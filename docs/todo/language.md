@@ -75,10 +75,19 @@
     human-oriented `--dump-graph` inspection output.
 
 - Events follow-ups
-  - The output-event/delegate proposal is specified in [`delegates.md`](delegates.md).
   - Add deeper conformance tests for complex proc-event forwarding chains and nested dispatch edge cases.
   - Add deeper conformance tests for proc-event slice forwarding edge cases (aliases, nested field arrays, and diagnostic coverage).
   - Add deeper conformance tests for host slice-event payload layouts, truncation diagnostics, and mixed fixed/slice event signatures.
+
+- Print value follow-ups
+  - Evaluate structured print values only after defining a bounded, host-independent representation
+    for arrays, slices, tuples, and structs. Preserve scalar-leaf types and avoid reflective dumping
+    of processors, buffers, or other runtime-owned objects.
+  - Revisit dynamic print text only as part of a general runtime-string design with explicit
+    ownership and realtime constraints. Static labels should remain allocation-free metadata.
+  - Consider optional processor-instance or proc-array-slot context for log occurrences if explicit
+    authored indices prove insufficient. Any design must keep lexical source ownership stable and
+    avoid adding hidden per-instance strings or callbacks to generated execution.
 
 - Musical scheduling / pattern follow-ups
   - Evaluate a small sample-accurate scheduling layer on top of events:
@@ -123,6 +132,18 @@
   - Expression-level indexing (`calcIdx(pos)[0]` without an intermediate variable).
   - Tuple equality/comparison.
   - Tuple in proc port types.
+
+- Assignment follow-ups
+  - Support indexed compound-assignment targets such as `values[i] += amount` while evaluating each
+    selector exactly once.
+
+- Array and slice follow-ups
+  - Preserve the statically provable length of constant-bound slices so an exact-length slice can
+    satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type
+    `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.
+  - Allow fixed-array declarations to copy-initialize from an exact-length fixed array or slice,
+    such as `stereo: f32[2] = gains[0:2]`. Define this as value-copy semantics, not aliasing, and
+    reuse the same compile-time shape proof as fixed-array arguments.
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.

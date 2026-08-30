@@ -26,6 +26,7 @@ pub(crate) struct ProcApi {
     pub(crate) has_bound_params: bool,
     pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
+    pub(crate) delegates: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
@@ -106,11 +107,16 @@ pub(crate) struct ProcEventParamSlotSpec {
 pub(crate) struct ProcCallInstance {
     pub(crate) proc_name: String,
     pub(crate) buffer_args: Vec<Expr>,
+    /// Buffers captured from the owner so routed child delegates can execute
+    /// their owner's `when` handlers in the documented proc event scope.
+    pub(crate) delegate_context_args: Vec<Expr>,
+    pub(crate) routes_owner_delegates: bool,
 }
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct ProcStateFields {
     pub(crate) scalars: HashMap<String, PrimitiveType>,
+    pub(crate) tuples: HashMap<String, Vec<PrimitiveType>>,
     pub(crate) data: HashMap<String, onda_frontend::ArrayTypeSpec>,
     pub(crate) nested_procs: HashMap<String, ProcNestedState>,
     pub(crate) nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
@@ -119,7 +125,8 @@ pub(crate) struct ProcStateFields {
 
 impl ProcStateFields {
     pub(crate) fn has_non_scalar(&self, name: &str) -> bool {
-        self.data.contains_key(name)
+        self.tuples.contains_key(name)
+            || self.data.contains_key(name)
             || self.struct_instances.contains_key(name)
             || self.nested_procs.contains_key(name)
             || self.nested_proc_arrays.contains_key(name)
@@ -158,6 +165,7 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
     for (name, ty) in &st.state_scalars {
         psf.scalars.insert(name.clone(), *ty);
     }
+    psf.tuples = st.state_tuples.clone();
 
     // Merge array specs: prefer state_array_specs (full spec), fall back to state_arrays + elem type keys
     for (name, spec) in &st.state_array_specs {
@@ -695,6 +703,14 @@ pub(crate) fn rewrite_proc_expr_symbols(
                             *name = format!("self.{root}.{field}.chans");
                         }
                     }
+                } else if let Some(base) = parse_buffer_bound_instance_base(name) {
+                    if field_names.contains(base) && is_plain_symbol(base) {
+                        *name = format!("self.{base}.bound");
+                    } else if let Some((root, field)) = split_field_path(base, errors) {
+                        if field_names.contains(root) && is_plain_symbol(root) {
+                            *name = format!("self.{root}.{field}.bound");
+                        }
+                    }
                 } else if let Some(base) = parse_buffer_samplerate_instance_base(name) {
                     if field_names.contains(base) && is_plain_symbol(base) {
                         *name = format!("self.{base}.samplerate");
@@ -748,6 +764,30 @@ pub(crate) fn rewrite_proc_stmt_symbols(
         let source_loc = stmt.loc().cloned();
         match stmt {
             Stmt::Const { .. } => None,
+            Stmt::Print {
+                label,
+                values,
+                origin,
+                ..
+            } => {
+                let mut values = values.clone();
+                for value in &mut values {
+                    rewrite_proc_expr_symbols(
+                        value,
+                        owner_proc,
+                        field_names,
+                        field_array_slots,
+                        in_array_slots,
+                        errors,
+                    );
+                }
+                Some(Stmt::Print {
+                    loc: source_loc.into(),
+                    label: label.clone(),
+                    values,
+                    origin: origin.clone(),
+                })
+            }
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -777,7 +817,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 loc: source_loc.into(),
                                 target_loc: Default::default(),
                                 target: AssignTarget::Var(name.clone()),
-                                decl_ty: *decl_ty,
+                                decl_ty: decl_ty.clone(),
                                 generic_decl_ty: generic_decl_ty.clone(),
                                 is_typed_decl: *is_typed_decl,
                                 typed_decl_ty_loc: Default::default(),
@@ -818,7 +858,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Var(name.clone()),
-                            decl_ty: *decl_ty,
+                            decl_ty: decl_ty.clone(),
                             generic_decl_ty: generic_decl_ty.clone(),
                             is_typed_decl: *is_typed_decl,
                             typed_decl_ty_loc: Default::default(),
@@ -853,7 +893,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             loc: Default::default(),
                                             target_loc: Default::default(),
                                             target: AssignTarget::Var(slot_name.clone()),
-                                            decl_ty: *decl_ty,
+                                            decl_ty: decl_ty.clone(),
                                             generic_decl_ty: generic_decl_ty.clone(),
                                             is_typed_decl: *is_typed_decl,
                                             typed_decl_ty_loc: Default::default(),
@@ -878,7 +918,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             base: base.clone(),
                                             index: idx_rewritten,
                                         },
-                                        decl_ty: *decl_ty,
+                                        decl_ty: decl_ty.clone(),
                                         generic_decl_ty: generic_decl_ty.clone(),
                                         is_typed_decl: *is_typed_decl,
                                         typed_decl_ty_loc: Default::default(),
@@ -1015,7 +1055,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         loc: source_loc.into(),
                         target_loc: Default::default(),
                         target: target.clone(),
-                        decl_ty: *decl_ty,
+                        decl_ty: decl_ty.clone(),
                         generic_decl_ty: generic_decl_ty.clone(),
                         is_typed_decl: *is_typed_decl,
                         typed_decl_ty_loc: Default::default(),

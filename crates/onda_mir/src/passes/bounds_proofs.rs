@@ -1,7 +1,6 @@
 use crate::{
-    analyze_integer_ranges, Block, BoundsMode, CallArgument, Function, FunctionId,
-    FunctionRangeAnalysis, Place, PlaceBase, Projection, Rvalue, ScalarValue, StatementKind, Type,
-    TypeId, Value,
+    Block, BoundsMode, CallArgument, Function, FunctionId, FunctionRangeAnalysis, Place, PlaceBase,
+    Projection, Rvalue, ScalarValue, StatementKind, Type, TypeId, Value,
 };
 
 use super::PassStats;
@@ -11,15 +10,18 @@ pub(super) fn eliminate_proven_bounds_checks(
     stats: &mut PassStats,
 ) -> bool {
     let mut changed = false;
+    let program_ranges = crate::analyze_program_integer_ranges(program);
     for function_index in 0..program.functions.len() {
         let function_id = FunctionId::new(function_index as u32);
-        let ranges = analyze_integer_ranges(program, function_id);
+        let ranges = program_ranges
+            .function(function_id)
+            .expect("program range analysis covers every MIR function");
         let function = program.functions[function_index].clone();
         let mut body = std::mem::take(&mut program.functions[function_index].body);
         let context = Context {
             program,
             function: &function,
-            ranges: &ranges,
+            ranges,
         };
         let eliminated = prove_block(&context, &mut body);
         program.functions[function_index].body = body;
@@ -46,6 +48,11 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
             StatementKind::Call { function, args, .. } => {
                 for (index, argument) in args.iter_mut().enumerate() {
                     eliminated += prove_call_argument(context, *function, index, argument);
+                }
+            }
+            StatementKind::PublishDelegate { args, .. } => {
+                for argument in args {
+                    eliminated += prove_publish_argument(context, argument);
                 }
             }
             StatementKind::OutputStore {
@@ -105,9 +112,24 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
     }
     eliminated
+}
+
+fn prove_publish_argument(context: &Context<'_>, argument: &mut CallArgument) -> u64 {
+    match argument {
+        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
+            prove_place(context, place)
+        }
+        CallArgument::Buffer(buffer) => prove_buffer_ref(context, buffer),
+        CallArgument::BufferParam(parameter) => prove_buffer_param_ref(context, parameter),
+        CallArgument::Value(_)
+        | CallArgument::SliceElement { .. }
+        | CallArgument::SliceWindow { .. }
+        | CallArgument::BufferSpan(_) => 0,
+    }
 }
 
 fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
@@ -155,11 +177,13 @@ fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
         Rvalue::BufferLoad { buffer, .. }
         | Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => prove_buffer_ref(context, buffer),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => prove_buffer_ref(context, buffer),
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => prove_buffer_param_ref(context, parameter),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => prove_buffer_param_ref(context, parameter),
         Rvalue::MakeSlice { source, .. } => prove_slice_source(context, source),
         _ => 0,
     }

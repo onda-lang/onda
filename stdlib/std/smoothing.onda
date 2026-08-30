@@ -1,4 +1,9 @@
 namespace std::smoothing:
+  def time_coefficient<T>(time_s: T):
+    if time_s <= 0.0:
+      return T(0.0)
+    return exp(T(-1.0) / (time_s * SR))
+
   proc Lag<T>:
     ins<T> 1
     outs<T> 1
@@ -11,10 +16,7 @@ namespace std::smoothing:
       coef = 0.0
 
     def update_time():
-      if (time_s <= 0.0):
-        coef = 0.0
-      else:
-        coef = exp(T(-1.0) / max(time_s * SR, T(1.0)))
+      coef = std::smoothing::time_coefficient<T>(time_s)
 
     sample:
       y = in1 + (y - in1) * coef
@@ -34,16 +36,10 @@ namespace std::smoothing:
       release_coef = 0.0
 
     def update_attack():
-      if (attack_s <= 0.0):
-        attack_coef = 0.0
-      else:
-        attack_coef = exp(T(-1.0) / max(attack_s * SR, T(1.0)))
+      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
 
     def update_release():
-      if (release_s <= 0.0):
-        release_coef = 0.0
-      else:
-        release_coef = exp(T(-1.0) / max(release_s * SR, T(1.0)))
+      release_coef = std::smoothing::time_coefficient<T>(release_s)
 
     sample:
       if (in1 > y):
@@ -73,10 +69,10 @@ namespace std::smoothing:
 
     sample:
       delta = in1 - y
-      if (delta > rise_step):
-        y = y + rise_step
-      elif (delta < -fall_step):
-        y = y - fall_step
+      if delta > rise_step:
+        y += rise_step
+      elif delta < -fall_step:
+        y -= fall_step
       else:
         y = in1
       out1 = y

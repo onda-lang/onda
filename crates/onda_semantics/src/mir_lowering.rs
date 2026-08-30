@@ -15,9 +15,10 @@ use std::fmt;
 
 use onda_frontend::{
     ArrayElemType, AssignTarget, BinaryOp as AstBinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr,
-    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    LogicalOp, ParamScale, PrimitiveType, SourceLoc, Stmt, TupleAssignTarget,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 use onda_mir::{
     BinaryOp as MirBinaryOp, Block as MirBlock, BoundsMode, CallArgument, CompareOp,
@@ -36,12 +37,13 @@ use crate::{
     builtin_constant_value_f64, can_assign_expr_to_type, can_eval_const_expr_exact_int,
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
-    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, resolve_call_args_at,
-    zero_expr, AggregateLayoutTable, AggregatePathComponent, AnalysisOptions, IndexAccess,
-    ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView,
-    ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent,
-    TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction,
-    TypedNestedProcArray, TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
+    parse_buffer_bound_instance_base, parse_buffer_chans_instance_base,
+    parse_buffer_samplerate_instance_base, resolve_call_args_at, zero_expr, AggregateLayoutTable,
+    AggregatePathComponent, AnalysisOptions, IndexAccess, ProcSincStageStateFields,
+    ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
+    TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
+    TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedNestedProcArray,
+    TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;
@@ -277,6 +279,7 @@ fn lower_user_functions_to_mir(
         );
     }
     let mut source_files = mir.source_files.clone();
+    let mut log_sites = mir.log_sites.clone();
     let structs = program
         .structs
         .iter()
@@ -317,6 +320,7 @@ fn lower_user_functions_to_mir(
                 globals,
                 &mut types,
                 &mut source_files,
+                &mut log_sites,
             )
         } else {
             FunctionLowerer::new(
@@ -336,6 +340,7 @@ fn lower_user_functions_to_mir(
                 emitted_name,
                 &mut types,
                 &mut source_files,
+                &mut log_sites,
             )
         };
         match lowerer.lower() {
@@ -350,6 +355,7 @@ fn lower_user_functions_to_mir(
     mir.types = types;
     mir.const_data.extend(pending_const_data);
     mir.source_files = source_files;
+    mir.log_sites = log_sites;
     mir.functions.extend(functions);
     Ok(ids)
 }
@@ -410,6 +416,7 @@ fn lower_program_to_raw_mir(
 
     let mut globals = RuntimeGlobals::default();
     populate_interface(program, &mut mir, &mut globals)?;
+    populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
     populate_runtime_interface_views(program, &mut globals)?;
     populate_constant_data(program, &mut mir, &mut globals)?;
@@ -431,6 +438,7 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
+        &mut mir.log_sites,
     );
     init_lowerer.bind_init_all(crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME);
     let mut init = init_lowerer.lower().map_err(|error| vec![error])?;
@@ -450,6 +458,7 @@ fn lower_program_to_raw_mir(
         &globals,
         &mut mir.types,
         &mut mir.source_files,
+        &mut mir.log_sites,
     )
     .lower_process(
         &program.block_pre,
@@ -1837,6 +1846,44 @@ fn populate_constant_data(
     Ok(())
 }
 
+fn populate_delegates(
+    program: &TypedProgram,
+    mir: &mut onda_mir::Program,
+) -> Result<(), Vec<MirLoweringError>> {
+    for delegate in &program.delegates {
+        let mut params = Vec::with_capacity(delegate.params.len());
+        for param in &delegate.params {
+            let ty = match param.ty {
+                TypedEventParamType::Scalar(ty) => intern_scalar_type(&mut mir.types, ty),
+                TypedEventParamType::Array { elem, len } => {
+                    let len = u32::try_from(len).map_err(|_| {
+                        vec![MirLoweringError::new(
+                            format!(
+                                "delegate '{}' array parameter '{}' length does not fit u32",
+                                delegate.name, param.name
+                            ),
+                            SourceLoc::ZERO,
+                        )]
+                    })?;
+                    intern_array_type(&mut mir.types, elem, len)
+                }
+                TypedEventParamType::Slice { elem } => {
+                    intern_slice_type(&mut mir.types, elem, onda_mir::AccessMode::ReadOnly)
+                }
+            };
+            params.push(onda_mir::DelegateParam {
+                name: param.name.clone(),
+                ty,
+            });
+        }
+        mir.interface.delegates.push(onda_mir::Delegate {
+            name: delegate.name.clone(),
+            params,
+        });
+    }
+    Ok(())
+}
+
 fn lower_events(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
@@ -1938,6 +1985,7 @@ fn lower_events(
             globals,
             &mut mir.types,
             &mut mir.source_files,
+            &mut mir.log_sites,
         );
         lowerer
             .bind_event_params(event)
@@ -1986,6 +2034,7 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
         name: name.to_owned(),
         runtime_context: false,
+        publishes_print: false,
         method_of: None,
         type_params: Vec::new(),
         params: Vec::new(),
@@ -2017,6 +2066,7 @@ fn compiler_generated_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Always,
+        runtime_context: true,
     }
 }
 
@@ -2024,14 +2074,18 @@ fn compiler_shared_function_attributes() -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
         inline: InlineHint::Never,
+        runtime_context: true,
     }
 }
 
-fn source_function_attributes(name: &str) -> FunctionAttributes {
+fn source_function_attributes(name: &str, publishes_print: bool) -> FunctionAttributes {
     if crate::internal_names::is_compiler_generated_function_name(name) {
         compiler_generated_function_attributes()
     } else {
-        FunctionAttributes::default()
+        FunctionAttributes {
+            runtime_context: publishes_print,
+            ..FunctionAttributes::default()
+        }
     }
 }
 
@@ -2402,6 +2456,11 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_calls_in_expr(expr, calls);
             }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_calls_in_expr(value, calls);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -2749,6 +2808,7 @@ struct FunctionLowerer<'a> {
     emitted_name: String,
     types: &'a mut Vec<MirType>,
     source_files: &'a mut Vec<SourceFile>,
+    log_sites: &'a mut Vec<onda_mir::LogSite>,
     runtime_globals: Option<&'a RuntimeGlobals>,
     current_frame: Option<Value>,
     oversampled_inputs: HashMap<String, (LocalId, PrimitiveType)>,
@@ -3197,16 +3257,16 @@ fn collect_for_body_range_annotations(
 }
 
 fn annotate_structured_for_body_ranges(program: &mut onda_mir::Program) {
+    let program_ranges = onda_mir::analyze_program_integer_ranges(program);
     for function_index in 0..program.functions.len() {
-        let ranges = onda_mir::analyze_integer_ranges(
-            program,
-            onda_mir::FunctionId::new(function_index as u32),
-        );
+        let ranges = program_ranges
+            .function(onda_mir::FunctionId::new(function_index as u32))
+            .expect("program range analysis covers every MIR function");
         let mut annotations = Vec::new();
         collect_for_body_range_annotations(
             &program.functions[function_index],
             &program.functions[function_index].body,
-            &ranges,
+            ranges,
             &mut HashMap::new(),
             &mut annotations,
         );

@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/processor-abi",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "type": "module",
   "description": "Shared Onda processor artifact schema, validation, and integrity helpers",
   "license": "MIT",
@@ -22,11 +22,13 @@
   },
   "files": [
     "src",
+    "api.md",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepack": "node ../../scripts/stage-web-api-docs.mjs"
   },
   "publishConfig": {
     "access": "public"

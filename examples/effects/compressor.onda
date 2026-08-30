@@ -64,6 +64,6 @@ sample:
   comp.release_ms = release_ms
   comp.knee_db = knee_db
   comp.makeup_db = makeup_db
-  comp(dry_l, dry_r)
-  out1 = (dry_l * (1.0 - mix) + comp.out1 * mix) * level
-  out2 = (dry_r * (1.0 - mix) + comp.out2 * mix) * level
+  wet_l, wet_r = comp(dry_l, dry_r)
+  out1 = (dry_l * (1.0 - mix) + wet_l * mix) * level
+  out2 = (dry_r * (1.0 - mix) + wet_r * mix) * level

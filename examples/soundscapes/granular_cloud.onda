@@ -100,7 +100,7 @@ sample:
       progress = grain_age[i] / f32(max(grain_length[i], 1))
       window = 0.5 - 0.5 * cos(progress * TWO_PI)
       grain_signal = std::lookup::readCW(tape, grain_position[i]) * window
-      (gain_l, gain_r) = std::levels::pan_3db(grain_pan[i])
+      gain_l, gain_r = std::levels::pan_3db(grain_pan[i])
       cloud_l = cloud_l + grain_signal * gain_l
       cloud_r = cloud_r + grain_signal * gain_r
       grain_position[i] = wrap(grain_position[i] + grain_speed[i], 0.0, TapeFrames)

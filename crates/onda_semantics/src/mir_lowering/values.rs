@@ -21,7 +21,7 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn assign_destructured_values(
         &mut self,
-        targets: &[String],
+        targets: &[TupleAssignTarget],
         values: Vec<LoweredValue>,
         block: &mut MirBlock,
         value_location: SourceLoc,
@@ -38,6 +38,9 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
         for (target, value) in targets.iter().zip(values) {
+            let Some(target) = target.binding() else {
+                continue;
+            };
             let (local, target_ty) =
                 self.scalar_local_for_destructure(target, value.ty, statement_location)?;
             let value = self.coerce(value, target_ty, block, value_location)?;

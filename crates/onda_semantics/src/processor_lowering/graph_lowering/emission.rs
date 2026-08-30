@@ -198,7 +198,7 @@ pub(super) fn lower_graph(
                 loc: Default::default(),
                 target_loc: Default::default(),
                 target: AssignTarget::Var(delay_state.head_name.clone()),
-                decl_ty: Some(PrimitiveType::I32),
+                decl_ty: Some(DeclType::Scalar(PrimitiveType::I32)),
                 generic_decl_ty: None,
                 is_typed_decl: true,
                 typed_decl_ty_loc: Default::default(),

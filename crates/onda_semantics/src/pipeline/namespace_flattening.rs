@@ -222,7 +222,11 @@ impl RewriteNameScope {
 fn assignment_target_plain_names(target: &AssignTarget) -> Vec<String> {
     match target {
         AssignTarget::Var(name) => vec![name.clone()],
-        AssignTarget::Tuple(names) => names.clone(),
+        AssignTarget::Tuple(names) => names
+            .iter()
+            .filter_map(|target| target.binding())
+            .map(str::to_owned)
+            .collect(),
         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
@@ -255,6 +259,14 @@ fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
             Block::Events(events) => {
                 names.extend(events.events.iter().map(|event| event.name.clone()));
             }
+            Block::Delegates(delegates) => {
+                names.extend(
+                    delegates
+                        .delegates
+                        .iter()
+                        .map(|delegate| delegate.name.clone()),
+                );
+            }
             Block::Init(init) => {
                 collect_top_level_assignment_target_names(&init.body, &mut names);
             }
@@ -271,6 +283,7 @@ fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
             | Block::Struct(_)
             | Block::Def(_)
             | Block::Tasks(_)
+            | Block::When(_)
             | Block::Sample(_)
             | Block::Graph(_) => {}
         }
@@ -287,6 +300,7 @@ fn proc_value_name_scope(proc: &ProcessorDef) -> RewriteNameScope {
     scope.extend(proc.params.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.buffers.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.events.iter().map(|event| event.name.clone()));
+    scope.extend(proc.delegates.iter().map(|delegate| delegate.name.clone()));
     scope.extend(proc.tasks.iter().map(|task| task.name.clone()));
     scope.extend(proc.local_defs.iter().map(|def| def.name.clone()));
     collect_top_level_assignment_target_names(&proc.init.body, &mut scope.names);
@@ -958,6 +972,11 @@ fn validate_template_stmt_refs(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             validate_template_expr_refs(expr, current_ns, state, scope, context, errors);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                validate_template_expr_refs(value, current_ns, state, scope, context, errors);
+            }
         }
         Stmt::If {
             cond,
@@ -3047,6 +3066,34 @@ fn rewrite_block_namespace_refs(
                 );
             }
         }
+        Block::Delegates(delegates) => {
+            let global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            for delegate in &mut delegates.delegates {
+                rewrite_delegate_def_with_scope(
+                    delegate,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    &global_scope,
+                );
+            }
+        }
+        Block::When(when) => {
+            let global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
+            rewrite_when_def_with_scope(
+                when,
+                current_ns,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+                &global_scope,
+            );
+        }
         Block::Tasks(tasks) => {
             let global_scope = RewriteNameScope::from_names(state.global_value_names.clone());
             for task in &mut tasks.tasks {
@@ -3207,6 +3254,30 @@ fn rewrite_block_namespace_refs(
             for event in &mut p.events {
                 rewrite_event_def_with_scope(
                     event,
+                    current_ns,
+                    &proc_template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    &proc_scope,
+                );
+            }
+            for delegate in &mut p.delegates {
+                rewrite_delegate_def_with_scope(
+                    delegate,
+                    current_ns,
+                    &proc_template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    &proc_scope,
+                );
+            }
+            for when in &mut p.whens {
+                rewrite_when_def_with_scope(
+                    when,
                     current_ns,
                     &proc_template_consts,
                     options,
@@ -4006,6 +4077,77 @@ fn rewrite_event_def_with_scope(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn rewrite_delegate_def_with_scope(
+    delegate: &mut DelegateDef,
+    current_ns: &str,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+    parent_scope: &RewriteNameScope,
+) {
+    let mut adapter = EventDef {
+        loc: delegate.loc,
+        name: delegate.name.clone(),
+        params: std::mem::take(&mut delegate.params),
+        body: Vec::new(),
+    };
+    rewrite_event_def_with_scope(
+        &mut adapter,
+        current_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        parent_scope,
+    );
+    delegate.params = adapter.params;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rewrite_when_def_with_scope(
+    when: &mut WhenDef,
+    current_ns: &str,
+    template_consts: &HashMap<String, Expr>,
+    options: AnalysisOptions,
+    state: &mut NamespaceFlattenState,
+    generated: &mut Vec<Block>,
+    errors: &mut Vec<Diagnostic>,
+    parent_scope: &RewriteNameScope,
+) {
+    if let Some(index) = &mut when.target.index {
+        rewrite_expr(
+            index,
+            current_ns,
+            template_consts,
+            options,
+            state,
+            generated,
+            errors,
+        );
+    }
+    let mut local_scope = parent_scope.clone();
+    local_scope.extend(
+        when.bindings
+            .iter()
+            .filter(|binding| binding.name != "_")
+            .map(|binding| binding.name.clone()),
+    );
+    rewrite_stmts_scoped(
+        &mut when.body,
+        current_ns,
+        template_consts,
+        options,
+        state,
+        generated,
+        errors,
+        &mut local_scope,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn rewrite_decl_type(
     ty: &mut DeclType,
     current_ns: &str,
@@ -4507,6 +4649,20 @@ fn rewrite_stmt_scoped(
                 errors,
                 local_scope,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_expr_scoped(
+                    value,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    local_scope,
+                );
+            }
         }
         Stmt::If {
             cond,

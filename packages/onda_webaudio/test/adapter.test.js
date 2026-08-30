@@ -17,6 +17,13 @@ import {
   createOndaAudioProcessorInitialized,
   ondaAudioWorkletNodeOptions,
 } from "../src/index.js";
+import {
+  EXECUTION_OPERATION_INIT,
+  EXECUTION_OPERATION_PROCESS,
+  createExecutionOutputRing,
+  openExecutionOutputRing,
+  writeExecutionOutputRing,
+} from "../src/execution-output-ring.js";
 
 const FIXTURE_MIR_SCHEMA_VERSION = 6;
 
@@ -93,6 +100,8 @@ function artifact() {
         snapshot_byte_order: "little_endian",
         snapshot_restore_base: "post_init_physical_state_image",
         requires_full_blocks: false,
+        delegate_record_header_size_bytes: 12,
+        print_record_header_size_bytes: 12,
       },
       exports: {
         memory: "memory",
@@ -109,6 +118,9 @@ function artifact() {
         params: [],
         buffers: [],
         events: [],
+        delegates: [],
+        source_files: [],
+        log_sites: [],
       },
     },
   };
@@ -148,6 +160,46 @@ class FakeNode {
   }
 }
 
+function createTestOutputRing(delegateCapacity = 64, printCapacity = 64) {
+  const buffer = createExecutionOutputRing(delegateCapacity, printCapacity, 1024);
+  return { buffer, ring: openExecutionOutputRing(buffer) };
+}
+
+function writeTestOutput(ring, fields, delegateStorage = null, printStorage = null) {
+  const delegate = delegateStorage ?? new Uint8Array(0);
+  const print = printStorage ?? new Uint8Array(0);
+  assert.equal(writeExecutionOutputRing(ring, {
+    operation: EXECUTION_OPERATION_PROCESS,
+    operationIndex: 0,
+    delegateSubscriptionId: 0,
+    delegateUsed: delegate.byteLength,
+    delegateRecordCount: 0,
+    delegateOverflowCount: 0,
+    delegateTransportDropCount: 0,
+    printSubscriptionId: 0,
+    printUsed: print.byteLength,
+    printRecordCount: 0,
+    printOverflowCount: 0,
+    printTransportDropCount: 0,
+    ...fields,
+  }, delegate, print), true);
+}
+
+test("closed processors reject new work and settle pending requests", async () => {
+  const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
+  const processor = new OndaAudioProcessor(node, artifact().metadata);
+  const pending = processor.trigger("note");
+  const reason = new Error("closed by host");
+
+  processor.close(reason);
+  processor.close();
+
+  await assert.rejects(pending, reason);
+  await assert.rejects(processor.trigger("note"), reason);
+  assert.throws(() => processor.onPrint(() => {}), reason);
+  assert.equal(node.port.messages.length, 1);
+});
+
 test("derives explicit Web Audio channel options from processor metadata", () => {
   const options = ondaAudioWorkletNodeOptions(artifact(), {
     nodeOptions: {
@@ -171,6 +223,10 @@ test("rejects unknown initial parameters before worklet construction", () => {
   assert.throws(
     () => ondaAudioWorkletNodeOptions(artifact(), { params: [1] }),
     /unknown Onda parameter '0'/,
+  );
+  assert.throws(
+    () => ondaAudioWorkletNodeOptions(artifact(), { onPrint: true }),
+    /initial print listener must be a function/,
   );
 });
 
@@ -214,6 +270,47 @@ test("initialized creation requests full initialization in the worklet construct
     AudioWorkletNode: FakeNode,
   });
   assert.equal(processor.node.options.processorOptions.initialize, true);
+  assert.equal(processor.node.options.processorOptions.printCollectionEnabled, false);
+});
+
+test("initialized creation installs its print listener before worklet output arrives", async () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: "init",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "init",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const context = {
+    sampleRate: 48_000,
+    audioWorklet: { addModule: async () => {} },
+  };
+  const batches = [];
+  const processor = await createOndaAudioProcessorInitialized(context, source, {
+    AudioWorkletNode: FakeNode,
+    onPrint: (batch) => batches.push(batch),
+  });
+  assert.equal(processor.node.options.processorOptions.printCollectionEnabled, true);
+  assert.equal(processor.node.options.processorOptions.printSubscriptionId, 1);
+
+  const storage = new Uint8Array(16);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 4, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 42, true);
+  writeTestOutput(processor.executionOutputRing, {
+    operation: EXECUTION_OPERATION_INIT,
+    printSubscriptionId: 1,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+  }, null, storage);
+  processor.drainExecutionOutput();
+  assert.equal(batches[0].text, "init: 42\n");
+  processor.close();
 });
 
 test("rejects a processor compiled for a different AudioContext sample rate", async () => {
@@ -281,6 +378,204 @@ test("correlates control responses and preserves caller snapshot storage", async
   assert.equal(fullInitRequest.mode, ONDA_INIT_FULL);
   node.port.reply({ type: "onda-ok", requestId: fullInitRequest.requestId });
   await fullInit;
+  processor.close();
+});
+
+test("formats worklet print records on the main side", () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: "value",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const node = { port: new FakePort() };
+  const output = createTestOutputRing(0, 64);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
+  const batches = [];
+  const unsubscribe = processor.onPrint((batch) => batches.push(batch));
+  const subscription = node.port.messages.at(-1);
+  assert.equal(subscription.type, "print-subscription");
+  assert.equal(subscription.enabled, true);
+  const storage = new Uint8Array(16);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 4, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 42, true);
+  writeTestOutput(output.ring, {
+    printSubscriptionId: subscription.subscriptionId,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+    printOverflowCount: 2,
+    printTransportDropCount: 3,
+  }, null, storage);
+  processor.drainExecutionOutput();
+  assert.equal(batches[0].text, "value: 42\n");
+  assert.equal(batches[0].entries[0].values[0].value, 42);
+  assert.equal(batches[0].overflowCount, 2);
+  assert.equal(batches[0].transportDropCount, 3);
+  assert.equal(unsubscribe(), true);
+  assert.deepEqual(node.port.messages.at(-1), {
+    type: "print-subscription",
+    enabled: false,
+    subscriptionId: subscription.subscriptionId,
+  });
+  writeTestOutput(output.ring, {
+    printSubscriptionId: subscription.subscriptionId,
+    printUsed: storage.byteLength,
+    printRecordCount: 1,
+  }, null, storage);
+  processor.drainExecutionOutput();
+  assert.equal(batches.length, 1);
+  processor.close();
+});
+
+test("subscribes lazily and decodes delegate records on the main side", () => {
+  const source = artifact();
+  source.metadata.metadata.delegates = [{
+    name: "report",
+    params: [
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_array: false,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
+    ],
+  }];
+  const node = { port: new FakePort() };
+  const output = createTestOutputRing(64, 0);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
+  const batches = [];
+  const unsubscribe = processor.onDelegates((batch) => batches.push(batch));
+  const subscription = node.port.messages.at(-1);
+  assert.equal(subscription.type, "delegate-subscription");
+  assert.equal(subscription.enabled, true);
+
+  const storage = new Uint8Array(28);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 16, true);
+  view.setUint32(8, 0, true);
+  view.setInt32(12, 7, true);
+  view.setInt32(16, 2, true);
+  view.setFloat32(20, 1.25, true);
+  view.setFloat32(24, -2.5, true);
+  writeTestOutput(output.ring, {
+    delegateSubscriptionId: subscription.subscriptionId,
+    delegateUsed: storage.byteLength,
+    delegateRecordCount: 1,
+    delegateOverflowCount: 2,
+    delegateTransportDropCount: 3,
+  }, storage);
+  processor.drainExecutionOutput();
+
+  assert.deepEqual(batches, [{
+    type: "onda-delegates",
+    operation: "process",
+    occurrences: [{
+      sequence: 0,
+      index: 0,
+      name: "report",
+      values: { code: 7, values: [1.25, -2.5] },
+    }],
+    overflowCount: 2,
+    transportDropCount: 3,
+  }]);
+  assert.equal(unsubscribe(), true);
+  assert.deepEqual(node.port.messages.at(-1), {
+    type: "delegate-subscription",
+    enabled: false,
+    subscriptionId: subscription.subscriptionId,
+  });
+  processor.close();
+});
+
+test("delivers print and delegate callbacks in call-local source order", () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: null,
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  source.metadata.metadata.delegates = [{
+    name: "tick",
+    params: [{
+      name: "value",
+      scalar: "i32",
+      array_len: 1,
+      is_array: false,
+      is_slice: false,
+      element_size_bytes: 4,
+    }],
+  }];
+  const node = { port: new FakePort() };
+  const output = createTestOutputRing(64, 64);
+  const processor = new OndaAudioProcessor(
+    node,
+    source.metadata,
+    undefined,
+    output.buffer,
+  );
+  const delivered = [];
+  processor.onPrint((batch) => delivered.push(`print:${batch.entries[0].values[0].value}`));
+  const printSubscription = node.port.messages.at(-1).subscriptionId;
+  processor.onDelegates((batch) => delivered.push(`delegate:${batch.occurrences[0].values.value}`));
+  const delegateSubscription = node.port.messages.at(-1).subscriptionId;
+
+  const printStorage = new Uint8Array(32);
+  const printView = new DataView(printStorage.buffer);
+  for (const [offset, sequence, value] of [[0, 0, 11], [16, 2, 33]]) {
+    printView.setUint32(offset, 0, true);
+    printView.setUint32(offset + 4, 4, true);
+    printView.setUint32(offset + 8, sequence, true);
+    printView.setInt32(offset + 12, value, true);
+  }
+  const delegateStorage = new Uint8Array(16);
+  const delegateView = new DataView(delegateStorage.buffer);
+  delegateView.setUint32(0, 0, true);
+  delegateView.setUint32(4, 4, true);
+  delegateView.setUint32(8, 1, true);
+  delegateView.setInt32(12, 22, true);
+  writeTestOutput(output.ring, {
+    printSubscriptionId: printSubscription,
+    printUsed: printStorage.byteLength,
+    printRecordCount: 2,
+    delegateSubscriptionId: delegateSubscription,
+    delegateUsed: delegateStorage.byteLength,
+    delegateRecordCount: 1,
+  }, delegateStorage, printStorage);
+  assert.deepEqual(delivered, []);
+  processor.drainExecutionOutput();
+  assert.deepEqual(delivered, ["print:11", "delegate:22", "print:33"]);
   processor.close();
 });
 

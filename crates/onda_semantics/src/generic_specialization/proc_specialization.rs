@@ -288,6 +288,11 @@ pub(crate) fn rewrite_generic_array_ctor_stmt_types(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -350,7 +355,7 @@ pub(crate) fn specialize_generic_typed_decls(
                 push_semantic(
                     diag,
                     errors,
-                    "typed declaration is only supported for plain scalar variables",
+                    "typed declaration is only supported for plain variables",
                 );
                 *generic_decl_ty = None;
                 return;
@@ -369,7 +374,7 @@ pub(crate) fn specialize_generic_typed_decls(
             }
             match type_bindings.get(&param).copied() {
                 Some(bound) => {
-                    *decl_ty = Some(bound);
+                    *decl_ty = Some(DeclType::Scalar(bound));
                     *generic_decl_ty = None;
                     *is_typed_decl = true;
                 }
@@ -407,7 +412,11 @@ pub(crate) fn specialize_generic_typed_decls(
                 specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
             }
         }
-        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { .. }
+        | Stmt::Print { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
     });
 }
 
@@ -682,6 +691,8 @@ pub(crate) fn specialize_generic_proc_template(
     let mut block_post = template.block_post.clone();
     let mut local_defs = template.local_defs.clone();
     let mut events = template.events.clone();
+    let mut delegates = template.delegates.clone();
+    let mut whens = template.whens.clone();
     let mut tasks = template.tasks.clone();
     for event in &mut events {
         for param in &mut event.params {
@@ -702,6 +713,31 @@ pub(crate) fn specialize_generic_proc_template(
                     &format!(
                         "processor '{}.{}' event parameter default",
                         template.name, event.name
+                    ),
+                    errors,
+                );
+            }
+        }
+    }
+    for delegate in &mut delegates {
+        for param in &mut delegate.params {
+            param.ty = specialize_generic_proc_event_param_type(
+                &param.ty,
+                &type_bindings,
+                &template.name,
+                &delegate.name,
+                &param.name,
+                DiagCtx::new(param.ty_loc.or(param.loc)),
+                errors,
+            );
+            if let Some(default) = &mut param.default {
+                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
+                substitute_call_type_args_with_bindings_expr(
+                    default,
+                    &type_bindings,
+                    &format!(
+                        "processor '{}.{}' delegate parameter default",
+                        template.name, delegate.name
                     ),
                     errors,
                 );
@@ -787,6 +823,28 @@ pub(crate) fn specialize_generic_proc_template(
         for stmt in &mut event.body {
             specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
         }
+    }
+    for when in &mut whens {
+        if let Some(index) = &mut when.target.index {
+            rewrite_generic_array_ctor_expr_types(index, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_expr(
+                index,
+                &type_bindings,
+                &format!("processor '{}' when target", template.name),
+                errors,
+            );
+        }
+        for stmt in &mut when.body {
+            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
+            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
+            substitute_call_type_args_with_bindings_stmt(
+                stmt,
+                &type_bindings,
+                &format!("processor '{}' when handler", template.name),
+                errors,
+            );
+        }
+        expand_inline_array_ctor_initializers(&mut when.body);
     }
     for event in &mut events {
         for stmt in &mut event.body {
@@ -956,6 +1014,8 @@ pub(crate) fn specialize_generic_proc_template(
         params_deferred_count: None,
         params_deferred_default_ty: None,
         events,
+        delegates,
+        whens,
         tasks,
         buffers,
         buffers_deferred_count: None,
@@ -1227,11 +1287,23 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt(
                 );
             }
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-            update_generic_inference_locals_from_assign(target, *decl_ty, expr, locals);
+            update_generic_inference_locals_from_assign(
+                target,
+                decl_ty.as_ref().and_then(DeclType::scalar),
+                expr,
+                locals,
+            );
             locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_generic_proc_ctor_expr(
+                    value, templates, generated, errors, locals, current_ns,
+                );
+            }
         }
         Stmt::If {
             cond,

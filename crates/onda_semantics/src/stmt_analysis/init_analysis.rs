@@ -44,6 +44,7 @@ impl<'a> InitStmtAnalysisCtx<'a> {
 pub(crate) struct InitAnalysisState {
     pub known_scalars: HashSet<String>,
     pub local_aliases: LocalAliasTypes,
+    pub tuple_vars: HashMap<String, usize>,
     pub integer_ranges: HashMap<String, TypedIntegerRange>,
     pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub declared_symbols: DeclaredSymbolMap,
@@ -115,6 +116,7 @@ impl InitAnalysisState {
         Self {
             known_scalars,
             local_aliases,
+            tuple_vars: HashMap::new(),
             integer_ranges: HashMap::new(),
             local_array_aliases,
             declared_symbols,
@@ -138,6 +140,7 @@ impl InitAnalysisState {
             HashMap::new(),
         );
         flow.integer_ranges = self.integer_ranges.clone();
+        flow.tuple_vars = self.tuple_vars.clone();
         flow
     }
 
@@ -146,11 +149,18 @@ impl InitAnalysisState {
         self.local_aliases = flow.local_aliases;
         self.integer_ranges = flow.integer_ranges;
         self.local_array_aliases = flow.local_array_aliases;
+        self.tuple_vars = flow.tuple_vars;
     }
 
     fn sync_known_scalars_with_registered_state(&mut self) {
         self.known_scalars
             .extend(self.state_scalars.keys().cloned());
+        self.known_scalars.extend(self.state_tuples.keys().cloned());
+        self.tuple_vars.extend(
+            self.state_tuples
+                .iter()
+                .map(|(name, types)| (name.clone(), types.len())),
+        );
     }
 
     fn absorb_registered_state(
@@ -182,6 +192,20 @@ impl InitAnalysisState {
         }
         for (k, v) in child.state_array_struct_roots {
             self.state_array_struct_roots.entry(k).or_insert(v);
+        }
+        for (k, v) in child.state_tuples {
+            if let Some(existing) = self.state_tuples.get(&k) {
+                if existing != &v {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "{context_label} tuple state symbol '{k}' has conflicting types across branches"
+                        ),
+                    );
+                }
+            }
+            self.state_tuples.insert(k, v);
         }
         for (k, v) in child.struct_instances {
             self.struct_instances.entry(k).or_insert(v);
@@ -293,13 +317,14 @@ pub(crate) fn analyze_init_stmt(
             &st.nested_proc_arrays,
         );
         let stmt_expr_env = |scope| {
-            build_scope_stmt_expr_env(
+            build_scope_stmt_expr_env_with_tuples(
                 expr_inputs,
                 &st.known_scalars,
                 &st.local_aliases,
                 &st.local_array_aliases,
                 &array_vars,
                 scope,
+                &st.tuple_vars,
             )
         };
         match stmt {
@@ -354,6 +379,30 @@ pub(crate) fn analyze_init_stmt(
                 errors,
                 "return is only allowed inside def blocks",
             ),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    let env = stmt_expr_env(common.scope_kind());
+                    if let Some((name, ty)) = non_printable_stmt_expr_type(value, env) {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            format!(
+                                "value '{name}' has non-printable type '{ty}'; print scalar values explicitly"
+                            ),
+                        );
+                        continue;
+                    }
+                    let before = errors.len();
+                    let ty = validate_and_infer_stmt_expr_type(value, env, errors);
+                    if ty.is_none() && errors.len() == before {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            "print values must resolve to f32, f64, i32, i64, or bool; print scalar values explicitly",
+                        );
+                    }
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -395,7 +444,6 @@ pub(crate) fn analyze_init_stmt(
                 let mut proc_aliases = HashMap::new();
                 let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
-                let mut tuple_vars = HashMap::new();
                 merge_reachable_branch_scope_flow_state(
                     &mut st.known_scalars,
                     &mut st.local_aliases,
@@ -404,7 +452,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut proc_aliases,
                     &mut struct_aliases,
                     &mut buffer_aliases,
-                    &mut tuple_vars,
+                    &mut st.tuple_vars,
                     then_flow,
                     then_execution,
                     else_flow,
@@ -459,7 +507,6 @@ pub(crate) fn analyze_init_stmt(
                 let mut proc_aliases = HashMap::new();
                 let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
-                let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
@@ -467,7 +514,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut proc_aliases,
                     &mut struct_aliases,
                     &mut buffer_aliases,
-                    &mut tuple_vars,
+                    &mut st.tuple_vars,
                     loop_flow,
                 );
                 st.sync_known_scalars_with_registered_state();
@@ -495,7 +542,6 @@ pub(crate) fn analyze_init_stmt(
                 let mut proc_aliases = HashMap::new();
                 let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
-                let mut tuple_vars = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
@@ -503,7 +549,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut proc_aliases,
                     &mut struct_aliases,
                     &mut buffer_aliases,
-                    &mut tuple_vars,
+                    &mut st.tuple_vars,
                     loop_flow,
                 );
                 st.sync_known_scalars_with_registered_state();
@@ -516,7 +562,7 @@ pub(crate) fn analyze_init_stmt(
 fn analyze_assign_init(
     target_loc: SourceLoc,
     target: &AssignTarget,
-    decl_ty: &Option<PrimitiveType>,
+    decl_ty: &Option<DeclType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     expr: &Expr,
@@ -534,7 +580,6 @@ fn analyze_assign_init(
     let output_names = common.output_names;
     let param_names = common.param_names;
     let struct_defs = common.struct_defs;
-    let fn_signatures = common.fn_signatures;
     let options = common.options;
     let scope = common.scope_kind();
     let allow_owner_state_intro = scope_depth == 0;
@@ -570,12 +615,13 @@ fn analyze_assign_init(
     }
     macro_rules! scope_expr_env {
         ($scope:expr) => {{
-            let mut env = build_scope_expr_env(
+            let mut env = build_scope_expr_env_with_tuples(
                 expr_inputs!(),
                 &st.known_scalars,
                 &st.local_aliases,
                 &array_vars,
                 $scope,
+                &st.tuple_vars,
             );
             env.local_array_aliases = &st.local_array_aliases;
             env
@@ -646,7 +692,7 @@ fn analyze_assign_init(
                 }
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             // Proc mode: declaration-order validation on index target
             if let Some(pctx) = stmt_ctx.proc_init_resolution() {
@@ -757,7 +803,7 @@ fn analyze_assign_init(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if let Some(name) = io_surface_name(base, scope_expr_env!(ScopeKind::Init)) {
                 push_io_surface_scope_error(errors, target_loc, name);
@@ -872,13 +918,14 @@ fn analyze_assign_init(
                 );
                 require_expr_numeric_type(end, end_ty, "slice end bound", errors);
             }
-            let stmt_env = build_scope_stmt_expr_env(
+            let stmt_env = build_scope_stmt_expr_env_with_tuples(
                 expr_inputs!(),
                 &st.known_scalars,
                 &st.local_aliases,
                 &st.local_array_aliases,
                 &array_vars,
                 ScopeKind::Init,
+                &st.tuple_vars,
             );
             if is_data_like_value_expr(expr, stmt_env) {
                 validate_data_like_value_expr(expr, stmt_env, errors);
@@ -927,11 +974,13 @@ fn analyze_assign_init(
             }
         }
         AssignTarget::Var(name) => {
+            let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+            let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
             let typed_named_ctor_decl_without_type_args = is_typed_decl
                 && decl_ty.is_none()
                 && generic_decl_ty.is_none()
                 && matches!(expr, Expr::UserCall { type_args, .. } if type_args.is_empty());
-            let declared_ty = if let Some(declared) = *decl_ty {
+            let declared_ty = if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else if let Some(param) = generic_decl_ty {
                 if !typed_named_ctor_decl_without_type_args {
@@ -983,7 +1032,7 @@ fn analyze_assign_init(
                         match expr {
                             Expr::ArrayCtor { .. } | Expr::UserCall { .. } => {}
                             _ => {
-                                let placeholder_ty = decl_ty
+                                let placeholder_ty = declared_scalar_ty
                                     .or(ctx.init_default_ty)
                                     .unwrap_or(PrimitiveType::F32);
                                 if allow_owner_state_intro {
@@ -1050,17 +1099,8 @@ fn analyze_assign_init(
                     field,
                     expr,
                     target_loc.into(),
-                    &mut st.known_scalars,
-                    locals,
-                    &mut st.state_scalars,
-                    &mut st.declared_symbols,
-                    &mut st.state_arrays,
-                    &mut st.state_array_struct_roots,
-                    &st.struct_instances,
-                    output_names,
-                    struct_defs,
-                    fn_signatures,
-                    options,
+                    stmt_ctx,
+                    st,
                     errors,
                 );
                 return;
@@ -1168,22 +1208,16 @@ fn analyze_assign_init(
                 st.known_scalars.insert(name.clone());
                 return;
             }
-            // Tuple literal assignment: flatten to individual scalar state entries
-            if let Expr::Tuple { values, .. } = expr {
-                if st.state_scalars.contains_key(name)
-                    || st.state_arrays.contains_key(name)
-                    || st.state_array_struct_roots.contains_key(name)
-                    || st.struct_instances.contains_key(name)
-                {
-                    target_error!(format!(
-                        "symbol '{name}' already used with a different state type"
-                    ),);
-                    return;
-                }
-                let mut elem_tys = Vec::new();
-                for (idx, value) in values.iter().enumerate() {
-                    validate_expr(value, scope_expr_env!(scope), errors);
-                    let inferred = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+            let inferred_tuple_types = infer_tracked_tuple_types(
+                expr,
+                &st.tuple_vars,
+                &st.local_aliases,
+                Some(&st.state_tuples),
+                &st.struct_instances,
+                struct_defs,
+                common.fn_return_types,
+                |value| {
+                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         value,
                         &st.state_scalars,
                         &st.declared_symbols,
@@ -1198,15 +1232,76 @@ fn analyze_assign_init(
                         struct_defs,
                         &st.nested_proc_arrays,
                         errors,
-                    );
-                    let elem_ty = effective_untyped_assignment_type(value, inferred)
-                        .unwrap_or(PrimitiveType::F32);
-                    elem_tys.push(elem_ty);
-                    let flat_name = format!("{name}.__{idx}");
-                    st.state_scalars.insert(flat_name, elem_ty);
+                    )
+                },
+            );
+            if let Some(inferred_types) = inferred_tuple_types {
+                if declared_tuple_types.is_none()
+                    && (decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl)
+                {
+                    target_error!(format!(
+                        "typed scalar declaration for '{name}' cannot use a tuple value"
+                    ));
+                    return;
                 }
-                st.state_tuples.insert(name.clone(), elem_tys);
+                let existing_state_types = st.state_tuples.get(name).cloned();
+                let existing_local_types =
+                    tracked_local_tuple_types(name, &st.tuple_vars, &st.local_aliases);
+                let existing_types = existing_state_types
+                    .as_deref()
+                    .or(existing_local_types.as_deref());
+                if existing_types.is_none()
+                    && (st.state_scalars.contains_key(name)
+                        || st.state_arrays.contains_key(name)
+                        || st.state_array_struct_roots.contains_key(name)
+                        || st.struct_instances.contains_key(name)
+                        || st.local_aliases.contains_key(name))
+                {
+                    target_error!(format!(
+                        "symbol '{name}' already used with a different state type"
+                    ),);
+                    return;
+                }
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                let Some(target_types) = resolve_tuple_assignment_types(
+                    name,
+                    expr,
+                    &inferred_types,
+                    declared_tuple_types,
+                    existing_types,
+                    false,
+                    errors,
+                ) else {
+                    return;
+                };
+                if existing_state_types.is_some() {
+                    return;
+                }
+                if existing_local_types.is_some() || !allow_owner_state_intro {
+                    set_tracked_tuple_types(
+                        &mut st.tuple_vars,
+                        &mut st.local_aliases,
+                        name,
+                        &target_types,
+                    );
+                    st.known_scalars.insert(name.clone());
+                    return;
+                }
+                st.tuple_vars.insert(name.clone(), target_types.len());
+                register_tuple_state(
+                    &mut st.state_scalars,
+                    &mut st.state_tuples,
+                    name,
+                    &target_types,
+                );
                 st.known_scalars.insert(name.clone());
+                return;
+            }
+            if declared_tuple_types.is_some() {
+                validate_expr(expr, scope_expr_env!(scope), errors);
+                target_error!(format!(
+                    "typed tuple declaration for '{name}' requires a tuple value"
+                ));
                 return;
             }
 
@@ -1504,18 +1599,8 @@ fn analyze_assign_init(
                             ctor_name,
                             args,
                             target_loc.into(),
-                            &mut st.known_scalars,
-                            locals,
-                            &mut st.state_scalars,
-                            &mut st.declared_symbols,
-                            &mut st.state_arrays,
-                            &mut st.state_array_struct_roots,
-                            &mut st.struct_instances,
-                            &mut st.state_tuples,
-                            output_names,
-                            struct_defs,
-                            fn_signatures,
-                            options,
+                            stmt_ctx,
+                            st,
                             errors,
                         );
                         return;
@@ -2012,27 +2097,59 @@ fn analyze_assign_init(
         AssignTarget::Tuple(_) => {}
     }
 }
-#[allow(clippy::too_many_arguments)]
 fn analyze_struct_ctor_init_assign(
     target: &str,
     struct_name: &str,
     args: &[CallArg],
     diag: DiagCtx,
-    known_scalars: &mut HashSet<String>,
-    locals: &HashSet<String>,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    declared_symbols: &mut DeclaredSymbolMap,
-    state_arrays: &mut HashMap<String, usize>,
-    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &mut HashMap<String, String>,
-    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
-    outputs: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    _options: AnalysisOptions,
+    ctx: InitStmtAnalysisCtx<'_>,
+    st: &mut InitAnalysisState,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let common = ctx.init.common;
+    let locals = ctx.locals;
+    let outputs = common.output_names;
+    let struct_defs = common.struct_defs;
+    let InitAnalysisState {
+        known_scalars,
+        local_aliases,
+        tuple_vars,
+        local_array_aliases,
+        declared_symbols,
+        state_scalars,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        state_tuples,
+        nested_proc_arrays,
+        ..
+    } = st;
     let empty_param_structs = HashMap::<String, String>::new();
+    let array_vars = merged_data_vars(state_arrays, local_array_aliases);
+    macro_rules! init_expr_env {
+        () => {{
+            let mut env = build_scope_expr_env_with_tuples(
+                build_scope_analysis_expr_inputs(
+                    common,
+                    locals,
+                    state_scalars,
+                    declared_symbols,
+                    &empty_param_structs,
+                    struct_instances,
+                    outputs,
+                    state_array_struct_roots,
+                    nested_proc_arrays,
+                ),
+                known_scalars,
+                local_aliases,
+                &array_vars,
+                ScopeKind::Init,
+                tuple_vars,
+            );
+            env.local_array_aliases = local_array_aliases;
+            env
+        }};
+    }
     if struct_instances.contains_key(target) {
         push_semantic(
             diag,
@@ -2085,34 +2202,21 @@ fn analyze_struct_ctor_init_assign(
         match field.ty {
             TypedFieldType::Scalar(prim) => {
                 if let Some(arg) = resolved[scalar_idx] {
-                    validate_expr(
-                        arg,
-                        build_expr_env(
-                            known_scalars,
-                            state_scalars,
-                            locals,
-                            outputs,
-                            state_arrays,
-                            declared_symbols,
-                            &empty_param_structs,
-                            struct_instances,
-                            struct_defs,
-                            fn_signatures,
-                            ScopeKind::Init,
-                        ),
-                        errors,
-                    );
-                    let arg_ty = infer_expr_type_for_semantics(
+                    validate_expr(arg, init_expr_env!(), errors);
+                    let arg_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                         arg,
                         state_scalars,
                         declared_symbols,
                         None,
+                        local_aliases,
+                        local_array_aliases,
                         locals,
-                        &HashSet::new(),
+                        common.input_names,
                         outputs,
-                        &HashSet::new(),
+                        common.param_names,
                         struct_instances,
                         struct_defs,
+                        nested_proc_arrays,
                         errors,
                     );
                     require_expr_assignable_type(
@@ -2128,11 +2232,8 @@ fn analyze_struct_ctor_init_assign(
                 known_scalars.insert(flat);
             }
             TypedFieldType::Tuple(ref elem_tys) => {
-                for (idx, prim) in elem_tys.iter().enumerate() {
-                    let elem_flat = format!("{flat}.__{idx}");
-                    state_scalars.insert(elem_flat, *prim);
-                }
-                state_tuples.insert(flat.clone(), elem_tys.clone());
+                tuple_vars.insert(flat.clone(), elem_tys.len());
+                register_tuple_state(state_scalars, state_tuples, &flat, elem_tys);
                 known_scalars.insert(flat);
             }
             TypedFieldType::Struct => {}
@@ -2172,26 +2273,61 @@ fn analyze_struct_ctor_init_assign(
     register_struct_instance_roots(target, struct_name, struct_defs, struct_instances);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn analyze_struct_field_init_assign(
     base: &str,
     field: &str,
     expr: &Expr,
     diag: DiagCtx,
-    known_scalars: &mut HashSet<String>,
-    locals: &HashSet<String>,
-    state_scalars: &mut HashMap<String, PrimitiveType>,
-    declared_symbols: &mut DeclaredSymbolMap,
-    state_arrays: &mut HashMap<String, usize>,
-    state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
-    struct_instances: &HashMap<String, String>,
-    outputs: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    options: AnalysisOptions,
+    ctx: InitStmtAnalysisCtx<'_>,
+    st: &mut InitAnalysisState,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let common = ctx.init.common;
+    let locals = ctx.locals;
+    let outputs = common.output_names;
+    let struct_defs = common.struct_defs;
+    let options = common.options;
+    let InitAnalysisState {
+        known_scalars,
+        local_aliases,
+        tuple_vars,
+        local_array_aliases,
+        declared_symbols,
+        state_scalars,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        state_tuples,
+        nested_proc_arrays,
+        ..
+    } = st;
     let empty_param_structs = HashMap::<String, String>::new();
+    let array_vars = merged_data_vars(state_arrays, local_array_aliases);
+    let expr_inputs = build_scope_analysis_expr_inputs(
+        common,
+        locals,
+        state_scalars,
+        declared_symbols,
+        &empty_param_structs,
+        struct_instances,
+        outputs,
+        state_array_struct_roots,
+        nested_proc_arrays,
+    );
+    macro_rules! init_expr_env {
+        () => {{
+            let mut env = build_scope_expr_env_with_tuples(
+                expr_inputs,
+                known_scalars,
+                local_aliases,
+                &array_vars,
+                ScopeKind::Init,
+                tuple_vars,
+            );
+            env.local_array_aliases = local_array_aliases;
+            env
+        }};
+    }
     let Some(struct_name) = struct_instances.get(base) else {
         push_semantic(diag, errors, format!("unknown struct instance '{base}'"));
         return;
@@ -2224,23 +2360,7 @@ fn analyze_struct_field_init_assign(
                 );
                 return;
             }
-            validate_expr(
-                expr,
-                build_expr_env(
-                    known_scalars,
-                    state_scalars,
-                    locals,
-                    outputs,
-                    state_arrays,
-                    declared_symbols,
-                    &empty_param_structs,
-                    struct_instances,
-                    struct_defs,
-                    fn_signatures,
-                    ScopeKind::Init,
-                ),
-                errors,
-            );
+            validate_expr(expr, init_expr_env!(), errors);
             let expr_ty = infer_expr_type_for_semantics(
                 expr,
                 state_scalars,
@@ -2264,14 +2384,52 @@ fn analyze_struct_field_init_assign(
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
         }
-        TypedFieldType::Tuple(_) => {
-            push_semantic(
-                diag,
-                errors,
-                format!(
-                    "tuple field '{flat}' must be initialized via struct constructor, not direct assignment"
-                ),
+        TypedFieldType::Tuple(ref field_types) => {
+            validate_expr(expr, init_expr_env!(), errors);
+            let assigned_types = infer_tracked_tuple_types(
+                expr,
+                tuple_vars,
+                local_aliases,
+                Some(state_tuples),
+                struct_instances,
+                struct_defs,
+                common.fn_return_types,
+                |value| {
+                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                        value,
+                        state_scalars,
+                        declared_symbols,
+                        None,
+                        local_aliases,
+                        local_array_aliases,
+                        locals,
+                        common.input_names,
+                        outputs,
+                        common.param_names,
+                        struct_instances,
+                        struct_defs,
+                        nested_proc_arrays,
+                        errors,
+                    )
+                },
             );
+            if let Some(assigned_types) = assigned_types {
+                resolve_tuple_assignment_types(
+                    &flat,
+                    expr,
+                    &assigned_types,
+                    None,
+                    Some(field_types),
+                    false,
+                    errors,
+                );
+            } else {
+                push_semantic(
+                    diag,
+                    errors,
+                    format!("assignment to tuple field '{flat}' requires a tuple value"),
+                );
+            }
         }
         TypedFieldType::Struct => {
             push_semantic(

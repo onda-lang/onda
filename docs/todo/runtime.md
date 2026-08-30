@@ -34,6 +34,3 @@
 - RT-safety verification suite
   - Add automated checks/assertions for callback-time allocation/lock regressions.
   - Add repeatable stress tests around bind/rebind/process paths.
-
-- C ABI diagnostics lifecycle
-  - Tighten memory ownership model for diagnostic messages and document host-side lifecycle guarantees.

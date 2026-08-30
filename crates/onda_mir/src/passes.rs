@@ -331,7 +331,9 @@ fn guard_preinitialized_zero_stores(
             StatementKind::OutputStore { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
-            | StatementKind::BufferParamStore { .. } => {}
+            | StatementKind::BufferParamStore { .. }
+            | StatementKind::PublishDelegate { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
 
         if guard {
@@ -448,9 +450,11 @@ fn collect_block_state_writes(
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::BufferParamStore { .. }
+            | StatementKind::PublishDelegate { .. }
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
+            StatementKind::PublishLog { .. } => {}
         }
     }
 }
@@ -975,6 +979,18 @@ fn propagate_statement_values(
             }
             true
         }
+        StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                propagate_call_argument(argument, facts, stats);
+            }
+            true
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for argument in arguments {
+                propagate_value(argument, facts, stats);
+            }
+            true
+        }
         StatementKind::OutputStore {
             element,
             frame,
@@ -1260,10 +1276,12 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => propagate_buffer_ref(buffer, facts, stats),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => propagate_buffer_ref(buffer, facts, stats),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             propagate_buffer_param_ref(parameter, facts, stats);
         }
     }
@@ -1403,6 +1421,8 @@ fn collect_mutated_locals(
             | StatementKind::SliceStore { .. }
             | StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
+            | StatementKind::PublishDelegate { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::Break
             | StatementKind::Continue
             | StatementKind::Return { .. } => {}
@@ -1453,6 +1473,8 @@ fn canonicalize_block(block: &mut Block, stats: &mut PassStats) {
             }
             StatementKind::Loop { body } => canonicalize_block(body, stats),
             StatementKind::Call { .. }
+            | StatementKind::PublishDelegate { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::OutputStore { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
@@ -1971,10 +1993,12 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => collect_buffer_ref_read(*buffer, reads),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => collect_buffer_ref_read(*buffer, reads),
         Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_) => {}
+        | Rvalue::BufferParamSampleRate(_)
+        | Rvalue::BufferParamIsBound(_) => {}
     }
 }
 
@@ -1984,7 +2008,7 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
             collect_place_index_reads(destination, reads);
             collect_rvalue_reads(value, reads);
         }
-        StatementKind::Call { args, .. } => {
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
             for argument in args {
                 match argument {
                     CallArgument::Value(value) => mark_value_read(*value, reads),
@@ -2007,6 +2031,11 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
                     }
                     CallArgument::BufferSpan(_) => {}
                 }
+            }
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for value in arguments {
+                mark_value_read(*value, reads);
             }
         }
         StatementKind::OutputStore {
@@ -2205,10 +2234,12 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => buffer_ref(*buffer, referenced),
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => buffer_ref(*buffer, referenced),
             Rvalue::BufferParamLen(parameter)
             | Rvalue::BufferParamChannels(parameter)
-            | Rvalue::BufferParamSampleRate(parameter) => {
+            | Rvalue::BufferParamSampleRate(parameter)
+            | Rvalue::BufferParamIsBound(parameter) => {
                 buffer_param_ref(*parameter, referenced);
             }
         }
@@ -2222,7 +2253,7 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 place(destination, false, referenced);
                 rvalue(v, referenced);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     match argument {
                         CallArgument::Value(v) => value(*v, referenced),
@@ -2245,6 +2276,11 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                         }
                         CallArgument::BufferSpan(_) => {}
                     }
+                }
+            }
+            StatementKind::PublishLog { arguments, .. } => {
+                for item in arguments {
+                    value(*item, referenced);
                 }
             }
             StatementKind::OutputStore {
@@ -2475,10 +2511,12 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
         }
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => rewrite_buffer_ref(buffer, mapping),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => rewrite_buffer_ref(buffer, mapping),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             rewrite_buffer_param_ref(parameter, mapping);
         }
     }
@@ -2516,6 +2554,36 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
                     }
                     CallArgument::BufferSpan(_) => {}
                 }
+            }
+        }
+        StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                match argument {
+                    CallArgument::Value(value) => rewrite_value(value, mapping),
+                    CallArgument::Place(place) => rewrite_place(place, mapping),
+                    CallArgument::ArrayWindow { array, start, .. } => {
+                        rewrite_place(array, mapping);
+                        rewrite_value(start, mapping);
+                    }
+                    CallArgument::SliceElement { slice, index, .. } => {
+                        rewrite_value(slice, mapping);
+                        rewrite_value(index, mapping);
+                    }
+                    CallArgument::SliceWindow { slice, start, .. } => {
+                        rewrite_value(slice, mapping);
+                        rewrite_value(start, mapping);
+                    }
+                    CallArgument::Buffer(buffer) => rewrite_buffer_ref(buffer, mapping),
+                    CallArgument::BufferParam(parameter) => {
+                        rewrite_buffer_param_ref(parameter, mapping);
+                    }
+                    CallArgument::BufferSpan(_) => {}
+                }
+            }
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for value in arguments {
+                rewrite_value(value, mapping);
             }
         }
         StatementKind::OutputStore {
@@ -2664,6 +2732,7 @@ mod tests {
         helper.attributes = FunctionAttributes {
             origin: crate::FunctionOrigin::CompilerGenerated,
             inline: crate::InlineHint::Always,
+            runtime_context: true,
         };
         helper.params.push(crate::FunctionParam {
             integer_range: None,

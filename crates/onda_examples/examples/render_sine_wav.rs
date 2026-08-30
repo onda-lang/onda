@@ -91,8 +91,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|d| format!("bind output failed: {d:?}"))?;
 
     for _ in 0..blocks {
-        process_checked(&mut instance, BLOCK_FRAMES)
-            .map_err(|d| format!("processing failed: {d:?}"))?;
+        process_checked(
+            &mut instance,
+            BLOCK_FRAMES,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .map_err(|d| format!("processing failed: {d:?}"))?;
         let out_f32 =
             unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_FRAMES) };
         rendered.extend_from_slice(out_f32);

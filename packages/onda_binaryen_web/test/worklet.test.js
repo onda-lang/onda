@@ -62,6 +62,7 @@ function f64PassthroughMir() {
       ],
       buffers: [],
       events: [],
+      delegates: [],
     },
     state: [],
     const_data: [],
@@ -69,7 +70,7 @@ function f64PassthroughMir() {
       {
         name: "onda_processor_init",
         kind: { kind: "init" },
-        attributes: { origin: "compiler_generated", inline: "always" },
+        attributes: { origin: "compiler_generated", inline: "always", runtime_context: false },
         params: [],
         results: [],
         locals: [],
@@ -79,7 +80,7 @@ function f64PassthroughMir() {
       {
         name: "onda_process",
         kind: { kind: "process" },
-        attributes: { origin: "compiler_generated", inline: "always" },
+        attributes: { origin: "compiler_generated", inline: "always", runtime_context: true },
         params: [
           { name: "start_frame", ty: 1, mode: "value" },
           { name: "frames", ty: 1, mode: "value" },
@@ -201,15 +202,26 @@ globalThis.registerProcessor = (name, processor) => {
 
 const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
 try {
-  await copyFile(
-    fileURLToPath(
-      new URL(
-        "../../onda_webaudio/src/worklet.js",
-        import.meta.url,
+  await Promise.all([
+    copyFile(
+      fileURLToPath(
+        new URL(
+          "../../onda_webaudio/src/worklet.js",
+          import.meta.url,
+        ),
       ),
+      join(workletFixture, "onda-wasm-processor.js"),
     ),
-    join(workletFixture, "onda-wasm-processor.js"),
-  );
+    copyFile(
+      fileURLToPath(
+        new URL(
+          "../../onda_webaudio/src/execution-output-ring.js",
+          import.meta.url,
+        ),
+      ),
+      join(workletFixture, "execution-output-ring.js"),
+    ),
+  ]);
   await import(pathToFileURL(join(workletFixture, "onda-wasm-processor.js")));
 } finally {
   await rm(workletFixture, { recursive: true, force: true });
@@ -293,6 +305,7 @@ test("AudioWorklet bounds dynamic event storage before rendering starts", () => 
     params: [{
       name: "values",
       scalar: "f32",
+      is_array: false,
       is_slice: true,
     }],
   }];

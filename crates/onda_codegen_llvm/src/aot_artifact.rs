@@ -15,6 +15,7 @@ pub use onda_processor_abi::IntegrationProfile as AotIntegrationProfile;
 #[cfg(feature = "llvm-orc")]
 use onda_processor_abi::{
     BufferMetadata as AotBufferMetadata, CompileInfo as AotCompileInfo,
+    DelegateMetadata as AotDelegateMetadata, DelegateParamMetadata as AotDelegateParamMetadata,
     EventMetadata as AotEventMetadata, EventParamMetadata as AotEventParamMetadata,
     Exports as AotExports, IntegerRangeEndpoint, IntegerRangeMetadata,
     IntegrationInfo as AotIntegrationInfo, IoMetadata as AotIoMetadata,
@@ -54,7 +55,7 @@ pub(crate) fn build_mir_aot_metadata(
     param_align_bytes: usize,
 ) -> Result<AotMetadata, MirMetadataError> {
     let metadata = build_mir_program_metadata(program, layout)?;
-    Ok(build_aot_metadata_from_descriptors(
+    let mut descriptor = build_aot_metadata_from_descriptors(
         metadata,
         program.schema_version,
         program.interface.events.len(),
@@ -72,7 +73,39 @@ pub(crate) fn build_mir_aot_metadata(
         state_align_bytes,
         param_size_bytes,
         param_align_bytes,
-    ))
+    );
+    descriptor.metadata.source_files = program
+        .source_files
+        .iter()
+        .map(|file| onda_processor_abi::SourceFileMetadata {
+            path: file.path.clone(),
+        })
+        .collect();
+    descriptor.metadata.log_sites = program
+        .log_sites
+        .iter()
+        .enumerate()
+        .map(|(index, site)| onda_processor_abi::LogSiteMetadata {
+            index,
+            label: site.label.clone(),
+            source: onda_processor_abi::SourceSpanMetadata {
+                file: site.source.file.map(|file| file.index()),
+                line: site.source.line,
+                column: site.source.column,
+                end_line: site.source.end_line,
+                end_column: site.source.end_column,
+            },
+            lexical_owner: site.lexical_owner.clone(),
+            declaration: site.declaration.clone(),
+            argument_types: site
+                .argument_types
+                .iter()
+                .map(|scalar| format!("{scalar:?}").to_ascii_lowercase())
+                .collect(),
+            payload_size_bytes: site.payload_size as usize,
+        })
+        .collect();
+    Ok(descriptor)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -170,8 +203,12 @@ fn build_aot_metadata_from_descriptors(
             snapshot_byte_order: "little_endian".to_owned(),
             snapshot_restore_base: "post_init_physical_state_image".to_owned(),
             requires_full_blocks: false,
+            delegate_record_header_size_bytes: onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE,
+            print_record_header_size_bytes: onda_processor_abi::PRINT_RECORD_HEADER_SIZE,
         },
         metadata: AotProgramMetadata {
+            source_files: Vec::new(),
+            log_sites: Vec::new(),
             inputs: metadata.inputs.iter().map(map_io_metadata).collect(),
             outputs: metadata.outputs.iter().map(map_io_metadata).collect(),
             control_outputs: metadata
@@ -195,6 +232,12 @@ fn build_aot_metadata_from_descriptors(
                 .iter()
                 .enumerate()
                 .map(|(index, event)| map_event_metadata(index, event))
+                .collect(),
+            delegates: metadata
+                .delegates
+                .iter()
+                .enumerate()
+                .map(|(index, delegate)| map_delegate_metadata(index, delegate))
                 .collect(),
             states: metadata
                 .state_entries
@@ -264,28 +307,44 @@ fn map_buffer_metadata(buffer: &crate::DeclaredBuffer) -> AotBufferMetadata {
 
 #[cfg(feature = "llvm-orc")]
 fn map_event_metadata(index: usize, event: &crate::DeclaredEvent) -> AotEventMetadata {
-    let payload_min_size_bytes = event
-        .params()
-        .iter()
-        .map(|param| param.byte_offset() + param.byte_size().unwrap_or(std::mem::size_of::<i32>()))
-        .max()
-        .unwrap_or(0);
-    let mut has_preceding_slice = false;
     let params = event
         .params()
         .iter()
-        .map(|param| {
-            let byte_offset = (!has_preceding_slice).then(|| param.byte_offset());
-            has_preceding_slice |= param.is_slice();
-            map_event_param_metadata(param, byte_offset)
-        })
+        .map(|param| map_event_param_metadata(param, param.byte_offset()))
         .collect();
     AotEventMetadata {
         name: event.name().to_owned(),
         export: format!("onda_event_{index}"),
         payload_size_bytes: event.payload_bytes(),
-        payload_min_size_bytes,
+        payload_min_size_bytes: event.payload_min_bytes(),
         has_dynamic_payload: event.payload_bytes().is_none(),
+        params,
+    }
+}
+
+#[cfg(feature = "llvm-orc")]
+fn map_delegate_metadata(index: usize, delegate: &crate::DeclaredDelegate) -> AotDelegateMetadata {
+    let params = delegate
+        .params()
+        .iter()
+        .map(|param| AotDelegateParamMetadata {
+            name: param.name().to_owned(),
+            type_repr: param.type_repr(),
+            scalar: primitive_type_name(param.elem_ty()).to_owned(),
+            array_len: param.array_len(),
+            is_array: param.is_array(),
+            is_slice: param.is_slice(),
+            byte_offset: param.byte_offset(),
+            byte_size: param.byte_size(),
+            element_size_bytes: crate::primitives::primitive_type_bytes(param.elem_ty()),
+        })
+        .collect();
+    AotDelegateMetadata {
+        index,
+        name: delegate.name().to_owned(),
+        payload_size_bytes: delegate.payload_bytes(),
+        payload_min_size_bytes: delegate.payload_min_bytes(),
+        has_dynamic_payload: delegate.payload_bytes().is_none(),
         params,
     }
 }
@@ -337,6 +396,7 @@ fn map_event_param_metadata(
         type_repr: param.type_repr(),
         scalar: primitive_type_name(param.elem_ty()).to_owned(),
         array_len: param.array_len(),
+        is_array: param.is_array(),
         is_slice: param.is_slice(),
         byte_offset,
         byte_size: param.byte_size(),
@@ -388,7 +448,7 @@ mod tests {
                     array_len: 1,
                     is_array: false,
                     is_slice: false,
-                    byte_offset: 0,
+                    byte_offset: Some(0),
                     default_bytes: None,
                     default_values: None,
                 },
@@ -398,7 +458,7 @@ mod tests {
                     array_len: 0,
                     is_array: false,
                     is_slice: true,
-                    byte_offset: 4,
+                    byte_offset: Some(4),
                     default_bytes: None,
                     default_values: None,
                 },
@@ -408,12 +468,13 @@ mod tests {
                     array_len: 1,
                     is_array: false,
                     is_slice: false,
-                    byte_offset: 8,
+                    byte_offset: None,
                     default_bytes: None,
                     default_values: None,
                 },
             ],
             payload_bytes: None,
+            payload_min_bytes: 16,
         };
 
         let mapped = map_event_metadata(0, &event);

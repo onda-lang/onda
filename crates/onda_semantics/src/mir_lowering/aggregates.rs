@@ -1330,7 +1330,7 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         name: &str,
         values: Vec<LoweredValue>,
-        declared_ty: Option<PrimitiveType>,
+        declared_ty: Option<&onda_frontend::DeclType>,
         expression: &Expr,
         block: &mut MirBlock,
         statement_location: SourceLoc,
@@ -1382,6 +1382,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
             let inferred_ty = declared_ty
+                .and_then(onda_frontend::DeclType::scalar)
                 .or_else(|| effective_untyped_assignment_type(expression, Some(values[0].ty)))
                 .unwrap_or(PrimitiveType::F32);
             let (local, target_ty) = self.scalar_local(name, inferred_ty, statement_location)?;
@@ -1420,7 +1421,20 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let source_types = values.iter().map(|value| value.ty).collect::<Vec<_>>();
-        let components = self.tuple_local(name, &source_types, statement_location)?;
+        let target_types = declared_ty
+            .and_then(onda_frontend::DeclType::tuple)
+            .unwrap_or(&source_types);
+        if values.len() != target_types.len() {
+            return Err(self.error(
+                format!(
+                    "tuple local '{name}' expected {} values, got {}",
+                    target_types.len(),
+                    values.len()
+                ),
+                statement_location,
+            ));
+        }
+        let components = self.tuple_local(name, target_types, statement_location)?;
         for (value, (local, target_ty)) in values.into_iter().zip(components) {
             let value = self.coerce(value, target_ty, block, expression.loc())?;
             self.assign_value(block, local, value.value, statement_location);

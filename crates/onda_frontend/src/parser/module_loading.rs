@@ -411,6 +411,21 @@ fn append_or_merge_event_block(
     Ok(())
 }
 
+fn append_or_merge_delegate_block(
+    blocks: &mut Vec<Block>,
+    incoming: DelegateBlock,
+) -> Result<(), Vec<Diagnostic>> {
+    for block in blocks.iter_mut() {
+        if let Block::Delegates(existing) = block {
+            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            merge_delegate_defs(&mut existing.delegates, incoming.delegates)?;
+            return Ok(());
+        }
+    }
+    blocks.push(Block::Delegates(incoming));
+    Ok(())
+}
+
 fn append_or_merge_task_block(
     blocks: &mut Vec<Block>,
     incoming: TaskBlock,
@@ -670,6 +685,13 @@ fn parse_program_preprocessed(
                 Rule::event_block => {
                     append_or_merge_event_block(&mut blocks, parse_event_block(pair)?)?
                 }
+                Rule::delegates_block => {
+                    append_or_merge_delegate_block(&mut blocks, parse_delegates_block(pair)?)?
+                }
+                Rule::delegate_block => {
+                    append_or_merge_delegate_block(&mut blocks, parse_delegate_block(pair)?)?
+                }
+                Rule::when_block => blocks.push(Block::When(parse_when_block(pair)?)),
                 Rule::tasks_block => {
                     append_or_merge_task_block(&mut blocks, parse_tasks_block(pair)?)?
                 }

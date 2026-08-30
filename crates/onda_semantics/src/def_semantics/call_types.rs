@@ -82,6 +82,7 @@ pub(crate) fn statement_flow(stmt: &Stmt) -> StatementFlow {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::If { .. }
         | Stmt::For { .. }
         | Stmt::While { .. } => StatementFlow::Continues,
@@ -555,6 +556,11 @@ pub(crate) fn infer_scalar_expr_type(
                     return Some(PrimitiveType::I32);
                 }
             }
+            if let Some(base) = parse_buffer_bound_instance_base(name) {
+                if env.buffer_types.contains_key(base) {
+                    return Some(PrimitiveType::Bool);
+                }
+            }
             if let Some(base) = parse_buffer_samplerate_instance_base(name) {
                 if env.buffer_types.contains_key(base) {
                     return Some(PrimitiveType::F32);
@@ -806,7 +812,7 @@ pub(crate) fn infer_tuple_arg_types(
 
 pub(crate) fn update_call_type_env_after_assign(
     target: &AssignTarget,
-    decl_ty: Option<PrimitiveType>,
+    decl_ty: Option<&DeclType>,
     generic_decl_ty: Option<&str>,
     expr: &Expr,
     env: &mut CallTypeEnv,
@@ -814,7 +820,10 @@ pub(crate) fn update_call_type_env_after_assign(
 ) {
     if let AssignTarget::Tuple(names) = target {
         let elem_types = infer_tuple_arg_types(expr, env, context);
-        for (index, name) in names.iter().enumerate() {
+        for (index, target) in names.iter().enumerate() {
+            let Some(name) = target.binding() else {
+                continue;
+            };
             if env.has_binding(name) {
                 continue;
             }
@@ -824,9 +833,9 @@ pub(crate) fn update_call_type_env_after_assign(
                 .and_then(|elem_types| elem_types.get(index))
                 .copied()
             {
-                env.scalar_types.insert(name.clone(), elem_ty);
+                env.scalar_types.insert(name.to_owned(), elem_ty);
             } else {
-                env.unresolved_bindings.insert(name.clone());
+                env.unresolved_bindings.insert(name.to_owned());
             }
         }
         return;
@@ -837,9 +846,19 @@ pub(crate) fn update_call_type_env_after_assign(
     };
 
     if let Some(declared) = decl_ty {
-        env.shadow_binding(name);
-        env.scalar_types.insert(name.clone(), declared);
-        return;
+        match declared {
+            DeclType::Scalar(ty) => {
+                env.shadow_binding(name);
+                env.scalar_types.insert(name.clone(), *ty);
+                return;
+            }
+            DeclType::Tuple(types) => {
+                env.shadow_binding(name);
+                env.tuple_elem_types.insert(name.clone(), types.clone());
+                return;
+            }
+            DeclType::Generic(_) | DeclType::ArrayGeneric { .. } | DeclType::Array { .. } => {}
+        }
     }
     if generic_decl_ty.is_some_and(|type_name| env.owner_type_params.contains(type_name)) {
         env.shadow_binding(name);

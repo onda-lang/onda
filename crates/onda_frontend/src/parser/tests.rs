@@ -6,8 +6,8 @@ use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
-    OutputTiming, ParamScale, PrimitiveType, Stmt, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
-    INTERNAL_TASK_YIELD_FN,
+    OutputTiming, ParamScale, PrimitiveType, Stmt, TupleAssignTarget, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 use super::{
@@ -973,11 +973,11 @@ init {
 sample {
   p.set(
     1.0,
-    2.0,
+    2.0
   )
   out1 = max(
     p.a,
-    p.b,
+    p.b
   )
 }
 "#;
@@ -1015,7 +1015,7 @@ outs:
 init:
   env = std::env::DecayEnv(
     decay_s = 0.05,
-    trigger = 1.0,
+    trigger = 1.0
   )
 sample:
   out1 = env()
@@ -1223,6 +1223,33 @@ sample {
 }
 
 #[test]
+fn parses_for_statement_with_unparenthesized_expression_bounds() {
+    let src = r#"
+outs { out1 }
+sample {
+  values = [1.0, 2.0, 3.0, 4.0]
+  for i in 1 + 1..values.len() { out1 = out1 + values[i] }
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample[1] {
+        Stmt::For { start, end, .. } => {
+            assert!(matches!(start, Expr::Binary { .. }));
+            assert!(matches!(end, Expr::UserCall { .. }));
+        }
+        _ => panic!("expected for statement"),
+    }
+}
+
+#[test]
 fn parses_for_statement_with_explicit_step_prefix() {
     let src = r#"
 outs { out1 }
@@ -1366,6 +1393,46 @@ sample {
             assert!(matches!(start, Expr::Int { value: 0, .. }));
             assert!(matches!(end, Expr::Int { value: 4, .. }));
         }
+        _ => panic!("expected for statement from loop sugar"),
+    }
+}
+
+#[test]
+fn parses_underscore_as_an_explicit_for_loop_variable() {
+    let program = parse_program("sample:\n  for _ in 0..4:\n    out1 = 1.0\n")
+        .expect("underscore loop variable should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+
+    assert!(matches!(&sample[0], Stmt::For { var, .. } if var == "_"));
+}
+
+#[test]
+fn parses_loop_statement_with_unparenthesized_expression_count() {
+    let src = r#"
+outs { out1 }
+sample {
+  values = [1.0, 2.0, 3.0, 4.0]
+  loop values.len() { out1 = out1 + 1.0 }
+}
+"#;
+    let program = parse_program(src).expect("program should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Sample(stmts) => Some(stmts),
+            _ => None,
+        })
+        .expect("sample block");
+    match &sample[1] {
+        Stmt::For { end, .. } => assert!(matches!(end, Expr::UserCall { .. })),
         _ => panic!("expected for statement from loop sugar"),
     }
 }
@@ -1926,6 +1993,7 @@ struct Voice {
     self.phase = self.phase + 1.0
   }
 }
+
 init {
   v = Voice(0.0)
 }
@@ -1948,6 +2016,46 @@ sample {
         Stmt::Expr { .. } => {}
         _ => panic!("first statement should be call expression statement"),
     }
+}
+
+#[test]
+fn parses_print_statements_and_decodes_labels() {
+    let program = parse_program(
+        "outs:\n  out1\nsample:\n  print()\n  print(value)\n  print(\"line\\n\\t\\\"\\\\\")\n  print(\"value\", value, true)\n  out1 = 0.0\n",
+    )
+    .expect("print statements should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(statements) => Some(statements),
+            _ => None,
+        })
+        .expect("sample block");
+    assert!(matches!(
+        &sample[0],
+        Stmt::Print { label: None, values, .. } if values.is_empty()
+    ));
+    assert!(matches!(
+        &sample[1],
+        Stmt::Print { label: None, values, .. } if values.len() == 1
+    ));
+    assert!(matches!(
+        &sample[2],
+        Stmt::Print { label: Some(label), values, .. }
+            if label == "line\n\t\"\\" && values.is_empty()
+    ));
+    assert!(matches!(
+        &sample[3],
+        Stmt::Print { label: Some(label), values, .. }
+            if label == "value" && values.len() == 2
+    ));
+}
+
+#[test]
+fn print_is_not_an_expression_or_declarable_name() {
+    assert!(parse_program("sample:\n  value = print(1)\n").is_err());
+    assert!(parse_program("def print(value):\n  return value\n").is_err());
 }
 
 #[test]
@@ -4674,13 +4782,59 @@ sample:
         else {
             panic!("expected an inferred ranged declaration");
         };
-        assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+        assert_eq!(*decl_ty, Some(DeclType::Scalar(PrimitiveType::I32)));
         assert!(*is_typed_decl);
         assert_eq!(*func, expected_func);
         assert_eq!(args.len(), 3);
         assert!(matches!(args[1], Expr::Int { value, .. } if value == expected_begin));
         assert!(matches!(args[2], Expr::Int { value, .. } if value == expected_end));
     }
+}
+
+#[test]
+fn parses_integer_binding_ranges_on_struct_fields() {
+    let program = parse_program(
+        r#"
+struct Cursor:
+  index: i32 = 0 {8, wrap}
+  limit = 7 {0..=7}
+"#,
+    )
+    .expect("integer struct field ranges should parse");
+    let struct_def = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Struct(struct_def) => Some(struct_def),
+            _ => None,
+        })
+        .expect("struct block");
+    let expected = [
+        BuiltinFn::BindingCountWrap,
+        BuiltinFn::BindingRangeInclusiveClamp,
+    ];
+    for (field, expected_func) in struct_def.fields.iter().zip(expected) {
+        let Some(Expr::Call { func, args, .. }) = &field.default else {
+            panic!("expected a ranged struct field default");
+        };
+        assert_eq!(*func, expected_func);
+        assert_eq!(args.len(), 3);
+        assert_eq!(field.ty, FieldType::Scalar(PrimitiveType::I32));
+    }
+}
+
+#[test]
+fn rejects_binding_ranges_on_non_integer_struct_fields() {
+    let errors = parse_program(
+        r#"
+struct Invalid:
+  value: f32 = 0.0 {8, wrap}
+"#,
+    )
+    .expect_err("non-integer struct field ranges should be rejected");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("binding ranges require an i32 or i64 struct field")));
 }
 
 #[test]
@@ -4744,6 +4898,73 @@ fn pin_freshness_accounts_for_tuple_bindings() {
     assert!(diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("'pin' requires a fresh state binding; 'value' was already assigned")));
+}
+
+#[test]
+fn parses_bare_and_parenthesized_tuple_targets_with_discards() {
+    let program = parse_program(
+        "sample:\n  left, _, right = (1.0, 2.0, 3.0)\n  (a, _, b) = (4.0, 5.0, 6.0)\n  out1 = left + right + a + b\n",
+    )
+    .expect("tuple targets should allow optional parentheses and discard entries");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+
+    for stmt in &sample[..2] {
+        let Stmt::Assign {
+            target: AssignTarget::Tuple(targets),
+            ..
+        } = stmt
+        else {
+            panic!("expected tuple assignment");
+        };
+        assert!(matches!(
+            targets.as_slice(),
+            [
+                TupleAssignTarget::Binding(_),
+                TupleAssignTarget::Discard,
+                TupleAssignTarget::Binding(_)
+            ]
+        ));
+    }
+}
+
+#[test]
+fn typed_tuple_assignments_retain_the_declared_element_types() {
+    let program = parse_program(
+        "sample:\n  pair: (f64, i32, bool) = (1.0, 2, true)\n  out1 = f32(pair[0])\n",
+    )
+    .expect("typed tuple assignment should parse");
+    let sample = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Sample(sample) => Some(&sample.body),
+            _ => None,
+        })
+        .expect("sample block");
+    let Stmt::Assign {
+        decl_ty,
+        is_typed_decl,
+        ..
+    } = &sample[0]
+    else {
+        panic!("expected typed tuple assignment");
+    };
+    assert_eq!(
+        decl_ty,
+        &Some(DeclType::Tuple(vec![
+            PrimitiveType::F64,
+            PrimitiveType::I32,
+            PrimitiveType::Bool,
+        ]))
+    );
+    assert!(*is_typed_decl);
 }
 
 #[test]
@@ -5742,7 +5963,7 @@ fn parses_multiline_event_param_list_in_indentation_syntax() {
 events:
   test(
     a: f32,
-    b: f32,
+    b: f32
   ):
     value = a + b
 sample:
@@ -6565,39 +6786,39 @@ fn parses_multiline_delimiters_across_core_constructs() {
 namespace Math<
   N = (
     1 + 1
-  ),
+  )
 >:
   const Size = N
 
 def mix<
-  T,
+  T
 >(
   a: T,
-  b: T,
+  b: T
 ) -> (
   T,
-  T,
+  T
 ):
   pair = (
     a,
-    b,
+    b
   )
   return pair
 
 params:
   freq = 440.0 {
     20.0,
-    20000.0,
+    20000.0
   }
 
 init:
   arr: f32[
     Math<
-      N = 2,
+      N = 2
     >::Size
   ] = [
     0.0,
-    1.0,
+    1.0
   ]
   x = arr[
     (
@@ -6607,12 +6828,12 @@ init:
 
 sample:
   out1 = mix<
-    f32,
+    f32
   >(
     arr[
       0
     ],
-    x,
+    x
   )
 "#;
 
@@ -6659,11 +6880,11 @@ graph:
   ] out1
   0.25 >> {
     out1,
-    out2,
+    out2
   }
   {
     out1,
-    out2,
+    out2
   } << 0.125
 "#;
 
@@ -6678,7 +6899,7 @@ struct Store:
 
   def set(
     self,
-    value: f32,
+    value: f32
   ):
     self.value = value
 
@@ -6689,7 +6910,7 @@ init:
     0.0,
     1.0,
     2.0,
-    3.0,
+    3.0
   ]
   dst: f32[
     2
@@ -6707,7 +6928,7 @@ sample:
   s.set(
     dst[
       0
-    ],
+    ]
   )
   out1 = data[
     0
@@ -6715,6 +6936,53 @@ sample:
 "#;
 
     parse_program(src).expect("multiline method, slice, and index delimiters should parse");
+}
+
+#[test]
+fn rejects_trailing_commas_in_comma_separated_language_forms() {
+    let cases = [
+        ("print arguments", "sample:\n  print(1,)\n"),
+        ("call arguments", "sample:\n  value = f(1,)\n"),
+        ("array literals", "init:\n  values = [1,]\n"),
+        ("tuple expressions", "init:\n  value = (1, 2,)\n"),
+        ("tuple targets", "sample:\n  (a, b,) = pair()\n"),
+        (
+            "function parameters",
+            "def f(value: f32,):\n  return value\n",
+        ),
+        (
+            "generic parameters",
+            "def f<T,>(value: T):\n  return value\n",
+        ),
+        ("generic arguments", "sample:\n  value = f<f32,>(1.0)\n"),
+        ("tuple types", "init:\n  value: (f32, i32,) = (1.0, 1)\n"),
+        (
+            "event parameters",
+            "event ping(value: f32,):\n  print(value)\n",
+        ),
+        ("delegate parameters", "delegate ready(value: f32,)\n"),
+        ("when bindings", "when ready(value,):\n  print(value)\n"),
+        (
+            "namespace parameters",
+            "namespace N<Value = 1,>:\n  const Result = Value\n",
+        ),
+        ("namespace arguments", "use N<Value = 1,>\n"),
+        ("binding ranges", "init:\n  value = 0 {8,}\n"),
+        ("parameter domains", "params:\n  value = 0.0 {0.0, 1.0,}\n"),
+        (
+            "graph endpoint sets",
+            "outs:\n  out1\ngraph:\n  0.0 >> {out1,}\n",
+        ),
+        ("section declaration lists", "outs { out1, }\n"),
+        ("struct field lists", "struct Value { field: f32, }\n"),
+    ];
+
+    for (context, source) in cases {
+        assert!(
+            parse_program(source).is_err(),
+            "{context} must reject a trailing comma"
+        );
+    }
 }
 
 #[test]
@@ -7413,6 +7681,9 @@ fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
         Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             expr_contains_var_with_suffix(expr, suffix)
         }
+        Stmt::Print { values, .. } => values
+            .iter()
+            .any(|expr| expr_contains_var_with_suffix(expr, suffix)),
         Stmt::If {
             cond,
             then_branch,
@@ -8308,4 +8579,102 @@ fn parses_decimal_literals_with_f64_precision() {
         }
         other => panic!("expected number literal, got {other:?}"),
     }
+}
+
+#[test]
+fn parses_delegate_forms_and_static_subscription_targets_in_source_order() {
+    let source = r#"delegate first(value)
+delegates:
+  second(values: f32[])
+  third(flag: bool = true)
+
+when first(value):
+  result = value
+when child.second(values):
+  result = values[0]
+when children[2].third(flag):
+  result = f32(flag)
+when children.first(index, value):
+  result = f32(index + value)
+
+proc Child:
+  delegate local(value: i32)
+  delegates:
+    other(values: f64[2])
+  when local(value):
+    state = value
+  sample:
+    out1 = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(source).expect("delegate syntax should parse");
+    let delegates = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Delegates(delegates) => Some(&delegates.delegates),
+            _ => None,
+        })
+        .expect("merged top-level delegates");
+    assert_eq!(
+        delegates
+            .iter()
+            .map(|delegate| delegate.name.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
+    assert!(matches!(
+        delegates[0].params[0].ty,
+        EventParamType::Scalar(PrimitiveType::F32)
+    ));
+    assert!(matches!(
+        delegates[1].params[0].ty,
+        EventParamType::Slice {
+            elem: PrimitiveType::F32
+        }
+    ));
+    assert!(delegates[2].params[0].default.is_some());
+
+    let whens = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::When(when) => Some(when),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(whens.len(), 4);
+    assert!(whens[0].target.receiver.is_empty());
+    assert_eq!(whens[1].target.receiver, ["child"]);
+    assert_eq!(whens[2].target.receiver, ["children"]);
+    assert!(whens[2].target.index.is_some());
+    assert_eq!(whens[3].bindings[0].name, "index");
+
+    let proc = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Proc(proc) => Some(proc),
+            _ => None,
+        })
+        .expect("processor");
+    assert_eq!(
+        proc.delegates
+            .iter()
+            .map(|delegate| delegate.name.as_str())
+            .collect::<Vec<_>>(),
+        ["local", "other"]
+    );
+    assert_eq!(proc.whens.len(), 1);
+}
+
+#[test]
+fn rejects_duplicate_delegates_across_singular_and_plural_forms() {
+    let errors = parse_program("delegate done()\ndelegates:\n  done(value: i32)\n")
+        .expect_err("duplicate delegates should fail during parsing");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("duplicate delegate declaration 'done'")));
 }

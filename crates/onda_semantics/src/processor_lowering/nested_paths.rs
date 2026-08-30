@@ -117,6 +117,24 @@ fn split_simple_field_path(name: &str) -> Option<(&str, &str)> {
     split_root_field_path(name)
 }
 
+fn prefixed_self_field_path(
+    path: &str,
+    prefix: &str,
+    nested_field_names: &HashSet<String>,
+) -> Option<String> {
+    let path = path.strip_prefix("self.")?;
+    let (field, suffix) = path
+        .split_once('.')
+        .map_or((path, None), |(field, suffix)| (field, Some(suffix)));
+    nested_field_names.contains(field).then(|| {
+        let field = nested_field_name(prefix, field);
+        match suffix {
+            Some(suffix) => format!("self.{field}.{suffix}"),
+            None => format!("self.{field}"),
+        }
+    })
+}
+
 pub(super) fn rewrite_nested_field_paths_in_stmt(
     stmt: &mut Stmt,
     nested_fields: &HashMap<String, HashSet<String>>,
@@ -168,6 +186,11 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             rewrite_nested_field_paths_in_expr(expr, nested_fields)
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_nested_field_paths_in_expr(value, nested_fields);
+            }
         }
         Stmt::If {
             cond,
@@ -345,6 +368,11 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             remap_nested_symbols_in_expr(expr, remap)
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                remap_nested_symbols_in_expr(value, remap);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -392,17 +420,13 @@ pub(super) fn prefix_self_fields_in_expr(
 ) {
     match expr {
         Expr::Var { name, .. } => {
-            if let Some((base, field)) = split_simple_field_path(name) {
-                if base == "self" && nested_field_names.contains(field) {
-                    *name = format!("self.{}", nested_field_name(prefix, field));
-                }
+            if let Some(prefixed) = prefixed_self_field_path(name, prefix, nested_field_names) {
+                *name = prefixed;
             }
         }
         Expr::Index { base, index, .. } => {
-            if let Some((root, field)) = split_simple_field_path(base) {
-                if root == "self" && nested_field_names.contains(field) {
-                    *base = format!("self.{}", nested_field_name(prefix, field));
-                }
+            if let Some(prefixed) = prefixed_self_field_path(base, prefix, nested_field_names) {
+                *base = prefixed;
             }
             prefix_self_fields_in_expr(index, prefix, nested_field_names);
         }
@@ -414,10 +438,8 @@ pub(super) fn prefix_self_fields_in_expr(
             end,
             ..
         } => {
-            if let Some((root, field)) = split_simple_field_path(base) {
-                if root == "self" && nested_field_names.contains(field) {
-                    *base = format!("self.{}", nested_field_name(prefix, field));
-                }
+            if let Some(prefixed) = prefixed_self_field_path(base, prefix, nested_field_names) {
+                *base = prefixed;
             }
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 prefix_self_fields_in_expr(coordinate, prefix, nested_field_names);
@@ -447,9 +469,8 @@ pub(super) fn prefix_self_fields_in_expr(
                 prefix_self_fields_in_expr(&mut arg.expr, prefix, nested_field_names);
             }
             let remapped_name = split_receiver_method_path(name).and_then(|(receiver, method)| {
-                let (root, field) = split_simple_field_path(receiver)?;
-                (root == "self" && nested_field_names.contains(field))
-                    .then(|| format!("self.{}.{}", nested_field_name(prefix, field), method))
+                prefixed_self_field_path(receiver, prefix, nested_field_names)
+                    .map(|receiver| format!("{receiver}.{method}"))
             });
             if let Some(remapped_name) = remapped_name {
                 *name = remapped_name;
@@ -479,17 +500,17 @@ pub(super) fn prefix_self_fields_in_stmt(
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
-                    if let Some((base, field)) = split_simple_field_path(name) {
-                        if base == "self" && nested_field_names.contains(field) {
-                            *name = format!("self.{}", nested_field_name(prefix, field));
-                        }
+                    if let Some(prefixed) =
+                        prefixed_self_field_path(name, prefix, nested_field_names)
+                    {
+                        *name = prefixed;
                     }
                 }
                 AssignTarget::Index { base, index } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if root == "self" && nested_field_names.contains(field) {
-                            *base = format!("self.{}", nested_field_name(prefix, field));
-                        }
+                    if let Some(prefixed) =
+                        prefixed_self_field_path(base, prefix, nested_field_names)
+                    {
+                        *base = prefixed;
                     }
                     prefix_self_fields_in_expr(index, prefix, nested_field_names);
                 }
@@ -500,10 +521,10 @@ pub(super) fn prefix_self_fields_in_stmt(
                     start,
                     end,
                 } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if root == "self" && nested_field_names.contains(field) {
-                            *base = format!("self.{}", nested_field_name(prefix, field));
-                        }
+                    if let Some(prefixed) =
+                        prefixed_self_field_path(base, prefix, nested_field_names)
+                    {
+                        *base = prefixed;
                     }
                     for coordinate in [selector, channel, start, end].into_iter().flatten() {
                         prefix_self_fields_in_expr(coordinate, prefix, nested_field_names);
@@ -515,6 +536,11 @@ pub(super) fn prefix_self_fields_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             prefix_self_fields_in_expr(expr, prefix, nested_field_names)
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                prefix_self_fields_in_expr(value, prefix, nested_field_names);
+            }
         }
         Stmt::If {
             cond,

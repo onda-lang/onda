@@ -763,6 +763,19 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                 usage,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_top_level_range_clamps_in_expr(
+                    value,
+                    input_aliases,
+                    param_aliases,
+                    shadowed,
+                    clamp_inputs,
+                    clamp_params,
+                    usage,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

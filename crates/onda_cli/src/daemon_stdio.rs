@@ -2,8 +2,8 @@ use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
 use onda_daemon::{
-    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunEventValue, RunOptions,
-    RunParamInfo,
+    DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunDelegateBatch, RunDelegateInfo,
+    RunEventValue, RunOptions, RunParamInfo, RunPrintBatch,
 };
 use onda_frontend::Diagnostic;
 use onda_semantics::AnalysisOptions;
@@ -128,18 +128,25 @@ struct ProcessSegmentRequest {
     flags: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum EventValueRequest {
     Bool(bool),
     Number(f64),
+    I64(String),
 }
 
-impl From<EventValueRequest> for RunEventValue {
-    fn from(value: EventValueRequest) -> Self {
+impl TryFrom<EventValueRequest> for RunEventValue {
+    type Error = String;
+
+    fn try_from(value: EventValueRequest) -> Result<Self, Self::Error> {
         match value {
-            EventValueRequest::Bool(value) => Self::Bool(value),
-            EventValueRequest::Number(value) => Self::Number(value),
+            EventValueRequest::Bool(value) => Ok(Self::Bool(value)),
+            EventValueRequest::Number(value) => Ok(Self::Number(value)),
+            EventValueRequest::I64(value) => value
+                .parse()
+                .map(Self::I64)
+                .map_err(|_| format!("invalid decimal i64 event value '{value}'")),
         }
     }
 }
@@ -173,10 +180,20 @@ impl ResponseEnvelope {
             error: Some(error.into()),
         }
     }
+
+    fn error_with_result(id: Option<u64>, error: impl Into<String>, result: Value) -> Self {
+        Self {
+            id,
+            ok: false,
+            result: Some(result),
+            error: Some(error.into()),
+        }
+    }
 }
 
 fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> ResponseEnvelope {
     let id = envelope.id;
+    let mut error_result = None;
     let result = match envelope.request {
         Request::Ping => Ok(json!({ "status": "ok" })),
         Request::Initialize {
@@ -241,17 +258,24 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 "diagnostics": snapshot.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
             }))
         }
-        Request::RunStart { path } => session
-            .start_run(&path)
-            .map(|run| {
-                json!({
+        Request::RunStart { path } => match session.start_run(&path) {
+            Ok(run) => {
+                let result = json!({
                     "path": display_path(run.path()),
                     "version": run.version().map(|v| v.0),
                     "params": run.param_info().iter().map(run_param_json).collect::<Vec<_>>(),
+                    "delegates": run.delegate_info().iter().map(run_delegate_json).collect::<Vec<_>>(),
                     "output_channels": run.output_channel_count(),
-                })
-            })
-            .map_err(|err| run_build_error_string("run_start failed", &err)),
+                });
+                let prints = session
+                    .run_mut(&path)
+                    .expect("run should be active after successful start")
+                    .take_print_batch()
+                    .map_err(|diag| diagnostic_string("run_start print decoding failed", &diag));
+                prints.map(|prints| attach_run_print_batch(result, &prints))
+            }
+            Err(err) => Err(run_build_error_string("run_start failed", &err)),
+        },
         Request::RunStop { path } => {
             let stopped = session.stop_run(path).is_some();
             Ok(json!({ "stopped": stopped }))
@@ -279,46 +303,121 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             samples,
             channels,
             sample_rate_hz,
-        } => session
-            .run_mut(path)
-            .ok_or_else(|| "run is not active".to_owned())
-            .and_then(|run| {
-                run.bind_buffer_samples(&name, samples, channels, sample_rate_hz)
-                    .map_err(|diag| diagnostic_string("run_bind_buffer failed", &diag))
-            })
-            .map(|_| json!({ "status": "ok" })),
+        } => (|| {
+            let run = session
+                .run_mut(path)
+                .ok_or_else(|| "run is not active".to_owned())?;
+            let execution = run.bind_buffer_samples(&name, samples, channels, sample_rate_hz);
+            let prints = run.take_print_batch().map_err(|diag| {
+                diagnostic_string("run_bind_buffer print decoding failed", &diag)
+            })?;
+            match execution {
+                Ok(()) => Ok(attach_run_print_batch(json!({ "status": "ok" }), &prints)),
+                Err(diag) => {
+                    error_result = Some(attach_run_print_batch(
+                        json!({ "status": "failed" }),
+                        &prints,
+                    ));
+                    Err(diagnostic_string("run_bind_buffer failed", &diag))
+                }
+            }
+        })(),
         Request::RunRender {
             path,
             include_sample_bits,
-        } => session
-            .render_run_block(path)
-            .map(|channels| rendered_channels_json(channels, include_sample_bits))
-            .map_err(|diag| diagnostic_string("run_render failed", &diag)),
+        } => (|| {
+            let run = session
+                .run_mut(path)
+                .ok_or_else(|| "run is not active".to_owned())?;
+            let execution = run.render_block();
+            let batch = run
+                .take_delegate_batch()
+                .map_err(|diag| diagnostic_string("run_render delegate decoding failed", &diag))?;
+            let prints = run
+                .take_print_batch()
+                .map_err(|diag| diagnostic_string("run_render print decoding failed", &diag))?;
+            match execution {
+                Ok(channels) => Ok(attach_run_print_batch(
+                    attach_run_delegate_batch(
+                        rendered_channels_json(channels, include_sample_bits),
+                        &batch,
+                    ),
+                    &prints,
+                )),
+                Err(diag) => {
+                    error_result = Some(attach_run_print_batch(
+                        attach_run_delegate_batch(json!({ "status": "failed" }), &batch),
+                        &prints,
+                    ));
+                    Err(diagnostic_string("run_render failed", &diag))
+                }
+            }
+        })(),
         Request::RunRenderSegments {
             path,
             segments,
             include_sample_bits,
-        } => session
-            .run_mut(path)
-            .ok_or_else(|| "run is not active".to_owned())
-            .and_then(|run| {
-                let segments = segments
-                    .into_iter()
-                    .map(|segment| (segment.start_frame, segment.frames, segment.flags))
-                    .collect::<Vec<_>>();
-                run.render_block_segments(&segments)
-                    .map_err(|diag| diagnostic_string("run_render_segments failed", &diag))
-            })
-            .map(|channels| rendered_channels_json(channels, include_sample_bits)),
-        Request::RunTriggerEvent { path, name, values } => session
-            .run_mut(path)
-            .ok_or_else(|| "run is not active".to_owned())
-            .and_then(|run| {
-                let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
-                run.trigger_event(&name, &values)
-                    .map_err(|diag| diagnostic_string("run_trigger_event failed", &diag))
-            })
-            .map(|_| json!({ "status": "ok" })),
+        } => (|| {
+            let run = session
+                .run_mut(path)
+                .ok_or_else(|| "run is not active".to_owned())?;
+            let segments = segments
+                .into_iter()
+                .map(|segment| (segment.start_frame, segment.frames, segment.flags))
+                .collect::<Vec<_>>();
+            let execution = run.render_block_segments(&segments);
+            let batch = run.take_delegate_batch().map_err(|diag| {
+                diagnostic_string("run_render_segments delegate decoding failed", &diag)
+            })?;
+            let prints = run.take_print_batch().map_err(|diag| {
+                diagnostic_string("run_render_segments print decoding failed", &diag)
+            })?;
+            match execution {
+                Ok(channels) => Ok(attach_run_print_batch(
+                    attach_run_delegate_batch(
+                        rendered_channels_json(channels, include_sample_bits),
+                        &batch,
+                    ),
+                    &prints,
+                )),
+                Err(diag) => {
+                    error_result = Some(attach_run_print_batch(
+                        attach_run_delegate_batch(json!({ "status": "failed" }), &batch),
+                        &prints,
+                    ));
+                    Err(diagnostic_string("run_render_segments failed", &diag))
+                }
+            }
+        })(),
+        Request::RunTriggerEvent { path, name, values } => (|| {
+            let run = session
+                .run_mut(path)
+                .ok_or_else(|| "run is not active".to_owned())?;
+            let values = values
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<_>, _>>()?;
+            let execution = run.trigger_event(&name, &values);
+            let batch = run.take_delegate_batch().map_err(|diag| {
+                diagnostic_string("run_trigger_event delegate decoding failed", &diag)
+            })?;
+            let prints = run.take_print_batch().map_err(|diag| {
+                diagnostic_string("run_trigger_event print decoding failed", &diag)
+            })?;
+            match execution {
+                Ok(()) => Ok(attach_run_print_batch(
+                    attach_run_delegate_batch(json!({ "status": "ok" }), &batch),
+                    &prints,
+                )),
+                Err(diag) => {
+                    error_result = Some(attach_run_print_batch(
+                        attach_run_delegate_batch(json!({ "status": "failed" }), &batch),
+                        &prints,
+                    ));
+                    Err(diagnostic_string("run_trigger_event failed", &diag))
+                }
+            }
+        })(),
         Request::RunSnapshot { path } => session
             .run(path)
             .ok_or_else(|| "run is not active".to_owned())
@@ -339,7 +438,10 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
 
     match result {
         Ok(result) => ResponseEnvelope::ok(id, result),
-        Err(err) => ResponseEnvelope::error(id, err),
+        Err(err) => match error_result {
+            Some(result) => ResponseEnvelope::error_with_result(id, err, result),
+            None => ResponseEnvelope::error(id, err),
+        },
     }
 }
 
@@ -364,6 +466,79 @@ fn rendered_channels_json(channels: Vec<Vec<f32>>, include_sample_bits: bool) ->
         result["channel_bits"] = json!(channel_bits);
     }
     result
+}
+
+fn run_delegate_json(delegate: &RunDelegateInfo) -> Value {
+    json!({
+        "index": delegate.index,
+        "name": delegate.name,
+        "params": delegate.params.iter().map(|param| json!({
+            "index": param.index,
+            "name": param.name,
+            "type_repr": param.type_repr,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn attach_run_delegate_batch(mut result: Value, batch: &RunDelegateBatch) -> Value {
+    let occurrences = batch
+        .occurrences
+        .iter()
+        .map(|occurrence| {
+            let values = occurrence
+                .values
+                .iter()
+                .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+                .collect::<serde_json::Map<_, _>>();
+            json!({
+                "sequence": occurrence.sequence,
+                "index": occurrence.index,
+                "name": occurrence.name,
+                "values": values,
+            })
+        })
+        .collect::<Vec<_>>();
+    result["delegate_occurrences"] = Value::Array(occurrences);
+    result["delegate_overflow_count"] = json!(batch.overflow_count);
+    result
+}
+
+fn attach_run_print_batch(mut result: Value, batch: &RunPrintBatch) -> Value {
+    result["print"] = json!({
+        "text": batch.text,
+        "entries": batch.entries.iter().map(|entry| json!({
+            "sequence": entry.sequence,
+            "site_index": entry.site_index,
+            "label": entry.label,
+            "source": {
+                "file": entry.source_file,
+                "line": entry.line,
+                "column": entry.column,
+                "end_line": entry.end_line,
+                "end_column": entry.end_column,
+            },
+            "lexical_owner": entry.lexical_owner,
+            "declaration": entry.declaration,
+            "values": entry.values.iter().map(|value| json!({
+                "type": value.type_repr,
+                "value": run_event_value_json(&value.value),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "overflow_count": batch.overflow_count,
+        "transport_drop_count": batch.transport_drop_count,
+    });
+    result
+}
+
+fn run_event_value_json(value: &RunEventValue) -> Value {
+    match value {
+        RunEventValue::Bool(value) => Value::Bool(*value),
+        RunEventValue::Number(value) => json!(value),
+        RunEventValue::I64(value) => Value::String(value.to_string()),
+        RunEventValue::Array(values) => {
+            Value::Array(values.iter().map(run_event_value_json).collect())
+        }
+    }
 }
 
 fn diagnostic_json(diag: &Diagnostic) -> Value {
@@ -474,6 +649,18 @@ mod tests {
     }
 
     #[test]
+    fn daemon_json_preserves_decimal_i64_event_values() {
+        let value = RunEventValue::try_from(EventValueRequest::I64("9007199254740993".to_owned()))
+            .expect("decimal i64 input should parse");
+        assert_eq!(value, RunEventValue::I64(9_007_199_254_740_993));
+        assert_eq!(
+            run_event_value_json(&value),
+            Value::String("9007199254740993".to_owned())
+        );
+        assert!(RunEventValue::try_from(EventValueRequest::I64("1.5".to_owned())).is_err());
+    }
+
+    #[test]
     fn run_render_command_round_trips() {
         let dir = mk_temp_dir("run_render");
         let main = dir.join("main.onda");
@@ -513,6 +700,101 @@ mod tests {
             result["channel_bits"][0][0].as_u64(),
             Some(0.25_f32.to_bits().into())
         );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_run_start_returns_only_the_error() {
+        let dir = mk_temp_dir("run_start_failure_print");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "params:\n  divisor: i32 = 0\nouts:\n  out1\ninit:\n  print(\"before failure\", 7)\n  value = i32(1) / divisor\nsample:\n  out1 = f32(value)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(4),
+                request: Request::RunStart {
+                    path: main.to_string_lossy().into_owned(),
+                },
+            },
+        );
+
+        assert!(!response.ok);
+        assert!(response.error.is_some());
+        assert!(response.result.is_none());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn successful_run_start_returns_initialization_prints() {
+        let dir = mk_temp_dir("run_start_print");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "outs:\n  out1\ninit:\n  print(\"ready\", true)\nsample:\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(7),
+                request: Request::RunStart {
+                    path: main.to_string_lossy().into_owned(),
+                },
+            },
+        );
+
+        assert!(response.ok, "start response: {:?}", response.error);
+        let result = response.result.expect("start result");
+        assert_eq!(result["print"]["text"], "ready: true\n");
+        assert_eq!(result["print"]["entries"].as_array().map(Vec::len), Some(1));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_render_returns_prints_emitted_before_the_error() {
+        let dir = mk_temp_dir("run_render_failure_print");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "params:\n  divisor: i32 = 0\nouts:\n  out1\nsample:\n  print(\"before failure\", 9)\n  value: i32 = i32(1) / divisor\n  out1 = f32(value)\n",
+        );
+        let path = main.to_string_lossy().into_owned();
+        let mut session = DaemonSession::default();
+        let start = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(5),
+                request: Request::RunStart { path: path.clone() },
+            },
+        );
+        assert!(start.ok, "start response: {:?}", start.error);
+
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(6),
+                request: Request::RunRender {
+                    path,
+                    include_sample_bits: false,
+                },
+            },
+        );
+
+        assert!(!response.ok);
+        assert!(response.error.is_some());
+        let result = response.result.expect("failure output");
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["print"]["text"], "before failure: 9\n");
+        assert_eq!(result["delegate_occurrences"], json!([]));
 
         fs::remove_dir_all(&dir).ok();
     }

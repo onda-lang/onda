@@ -36,6 +36,10 @@ compile_commands.json
 
 # JavaScript package and test output
 node_modules/
+/packages/onda_binaryen_web/api.md
+/packages/onda_processor_abi/api.md
+/packages/onda_wasm_compiler/api.md
+/packages/onda_webaudio/api.md
 coverage/
 .nyc_output/
 .cache/

@@ -203,7 +203,8 @@ Non-crate directories of note:
 - `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, contextual
   completion, hover, signature help, and definition handling.
 - `server/param_domain.rs` — parameter-domain and integer-binding-range completion/token contexts.
-- `server/unsafe_index.rs` — shared unchecked-intrinsic signatures and safety documentation.
+- `server/language_intrinsics.rs`, `server/unsafe_index.rs` — shared compiler-known statement and
+  unchecked-intrinsic signatures/documentation used across completion and navigation.
 - `server/namespace_resolution.rs`, `server/position.rs`, `server/path_utils.rs` — namespace, source-position, and path support.
 - `server/semantic_tokens/{mod,ast_index,source_fallback,tests}.rs` — semantic-token indexing, incomplete-source fallback, and tests.
 - `formatting.rs` — source formatting shared with the CLI.
@@ -257,7 +258,8 @@ Non-crate directories of note:
   compile` emits target-aware LLVM IR or objects through the same MIR lowering. There is no direct
   `TypedProgram`/frontend-AST LLVM backend.
 - Native JIT metadata and AOT sidecar metadata come from validated MIR plus codegen's selected byte
-  offsets. Parameter, state, audio/control I/O, buffer, event, export, and target information
+  offsets. Parameter, state, audio/control I/O, buffer, input-event, delegate, print-site, source,
+  export, and target information
   therefore cannot drift from the executable layout through a separate `TypedProgram` walk. The
   processor descriptor also maps each packed snapshot segment to its physical state offset,
   records the little-endian scalar encoding and post-init restore base, and declares the
@@ -268,7 +270,7 @@ Non-crate directories of note:
   source and embedded `std/...` modules.
   `packages/onda_binaryen_web` consumes the current schema, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
-  state, snapshot, interface, event, buffer, and import metadata.
+  state, snapshot, interface, input-event, delegate, print-site, source, buffer, and import metadata.
 - [`processor-abi.md`](processor-abi.md) defines the shared logical processor contract. LLVM emits
   relocatable objects for native and WebAssembly targets and leaves linking to the application;
   Binaryen emits a complete core-Wasm module because browsers expose no linker. Target triples
@@ -278,9 +280,12 @@ Non-crate directories of note:
 - Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
   on x86 this enables FTZ/DAZ once per thread before executing DSP.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
-- Runtime processing uses prepared buffer descriptor tables (`process_checked`); omitted slots are
-  prepared as neutral descriptors rather than blocking processing. Segment variants exist for hosts
-  that split a logical block around sample-accurate events:
+- Runtime init, events, and processing use prepared buffer descriptor tables; omitted slots are
+  prepared as neutral descriptors rather than blocking execution. Rebinding invalidates the tables,
+  and the next checked entry-point call observes the replacement without implicitly rerunning init.
+  Buffer-write metadata conservatively joins writes reachable from init, process, and exported
+  events, including generated proc-init paths. Segment variants exist for hosts that split a logical
+  block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
   - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
   - unchecked preparation validates the current bindings; buffer references resolve directly
@@ -302,12 +307,24 @@ Non-crate directories of note:
   parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
   range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
   index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
-  element bytes).
+  element bytes). Source delegates lower to direct synchronous subscription calls. Top-level
+  delegate publication and authored printing remain explicit observable MIR effects as
+  `PublishDelegate` and `PublishLog`. Init, process, and input-event entries accept one optional
+  `ExecutionOutput` containing independent caller-owned delegate and print batches, reset supplied
+  counters and one shared output sequence per call, and append complete packed records without
+  allocation. Hosts merge the two batches by sequence before delivery. Generated failure
+  clears incomplete delegates while retaining diagnostic print records. Native and Binaryen
+  backends share the same logical layouts. Web Audio transports raw print records out of the audio
+  callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches
+  outside generated execution. Run UIs deliver prints and subscribed delegates in call-local source
+  order.
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
-  bounds-proof pass removes clamping or checks when the complete coordinate interval is known to
-  fit. Explicit `read_unsafe` / `write_unsafe` calls instead establish a programmer-owned unchecked
-  boundary and are memory-unsafe when any coordinate is invalid.
+  whole-program analysis carries them through statically resolved read-only call boundaries and
+  scalar returns. The shared bounds-proof pass removes clamping or checks when the complete
+  coordinate interval is known to fit. Explicit `read_unsafe` / `write_unsafe` calls instead
+  establish a programmer-owned unchecked boundary and are memory-unsafe when any coordinate is
+  invalid.
 - MIR optimization removes unused internal parameters and forwarding arguments to a fixed point.
   It retains a parameter when any call site uses fallible argument preparation, preserving checked
   fixed-range and dynamic-slice addressing even when the callee does not read the reference.

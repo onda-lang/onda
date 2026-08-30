@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 mod completion;
 mod diagnostics;
+mod language_intrinsics;
 mod namespace_resolution;
 mod navigation;
 mod param_domain;
@@ -38,8 +39,8 @@ use navigation::{
 };
 use path_utils::{lsp_document_path, normalize_path, path_to_file_uri};
 use semantic_tokens::{
-    encode_semantic_tokens, semantic_token_legend, semantic_tokens_for_document_source_only,
-    semantic_tokens_for_document_with_parsed,
+    encode_semantic_tokens, semantic_token_legend, semantic_token_modifier_legend,
+    semantic_tokens_for_document_source_only, semantic_tokens_for_document_with_parsed,
 };
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -1829,7 +1830,7 @@ fn initialize_result(process_id: Option<u32>) -> Value {
                 "full": true,
                 "legend": {
                     "tokenTypes": semantic_token_legend(),
-                    "tokenModifiers": [],
+                    "tokenModifiers": semantic_token_modifier_legend(),
                 }
             },
             "completionProvider": {
@@ -4093,7 +4094,7 @@ init:
         let diagnostic = &diagnostics[0];
         let message = diagnostic["message"].as_str().unwrap_or_default();
         assert!(
-            message.contains("while checking specialization of 'std::lookup::calcIdx'")
+            message.contains("while checking specialization of 'std::lookup::_split_position'")
                 && message.contains("got I32"),
             "unexpected diagnostic message: {message}"
         );
@@ -5131,10 +5132,10 @@ sample:
             .filter_map(|item| item["label"].as_str())
             .collect::<Vec<_>>();
 
-        for expected in ["osc", "filter", "env", "delay"] {
+        for expected in ["osc", "filter", "env", "delay", "dynamics", "sample"] {
             assert!(labels.contains(&expected), "missing {expected}: {items:?}");
         }
-        for unrelated in ["init", "sample", "sin", "PI"] {
+        for unrelated in ["init", "sin", "PI"] {
             assert!(
                 !labels.contains(&unrelated),
                 "unexpected {unrelated}: {items:?}"
@@ -5281,7 +5282,7 @@ sample:
             "labels: {root_labels:?}"
         );
         assert!(
-            !root_labels.contains(&"sample".to_owned()),
+            !root_labels.contains(&"Sine".to_owned()),
             "labels: {root_labels:?}"
         );
 
@@ -6717,10 +6718,14 @@ init:
   buf: f32[4]
   n = buf.len()
 
+buffers:
+  clip: f32
+
 sample:
   x = buf[0]
   y = fabs(0.0 - 1.0)
   sr = HOST_SR
+  clip_bound = clip.bound()
   out1 = x + y + sr
 "#;
         write_file(&main, source);
@@ -6728,12 +6733,18 @@ sample:
         let mut server = LspServer::default();
         let len = hover_markdown_for(&mut server, &main, source, "len")
             .expect("hover should resolve len builtin");
+        let bound = hover_markdown_for(&mut server, &main, source, "bound")
+            .expect("hover should resolve bound builtin");
         let fabs = hover_markdown_for(&mut server, &main, source, "fabs")
             .expect("hover should resolve fabs builtin alias");
         let host_sr = hover_markdown_for(&mut server, &main, source, "HOST_SR")
             .expect("hover should resolve HOST_SR builtin const");
 
         assert!(len.contains("built-in call .len(...)"), "hover: {len}");
+        assert!(
+            bound.contains("built-in call .bound(...)"),
+            "hover: {bound}"
+        );
         assert!(fabs.contains("built-in call fabs(...)"), "hover: {fabs}");
         assert!(
             host_sr.contains("builtin const HOST_SR: f32"),
@@ -7584,37 +7595,33 @@ namespace Test<FFTSize = 64, MaxImpulseLen = 1024>:
         let _guard = EnvVarGuard::set_path("ONDA_STDLIB_CACHE_DIR", &cache);
         let main = dir.join("main.onda");
         let source = r#"
-import std/delay
+import std/smoothing
 
 init:
-  smear = std::delay::Delay<f64>()
+  lag = std::smoothing::Lag<f64>()
 "#;
         write_file(&main, source);
 
         let mut server = LspServer::default();
-        let definition = definition_for(&mut server, &main, source, "Delay");
+        let definition = definition_for(&mut server, &main, source, "Lag");
         let uri = definition["uri"].as_str().expect("stdlib proc uri");
-        let delay_path = file_uri_to_path(uri).expect("stdlib proc should be a file uri");
-        let delay_source = fs::read_to_string(&delay_path).expect("read materialized delay");
+        let smoothing_path = file_uri_to_path(uri).expect("stdlib proc should be a file uri");
+        let smoothing_source =
+            fs::read_to_string(&smoothing_path).expect("read materialized smoothing");
 
-        for (needle, expected_line) in [
-            ("T(max_d", 14),
-            ("\n      di0", 15),
-            ("T(di0", 15),
-            ("\n      frac", 16),
-        ] {
-            let state_definition = definition_for(&mut server, &delay_path, &delay_source, needle);
-            assert_ne!(
-                state_definition,
-                json!(null),
-                "{needle:?} should resolve inside materialized stdlib local def"
-            );
-            assert_eq!(
-                state_definition["range"]["start"]["line"],
-                json!(expected_line),
-                "{needle:?} should goto the init declaration: {state_definition:?}"
-            );
-        }
+        let needle = "\n      coef";
+        let state_definition =
+            definition_for(&mut server, &smoothing_path, &smoothing_source, needle);
+        assert_ne!(
+            state_definition,
+            json!(null),
+            "{needle:?} should resolve inside materialized stdlib local def"
+        );
+        assert_eq!(
+            state_definition["range"]["start"]["line"],
+            json!(15),
+            "{needle:?} should goto the init declaration: {state_definition:?}"
+        );
 
         drop(_guard);
         clear_readonly_recursive(&dir);

@@ -53,7 +53,7 @@ for (let channel = 0; channel < outputCount; channel += 1) {
   new DataView(memory.buffer).setUint32(outputTable + channel * 4, pointer, true);
 }
 
-if (onda_processor_init(params, state, 1) !== 0) {
+if (onda_processor_init(params, state, 1, 0, 0, 0, 0, 0) !== 0) {
   throw new Error("DSP smoke init returned a generated execution failure");
 }
 if (onda_process(state, params, 0, outputTable, 0, blockSize, 3, 0, 0, 0, 0) !== 0) {

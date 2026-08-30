@@ -1,8 +1,20 @@
 import {
   createParamControl,
+  decodeDelegateRecords,
+  formatPrintRecords,
   validateProcessorArtifact,
   validateProcessorModule,
 } from "@onda-lang/processor-abi";
+import {
+  EXECUTION_OPERATION_EVENT,
+  EXECUTION_OPERATION_INIT,
+  EXECUTION_OPERATION_PROCESS,
+  EXECUTION_OPERATION_TRANSPORT,
+  EXECUTION_OUTPUT_RING_WAKE_INDEX,
+  createExecutionOutputRing,
+  drainExecutionOutputRing,
+  openExecutionOutputRing,
+} from "./execution-output-ring.js";
 
 export {
   createParamDomain,
@@ -17,6 +29,8 @@ export const ONDA_INIT_PRESERVE_PINNED = 0;
 export const ONDA_INIT_FULL = 1;
 
 const registrationByContext = new WeakMap();
+const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
+const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
 
 export function flattenedAudioChannelCount(ports = []) {
   if (!Array.isArray(ports)) {
@@ -50,6 +64,9 @@ function audioWorkletNodeOptionsFromValidated(
   options,
   validateCompiledModule,
 ) {
+  if (options.onPrint !== undefined && typeof options.onPrint !== "function") {
+    throw new TypeError("initial print listener must be a function");
+  }
   const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
   const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
@@ -62,6 +79,27 @@ function audioWorkletNodeOptionsFromValidated(
   }
   if (validateCompiledModule) {
     validateProcessorModule(options.compiledModule, metadata);
+  }
+  const delegateCapacityBytes = configuredExecutionOutputCapacity(
+    metadata.metadata?.delegates,
+    options.delegateCapacityBytes,
+    DEFAULT_DELEGATE_CAPACITY_BYTES,
+    "delegate",
+  );
+  const printCapacityBytes = configuredExecutionOutputCapacity(
+    metadata.metadata?.log_sites,
+    options.printCapacityBytes,
+    DEFAULT_PRINT_CAPACITY_BYTES,
+    "print",
+  );
+  const executionOutputRing = createExecutionOutputRing(
+    delegateCapacityBytes,
+    printCapacityBytes,
+  );
+  if (options.onPrint !== undefined && executionOutputRing === null) {
+    throw new Error(
+      "print delivery requires SharedArrayBuffer; enable cross-origin isolation",
+    );
   }
   const nodeOptions = {
     ...options.nodeOptions,
@@ -82,6 +120,11 @@ function audioWorkletNodeOptionsFromValidated(
       ),
       buffers: options.buffers ?? {},
       eventPayloadCapacityBytes: options.eventPayloadCapacityBytes,
+      delegateCapacityBytes,
+      printCapacityBytes,
+      executionOutputRing,
+      printCollectionEnabled: options.onPrint !== undefined,
+      printSubscriptionId: options.onPrint === undefined ? 0 : 1,
       initialize: options.initialize === true,
     },
   };
@@ -91,6 +134,22 @@ function audioWorkletNodeOptionsFromValidated(
     delete nodeOptions.outputChannelCount;
   }
   return nodeOptions;
+}
+
+function configuredExecutionOutputCapacity(
+  descriptors,
+  configured,
+  defaultCapacity,
+  name,
+) {
+  const capacity = configured
+    ?? (Array.isArray(descriptors) && descriptors.length ? defaultCapacity : 0);
+  if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity > 0x7fff_ffff) {
+    throw new Error(
+      `${name} capacity must be an integer from 0 through 2147483647 bytes`,
+    );
+  }
+  return capacity;
 }
 
 function paramInfoFor(paramInfo, selector) {
@@ -185,16 +244,22 @@ async function createOndaAudioProcessorImpl(context, artifact, options, initiali
   if (typeof NodeConstructor !== "function") {
     throw new Error("AudioWorkletNode is not available in this environment");
   }
+  const nodeOptions = audioWorkletNodeOptionsFromValidated(
+    validated,
+    { ...options, compiledModule, initialize },
+    false,
+  );
   const node = new NodeConstructor(
     context,
     ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
-    audioWorkletNodeOptionsFromValidated(
-      validated,
-      { ...options, compiledModule, initialize },
-      false,
-    ),
+    nodeOptions,
   );
-  return new OndaAudioProcessor(node, validated.metadata);
+  return new OndaAudioProcessor(
+    node,
+    validated.metadata,
+    options.onPrint,
+    nodeOptions.processorOptions.executionOutputRing,
+  );
 }
 
 export async function compileOndaProcessorModule(artifact) {
@@ -210,13 +275,43 @@ async function compileValidatedProcessorModule({ wasm, metadata }) {
 }
 
 export class OndaAudioProcessor {
-  constructor(node, metadata = null) {
+  constructor(
+    node,
+    metadata = null,
+    initialPrintListener = undefined,
+    executionOutputRing = null,
+  ) {
+    if (
+      initialPrintListener !== undefined
+      && typeof initialPrintListener !== "function"
+    ) {
+      throw new TypeError("initial print listener must be a function");
+    }
     this.node = node;
     this.metadata = metadata;
     this.paramInfo = metadata?.metadata?.params ?? null;
     this.paramControls = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.delegateListeners = new Set();
+    this.delegateSubscriptionId = 0;
+    this.printListeners = new Set(
+      initialPrintListener === undefined ? [] : [initialPrintListener],
+    );
+    this.printSubscriptionId = initialPrintListener === undefined ? 0 : 1;
+    this.executionOutputRing = executionOutputRing === null
+      ? null
+      : openExecutionOutputRing(executionOutputRing);
+    if (initialPrintListener !== undefined && !this.executionOutputRing) {
+      throw new Error(
+        "print delivery requires SharedArrayBuffer; enable cross-origin isolation",
+      );
+    }
+    this.executionOutputWaitGeneration = 0;
+    this.executionOutputPoll = null;
+    this.executionOutputDrainActive = false;
+    this.closed = false;
+    this.closeReason = null;
     this.handleMessage = (event) => {
       const message = event.data ?? {};
       if (message.requestId === undefined) return;
@@ -231,9 +326,243 @@ export class OndaAudioProcessor {
     };
     node.port.addEventListener("message", this.handleMessage);
     node.port.start?.();
+    if (this.printListeners.size !== 0) this.startExecutionOutputDrain();
+  }
+
+  startExecutionOutputDrain() {
+    if (!this.executionOutputRing || this.executionOutputDrainActive) return;
+    this.executionOutputDrainActive = true;
+    this.drainExecutionOutput();
+    if (typeof Atomics.waitAsync !== "function") {
+      this.executionOutputPoll = setInterval(() => {
+        if (!this.closed) this.drainExecutionOutput();
+      }, 16);
+      return;
+    }
+    const generation = ++this.executionOutputWaitGeneration;
+    const wait = async () => {
+      while (!this.closed && generation === this.executionOutputWaitGeneration) {
+        const expected = Atomics.load(
+          this.executionOutputRing.control,
+          EXECUTION_OUTPUT_RING_WAKE_INDEX,
+        );
+        this.drainExecutionOutput();
+        if (this.closed || generation !== this.executionOutputWaitGeneration) return;
+        const result = Atomics.waitAsync(
+          this.executionOutputRing.control,
+          EXECUTION_OUTPUT_RING_WAKE_INDEX,
+          expected,
+        );
+        if (result.async) await result.value;
+      }
+    };
+    void wait().catch((error) => this.reportExecutionOutputError(error));
+  }
+
+  stopExecutionOutputDrain() {
+    if (!this.executionOutputDrainActive) return;
+    this.executionOutputDrainActive = false;
+    this.executionOutputWaitGeneration += 1;
+    if (this.executionOutputPoll !== null) {
+      clearInterval(this.executionOutputPoll);
+      this.executionOutputPoll = null;
+    }
+    if (!this.executionOutputRing) return;
+    Atomics.add(
+      this.executionOutputRing.control,
+      EXECUTION_OUTPUT_RING_WAKE_INDEX,
+      1,
+    );
+    Atomics.notify(
+      this.executionOutputRing.control,
+      EXECUTION_OUTPUT_RING_WAKE_INDEX,
+    );
+  }
+
+  reportExecutionOutputError(error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
+
+  notifyExecutionOutputListeners(listeners, batch) {
+    for (const listener of listeners) {
+      try {
+        listener(batch);
+      } catch (error) {
+        this.reportExecutionOutputError(error);
+      }
+    }
+  }
+
+  drainExecutionOutput() {
+    if (!this.executionOutputRing) return 0;
+    return drainExecutionOutputRing(
+      this.executionOutputRing,
+      (entry) => {
+        try {
+          this.consumeExecutionOutput(entry);
+        } catch (error) {
+          this.reportExecutionOutputError(error);
+        }
+      },
+    );
+  }
+
+  consumeExecutionOutput(entry) {
+    const operation = this.executionOperationName(
+      entry.operation,
+      entry.operationIndex,
+    );
+    const records = [];
+    let print = null;
+    let delegate = null;
+    if (
+      entry.printSubscriptionId === this.printSubscriptionId
+      && this.printListeners.size !== 0
+      && (
+        entry.printUsed
+        || entry.printRecordCount
+        || entry.printOverflowCount
+        || entry.printTransportDropCount
+      )
+    ) {
+      const formatted = formatPrintRecords(
+        entry.printStorage,
+        entry.printUsed,
+        this.metadata,
+        entry.printOverflowCount,
+      );
+      if (formatted.entries.length !== entry.printRecordCount) {
+        throw new Error("processor print count does not match packed storage");
+      }
+      const lines = formatted.text.match(/.*\n/g) ?? [];
+      if (lines.length !== formatted.entries.length) {
+        throw new Error("formatted print output does not match its decoded entries");
+      }
+      print = {
+        overflowCount: formatted.overflowCount,
+        transportDropCount: entry.printTransportDropCount,
+      };
+      formatted.entries.forEach((decoded, index) => records.push({
+        kind: "print",
+        sequence: decoded.sequence,
+        entry: decoded,
+        line: lines[index],
+      }));
+    }
+    if (
+      entry.delegateSubscriptionId === this.delegateSubscriptionId
+      && this.delegateListeners.size !== 0
+      && (
+        entry.delegateUsed
+        || entry.delegateRecordCount
+        || entry.delegateOverflowCount
+        || entry.delegateTransportDropCount
+      )
+    ) {
+      const decodedRecords = decodeDelegateRecords(
+        entry.delegateStorage,
+        entry.delegateUsed,
+        this.metadata?.metadata?.delegates,
+        this.metadata?.target?.byte_order,
+      );
+      if (decodedRecords.length !== entry.delegateRecordCount) {
+        throw new Error("processor delegate count does not match packed storage");
+      }
+      delegate = {
+        overflowCount: entry.delegateOverflowCount,
+        transportDropCount: entry.delegateTransportDropCount,
+      };
+      decodedRecords.forEach((record) => {
+        const occurrence = {
+          sequence: record.sequence,
+          index: record.delegateIndex,
+          name: record.name,
+          values: record.values,
+        };
+        records.push({
+          kind: "delegate",
+          sequence: occurrence.sequence,
+          occurrence,
+        });
+      });
+    }
+    this.deliverExecutionOutput(records, print, delegate, operation);
+  }
+
+  executionOperationName(operation, operationIndex) {
+    if (operation === EXECUTION_OPERATION_INIT) return "processor init";
+    if (operation === EXECUTION_OPERATION_PROCESS) return "process";
+    if (operation === EXECUTION_OPERATION_TRANSPORT) return "transport";
+    if (operation === EXECUTION_OPERATION_EVENT) {
+      const event = this.metadata?.metadata?.events?.[operationIndex];
+      if (!event) throw new Error("execution-output ring references an unknown event");
+      return `event '${event.name}'`;
+    }
+    throw new Error("execution-output ring contains an unknown operation");
+  }
+
+  deliverExecutionOutput(records, print, delegate, operation) {
+    records.sort((lhs, rhs) => lhs.sequence - rhs.sequence);
+    let cursor = 0;
+    while (cursor < records.length) {
+      const kind = records[cursor].kind;
+      let end = cursor + 1;
+      while (end < records.length && records[end].kind === kind) end += 1;
+      const batchRecords = records.slice(cursor, end);
+      if (kind === "print") {
+        const meta = print ?? { overflowCount: 0, transportDropCount: 0 };
+        print = null;
+        const batch = {
+          type: "onda-print",
+          operation,
+          text: batchRecords.map((record) => record.line).join(""),
+          entries: batchRecords.map((record) => record.entry),
+          ...meta,
+        };
+        this.notifyExecutionOutputListeners(this.printListeners, batch);
+      } else {
+        const meta = delegate ?? { overflowCount: 0, transportDropCount: 0 };
+        delegate = null;
+        const batch = {
+          type: "onda-delegates",
+          operation,
+          occurrences: batchRecords.map((record) => record.occurrence),
+          ...meta,
+        };
+        this.notifyExecutionOutputListeners(this.delegateListeners, batch);
+      }
+      cursor = end;
+    }
+    if (print && (print.overflowCount || print.transportDropCount)) {
+      const batch = {
+        type: "onda-print",
+        operation,
+        text: "",
+        entries: [],
+        ...print,
+      };
+      this.notifyExecutionOutputListeners(this.printListeners, batch);
+    }
+    if (
+      delegate
+      && (delegate.overflowCount || delegate.transportDropCount)
+    ) {
+      const batch = {
+        type: "onda-delegates",
+        operation,
+        occurrences: [],
+        ...delegate,
+      };
+      this.notifyExecutionOutputListeners(this.delegateListeners, batch);
+    }
   }
 
   request(type, fields = {}, transfer = []) {
+    if (this.closed) {
+      return Promise.reject(this.closeReason);
+    }
     const requestId = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
@@ -286,6 +615,82 @@ export class OndaAudioProcessor {
     return this.request("event", { event, values });
   }
 
+  onDelegates(listener) {
+    this.assertOpen();
+    if (typeof listener !== "function") {
+      throw new TypeError("delegate listener must be a function");
+    }
+    this.requireExecutionOutputRing("delegate");
+    const wasEmpty = this.delegateListeners.size === 0;
+    this.delegateListeners.add(listener);
+    if (wasEmpty) {
+      this.delegateSubscriptionId = (this.delegateSubscriptionId + 1) >>> 0;
+      if (this.delegateSubscriptionId === 0) this.delegateSubscriptionId = 1;
+      try {
+        this.startExecutionOutputDrain();
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: true,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+      } catch (error) {
+        this.delegateListeners.delete(listener);
+        if (this.printListeners.size === 0) this.stopExecutionOutputDrain();
+        throw error;
+      }
+    }
+    return () => {
+      const removed = this.delegateListeners.delete(listener);
+      if (removed && this.delegateListeners.size === 0) {
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: false,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+        if (this.printListeners.size === 0) this.stopExecutionOutputDrain();
+      }
+      return removed;
+    };
+  }
+
+  onPrint(listener) {
+    this.assertOpen();
+    if (typeof listener !== "function") {
+      throw new TypeError("print listener must be a function");
+    }
+    this.requireExecutionOutputRing("print");
+    const wasEmpty = this.printListeners.size === 0;
+    this.printListeners.add(listener);
+    if (wasEmpty) {
+      this.printSubscriptionId = (this.printSubscriptionId + 1) >>> 0;
+      if (this.printSubscriptionId === 0) this.printSubscriptionId = 1;
+      try {
+        this.startExecutionOutputDrain();
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: true,
+          subscriptionId: this.printSubscriptionId,
+        });
+      } catch (error) {
+        this.printListeners.delete(listener);
+        if (this.delegateListeners.size === 0) this.stopExecutionOutputDrain();
+        throw error;
+      }
+    }
+    return () => {
+      const removed = this.printListeners.delete(listener);
+      if (removed && this.printListeners.size === 0) {
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: false,
+          subscriptionId: this.printSubscriptionId,
+        });
+        if (this.delegateListeners.size === 0) this.stopExecutionOutputDrain();
+      }
+      return removed;
+    };
+  }
+
   init(mode) {
     if (mode !== ONDA_INIT_PRESERVE_PINNED && mode !== ONDA_INIT_FULL) {
       return Promise.reject(new Error(`invalid Onda init mode '${String(mode)}'`));
@@ -313,9 +718,48 @@ export class OndaAudioProcessor {
   }
 
   close(reason = new Error("Onda AudioWorklet processor closed")) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeReason = reason instanceof Error ? reason : new Error(String(reason));
+    if (this.delegateListeners.size !== 0) {
+      try {
+        this.node.port.postMessage({
+          type: "delegate-subscription",
+          enabled: false,
+          subscriptionId: this.delegateSubscriptionId,
+        });
+      } catch {
+        // The underlying node may already be gone; local closure still proceeds.
+      }
+    }
+    if (this.printListeners.size !== 0) {
+      try {
+        this.node.port.postMessage({
+          type: "print-subscription",
+          enabled: false,
+          subscriptionId: this.printSubscriptionId,
+        });
+      } catch {
+        // The underlying node may already be gone; local closure still proceeds.
+      }
+    }
     this.node.port.removeEventListener("message", this.handleMessage);
-    for (const pending of this.pending.values()) pending.reject(reason);
+    this.stopExecutionOutputDrain();
+    for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();
+    this.delegateListeners.clear();
+    this.printListeners.clear();
+  }
+
+  assertOpen() {
+    if (this.closed) throw this.closeReason;
+  }
+
+  requireExecutionOutputRing(kind) {
+    if (this.executionOutputRing) return;
+    throw new Error(
+      `${kind} delivery requires SharedArrayBuffer; enable cross-origin isolation`,
+    );
   }
 }
 

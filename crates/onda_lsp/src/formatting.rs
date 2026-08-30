@@ -1,7 +1,7 @@
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferBlock,
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
-    ConstType, DeclType, EventDef, EventParamType, Expr, FieldType, FnParamType,
+    ConstType, DeclType, DelegateDef, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
     SampleBlock, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
@@ -73,6 +73,8 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
                 format_event(event, indent + 1, out);
             }
         }
+        Block::Delegates(delegates) => format_delegates(delegates, indent, out),
+        Block::When(when) => format_when(when, indent, out),
         Block::Tasks(tasks) => format_tasks(&tasks.tasks, indent, out),
         Block::Buffers(buffers) => format_buffer_block("buffers", buffers, indent, out),
         Block::Assert(assert_decl) => {
@@ -445,6 +447,15 @@ fn format_proc(proc: &ProcessorDef, indent: usize, out: &mut String) {
             format_event(event, indent + 2, out);
         }
     }
+    if !proc.delegates.is_empty() {
+        push_line(out, indent + 1, "delegates:");
+        for delegate in &proc.delegates {
+            format_delegate(delegate, indent + 2, out);
+        }
+    }
+    for when in &proc.whens {
+        format_when(when, indent + 1, out);
+    }
     if !proc.tasks.is_empty() {
         format_tasks(&proc.tasks, indent + 1, out);
     }
@@ -530,7 +541,13 @@ pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
     let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
     if let Some(default) = &field.default {
         text.push_str(" = ");
-        text.push_str(&format_expr(default));
+        if let Some((value, range)) = format_binding_range_initializer(default) {
+            text.push_str(&value);
+            text.push(' ');
+            text.push_str(&range);
+        } else {
+            text.push_str(&format_expr(default));
+        }
     }
     text
 }
@@ -583,6 +600,45 @@ fn format_event(event: &EventDef, indent: usize, out: &mut String) {
     format_stmt_list(&event.body, indent + 1, out);
 }
 
+fn format_delegates(delegates: &onda_frontend::DelegateBlock, indent: usize, out: &mut String) {
+    push_line(out, indent, "delegates:");
+    for delegate in delegates {
+        format_delegate(delegate, indent + 1, out);
+    }
+}
+
+fn format_delegate(delegate: &DelegateDef, indent: usize, out: &mut String) {
+    push_line(out, indent, &format_delegate_signature(delegate));
+}
+
+pub(crate) fn format_delegate_signature(delegate: &DelegateDef) -> String {
+    let mut signature = format!("{}(", delegate.name);
+    signature.push_str(&format_event_params(&delegate.params));
+    signature.push(')');
+    signature
+}
+
+fn format_when(when: &onda_frontend::WhenDef, indent: usize, out: &mut String) {
+    let mut target = when.target.receiver.join(".");
+    if let Some(index) = &when.target.index {
+        target.push('[');
+        target.push_str(&format_expr(index));
+        target.push(']');
+    }
+    if !target.is_empty() {
+        target.push('.');
+    }
+    target.push_str(&when.target.delegate);
+    let bindings = when
+        .bindings
+        .iter()
+        .map(|binding| binding.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    push_line(out, indent, &format!("when {target}({bindings}):"));
+    format_stmt_list(&when.body, indent + 1, out);
+}
+
 fn format_tasks(tasks: &[TaskDef], indent: usize, out: &mut String) {
     push_line(out, indent, "tasks:");
     for task in tasks {
@@ -593,23 +649,24 @@ fn format_tasks(tasks: &[TaskDef], indent: usize, out: &mut String) {
 
 pub fn format_event_signature(event: &EventDef) -> String {
     let mut header = format!("{}(", event.name);
-    header.push_str(
-        &event
-            .params
-            .iter()
-            .map(|param| {
-                let mut text = format!("{}: {}", param.name, format_event_param_type(&param.ty));
-                if let Some(default) = &param.default {
-                    text.push_str(" = ");
-                    text.push_str(&format_expr(default));
-                }
-                text
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
+    header.push_str(&format_event_params(&event.params));
     header.push_str("):");
     header
+}
+
+fn format_event_params(params: &[onda_frontend::EventParamDecl]) -> String {
+    params
+        .iter()
+        .map(|param| {
+            let mut text = format!("{}: {}", param.name, format_event_param_type(&param.ty));
+            if let Some(default) = &param.default {
+                text.push_str(" = ");
+                text.push_str(&format_expr(default));
+            }
+            text
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn format_stmt_list(stmts: &[Stmt], indent: usize, out: &mut String) {
@@ -676,7 +733,7 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             if *is_typed_decl {
                 if let Some(ty) = decl_ty {
                     text.push_str(": ");
-                    text.push_str(primitive_type_name(*ty));
+                    text.push_str(&format_decl_type(ty));
                 } else if let Some(ty) = generic_decl_ty {
                     text.push_str(": ");
                     text.push_str(ty);
@@ -706,6 +763,14 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             } else {
                 push_line(out, indent, &format!("return {}", format_expr(expr)));
             }
+        }
+        Stmt::Print { label, values, .. } => {
+            let mut arguments = Vec::with_capacity(values.len() + usize::from(label.is_some()));
+            if let Some(label) = label {
+                arguments.push(format_quoted_text(label));
+            }
+            arguments.extend(values.iter().map(format_expr));
+            push_line(out, indent, &format!("print({})", arguments.join(", ")));
         }
         Stmt::If {
             cond,
@@ -824,7 +889,11 @@ fn format_assign_target(target: &AssignTarget) -> String {
             start.as_deref(),
             end.as_deref(),
         ),
-        AssignTarget::Tuple(names) => format!("({})", names.join(", ")),
+        AssignTarget::Tuple(targets) => targets
+            .iter()
+            .map(|target| target.binding().unwrap_or("_"))
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -1331,9 +1400,13 @@ pub fn format_param_decl(param: &ParamDecl) -> String {
 }
 
 fn format_param_unit(unit: &str) -> String {
-    let mut text = String::with_capacity(unit.len() + 2);
+    format_quoted_text(unit)
+}
+
+fn format_quoted_text(value: &str) -> String {
+    let mut text = String::with_capacity(value.len() + 2);
     text.push('"');
-    for ch in unit.chars() {
+    for ch in value.chars() {
         match ch {
             '"' => text.push_str("\\\""),
             '\\' => text.push_str("\\\\"),
@@ -1403,6 +1476,14 @@ mod tests {
     use onda_frontend::parse_program;
 
     use super::format_program;
+
+    #[test]
+    fn formatting_canonicalizes_tuple_targets_without_parentheses() {
+        let source = "sample:\n  (left, _, right) = (1.0, 2.0, 3.0)\n  out1 = left + right\n";
+        let program = parse_program(source).expect("source should parse");
+        let formatted = format_program(&program);
+        assert!(formatted.contains("  left, _, right = (1.0, 2.0, 3.0)\n"));
+    }
 
     #[test]
     fn formatting_preserves_parameter_control_domains() {
@@ -1525,6 +1606,20 @@ proc Worker:
     }
 
     #[test]
+    fn formatting_preserves_ranged_struct_fields() {
+        let source = "struct Cursor:\n  index: i32 = 0 {8, wrap}\n";
+        let program = parse_program(source).expect("ranged struct field should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains("  index: i32 = 0 {8, wrap}\n"),
+            "{formatted}"
+        );
+        let reparsed = parse_program(&formatted).expect("formatted struct field should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
     fn formatting_preserves_configuration_constants() {
         let program = parse_program(
             "config const Size: i32 = 4\nconfig const Values: f32[Size] = [0.0, 0.5, 1.0, 0.5]\n",
@@ -1534,6 +1629,17 @@ proc Worker:
         assert!(formatted.contains("config const Size: i32 = 4\n"));
         assert!(formatted.contains("config const Values: f32[Size] = [0.0, 0.5, 1.0, 0.5]\n"));
         let reparsed = parse_program(&formatted).expect("formatted config constants should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn formatting_preserves_print_labels_and_argument_order() {
+        let program =
+            parse_program("sample:\n  print(\"voice\\n\\\"phase\\\"\",index, phase, true)\n")
+                .expect("print statement should parse");
+        let formatted = format_program(&program);
+        assert!(formatted.contains("print(\"voice\\n\\\"phase\\\"\", index, phase, true)\n"));
+        let reparsed = parse_program(&formatted).expect("formatted print should remain parseable");
         assert_eq!(format_program(&reparsed), formatted);
     }
 }

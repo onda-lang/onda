@@ -18,7 +18,7 @@ pub(crate) struct ExecutableOwnerRuntimeState<'a> {
     pub(crate) nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
-    pub(crate) state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    pub(crate) state_tuples: &'a mut HashMap<String, Vec<PrimitiveType>>,
 }
 
 #[derive(Clone)]
@@ -124,7 +124,6 @@ struct ExecutableOwnerEventPlanSeed {
 }
 
 pub(crate) struct ExecutableOwnerAnalysisPlanSeeds {
-    empty_inputs: HashSet<String>,
     runtime: ExecutableOwnerRuntimePlanSeeds,
     event: ExecutableOwnerEventPlanSeed,
 }
@@ -137,7 +136,9 @@ impl ExecutableOwnerAnalysisPlanSeeds {
     ) -> [RuntimeScopePlan<'a>; 3] {
         let block_common = ScopeAnalysisCtx {
             policy: ScopePolicy::Runtime(ScopeKind::Block),
-            input_names: &self.empty_inputs,
+            // Keep audio inputs identifiable while checking block-pre/post so
+            // diagnostics can point users to the nested sample section.
+            input_names: inputs.sample_input_names,
             output_names: inputs.block_output_names,
             output_array_names: inputs.output_array_names,
             io_surface_names: inputs.io_surface_names,
@@ -344,7 +345,6 @@ pub(crate) fn build_top_level_owner_analysis_plan_seeds(
     let control_output_array_names = control_out_arrays.keys().cloned().collect::<HashSet<_>>();
 
     ExecutableOwnerAnalysisPlanSeeds {
-        empty_inputs: HashSet::new(),
         runtime: ExecutableOwnerRuntimePlanSeeds {
             block_locals: HashSet::new(),
             sample_locals: HashSet::new(),
@@ -400,7 +400,6 @@ pub(crate) fn build_proc_owner_analysis_plan_seeds(
     }
 
     ExecutableOwnerAnalysisPlanSeeds {
-        empty_inputs: HashSet::new(),
         runtime: ExecutableOwnerRuntimePlanSeeds {
             block_locals: HashSet::new(),
             sample_locals: HashSet::new(),

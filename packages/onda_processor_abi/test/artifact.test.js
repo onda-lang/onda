@@ -11,19 +11,28 @@ import {
   createParamControl,
   constrainParamPlain,
   createProcessorArtifactFiles,
+  decodeDelegateRecords,
+  formatPrintBatch,
+  formatPrintRecords,
   loadProcessorArtifactFiles,
   paramNormalizedToPlain,
   paramPlainToNormalized,
+  readDelegateBatch,
+  readPrintBatch,
+  resetExecutionOutput,
   validateProcessorArtifact,
   validateProcessorModule,
   validateProcessorMetadata,
+  writeDelegateBatch,
+  writeExecutionOutput,
+  writePrintBatch,
 } from "../src/index.js";
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 test("validates the descriptor fixture shared with the Rust schema", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v5.json", import.meta.url),
     "utf8",
   ));
   assert.equal(
@@ -31,6 +40,7 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     PROCESSOR_ARTIFACT_FORMAT_VERSION,
   );
   assert.equal(fixture.metadata.states[0].integer_range.mode, "wrap");
+  assert.equal(fixture.metadata.delegates[0].params[0].is_array, false);
 
   const missingCanonicalField = structuredClone(fixture);
   delete missingCanonicalField.metadata.inputs[0].default_reprs;
@@ -44,6 +54,35 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
   assert.throws(
     () => validateProcessorMetadata(inconsistentLayout),
     /byte_size does not match/,
+  );
+
+  const missingArrayShape = structuredClone(fixture);
+  delete missingArrayShape.metadata.delegates[0].params[0].is_array;
+  assert.throws(
+    () => validateProcessorMetadata(missingArrayShape),
+    /is_array must be a boolean/,
+  );
+
+  const inconsistentArrayShape = structuredClone(fixture);
+  inconsistentArrayShape.metadata.delegates[0].params[0].is_array = true;
+  assert.throws(
+    () => validateProcessorMetadata(inconsistentArrayShape),
+    /invalid fixed-size descriptor/,
+  );
+
+  const inconsistentLogPayload = structuredClone(fixture);
+  inconsistentLogPayload.metadata.log_sites = [{
+    index: 0,
+    label: null,
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 2 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["f32"],
+    payload_size_bytes: 5,
+  }];
+  assert.throws(
+    () => validateProcessorMetadata(inconsistentLogPayload),
+    /payload_size_bytes must be/,
   );
 
   const readOnlyUse = structuredClone(fixture);
@@ -97,6 +136,113 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     () => validateProcessorMetadata(invalidReadOnlyWrite),
     /may_write requires read_write access/,
   );
+});
+
+test("formats packed print records with width-aware canonical scalars", () => {
+  const storage = new Uint8Array(12 + 4 + 8 + 8 + 1);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, 0, true);
+  view.setUint32(4, 21, true);
+  view.setUint32(8, 17, true);
+  view.setFloat32(12, 1.234567, true);
+  view.setFloat64(16, -0, true);
+  view.setBigInt64(24, 9_007_199_254_740_993n, true);
+  view.setUint8(32, 1);
+  const metadata = {
+    target: { byte_order: "little_endian" },
+    metadata: {
+      log_sites: [{
+        index: 0,
+        label: "value\0\n",
+        source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+        lexical_owner: "program",
+        declaration: "sample",
+        argument_types: ["f32", "f64", "i64", "bool"],
+        payload_size_bytes: 21,
+      }],
+    },
+  };
+  const result = formatPrintRecords(storage, storage.byteLength, metadata, 3);
+  assert.equal(result.text, "value\\0\\n: 1.234567 -0.0 9007199254740993 true\n");
+  assert.equal(result.entries[0].values[0].value, Math.fround(1.234567));
+  assert.equal(result.entries[0].sequence, 17);
+  assert.equal(result.overflowCount, 3);
+
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  writePrintBatch(memory, 0, 32, storage.byteLength);
+  new Uint8Array(memory.buffer, 32, storage.byteLength).set(storage);
+  const batch = new DataView(memory.buffer);
+  batch.setUint32(8, storage.byteLength, true);
+  batch.setUint32(4, 0, true);
+  assert.throws(
+    () => formatPrintBatch(memory, 0, metadata),
+    /usedBytes exceeds capacityBytes/,
+  );
+  batch.setUint32(4, storage.byteLength, true);
+  batch.setUint32(12, 0, true);
+  assert.throws(
+    () => formatPrintBatch(memory, 0, metadata),
+    /recordCount does not match packed storage/,
+  );
+});
+
+test("escapes every print-label record separator", () => {
+  const storage = new Uint8Array(12);
+  const metadata = {
+    target: { byte_order: "little_endian" },
+    metadata: {
+      log_sites: [{
+        index: 0,
+        label: "\0\\\n\r\t\u0007\u000b\u000c\u007f\u0085\u2028\u2029sound",
+        source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+        lexical_owner: "program",
+        declaration: "sample",
+        argument_types: [],
+        payload_size_bytes: 0,
+      }],
+    },
+  };
+
+  assert.equal(
+    formatPrintRecords(storage, storage.byteLength, metadata).text,
+    "\\0\\\\\\n\\r\\t\\u{7}\\u{b}\\u{c}\\u{7f}\\u{85}\\u{2028}\\u{2029}sound\n",
+  );
+});
+
+test("matches native canonical formatting for deterministic randomized float bits", () => {
+  const fixture = JSON.parse(readFileSync(
+    new URL("./fixtures/print-float-parity.json", import.meta.url),
+    "utf8",
+  ));
+  const metadata = (scalar, payloadSize) => ({
+    target: { byte_order: "little_endian" },
+    metadata: {
+      log_sites: [{
+        index: 0,
+        label: null,
+        source: { file: null, line: 0, column: 0, end_line: 0, end_column: 0 },
+        lexical_owner: "program",
+        declaration: null,
+        argument_types: [scalar],
+        payload_size_bytes: payloadSize,
+      }],
+    },
+  });
+
+  for (const entry of fixture.f32) {
+    const storage = new Uint8Array(16);
+    const view = new DataView(storage.buffer);
+    view.setUint32(4, 4, true);
+    view.setUint32(12, Number.parseInt(entry.bits, 16), true);
+    assert.equal(formatPrintRecords(storage, storage.length, metadata("f32", 4)).text, `${entry.text}\n`);
+  }
+  for (const entry of fixture.f64) {
+    const storage = new Uint8Array(20);
+    const view = new DataView(storage.buffer);
+    view.setUint32(4, 8, true);
+    view.setBigUint64(12, BigInt(`0x${entry.bits}`), true);
+    assert.equal(formatPrintRecords(storage, storage.length, metadata("f64", 8)).text, `${entry.text}\n`);
+  }
 });
 
 function controlledParam({
@@ -344,7 +490,7 @@ test("rejects i64 control domains that are not exact through host numbers", () =
 
 test("validates parameter-control semantics before accepting a descriptor", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v5.json", import.meta.url),
     "utf8",
   ));
 
@@ -473,7 +619,7 @@ test("rejects runtime semantics not implemented by the current processor ABI", (
 
 test("rejects metadata layouts outside or overlapping their runtime regions", () => {
   const fixture = JSON.parse(readFileSync(
-    new URL("./fixtures/processor-descriptor-v6.json", import.meta.url),
+    new URL("./fixtures/processor-descriptor-v5.json", import.meta.url),
     "utf8",
   ));
 
@@ -523,7 +669,7 @@ test("rejects metadata layouts outside or overlapping their runtime regions", ()
   );
 });
 
-const FIXTURE_MIR_SCHEMA_VERSION = 1;
+const FIXTURE_MIR_SCHEMA_VERSION = 6;
 
 const wasm = new Uint8Array([
   0, 97, 115, 109, 1, 0, 0, 0,
@@ -573,6 +719,8 @@ function metadata() {
       snapshot_byte_order: "little_endian",
       snapshot_restore_base: "post_init_physical_state_image",
       requires_full_blocks: false,
+      delegate_record_header_size_bytes: 12,
+      print_record_header_size_bytes: 12,
     },
     exports: {
       memory: "memory",
@@ -599,6 +747,9 @@ function metadata() {
       params: [],
       buffers: [],
       events: [],
+      delegates: [],
+      source_files: [],
+      log_sites: [],
     },
   };
 }
@@ -625,4 +776,112 @@ test("round-trips integrity-associated artifact files", async () => {
   });
   const loaded = await loadProcessorArtifactFiles(files.wasm.bytes, files.metadata.text);
   assert.deepEqual(loaded.wasm, wasm);
+});
+
+test("prepares and decodes call-scoped delegate batches", () => {
+  const memory = new ArrayBuffer(80);
+  writeDelegateBatch(memory, 0, 20, 32);
+  assert.deepEqual(readDelegateBatch(memory, 0), {
+    storageAddress: 20,
+    capacityBytes: 32,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  });
+
+  const view = new DataView(memory);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 20, true);
+  view.setUint32(28, 9, true);
+  view.setInt32(32, 7, true);
+  view.setInt32(36, 2, true);
+  view.setFloat32(40, 1.25, true);
+  view.setFloat32(44, -2.5, true);
+  view.setInt32(48, 99, true);
+  view.setUint32(8, 32, true);
+  view.setUint32(12, 1, true);
+  const delegates = [{
+    name: "report",
+    params: [
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_array: false,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
+      {
+        name: "singleton",
+        scalar: "i32",
+        array_len: 1,
+        is_array: true,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+    ],
+  }];
+  const batch = readDelegateBatch(memory, 0);
+  const records = decodeDelegateRecords(
+    new Uint8Array(memory, batch.storageAddress, batch.capacityBytes),
+    batch.usedBytes,
+    delegates,
+  );
+  assert.equal(records[0].sequence, 9);
+  assert.deepEqual(records.map(({ name, values }) => ({ name, values })), [{
+    name: "report",
+    values: { code: 7, values: [1.25, -2.5], singleton: [99] },
+  }]);
+});
+
+test("rejects execution-output addresses outside wasm32", () => {
+  const memory = new ArrayBuffer(16);
+  assert.throws(
+    () => writeExecutionOutput(memory, 0, 0x1_0000_0000, 0),
+    /must fit u32/,
+  );
+  assert.throws(
+    () => writeExecutionOutput(memory, 0, 0, 0x1_0000_0000),
+    /must fit u32/,
+  );
+});
+
+test("resets every present execution-output batch and the shared sequence", () => {
+  const memory = new ArrayBuffer(64);
+  writeDelegateBatch(memory, 12, 52, 12);
+  writePrintBatch(memory, 32, 52, 12);
+  writeExecutionOutput(memory, 0, 12, 32);
+  const view = new DataView(memory);
+  for (const batchAddress of [12, 32]) {
+    view.setUint32(batchAddress + 8, 9, true);
+    view.setUint32(batchAddress + 12, 7, true);
+    view.setUint32(batchAddress + 16, 5, true);
+  }
+  view.setUint32(8, 11, true);
+
+  resetExecutionOutput(memory, 0);
+
+  assert.deepEqual(readDelegateBatch(memory, 12), {
+    storageAddress: 52,
+    capacityBytes: 12,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  });
+  assert.deepEqual(readPrintBatch(memory, 32), {
+    storageAddress: 52,
+    capacityBytes: 12,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  });
+  assert.equal(view.getUint32(8, true), 0);
 });

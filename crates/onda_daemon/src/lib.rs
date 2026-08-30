@@ -2,8 +2,10 @@ mod run_session;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBuildError, RunEventInfo,
-    RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo, RunSession,
+    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBufferWaveform, RunBuildError,
+    RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo,
+    RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunPrintBatch, RunPrintEntry, RunPrintValue, RunSession,
 };
 
 use std::collections::HashMap;
@@ -370,6 +372,135 @@ mod tests {
     }
 
     #[test]
+    fn run_collects_initialization_process_and_event_prints() {
+        let dir = mk_temp_dir("run_prints");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "outs:\n  out1\ninit:\n  print(\"boot\\n\", -0.0)\nevent report(value: i64):\n  print(\"event\", value)\nsample:\n  print(\"frame\", 7, true)\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 2,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+
+        let init = run.take_print_batch().expect("init prints should decode");
+        assert_eq!(init.text, "boot\\n: -0.0\n");
+        assert_eq!(init.entries.len(), 1);
+        assert_eq!(init.entries[0].label.as_deref(), Some("boot\n"));
+        assert_eq!(init.entries[0].source_file.as_deref(), Some("main.onda"));
+
+        run.render_block().expect("process should run");
+        let process = run
+            .take_print_batch()
+            .expect("process prints should decode");
+        assert_eq!(process.text, "frame: 7 true\nframe: 7 true\n");
+        assert_eq!(process.entries.len(), 2);
+
+        run.trigger_event("report", &[RunEventValue::I64(9_007_199_254_740_993)])
+            .expect("event should run");
+        let event = run.take_print_batch().expect("event prints should decode");
+        assert_eq!(event.text, "event: 9007199254740993\n");
+        assert_eq!(event.entries[0].values[0].type_repr, "i64");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn segmented_render_uses_one_chronological_output_sequence() {
+        let dir = mk_temp_dir("run_segmented_output_sequence");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: i32)\n\nsample:\n  print(1)\n  report(2)\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 4,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        let segments = [
+            (0, 2, onda_runtime::PROCESS_BEGIN_BLOCK),
+            (2, 2, onda_runtime::PROCESS_END_BLOCK),
+        ];
+
+        run.render_block_segments(&segments)
+            .expect("segmented render should succeed without delegate collection");
+        let delegates = run.take_delegate_batch().expect("delegates should decode");
+        let prints = run.take_print_batch().expect("prints should decode");
+        assert!(delegates.occurrences.is_empty());
+        assert_eq!(
+            prints
+                .entries
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+
+        run.set_delegate_collection_enabled(true);
+        run.render_block_segments(&segments)
+            .expect("segmented render should succeed");
+
+        let delegates = run.take_delegate_batch().expect("delegates should decode");
+        let prints = run.take_print_batch().expect("prints should decode");
+        assert_eq!(
+            prints
+                .entries
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4, 6]
+        );
+        assert_eq!(
+            delegates
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 7]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn failed_initialization_returns_only_the_runtime_diagnostic() {
+        let dir = mk_temp_dir("run_failed_init_prints");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "params:\n  divisor: i32 = 0\nouts:\n  out1\ninit:\n  print(\"before failure\", 7)\n  value = i32(1) / divisor\nsample:\n  out1 = f32(value)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        let error = session
+            .start_run(&main)
+            .expect_err("division by zero should fail generated initialization");
+        let RunBuildError::Runtime(diagnostic) = error else {
+            panic!("expected a runtime initialization failure");
+        };
+        assert!(diagnostic.message.contains("runtime safety check"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn run_uses_neutral_descriptors_for_unbound_f32_buffers() {
         let dir = mk_temp_dir("run_buffer");
         let main = dir.join("main.onda");
@@ -410,6 +541,11 @@ mod tests {
         assert_eq!(loaded.loaded_frames, Some(4));
         assert_eq!(loaded.loaded_channels, Some(1));
         assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
+        let waveform = loaded.waveform.as_ref().expect("loaded waveform preview");
+        assert!((waveform.min_value - 0.1).abs() < 1e-6);
+        assert!((waveform.max_value - 0.4).abs() < 1e-6);
+        assert_eq!(waveform.minimums.len(), 4);
+        assert_eq!(waveform.maximums.len(), 4);
 
         let partially_bound = session
             .render_run_block(&main)
@@ -532,6 +668,17 @@ mod tests {
                 .expect("valid i32 buffer asset"),
             )
             .expect("i32 buffer bind should succeed");
+
+        let info = session.run(&main).expect("active run").buffer_info();
+        let waveform = info[0].waveform.as_ref().expect("typed waveform preview");
+        assert_eq!(waveform.min_value, -2.0);
+        assert_eq!(waveform.max_value, 4.0);
+        assert_eq!(waveform.minimums.len(), 128);
+        assert_eq!(waveform.maximums.len(), 128);
+        assert_eq!(waveform.minimums[0], -2.0);
+        assert_eq!(waveform.maximums[0], 4.0);
+        assert!(waveform.minimums[1..].iter().all(|value| *value == 0.0));
+        assert!(waveform.maximums[1..].iter().all(|value| *value == 0.0));
 
         let rendered = session
             .render_run_block(&main)
@@ -867,6 +1014,126 @@ mod tests {
             .expect("run render after event should succeed");
         assert!((rendered[0][0] - 72.0).abs() < 1e-6);
         assert!((rendered[1][0] - 1.25).abs() < 1e-6);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_transports_delegate_payloads_from_event_and_process_calls() {
+        let dir = mk_temp_dir("run_delegates");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(code: i32, values: f32[])\n\ninit:\n  pending = true\n\nevent trigger(values: f32[]):\n  report(7, values)\n\nsample:\n  if pending:\n    pending = false\n    report(9, [0.25, 0.5])\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run(&main)
+            .expect("delegate run should compile and start");
+        let run = session.run_mut(&main).expect("active delegate run");
+        run.set_delegate_collection_enabled(true);
+        assert_eq!(run.delegate_info()[0].name, "report");
+        run.trigger_event(
+            "trigger",
+            &[RunEventValue::Array(vec![
+                RunEventValue::Number(1.25),
+                RunEventValue::Number(-2.5),
+            ])],
+        )
+        .expect("delegate-producing event should run");
+        let event_batch = run
+            .take_delegate_batch()
+            .expect("event delegate batch should decode");
+        assert_eq!(event_batch.overflow_count, 0);
+        assert_eq!(event_batch.occurrences.len(), 1);
+        assert_eq!(event_batch.occurrences[0].name, "report");
+        assert_eq!(
+            event_batch.occurrences[0].values[1].value,
+            RunEventValue::Array(vec![
+                RunEventValue::Number(1.25),
+                RunEventValue::Number(-2.5),
+            ])
+        );
+
+        run.render_block_interleaved(&mut vec![0.0; RunOptions::default().block_size])
+            .expect("delegate-producing process call should run");
+        let process_batch = run
+            .take_delegate_batch()
+            .expect("process delegate batch should decode");
+        assert_eq!(process_batch.occurrences.len(), 1);
+        assert_eq!(
+            process_batch.occurrences[0].values[0].value,
+            RunEventValue::Number(9.0)
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn when_bindings_do_not_shadow_owner_state() {
+        let dir = mk_temp_dir("run_delegate_binding_hygiene");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate fired(payload: i32)\n\ninit:\n  payload: i32 = 42\n  result: i32 = 0\n\nevent trigger():\n  fired(7)\n\nwhen fired(value):\n  result = payload\n\nsample:\n  out1 = f32(result)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        session
+            .run_mut(&main)
+            .expect("active run")
+            .trigger_event("trigger", &[])
+            .expect("event should run");
+        let rendered = session
+            .render_run_block(&main)
+            .expect("run render should succeed");
+        assert_eq!(rendered[0][0], 42.0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn namespaced_proc_delegate_calls_remain_owner_local() {
+        let dir = mk_temp_dir("run_namespaced_delegate");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "namespace N:\n  def fired():\n    return\n\n  proc Child:\n    delegate fired()\n    event trigger():\n      fired()\n    sample:\n      out1 = 0.0\n\ndelegate observed()\n\ninit:\n  child = N::Child()\n\nwhen child.fired():\n  observed()\n\nevent trigger():\n  child.trigger()\n\nsample:\n  out1 = child()\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        run.set_delegate_collection_enabled(true);
+        run.trigger_event("trigger", &[]).expect("event should run");
+        let batch = run.take_delegate_batch().expect("batch should decode");
+        assert_eq!(batch.occurrences.len(), 1);
+        assert_eq!(batch.occurrences[0].name, "observed");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_delegate_batches_preserve_i64_payloads() {
+        let dir = mk_temp_dir("run_delegate_i64");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: i64)\n\nevent trigger():\n  report(9007199254740993)\n\nsample:\n  out1 = 0.0\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session.start_run(&main).expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        run.set_delegate_collection_enabled(true);
+        run.trigger_event("trigger", &[]).expect("event should run");
+        let batch = run.take_delegate_batch().expect("batch should decode");
+        assert_eq!(
+            batch.occurrences[0].values[0].value,
+            RunEventValue::I64(9_007_199_254_740_993)
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

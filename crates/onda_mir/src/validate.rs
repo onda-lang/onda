@@ -3,9 +3,9 @@ use std::fmt;
 use std::ops::Deref;
 
 use crate::{
-    Block, CallArgument, Function, FunctionId, FunctionKind, Place, PlaceBase, Program, Rvalue,
-    SliceSource, SourceSpan, StatementKind, Type, Value, MIR_SCHEMA_VERSION, PROCESS_PARAM_COUNT,
-    PROCESS_PARAM_NAMES,
+    Block, CallArgument, Function, FunctionId, FunctionKind, FunctionOrigin, Place, PlaceBase,
+    Program, Rvalue, SliceSource, SourceSpan, StatementKind, Type, Value, MIR_SCHEMA_VERSION,
+    PROCESS_PARAM_COUNT, PROCESS_PARAM_NAMES,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -283,7 +283,10 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
         StatementKind::Assign { destination, value } => {
             place_uses_unchecked_bounds(destination) || rvalue_uses_unchecked_bounds(value)
         }
-        StatementKind::Call { args, .. } => args.iter().any(call_arg_uses_unchecked_bounds),
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
+            args.iter().any(call_arg_uses_unchecked_bounds)
+        }
+        StatementKind::PublishLog { .. } => false,
         StatementKind::BufferStore { buffer, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
         }
@@ -336,10 +339,12 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         | Rvalue::SliceLen(_) => false,
         Rvalue::BufferLen(buffer)
         | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
+        | Rvalue::BufferSampleRate(buffer)
+        | Rvalue::BufferIsBound(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
         Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => {
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
             buffer_param_ref_uses_unchecked_bounds(*parameter)
         }
     }
@@ -640,6 +645,30 @@ impl Validator<'_> {
             }
         }
 
+        for (index, site) in self.program.log_sites.iter().enumerate() {
+            if let Some(file) = site.source.file {
+                if file.index() >= self.program.source_files.len() {
+                    self.program_error(format!(
+                        "log site {index} source references missing file {}",
+                        file.raw()
+                    ));
+                }
+            }
+            let payload_size = site.argument_types.iter().fold(0_u32, |size, ty| {
+                size.saturating_add(match ty {
+                    crate::ScalarType::F32 | crate::ScalarType::I32 => 4,
+                    crate::ScalarType::F64 | crate::ScalarType::I64 => 8,
+                    crate::ScalarType::Bool => 1,
+                })
+            });
+            if site.payload_size != payload_size {
+                self.program_error(format!(
+                    "log site {index} payload size is {}, expected {payload_size}",
+                    site.payload_size
+                ));
+            }
+        }
+
         self.require_function_kind(
             self.program.entry_points.init,
             FunctionKind::Init,
@@ -695,6 +724,36 @@ impl Validator<'_> {
                 &format!("event '{}' handler", event.name),
             );
         }
+        for delegate in &self.program.interface.delegates {
+            for param in &delegate.params {
+                self.require_type(param.ty, None, SourceSpan::UNKNOWN);
+                match self.program.types.get(param.ty.index()) {
+                    Some(Type::Scalar(_)) => {}
+                    Some(Type::Array { element, .. }) => {
+                        if !matches!(self.program.types.get(element.index()), Some(Type::Scalar(_)))
+                        {
+                            self.program_error(format!(
+                                "delegate '{}' parameter '{}' fixed array element must be a primitive scalar",
+                                delegate.name, param.name
+                            ));
+                        }
+                    }
+                    Some(Type::Slice {
+                        access: crate::AccessMode::ReadOnly,
+                        ..
+                    }) => {}
+                    Some(Type::Slice { .. }) => self.program_error(format!(
+                        "delegate '{}' parameter '{}' slice must be read-only",
+                        delegate.name, param.name
+                    )),
+                    Some(_) => self.program_error(format!(
+                        "delegate '{}' parameter '{}' must be a primitive scalar, fixed primitive array, or read-only primitive slice",
+                        delegate.name, param.name
+                    )),
+                    None => {}
+                }
+            }
+        }
 
         self.validate_entry_role_ownership();
         for index in 0..self.program.functions.len() {
@@ -702,6 +761,7 @@ impl Validator<'_> {
             let function = &self.program.functions[index];
             self.validate_function(id, function);
         }
+        self.validate_init_cannot_reach_publication();
         self.validate_acyclic_call_graph();
     }
 
@@ -744,6 +804,18 @@ impl Validator<'_> {
                     self.program_error(format!(
                         "event '{}' has duplicate parameter name '{}'",
                         event.name, param.name
+                    ));
+                }
+            }
+        }
+        for delegate in &self.program.interface.delegates {
+            insert(&delegate.name, "a delegate", &mut self.errors);
+            let mut delegate_params = HashSet::new();
+            for param in &delegate.params {
+                if !delegate_params.insert(param.name.as_str()) {
+                    self.program_error(format!(
+                        "delegate '{}' has duplicate parameter name '{}'",
+                        delegate.name, param.name
                     ));
                 }
             }
@@ -1004,6 +1076,32 @@ impl Validator<'_> {
             function.source,
             format!("recursive call cycle is not realtime-safe: {display}"),
         );
+    }
+
+    fn validate_init_cannot_reach_publication(&mut self) {
+        let init = self.program.entry_points.init.index();
+        if init >= self.program.functions.len() {
+            return;
+        }
+        let mut pending = vec![init];
+        let mut visited = vec![false; self.program.functions.len()];
+        while let Some(index) = pending.pop() {
+            if visited[index] {
+                continue;
+            }
+            visited[index] = true;
+            let function = &self.program.functions[index];
+            if block_contains_publication(&function.body) {
+                self.function_error(
+                    FunctionId::new(index as u32),
+                    function.source,
+                    "init entry point reaches delegate publication",
+                );
+            }
+            let mut callees = Vec::new();
+            collect_block_callees(&function.body, self.program.functions.len(), &mut callees);
+            pending.extend(callees);
+        }
     }
 
     fn validate_function(&mut self, id: FunctionId, function: &Function) {
@@ -1385,6 +1483,140 @@ impl Validator<'_> {
                                     self.type_name(param.ty)
                                 ),
                             );
+                        }
+                    }
+                }
+                StatementKind::PublishDelegate { delegate, args } => {
+                    let Some(descriptor) = self.program.interface.delegates.get(delegate.index())
+                    else {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!("publication references missing delegate {}", delegate.raw()),
+                        );
+                        continue;
+                    };
+                    if matches!(function.kind, FunctionKind::Init) {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "init entry point cannot publish delegates",
+                        );
+                    }
+                    if matches!(function.kind, FunctionKind::User)
+                        && !function.attributes.runtime_context
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "delegate publication requires a runtime-context user function",
+                        );
+                    }
+                    if args.len() != descriptor.params.len() {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "publication of delegate '{}' has {} arguments but the descriptor declares {}",
+                                descriptor.name,
+                                args.len(),
+                                descriptor.params.len()
+                            ),
+                        );
+                    }
+                    for (index, argument) in args.iter().enumerate() {
+                        let CallArgument::Value(value) = argument else {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                format!(
+                                    "publication of delegate '{}' argument {index} must be an evaluated value",
+                                    descriptor.name
+                                ),
+                            );
+                            continue;
+                        };
+                        self.validate_value(function_id, function, *value, statement.source);
+                        let Some(param) = descriptor.params.get(index) else {
+                            continue;
+                        };
+                        let matches = match self.program.types.get(param.ty.index()) {
+                            Some(Type::Scalar(_)) => {
+                                self.value_matches_type(function, *value, param.ty)
+                            }
+                            Some(Type::Array { element, .. }) => {
+                                match self.program.types.get(element.index()) {
+                                    Some(Type::Scalar(expected)) => self
+                                        .value_slice_type(function, *value)
+                                        .is_some_and(|(actual, _)| actual == *expected),
+                                    _ => false,
+                                }
+                            }
+                            Some(Type::Slice { element, .. }) => self
+                                .value_slice_type(function, *value)
+                                .is_some_and(|(actual, _)| actual == *element),
+                            _ => false,
+                        };
+                        if !matches {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                format!(
+                                    "publication of delegate '{}' argument {index} does not match payload parameter '{}' type {}",
+                                    descriptor.name,
+                                    param.name,
+                                    self.type_name(param.ty)
+                                ),
+                            );
+                        }
+                    }
+                }
+                StatementKind::PublishLog { site, arguments } => {
+                    let Some(descriptor) = self.program.log_sites.get(site.index()) else {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "print publication references missing log site {}",
+                                site.raw()
+                            ),
+                        );
+                        continue;
+                    };
+                    if matches!(function.kind, FunctionKind::User)
+                        && !function.attributes.runtime_context
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "print publication requires a runtime-context user function",
+                        );
+                    }
+                    if arguments.len() != descriptor.argument_types.len() {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            format!(
+                                "print publication at site {} has {} arguments but the descriptor declares {}",
+                                site.raw(),
+                                arguments.len(),
+                                descriptor.argument_types.len()
+                            ),
+                        );
+                    }
+                    for (index, value) in arguments.iter().enumerate() {
+                        self.validate_value(function_id, function, *value, statement.source);
+                        if let Some(expected) = descriptor.argument_types.get(index) {
+                            if self.value_scalar_type(function, *value) != Some(*expected) {
+                                self.function_error(
+                                    function_id,
+                                    statement.source,
+                                    format!(
+                                        "print publication at site {} argument {index} does not match {:?}",
+                                        site.raw(), expected
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
@@ -1986,6 +2218,88 @@ impl Validator<'_> {
                     self.assignment_write_local(function, *result, false, state);
                 }
             }
+            StatementKind::PublishDelegate { args, .. } => {
+                for argument in args {
+                    match argument {
+                        CallArgument::Value(value) => self.assignment_read_value(
+                            function_id,
+                            function,
+                            *value,
+                            statement.source,
+                            state,
+                        ),
+                        CallArgument::Place(place) => self.assignment_read_place(
+                            function_id,
+                            function,
+                            place,
+                            statement.source,
+                            state,
+                        ),
+                        CallArgument::SliceElement { slice, index, .. } => {
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *slice,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *index,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::ArrayWindow { array, start, .. } => {
+                            self.assignment_read_place(
+                                function_id,
+                                function,
+                                array,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *start,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::SliceWindow { slice, start, .. } => {
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *slice,
+                                statement.source,
+                                state,
+                            );
+                            self.assignment_read_value(
+                                function_id,
+                                function,
+                                *start,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        CallArgument::Buffer(_)
+                        | CallArgument::BufferParam(_)
+                        | CallArgument::BufferSpan(_) => {}
+                    }
+                }
+            }
+            StatementKind::PublishLog { arguments, .. } => {
+                for value in arguments {
+                    self.assignment_read_value(
+                        function_id,
+                        function,
+                        *value,
+                        statement.source,
+                        state,
+                    );
+                }
+            }
             StatementKind::OutputStore {
                 element,
                 frame,
@@ -2171,12 +2485,14 @@ impl Validator<'_> {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => {
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => {
                 self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
             }
             Rvalue::BufferParamLen(_)
             | Rvalue::BufferParamChannels(_)
-            | Rvalue::BufferParamSampleRate(_) => {}
+            | Rvalue::BufferParamSampleRate(_)
+            | Rvalue::BufferParamIsBound(_) => {}
             Rvalue::ConstDataLoad { index, .. } => {
                 self.assignment_read_value(function_id, function, *index, source, state)
             }
@@ -2777,7 +3093,8 @@ impl Validator<'_> {
             }
             Rvalue::BufferLen(buffer)
             | Rvalue::BufferChannels(buffer)
-            | Rvalue::BufferSampleRate(buffer) => {
+            | Rvalue::BufferSampleRate(buffer)
+            | Rvalue::BufferIsBound(buffer) => {
                 self.require_direct_buffer_capability(
                     function_id,
                     function,
@@ -2788,7 +3105,8 @@ impl Validator<'_> {
             }
             Rvalue::BufferParamLen(parameter)
             | Rvalue::BufferParamChannels(parameter)
-            | Rvalue::BufferParamSampleRate(parameter) => {
+            | Rvalue::BufferParamSampleRate(parameter)
+            | Rvalue::BufferParamIsBound(parameter) => {
                 self.validate_buffer_param_ref(function_id, function, *parameter, source);
                 if self
                     .function_buffer_param_ref(function, *parameter)
@@ -3238,6 +3556,9 @@ impl Validator<'_> {
             }
             Rvalue::BufferSampleRate(_) | Rvalue::BufferParamSampleRate(_) => {
                 self.type_is_scalar(expected, crate::ScalarType::F32)
+            }
+            Rvalue::BufferIsBound(_) | Rvalue::BufferParamIsBound(_) => {
+                self.type_is_scalar(expected, crate::ScalarType::Bool)
             }
             Rvalue::ConstDataLoad { data, .. } => self
                 .program
@@ -4207,15 +4528,18 @@ impl Validator<'_> {
         source: SourceSpan,
         operation: &str,
     ) {
-        if !matches!(
+        let has_runtime_buffer_capability = matches!(
             function.kind,
-            FunctionKind::Process | FunctionKind::Event(_)
-        ) {
+            FunctionKind::Init | FunctionKind::Process | FunctionKind::Event(_)
+        ) || (function.kind == FunctionKind::User
+            && function.attributes.origin == FunctionOrigin::CompilerGenerated
+            && function.attributes.runtime_context);
+        if !has_runtime_buffer_capability {
             self.function_error(
                 function_id,
                 source,
                 format!(
-                    "{operation} requires process or event host-buffer capability; user functions must receive buffers as parameters"
+                    "{operation} requires init, process, or event host-buffer capability; user functions must receive buffers as parameters"
                 ),
             );
         }
@@ -4818,6 +5142,22 @@ fn collect_block_callees(block: &Block, function_count: usize, callees: &mut Vec
     }
 }
 
+fn block_contains_publication(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::PublishDelegate { .. } => true,
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => block_contains_publication(then_block) || block_contains_publication(else_block),
+            StatementKind::Loop { body } => block_contains_publication(body),
+            _ => false,
+        })
+}
+
 fn passing_mode_name(mode: crate::PassingMode) -> &'static str {
     match mode {
         crate::PassingMode::Value => "value",
@@ -4951,11 +5291,11 @@ fn intrinsic_name(intrinsic: crate::Intrinsic) -> &'static str {
 mod tests {
     use crate::{
         AccessMode, Buffer, BufferChannels, BufferId, BufferRef, CallArgument, CompareOp,
-        CompileConfig, ConstantValue, Event, EventId, EventParam, FieldId, Function, FunctionId,
-        FunctionKind, FunctionParam, Intrinsic, Local, LocalId, Output, OutputId, Param, ParamId,
-        PassingMode, Place, PlaceBase, Program, Projection, Rvalue, ScalarType, ScalarValue,
-        SliceSource, SourceSpan, StatePersistence, StateSlot, Statement, StatementKind,
-        StructField, StructType, Type, TypeId, Value,
+        CompileConfig, ConstantValue, Delegate, DelegateParam, Event, EventId, EventParam, FieldId,
+        Function, FunctionId, FunctionKind, FunctionParam, Intrinsic, Local, LocalId, Output,
+        OutputId, Param, ParamId, PassingMode, Place, PlaceBase, Program, Projection, Rvalue,
+        ScalarType, ScalarValue, SliceSource, SourceSpan, StatePersistence, StateSlot, Statement,
+        StatementKind, StructField, StructType, Type, TypeId, Value,
     };
 
     fn function(name: &str, kind: FunctionKind) -> Function {
@@ -5001,6 +5341,35 @@ mod tests {
     #[test]
     fn accepts_well_formed_empty_program() {
         assert!(super::validate(&empty_program()).is_ok());
+    }
+
+    #[test]
+    fn delegate_fixed_arrays_require_primitive_elements() {
+        let mut program = empty_program();
+        program.structs.push(StructType {
+            name: "Payload".to_owned(),
+            fields: Vec::new(),
+        });
+        program.types.extend([
+            Type::Struct(crate::StructId::new(0)),
+            Type::Array {
+                element: test_type(0),
+                len: 2,
+            },
+        ]);
+        program.interface.delegates.push(Delegate {
+            name: "invalid".to_owned(),
+            params: vec![DelegateParam {
+                name: "values".to_owned(),
+                ty: test_type(1),
+            }],
+        });
+
+        let errors = super::validate(&program)
+            .expect_err("delegate arrays with aggregate elements must fail validation");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("fixed array element must be a primitive scalar")));
     }
 
     #[test]
@@ -6643,6 +7012,52 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.message.contains("spans incompatible descriptors")));
+    }
+
+    #[test]
+    fn direct_buffers_in_user_functions_require_compiler_runtime_provenance() {
+        let mut program = empty_program();
+        program.types.push(Type::Scalar(ScalarType::F32));
+        program.interface.buffers.push(Buffer {
+            name: "samples".to_owned(),
+            element: ScalarType::F32,
+            channels: BufferChannels::Mono,
+            access: AccessMode::ReadWrite,
+        });
+        let mut handler = function("delegate_handler", FunctionKind::User);
+        handler.locals.push(Local {
+            integer_range: None,
+            name: Some("sample".to_owned()),
+            ty: test_type(0),
+        });
+        handler.body.statements.push(Statement {
+            kind: StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: Vec::new(),
+                },
+                value: Rvalue::BufferLoad {
+                    buffer: BufferRef::Direct(BufferId::new(0)),
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    bounds: crate::BoundsMode::Clamp,
+                },
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+
+        handler.attributes.runtime_context = true;
+        program.functions.push(handler.clone());
+        let errors = super::validate(&program)
+            .expect_err("source user functions must not gain direct buffer capability");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("user functions must receive buffers")));
+
+        handler.attributes.origin = crate::FunctionOrigin::CompilerGenerated;
+        program.functions[2] = handler;
+        super::validate(&program)
+            .expect("compiler-generated runtime handlers may access direct host buffers");
     }
 
     #[test]

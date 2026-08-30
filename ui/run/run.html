@@ -424,6 +424,20 @@
         white-space: nowrap;
       }
 
+      .buffer-waveform {
+        grid-column: 1 / -1;
+        min-width: 0;
+        margin-top: 3px;
+      }
+
+      .buffer-waveform canvas {
+        display: block;
+        width: 100%;
+        height: 62px;
+        border-radius: 6px;
+        background: var(--scope-bg);
+      }
+
       .buffer-actions {
         grid-column: 2;
         grid-row: 1;
@@ -938,6 +952,40 @@
         color: var(--muted);
       }
 
+      .log-output {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+        margin: 0;
+        max-height: 120px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        color: var(--text);
+        font: 12px/1.5 var(--mono-font);
+      }
+      .log-line {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) max-content;
+        column-gap: 12px;
+        align-items: baseline;
+        min-height: 1.5em;
+      }
+      .log-message {
+        min-width: 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .log-context {
+        max-width: 45%;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 10px;
+        text-align: right;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       .scope-section {
         display: none;
       }
@@ -1091,6 +1139,25 @@
         </div>
         <div class="section-body" id="scope-body">
           <canvas class="scope-canvas" id="scope-canvas"></canvas>
+        </div>
+      </section>
+      <section class="events" id="log-section">
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="log-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Log"
+            ></button>
+            <div class="params-title">Log</div>
+            <button class="secondary compact-action" id="clear-log" type="button">Clear</button>
+          </div>
+        </div>
+        <div class="section-body" id="log-body">
+          <div class="log-output" id="log-output"></div>
+          <div class="error" id="log-loss" style="display: none"></div>
         </div>
       </section>
       <section class="buffers" id="buffers-section">
@@ -1318,6 +1385,13 @@
         sourceDirty: false,
         buffers: [],
         events: [],
+        logText: "",
+        logEntries: [],
+        logRevealed: false,
+        printOverflowCount: 0,
+        printTransportDropCount: 0,
+        delegateOverflowCount: 0,
+        delegateTransportDropCount: 0,
         params: [],
         inputDevices: [],
         outputDevices: [],
@@ -1366,6 +1440,10 @@
       const buffersNode = document.getElementById("buffers");
       const eventsSection = document.getElementById("events-section");
       const eventsNode = document.getElementById("events");
+      const logSection = document.getElementById("log-section");
+      const logOutputNode = document.getElementById("log-output");
+      const logLossNode = document.getElementById("log-loss");
+      const clearLogButton = document.getElementById("clear-log");
       const paramsSection = document.getElementById("params-section");
       const paramsNode = document.getElementById("params");
       const scopeSection = document.getElementById("scope-section");
@@ -1377,6 +1455,8 @@
       const buffersBody = document.getElementById("buffers-body");
       const eventsToggle = document.getElementById("events-toggle");
       const eventsBody = document.getElementById("events-body");
+      const logToggle = document.getElementById("log-toggle");
+      const logBody = document.getElementById("log-body");
       const paramsToggle = document.getElementById("params-toggle");
       const paramsBody = document.getElementById("params-body");
       const paramLayoutButtons = [...document.querySelectorAll("[data-param-layout]")];
@@ -1395,6 +1475,7 @@
         scope: true,
         buffers: true,
         events: true,
+        log: true,
         params: true,
       };
       let paramLayout = restoreParamLayout();
@@ -1430,6 +1511,9 @@
       });
       resetEventArgumentsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetEventArguments" });
+      });
+      clearLogButton.addEventListener("click", () => {
+        hostBridge.postMessage({ type: "clearLog" });
       });
       refreshDevicesButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "refreshDevices" });
@@ -1578,6 +1662,7 @@
           filePickerLogoNode.src = THEME_LOGOS[nextTheme];
         }
         scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
+        window.requestAnimationFrame(drawVisibleBufferWaveforms);
       }
 
       function setSectionOpen(name, isOpen) {
@@ -1586,12 +1671,14 @@
           scope: scopeToggle,
           buffers: buffersToggle,
           events: eventsToggle,
+          log: logToggle,
           params: paramsToggle,
         }[name];
         const body = {
           scope: scopeBody,
           buffers: buffersBody,
           events: eventsBody,
+          log: logBody,
           params: paramsBody,
         }[name];
         if (toggle) {
@@ -1600,6 +1687,9 @@
         if (body) {
           body.hidden = !isOpen;
         }
+        if (name === "buffers" && isOpen) {
+          window.requestAnimationFrame(drawVisibleBufferWaveforms);
+        }
       }
 
       function setupCollapsibleSections() {
@@ -1607,6 +1697,7 @@
           ["scope", scopeToggle],
           ["buffers", buffersToggle],
           ["events", eventsToggle],
+          ["log", logToggle],
           ["params", paramsToggle],
         ].forEach(([name, toggle]) => {
           if (!toggle) {
@@ -2292,7 +2383,51 @@
       // Render
       // ---------------------------------------------------------------------------
 
+      function logEntryContext(entry) {
+        const source = entry && typeof entry.source === "object" ? entry.source : null;
+        const file = source && typeof source.file === "string" ? source.file : "";
+        const line = Number(source && source.line);
+        const hasLine = Number.isSafeInteger(line) && line >= 0;
+        const owner = entry && typeof entry.lexicalOwner === "string"
+          ? entry.lexicalOwner
+          : "";
+        if (file && hasLine && owner) return file + ":" + line + " \u00b7 " + owner;
+        if (file && hasLine) return file + ":" + line;
+        return owner;
+      }
+
+      function renderLogLines(logText, entries) {
+        const lines = logText.split("\n");
+        if (lines[lines.length - 1] === "") lines.pop();
+        const contexts = lines.map((_, index) => logEntryContext(entries[index]));
+        const contentKey = logText + "\u0000" + contexts.join("\n");
+        if (logOutputNode.__ondaLogContentKey === contentKey) return false;
+
+        const fragment = document.createDocumentFragment();
+        for (let index = 0; index < lines.length; index++) {
+          const row = document.createElement("div");
+          row.className = "log-line";
+          const message = document.createElement("span");
+          message.className = "log-message";
+          message.textContent = lines[index];
+          row.appendChild(message);
+          if (contexts[index]) {
+            const context = document.createElement("span");
+            context.className = "log-context";
+            context.textContent = contexts[index];
+            context.title = contexts[index];
+            row.appendChild(context);
+          }
+          fragment.appendChild(row);
+        }
+        logOutputNode.replaceChildren(fragment);
+        logOutputNode.__ondaLogContentKey = contentKey;
+        return true;
+      }
+
       function render() {
+        const logWasAtBottom =
+          logOutputNode.scrollHeight - logOutputNode.clientHeight - logOutputNode.scrollTop <= 1;
         applyTheme();
         const supportsSourceSelection = state.supportsSourceSelection === true;
         const supportsProjectExport = state.supportsProjectExport === true;
@@ -2344,6 +2479,7 @@
             ? "Embedding buffers…"
             : "Embed in DAW project";
         eventsSection.style.display = hasEvents ? "" : "none";
+        logSection.style.display = state.logRevealed === true ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
         refreshDevicesButton.hidden = !supportsDeviceSelection;
         ioSettingsNode.hidden = !supportsDeviceSelection;
@@ -2416,6 +2552,19 @@
             card.appendChild(actions);
 
             buffersNode.appendChild(card);
+            const waveform = bufferWaveform(buffer);
+            if (waveform) {
+              const preview = document.createElement("div");
+              preview.className = "buffer-waveform";
+              const canvas = document.createElement("canvas");
+              canvas.setAttribute("role", "img");
+              canvas.setAttribute("aria-label", bufferWaveformRangeLabel(waveform));
+              canvas.title = bufferWaveformRangeLabel(waveform);
+              canvas.__ondaBufferWaveform = waveform;
+              preview.appendChild(canvas);
+              card.appendChild(preview);
+              drawBufferWaveform(canvas, waveform);
+            }
           }
         }
 
@@ -2584,6 +2733,29 @@
             eventsNode.appendChild(card);
           }
         }
+
+        const logText = state.logText || "";
+        const logEntries = Array.isArray(state.logEntries) ? state.logEntries : [];
+        if (renderLogLines(logText, logEntries)) {
+          if (logWasAtBottom) {
+            logOutputNode.scrollTop = logOutputNode.scrollHeight;
+          }
+        }
+        const generatedOverflow = Number(state.printOverflowCount || 0);
+        const transportDrops = Number(state.printTransportDropCount || 0);
+        const delegateOverflow = Number(state.delegateOverflowCount || 0);
+        const delegateTransportDrops = Number(state.delegateTransportDropCount || 0);
+        const losses = [];
+        if (generatedOverflow || transportDrops) {
+          losses.push("prints: " + generatedOverflow + " generated overflow · "
+            + transportDrops + " transport drops");
+        }
+        if (delegateOverflow || delegateTransportDrops) {
+          losses.push("delegates: " + delegateOverflow + " generated overflow · "
+            + delegateTransportDrops + " transport drops");
+        }
+        logLossNode.style.display = losses.length > 0 ? "block" : "none";
+        logLossNode.textContent = losses.join("\n");
 
         const paramSignature = paramRenderSignature(state.params);
         if (updateRenderedParams(state.params)) {
@@ -2761,6 +2933,182 @@
           + channels + " ch \u00b7 " + formatBufferSampleRate(sampleRate);
       }
 
+      function bufferWaveform(buffer) {
+        const waveform = buffer && buffer.waveform;
+        const minValue = Number(waveform && waveform.minValue);
+        const maxValue = Number(waveform && waveform.maxValue);
+        const minimums = waveform && waveform.minimums;
+        const maximums = waveform && waveform.maximums;
+        if (
+          !Number.isFinite(minValue)
+          || !Number.isFinite(maxValue)
+          || !Array.isArray(minimums)
+          || !Array.isArray(maximums)
+          || minimums.length === 0
+          || minimums.length !== maximums.length
+        ) return null;
+        return { minValue, maxValue, minimums, maximums };
+      }
+
+      function bufferWaveformScale(waveform) {
+        return Math.max(1, Math.abs(waveform.minValue), Math.abs(waveform.maxValue));
+      }
+
+      function formatWaveformValue(value) {
+        const magnitude = Math.abs(value);
+        let rendered;
+        if (Object.is(value, -0) || value === 0) {
+          rendered = "0";
+        } else if (magnitude >= 10_000 || magnitude < 0.001) {
+          rendered = value.toExponential(2);
+        } else {
+          rendered = value.toFixed(3).replace(/\.?0+$/, "");
+        }
+        return rendered.replaceAll("-", "\u2212");
+      }
+
+      function formatWaveformAxis(value) {
+        return value > 0 ? "+" + formatWaveformValue(value) : formatWaveformValue(value);
+      }
+
+      function bufferWaveformRangeLabel(waveform) {
+        const scale = bufferWaveformScale(waveform);
+        return "range " + formatWaveformValue(waveform.minValue)
+          + " \u2026 " + formatWaveformValue(waveform.maxValue)
+          + " \u00b7 scale " + formatWaveformAxis(-scale)
+          + " / " + formatWaveformAxis(scale);
+      }
+
+      function drawBufferWaveform(canvas, waveform) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const cssWidth = rect.width || canvas.parentElement?.clientWidth || 600;
+        const cssHeight = rect.height || 62;
+        const width = Math.max(1, Math.round(cssWidth * dpr));
+        const height = Math.max(1, Math.round(cssHeight * dpr));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        const context = canvas.getContext("2d");
+        const computed = getComputedStyle(document.documentElement);
+        const gridColor = computed.getPropertyValue("--scope-grid").trim();
+        const strokeColor = computed.getPropertyValue("--scope-1").trim();
+        const textColor = computed.getPropertyValue("--muted").trim();
+        const monoFont = computed.getPropertyValue("--mono-font").trim();
+        context.clearRect(0, 0, width, height);
+
+        context.fillStyle = textColor;
+        context.font = `${10 * dpr}px ${monoFont}`;
+        context.textAlign = "left";
+        context.textBaseline = "top";
+        context.fillText(bufferWaveformRangeLabel(waveform), 5 * dpr, 4 * dpr);
+
+        const left = 42 * dpr;
+        const right = width - 5 * dpr;
+        const top = 20 * dpr;
+        const bottom = height - 5 * dpr;
+        const center = (top + bottom) / 2;
+        const amplitude = (bottom - top) / 2;
+        const scale = bufferWaveformScale(waveform);
+        const snapToPixelCenter = coordinate => Math.floor(coordinate) + 0.5;
+        const zeroY = snapToPixelCenter(center);
+        const valueY = value => zeroY - value / scale * amplitude;
+        const guideY = value => snapToPixelCenter(valueY(value));
+
+        context.strokeStyle = gridColor;
+        context.lineWidth = 1;
+        context.setLineDash([]);
+        for (const value of [-scale, scale]) {
+          const y = guideY(value);
+          context.beginPath();
+          context.moveTo(left, y);
+          context.lineTo(right, y);
+          context.stroke();
+        }
+        context.save();
+        context.globalAlpha = 0.4;
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(left, zeroY);
+        context.lineTo(right, zeroY);
+        context.stroke();
+        context.restore();
+        if (scale > 1 && Math.abs(guideY(1) - zeroY) >= 2) {
+          context.setLineDash([2 * dpr, 2 * dpr]);
+          for (const value of [-1, 1]) {
+            const y = guideY(value);
+            context.beginPath();
+            context.moveTo(left, y);
+            context.lineTo(right, y);
+            context.stroke();
+          }
+          context.setLineDash([]);
+        }
+
+        context.strokeStyle = strokeColor;
+        context.lineWidth = Math.max(1, 1.25 * dpr);
+        const plotWidth = Math.max(1, right - left);
+        const columns = waveform.minimums.length;
+        const bucketX = index => snapToPixelCenter(
+          left + plotWidth * (index + 0.5) / columns
+        );
+        const sampleY = value => snapToPixelCenter(
+          valueY(Math.max(-scale, Math.min(scale, value)))
+        );
+        context.beginPath();
+        for (let index = 0; index < columns; index++) {
+          const minimum = Number(waveform.minimums[index]);
+          const maximum = Number(waveform.maximums[index]);
+          if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
+          const x = bucketX(index);
+          const maximumY = maximum > 0 ? sampleY(maximum) : zeroY;
+          const minimumY = minimum < 0 ? sampleY(minimum) : zeroY;
+          context.moveTo(x, maximumY);
+          context.lineTo(x, minimumY);
+        }
+        context.stroke();
+
+        context.fillStyle = strokeColor;
+        context.beginPath();
+        const markerRadius = 0.75 * dpr;
+        for (let index = 0; index < columns; index++) {
+          const minimum = Number(waveform.minimums[index]);
+          const maximum = Number(waveform.maximums[index]);
+          if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) continue;
+          const x = bucketX(index);
+          const maximumY = sampleY(maximum);
+          context.moveTo(x + markerRadius, maximumY);
+          context.arc(x, maximumY, markerRadius, 0, 2 * Math.PI);
+          if (minimum !== maximum) {
+            const minimumY = sampleY(minimum);
+            context.moveTo(x + markerRadius, minimumY);
+            context.arc(x, minimumY, markerRadius, 0, 2 * Math.PI);
+          }
+        }
+        context.fill();
+
+        context.fillStyle = textColor;
+        context.font = `${9.5 * dpr}px ${monoFont}`;
+        context.textAlign = "right";
+        for (const [value, y, baseline] of [
+          [scale, top, "top"],
+          [0, center, "middle"],
+          [-scale, bottom, "bottom"],
+        ]) {
+          context.textBaseline = baseline;
+          context.fillText(formatWaveformAxis(value), left - 4 * dpr, y);
+        }
+      }
+
+      function drawVisibleBufferWaveforms() {
+        for (const canvas of buffersNode.querySelectorAll(".buffer-waveform canvas")) {
+          if (canvas.__ondaBufferWaveform) {
+            drawBufferWaveform(canvas, canvas.__ondaBufferWaveform);
+          }
+        }
+      }
+
       function formatBufferSampleRate(sampleRate) {
         if (sampleRate < 1_000) return Math.round(sampleRate) + " Hz";
         const khz = sampleRate / 1_000;
@@ -2828,6 +3176,9 @@
 
       setupCollapsibleSections();
       setupParamLayoutToggle();
+      window.addEventListener("resize", () => {
+        window.requestAnimationFrame(drawVisibleBufferWaveforms);
+      });
       applyTheme();
       render();
     </script>

@@ -13,6 +13,32 @@ fn flow_scope_label(scope: ScopeKind) -> &'static str {
     }
 }
 
+fn wrong_rate_output_assignment_message(name: &str, scope: ScopeKind) -> String {
+    if scope == ScopeKind::Block {
+        format!(
+            "audio output '{name}' can only be written in sample; move this assignment into the block's nested sample section"
+        )
+    } else {
+        format!(
+            "cannot assign to output symbol '{name}' in {}",
+            flow_scope_label(scope)
+        )
+    }
+}
+
+fn wrong_rate_output_array_assignment_message(name: &str, scope: ScopeKind) -> String {
+    if scope == ScopeKind::Block {
+        format!(
+            "audio output array '{name}' can only be written in sample; move this assignment into the block's nested sample section"
+        )
+    } else {
+        format!(
+            "cannot assign to output array symbol '{name}' in {}",
+            flow_scope_label(scope)
+        )
+    }
+}
+
 fn indexed_aggregate_target_type(
     base: &str,
     index: &Expr,
@@ -107,14 +133,12 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub state_array_struct_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     pub struct_instances: &'a HashMap<String, String>,
-    pub registration_input_names: &'a HashSet<String>,
-    pub registration_output_names: &'a HashSet<String>,
-    pub registration_param_names: &'a HashSet<String>,
     pub forbidden_assign_names: &'a HashSet<String>,
     pub forbidden_assign_array_names: &'a HashSet<String>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub event_policy: Option<EventStmtPolicy<'a>>,
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    pub registered_state_tuples: &'a HashMap<String, SourceLoc>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
     pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
     pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
@@ -181,6 +205,7 @@ fn has_local_binding_root(
 fn validate_event_assign_target_restrictions(
     target_loc: SourceLoc,
     target: &AssignTarget,
+    declared_symbols: &DeclaredSymbolMap,
     locals: &HashSet<String>,
     local_aliases: &LocalAliasTypes,
     local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
@@ -227,6 +252,9 @@ fn validate_event_assign_target_restrictions(
         ));
         return;
     }
+    if indexed && has_declared_buffer_symbol_info(declared_symbols, base) {
+        return;
+    }
     if event_policy.immutable_roots.contains(root) {
         errors.push(Diagnostic::semantic_span(
             format!(
@@ -268,13 +296,11 @@ fn build_runtime_stmt_analysis_ctx<'a>(
     nested_proc_instances: &'a HashMap<String, ProcNestedState>,
     proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     struct_instances: &'a HashMap<String, String>,
-    registration_input_names: &'a HashSet<String>,
-    registration_output_names: &'a HashSet<String>,
-    registration_param_names: &'a HashSet<String>,
     forbidden_assign_names: &'a HashSet<String>,
     forbidden_assign_array_names: &'a HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    registered_state_tuples: &'a HashMap<String, SourceLoc>,
 ) -> FlowStmtAnalysisCtx<'a> {
     FlowStmtAnalysisCtx {
         common,
@@ -285,13 +311,11 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        registration_input_names,
-        registration_output_names,
-        registration_param_names,
         forbidden_assign_names,
         forbidden_assign_array_names,
         event_policy,
         state_tuples,
+        registered_state_tuples,
         resolved_scalar_locals: None,
         resolved_array_locals: None,
         resolved_tuple_locals: None,
@@ -370,6 +394,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut state_scalars = state_scalars.clone();
+    let registered_state_tuples = HashMap::new();
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
         registration_mode,
@@ -379,13 +404,11 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        common.input_names,
-        common.output_names,
-        common.param_names,
         forbidden_assign_names,
         forbidden_assign_array_names,
         event_policy,
         state_tuples,
+        &registered_state_tuples,
     );
     let mut state =
         build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
@@ -430,9 +453,26 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_local_buffer_aliases: LocalBufferAliases,
     runtime_forbidden_assign_names: &HashSet<String>,
     runtime_forbidden_assign_array_names: &HashSet<String>,
-    state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) -> LocalBufferAliases {
+    let stmts = stmts.into_iter().collect::<Vec<_>>();
+    let registered_state_tuples = register_scope_state(
+        stmts.iter().copied(),
+        state_scalars,
+        state_tuples,
+        declared_symbols,
+        state_arrays,
+        state_array_struct_roots,
+        struct_instances,
+        registration_input_names,
+        registration_output_names,
+        registration_param_names,
+        common.struct_defs,
+        common.fn_return_types,
+        registration_mode,
+        &runtime_local_buffer_aliases,
+    );
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
         registration_mode,
@@ -442,13 +482,11 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         nested_proc_instances,
         proc_array_roots,
         struct_instances,
-        registration_input_names,
-        registration_output_names,
-        registration_param_names,
         runtime_forbidden_assign_names,
         runtime_forbidden_assign_array_names,
         None,
         state_tuples,
+        &registered_state_tuples,
     );
     let mut state = build_runtime_stmt_analysis_state(
         runtime_known_scalars,
@@ -625,22 +663,6 @@ pub(crate) fn analyze_flow_scope_stmts<'a>(
     use crate::def_semantics::call_types::{statement_flow, StatementFlow};
 
     let stmts = stmts.into_iter().collect::<Vec<_>>();
-    if scope_depth == 0 {
-        register_scope_state(
-            stmts.iter().copied(),
-            state_scalars,
-            ctx.declared_symbols,
-            ctx.state_arrays,
-            ctx.state_array_struct_roots,
-            ctx.struct_instances,
-            ctx.registration_input_names,
-            ctx.registration_output_names,
-            ctx.registration_param_names,
-            ctx.common.struct_defs,
-            ctx.registration_mode,
-            &state.local_buffer_aliases,
-        );
-    }
     state.known_scalars.extend(state_scalars.keys().cloned());
     // Seed tuple_vars so expression validation allows pair[0] indexing
     state
@@ -731,6 +753,7 @@ fn analyze_flow_stmt(
                     validate_event_assign_target_restrictions(
                         target_loc.as_ref().into(),
                         target,
+                        declared_symbols,
                         locals,
                         &state.local_aliases,
                         &state.local_array_aliases,
@@ -783,6 +806,7 @@ fn analyze_flow_stmt(
                     common.port_index_params,
                     common.port_index_kins,
                     ctx.state_tuples,
+                    ctx.registered_state_tuples,
                     errors,
                 );
                 record_resolved_local_bindings(ctx, state);
@@ -840,6 +864,32 @@ fn analyze_flow_stmt(
                     }
                 } else {
                     push_semantic(diag, errors, "return is only allowed inside def blocks");
+                }
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    let value =
+                        rewrite_proc_alias_calls_for_validation(value, &state.local_proc_aliases);
+                    let env = build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope);
+                    if let Some((name, ty)) = non_printable_stmt_expr_type(&value, env) {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            format!(
+                                "value '{name}' has non-printable type '{ty}'; print scalar values explicitly"
+                            ),
+                        );
+                        continue;
+                    }
+                    let before = errors.len();
+                    let ty = validate_and_infer_stmt_expr_type(&value, env, errors);
+                    if ty.is_none() && errors.len() == before {
+                        push_semantic(
+                            DiagCtx::new(value.loc().span()),
+                            errors,
+                            "print values must resolve to f32, f64, i32, i64, or bool; print scalar values explicitly",
+                        );
+                    }
                 }
             }
             Stmt::If {
@@ -1033,7 +1083,7 @@ fn analyze_flow_stmt(
 fn analyze_flow_assignment(
     target_loc: SourceLoc,
     target: &AssignTarget,
-    decl_ty: &Option<PrimitiveType>,
+    decl_ty: &Option<DeclType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
     scope: ScopeKind,
@@ -1074,6 +1124,7 @@ fn analyze_flow_assignment(
     port_index_params: Option<PortIndexInfo>,
     port_index_kins: Option<PortIndexInfo>,
     state_tuples: &HashMap<String, Vec<PrimitiveType>>,
+    registered_state_tuples: &HashMap<String, SourceLoc>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
@@ -1158,7 +1209,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if let Some(name) = io_surface_name(base, scope_expr_env!()) {
                 if !scope_expr_env!().io_surface_access_allowed {
@@ -1169,10 +1220,7 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(format!(
-                    "cannot assign to output array symbol '{base}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_array_assignment_message(base, scope));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
@@ -1229,11 +1277,15 @@ fn analyze_flow_assignment(
                     ("outs", ScopeKind::Sample) | ("kouts", ScopeKind::Block)
                 );
                 if !output_index_allowed || scope_expr_env!().port_index_outs.is_none() {
-                    target_error!(
-                        format!(
-                            "{base}[i] assignment requires explicit {base} declarations with uniform type in the current scope"
-                        ),
-                    );
+                    if base == "outs" && scope == ScopeKind::Block {
+                        target_error!(wrong_rate_output_array_assignment_message("outs", scope));
+                    } else {
+                        target_error!(
+                            format!(
+                                "{base}[i] assignment requires explicit {base} declarations with uniform type in the current scope"
+                            ),
+                        );
+                    }
                 }
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(
@@ -1358,7 +1410,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
-                target_error!("typed declaration is only supported for plain scalar variables",);
+                target_error!("typed declaration is only supported for plain variables",);
             }
             if !validate_block_bound_surface_assign_target(
                 target,
@@ -1380,10 +1432,7 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(format!(
-                    "cannot assign to output array symbol '{base}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_array_assignment_message(base, scope));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
                 }
@@ -1534,10 +1583,7 @@ fn analyze_flow_assignment(
                 return;
             }
             if forbidden_assign_names.contains(name) {
-                target_error!(format!(
-                    "cannot assign to output symbol '{name}' in {}",
-                    flow_scope_label(scope)
-                ));
+                target_error!(wrong_rate_output_assignment_message(name, scope));
             }
             if forbidden_assign_array_names.contains(name) {
                 target_error!(format!(
@@ -1981,10 +2027,52 @@ fn analyze_flow_assignment(
                                 )
                             );
                         }
-                        TypedFieldType::Tuple(_) => {
-                            target_error!(format!(
-                                "tuple field '{flat}' must be accessed with index syntax"
-                            ));
+                        TypedFieldType::Tuple(ref field_types) => {
+                            let expr_for_validation =
+                                rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+                            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                            let assigned_types = infer_tracked_tuple_types(
+                                &expr_for_validation,
+                                tuple_vars,
+                                local_aliases,
+                                Some(state_tuples),
+                                struct_instances,
+                                struct_defs,
+                                fn_return_types,
+                                |value| {
+                                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                                        value,
+                                        state_scalars,
+                                        declared_symbols,
+                                        None,
+                                        local_aliases,
+                                        local_array_aliases,
+                                        locals,
+                                        input_names,
+                                        output_names,
+                                        param_names,
+                                        struct_instances,
+                                        struct_defs,
+                                        proc_array_roots,
+                                        errors,
+                                    )
+                                },
+                            );
+                            if let Some(assigned_types) = assigned_types {
+                                resolve_tuple_assignment_types(
+                                    &flat,
+                                    &expr_for_validation,
+                                    &assigned_types,
+                                    None,
+                                    Some(field_types),
+                                    false,
+                                    errors,
+                                );
+                            } else {
+                                target_error!(format!(
+                                    "assignment to tuple field '{flat}' requires a tuple value"
+                                ));
+                            }
                         }
                     }
                     return;
@@ -2113,7 +2201,9 @@ fn analyze_flow_assignment(
                     "array alias '{name}' must be written using '{name}[index] = value'"
                 ),);
             }
-            if let Some(declared_ty) = *decl_ty {
+            let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+            let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
+            if let Some(declared_ty) = declared_scalar_ty {
                 if output_names.contains(name) || local_aliases.contains_key(name) {
                     target_error!(format!(
                         "typed declaration for '{name}' is only allowed on first assignment"
@@ -2175,47 +2265,53 @@ fn analyze_flow_assignment(
                 .cloned()
                 .or_else(|| tracked_local_tuple_types(name, tuple_vars, local_aliases));
             if let Some(tuple_types) = tuple_types.as_ref() {
-                if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
+                if declared_tuple_types.is_none()
+                    && (decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl)
+                {
                     target_error!(format!(
                         "typed scalar declaration for '{name}' cannot use a tuple value"
                     ));
                     return;
                 }
-                if let Some(existing_types) = existing_tuple_types.as_ref() {
-                    require_tuple_expr_assignable_types(
-                        name,
-                        &expr_for_validation,
-                        tuple_types,
-                        existing_types,
-                        errors,
-                    );
-                    if !state_tuples.contains_key(name) {
-                        replace_tracked_tuple_types(local_aliases, name, Some(existing_types));
-                        track_tuple_var_assignment(tuple_vars, name, Some(existing_types.len()));
-                        known_scalars.insert(name.clone());
-                    }
-                    return;
-                }
-                if state_scalars.contains_key(name)
-                    || known_scalars.contains(name)
-                    || local_aliases.contains_key(name)
+                if existing_tuple_types.is_none()
+                    && (state_scalars.contains_key(name)
+                        || known_scalars.contains(name)
+                        || local_aliases.contains_key(name))
                 {
                     target_error!(format!(
                         "cannot assign a tuple value to scalar local '{name}'"
                     ));
                     return;
                 }
-            }
-            if let Some(tuple_types) = tuple_types.filter(|_| can_track_local) {
-                local_aliases.remove(name);
-                replace_tracked_tuple_types(local_aliases, name, Some(&tuple_types));
-                track_tuple_var_assignment(tuple_vars, name, Some(tuple_types.len()));
-                known_scalars.insert(name.clone());
+                let Some(target_types) = resolve_tuple_assignment_types(
+                    name,
+                    &expr_for_validation,
+                    tuple_types,
+                    declared_tuple_types,
+                    existing_tuple_types.as_deref(),
+                    registered_state_tuples
+                        .get(name)
+                        .is_some_and(|registered_loc| *registered_loc == target_loc),
+                    errors,
+                ) else {
+                    return;
+                };
+                if !state_tuples.contains_key(name) && can_track_local {
+                    local_aliases.remove(name);
+                    set_tracked_tuple_types(tuple_vars, local_aliases, name, &target_types);
+                    known_scalars.insert(name.clone());
+                }
                 return;
             }
             if existing_tuple_types.is_some() {
                 target_error!(format!(
                     "assignment to tuple local '{name}' requires a tuple value"
+                ));
+                return;
+            }
+            if declared_tuple_types.is_some() {
+                target_error!(format!(
+                    "typed tuple declaration for '{name}' requires a tuple value"
                 ));
                 return;
             }
@@ -2244,7 +2340,7 @@ fn analyze_flow_assignment(
                 Some(existing)
             } else if let Some(existing) = local_aliases.get(name).copied() {
                 Some(existing)
-            } else if let Some(declared) = *decl_ty {
+            } else if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else {
                 let untyped_ty = effective_untyped_assignment_type(expr, expr_ty);
@@ -2277,13 +2373,17 @@ fn analyze_flow_assignment(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             let mut targets_ok = true;
-            for target_name in targets {
+            for target_name in targets.iter().filter_map(|target| target.binding()) {
                 targets_ok &= validate_block_bound_surface_var_name(
                     target_name,
                     target_loc,
                     scope_expr_env!(),
                     errors,
                 );
+                if forbidden_assign_names.contains(target_name) {
+                    target_error!(wrong_rate_output_assignment_message(target_name, scope));
+                    targets_ok = false;
+                }
             }
             let destructured_types = infer_tracked_tuple_types(
                 &expr_for_validation,
@@ -2333,17 +2433,23 @@ fn analyze_flow_assignment(
             if !targets_ok {
                 return;
             }
-            clear_tuple_var_bindings(tuple_vars, targets.iter());
-            for (index, target_name) in targets.iter().enumerate() {
+            clear_tuple_var_bindings(
+                tuple_vars,
+                targets.iter().filter_map(|target| target.binding()),
+            );
+            for (index, target) in targets.iter().enumerate() {
+                let Some(target_name) = target.binding() else {
+                    continue;
+                };
                 let target_ty = destructured_types
                     .as_ref()
                     .and_then(|types| types.get(index))
                     .copied()
                     .unwrap_or(PrimitiveType::F32);
                 replace_tracked_tuple_types(local_aliases, target_name, None);
-                known_scalars.insert(target_name.clone());
+                known_scalars.insert(target_name.to_owned());
                 local_aliases
-                    .entry(target_name.clone())
+                    .entry(target_name.to_owned())
                     .or_insert(target_ty);
             }
         }

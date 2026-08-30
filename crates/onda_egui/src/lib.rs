@@ -579,6 +579,12 @@ impl RunApp {
                             );
                         }
                     });
+                    if let Some(waveform) = buffer_waveform(buffer) {
+                        ui.add_space(4.0);
+                        let width = ui.available_width();
+                        let theme = RunTheme::from_dark_mode(ui.visuals().dark_mode);
+                        draw_buffer_waveform(ui, waveform, egui::vec2(width, 62.0), &theme);
+                    }
                 });
             ui.add_space(3.0);
         }
@@ -664,6 +670,58 @@ impl RunApp {
                     }
                 });
             ui.add_space(2.0);
+        }
+    }
+
+    fn render_log(&self, ui: &mut egui::Ui, state: &onda_run::RunState) {
+        if !state.log_text.is_empty() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .max_height(120.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for (index, line) in state.log_text.lines().enumerate() {
+                        let context = log_entry_context(state.log_entries.get(index));
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 0.0),
+                            egui::Layout::right_to_left(egui::Align::TOP),
+                            |ui| {
+                                if !context.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(context).small().weak().monospace(),
+                                    );
+                                }
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::TOP),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(line).monospace())
+                                                .wrap(),
+                                        );
+                                    },
+                                );
+                            },
+                        );
+                    }
+                });
+        }
+        if state.print_overflow_count != 0 || state.print_transport_drop_count != 0 {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "prints: {} generated overflow · {} transport drops",
+                    state.print_overflow_count, state.print_transport_drop_count,
+                ),
+            );
+        }
+        if state.delegate_overflow_count != 0 || state.delegate_transport_drop_count != 0 {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "delegates: {} generated overflow · {} transport drops",
+                    state.delegate_overflow_count, state.delegate_transport_drop_count,
+                ),
+            );
         }
     }
 
@@ -1058,7 +1116,7 @@ impl eframe::App for RunApp {
                                             );
                                         },
                                     );
-                                    if let Some(error) = state.error {
+                                    if let Some(error) = &state.error {
                                         ui.add_space(8.0);
                                         ui.colored_label(theme.error, error);
                                     }
@@ -1089,6 +1147,33 @@ impl eframe::App for RunApp {
                                         egui::vec2(ui.available_width(), 140.0),
                                         &theme,
                                     );
+                                });
+                            });
+                        }
+
+                        if state.log_revealed {
+                            ui.add_space(12.0);
+                            section_box(ui, "", |ui| {
+                                let mut log_state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("log-section"),
+                                    true,
+                                );
+                                let mut clear_log = false;
+                                render_section_header(ui, &mut log_state, "Log", |ui| {
+                                    clear_log = ui
+                                        .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
+                                        .clicked();
+                                });
+                                if clear_log {
+                                    self.controller
+                                        .as_mut()
+                                        .expect("loaded run controller")
+                                        .clear_log();
+                                }
+                                log_state.show_body_unindented(ui, |ui| {
+                                    ui.add_space(8.0);
+                                    self.render_log(ui, &state);
                                 });
                             });
                         }
@@ -2102,6 +2187,114 @@ fn event_array_grid_columns(available_width: f32) -> usize {
         .max(1)
 }
 
+fn draw_buffer_waveform(
+    ui: &mut egui::Ui,
+    waveform: BufferWaveformPreview<'_>,
+    size: egui::Vec2,
+    theme: &RunTheme,
+) {
+    let scale = buffer_waveform_scale(waveform);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 6.0, theme.scope_background);
+
+    let label_font = egui::FontId::monospace(9.5);
+    let label_color = ui.visuals().weak_text_color();
+    painter.text(
+        rect.left_top() + egui::vec2(5.0, 4.0),
+        egui::Align2::LEFT_TOP,
+        buffer_waveform_range_label(waveform),
+        label_font.clone(),
+        label_color,
+    );
+
+    let plot = egui::Rect::from_min_max(
+        rect.left_top() + egui::vec2(38.0, 19.0),
+        rect.right_bottom() - egui::vec2(5.0, 5.0),
+    );
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let guide_width = pixels_per_point.recip();
+    let snap_to_pixel_center =
+        |coordinate: f32| ((coordinate * pixels_per_point).floor() + 0.5) / pixels_per_point;
+    let zero_y = snap_to_pixel_center(plot.center().y);
+    let value_y = |value: f64| zero_y - (value / scale) as f32 * (plot.height() * 0.5);
+    let guide_y = |value: f64| snap_to_pixel_center(value_y(value));
+    for value in [-scale, scale] {
+        let y = guide_y(value);
+        painter.line_segment(
+            [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
+            egui::Stroke::new(guide_width, theme.scope_grid),
+        );
+    }
+    painter.line_segment(
+        [
+            egui::pos2(plot.left(), zero_y),
+            egui::pos2(plot.right(), zero_y),
+        ],
+        egui::Stroke::new(guide_width, theme.scope_grid.gamma_multiply(0.4)),
+    );
+    let unit_guide_distance_pixels = (value_y(1.0) - value_y(0.0)).abs() * pixels_per_point;
+    if scale > 1.0 && unit_guide_distance_pixels >= 2.0 {
+        for value in [-1.0, 1.0] {
+            let y = guide_y(value);
+            painter.line_segment(
+                [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
+                egui::Stroke::new(guide_width, theme.scope_grid.gamma_multiply(0.65)),
+            );
+        }
+    }
+
+    let columns = waveform.minimums.len();
+    for (index, (minimum, maximum)) in waveform.minimums.iter().zip(waveform.maximums).enumerate() {
+        let (Some(minimum), Some(maximum)) = (minimum.as_f64(), maximum.as_f64()) else {
+            continue;
+        };
+        let x = snap_to_pixel_center(
+            plot.left() + plot.width() * (index as f32 + 0.5) / columns as f32,
+        );
+        let minimum_y = snap_to_pixel_center(value_y(minimum.clamp(-scale, scale)));
+        let maximum_y = snap_to_pixel_center(value_y(maximum.clamp(-scale, scale)));
+        let top = if maximum > 0.0 { maximum_y } else { zero_y };
+        let bottom = if minimum < 0.0 { minimum_y } else { zero_y };
+        let color = theme.scope_strokes[0];
+        painter.line_segment(
+            [egui::pos2(x, top), egui::pos2(x, bottom)],
+            egui::Stroke::new(1.25_f32, color),
+        );
+        painter.circle_filled(egui::pos2(x, maximum_y), 0.75, color);
+        if minimum != maximum {
+            painter.circle_filled(egui::pos2(x, minimum_y), 0.75, color);
+        }
+    }
+
+    for (value, alignment, position) in [
+        (
+            scale,
+            egui::Align2::RIGHT_TOP,
+            egui::pos2(plot.left() - 4.0, plot.top()),
+        ),
+        (
+            0.0,
+            egui::Align2::RIGHT_CENTER,
+            egui::pos2(plot.left() - 4.0, plot.center().y),
+        ),
+        (
+            -scale,
+            egui::Align2::RIGHT_BOTTOM,
+            egui::pos2(plot.left() - 4.0, plot.bottom()),
+        ),
+    ] {
+        painter.text(
+            position,
+            alignment,
+            format_waveform_axis(value),
+            label_font.clone(),
+            label_color,
+        );
+    }
+    response.on_hover_text(buffer_waveform_range_label(waveform));
+}
+
 fn draw_scope(
     ui: &mut egui::Ui,
     channels: usize,
@@ -2297,6 +2490,25 @@ fn buffer_name(buffer: &Value) -> Option<&str> {
     buffer.get("name").and_then(Value::as_str)
 }
 
+fn log_entry_context(entry: Option<&Value>) -> String {
+    let source = entry.and_then(|entry| entry.get("source"));
+    let file = source
+        .and_then(|source| source.get("file"))
+        .and_then(Value::as_str);
+    let line = source
+        .and_then(|source| source.get("line"))
+        .and_then(Value::as_u64);
+    let owner = entry
+        .and_then(|entry| entry.get("lexicalOwner"))
+        .and_then(Value::as_str);
+    match (file, line, owner) {
+        (Some(file), Some(line), Some(owner)) => format!("{file}:{line} · {owner}"),
+        (Some(file), Some(line), None) => format!("{file}:{line}"),
+        (_, _, Some(owner)) => owner.to_owned(),
+        _ => String::new(),
+    }
+}
+
 fn buffer_type_summary(buffer: &Value) -> String {
     buffer
         .get("type")
@@ -2321,6 +2533,78 @@ fn buffer_loaded_summary(buffer: &Value) -> Option<String> {
         format_grouped_count(frames),
         format_sample_rate(sample_rate)
     ))
+}
+
+#[derive(Clone, Copy)]
+struct BufferWaveformPreview<'a> {
+    min_value: f64,
+    max_value: f64,
+    minimums: &'a [Value],
+    maximums: &'a [Value],
+}
+
+fn buffer_waveform(buffer: &Value) -> Option<BufferWaveformPreview<'_>> {
+    let waveform = buffer.get("waveform")?.as_object()?;
+    let min_value = waveform.get("minValue")?.as_f64()?;
+    let max_value = waveform.get("maxValue")?.as_f64()?;
+    let minimums = waveform.get("minimums")?.as_array()?.as_slice();
+    let maximums = waveform.get("maximums")?.as_array()?.as_slice();
+    if !min_value.is_finite()
+        || !max_value.is_finite()
+        || minimums.is_empty()
+        || minimums.len() != maximums.len()
+    {
+        return None;
+    }
+    Some(BufferWaveformPreview {
+        min_value,
+        max_value,
+        minimums,
+        maximums,
+    })
+}
+
+fn buffer_waveform_scale(waveform: BufferWaveformPreview<'_>) -> f64 {
+    waveform
+        .min_value
+        .abs()
+        .max(waveform.max_value.abs())
+        .max(1.0)
+}
+
+fn format_waveform_value(value: f64) -> String {
+    let magnitude = value.abs();
+    let rendered = if value == 0.0 {
+        "0".to_owned()
+    } else if magnitude >= 10_000.0 || magnitude < 0.001 {
+        format!("{value:.2e}")
+    } else {
+        let rendered = format!("{value:.3}");
+        rendered
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    };
+    rendered.replace('-', "−")
+}
+
+fn format_waveform_axis(value: f64) -> String {
+    if value > 0.0 {
+        format!("+{}", format_waveform_value(value))
+    } else {
+        format_waveform_value(value)
+    }
+}
+
+fn buffer_waveform_range_label(waveform: BufferWaveformPreview<'_>) -> String {
+    let scale = buffer_waveform_scale(waveform);
+    format!(
+        "range {} … {} · scale {} / {}",
+        format_waveform_value(waveform.min_value),
+        format_waveform_value(waveform.max_value),
+        format_waveform_axis(-scale),
+        format_waveform_axis(scale),
+    )
 }
 
 fn format_grouped_count(value: u64) -> String {
@@ -2414,8 +2698,9 @@ mod tests {
     use eframe::{egui, Storage};
 
     use super::{
-        buffer_loaded_summary, control_decimals, event_arg_signature, event_array_grid_columns,
-        event_array_len, event_array_scalar_type, format_run_status, param_grid_columns,
+        buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label, buffer_waveform_scale,
+        control_decimals, event_arg_signature, event_array_grid_columns, event_array_len,
+        event_array_scalar_type, format_run_status, log_entry_context, param_grid_columns,
         prepared_param_domain, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
         KnobDragState, ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
         PARAM_LAYOUT_STORAGE_KEY,
@@ -2700,6 +2985,49 @@ mod tests {
             }))
             .as_deref(),
             Some("96,000 frames · 2 ch · 44.1 kHz")
+        );
+    }
+
+    #[test]
+    fn print_log_context_combines_source_and_lexical_owner() {
+        let entry = serde_json::json!({
+            "source": { "file": "main.onda", "line": 12 },
+            "lexicalOwner": "program",
+        });
+        assert_eq!(log_entry_context(Some(&entry)), "main.onda:12 · program");
+        assert!(log_entry_context(None).is_empty());
+    }
+
+    #[test]
+    fn buffer_waveform_keeps_unit_scale_until_values_overflow() {
+        let in_range = serde_json::json!({
+            "waveform": {
+                "minValue": -0.75,
+                "maxValue": 0.5,
+                "minimums": [-0.75, -0.25],
+                "maximums": [0.25, 0.5],
+            }
+        });
+        let waveform = buffer_waveform(&in_range).expect("valid waveform");
+        assert_eq!(buffer_waveform_scale(waveform), 1.0);
+        assert_eq!(
+            buffer_waveform_range_label(waveform),
+            "range −0.75 … 0.5 · scale −1 / +1"
+        );
+
+        let overflow = serde_json::json!({
+            "waveform": {
+                "minValue": -2.0,
+                "maxValue": 4.0,
+                "minimums": [-2.0],
+                "maximums": [4.0],
+            }
+        });
+        let waveform = buffer_waveform(&overflow).expect("valid overflow waveform");
+        assert_eq!(buffer_waveform_scale(waveform), 4.0);
+        assert_eq!(
+            buffer_waveform_range_label(waveform),
+            "range −2 … 4 · scale −4 / +4"
         );
     }
 

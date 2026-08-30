@@ -274,6 +274,28 @@ impl<'a> Formatter<'a> {
                     function_id(*function)
                 ));
             }
+            StatementKind::PublishDelegate { delegate, args } => {
+                let args = args
+                    .iter()
+                    .map(format_call_argument)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(format_args!(
+                    "{pad}publish_delegate @delegate{}({args}){source}",
+                    delegate.raw()
+                ));
+            }
+            StatementKind::PublishLog { site, arguments } => {
+                let arguments = arguments
+                    .iter()
+                    .map(|value| format_value(*value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(format_args!(
+                    "{pad}publish_log @log{}({arguments}){source}",
+                    site.raw()
+                ));
+            }
             StatementKind::OutputStore {
                 output,
                 element,
@@ -597,12 +619,18 @@ fn format_rvalue(value: &Rvalue) -> String {
         Rvalue::BufferSampleRate(buffer) => {
             format!("buffer_sample_rate {}", format_buffer_ref(*buffer))
         }
+        Rvalue::BufferIsBound(buffer) => {
+            format!("buffer_is_bound {}", format_buffer_ref(*buffer))
+        }
         Rvalue::BufferParamLen(id) => format!("buffer_len {}", format_buffer_param_ref(*id)),
         Rvalue::BufferParamChannels(id) => {
             format!("buffer_channels {}", format_buffer_param_ref(*id))
         }
         Rvalue::BufferParamSampleRate(id) => {
             format!("buffer_sample_rate {}", format_buffer_param_ref(*id))
+        }
+        Rvalue::BufferParamIsBound(id) => {
+            format!("buffer_is_bound {}", format_buffer_param_ref(*id))
         }
         Rvalue::ConstDataLoad {
             data,

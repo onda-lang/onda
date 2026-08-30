@@ -10,8 +10,8 @@ use onda_mir::{
 use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes};
 use crate::runtime_metadata::ProgramMetadata;
 use crate::{
-    DeclaredBuffer, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam, DeclaredIo,
-    DeclaredState,
+    DeclaredBuffer, DeclaredBufferChannels, DeclaredDelegate, DeclaredEvent, DeclaredEventParam,
+    DeclaredIo, DeclaredState,
 };
 
 /// Target-specific offsets computed by the MIR code generator.
@@ -69,6 +69,7 @@ pub(crate) fn build_mir_program_metadata(
     let control_outputs = build_control_outputs(program, layout.control_output_offsets)?;
     let params = build_params(program, layout.param_offsets)?;
     let events = build_events(program, layout.event_fixed_sizes)?;
+    let delegates = build_delegates(program)?;
     let buffers = build_buffers(program)?;
     let buffer_arrays = program
         .interface
@@ -93,6 +94,11 @@ pub(crate) fn build_mir_program_metadata(
             .enumerate()
             .map(|(index, event)| (event.name().to_owned(), index))
             .collect(),
+        delegate_index: delegates
+            .iter()
+            .enumerate()
+            .map(|(index, delegate)| (delegate.name().to_owned(), index))
+            .collect(),
         buffer_index: buffers
             .iter()
             .enumerate()
@@ -104,6 +110,7 @@ pub(crate) fn build_mir_program_metadata(
         control_outputs,
         params,
         events,
+        delegates,
         buffers,
         state_entries,
     })
@@ -368,123 +375,15 @@ fn build_events(
 ) -> Result<Vec<DeclaredEvent>, MirMetadataError> {
     let mut events = Vec::with_capacity(program.interface.events.len());
     for (event_index, event) in program.interface.events.iter().enumerate() {
-        let mut params = Vec::with_capacity(event.params.len());
-        let mut minimum_wire_offset = 0usize;
-        let mut computed_fixed_size = Some(0usize);
-
-        for param in &event.params {
-            match &program.types[param.ty.index()] {
-                Type::Scalar(scalar) => {
-                    let element = primitive_type(*scalar);
-                    let bytes = primitive_type_bytes(element);
-                    let default_bytes = param
-                        .default
-                        .as_ref()
-                        .map(|value| constant_bytes(program, value, param.ty))
-                        .transpose()?;
-                    let default_values = param
-                        .default
-                        .as_ref()
-                        .map(|value| constant_values(program, value, param.ty))
-                        .transpose()?;
-                    params.push(DeclaredEventParam {
-                        name: param.name.clone(),
-                        elem_ty: element,
-                        array_len: 1,
-                        is_array: false,
-                        is_slice: false,
-                        byte_offset: minimum_wire_offset,
-                        default_bytes,
-                        default_values,
-                    });
-                    minimum_wire_offset =
-                        checked_add(minimum_wire_offset, bytes, "event parameter wire offset")?;
-                    if let Some(size) = computed_fixed_size.as_mut() {
-                        *size = checked_add(*size, bytes, "event payload size")?;
-                    }
-                }
-                Type::Array { element, len } => {
-                    let Type::Scalar(scalar) =
-                        program.types.get(element.index()).ok_or_else(|| {
-                            MirMetadataError::new(format!(
-                            "MIR event '{}' parameter '{}' references a missing array element type",
-                            event.name, param.name
-                        ))
-                        })?
-                    else {
-                        return Err(MirMetadataError::new(format!(
-                            "MIR event '{}' parameter '{}' is not a one-dimensional scalar array",
-                            event.name, param.name
-                        )));
-                    };
-                    let len = usize::try_from(*len).map_err(|_| {
-                        MirMetadataError::new("MIR event array length does not fit usize")
-                    })?;
-                    let elem_ty = primitive_type(*scalar);
-                    let bytes = primitive_type_bytes(elem_ty)
-                        .checked_mul(len)
-                        .ok_or_else(|| MirMetadataError::new("MIR event array size overflow"))?;
-                    let default_bytes = param
-                        .default
-                        .as_ref()
-                        .map(|value| constant_bytes(program, value, param.ty))
-                        .transpose()?;
-                    let default_values = param
-                        .default
-                        .as_ref()
-                        .map(|value| constant_values(program, value, param.ty))
-                        .transpose()?;
-                    params.push(DeclaredEventParam {
-                        name: param.name.clone(),
-                        elem_ty,
-                        array_len: len,
-                        is_array: true,
-                        is_slice: false,
-                        byte_offset: minimum_wire_offset,
-                        default_bytes,
-                        default_values,
-                    });
-                    minimum_wire_offset =
-                        checked_add(minimum_wire_offset, bytes, "event parameter wire offset")?;
-                    if let Some(size) = computed_fixed_size.as_mut() {
-                        *size = checked_add(*size, bytes, "event payload size")?;
-                    }
-                }
-                Type::Slice { element, .. } => {
-                    if param.default.is_some() {
-                        return Err(MirMetadataError::new(format!(
-                            "MIR event '{}' slice parameter '{}' unexpectedly has a default",
-                            event.name, param.name
-                        )));
-                    }
-                    params.push(DeclaredEventParam {
-                        name: param.name.clone(),
-                        elem_ty: primitive_type(*element),
-                        array_len: 0,
-                        is_array: false,
-                        is_slice: true,
-                        byte_offset: minimum_wire_offset,
-                        default_bytes: None,
-                        default_values: None,
-                    });
-                    // The dynamic native wire format stores an i32 length before
-                    // the element bytes. Offsets after a slice are minimum
-                    // offsets (the offsets when preceding slice lengths are zero).
-                    minimum_wire_offset = checked_add(
-                        minimum_wire_offset,
-                        std::mem::size_of::<i32>(),
-                        "event slice length-prefix offset",
-                    )?;
-                    computed_fixed_size = None;
-                }
-                other => {
-                    return Err(MirMetadataError::new(format!(
-                        "MIR event '{}' parameter '{}' has unsupported runtime type {other:?}",
-                        event.name, param.name
-                    )));
-                }
-            }
-        }
+        let (params, computed_fixed_size, payload_min_bytes) = build_payload_descriptor(
+            program,
+            "event",
+            &event.name,
+            event
+                .params
+                .iter()
+                .map(|param| (param.name.as_str(), param.ty, param.default.as_ref())),
+        )?;
 
         if fixed_sizes[event_index] != computed_fixed_size {
             return Err(MirMetadataError::new(format!(
@@ -496,9 +395,141 @@ fn build_events(
             name: event.name.clone(),
             params,
             payload_bytes: fixed_sizes[event_index],
+            payload_min_bytes,
         });
     }
     Ok(events)
+}
+
+fn build_delegates(program: &Program) -> Result<Vec<DeclaredDelegate>, MirMetadataError> {
+    program
+        .interface
+        .delegates
+        .iter()
+        .map(|delegate| {
+            let (params, payload_bytes, payload_min_bytes) = build_payload_descriptor(
+                program,
+                "delegate",
+                &delegate.name,
+                delegate
+                    .params
+                    .iter()
+                    .map(|param| (param.name.as_str(), param.ty, None)),
+            )?;
+            Ok(DeclaredDelegate {
+                name: delegate.name.clone(),
+                params,
+                payload_bytes,
+                payload_min_bytes,
+            })
+        })
+        .collect()
+}
+
+fn build_payload_descriptor<'a>(
+    program: &Program,
+    owner_kind: &str,
+    owner_name: &str,
+    params: impl IntoIterator<
+        Item = (
+            &'a str,
+            onda_mir::TypeId,
+            Option<&'a onda_mir::ConstantValue>,
+        ),
+    >,
+) -> Result<(Vec<DeclaredEventParam>, Option<usize>, usize), MirMetadataError> {
+    let mut descriptors = Vec::new();
+    let mut minimum_wire_offset = 0usize;
+    let mut fixed_size = Some(0usize);
+    for (name, ty, default) in params {
+        match &program.types[ty.index()] {
+            Type::Scalar(scalar) => {
+                let elem_ty = primitive_type(*scalar);
+                let bytes = primitive_type_bytes(elem_ty);
+                descriptors.push(DeclaredEventParam {
+                    name: name.to_owned(),
+                    elem_ty,
+                    array_len: 1,
+                    is_array: false,
+                    is_slice: false,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
+                    default_bytes: default
+                        .map(|value| constant_bytes(program, value, ty))
+                        .transpose()?,
+                    default_values: default
+                        .map(|value| constant_values(program, value, ty))
+                        .transpose()?,
+                });
+                minimum_wire_offset =
+                    checked_add(minimum_wire_offset, bytes, "payload parameter wire offset")?;
+                if let Some(size) = fixed_size.as_mut() {
+                    *size = checked_add(*size, bytes, "payload size")?;
+                }
+            }
+            Type::Array { element, len } => {
+                let Some(Type::Scalar(scalar)) = program.types.get(element.index()) else {
+                    return Err(MirMetadataError::new(format!(
+                        "MIR {owner_kind} '{owner_name}' parameter '{name}' is not a one-dimensional scalar array"
+                    )));
+                };
+                let len = usize::try_from(*len).map_err(|_| {
+                    MirMetadataError::new("MIR payload array length does not fit usize")
+                })?;
+                let elem_ty = primitive_type(*scalar);
+                let bytes = primitive_type_bytes(elem_ty)
+                    .checked_mul(len)
+                    .ok_or_else(|| MirMetadataError::new("MIR payload array size overflow"))?;
+                descriptors.push(DeclaredEventParam {
+                    name: name.to_owned(),
+                    elem_ty,
+                    array_len: len,
+                    is_array: true,
+                    is_slice: false,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
+                    default_bytes: default
+                        .map(|value| constant_bytes(program, value, ty))
+                        .transpose()?,
+                    default_values: default
+                        .map(|value| constant_values(program, value, ty))
+                        .transpose()?,
+                });
+                minimum_wire_offset =
+                    checked_add(minimum_wire_offset, bytes, "payload parameter wire offset")?;
+                if let Some(size) = fixed_size.as_mut() {
+                    *size = checked_add(*size, bytes, "payload size")?;
+                }
+            }
+            Type::Slice { element, .. } => {
+                if default.is_some() {
+                    return Err(MirMetadataError::new(format!(
+                        "MIR {owner_kind} '{owner_name}' slice parameter '{name}' unexpectedly has a default"
+                    )));
+                }
+                descriptors.push(DeclaredEventParam {
+                    name: name.to_owned(),
+                    elem_ty: primitive_type(*element),
+                    array_len: 0,
+                    is_array: false,
+                    is_slice: true,
+                    byte_offset: fixed_size.map(|_| minimum_wire_offset),
+                    default_bytes: None,
+                    default_values: None,
+                });
+                minimum_wire_offset = checked_add(
+                    minimum_wire_offset,
+                    std::mem::size_of::<i32>(),
+                    "payload slice length-prefix offset",
+                )?;
+                fixed_size = None;
+            }
+            other => {
+                return Err(MirMetadataError::new(format!(
+                    "MIR {owner_kind} '{owner_name}' parameter '{name}' has unsupported runtime type {other:?}"
+                )));
+            }
+        }
+    }
+    Ok((descriptors, fixed_size, minimum_wire_offset))
 }
 
 fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataError> {
@@ -758,6 +789,7 @@ mod tests {
                 block_size: 64,
             },
             source_files: Vec::new(),
+            log_sites: Vec::new(),
             types,
             structs: Vec::new(),
             interface: Interface {
@@ -885,6 +917,7 @@ mod tests {
                         handler: FunctionId::new(3),
                     },
                 ],
+                delegates: Vec::new(),
             },
             state: vec![
                 StateSlot {
@@ -1010,15 +1043,16 @@ mod tests {
 
         let note = &metadata.events[0];
         assert_eq!(note.payload_bytes(), Some(12));
-        assert_eq!(note.params()[0].byte_offset(), 0);
-        assert_eq!(note.params()[1].byte_offset(), 4);
+        assert_eq!(note.params()[0].byte_offset(), Some(0));
+        assert_eq!(note.params()[1].byte_offset(), Some(4));
         assert_eq!(note.params()[1].default_bytes().unwrap().len(), 8);
         let curve = &metadata.events[1];
         assert_eq!(curve.payload_bytes(), None);
-        assert_eq!(curve.params()[0].byte_offset(), 0);
-        assert_eq!(curve.params()[1].byte_offset(), 1);
+        assert_eq!(curve.payload_min_bytes(), 13);
+        assert_eq!(curve.params()[0].byte_offset(), Some(0));
+        assert_eq!(curve.params()[1].byte_offset(), Some(1));
         assert!(curve.params()[1].is_slice());
-        assert_eq!(curve.params()[2].byte_offset(), 5);
+        assert_eq!(curve.params()[2].byte_offset(), None);
 
         assert_eq!(metadata.input_index["stereo"], 1);
         assert_eq!(metadata.output_index["counter"], 1);

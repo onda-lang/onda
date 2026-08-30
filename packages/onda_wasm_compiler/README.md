@@ -1,5 +1,7 @@
 # Onda WebAssembly compiler
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 `@onda-lang/wasm-compiler` compiles Onda source or an in-memory multi-file project to a complete,
 self-contained WebAssembly processor artifact. It runs in modern browsers and Node.js and does not
 require LLVM, a Wasm linker, Rust, or `wasm-pack` after installation.
@@ -153,6 +155,9 @@ const compiler = await createCompiler({ worker: true });
 const { artifact, sourceFiles } = await compiler.compileSource(source, options);
 await compiler.dispose();
 ```
+
+`dispose()` is idempotent and terminal in both direct and worker modes. Every later compiler
+operation rejects with `OndaCompilerError`.
 
 Static hosts and bundlers may provide explicit `workerUrl` and `frontendWasm` URLs. The worker
 receives the frontend URL during initialization, so versioned or content-hashed compiler assets do

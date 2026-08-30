@@ -1,0 +1,77 @@
+import std/math
+import std/lookup
+
+namespace std::sample<Channels = 2>:
+  assert(Channels > 0)
+
+  def _normalize_frame<T>(frame: T, frames: i32, looping: bool):
+    if frames <= 1:
+      return T(0.0)
+    if looping:
+      return wrap(frame, T(0.0), T(frames))
+    return clamp(frame, T(0.0), T(frames - 1))
+
+  proc Player<T>:
+    outs<T> Channels
+
+    buffers:
+      clip: T[]
+
+    params<T>:
+      speed = 1.0
+      looping: bool = false
+
+    delegate finished()
+    delegate looped()
+
+    init<T>:
+      playhead = 0.0
+      playing: bool = false
+
+    events:
+      play(start_frame: T = 0.0):
+        playhead = _normalize_frame<T>(start_frame, clip.len(), looping)
+        playing = true
+
+      stop():
+        playing = false
+
+      seek(frame: T):
+        playhead = _normalize_frame<T>(frame, clip.len(), looping)
+
+      reset():
+        playhead = 0.0
+        playing = false
+
+    block:
+      clip_bound = clip.bound()
+      clip_frames = clip.len()
+      clip_channels = clip.chans()
+      step = speed * T(clip.samplerate() / SR)
+
+      sample:
+        for channel in 0..Channels:
+            outs[channel] = T(0.0)
+
+        if playing:
+          if !clip_bound:
+            playing = false
+            finished()
+          else:
+            for channel in 0..Channels:
+              source_channel = min(channel, clip_channels - 1)
+              if looping:
+                outs[channel] = std::lookup::readCW(clip, source_channel, playhead)
+              else:
+                outs[channel] = std::lookup::readC(clip, source_channel, playhead)
+
+            next_playhead = playhead + step
+            if next_playhead >= T(clip_frames) || next_playhead < 0.0:
+              if looping:
+                playhead = wrap(next_playhead, T(0.0), T(clip_frames))
+                looped()
+              else:
+                playing = false
+                finished()
+            else:
+              playhead = next_playhead

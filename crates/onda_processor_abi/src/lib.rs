@@ -7,13 +7,142 @@ use serde::{Deserialize, Serialize};
 
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 4;
-pub const PROCESSOR_ABI_VERSION: u32 = 6;
+pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 5;
+pub const PROCESSOR_ABI_VERSION: u32 = 5;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
 pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+/// Packed occurrence headers: stream-local index, payload byte count, and call-local sequence.
+pub const DELEGATE_RECORD_HEADER_SIZE: usize = 12;
+pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
+
+/// Caller-owned, call-scoped storage for top-level delegate occurrences.
+///
+/// The host resets the three result counters before every init, process, or
+/// event entry. `storage` may be null; in that neutral configuration
+/// publication is discarded without counting overflow.
+#[repr(C)]
+#[derive(Debug)]
+pub struct DelegateBatch {
+    pub storage: *mut u8,
+    pub capacity_bytes: u32,
+    pub used_bytes: u32,
+    pub record_count: u32,
+    pub overflow_count: u32,
+}
+
+impl DelegateBatch {
+    pub fn from_storage(storage: &mut [u8]) -> Self {
+        Self {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: u32::try_from(storage.len()).unwrap_or(u32::MAX),
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub const fn absent() -> Self {
+        Self {
+            storage: std::ptr::null_mut(),
+            capacity_bytes: 0,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.used_bytes = 0;
+        self.record_count = 0;
+        self.overflow_count = 0;
+    }
+}
+
+/// Caller-owned, call-scoped storage for authored print occurrences.
+///
+/// The host resets the three result counters before every init, process, or
+/// event entry. `storage` may be null; in that neutral configuration
+/// publication is discarded without counting overflow.
+/// Caller-owned output streams shared by every processor entry ABI.
+///
+/// The host must call [`Self::reset`] immediately before passing this
+/// descriptor to generated init, process, or event code.
+#[repr(C)]
+#[derive(Debug)]
+pub struct PrintBatch {
+    pub storage: *mut u8,
+    pub capacity_bytes: u32,
+    pub used_bytes: u32,
+    pub record_count: u32,
+    pub overflow_count: u32,
+}
+
+impl PrintBatch {
+    pub fn from_storage(storage: &mut [u8]) -> Self {
+        Self {
+            storage: storage.as_mut_ptr(),
+            capacity_bytes: u32::try_from(storage.len()).unwrap_or(u32::MAX),
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub const fn absent() -> Self {
+        Self {
+            storage: std::ptr::null_mut(),
+            capacity_bytes: 0,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.used_bytes = 0;
+        self.record_count = 0;
+        self.overflow_count = 0;
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct ExecutionOutput {
+    pub delegate_batch: *mut DelegateBatch,
+    pub print_batch: *mut PrintBatch,
+    /// Call-local sequence assigned to the next print or delegate publication.
+    pub next_sequence: u32,
+}
+
+impl ExecutionOutput {
+    pub const fn none() -> Self {
+        Self {
+            delegate_batch: std::ptr::null_mut(),
+            print_batch: std::ptr::null_mut(),
+            next_sequence: 0,
+        }
+    }
+
+    /// Prepares caller-owned output storage for one processor entry call.
+    ///
+    /// # Safety
+    ///
+    /// Every non-null batch pointer must be valid and exclusively writable for
+    /// the duration of this call.
+    pub unsafe fn reset(&mut self) {
+        if let Some(batch) = unsafe { self.delegate_batch.as_mut() } {
+            batch.reset();
+        }
+        if let Some(batch) = unsafe { self.print_batch.as_mut() } {
+            batch.reset();
+        }
+        self.next_sequence = 0;
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessorDescriptor {
@@ -124,10 +253,14 @@ pub struct RuntimeInfo {
     pub snapshot_byte_order: String,
     pub snapshot_restore_base: String,
     pub requires_full_blocks: bool,
+    pub delegate_record_header_size_bytes: usize,
+    pub print_record_header_size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgramMetadata {
+    pub source_files: Vec<SourceFileMetadata>,
+    pub log_sites: Vec<LogSiteMetadata>,
     pub inputs: Vec<IoMetadata>,
     pub outputs: Vec<IoMetadata>,
     pub control_outputs: Vec<IoMetadata>,
@@ -136,7 +269,33 @@ pub struct ProgramMetadata {
     #[serde(default)]
     pub buffer_arrays: Vec<BufferArrayMetadata>,
     pub events: Vec<EventMetadata>,
+    pub delegates: Vec<DelegateMetadata>,
     pub states: Vec<StateMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceFileMetadata {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSpanMetadata {
+    pub file: Option<usize>,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSiteMetadata {
+    pub index: usize,
+    pub label: Option<String>,
+    pub source: SourceSpanMetadata,
+    pub lexical_owner: String,
+    pub declaration: Option<String>,
+    pub argument_types: Vec<String>,
+    pub payload_size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +359,7 @@ pub struct EventParamMetadata {
     pub type_repr: String,
     pub scalar: String,
     pub array_len: usize,
+    pub is_array: bool,
     pub is_slice: bool,
     pub byte_offset: Option<usize>,
     pub byte_size: Option<usize>,
@@ -207,6 +367,29 @@ pub struct EventParamMetadata {
     pub has_default: bool,
     /// Scalar spellings in wire order. Arrays contain one entry per element.
     pub default_reprs: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateMetadata {
+    pub index: usize,
+    pub name: String,
+    pub payload_size_bytes: Option<usize>,
+    pub payload_min_size_bytes: usize,
+    pub has_dynamic_payload: bool,
+    pub params: Vec<DelegateParamMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateParamMetadata {
+    pub name: String,
+    pub type_repr: String,
+    pub scalar: String,
+    pub array_len: usize,
+    pub is_array: bool,
+    pub is_slice: bool,
+    pub byte_offset: Option<usize>,
+    pub byte_size: Option<usize>,
+    pub element_size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,7 +433,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v6.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v5.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");
@@ -270,5 +453,32 @@ mod tests {
         let encoded = serde_json::to_string(&descriptor).expect("descriptor should serialize");
         serde_json::from_str::<ProcessorDescriptor>(&encoded)
             .expect("serialized descriptor should deserialize");
+    }
+
+    #[test]
+    fn execution_output_reset_prepares_both_batches_and_sequence() {
+        let mut delegate = DelegateBatch::absent();
+        delegate.used_bytes = 9;
+        delegate.record_count = 7;
+        delegate.overflow_count = 5;
+        let mut print = PrintBatch::absent();
+        print.used_bytes = 8;
+        print.record_count = 6;
+        print.overflow_count = 4;
+        let mut output = ExecutionOutput {
+            delegate_batch: &mut delegate,
+            print_batch: &mut print,
+            next_sequence: 11,
+        };
+
+        unsafe { output.reset() };
+
+        assert_eq!(delegate.used_bytes, 0);
+        assert_eq!(delegate.record_count, 0);
+        assert_eq!(delegate.overflow_count, 0);
+        assert_eq!(print.used_bytes, 0);
+        assert_eq!(print.record_count, 0);
+        assert_eq!(print.overflow_count, 0);
+        assert_eq!(output.next_sequence, 0);
     }
 }

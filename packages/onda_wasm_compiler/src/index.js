@@ -74,9 +74,17 @@ class OndaCompiler {
     this.frontend = frontend;
     this.compileTrustedMir = compileTrustedMir;
     this.lsp = null;
+    this.disposed = false;
+  }
+
+  assertActive() {
+    if (this.disposed) {
+      throw new OndaCompilerError("compiler was disposed");
+    }
   }
 
   async compileSource(source, options = {}) {
+    this.assertActive();
     if (typeof source !== "string") {
       throw configurationError("source must be a string");
     }
@@ -103,6 +111,7 @@ class OndaCompiler {
   }
 
   async inspectSourceConstants(source, options = {}) {
+    this.assertActive();
     if (typeof source !== "string") {
       throw configurationError("source must be a string");
     }
@@ -122,6 +131,7 @@ class OndaCompiler {
   }
 
   async compileWorkspace(workspace, options = {}) {
+    this.assertActive();
     workspace = normalizeWorkspace(workspace);
     const compile = normalizeCompileOptions(options);
     let frontendCompilation;
@@ -147,6 +157,7 @@ class OndaCompiler {
   }
 
   async inspectWorkspaceConstants(workspace, options = {}) {
+    this.assertActive();
     workspace = normalizeWorkspace(workspace);
     const compile = normalizeCompileConstInspectionOptions(options);
     let encoded;
@@ -165,6 +176,7 @@ class OndaCompiler {
   }
 
   async compileProjectImage(imageBytes, options = {}) {
+    this.assertActive();
     const bytes = normalizeBytes(imageBytes, "project image");
     const compile = normalizeCompileOptions(options);
     let frontendCompilation;
@@ -189,6 +201,7 @@ class OndaCompiler {
   }
 
   async inspectProjectImageConstants(imageBytes, options = {}) {
+    this.assertActive();
     const bytes = normalizeBytes(imageBytes, "project image");
     const compile = normalizeCompileConstInspectionOptions(options);
     let encoded;
@@ -206,6 +219,7 @@ class OndaCompiler {
   }
 
   async createProjectImage(sourceGraph, buffers = new Map()) {
+    this.assertActive();
     const graph = normalizeSourceGraph(sourceGraph);
     const builder = new this.frontend.WebProjectImageBuilder(JSON.stringify(graph));
     try {
@@ -225,6 +239,7 @@ class OndaCompiler {
   }
 
   async inspectProjectImage(imageBytes) {
+    this.assertActive();
     try {
       return normalizeProjectImageInfo(JSON.parse(this.frontend.inspect_project_image(
         normalizeBytes(imageBytes, "project image"),
@@ -235,6 +250,7 @@ class OndaCompiler {
   }
 
   async loadProjectFiles(files, projectFilePath = null) {
+    this.assertActive();
     const builder = new this.frontend.WebMaterializedProjectBuilder();
     try {
       if (projectFilePath !== null) {
@@ -256,6 +272,7 @@ class OndaCompiler {
   }
 
   async materializeProjectImage(imageBytes, assetFileNames = new Map()) {
+    this.assertActive();
     let plan;
     try {
       plan = this.frontend.materialize_project_image(
@@ -275,6 +292,7 @@ class OndaCompiler {
   }
 
   async encodeBufferAsset(binding) {
+    this.assertActive();
     const normalized = normalizeBufferBinding(binding);
     try {
       return this.frontend.encode_buffer_asset(
@@ -290,6 +308,7 @@ class OndaCompiler {
   }
 
   async decodeBufferAsset(bytes) {
+    this.assertActive();
     return this.#decodeBuffer(
       () => this.frontend.decode_buffer_asset(normalizeBytes(bytes, "buffer asset")),
       "failed to decode Onda buffer asset",
@@ -297,6 +316,7 @@ class OndaCompiler {
   }
 
   async decodeBufferFile(bytes, path = "buffer") {
+    this.assertActive();
     return this.#decodeBuffer(
       () => this.frontend.decode_buffer_file(
         normalizeBytes(bytes, "buffer file"),
@@ -327,6 +347,7 @@ class OndaCompiler {
   }
 
   async projectCapabilities() {
+    this.assertActive();
     return {
       imageFormatVersion: this.frontend.project_image_format_version(),
       bufferAssetFormatVersion: this.frontend.buffer_asset_format_version(),
@@ -335,6 +356,7 @@ class OndaCompiler {
   }
 
   async sendLspMessage(message) {
+    this.assertActive();
     if (!message || typeof message !== "object" || Array.isArray(message)) {
       throw new OndaCompilerError("LSP message must be a JSON-RPC object");
     }
@@ -351,6 +373,7 @@ class OndaCompiler {
   }
 
   async setLspAnalysisOptions(options = {}) {
+    this.assertActive();
     const analysis = normalizeLspAnalysisOptions(options);
     this.lsp ??= new this.frontend.OndaLsp();
     try {
@@ -361,8 +384,12 @@ class OndaCompiler {
   }
 
   async dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
     this.lsp?.free();
     this.lsp = null;
+    this.frontend = null;
+    this.compileTrustedMir = null;
   }
 }
 
@@ -371,6 +398,9 @@ class WorkerOndaCompiler {
     this.worker = worker;
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.disposed = false;
+    this.terminated = false;
+    this.disposePromise = null;
     this.onMessage = (event) => this.handleMessage(event.data);
     this.onError = (event) => this.failAll(event.error ?? new Error(event.message));
     worker.addEventListener("message", this.onMessage);
@@ -445,15 +475,21 @@ class WorkerOndaCompiler {
     return this.request("lspAnalysisOptions", { options });
   }
 
-  async dispose() {
-    try {
-      await this.request("dispose");
-    } finally {
+  dispose() {
+    if (this.disposePromise) return this.disposePromise;
+    if (this.disposed) return Promise.resolve();
+    const request = this.request("dispose");
+    this.disposed = true;
+    this.disposePromise = request.finally(() => {
       this.terminate(new OndaCompilerError("compiler worker was disposed"));
-    }
+    });
+    return this.disposePromise;
   }
 
   terminate(error) {
+    if (this.terminated) return;
+    this.disposed = true;
+    this.terminated = true;
     this.worker.removeEventListener("message", this.onMessage);
     this.worker.removeEventListener("error", this.onError);
     this.worker.terminate();
@@ -461,6 +497,9 @@ class WorkerOndaCompiler {
   }
 
   request(type, fields = {}) {
+    if (this.disposed) {
+      return Promise.reject(new OndaCompilerError("compiler was disposed"));
+    }
     const requestId = this.nextRequestId;
     this.nextRequestId += 1;
     return new Promise((resolve, reject) => {

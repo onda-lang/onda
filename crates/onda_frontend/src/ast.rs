@@ -25,6 +25,8 @@ pub enum Block {
     Params(ParamBlock),
     Const(ConstDecl),
     Events(EventBlock),
+    Delegates(DelegateBlock),
+    When(WhenDef),
     Tasks(TaskBlock),
     Buffers(BufferBlock),
     Assert(AssertDecl),
@@ -49,6 +51,8 @@ impl Block {
             Self::Params(_) => BlockKind::Params,
             Self::Const(_) => BlockKind::Const,
             Self::Events(_) => BlockKind::Events,
+            Self::Delegates(_) => BlockKind::Delegates,
+            Self::When(_) => BlockKind::When,
             Self::Tasks(_) => BlockKind::Tasks,
             Self::Buffers(_) => BlockKind::Buffers,
             Self::Assert(_) => BlockKind::Assert,
@@ -71,6 +75,8 @@ impl Block {
             Self::Params(params) => params.loc.into(),
             Self::Const(decl) => decl.loc.into(),
             Self::Events(events) => events.loc.into(),
+            Self::Delegates(delegates) => delegates.loc.into(),
+            Self::When(when) => when.loc.into(),
             Self::Tasks(tasks) => tasks.loc.into(),
             Self::Buffers(buffers) => buffers.loc.into(),
             Self::Assert(assert_decl) => assert_decl.loc.into(),
@@ -96,6 +102,8 @@ pub enum BlockKind {
     Params,
     Const,
     Events,
+    Delegates,
+    When,
     Tasks,
     Buffers,
     Assert,
@@ -199,6 +207,35 @@ impl<'a> IntoIterator for &'a mut ParamBlock {
 pub struct EventBlock {
     pub loc: Span,
     pub events: Vec<EventDef>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DelegateBlock {
+    pub loc: Span,
+    pub delegates: Vec<DelegateDef>,
+}
+
+impl Deref for DelegateBlock {
+    type Target = Vec<DelegateDef>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.delegates
+    }
+}
+
+impl DerefMut for DelegateBlock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.delegates
+    }
+}
+
+impl<'a> IntoIterator for &'a DelegateBlock {
+    type Item = &'a DelegateDef;
+    type IntoIter = std::slice::Iter<'a, DelegateDef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.delegates.iter()
+    }
 }
 
 impl Deref for EventBlock {
@@ -567,6 +604,8 @@ pub struct ProcessorDef {
     pub params_deferred_count: Option<Expr>,
     pub params_deferred_default_ty: Option<DeclType>,
     pub events: Vec<EventDef>,
+    pub delegates: Vec<DelegateDef>,
+    pub whens: Vec<WhenDef>,
     pub tasks: Vec<TaskDef>,
     pub buffers: Vec<BufferDecl>,
     pub buffers_deferred_count: Option<Expr>,
@@ -676,6 +715,26 @@ pub enum DeclType {
     Tuple(Vec<PrimitiveType>),
 }
 
+impl DeclType {
+    pub fn scalar(&self) -> Option<PrimitiveType> {
+        match self {
+            Self::Scalar(ty) => Some(*ty),
+            Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } | Self::Tuple(_) => {
+                None
+            }
+        }
+    }
+
+    pub fn tuple(&self) -> Option<&[PrimitiveType]> {
+        match self {
+            Self::Tuple(elements) => Some(elements),
+            Self::Scalar(_) | Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } => {
+                None
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnParamType {
     Primitive(PrimitiveType),
@@ -752,6 +811,40 @@ pub struct EventDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DelegateDef {
+    pub loc: Span,
+    pub name: String,
+    pub params: Vec<EventParamDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenDef {
+    pub loc: Span,
+    pub target: WhenTarget,
+    pub bindings: Vec<WhenBinding>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenTarget {
+    pub loc: Span,
+    /// Dot-separated receiver path preceding the delegate name. Empty for an
+    /// owner-local delegate. Semantic analysis enforces the one-child boundary.
+    pub receiver: Vec<String>,
+    /// Present only for `child[constant].delegate`.
+    pub index: Option<Expr>,
+    pub delegate: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhenBinding {
+    pub loc: Span,
+    /// `_` is retained explicitly so diagnostics and formatting preserve the
+    /// source binding position without introducing a symbol.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventParamDecl {
     pub loc: Span,
     pub name: String,
@@ -821,6 +914,28 @@ pub struct ArrayTypeSpec {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TupleAssignTarget {
+    Binding(String),
+    Discard,
+}
+
+impl TupleAssignTarget {
+    pub fn binding(&self) -> Option<&str> {
+        match self {
+            Self::Binding(name) => Some(name),
+            Self::Discard => None,
+        }
+    }
+
+    pub fn binding_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::Binding(name) => Some(name),
+            Self::Discard => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AssignTarget {
     Var(String),
     Index {
@@ -834,7 +949,7 @@ pub enum AssignTarget {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
     },
-    Tuple(Vec<String>),
+    Tuple(Vec<TupleAssignTarget>),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
@@ -897,6 +1012,10 @@ impl Span {
 
     pub fn file(&self) -> Option<String> {
         SourceLoc::from(*self).file()
+    }
+
+    pub fn shares_source_file(self, other: Self) -> bool {
+        self.file_id == other.file_id
     }
 
     pub fn trace(&self) -> Vec<String> {
@@ -1275,7 +1394,7 @@ pub enum Stmt {
         loc: Span,
         target_loc: Span,
         target: AssignTarget,
-        decl_ty: Option<PrimitiveType>,
+        decl_ty: Option<DeclType>,
         generic_decl_ty: Option<String>,
         is_typed_decl: bool,
         typed_decl_ty_loc: Span,
@@ -1284,6 +1403,14 @@ pub enum Stmt {
     Expr {
         loc: Span,
         expr: Expr,
+    },
+    Print {
+        loc: Span,
+        label: Option<String>,
+        values: Vec<Expr>,
+        /// Lexical source ownership attached by semantic analysis before
+        /// specialization and processor desugaring clone this statement.
+        origin: Option<PrintSourceOrigin>,
     },
     Return {
         loc: Span,
@@ -1318,12 +1445,20 @@ pub enum Stmt {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintSourceOrigin {
+    pub source: Span,
+    pub lexical_owner: String,
+    pub declaration: String,
+}
+
 impl Stmt {
     pub fn loc(&self) -> SourceLoc {
         match self {
             Self::Const { loc, .. } => (*loc).into(),
             Self::Assign { loc, .. } => (*loc).into(),
             Self::Expr { loc, .. } => (*loc).into(),
+            Self::Print { loc, .. } => (*loc).into(),
             Self::Return { loc, .. } => (*loc).into(),
             Self::If { loc, .. } => (*loc).into(),
             Self::For { loc, .. } => (*loc).into(),

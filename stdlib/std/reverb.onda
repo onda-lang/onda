@@ -14,10 +14,10 @@ namespace std::reverb:
       outs<T> 2
 
       params<T>:
-        room_size = 0.82
-        damping = 0.34
-        width = 0.92
-        mix = 1.0
+        room_size = 0.82 {0.0, 1.0}
+        damping = 0.34 {0.0, 0.98}
+        width = 0.92 {0.0, 1.0}
+        mix = 1.0 {0.0, 1.0}
 
       init:
         comb_buffer: T[CombLines * CombCapacity]
@@ -36,10 +36,7 @@ namespace std::reverb:
           allpass_length[i] = min(max(i32(T(AllpassTuning[i]) * SR / T(ReferenceRate)), 1), AllpassCapacity - 1)
 
       block:
-        feedback = T(0.70) + clamp(room_size, T(0.0), T(1.0)) * T(0.28)
-        damp = clamp(damping, T(0.0), T(0.98))
-        stereo_width = clamp(width, T(0.0), T(1.0))
-        wet = clamp(mix, T(0.0), T(1.0))
+        feedback = T(0.70) + room_size * T(0.28)
 
         sample:
           excitation = (in1 + in2) * T(0.015)
@@ -50,17 +47,20 @@ namespace std::reverb:
             base = i * CombCapacity
             read_index = comb_index[i] - comb_length[i]
             if read_index < 0:
-              read_index = read_index + CombCapacity
+              read_index += CombCapacity
 
             delayed = comb_buffer[base + read_index]
-            comb_lowpass[i] = delayed * (T(1.0) - damp) + comb_lowpass[i] * damp
+            comb_lowpass[i] = delayed * (T(1.0) - damping) + comb_lowpass[i] * damping
             comb_buffer[base + comb_index[i]] = excitation + comb_lowpass[i] * feedback
-            comb_index[i] = (comb_index[i] + 1) % CombCapacity
+            next_index = comb_index[i] + 1
+            if next_index >= CombCapacity:
+              next_index = 0
+            comb_index[i] = next_index
 
             if i < CombLines / 2:
-              comb_l = comb_l + delayed
+              comb_l += delayed
             else:
-              comb_r = comb_r + delayed
+              comb_r += delayed
 
           comb_norm = T(2.0) / T(CombLines)
           diffuse_l = comb_l * comb_norm
@@ -69,7 +69,7 @@ namespace std::reverb:
             base = i * AllpassCapacity
             read_index = allpass_index[i] - allpass_length[i]
             if read_index < 0:
-              read_index = read_index + AllpassCapacity
+              read_index += AllpassCapacity
 
             delayed = allpass_buffer[base + read_index]
             if i < AllpassLines / 2:
@@ -78,11 +78,14 @@ namespace std::reverb:
             else:
               allpass_buffer[base + allpass_index[i]] = diffuse_r + delayed * T(0.5)
               diffuse_r = delayed - diffuse_r * T(0.5)
-            allpass_index[i] = (allpass_index[i] + 1) % AllpassCapacity
+            next_index = allpass_index[i] + 1
+            if next_index >= AllpassCapacity:
+              next_index = 0
+            allpass_index[i] = next_index
 
-          width_main = T(0.5) + stereo_width * T(0.5)
-          width_cross = T(0.5) - stereo_width * T(0.5)
+          width_main = T(0.5) + width * T(0.5)
+          width_cross = T(0.5) - width * T(0.5)
           wet_l = diffuse_l * width_main + diffuse_r * width_cross
           wet_r = diffuse_r * width_main + diffuse_l * width_cross
-          out1 = in1 * (T(1.0) - wet) + wet_l * wet
-          out2 = in2 * (T(1.0) - wet) + wet_r * wet
+          out1 = in1 * (T(1.0) - mix) + wet_l * mix
+          out2 = in2 * (T(1.0) - mix) + wet_r * mix

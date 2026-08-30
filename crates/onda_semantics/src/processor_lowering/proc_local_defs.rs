@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use super::{proc_buffer_fn_param_type, ProcBufferSpec};
 use crate::push_semantic;
 use onda_frontend::ast::*;
 use onda_frontend::{DiagCtx, Diagnostic};
@@ -42,13 +43,24 @@ pub(super) fn unique_proc_local_defs(proc: &ProcessorDef) -> Vec<FunctionDef> {
 pub(super) fn pre_desugar_proc_local_hidden_def(
     owner_proc: &str,
     local_def: &FunctionDef,
+    captured_buffers: &[ProcBufferSpec],
 ) -> FunctionDef {
     FunctionDef {
         loc: Default::default(),
         is_const: false,
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
-        params: local_def.params.clone(),
+        params: {
+            let mut params = local_def.params.clone();
+            params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+                loc: Default::default(),
+                name: buffer.name.clone(),
+                ty: Some(proc_buffer_fn_param_type(buffer)),
+                ty_loc: Default::default(),
+                default: None,
+            }));
+            params
+        },
         return_ty: local_def.return_ty.clone(),
         return_ty_loc: local_def.return_ty_loc,
         body: local_def.body.clone(),
@@ -58,6 +70,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
 pub(super) fn owner_proc_local_hidden_def(
     owner_proc: &str,
     local_def: &FunctionDef,
+    captured_buffers: &[ProcBufferSpec],
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
@@ -65,7 +78,7 @@ pub(super) fn owner_proc_local_hidden_def(
         is_const: false,
         type_params: local_def.type_params.clone(),
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
-        params: proc_local_hidden_def_params(owner_proc, local_def),
+        params: proc_local_hidden_def_params(owner_proc, local_def, captured_buffers),
         return_ty: local_def.return_ty.clone(),
         return_ty_loc: local_def.return_ty_loc,
         body,
@@ -76,6 +89,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
     owner_proc: &str,
     nested_path: &str,
     local_def: &FunctionDef,
+    captured_buffers: &[ProcBufferSpec],
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
@@ -83,15 +97,20 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
         is_const: false,
         type_params: local_def.type_params.clone(),
         name: nested_wrapper_local_def_name(owner_proc, nested_path, &local_def.name),
-        params: proc_local_hidden_def_params(owner_proc, local_def),
+        params: proc_local_hidden_def_params(owner_proc, local_def, captured_buffers),
         return_ty: local_def.return_ty.clone(),
         return_ty_loc: local_def.return_ty_loc,
         body,
     }
 }
 
-fn proc_local_hidden_def_params(owner_proc: &str, local_def: &FunctionDef) -> Vec<FnParamDecl> {
-    let mut params = Vec::<FnParamDecl>::with_capacity(local_def.params.len() + 1);
+fn proc_local_hidden_def_params(
+    owner_proc: &str,
+    local_def: &FunctionDef,
+    captured_buffers: &[ProcBufferSpec],
+) -> Vec<FnParamDecl> {
+    let mut params =
+        Vec::<FnParamDecl>::with_capacity(local_def.params.len() + captured_buffers.len() + 1);
     params.push(FnParamDecl {
         loc: Default::default(),
         name: "self".to_owned(),
@@ -100,6 +119,13 @@ fn proc_local_hidden_def_params(owner_proc: &str, local_def: &FunctionDef) -> Ve
         default: None,
     });
     params.extend(local_def.params.clone());
+    params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+        loc: Default::default(),
+        name: buffer.name.clone(),
+        ty: Some(proc_buffer_fn_param_type(buffer)),
+        ty_loc: Default::default(),
+        default: None,
+    }));
     params
 }
 
@@ -120,8 +146,15 @@ pub(super) fn rewrite_nested_wrapper_local_calls(
     callee_proc: &str,
     owner_proc: &str,
     nested_path: &str,
+    delegate_context_args: &[String],
 ) {
-    rewrite_nested_wrapper_local_calls_in_stmt(stmt, callee_proc, owner_proc, nested_path);
+    rewrite_nested_wrapper_local_calls_in_stmt(
+        stmt,
+        callee_proc,
+        owner_proc,
+        nested_path,
+        delegate_context_args,
+    );
 }
 
 pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<Diagnostic>) {
@@ -158,18 +191,40 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
     }
 
     let local_names = def_map.keys().cloned().collect::<HashSet<_>>();
-    rewrite_stmt_list_local_calls(&mut proc.init.body, &local_names, &proc.name);
-    rewrite_stmt_list_local_calls(&mut proc.block_pre, &local_names, &proc.name);
-    rewrite_stmt_list_local_calls(&mut proc.sample, &local_names, &proc.name);
-    rewrite_stmt_list_local_calls(&mut proc.block_post, &local_names, &proc.name);
+    let buffer_capturing_names = local_names
+        .iter()
+        .filter(|name| super::is_generated_proc_delegate_local(proc, name))
+        .cloned()
+        .collect::<HashSet<_>>();
+    let captured_buffers = proc
+        .buffers
+        .iter()
+        .map(|buffer| buffer.name.clone())
+        .collect::<Vec<_>>();
+    let rewrite = |stmts: &mut Vec<Stmt>| {
+        rewrite_stmt_list_local_calls(
+            stmts,
+            &local_names,
+            &buffer_capturing_names,
+            &captured_buffers,
+            &proc.name,
+        )
+    };
+    rewrite(&mut proc.init.body);
+    rewrite(&mut proc.block_pre);
+    rewrite(&mut proc.sample);
+    rewrite(&mut proc.block_post);
     for event in &mut proc.events {
-        rewrite_stmt_list_local_calls(&mut event.body, &local_names, &proc.name);
+        rewrite(&mut event.body);
+    }
+    for when in &mut proc.whens {
+        rewrite(&mut when.body);
     }
     for task in &mut proc.tasks {
-        rewrite_stmt_list_local_calls(&mut task.body, &local_names, &proc.name);
+        rewrite(&mut task.body);
     }
     for def in &mut proc.local_defs {
-        rewrite_stmt_list_local_calls(&mut def.body, &local_names, &proc.name);
+        rewrite(&mut def.body);
     }
 }
 
@@ -241,6 +296,11 @@ fn collect_local_def_calls_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             collect_local_def_calls_in_expr(expr, def_map, calls);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_local_def_calls_in_expr(value, def_map, calls);
+            }
         }
         Stmt::If {
             cond,
@@ -363,22 +423,65 @@ fn collect_local_def_calls_in_expr(
 fn rewrite_stmt_list_local_calls(
     stmts: &mut Vec<Stmt>,
     local_names: &HashSet<String>,
+    buffer_capturing_names: &HashSet<String>,
+    captured_buffers: &[String],
     owner_proc: &str,
 ) {
     for stmt in stmts {
-        rewrite_stmt_local_calls(stmt, local_names, owner_proc);
+        rewrite_stmt_local_calls(
+            stmt,
+            local_names,
+            buffer_capturing_names,
+            captured_buffers,
+            owner_proc,
+        );
     }
 }
 
-fn rewrite_stmt_local_calls(stmt: &mut Stmt, local_names: &HashSet<String>, owner_proc: &str) {
+fn rewrite_stmt_local_calls(
+    stmt: &mut Stmt,
+    local_names: &HashSet<String>,
+    buffer_capturing_names: &HashSet<String>,
+    captured_buffers: &[String],
+    owner_proc: &str,
+) {
     match stmt {
         Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            rewrite_target_local_calls(target, local_names, owner_proc);
-            rewrite_expr_local_calls(expr, local_names, owner_proc);
+            rewrite_target_local_calls(
+                target,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_expr_local_calls(
+                expr,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_expr_local_calls(expr, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                expr,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_expr_local_calls(
+                    value,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
+            }
         }
         Stmt::If {
             cond,
@@ -386,9 +489,27 @@ fn rewrite_stmt_local_calls(stmt: &mut Stmt, local_names: &HashSet<String>, owne
             else_branch,
             ..
         } => {
-            rewrite_expr_local_calls(cond, local_names, owner_proc);
-            rewrite_stmt_list_local_calls(then_branch, local_names, owner_proc);
-            rewrite_stmt_list_local_calls(else_branch, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                cond,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_stmt_list_local_calls(
+                then_branch,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_stmt_list_local_calls(
+                else_branch,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
         Stmt::For {
             start,
@@ -397,16 +518,52 @@ fn rewrite_stmt_local_calls(stmt: &mut Stmt, local_names: &HashSet<String>, owne
             body,
             ..
         } => {
-            rewrite_expr_local_calls(start, local_names, owner_proc);
-            rewrite_expr_local_calls(end, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                start,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_expr_local_calls(
+                end,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
             if let Some(step) = step {
-                rewrite_expr_local_calls(step, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    step,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
-            rewrite_stmt_list_local_calls(body, local_names, owner_proc);
+            rewrite_stmt_list_local_calls(
+                body,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_expr_local_calls(cond, local_names, owner_proc);
-            rewrite_stmt_list_local_calls(body, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                cond,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_stmt_list_local_calls(
+                body,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
     }
 }
@@ -414,13 +571,19 @@ fn rewrite_stmt_local_calls(stmt: &mut Stmt, local_names: &HashSet<String>, owne
 fn rewrite_target_local_calls(
     target: &mut AssignTarget,
     local_names: &HashSet<String>,
+    buffer_capturing_names: &HashSet<String>,
+    captured_buffers: &[String],
     owner_proc: &str,
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
-            rewrite_expr_local_calls(index, local_names, owner_proc)
-        }
+        AssignTarget::Index { index, .. } => rewrite_expr_local_calls(
+            index,
+            local_names,
+            buffer_capturing_names,
+            captured_buffers,
+            owner_proc,
+        ),
         AssignTarget::Slice {
             selector,
             channel,
@@ -429,13 +592,25 @@ fn rewrite_target_local_calls(
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_local_calls(coordinate, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    coordinate,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
         }
     }
 }
 
-fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owner_proc: &str) {
+fn rewrite_expr_local_calls(
+    expr: &mut Expr,
+    local_names: &HashSet<String>,
+    buffer_capturing_names: &HashSet<String>,
+    captured_buffers: &[String],
+    owner_proc: &str,
+) {
     match expr {
         Expr::UserCall {
             name,
@@ -444,27 +619,69 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
             ..
         } => {
             for arg in args.iter_mut() {
-                rewrite_expr_local_calls(&mut arg.expr, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    &mut arg.expr,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
             if local_names.contains(name) {
+                if buffer_capturing_names.contains(name) {
+                    args.extend(captured_buffers.iter().map(|buffer| CallArg {
+                        name: None,
+                        expr: Expr::var(buffer.clone()),
+                    }));
+                }
                 *name = proc_local_hidden_def_name(owner_proc, name);
             }
         }
         Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
             for arg in args {
-                rewrite_expr_local_calls(arg, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    arg,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr_local_calls(lhs, local_names, owner_proc);
-            rewrite_expr_local_calls(rhs, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                lhs,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
+            rewrite_expr_local_calls(
+                rhs,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_expr_local_calls(expr, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                expr,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
         }
-        Expr::Index { index, .. } => rewrite_expr_local_calls(index, local_names, owner_proc),
+        Expr::Index { index, .. } => rewrite_expr_local_calls(
+            index,
+            local_names,
+            buffer_capturing_names,
+            captured_buffers,
+            owner_proc,
+        ),
         Expr::Slice {
             selector,
             channel,
@@ -473,20 +690,44 @@ fn rewrite_expr_local_calls(expr: &mut Expr, local_names: &HashSet<String>, owne
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_local_calls(coordinate, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    coordinate,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_expr_local_calls(&mut spec.size, local_names, owner_proc);
+            rewrite_expr_local_calls(
+                &mut spec.size,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            );
             if let Some(init) = init {
                 for expr in init {
-                    rewrite_expr_local_calls(expr, local_names, owner_proc);
+                    rewrite_expr_local_calls(
+                        expr,
+                        local_names,
+                        buffer_capturing_names,
+                        captured_buffers,
+                        owner_proc,
+                    );
                 }
             }
         }
         Expr::Tuple { values, .. } => {
             for v in values {
-                rewrite_expr_local_calls(v, local_names, owner_proc);
+                rewrite_expr_local_calls(
+                    v,
+                    local_names,
+                    buffer_capturing_names,
+                    captured_buffers,
+                    owner_proc,
+                );
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
@@ -506,6 +747,11 @@ fn inject_owner_self_into_hidden_local_calls_in_stmt(
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(expr, owner_proc, receiver);
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                inject_owner_self_into_hidden_local_calls_in_expr(value, owner_proc, receiver);
+            }
         }
         Stmt::If {
             cond,
@@ -645,6 +891,7 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
     callee_proc: &str,
     owner_proc: &str,
     nested_path: &str,
+    delegate_context_args: &[String],
 ) {
     match stmt {
         Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -654,11 +901,35 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
                 callee_proc,
                 owner_proc,
                 nested_path,
+                delegate_context_args,
             );
-            rewrite_nested_wrapper_local_calls_in_expr(expr, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                expr,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(expr, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                expr,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                rewrite_nested_wrapper_local_calls_in_expr(
+                    value,
+                    callee_proc,
+                    owner_proc,
+                    nested_path,
+                    delegate_context_args,
+                );
+            }
         }
         Stmt::If {
             cond,
@@ -666,13 +937,20 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
             else_branch,
             ..
         } => {
-            rewrite_nested_wrapper_local_calls_in_expr(cond, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                cond,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
             for stmt in then_branch {
                 rewrite_nested_wrapper_local_calls_in_stmt(
                     stmt,
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
             for stmt in else_branch {
@@ -681,6 +959,7 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
@@ -691,14 +970,27 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
             body,
             ..
         } => {
-            rewrite_nested_wrapper_local_calls_in_expr(start, callee_proc, owner_proc, nested_path);
-            rewrite_nested_wrapper_local_calls_in_expr(end, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                start,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
+            rewrite_nested_wrapper_local_calls_in_expr(
+                end,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
             if let Some(step) = step {
                 rewrite_nested_wrapper_local_calls_in_expr(
                     step,
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
             for stmt in body {
@@ -707,17 +999,25 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(cond, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                cond,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
             for stmt in body {
                 rewrite_nested_wrapper_local_calls_in_stmt(
                     stmt,
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
@@ -729,11 +1029,18 @@ fn rewrite_nested_wrapper_local_calls_in_target(
     callee_proc: &str,
     owner_proc: &str,
     nested_path: &str,
+    delegate_context_args: &[String],
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
         AssignTarget::Index { index, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(index, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                index,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
         }
         AssignTarget::Slice {
             selector,
@@ -748,6 +1055,7 @@ fn rewrite_nested_wrapper_local_calls_in_target(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
@@ -759,6 +1067,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
     callee_proc: &str,
     owner_proc: &str,
     nested_path: &str,
+    delegate_context_args: &[String],
 ) {
     match expr {
         Expr::UserCall { name, args, .. } => {
@@ -768,6 +1077,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
             let local_prefix = format!("{callee_proc}{PROC_LOCAL_DEF_FN_PREFIX}");
@@ -780,6 +1090,10 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                         expr: Expr::var("self"),
                     },
                 );
+                args.extend(delegate_context_args.iter().map(|buffer| CallArg {
+                    name: None,
+                    expr: Expr::var(buffer.clone()),
+                }));
             }
         }
         Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
@@ -789,20 +1103,45 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(lhs, callee_proc, owner_proc, nested_path);
-            rewrite_nested_wrapper_local_calls_in_expr(rhs, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                lhs,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
+            rewrite_nested_wrapper_local_calls_in_expr(
+                rhs,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(expr, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                expr,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
         }
         Expr::Index { index, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(index, callee_proc, owner_proc, nested_path);
+            rewrite_nested_wrapper_local_calls_in_expr(
+                index,
+                callee_proc,
+                owner_proc,
+                nested_path,
+                delegate_context_args,
+            );
         }
         Expr::Slice {
             selector,
@@ -817,6 +1156,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                     callee_proc,
                     owner_proc,
                     nested_path,
+                    delegate_context_args,
                 );
             }
         }
@@ -826,6 +1166,7 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                 callee_proc,
                 owner_proc,
                 nested_path,
+                delegate_context_args,
             );
             if let Some(init) = init {
                 for expr in init {
@@ -834,13 +1175,20 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                         callee_proc,
                         owner_proc,
                         nested_path,
+                        delegate_context_args,
                     );
                 }
             }
         }
         Expr::Tuple { values, .. } => {
             for v in values {
-                rewrite_nested_wrapper_local_calls_in_expr(v, callee_proc, owner_proc, nested_path);
+                rewrite_nested_wrapper_local_calls_in_expr(
+                    v,
+                    callee_proc,
+                    owner_proc,
+                    nested_path,
+                    delegate_context_args,
+                );
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}

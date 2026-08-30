@@ -1,6 +1,7 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
 use crate::is_bare_return_expr;
+use onda_frontend::DeclType;
 
 #[derive(Clone, Copy)]
 enum StaticForPlan {
@@ -27,6 +28,57 @@ impl<'a> FunctionLowerer<'a> {
                         statement.loc(),
                     ));
                 }
+                Stmt::Print {
+                    label,
+                    values,
+                    loc,
+                    origin,
+                } => {
+                    let mut arguments = Vec::with_capacity(values.len());
+                    let mut argument_types = Vec::with_capacity(values.len());
+                    let mut payload_size = 0_u32;
+                    for expression in values {
+                        let lowered = self.lower_expr(expression, block)?;
+                        // Unlike an ordinary call, `print` has no parameter type
+                        // that can provide literal context. Give pure numeric
+                        // literals the same f32/i32 defaults as an untyped
+                        // assignment; explicit casts and typed expressions retain
+                        // their concrete type.
+                        let print_ty =
+                            effective_untyped_assignment_type(expression, Some(lowered.ty))
+                                .unwrap_or(lowered.ty);
+                        let lowered = self.coerce(lowered, print_ty, block, expression.loc())?;
+                        payload_size += match lowered.ty {
+                            PrimitiveType::F32 | PrimitiveType::I32 => 4,
+                            PrimitiveType::F64 | PrimitiveType::I64 => 8,
+                            PrimitiveType::Bool => 1,
+                        };
+                        argument_types.push(scalar_type(lowered.ty));
+                        arguments.push(lowered.value);
+                    }
+                    let statement_loc: SourceLoc = (*loc).into();
+                    let site = onda_mir::LogSiteId::new(self.log_sites.len() as u32);
+                    let origin = origin.as_ref().ok_or_else(|| {
+                        self.error(
+                            "print statement lost its lexical source origin during lowering",
+                            statement_loc,
+                        )
+                    })?;
+                    let source = self.source_span(origin.source.into());
+                    self.log_sites.push(onda_mir::LogSite {
+                        label: label.clone(),
+                        source,
+                        lexical_owner: origin.lexical_owner.clone(),
+                        declaration: Some(origin.declaration.clone()),
+                        argument_types,
+                        payload_size,
+                    });
+                    block.statements.push(Statement {
+                        kind: StatementKind::PublishLog { site, arguments },
+                        source,
+                    });
+                    StatementFlow::Continues
+                }
                 Stmt::Assign {
                     target,
                     decl_ty,
@@ -34,7 +86,8 @@ impl<'a> FunctionLowerer<'a> {
                     loc,
                     ..
                 } => {
-                    let declared_integer_range = integer_range_invariant(expr, *decl_ty);
+                    let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+                    let declared_integer_range = integer_range_invariant(expr, declared_scalar_ty);
                     if let AssignTarget::Var(name) = target {
                         if self.is_slice_expression(expr) {
                             let slice = self.lower_slice_expression(expr, None, block)?;
@@ -107,7 +160,7 @@ impl<'a> FunctionLowerer<'a> {
                                 self.assign_variable_values(
                                     name,
                                     values,
-                                    *decl_ty,
+                                    decl_ty.as_ref(),
                                     expr,
                                     block,
                                     (*loc).into(),

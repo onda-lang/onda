@@ -1,5 +1,7 @@
+import std/delay
 import std/filter
 import std/osc
+import std/smoothing
 
 const TapeLineSamples = i32(SR * 3)
 
@@ -11,28 +13,30 @@ proc TapeLine:
     wow = 0.002
     wow_rate = 0.31
     drive = 1.4
+    transition_s = 0.04 {0.0, 1.0} => update_transition
 
   init:
-    line: f32[TapeLineSamples]
-    write = 0
+    line = std::delay<TapeLineSamples>::Line()
+    smoothed_delay = delay_s
+    transition_coefficient = 0.0
     wow_lfo = std::osc::Sine(freq = wow_rate)
     flutter_lfo = std::osc::Sine(freq = wow_rate * 7.31)
     feedback_filter = std::filter::OnePole(cutoff = tone)
 
+  def update_transition():
+    transition_coefficient = std::smoothing::time_coefficient(transition_s)
+
   sample:
     drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
-    moving_delay = clamp(delay_s * (1.0 + wow * drift), 0.002, 2.95)
-    read_pos = wrap(write - moving_delay * SR, 0.0, TapeLineSamples)
-    i0 = i32(read_pos)
-    i1 = i0 + 1
-    if (i1 >= TapeLineSamples):
-      i1 = 0
-    delayed = lerp(line[i0], line[i1], read_pos - i0)
+    smoothed_delay = delay_s + (smoothed_delay - delay_s) * transition_coefficient
+    moving_delay = smoothed_delay * (1.0 + wow * drift)
+    delayed = line.readL(moving_delay * SR)
 
     feedback_filter.cutoff = tone
     dark_repeat = feedback_filter(delayed)
-    line[write] = tanh((in1 + dark_repeat * feedback) * drive)
-    write = (write + 1) % TapeLineSamples
+    write_sample = tanh((in1 + dark_repeat * feedback) * drive)
+    line.write(write_sample)
+    line.advance()
     out1 = delayed
 
 proc StereoTapeEcho:

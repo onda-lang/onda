@@ -7,10 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
-## [0.7.6]
+## [0.8.0]
 
 ### Added
 
+- Added typed `delegate` declarations and synchronous `when` subscriptions for sparse outbound
+  application occurrences. Top-level delegates can be collected through independent, bounded,
+  caller-owned batches in the Rust runtime, hosted C API, raw native/Wasm processor ABI, daemon,
+  control protocol, and Web Audio adapter without callbacks or allocation in generated execution.
+- Added the compiler-known `print(...)` statement for ordered host-facing diagnostics with exact
+  `f32`, `f64`, `i32`, `i64`, and `bool` values, optional static labels, lexical source metadata,
+  bounded caller-owned delivery, and canonical ready-to-write text formatting across Rust, C,
+  JavaScript, the CLI, Web Audio, and the native run views.
 - Added explicitly typed executable-root `config const` declarations for immutable host-selected
   compile-time variants. Overrides flow through ordinary constant evaluation, shapes,
   specialization, assertions, and generated code, with support in the Rust compiler API, native
@@ -28,9 +36,15 @@ release; earlier releases are available on the
 - Added `pin` for persistent roots declared directly by `init`. Preserve-pinned initialization
   reruns ordinary declaration initializers while retaining pinned roots and task continuations;
   full initialization initializes the complete state image. Proc builtin `init(...)` events now
-  accept `all: bool = false`, with `all = true` selecting full initialization.
+  accept `full: bool = false`, with `full = true` selecting full initialization.
 - Added explicit `i32` and `i64` induction types with `for i: TYPE in ...`; unannotated loops
   continue to use `i32`.
+- Added finite `i32` and `i64` storage domains to struct fields. Constructor arguments and field
+  assignments now apply the declared clamp or wrap policy, while flattened state and struct
+  reference parameters retain the invariant for index-range proofs and bounds-check elimination.
+  Integer range facts now also propagate to a fixed point through statically resolved value and
+  read-only-reference parameters and scalar returns; writable references remain conservative.
+  Standard-library data indexing, delay lines, and real-FFT cursors use these contracts directly.
 - Added bare `return` to non-value-returning runtime `def` bodies for early exit. Bare and
   value-bearing returns cannot be mixed, and `const def` remains value-returning.
 - Added allocation-only and initialized instance-construction variants to the Rust runtime, C API,
@@ -40,11 +54,25 @@ release; earlier releases are available on the
   `begin_impulse` and `set_impulse_window`, together with `stage_window_count`,
   `impulse_window_count`, and `impulse_window_end` helpers. The Embedded Room project now uses a
   task to distribute impulse transformation over a configurable loading interval.
+- Added `std/dynamics` with linked stereo compressor, limiter, gate, peak-follower, and RMS-follower
+  processors, plus `std/sample` with a typed multichannel buffer player and synchronous completion
+  and loop delegates. Expanded `std/delay` with integer, linear, cubic, smoothly transitioning, and
+  feedback delay-line processors, and added start, release, reset, and completion surfaces to the
+  standard envelopes.
 - Added formatter, completion, navigation, document-symbol, validation, and semantic-highlighting
   support for tasks, pinned state, private proc parameters, and explicitly typed loop induction.
+- Added bare tuple destructuring targets such as `left, right = pair()`, with `_` entries for
+  discarding unneeded tuple or processor outputs without creating bindings.
+- Added `.bound()` on individual buffers and selected fixed-collection entries. It is available in
+  init, block, sample, event, task, and runtime `def` code and remains accurate when buffers are
+  forwarded through functions and processors.
 
 ### Changed
 
+- Standardized host lifecycle semantics: C opaque handles use `destroy`, caller-allocated values
+  with Onda-owned members use `dispose`, reusable caller storage uses `reset`, and `free` is reserved
+  for allocator callbacks. Caller-buffer print formatting is now allocation-free, while compiler
+  disposal and Web Audio processor closing are idempotent and terminal.
 - Renamed the proc-parameter access modifier from `pin` to `private`, reserving `pin` for persistent
   init state.
 - Instance creation is now allocation-only by default and no longer executes authored `init` code
@@ -60,9 +88,10 @@ release; earlier releases are available on the
 - Portable snapshots now include compiler-owned task continuations. Processor state metadata adds
   an `authored` flag so hosts can serialize those entries while omitting them from authored-state
   reflection; the snapshot format remains version 1.
-- Advanced the MIR schema to version 6 and the processor ABI to version 6. The raw init export is
-  now `onda_processor_init(params, state, mode)`, with named preserve-pinned and full modes; the
-  processor artifact descriptor remains format version 4.
+- Advanced the MIR schema to version 6, the processor artifact descriptor to format version 5, and
+  the processor ABI to version 5. Raw init, process, and event exports now accept a singular,
+  nullable `ExecutionOutput` containing independently nullable delegate and print batches; init
+  also takes the named preserve-pinned or full mode.
 - Advanced the project-image format to version 2 to preserve project constant bindings.
 - Reworked convolution state so prepared impulse data survives preserve-pinned initialization while
   signal history and processing counters are reinitialized.
@@ -71,10 +100,29 @@ release; earlier releases are available on the
   24-bit format behavior. The `onda_cpal` test and doctest harnesses are enabled again because the
   previous `libspa-sys` binding failure no longer reproduces with this dependency set.
 
+### Fixed
+
+- Fixed source-level processor validation selecting overloaded functions or struct methods by
+  declaration order instead of resolving the typed call shape, including calls distinguished by
+  buffer dimensionality or arity.
+- Fixed tuple destructuring of multi-output processor calls, including nested processors, indexed
+  processor arrays, and processor-array parameters. The selected processor and any dynamic index
+  are now evaluated exactly once before its outputs are bound in declaration order.
+- Fixed generated processor event functions losing their instance's buffer bindings. Direct,
+  nested, and dynamically indexed event calls now forward the current buffers so handlers can read,
+  write, and query them after host rebinding.
+- Fixed standard-library oscillators failing to propagate parent parameter updates to nested
+  oscillators, negative phasor increments wrapping incorrectly, zero-delay and wrapped delay-line
+  behavior, repeated envelope completion, and first-use FFT state depending on runtime-prepared
+  twiddle tables.
+- Fixed `std::sample::Player` treating the neutral unbound-buffer fallback as a one-frame looping
+  clip and emitting `looped` on every sample. Starting an unbound player now stops once and emits
+  `finished`.
+
 ### Migration notes
 
 - Replace `pin` on proc parameters with `private`. Use `pin` only for persistent value bindings
-  declared directly by `init`. The new builtin proc-init argument also reserves `all` as a proc
+  declared directly by `init`. The new builtin proc-init argument also reserves `full` as a proc
   parameter name.
 - Rust callers that need an immediately usable instance should replace `create_instance` with
   `create_instance_initialized` (and likewise for the allocator-backed variant), or call
@@ -88,9 +136,10 @@ release; earlier releases are available on the
   behavior, or call `processor.init(ONDA_INIT_FULL)` after `createOndaAudioProcessor`. Replace
   `processor.reset()` with `processor.init(ONDA_INIT_PRESERVE_PINNED)` or
   `processor.init(ONDA_INIT_FULL)` according to the desired state-retention policy.
-- Raw processor hosts must accept ABI version 6, call `onda_processor_init` with an explicit mode,
-  and honor the fail-closed instance lifecycle. Serialized-MIR consumers must accept schema version
-  6 and descriptor consumers should use the state `authored` field when exposing reflection.
+- Raw processor hosts must accept ABI version 5 and artifact format version 5, pass an explicit init
+  mode and optional `ExecutionOutput`, and honor the fail-closed instance lifecycle. Serialized-MIR
+  consumers must accept schema version 6; descriptor consumers should use the state `authored`
+  field when exposing reflection and the source/log-site tables when decoding prints.
 
 ## [0.7.5]
 
@@ -563,7 +612,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
-[0.7.5]: https://github.com/onda-lang/onda/compare/0.7.5...0.7.6
+[0.8.0]: https://github.com/onda-lang/onda/compare/0.7.5...0.8.0
 [0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5
 [0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4
 [0.7.3]: https://github.com/onda-lang/onda/compare/0.7.2...0.7.3

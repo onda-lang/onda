@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use onda_frontend::{
-    AssignTarget, Block, BlockExec, EventDef, FunctionDef, NamespaceDecl, NamespaceItem,
-    ProcessorDef, Program, Span, Stmt, TaskDef,
+    AssignTarget, Block, BlockExec, DelegateDef, EventDef, FunctionDef, NamespaceDecl,
+    NamespaceItem, ProcessorDef, Program, Span, Stmt, StructDef, TaskDef, WhenDef,
 };
 use onda_semantics::builtins::builtin_constant_names;
 
@@ -33,30 +33,107 @@ pub(super) fn build_semantic_scope_index(
     for block in current_blocks {
         match block {
             Block::Def(def) => build_function_scope(&mut index, None, def),
-            Block::Proc(proc_def) => build_proc_scope(&mut index, proc_def),
-            Block::Struct(struct_def) => {
-                let Some(owner_idx) = index.push_scope(None, struct_def.loc) else {
-                    continue;
-                };
-                for tp in &struct_def.type_params {
-                    index.scopes[owner_idx].scope.types.insert(tp.clone());
-                }
-                for field in &struct_def.fields {
-                    index.scopes[owner_idx]
-                        .scope
-                        .state_variables
-                        .insert(field.name.clone());
-                }
-                for method in &struct_def.methods {
-                    build_function_scope(&mut index, Some(owner_idx), method);
-                }
-            }
+            Block::Proc(proc_def) => build_proc_scope(&mut index, None, proc_def),
+            Block::Struct(struct_def) => build_struct_scope(&mut index, None, struct_def),
+            Block::Namespace(namespace) => build_namespace_scope(&mut index, None, namespace),
             _ => {}
         }
     }
 
     index.rebuild_scope_line_index();
     index
+}
+
+fn build_namespace_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    namespace: &NamespaceDecl,
+) {
+    let Some(owner_idx) = index.push_scope(parent, span_for_namespace_scope(namespace)) else {
+        return;
+    };
+    {
+        let owner = &mut index.scopes[owner_idx].scope;
+        for segment in namespace.name.split("::") {
+            let segment = segment.trim();
+            if !segment.is_empty() {
+                owner.namespaces.insert(segment.to_owned());
+            }
+        }
+        for param in &namespace.params {
+            owner.consts.insert(param.name.clone());
+        }
+        for item in &namespace.items {
+            match item {
+                NamespaceItem::Const(decl) => {
+                    owner.consts.insert(decl.name.clone());
+                }
+                NamespaceItem::Def(def) => {
+                    owner.functions.insert(def.name.clone());
+                }
+                NamespaceItem::Proc(proc_def) => {
+                    owner.types.insert(proc_def.name.clone());
+                }
+                NamespaceItem::Struct(struct_def) => {
+                    owner.types.insert(struct_def.name.clone());
+                }
+                NamespaceItem::Namespace(child) => {
+                    for segment in child.name.split("::") {
+                        let segment = segment.trim();
+                        if !segment.is_empty() {
+                            owner.namespaces.insert(segment.to_owned());
+                        }
+                    }
+                }
+                NamespaceItem::Alias(alias) => {
+                    owner.namespaces.insert(alias.name.clone());
+                }
+                NamespaceItem::Use(_) | NamespaceItem::Assert(_) => {}
+            }
+        }
+    }
+
+    for item in &namespace.items {
+        match item {
+            NamespaceItem::Def(def) => build_function_scope(index, Some(owner_idx), def),
+            NamespaceItem::Proc(proc_def) => build_proc_scope(index, Some(owner_idx), proc_def),
+            NamespaceItem::Struct(struct_def) => {
+                build_struct_scope(index, Some(owner_idx), struct_def);
+            }
+            NamespaceItem::Namespace(child) => {
+                build_namespace_scope(index, Some(owner_idx), child);
+            }
+            NamespaceItem::Assert(_)
+            | NamespaceItem::Const(_)
+            | NamespaceItem::Alias(_)
+            | NamespaceItem::Use(_) => {}
+        }
+    }
+}
+
+fn build_struct_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    struct_def: &StructDef,
+) {
+    let Some(owner_idx) = index.push_scope(parent, span_for_struct_scope(struct_def)) else {
+        return;
+    };
+    {
+        let owner = &mut index.scopes[owner_idx].scope;
+        for type_param in &struct_def.type_params {
+            owner.types.insert(type_param.clone());
+        }
+        for field in &struct_def.fields {
+            owner.state_variables.insert(field.name.clone());
+        }
+        for method in &struct_def.methods {
+            owner.functions.insert(method.name.clone());
+        }
+    }
+    for method in &struct_def.methods {
+        build_function_scope(index, Some(owner_idx), method);
+    }
 }
 
 pub(super) fn normalize_file_key_for_path(path: &Path) -> Option<String> {
@@ -100,12 +177,9 @@ pub(super) fn collect_document_scope_symbols(block: &Block, scope: &mut Semantic
         }
         Block::Struct(struct_def) => {
             scope.types.insert(struct_def.name.clone());
-            for method in &struct_def.methods {
-                scope.functions.insert(method.name.clone());
-            }
         }
         Block::Namespace(ns) => {
-            collect_namespace_symbols(ns, scope);
+            collect_namespace_name(&ns.name, scope);
         }
         Block::NamespaceAlias(alias) => {
             scope.namespaces.insert(alias.name.clone());
@@ -114,43 +188,11 @@ pub(super) fn collect_document_scope_symbols(block: &Block, scope: &mut Semantic
     }
 }
 
-fn collect_namespace_symbols(ns: &NamespaceDecl, scope: &mut SemanticScope) {
-    for segment in ns.name.split("::") {
+fn collect_namespace_name(name: &str, scope: &mut SemanticScope) {
+    for segment in name.split("::") {
         let segment = segment.trim();
         if !segment.is_empty() {
             scope.namespaces.insert(segment.to_owned());
-        }
-    }
-    for param in &ns.params {
-        scope.consts.insert(param.name.clone());
-    }
-    for item in &ns.items {
-        match item {
-            NamespaceItem::Const(decl) => {
-                scope.consts.insert(decl.name.clone());
-            }
-            NamespaceItem::Def(def) => {
-                scope.functions.insert(def.name.clone());
-            }
-            NamespaceItem::Proc(proc_def) => {
-                scope.types.insert(proc_def.name.clone());
-            }
-            NamespaceItem::Struct(struct_def) => {
-                scope.types.insert(struct_def.name.clone());
-                for tp in &struct_def.type_params {
-                    scope.types.insert(tp.clone());
-                }
-                for method in &struct_def.methods {
-                    scope.functions.insert(method.name.clone());
-                }
-            }
-            NamespaceItem::Namespace(child) => {
-                collect_namespace_symbols(child, scope);
-            }
-            NamespaceItem::Alias(alias) => {
-                scope.namespaces.insert(alias.name.clone());
-            }
-            NamespaceItem::Use(_) | NamespaceItem::Assert(_) => {}
         }
     }
 }
@@ -169,6 +211,8 @@ struct TopLevelRuntimeSections<'a> {
     parameters: Vec<String>,
     stmt_regions: Vec<RuntimeStmtRegion<'a>>,
     events: Vec<&'a EventDef>,
+    delegates: Vec<&'a DelegateDef>,
+    whens: Vec<&'a WhenDef>,
     tasks: Vec<&'a TaskDef>,
 }
 
@@ -190,10 +234,22 @@ fn build_top_level_runtime_scope(
         for task in &sections.tasks {
             owner.functions.insert(task.name.clone());
         }
+        for event in &sections.events {
+            owner.events.insert(event.name.clone());
+        }
+        for delegate in &sections.delegates {
+            owner.delegates.insert(delegate.name.clone());
+        }
     }
     build_runtime_stmt_regions(index, owner_idx, &sections.stmt_regions);
     for event in sections.events {
         build_event_scope(index, owner_idx, event);
+    }
+    for delegate in sections.delegates {
+        build_delegate_scope(index, owner_idx, delegate);
+    }
+    for when in sections.whens {
+        build_when_scope(index, owner_idx, when);
     }
     for task in sections.tasks {
         build_task_scope(index, owner_idx, task);
@@ -249,6 +305,14 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
             Block::Events(events) => {
                 extend_runtime_owner_span(&mut sections.span, events.loc);
                 sections.events.extend(events.events.iter());
+            }
+            Block::Delegates(delegates) => {
+                extend_runtime_owner_span(&mut sections.span, delegates.loc);
+                sections.delegates.extend(delegates.delegates.iter());
+            }
+            Block::When(when) => {
+                extend_runtime_owner_span(&mut sections.span, when.loc);
+                sections.whens.push(when);
             }
             Block::Tasks(tasks) => {
                 extend_runtime_owner_span(&mut sections.span, tasks.loc);
@@ -308,9 +372,13 @@ fn runtime_regions_for_block_exec<'a>(exec: &'a BlockExec) -> Vec<RuntimeStmtReg
     regions
 }
 
-fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
+fn build_proc_scope(
+    index: &mut SemanticScopeIndex,
+    parent: Option<usize>,
+    proc_def: &ProcessorDef,
+) {
     let Some(owner_idx) =
-        create_runtime_owner_scope(index, None, span_for_proc_scope(proc_def), true)
+        create_runtime_owner_scope(index, parent, span_for_proc_scope(proc_def), true)
     else {
         return;
     };
@@ -334,6 +402,12 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
         for def in &proc_def.local_defs {
             owner.functions.insert(def.name.clone());
         }
+        for event in &proc_def.events {
+            owner.events.insert(event.name.clone());
+        }
+        for delegate in &proc_def.delegates {
+            owner.delegates.insert(delegate.name.clone());
+        }
         for task in &proc_def.tasks {
             owner.functions.insert(task.name.clone());
         }
@@ -343,6 +417,12 @@ fn build_proc_scope(index: &mut SemanticScopeIndex, proc_def: &ProcessorDef) {
 
     for event in &proc_def.events {
         build_event_scope(index, owner_idx, event);
+    }
+    for delegate in &proc_def.delegates {
+        build_delegate_scope(index, owner_idx, delegate);
+    }
+    for when in &proc_def.whens {
+        build_when_scope(index, owner_idx, when);
     }
     for def in &proc_def.local_defs {
         build_function_scope(index, Some(owner_idx), def);
@@ -413,13 +493,40 @@ fn build_event_scope(index: &mut SemanticScopeIndex, parent: usize, event: &Even
     let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
     {
         let scope = &mut index.scopes[scope_idx].scope;
-        scope.functions.insert(event.name.clone());
+        scope.events.insert(event.name.clone());
         for param in &event.params {
             scope.parameters.insert(param.name.clone());
         }
         collect_stmt_symbols(&event.body, scope);
         prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
     }
+}
+
+fn build_delegate_scope(index: &mut SemanticScopeIndex, parent: usize, delegate: &DelegateDef) {
+    let Some(scope_idx) = index.push_scope(Some(parent), delegate.loc) else {
+        return;
+    };
+    let scope = &mut index.scopes[scope_idx].scope;
+    scope.delegates.insert(delegate.name.clone());
+    for param in &delegate.params {
+        scope.parameters.insert(param.name.clone());
+    }
+}
+
+fn build_when_scope(index: &mut SemanticScopeIndex, parent: usize, when: &WhenDef) {
+    let Some(scope_idx) = index.push_scope(Some(parent), span_for_when_scope(when)) else {
+        return;
+    };
+    let reserved = index.scopes[parent].scope.clone();
+    let allows_implicit_ports = index.scopes[scope_idx].allows_implicit_ports;
+    let scope = &mut index.scopes[scope_idx].scope;
+    for binding in &when.bindings {
+        if binding.name != "_" {
+            scope.parameters.insert(binding.name.clone());
+        }
+    }
+    collect_stmt_symbols(&when.body, scope);
+    prune_shadowed_variables(scope, &reserved, allows_implicit_ports);
 }
 
 fn build_task_scope(index: &mut SemanticScopeIndex, parent: usize, task: &TaskDef) {
@@ -509,6 +616,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_when_scope(when: &WhenDef) -> Span {
+    span_for_stmt_body(&when.body)
+        .map(|body_span| Span::spanning(when.loc, body_span))
+        .unwrap_or(when.loc)
+}
+
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
         .map(|body_span| Span::spanning(task.loc, body_span))
@@ -550,6 +663,12 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
     }
+    for delegate in &proc_def.delegates {
+        span = Span::spanning(span, delegate.loc);
+    }
+    for when in &proc_def.whens {
+        span = Span::spanning(span, span_for_when_scope(when));
+    }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
     }
@@ -557,6 +676,35 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
         span = Span::spanning(span, span_for_task_scope(task));
     }
 
+    span
+}
+
+fn span_for_struct_scope(struct_def: &StructDef) -> Span {
+    let mut span = struct_def.loc;
+    for field in &struct_def.fields {
+        span = Span::spanning(span, field.loc);
+    }
+    for method in &struct_def.methods {
+        span = Span::spanning(span, span_for_function_scope(method));
+    }
+    span
+}
+
+fn span_for_namespace_scope(namespace: &NamespaceDecl) -> Span {
+    let mut span = namespace.loc;
+    for item in &namespace.items {
+        let item_span = match item {
+            NamespaceItem::Assert(decl) => decl.loc,
+            NamespaceItem::Const(decl) => decl.loc,
+            NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
+            NamespaceItem::Def(decl) => span_for_function_scope(decl),
+            NamespaceItem::Proc(decl) => span_for_proc_scope(decl),
+            NamespaceItem::Namespace(decl) => span_for_namespace_scope(decl),
+            NamespaceItem::Alias(decl) => decl.loc,
+            NamespaceItem::Use(decl) => decl.loc,
+        };
+        span = Span::spanning(span, item_span);
+    }
     span
 }
 
@@ -575,137 +723,6 @@ fn prune_shadowed_variables(
         reserved.token_type_for(name).is_none()
             && (!allows_implicit_ports || !super::is_implicit_port_name(name))
     });
-}
-
-pub(super) fn collect_all_symbols(program: &Program) -> SemanticScope {
-    let mut scope = SemanticScope::default();
-    for block in &program.blocks {
-        collect_block_symbols(block, &mut scope);
-    }
-    scope
-}
-
-fn collect_block_symbols(block: &Block, scope: &mut SemanticScope) {
-    match block {
-        Block::Const(decl) => {
-            scope.consts.insert(decl.name.clone());
-        }
-        Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
-            for decl in &ports.decls {
-                scope.ports.insert(decl.name.clone());
-            }
-        }
-        Block::Params(params) => {
-            for decl in &params.decls {
-                scope.ports.insert(decl.name.clone());
-            }
-        }
-        Block::Buffers(buffers) => {
-            for decl in &buffers.decls {
-                scope.ports.insert(decl.name.clone());
-            }
-        }
-        Block::Events(events) => {
-            for event in &events.events {
-                scope.functions.insert(event.name.clone());
-                for param in &event.params {
-                    scope.parameters.insert(param.name.clone());
-                }
-                collect_stmt_symbols(&event.body, scope);
-            }
-        }
-        Block::Tasks(tasks) => {
-            for task in &tasks.tasks {
-                scope.functions.insert(task.name.clone());
-                collect_stmt_symbols(&task.body, scope);
-            }
-        }
-        Block::Init(init) => {
-            collect_state_stmt_symbols(&init.body, scope, 0);
-        }
-        Block::Block(exec) => {
-            collect_stmt_symbols(&exec.pre, scope);
-            if let Some(sample) = &exec.sample {
-                collect_stmt_symbols(&sample.body, scope);
-            }
-            collect_stmt_symbols(&exec.post, scope);
-        }
-        Block::Sample(sample) => {
-            collect_stmt_symbols(&sample.body, scope);
-        }
-        Block::Def(def) => {
-            scope.functions.insert(def.name.clone());
-            collect_def_symbols(def, scope);
-        }
-        Block::Proc(proc_def) => {
-            scope.types.insert(proc_def.name.clone());
-            collect_proc_symbols(proc_def, scope);
-        }
-        Block::Struct(struct_def) => {
-            scope.types.insert(struct_def.name.clone());
-            for tp in &struct_def.type_params {
-                scope.types.insert(tp.clone());
-            }
-            for method in &struct_def.methods {
-                scope.functions.insert(method.name.clone());
-                collect_def_symbols(method, scope);
-            }
-        }
-        Block::Namespace(ns) => {
-            collect_namespace_symbols(ns, scope);
-        }
-        Block::NamespaceAlias(alias) => {
-            scope.namespaces.insert(alias.name.clone());
-        }
-        _ => {}
-    }
-}
-
-fn collect_proc_symbols(proc_def: &ProcessorDef, scope: &mut SemanticScope) {
-    for tp in &proc_def.type_params {
-        scope.types.insert(tp.clone());
-    }
-    for decl in &proc_def.ins {
-        scope.ports.insert(decl.name.clone());
-    }
-    for decl in &proc_def.outs {
-        scope.ports.insert(decl.name.clone());
-    }
-    for decl in &proc_def.params {
-        scope.ports.insert(decl.name.clone());
-    }
-    for buffer in &proc_def.buffers {
-        scope.ports.insert(buffer.name.clone());
-    }
-    collect_state_stmt_symbols(&proc_def.init.body, scope, 0);
-    collect_stmt_symbols(&proc_def.block_pre, scope);
-    collect_stmt_symbols(&proc_def.sample, scope);
-    collect_stmt_symbols(&proc_def.block_post, scope);
-    for event in &proc_def.events {
-        scope.functions.insert(event.name.clone());
-        for param in &event.params {
-            scope.parameters.insert(param.name.clone());
-        }
-        collect_stmt_symbols(&event.body, scope);
-    }
-    for def in &proc_def.local_defs {
-        scope.functions.insert(def.name.clone());
-        collect_def_symbols(def, scope);
-    }
-    for task in &proc_def.tasks {
-        scope.functions.insert(task.name.clone());
-        collect_stmt_symbols(&task.body, scope);
-    }
-}
-
-fn collect_def_symbols(def: &FunctionDef, scope: &mut SemanticScope) {
-    for tp in &def.type_params {
-        scope.types.insert(tp.clone());
-    }
-    for param in &def.params {
-        scope.parameters.insert(param.name.clone());
-    }
-    collect_stmt_symbols(&def.body, scope);
 }
 
 fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
@@ -773,8 +790,8 @@ fn collect_target_symbols(target: &AssignTarget, scope: &mut SemanticScope) {
             scope.insert_variable(name.clone());
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
-                scope.insert_variable(name.clone());
+            for name in names.iter().filter_map(|target| target.binding()) {
+                scope.insert_variable(name.to_owned());
             }
         }
         _ => {}
@@ -787,8 +804,8 @@ fn collect_state_target_symbols(target: &AssignTarget, scope: &mut SemanticScope
             scope.insert_state_variable(name.clone());
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
-                scope.insert_state_variable(name.clone());
+            for name in names.iter().filter_map(|target| target.binding()) {
+                scope.insert_state_variable(name.to_owned());
             }
         }
         _ => {}

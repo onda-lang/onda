@@ -38,6 +38,7 @@ pub use project_io::{
 };
 
 const SCOPE_MAX_FRAMES: usize = 1024;
+const MAX_VISIBLE_LOG_ENTRIES: usize = 4096;
 const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Periodic controller polling interval used while a native run frontend is loaded.
@@ -96,6 +97,14 @@ pub struct RunState {
     pub output_channels: usize,
     pub buffers: Vec<Value>,
     pub events: Vec<Value>,
+    pub delegates: Vec<Value>,
+    pub log_text: String,
+    pub log_entries: Vec<Value>,
+    pub log_revealed: bool,
+    pub print_overflow_count: u64,
+    pub print_transport_drop_count: u64,
+    pub delegate_overflow_count: u64,
+    pub delegate_transport_drop_count: u64,
     pub params: Vec<Value>,
     pub input_devices: Vec<String>,
     pub output_devices: Vec<String>,
@@ -116,6 +125,14 @@ impl RunState {
             output_channels: 0,
             buffers: Vec::new(),
             events: Vec::new(),
+            delegates: Vec::new(),
+            log_text: String::new(),
+            log_entries: Vec::new(),
+            log_revealed: false,
+            print_overflow_count: 0,
+            print_transport_drop_count: 0,
+            delegate_overflow_count: 0,
+            delegate_transport_drop_count: 0,
             params: Vec::new(),
             input_devices: list_input_devices(),
             output_devices: list_output_devices(),
@@ -202,6 +219,7 @@ struct ReadyEvent {
     params: Vec<Value>,
     buffers: Vec<Value>,
     events: Vec<Value>,
+    delegates: Vec<Value>,
     output_channels: usize,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
@@ -217,6 +235,7 @@ struct RawReadyEvent {
     params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
+    delegates: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
     output_channels: Option<usize>,
     #[serde(rename = "inputDevices")]
@@ -561,6 +580,15 @@ impl RunController {
         self.state.error = None;
     }
 
+    pub fn clear_log(&mut self) {
+        self.state.log_text.clear();
+        self.state.log_entries.clear();
+        self.state.print_overflow_count = 0;
+        self.state.print_transport_drop_count = 0;
+        self.state.delegate_overflow_count = 0;
+        self.state.delegate_transport_drop_count = 0;
+    }
+
     pub fn set_param(&mut self, name: &str, value: Value) {
         self.bridge
             .send_command_notification("setParam", &json!({ "name": name, "value": value }));
@@ -807,7 +835,15 @@ impl RunController {
             &ready.events,
         );
         self.state.events = ready.events;
+        self.state.delegates = ready.delegates;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
+        self.state.log_text.clear();
+        self.state.log_entries.clear();
+        self.state.log_revealed = false;
+        self.state.print_overflow_count = 0;
+        self.state.print_transport_drop_count = 0;
+        self.state.delegate_overflow_count = 0;
+        self.state.delegate_transport_drop_count = 0;
         self.state.path = ready.path;
         self.state.output_channels = ready.output_channels;
         if !ready.input_devices.is_empty() {
@@ -824,6 +860,11 @@ impl RunController {
         self.state.current_output_device = ready.current_output_device;
         self.state.connected = self.bridge.is_connected();
         self.state.error = bridge_error;
+
+        // The run UI's compact Log is an explicit delegate consumer. Other
+        // control clients remain unsubscribed until they request collection.
+        self.bridge
+            .send_command_notification("subscribeDelegates", &json!({}));
 
         for (name, value) in &self.preserved_params {
             self.bridge
@@ -980,6 +1021,93 @@ impl RunController {
     fn handle_tcp_response(&mut self, line: &str) -> PollResult {
         let mut poll = PollResult::default();
         if let Ok(resp) = serde_json::from_str::<Value>(line) {
+            if resp.get("event").and_then(Value::as_str) == Some("print") {
+                let entries = resp
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let text = resp.get("text").and_then(Value::as_str).unwrap_or_default();
+                let overflow_count = resp
+                    .get("overflowCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let transport_drop_count = resp
+                    .get("transportDropCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if record_notification_is_visible(
+                    !text.is_empty() || !entries.is_empty(),
+                    overflow_count,
+                    transport_drop_count,
+                ) {
+                    self.state.log_revealed = true;
+                }
+                if !text.is_empty() {
+                    for (index, line) in text.lines().enumerate() {
+                        self.state.log_text.push_str(line);
+                        self.state.log_text.push('\n');
+                        self.state
+                            .log_entries
+                            .push(entries.get(index).cloned().unwrap_or(Value::Null));
+                    }
+                    trim_log_history(&mut self.state);
+                }
+                self.state.print_overflow_count = self
+                    .state
+                    .print_overflow_count
+                    .saturating_add(overflow_count);
+                self.state.print_transport_drop_count = self
+                    .state
+                    .print_transport_drop_count
+                    .saturating_add(transport_drop_count);
+                poll.state_changed = true;
+                return poll;
+            }
+            if resp.get("event").and_then(Value::as_str) == Some("delegates") {
+                let overflow_count = resp
+                    .get("overflowCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let transport_drop_count = resp
+                    .get("transportDropCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let has_occurrences = resp
+                    .get("occurrences")
+                    .and_then(Value::as_array)
+                    .is_some_and(|occurrences| !occurrences.is_empty());
+                if record_notification_is_visible(
+                    has_occurrences,
+                    overflow_count,
+                    transport_drop_count,
+                ) {
+                    self.state.log_revealed = true;
+                }
+                if let Some(occurrences) = resp.get("occurrences").and_then(Value::as_array) {
+                    for occurrence in occurrences {
+                        self.state
+                            .log_text
+                            .push_str(&format_delegate_log_line(occurrence, &self.state.delegates));
+                        self.state.log_text.push('\n');
+                        self.state.log_entries.push(json!({
+                            "kind": "delegate",
+                            "delegate": occurrence,
+                        }));
+                    }
+                    trim_log_history(&mut self.state);
+                }
+                self.state.delegate_overflow_count = self
+                    .state
+                    .delegate_overflow_count
+                    .saturating_add(overflow_count);
+                self.state.delegate_transport_drop_count = self
+                    .state
+                    .delegate_transport_drop_count
+                    .saturating_add(transport_drop_count);
+                poll.state_changed = true;
+                return poll;
+            }
             let id = resp.get("id").and_then(Value::as_u64);
             let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
             if let Some(command) = id.and_then(|id| self.pending_commands.remove(&id)) {
@@ -1061,6 +1189,99 @@ impl RunController {
         if !self.state.running {
             self.scope_polling_in_flight = false;
         }
+    }
+}
+
+fn record_notification_is_visible(
+    has_records: bool,
+    overflow_count: u64,
+    transport_drop_count: u64,
+) -> bool {
+    has_records || overflow_count != 0 || transport_drop_count != 0
+}
+
+fn trim_log_history(state: &mut RunState) {
+    let excess = state
+        .log_entries
+        .len()
+        .saturating_sub(MAX_VISIBLE_LOG_ENTRIES);
+    if excess == 0 {
+        return;
+    }
+    state.log_entries.drain(..excess);
+    state.log_text = state
+        .log_text
+        .lines()
+        .skip(excess)
+        .map(|line| format!("{line}\n"))
+        .collect();
+}
+
+fn format_delegate_log_line(occurrence: &Value, delegates: &[Value]) -> String {
+    let name = occurrence
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("delegate");
+    let values = occurrence.get("values").and_then(Value::as_object);
+    let params = occurrence
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|index| delegates.get(index as usize))
+        .and_then(|delegate| delegate.get("params"))
+        .and_then(Value::as_array);
+    let values = match (values, params) {
+        (Some(values), Some(params)) => params
+            .iter()
+            .filter_map(|param| {
+                let name = param.get("name")?.as_str()?;
+                let value = values.get(name)?;
+                let type_repr = param.get("type").and_then(Value::as_str);
+                Some(format!("{name}={}", format_log_value(value, type_repr)))
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        (Some(values), None) => values
+            .iter()
+            .map(|(name, value)| format!("{name}={}", format_log_value(value, None)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        (None, _) => String::new(),
+    };
+    if values.is_empty() {
+        format!("delegate {name}")
+    } else {
+        format!("delegate {name}: {values}")
+    }
+}
+
+fn format_log_value(value: &Value, type_repr: Option<&str>) -> String {
+    match value {
+        // Delegate i64 values cross JSON as decimal strings to retain their
+        // full width. Present them as integers rather than quoted text.
+        Value::String(value) => value.clone(),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(|value| format_log_value(value, type_repr))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Number(value)
+            if type_repr.is_some_and(|ty| matches!(ty.split('[').next(), Some("i32" | "i64"))) =>
+        {
+            value
+                .as_i64()
+                .map(|value| value.to_string())
+                .or_else(|| {
+                    value
+                        .as_f64()
+                        .filter(|value| value.is_finite() && value.fract() == 0.0)
+                        .map(|value| format!("{value:.0}"))
+                })
+                .unwrap_or_else(|| value.to_string())
+        }
+        _ => value.to_string(),
     }
 }
 
@@ -1236,6 +1457,12 @@ fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
         "loadedFrames": buffer.loaded_frames,
         "loadedChannels": buffer.loaded_channels,
         "loadedSampleRate": buffer.loaded_sample_rate_hz,
+        "waveform": buffer.waveform.as_ref().map(|waveform| json!({
+            "minValue": waveform.min_value,
+            "maxValue": waveform.max_value,
+            "minimums": waveform.minimums,
+            "maximums": waveform.maximums,
+        })),
     })
 }
 
@@ -1261,6 +1488,7 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
     match value {
         RunEventValue::Bool(value) => Value::Bool(*value),
         RunEventValue::Number(value) => json!(value),
+        RunEventValue::I64(value) => Value::String(value.to_string()),
         RunEventValue::Array(values) => {
             Value::Array(values.iter().map(run_event_value_json).collect())
         }
@@ -1377,6 +1605,7 @@ impl ChildSession {
                             params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
+                            delegates: raw.delegates.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
                             input_devices: raw.input_devices.unwrap_or_default(),
                             output_devices: raw.output_devices.unwrap_or_default(),
@@ -2498,12 +2727,13 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::{
         compiled_snapshot_is_current, events_are_compatible_for_preservation,
-        params_are_compatible_for_preservation, reconcile_preserved_events,
-        reconcile_preserved_params, relevant_source_change_paths, run_param_json,
-        source_change_paths, source_snapshot, source_snapshot_with_project, source_watch_root,
-        watcher_gap_validation_paths, ControllerEvent, FileWatcher, ParamDomain, ParamScalarType,
-        ParamScale, PendingCommand, PreservedBufferBinding, RunHostOptions, RunParamInfo,
-        RunParamWire, SourceCompilationState, SourceWatchRevision,
+        format_delegate_log_line, params_are_compatible_for_preservation,
+        reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
+        relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
+        source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
+        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
+        PreservedBufferBinding, RunHostOptions, RunParamInfo, RunParamWire, SourceCompilationState,
+        SourceWatchRevision,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -2515,6 +2745,44 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_256_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
+
+    #[test]
+    fn delegate_log_lines_follow_declared_order_and_types() {
+        let delegates = [json!({
+            "name": "meter",
+            "params": [
+                { "name": "voice", "type": "i32" },
+                { "name": "bins", "type": "f32[]" },
+                { "name": "frame", "type": "i64" },
+            ],
+        })];
+        assert_eq!(
+            format_delegate_log_line(
+                &json!({
+                    "index": 0,
+                    "name": "meter",
+                    "values": {
+                        "voice": 3.0,
+                        "bins": [0.25, 0.5],
+                        "frame": "9007199254740993",
+                    },
+                }),
+                &delegates
+            ),
+            "delegate meter: voice=3 bins=[0.25, 0.5] frame=9007199254740993"
+        );
+        assert_eq!(
+            format_delegate_log_line(&json!({ "name": "done", "values": {} }), &[],),
+            "delegate done"
+        );
+    }
+
+    #[test]
+    fn record_loss_notifications_reveal_the_log_without_records() {
+        assert!(record_notification_is_visible(false, 1, 0));
+        assert!(record_notification_is_visible(false, 0, 1));
+        assert!(!record_notification_is_visible(false, 0, 0));
     }
 
     #[test]

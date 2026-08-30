@@ -55,13 +55,169 @@ fn events_metadata_and_scalar_dispatch_work() {
 
     let payload = 0.75_f32.to_ne_bytes();
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in &output {
         assert_near(*sample, 0.75, 1e-6);
     }
+}
+
+#[test]
+
+fn proc_events_use_their_bound_buffers_at_runtime() {
+    let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    clip[frame] = clip[frame] + 1.0
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32
+
+events:
+  capture(frame: i32):
+    player.capture(frame)
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buffer = vec![0.25_f32, 0.75];
+    bind_buffer(
+        &mut instance,
+        0,
+        buffer.as_mut_ptr().cast(),
+        buffer.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind source buffer");
+
+    let capture = instance.event_index("capture").expect("capture event");
+    trigger_event_by_index(
+        &mut instance,
+        capture,
+        &1_i32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("capture event should access the bound buffer");
+
+    assert_near(buffer[1], 1.75, 1e-6);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 1.75, 1e-6);
+    }
+}
+
+#[test]
+fn delegate_handlers_use_their_owner_buffer_bindings_at_runtime() {
+    let src = r#"
+delegate top_fired()
+
+proc Child:
+  delegate fired()
+  buffers:
+    own: f32
+  when fired():
+    own[0] = own[0] + 2.0
+  block:
+    held = 0.0
+    sample:
+      fired()
+      out1 = held
+
+proc Parent:
+  delegate own_fired()
+  buffers:
+    own: f32
+    routed: f32
+    child_own: f32
+  init:
+    child = Child(own = child_own)
+  when own_fired():
+    own[0] = own[0] + 1.0
+  when child.fired():
+    routed[0] = routed[0] + 10.0
+  sample:
+    own_fired()
+    out1 = child()
+
+buffers:
+  top: f32
+  own: f32
+  routed: f32
+  child_own: f32
+
+when top_fired():
+  top[0] = top[0] + 100.0
+
+when parent.own_fired():
+  top[0] = top[0] + 1000.0
+
+init:
+  parent = Parent(own = own, routed = routed, child_own = child_own)
+
+sample:
+  top_fired()
+  out1 = parent()
+"#;
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut top = [0.0_f32];
+    let mut own = [0.0_f32];
+    let mut routed = [0.0_f32];
+    let mut child_own = [0.0_f32];
+    for (index, buffer) in [&mut top, &mut own, &mut routed, &mut child_own]
+        .into_iter()
+        .enumerate()
+    {
+        bind_buffer(
+            &mut instance,
+            index,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            1,
+            48_000.0,
+            PrimitiveType::F32,
+        )
+        .expect("bind delegate handler buffer");
+    }
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(top[0], 4400.0, 1e-6);
+    assert_near(own[0], 4.0, 1e-6);
+    assert_near(routed[0], 40.0, 1e-6);
+    assert_near(child_own[0], 8.0, 1e-6);
 }
 
 #[test]
@@ -86,7 +242,13 @@ fn init_restores_resettable_runtime_state() {
 
     let payload = 0.5_f32.to_ne_bytes();
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -119,8 +281,13 @@ fn event_array_payload_dispatch_and_unknown_index_ignore() {
 
     assert_eq!(instance.event_payload_bytes(0), Some(8));
 
-    trigger_event_by_index(&mut instance, 99, &[1, 2, 3])
-        .expect("unknown event index should be ignored");
+    trigger_event_by_index(
+        &mut instance,
+        99,
+        &[1, 2, 3],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("unknown event index should be ignored");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -136,7 +303,13 @@ fn event_array_payload_dispatch_and_unknown_index_ignore() {
 
     payload.extend_from_slice(&0.75_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -165,7 +338,8 @@ fn event_handler_local_array_literal_declaration_compiles_and_runs() {
         assert_near(*sample, 0.0, 1e-6);
     }
 
-    trigger_event_by_index(&mut instance, 0, &[]).expect("event trigger should succeed");
+    trigger_event_by_index(&mut instance, 0, &[], onda_runtime::ExecutionOutput::none())
+        .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -181,7 +355,7 @@ fn event_payload_mismatch_returns_runtime_error() {
 
     let (mut instance, _, _) = compile_instance(EVENT_SCALAR_UPDATE_EXAMPLE, frames);
 
-    let err = trigger_event_by_index(&mut instance, 0, &[])
+    let err = trigger_event_by_index(&mut instance, 0, &[], onda_runtime::ExecutionOutput::none())
         .expect_err("payload mismatch should return runtime error");
 
     assert!(
@@ -207,8 +381,13 @@ fn proc_event_forwarding_from_top_level_event_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.6_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -300,8 +479,13 @@ fn proc_array_indexed_event_forwarding_from_top_level_event_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.6_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -328,8 +512,13 @@ fn proc_array_alias_event_forwarding_from_top_level_event_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.66_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.66_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -421,8 +610,13 @@ fn nested_proc_array_indexed_event_forwarding_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.7_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.7_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -449,8 +643,13 @@ fn deep_nested_proc_array_dynamic_index_event_forwarding_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.65_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.65_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -479,8 +678,13 @@ fn deeper_nested_proc_array_dynamic_index_event_forwarding_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.6_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.6_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -509,8 +713,13 @@ fn proc_array_alias_event_forwarding_from_parent_proc_event_runs() {
         .event_index("note_on")
         .expect("top-level forwarding event must exist");
 
-    trigger_event_by_index(&mut instance, idx, &0.68_f32.to_ne_bytes())
-        .expect("forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &0.68_f32.to_ne_bytes(),
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -745,7 +954,13 @@ sample { out1 = voice() }
 
     let payload = 3.0_f32.to_ne_bytes();
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -800,7 +1015,13 @@ sample { out1 = voice() }
 
     let payload = 20.0_f32.to_ne_bytes();
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -855,7 +1076,8 @@ sample { out1 = voice() }
 
     assert_near(output[0], 7.0, 1e-6);
 
-    trigger_event_by_index(&mut instance, 0, &[]).expect("event trigger should succeed");
+    trigger_event_by_index(&mut instance, 0, &[], onda_runtime::ExecutionOutput::none())
+        .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -929,7 +1151,13 @@ sample {
 
     payload.extend_from_slice(&3.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, 0, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        0,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -1187,8 +1415,13 @@ fn top_level_events_accept_slice_payloads() {
 
     payload.extend_from_slice(&0.75_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("slice event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("slice event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1221,8 +1454,13 @@ fn top_level_events_forward_slice_payloads_to_proc_events() {
 
     payload.extend_from_slice(&0.25_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("slice forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("slice forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1248,8 +1486,13 @@ fn top_level_slice_event_truncated_payload_returns_runtime_error() {
 
     payload.extend_from_slice(&0.75_f32.to_ne_bytes());
 
-    let err = trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect_err("truncated slice payload should fail");
+    let err = trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect_err("truncated slice payload should fail");
 
     assert!(
         err.message.contains("payload"),
@@ -1284,8 +1527,13 @@ fn top_level_events_forward_fixed_array_payloads_to_proc_events() {
 
     payload.extend_from_slice(&0.4_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("fixed-array forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("fixed-array forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1322,8 +1570,13 @@ fn top_level_events_accept_mixed_fixed_and_slice_payloads() {
 
     payload.extend_from_slice(&2.5_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("mixed fixed/slice event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("mixed fixed/slice event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1356,8 +1609,13 @@ fn top_level_events_forward_large_fixed_array_payloads_to_proc_events() {
 
     payload[(96000 - 1) * 4..96000 * 4].copy_from_slice(&0.75_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload)
-        .expect("large fixed-array forwarding event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("large fixed-array forwarding event trigger should succeed");
 
     let mut output = vec![0.0_f32; frames];
 
@@ -1467,7 +1725,7 @@ fn events_reject_duplicate_and_conflicting_names() {
     assert!(
         errs.iter().any(|d| {
             d.message
-                .contains("event name conflicts with an existing callable/endpoint name")
+                .contains("binding 'note_on' conflicts with owner-local event 'note_on'")
         }),
         "expected proc event name conflict error, got {:?}",
         errs

@@ -1,10 +1,10 @@
 {
   "format": "onda-processor",
-  "format_version": 4,
+  "format_version": 5,
   "artifact_kind": "webassembly_module",
-  "abi_version": 6,
+  "abi_version": 5,
   "backend": "conformance-fixture",
-  "mir_schema_version": 5,
+  "mir_schema_version": 6,
   "target": {
     "triple": "wasm32-unknown-unknown",
     "cpu": "generic",
@@ -47,9 +47,13 @@
     "snapshot_format_version": 1,
     "snapshot_byte_order": "little_endian",
     "snapshot_restore_base": "post_init_physical_state_image",
-    "requires_full_blocks": false
+    "requires_full_blocks": false,
+    "delegate_record_header_size_bytes": 12,
+    "print_record_header_size_bytes": 12
   },
   "metadata": {
+    "source_files": [],
+    "log_sites": [],
     "inputs": [{
       "name": "in1",
       "type_repr": "f32",
@@ -109,12 +113,31 @@
         "type_repr": "f32",
         "scalar": "f32",
         "array_len": 1,
+        "is_array": false,
         "is_slice": false,
         "byte_offset": 0,
         "byte_size": 4,
         "element_size_bytes": 4,
         "has_default": false,
         "default_reprs": null
+      }]
+    }],
+    "delegates": [{
+      "index": 0,
+      "name": "finished",
+      "payload_size_bytes": 4,
+      "payload_min_size_bytes": 4,
+      "has_dynamic_payload": false,
+      "params": [{
+        "name": "reason",
+        "type_repr": "i32",
+        "scalar": "i32",
+        "array_len": 1,
+        "is_array": false,
+        "is_slice": false,
+        "byte_offset": 0,
+        "byte_size": 4,
+        "element_size_bytes": 4
       }]
     }],
     "states": [{

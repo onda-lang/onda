@@ -28,18 +28,18 @@ import { reorderMap } from "./tab-order.js";
 
 const sectionWords = new Set([
   "ins", "inputs", "outs", "outputs", "params", "kins", "kouts",
-  "buffers", "events", "init", "block", "sample", "graph",
+  "buffers", "events", "delegates", "init", "block", "sample", "graph",
 ]);
 const declarationWords = new Set([
-  "const", "def", "event", "proc", "processor", "struct", "namespace",
+  "const", "def", "event", "delegate", "proc", "processor", "struct", "namespace",
 ]);
 const nameFollowing = new Set([
-  "def", "event", "proc", "processor", "struct", "namespace",
+  "def", "event", "delegate", "proc", "processor", "struct", "namespace",
 ]);
 const keywordWords = new Set([
   "if", "elif", "else", "for", "in", "while", "loop", "break",
   "continue", "return", "assert", "import", "include", "use", "pub",
-  "as", "private", "pin", "config",
+  "as", "private", "pin", "config", "when",
 ]);
 const typeWords = new Set(["f32", "f64", "i32", "i64", "bool", "buffer"]);
 const constantWords = new Set([
@@ -132,6 +132,21 @@ const semanticTokenField = StateField.define({
     return tokens;
   },
   provide: (field) => EditorView.decorations.from(field),
+});
+
+export const ondaSemanticTokenColors = Object.freeze({
+  enumMember: "var(--syntax-constant)",
+  variable: "var(--code-ink)",
+  port: "var(--syntax-constant)",
+  parameter: "var(--syntax-number)",
+  function: "var(--syntax-function)",
+  type: "var(--syntax-type)",
+  namespace: "var(--syntax-section)",
+  state: "var(--syntax-string)",
+  keyword: "var(--syntax-keyword)",
+  number: "var(--syntax-number)",
+  event: "var(--syntax-function)",
+  delegate: "var(--syntax-function)",
 });
 
 export function editorViewportMargins(editor, viewport, padding = 16) {
@@ -264,14 +279,12 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-diagnostic-error": { borderLeftColor: "#f06b78" },
   ".cm-lintRange-error": { backgroundImage: "none", borderBottom: "2px wavy #f06b78" },
   ".cm-onda-hover": { maxWidth: "38rem", padding: ".65rem .8rem", whiteSpace: "pre-wrap" },
-  ".cm-onda-semantic-enumMember": { color: "var(--syntax-constant)" },
-  ".cm-onda-semantic-variable": { color: "var(--code-ink)" },
-  ".cm-onda-semantic-port": { color: "var(--syntax-constant)" },
-  ".cm-onda-semantic-parameter": { color: "var(--syntax-number)" },
-  ".cm-onda-semantic-function": { color: "var(--syntax-function)" },
-  ".cm-onda-semantic-type": { color: "var(--syntax-type)" },
-  ".cm-onda-semantic-namespace": { color: "var(--syntax-section)" },
-  ".cm-onda-semantic-state": { color: "var(--syntax-string)" },
+  ...Object.fromEntries(
+    Object.entries(ondaSemanticTokenColors).map(([type, color]) => [
+      `.cm-onda-semantic-${type}`,
+      { color },
+    ]),
+  ),
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
   "@media (pointer: coarse), (max-width: 720px)": {
@@ -318,6 +331,7 @@ export class OndaProjectEditor {
     this.active = initialProject.active;
     this.languageServer = null;
     this.semanticTokenTypes = [];
+    this.semanticTokenModifiers = [];
     this.diagnostics = new Map();
     this.semanticRefreshTimer = 0;
     this.states = new Map();
@@ -542,6 +556,7 @@ export class OndaProjectEditor {
   connectLanguageServer(languageServer, capabilities) {
     this.languageServer = languageServer;
     this.semanticTokenTypes = capabilities?.semanticTokensProvider?.legend?.tokenTypes ?? [];
+    this.semanticTokenModifiers = capabilities?.semanticTokensProvider?.legend?.tokenModifiers ?? [];
     this.scheduleSemanticTokens(this.active, 0);
   }
 
@@ -729,6 +744,7 @@ export class OndaProjectEditor {
         this.view.state.doc,
         result?.data ?? [],
         this.semanticTokenTypes,
+        this.semanticTokenModifiers,
       );
       this.view.dispatch({ effects: setSemanticTokens.of(Decoration.set(ranges, true)) });
     } catch {
@@ -1077,7 +1093,17 @@ function lspSeverity(severity) {
   return ({ 1: "error", 2: "warning", 3: "info", 4: "hint" })[severity] ?? "error";
 }
 
-function decodeSemanticTokens(doc, data, tokenTypes) {
+export function semanticTokenClassNames(type, modifierBits, tokenModifiers) {
+  const classes = [`cm-onda-semantic-${type}`];
+  for (let bit = 0; bit < tokenModifiers.length && bit < 32; bit += 1) {
+    if ((modifierBits & (1 << bit)) !== 0) {
+      classes.push(`cm-onda-semantic-mod-${tokenModifiers[bit]}`);
+    }
+  }
+  return classes.join(" ");
+}
+
+function decodeSemanticTokens(doc, data, tokenTypes, tokenModifiers) {
   const ranges = [];
   let lineNumber = 0;
   let character = 0;
@@ -1091,7 +1117,9 @@ function decodeSemanticTokens(doc, data, tokenTypes) {
     const to = Math.min(line.to, from + data[index + 2]);
     const type = tokenTypes[data[index + 3]];
     if (to > from && type) {
-      ranges.push(Decoration.mark({ class: `cm-onda-semantic-${type}` }).range(from, to));
+      ranges.push(Decoration.mark({
+        class: semanticTokenClassNames(type, data[index + 4], tokenModifiers),
+      }).range(from, to));
     }
   }
   return ranges;

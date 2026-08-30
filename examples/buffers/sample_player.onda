@@ -1,38 +1,25 @@
+import std/sample
+
 buffers:
   clip: f32[]
 
 params:
   speed = 1.0 {0.25, 4.0, log, "x"}
 
+delegate playback_finished()
+
 init:
-  playhead = 0.0
-  playing = false
+  player = std::sample::Player(clip = clip)
 
-event play(enabled: bool = true):
-  playing = enabled
-  if enabled:
-    playhead = 0.0
+events:
+  play(start_frame: f32 = 0.0):
+    player.play(start_frame)
 
-block:
-  clip_frames = clip.len()
-  clip_channels = clip.chans()
-  clip_step = speed * clip.samplerate() / HOST_SR
+  stop():
+    player.stop()
 
-  sample:
-    left = 0.0
-    right = 0.0
+when player.finished():
+  playback_finished()
 
-    if playing:
-      if playhead >= clip_frames:
-        playing = false
-      else:
-        clip_frame = i32(playhead)
-        if clip_channels > 0:
-          left = clip.readC(0, playhead)
-          right = left
-        if clip_channels > 1:
-          right = clip.readC(1, playhead)
-        playhead = playhead + clip_step
-
-    out1 = left
-    out2 = right
+sample:
+  out1, out2 = player(speed = speed)

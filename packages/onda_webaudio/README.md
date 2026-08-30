@@ -1,5 +1,7 @@
 # Onda Web Audio adapter
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 This optional package hosts a complete wasm32 Onda processor artifact in an `AudioWorklet`. It is a
 reference adapter for the generic Onda processor ABI; Web Audio is not required by the compiler or
 by native and relocatable-WebAssembly object consumers.
@@ -87,6 +89,83 @@ Audio processor must expose at least one audio input or output, because an empty
 does not carry a render-quantum frame count. Control-only artifacts remain usable through the generic
 processor ABI in a non-Web-Audio host.
 
+Call `processor.close()` when the adapter is no longer used. Closing is idempotent and terminal: it
+rejects pending requests, removes listeners, and makes subsequent operations fail immediately. The
+wrapped `AudioWorkletNode` and `AudioContext` remain caller-owned.
+
+## Prints
+
+Authored `print(...)` occurrences leave generated execution as bounded typed records. The worklet
+copies those records into a preallocated `SharedArrayBuffer` ring without formatting or allocating
+during audio rendering; the main-side adapter drains the ring and turns them into canonical,
+newline-terminated text:
+
+```js
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
+  printCapacityBytes: 128 * 1024,
+  // Register during construction to include output from authored init code.
+  onPrint: ({ text, entries, overflowCount, transportDropCount }) => {
+    logView.append(text);
+    if (overflowCount) console.warn(`${overflowCount} generated print records were dropped`);
+    if (transportDropCount) console.warn(`${transportDropCount} print records missed UI transport`);
+  },
+});
+```
+
+`text` is ready to write or display and contains one newline-terminated line per occurrence.
+`entries` retains typed values and source/log-site metadata for source-aware consumers. Generated
+batch overflow and bounded worklet-to-main transport loss are reported separately; loss-only
+notifications are delivered even when no later authored print arrives. Capacity defaults to 64 KiB
+and can be set to zero to suppress host delivery without suppressing argument evaluation. Print
+collection is inactive while no listener is registered, avoiding record packing and transport work
+in the render callback. Listeners added later with `processor.onPrint(...)` receive subsequent
+executions; use the construction option above when initialized-code output must be observed.
+See the internal [print host integration](../../docs/printing.md) reference for scalar formatting,
+source metadata, and the equivalent Rust, C, and raw processor APIs.
+
+## Delegates
+
+Top-level delegates are delivered after generated execution through `onDelegates()`. The worklet
+uses reusable storage allocated during construction; listeners run while the main-side adapter
+drains the shared ring, not as callbacks inside generated DSP code.
+
+```js
+const processor = await createOndaAudioProcessorInitialized(context, artifact, {
+  delegateCapacityBytes: 128 * 1024,
+});
+
+const unsubscribe = processor.onDelegates(({
+  occurrences,
+  overflowCount,
+  transportDropCount,
+}) => {
+  for (const occurrence of occurrences) {
+    console.log(occurrence.name, occurrence.values);
+  }
+  if (overflowCount) console.warn(`${overflowCount} delegate records were dropped`);
+  if (transportDropCount) {
+    console.warn(`${transportDropCount} delegate records were dropped in transport`);
+  }
+});
+```
+
+Capacity defaults to 64 KiB and can be set to zero to disable host collection. It is a host policy,
+not a compiler-computable exact whole-call size: occurrence counts and slice payload lengths may be
+runtime-dependent. The worklet supplies delegate storage to generated code only while at least one
+listener is registered, and decoding happens on the main side. `overflowCount` reports insufficient
+configured capacity; `transportDropCount` separately reports records discarded by the bounded
+worklet-to-main queue. Internal Onda `when` handlers still run in either case. See the internal
+[delegate host integration](../../docs/delegates.md) reference for sizing and lifecycle details.
+
+When print and delegate listeners are both active, the adapter invokes them in authored order for
+each init, event, or process segment. It may split one stream's batch around an occurrence from the
+other stream; ordering intentionally does not span separate generated calls.
+
+Print and delegate delivery requires `SharedArrayBuffer`. Browser deployments must therefore be
+cross-origin isolated, normally with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`). Audio processing remains usable
+without those headers, but registering an output listener fails with a clear error.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet
@@ -105,8 +184,9 @@ const left = await createOndaAudioProcessorInitialized(context, artifact, { comp
 const right = await createOndaAudioProcessorInitialized(context, artifact, { compiledModule });
 ```
 
-After construction, the normal f32 render callback reuses cached Wasm-memory views and performs no
-host-side allocation or memory growth. Full-block f32 inputs and outputs use typed-array bulk copies;
+After construction, the normal f32 render callback reuses cached Wasm and shared-ring views and
+performs no host-side allocation or memory growth, including while transporting print and delegate
+records. Full-block f32 inputs and outputs use typed-array bulk copies;
 segmented callbacks and other ABI scalar widths use preallocated typed views with conversion loops
 (i64 input conversion necessarily creates JavaScript `BigInt` values). External buffers are copied
 into Wasm with typed-array bulk operations during construction. Missing or `null` bindings install
@@ -131,7 +211,9 @@ const processor = await createOndaAudioProcessorInitialized(context, artifact, {
 
 Hosts may instead pass a flat array in physical descriptor order or key individual physical names
 such as `"bank[1]"`. Logical group metadata determines the contiguous slot range; no sample data is
-copied when Onda selects a slot while processing.
+copied when Onda selects a slot while processing. Initial descriptors are installed before the
+initialized constructor runs full initialization, so authored top-level and proc init code can
+preprocess the supplied samples once before rendering begins.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.

@@ -197,11 +197,13 @@ pub(crate) fn is_unsafe_index_method_name(name: &str) -> bool {
 }
 
 pub const ARRAY_LEN_METHOD: &str = "len";
+pub const BUFFER_BOUND_METHOD: &str = "bound";
 pub const BUFFER_CHANS_METHOD: &str = "chans";
 pub const BUFFER_SAMPLERATE_METHOD: &str = "samplerate";
 
 pub const BUILTIN_INSTANCE_METHOD_NAMES: &[&str] = &[
     ARRAY_LEN_METHOD,
+    BUFFER_BOUND_METHOD,
     BUFFER_CHANS_METHOD,
     BUFFER_SAMPLERATE_METHOD,
 ];
@@ -234,6 +236,15 @@ pub fn parse_array_len_instance_base(name: &str) -> Option<&str> {
 pub fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {
     let (base, method) = split_instance_method_path(name)?;
     if method == BUFFER_CHANS_METHOD {
+        Some(base)
+    } else {
+        None
+    }
+}
+
+pub fn parse_buffer_bound_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    if method == BUFFER_BOUND_METHOD {
         Some(base)
     } else {
         None

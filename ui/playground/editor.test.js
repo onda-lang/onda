@@ -5,9 +5,41 @@ import {
   colonIndentText,
   editorGuttersAreFixed,
   editorViewportMargins,
+  ondaSemanticTokenColors,
   preferredCaretScrollLeft,
+  semanticTokenClassNames,
   validProjectPath,
 } from "./editor.js";
+
+test("event and delegate semantic tokens use callable highlighting", () => {
+  assert.deepEqual(Object.keys(ondaSemanticTokenColors), [
+    "enumMember",
+    "variable",
+    "port",
+    "parameter",
+    "function",
+    "type",
+    "namespace",
+    "state",
+    "keyword",
+    "number",
+    "event",
+    "delegate",
+  ]);
+  assert.equal(ondaSemanticTokenColors.event, ondaSemanticTokenColors.function);
+  assert.equal(ondaSemanticTokenColors.delegate, ondaSemanticTokenColors.function);
+});
+
+test("semantic token classes preserve declaration modifiers", () => {
+  assert.equal(
+    semanticTokenClassNames("event", 1, ["declaration"]),
+    "cm-onda-semantic-event cm-onda-semantic-mod-declaration",
+  );
+  assert.equal(
+    semanticTokenClassNames("event", 0, ["declaration"]),
+    "cm-onda-semantic-event",
+  );
+});
 
 test("adds two spaces after an Onda block colon", () => {
   assert.equal(colonIndentText("sample:"), "\n  ");

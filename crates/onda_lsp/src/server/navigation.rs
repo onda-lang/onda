@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use onda_frontend::{
     inject_auto_std_prelude, is_language_type_name, parse_program,
     parse_program_file_with_overlays, ArrayElemType, AssignTarget, Block, BlockExec, BufferDecl,
-    ConstDecl, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
+    ConstDecl, DelegateDef, EventDef, EventParamDecl, Expr, FnParamDecl, FnParamType, FunctionDef,
     NamespaceAliasDecl, NamespaceDecl, NamespaceItem, ParamDecl, PortDecl, ProcessorDef, Program,
-    Span, Stmt, StructDef, StructField, TaskDef, UseDecl,
+    Span, Stmt, StructDef, StructField, TaskDef, UseDecl, WhenDef,
 };
 use onda_semantics::builtins::{
     builtin_constant_type, builtin_instance_method_names, is_builtin_function_name,
@@ -23,6 +23,9 @@ use crate::formatting::{
     format_fn_param_type, format_param_decl,
 };
 
+use super::language_intrinsics::{
+    PRINT_DOCUMENTATION, PRINT_LABEL_SIGNATURE, PRINT_NAME, PRINT_SIGNATURE, PRINT_VALUE_TYPES,
+};
 use super::namespace_resolution::{
     namespace_join, namespace_parent_of, namespace_segments_key,
     qualified_path_candidates as namespace_qualified_path_candidates,
@@ -52,6 +55,48 @@ const SYMBOL_KIND_EVENT: u32 = 24;
 pub(super) struct NavigationPosition {
     pub(super) line: u32,
     pub(super) character: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SemanticSymbolKind {
+    EnumMember,
+    Variable,
+    Port,
+    Parameter,
+    Function,
+    Type,
+    Namespace,
+    State,
+    Event,
+    Delegate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ResolvedSemanticSymbol {
+    pub(super) kind: SemanticSymbolKind,
+    pub(super) declaration: bool,
+}
+
+pub(super) struct SemanticTokenResolver {
+    index: NavigationIndex,
+}
+
+impl SemanticTokenResolver {
+    pub(super) fn new(program: &Program, source: &str, path: Option<&Path>) -> Self {
+        Self {
+            index: NavigationIndex::build(Some(program), source, path, None),
+        }
+    }
+
+    pub(super) fn resolve(&self, line: u32, character: u32) -> Option<ResolvedSemanticSymbol> {
+        let token =
+            source_token_at_position(&self.index.source, NavigationPosition { line, character })?;
+        let definition = self.index.resolve_token(&self.index.source, &token)?;
+        Some(ResolvedSemanticSymbol {
+            kind: semantic_symbol_kind(definition.kind),
+            declaration: self.index.token_is_definition(&token, definition),
+        })
+    }
 }
 
 pub(super) fn hover_for_document_with_parsed(
@@ -151,6 +196,9 @@ pub(super) fn signature_help_for_document_with_parsed(
     let offset =
         byte_offset_for_lsp_position(source, LspPosition::new(position.line, position.character));
     let (callee, open_paren) = active_call_context(source, offset)?;
+    if normalize_call_callee(&callee) == PRINT_NAME {
+        return Some(print_signature_help(source, open_paren, offset));
+    }
     if let Some(help) = unsafe_index_signature_help(&callee, source, open_paren, offset) {
         return Some(help);
     }
@@ -160,7 +208,13 @@ pub(super) fn signature_help_for_document_with_parsed(
         .iter()
         .filter(|candidate| {
             candidate.full_name == definition.full_name
-                && matches!(candidate.kind, DefinitionKind::Def | DefinitionKind::Method)
+                && matches!(
+                    candidate.kind,
+                    DefinitionKind::Def
+                        | DefinitionKind::Method
+                        | DefinitionKind::Event
+                        | DefinitionKind::Delegate
+                )
         })
         .collect::<Vec<_>>();
     if overloads.is_empty() {
@@ -173,13 +227,33 @@ pub(super) fn signature_help_for_document_with_parsed(
     // Both struct methods and free-function method sugar omit the receiver at
     // the call site while their declaration signatures include it (`self` or
     // the first ordinary parameter).
-    let implicit_receiver = split_member_callee(&callee).is_some();
+    let implicit_receiver = matches!(
+        definition.kind,
+        DefinitionKind::Def | DefinitionKind::Method
+    ) && split_member_callee(&callee).is_some();
     let active_parameter = active_call_argument_index(source, open_paren, offset)
         .saturating_add(usize::from(implicit_receiver));
+    let whole_array_delegate = definition.kind == DefinitionKind::Delegate
+        && source_line_prefix(source, open_paren)
+            .trim_start()
+            .starts_with("when ")
+        && split_member_callee(&callee).is_some_and(|(receiver, _)| {
+            !receiver.contains('[')
+                && index
+                    .resolve_instance(receiver_root(receiver), position.line, position.character)
+                    .is_some_and(|instance| instance.is_array)
+        });
     Some(json!({
         "signatures": overloads
             .iter()
-            .map(|candidate| json!({ "label": candidate.detail }))
+            .map(|candidate| {
+                let label = if whole_array_delegate && candidate.kind == DefinitionKind::Delegate {
+                    delegate_signature_with_index(&candidate.detail)
+                } else {
+                    candidate.detail.clone()
+                };
+                json!({ "label": label })
+            })
             .collect::<Vec<_>>(),
         "activeSignature": active_signature,
         "activeParameter": active_parameter,
@@ -381,15 +455,39 @@ enum DefinitionKind {
     Namespace,
     NamespaceAlias,
     Port,
-    Param,
+    RuntimeParam,
+    Parameter,
     Buffer,
     Event,
+    Delegate,
     Task,
     Field,
     Method,
     Variable,
+    State,
     TypeParam,
     NamespaceParam,
+}
+
+fn semantic_symbol_kind(kind: DefinitionKind) -> SemanticSymbolKind {
+    match kind {
+        DefinitionKind::Const | DefinitionKind::NamespaceParam => SemanticSymbolKind::EnumMember,
+        DefinitionKind::Variable => SemanticSymbolKind::Variable,
+        DefinitionKind::Port | DefinitionKind::RuntimeParam | DefinitionKind::Buffer => {
+            SemanticSymbolKind::Port
+        }
+        DefinitionKind::Parameter => SemanticSymbolKind::Parameter,
+        DefinitionKind::Def | DefinitionKind::Method | DefinitionKind::Task => {
+            SemanticSymbolKind::Function
+        }
+        DefinitionKind::Proc | DefinitionKind::Struct | DefinitionKind::TypeParam => {
+            SemanticSymbolKind::Type
+        }
+        DefinitionKind::Namespace | DefinitionKind::NamespaceAlias => SemanticSymbolKind::Namespace,
+        DefinitionKind::Field | DefinitionKind::State => SemanticSymbolKind::State,
+        DefinitionKind::Event => SemanticSymbolKind::Event,
+        DefinitionKind::Delegate => SemanticSymbolKind::Delegate,
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -399,6 +497,7 @@ struct ProcInfo {
     params: HashMap<String, usize>,
     init: Option<usize>,
     events: HashMap<String, usize>,
+    delegates: HashMap<String, usize>,
     buffers: HashMap<String, usize>,
     local_defs: HashMap<String, usize>,
     has_private_params: bool,
@@ -447,6 +546,7 @@ struct NavigationIndex {
     structs: HashMap<String, StructInfo>,
     function_params: HashMap<String, HashMap<String, usize>>,
     event_params: HashMap<String, HashMap<String, usize>>,
+    event_param_decls: HashMap<String, Vec<EventParamDecl>>,
     instances: HashMap<String, InstanceInfo>,
 }
 
@@ -730,6 +830,10 @@ impl NavigationIndex {
             let idx = self.add_event_definition(&full_name, event);
             info.events.insert(event.name.clone(), idx);
         }
+        for delegate in &proc_def.delegates {
+            let idx = self.add_delegate_definition(&full_name, delegate);
+            info.delegates.insert(delegate.name.clone(), idx);
+        }
         for def in &proc_def.local_defs {
             let idx = self.add_function_definition(
                 &full_name,
@@ -841,7 +945,7 @@ impl NavigationIndex {
         self.add_definition(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
+            kind: DefinitionKind::RuntimeParam,
             detail: format!("{detail} {}", format_param_decl(decl)),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
@@ -853,7 +957,7 @@ impl NavigationIndex {
         self.add_definition_once(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
+            kind: DefinitionKind::Parameter,
             detail: format!("argument {}", decl.name),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
@@ -865,8 +969,12 @@ impl NavigationIndex {
         self.add_definition_once(DefinitionInfo {
             name: decl.name.clone(),
             full_name: namespace_join(owner, &decl.name),
-            kind: DefinitionKind::Param,
-            detail: format!("event parameter {}", decl.name),
+            kind: DefinitionKind::Parameter,
+            detail: format!(
+                "event parameter {}: {}",
+                decl.name,
+                format_event_param_type(&decl.ty)
+            ),
             span: decl.loc,
             file_key: file_key_for_span(decl.loc),
             private: false,
@@ -893,7 +1001,7 @@ impl NavigationIndex {
             .collect::<Vec<_>>()
             .join(", ");
         let event_owner = namespace_join(owner, &event.name);
-        let event_idx = self.add_definition(DefinitionInfo {
+        let event_idx = self.add_definition_once(DefinitionInfo {
             name: event.name.clone(),
             full_name: event_owner.clone(),
             kind: DefinitionKind::Event,
@@ -912,7 +1020,54 @@ impl NavigationIndex {
             .entry(event_owner)
             .or_default()
             .extend(param_indices);
+        self.event_param_decls
+            .insert(namespace_join(owner, &event.name), event.params.clone());
         event_idx
+    }
+
+    fn add_delegate_definition(&mut self, owner: &str, delegate: &DelegateDef) -> usize {
+        let params = delegate
+            .params
+            .iter()
+            .map(format_event_param_signature)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let delegate_owner = namespace_join(owner, &delegate.name);
+        let delegate_idx = self.add_definition_once(DefinitionInfo {
+            name: delegate.name.clone(),
+            full_name: delegate_owner.clone(),
+            kind: DefinitionKind::Delegate,
+            detail: format!("delegate {}({params})", delegate.name),
+            span: delegate.loc,
+            file_key: file_key_for_span(delegate.loc),
+            private: false,
+        });
+        let mut param_indices = HashMap::new();
+        for param in &delegate.params {
+            let idx = self.add_definition_once(DefinitionInfo {
+                name: param.name.clone(),
+                full_name: namespace_join(&delegate_owner, &param.name),
+                kind: DefinitionKind::Parameter,
+                detail: format!(
+                    "delegate parameter {}: {}",
+                    param.name,
+                    format_event_param_type(&param.ty)
+                ),
+                span: param.loc,
+                file_key: file_key_for_span(param.loc),
+                private: false,
+            });
+            param_indices.entry(param.name.clone()).or_insert(idx);
+        }
+        self.event_params
+            .entry(delegate_owner)
+            .or_default()
+            .extend(param_indices);
+        self.event_param_decls.insert(
+            namespace_join(owner, &delegate.name),
+            delegate.params.clone(),
+        );
+        delegate_idx
     }
 
     fn add_task_definition(&mut self, owner: &str, task: &TaskDef) -> usize {
@@ -939,11 +1094,21 @@ impl NavigationIndex {
         })
     }
 
-    fn add_local_variable_definition(&mut self, owner: &str, name: &str, span: Span) -> usize {
+    fn add_local_variable_definition(
+        &mut self,
+        owner: &str,
+        name: &str,
+        span: Span,
+        state: bool,
+    ) -> usize {
         self.add_definition(DefinitionInfo {
             name: name.to_owned(),
             full_name: namespace_join(owner, name),
-            kind: DefinitionKind::Variable,
+            kind: if state {
+                DefinitionKind::State
+            } else {
+                DefinitionKind::Variable
+            },
             detail: format!("local {name}"),
             span,
             file_key: file_key_for_span(span),
@@ -1090,6 +1255,11 @@ impl NavigationIndex {
                         }
                     }
                 }
+                Block::When(when) => {
+                    if let Some(owner_idx) = top_level_scope {
+                        self.collect_when_scope(owner_idx, "", when);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1142,6 +1312,16 @@ impl NavigationIndex {
                         let idx = self.add_event_definition("", event);
                         definitions.insert(event.name.clone(), idx);
                     }
+                }
+                Block::Delegates(delegates) => {
+                    extend_span(&mut span, delegates.loc);
+                    for delegate in &delegates.delegates {
+                        let idx = self.add_delegate_definition("", delegate);
+                        definitions.insert(delegate.name.clone(), idx);
+                    }
+                }
+                Block::When(when) => {
+                    extend_span(&mut span, span_for_when_scope(when));
                 }
                 Block::Tasks(task_block) => {
                     extend_span(&mut span, task_block.loc);
@@ -1257,6 +1437,10 @@ impl NavigationIndex {
             let idx = self.add_event_definition(&owner, event);
             definitions.insert(event.name.clone(), idx);
         }
+        for delegate in &proc_def.delegates {
+            let idx = self.add_delegate_definition(&owner, delegate);
+            definitions.insert(delegate.name.clone(), idx);
+        }
         for def in &proc_def.local_defs {
             let idx =
                 self.add_function_definition(&owner, def, DefinitionKind::Method, "proc-local def");
@@ -1315,6 +1499,9 @@ impl NavigationIndex {
         }
         for event in &proc_def.events {
             self.collect_event_scope(owner_idx, &owner, event);
+        }
+        for when in &proc_def.whens {
+            self.collect_when_scope(owner_idx, &owner, when);
         }
         for def in &proc_def.local_defs {
             self.collect_function_scope(Some(owner_idx), &owner, def, "proc-local def");
@@ -1551,6 +1738,95 @@ impl NavigationIndex {
         Some(scope_idx)
     }
 
+    fn collect_when_scope(&mut self, parent: usize, owner: &str, when: &WhenDef) -> Option<usize> {
+        let handler_owner = format!("{}.__when_{}_{}", owner, when.loc.line, when.loc.column);
+        let binding_types = self.when_binding_types(parent, owner, when);
+        let mut definitions = HashMap::<String, usize>::new();
+        for (index, binding) in when.bindings.iter().enumerate() {
+            if binding.name == "_" {
+                continue;
+            }
+            let idx = self.add_definition_once(DefinitionInfo {
+                name: binding.name.clone(),
+                full_name: namespace_join(&handler_owner, &binding.name),
+                kind: DefinitionKind::Parameter,
+                detail: binding_types.get(index).map_or_else(
+                    || format!("delegate payload binding {}", binding.name),
+                    |ty| format!("delegate payload binding {}: {ty}", binding.name),
+                ),
+                span: binding.loc,
+                file_key: file_key_for_span(binding.loc),
+                private: false,
+            });
+            definitions.insert(binding.name.clone(), idx);
+        }
+        let inherited_names = self.inherited_runtime_definition_names(Some(parent));
+        self.collect_stmt_definitions_with_inherited(
+            &handler_owner,
+            &when.body,
+            false,
+            &inherited_names,
+            &mut definitions,
+        );
+        let mut instances = HashMap::<String, InstanceInfo>::new();
+        let scope_namespace = self.child_scope_namespace(Some(parent), owner);
+        self.collect_stmt_scope_instances(&when.body, &scope_namespace, false, &mut instances);
+        let scope_idx = self.push_scope(
+            Some(parent),
+            &scope_namespace,
+            span_for_when_scope(when),
+            definitions,
+            instances,
+        )?;
+        self.collect_nested_stmt_scopes(scope_idx, &handler_owner, &when.body);
+        Some(scope_idx)
+    }
+
+    fn when_binding_types(&self, parent: usize, owner: &str, when: &WhenDef) -> Vec<String> {
+        let (delegate_owner, whole_array) = if when.target.receiver.is_empty() {
+            (namespace_join(owner, &when.target.delegate), false)
+        } else if when.target.receiver.len() == 1 {
+            let receiver = &when.target.receiver[0];
+            let Some(instance) = self.resolve_instance_from_scope(Some(parent), receiver) else {
+                return Vec::new();
+            };
+            (
+                namespace_join(&instance.type_name, &when.target.delegate),
+                instance.is_array && when.target.index.is_none(),
+            )
+        } else {
+            return Vec::new();
+        };
+        let Some(params) = self.event_param_decls.get(&delegate_owner) else {
+            return Vec::new();
+        };
+        let mut types = Vec::with_capacity(params.len() + usize::from(whole_array));
+        if whole_array {
+            types.push("i32".to_owned());
+        }
+        types.extend(
+            params
+                .iter()
+                .map(|param| format_event_param_type(&param.ty)),
+        );
+        types
+    }
+
+    fn resolve_instance_from_scope(
+        &self,
+        mut current: Option<usize>,
+        name: &str,
+    ) -> Option<&InstanceInfo> {
+        while let Some(idx) = current {
+            let scope = &self.scopes[idx];
+            if let Some(instance) = scope.instances.get(name) {
+                return Some(instance);
+            }
+            current = scope.parent;
+        }
+        self.instances.get(name)
+    }
+
     fn collect_stmt_scope(
         &mut self,
         parent: Option<usize>,
@@ -1610,7 +1886,7 @@ impl NavigationIndex {
                 Stmt::For { var, loc, body, .. } => {
                     if let Some(span) = span_for_stmt_body(body) {
                         let mut definitions = HashMap::new();
-                        let idx = self.add_local_variable_definition(owner, var, *loc);
+                        let idx = self.add_local_variable_definition(owner, var, *loc, false);
                         definitions.insert(var.clone(), idx);
                         self.collect_stmt_scope_with_seed(
                             Some(parent),
@@ -1630,6 +1906,7 @@ impl NavigationIndex {
                 Stmt::Const { .. }
                 | Stmt::Assign { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -1739,6 +2016,7 @@ impl NavigationIndex {
                 Stmt::For { .. } | Stmt::While { .. } => {}
                 Stmt::Const { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -1823,7 +2101,12 @@ impl NavigationIndex {
                             if inherited_names.is_some_and(|names| names.contains(name)) {
                                 continue;
                             }
-                            let idx = self.add_local_variable_definition(owner, name, *target_loc);
+                            let idx = self.add_local_variable_definition(
+                                owner,
+                                name,
+                                *target_loc,
+                                top_level_assigns_only,
+                            );
                             out.entry(name.to_owned()).or_insert(idx);
                         }
                     }
@@ -1865,6 +2148,7 @@ impl NavigationIndex {
                 }
                 Stmt::For { .. } | Stmt::While { .. } => {}
                 Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -1996,6 +2280,30 @@ impl NavigationIndex {
             }
         }
         self.resolve_unqualified(&token.name, token.line, token.start_character)
+    }
+
+    fn token_is_definition(&self, token: &SourceToken, definition: &DefinitionInfo) -> bool {
+        if definition.span.is_zero() || token.name != definition.name {
+            return false;
+        }
+        if let (Some(current), Some(definition_file)) =
+            (&self.current_file_key, &definition.file_key)
+        {
+            if current != definition_file {
+                return false;
+            }
+        }
+
+        let start = byte_offset_for_lsp_position(
+            &self.source,
+            span_start_position(&self.source, definition.span),
+        );
+        let end = byte_offset_for_lsp_position(
+            &self.source,
+            span_end_position(&self.source, definition.span),
+        );
+        let declaration_start = first_identifier_offset(&self.source, start, end, &definition.name);
+        declaration_start == Some(token.byte_start)
     }
 
     fn resolve_callee(&self, callee: &str, line: u32, column: u32) -> Option<&DefinitionInfo> {
@@ -2373,6 +2681,9 @@ impl NavigationIndex {
             if let Some(idx) = proc_info.events.get(member) {
                 return self.definitions.get(*idx);
             }
+            if let Some(idx) = proc_info.delegates.get(member) {
+                return self.definitions.get(*idx);
+            }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             if let Some(idx) = struct_info
                 .fields
@@ -2458,6 +2769,10 @@ impl NavigationIndex {
             if let Some(idx) = proc_info.events.get(member) {
                 let event = self.definitions.get(*idx)?;
                 return self.resolve_event_param(&event.full_name, arg);
+            }
+            if let Some(idx) = proc_info.delegates.get(member) {
+                let delegate = self.definitions.get(*idx)?;
+                return self.resolve_event_param(&delegate.full_name, arg);
             }
         } else if let Some(struct_info) = self.structs.get(&instance.type_name) {
             if let Some(idx) = struct_info.methods.get(member) {
@@ -2640,6 +2955,21 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
                 children,
             ))
         }
+        Block::Delegates(delegates) => {
+            let children = delegates
+                .delegates
+                .iter()
+                .map(|delegate| document_symbol_for_delegate(delegate, source))
+                .collect::<Vec<_>>();
+            Some(document_symbol(
+                "delegates",
+                SYMBOL_KIND_EVENT,
+                delegates.loc,
+                source,
+                children,
+            ))
+        }
+        Block::When(when) => Some(document_symbol_for_when(when, source)),
         Block::Tasks(tasks) => {
             let children = tasks
                 .tasks
@@ -2761,6 +3091,18 @@ fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     );
     children.extend(
         proc_def
+            .delegates
+            .iter()
+            .map(|delegate| document_symbol_for_delegate(delegate, source)),
+    );
+    children.extend(
+        proc_def
+            .whens
+            .iter()
+            .map(|when| document_symbol_for_when(when, source)),
+    );
+    children.extend(
+        proc_def
             .local_defs
             .iter()
             .map(|def| document_symbol_for_function(def, SYMBOL_KIND_METHOD, source)),
@@ -2808,6 +3150,36 @@ fn document_symbol_for_function(def: &FunctionDef, kind: u32, source: &str) -> V
 
 fn document_symbol_for_event(event: &EventDef, source: &str) -> Value {
     document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, source, vec![])
+}
+
+fn document_symbol_for_when(when: &WhenDef, source: &str) -> Value {
+    let mut target = when.target.receiver.join(".");
+    if let Some(index) = &when.target.index {
+        target.push('[');
+        target.push_str(&format_expr(index));
+        target.push(']');
+    }
+    if !target.is_empty() {
+        target.push('.');
+    }
+    target.push_str(&when.target.delegate);
+    document_symbol(
+        &format!("when {target}"),
+        SYMBOL_KIND_EVENT,
+        when.loc,
+        source,
+        vec![],
+    )
+}
+
+fn document_symbol_for_delegate(delegate: &DelegateDef, source: &str) -> Value {
+    document_symbol(
+        &delegate.name,
+        SYMBOL_KIND_EVENT,
+        delegate.loc,
+        source,
+        vec![],
+    )
 }
 
 fn document_symbol_for_task(task: &TaskDef, source: &str) -> Value {
@@ -3127,7 +3499,11 @@ fn import_module_at_token(source: &str, token: &SourceToken) -> Option<String> {
 }
 
 fn builtin_hover(name: &str) -> Option<String> {
-    if let Some(operation) = unsafe_index_operation(name) {
+    if name == PRINT_NAME {
+        Some(format!(
+            "```onda\n{PRINT_SIGNATURE}\n{PRINT_LABEL_SIGNATURE}\n```\n\n{PRINT_DOCUMENTATION}"
+        ))
+    } else if let Some(operation) = unsafe_index_operation(name) {
         Some(format!(
             "```onda\nunchecked intrinsic {name}(...)\n```\n\n{} {UNSAFE_INDEX_CONTRACT}",
             operation.description
@@ -3143,6 +3519,57 @@ fn builtin_hover(name: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn print_signature_help(source: &str, open_paren: usize, offset: usize) -> Value {
+    let labelled = first_call_argument_is_quoted(source, open_paren, offset);
+    let argument = active_call_argument_index(source, open_paren, offset);
+    json!({
+        "signatures": [
+            {
+                "label": PRINT_SIGNATURE,
+                "documentation": PRINT_DOCUMENTATION,
+                "parameters": [{ "label": format!("...values: {PRINT_VALUE_TYPES}") }],
+            },
+            {
+                "label": PRINT_LABEL_SIGNATURE,
+                "documentation": PRINT_DOCUMENTATION,
+                "parameters": [
+                    { "label": "label: quoted text" },
+                    { "label": format!("...values: {PRINT_VALUE_TYPES}") },
+                ],
+            },
+        ],
+        "activeSignature": usize::from(labelled),
+        "activeParameter": if labelled && argument == 0 { 0 } else { usize::from(labelled) },
+    })
+}
+
+fn first_call_argument_is_quoted(source: &str, open_paren: usize, offset: usize) -> bool {
+    let start = open_paren.saturating_add(1).min(source.len());
+    let end = offset.min(source.len()).max(start);
+    source[start..end].trim_start().starts_with('"')
+}
+
+fn source_line_prefix(source: &str, offset: usize) -> &str {
+    let end = offset.min(source.len());
+    let start = source[..end].rfind('\n').map_or(0, |index| index + 1);
+    &source[start..end]
+}
+
+fn delegate_signature_with_index(signature: &str) -> String {
+    let Some(open) = signature.find('(') else {
+        return signature.to_owned();
+    };
+    let mut result = String::with_capacity(signature.len() + "index: i32, ".len());
+    result.push_str(&signature[..=open]);
+    if signature[open + 1..].starts_with(')') {
+        result.push_str("index: i32");
+    } else {
+        result.push_str("index: i32, ");
+    }
+    result.push_str(&signature[open + 1..]);
+    result
 }
 
 fn unsafe_index_signature_help(
@@ -3761,23 +4188,39 @@ fn active_call_callee(source: &str, offset: usize) -> Option<String> {
 }
 
 fn active_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
-    let mut depth = 0isize;
-    let mut paren_idx = None;
-    for (idx, ch) in source[..offset.min(source.len())].char_indices().rev() {
-        match ch {
-            ')' => depth += 1,
-            '(' => {
-                if depth == 0 {
-                    paren_idx = Some(idx);
-                    break;
-                }
-                depth -= 1;
+    let end = offset.min(source.len());
+    let mut parens = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut comment = false;
+    for (idx, ch) in source[..end].char_indices() {
+        if comment {
+            if ch == '\n' {
+                comment = false;
             }
-            '\n' if depth == 0 => break,
+            continue;
+        }
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match ch {
+            '#' => comment = true,
+            '"' => quoted = true,
+            '(' => parens.push(idx),
+            ')' => {
+                parens.pop();
+            }
             _ => {}
         }
     }
-    let paren_idx = paren_idx?;
+    let paren_idx = parens.pop()?;
     let before = source[..paren_idx].trim_end();
     scan_call_callee_left(before).map(|callee| (callee, paren_idx))
 }
@@ -3785,10 +4228,23 @@ fn active_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
 fn active_call_argument_index(source: &str, open_paren: usize, offset: usize) -> usize {
     let mut nested = 0usize;
     let mut argument = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
     let start = open_paren.saturating_add(1).min(source.len());
     let end = offset.min(source.len()).max(start);
     for ch in source[start..end].chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
         match ch {
+            '"' => quoted = true,
             '(' | '[' | '{' => nested += 1,
             ')' | ']' | '}' => nested = nested.saturating_sub(1),
             ',' if nested == 0 => argument += 1,
@@ -3984,6 +4440,12 @@ fn span_for_event_scope(event: &EventDef) -> Span {
         .unwrap_or(event.loc)
 }
 
+fn span_for_when_scope(when: &WhenDef) -> Span {
+    span_for_stmt_body(&when.body)
+        .map(|body_span| Span::spanning(when.loc, body_span))
+        .unwrap_or(when.loc)
+}
+
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
         .map(|body_span| Span::spanning(task.loc, body_span))
@@ -4022,6 +4484,12 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
+    }
+    for delegate in &proc_def.delegates {
+        span = Span::spanning(span, delegate.loc);
+    }
+    for when in &proc_def.whens {
+        span = Span::spanning(span, span_for_when_scope(when));
     }
     for def in &proc_def.local_defs {
         span = Span::spanning(span, span_for_function_scope(def));
@@ -4088,7 +4556,7 @@ fn assign_target_name(target: &AssignTarget) -> Option<&str> {
 fn assign_target_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name.as_str()],
-        AssignTarget::Tuple(names) => names.iter().map(String::as_str).collect(),
+        AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
         _ => Vec::new(),
     }
 }
@@ -4131,6 +4599,26 @@ fn is_namespace_path(text: &str) -> bool {
 
 fn is_ident_byte(byte: Option<u8>) -> bool {
     byte.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn first_identifier_offset(source: &str, start: usize, end: usize, name: &str) -> Option<usize> {
+    let start = start.min(source.len());
+    let end = end.min(source.len()).max(start);
+    let mut search_start = start;
+    while let Some(relative) = source.get(search_start..end)?.find(name) {
+        let offset = search_start + relative;
+        let name_end = offset + name.len();
+        if !is_ident_byte(
+            offset
+                .checked_sub(1)
+                .and_then(|idx| source.as_bytes().get(idx).copied()),
+        ) && !is_ident_byte(source.as_bytes().get(name_end).copied())
+        {
+            return Some(offset);
+        }
+        search_start = name_end;
+    }
+    None
 }
 
 fn is_ident_continue(ch: char) -> bool {
@@ -4675,5 +5163,147 @@ block:
             .as_array()
             .expect("proc document symbol children");
         assert!(children.iter().any(|symbol| symbol["name"] == "prepare"));
+    }
+
+    #[test]
+    fn delegate_hover_and_navigation_preserve_directional_identity() {
+        let source = r#"proc Child:
+  delegate stopped(reason: i32)
+  sample:
+    out1 = 0.0
+
+delegate finished(reason: i32)
+init:
+  child = Child()
+when child.stopped(reason):
+  seen = reason
+  finished(reason)
+sample:
+  out1 = child()
+"#;
+        let owner_hover =
+            hover_at(source, "finished(reason)", 1).expect("owner delegate call should hover");
+        assert!(owner_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate finished(reason: i32)")));
+        let child_hover = hover_at(source, "child.stopped", "child.".len() + 1)
+            .expect("subscription target should hover");
+        assert!(child_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate stopped(reason: i32)")));
+        let definition = definition_at(source, "child.stopped", "child.".len() + 1)
+            .expect("subscription target should navigate");
+        assert_eq!(definition["range"]["start"]["line"], json!(1));
+        let binding_hover = hover_at(source, "seen = reason", "seen = ".len() + 1)
+            .expect("when payload binding should hover in its body");
+        assert!(binding_hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate payload binding reason: i32")));
+        let binding_definition = definition_at(source, "seen = reason", "seen = ".len() + 1)
+            .expect("when payload binding should navigate to its declaration");
+        assert_eq!(binding_definition["range"]["start"]["line"], json!(8));
+    }
+
+    #[test]
+    fn print_hover_and_signature_help_describe_variadic_typed_values() {
+        let source = "sample:\n  print(\"left, right\", 3, 4.0)\n";
+        let hover = hover_at(source, "print", 1).expect("print should hover");
+        let markdown = hover["contents"]["value"]
+            .as_str()
+            .expect("print hover markdown");
+        assert!(markdown.contains(PRINT_SIGNATURE));
+        assert!(markdown.contains(PRINT_LABEL_SIGNATURE));
+
+        let signature = signature_at(
+            source,
+            "print(\"left, right\", 3, 4.0)",
+            "print(\"left, right\", 3, ".len(),
+        )
+        .expect("print should have signature help");
+        assert_eq!(signature["activeSignature"], 1);
+        assert_eq!(signature["activeParameter"], 1);
+        assert_eq!(signature["signatures"][1]["label"], PRINT_LABEL_SIGNATURE);
+    }
+
+    #[test]
+    fn event_and_delegate_signature_help_preserve_explicit_parameters() {
+        let source = r#"proc Child:
+  event start(value: f32, enabled: bool):
+    return
+  delegate ready(reason: i32)
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+  children[0].start(1.0, true)
+
+when children.ready(index, reason):
+  seen = reason
+
+sample:
+  out1 = children[0]()
+"#;
+        let event = signature_at(
+            source,
+            "children[0].start(1.0, true)",
+            "children[0].start(1.0, ".len(),
+        )
+        .expect("child event should have signature help");
+        assert_eq!(event["activeParameter"], 1);
+        assert_eq!(
+            event["signatures"][0]["label"],
+            "event start(value: f32, enabled: bool)"
+        );
+
+        let delegate = signature_at(
+            source,
+            "when children.ready(index, reason)",
+            "when children.ready(index, ".len(),
+        )
+        .expect("whole-array delegate target should have signature help");
+        assert_eq!(delegate["activeParameter"], 1);
+        assert_eq!(
+            delegate["signatures"][0]["label"],
+            "delegate ready(index: i32, reason: i32)"
+        );
+    }
+
+    #[test]
+    fn when_symbols_and_typed_bindings_are_visible() {
+        let source = r#"proc Child:
+  delegate ready(values: f32[])
+  when ready(values):
+    nested_count = values.len()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+when child.ready(values):
+  count = values.len()
+
+sample:
+  out1 = child()
+"#;
+        let hover = hover_at(source, "count = values.len", "count = ".len() + 1)
+            .expect("typed binding should hover");
+        assert!(hover["contents"]["value"]
+            .as_str()
+            .is_some_and(|value| value.contains("delegate payload binding values: f32[]")));
+
+        let parsed = parse_program(source).expect("test source should parse");
+        let symbols =
+            document_symbols_for_document_with_parsed(source, None, &HashMap::new(), Some(&parsed));
+        assert!(symbols
+            .iter()
+            .any(|symbol| symbol["name"] == "when child.ready"));
+        let proc_children = symbols[0]["children"]
+            .as_array()
+            .expect("proc document symbol children");
+        assert!(proc_children
+            .iter()
+            .any(|symbol| symbol["name"] == "when ready"));
     }
 }

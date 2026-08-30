@@ -191,7 +191,7 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
             } => {
                 update_call_type_env_after_assign(
                     target,
-                    *decl_ty,
+                    decl_ty.as_ref(),
                     generic_decl_ty.as_deref(),
                     expr,
                     env,
@@ -207,9 +207,9 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                             env.scalar_types.insert(name.clone(), ty);
                         }
                         AssignTarget::Tuple(names) => {
-                            for name in names {
+                            for name in names.iter().filter_map(|target| target.binding()) {
                                 if !env.has_binding(name) {
-                                    env.scalar_types.insert(name.clone(), PrimitiveType::F32);
+                                    env.scalar_types.insert(name.to_owned(), PrimitiveType::F32);
                                 }
                             }
                         }
@@ -220,7 +220,7 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                 }
                 StatementFlow::Continues
             }
-            Stmt::Expr { .. } => StatementFlow::Continues,
+            Stmt::Expr { .. } | Stmt::Print { .. } => StatementFlow::Continues,
             Stmt::Return { expr, .. } => {
                 if is_bare_return_expr(expr) {
                     return StatementFlow::Terminates;
@@ -469,6 +469,7 @@ fn statements_must_return_value(statements: &[Stmt]) -> bool {
             Stmt::Const { .. }
             | Stmt::Assign { .. }
             | Stmt::Expr { .. }
+            | Stmt::Print { .. }
             | Stmt::If { .. }
             | Stmt::For { .. }
             | Stmt::While { .. }
@@ -494,6 +495,7 @@ fn statements_contain_value_return(statements: &[Stmt]) -> bool {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
     })
@@ -514,6 +516,7 @@ fn statements_contain_bare_return(statements: &[Stmt]) -> bool {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
     })

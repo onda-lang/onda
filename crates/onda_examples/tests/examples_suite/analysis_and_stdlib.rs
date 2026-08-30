@@ -307,7 +307,8 @@ sample:
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames).expect("process checked");
+    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+        .expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 
@@ -1448,7 +1449,13 @@ sample:
     let restart = instance
         .event_index("restart")
         .expect("restart event should exist");
-    trigger_event_by_index(&mut instance, restart, &[]).expect("restart should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        restart,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("restart should succeed");
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("processing after restart should succeed");
 
@@ -1864,7 +1871,7 @@ fn stdlib_realifft_hann_reprimes_after_becoming_inactive() {
 }
 
 #[test]
-fn stdlib_realifft_first_frame_uses_prepared_twiddles() {
+fn stdlib_realifft_first_frame_uses_compile_time_twiddles() {
     let frames = 64;
     let (mut instance, in_channels, out_channels) =
         compile_instance(STDLIB_REALIFFT_FIRST_FRAME_EXAMPLE, frames);
@@ -1911,7 +1918,13 @@ fn stdlib_convolution_time_domain_event_compile_and_run() {
 
     payload.extend_from_slice(&0.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, idx, &payload).expect("event trigger should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should succeed");
 
     let input = vec![1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
@@ -2102,7 +2115,13 @@ fn stdlib_convolution_incremental_loading_preserves_the_impulse() {
     let reload = instance
         .event_index("reload_impulse")
         .expect("reload event should exist");
-    trigger_event_by_index(&mut instance, reload, &[]).expect("reload event should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        reload,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reload event should succeed");
     for _ in 0..4 {
         process_interleaved(&mut instance, &silence, &mut output, frames)
             .expect("reloading block should process");
@@ -2184,7 +2203,13 @@ fn stdlib_convolution_zero_latency_aligns_every_non_uniform_stage() {
     let reset = instance
         .event_index("reset_conv")
         .expect("reset_conv event must exist");
-    trigger_event_by_index(&mut instance, reset, &[]).expect("reset event should succeed");
+    trigger_event_by_index(
+        &mut instance,
+        reset,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reset event should succeed");
 
     output.fill(0.0);
     process_interleaved(&mut instance, &input, &mut output, frames)
@@ -3579,7 +3604,13 @@ fn top_level_consts_can_drive_event_sizes_and_proc_apis() {
 
     payload.extend_from_slice(&3.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(&mut instance, event_idx, &payload).expect("event trigger should work");
+    trigger_event_by_index(
+        &mut instance,
+        event_idx,
+        &payload,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("event trigger should work");
 
     let mut output = vec![0.0_f32; frames];
 

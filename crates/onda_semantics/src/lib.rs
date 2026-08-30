@@ -9,15 +9,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
-    CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DiagCtx, Diagnostic,
-    EventDef, EventParamType, Expr, FieldType, FnParamType, FnReturnScalarType, FnReturnType,
-    FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl,
-    NamespaceCallArg, NamespaceDecl, NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock,
-    ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock,
-    SourceLoc, Stmt, StructDef, StructField, UseDecl, INTERNAL_BARE_RETURN_FN,
-    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
-    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
-    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateDef, DiagCtx,
+    Diagnostic, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
+    FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
+    GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl,
+    NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock, ParamDecl, ParamScale, PortBlock,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef,
+    StructField, UseDecl, WhenDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
 pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) -> bool {
@@ -33,10 +33,37 @@ pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) 
     }
 }
 
+fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
+    let ty = match &param.ty {
+        EventParamType::Scalar(ty) => FnParamType::Primitive(*ty),
+        EventParamType::Array { elem, size } => FnParamType::SizedArray {
+            elem: Some(*elem),
+            generic_name: None,
+            size: size.clone(),
+        },
+        EventParamType::Slice { elem } => FnParamType::Array(Some(*elem)),
+        EventParamType::GenericScalar { name } => FnParamType::Struct(name.clone()),
+        EventParamType::GenericArray { elem, size } => FnParamType::SizedArray {
+            elem: None,
+            generic_name: Some(elem.clone()),
+            size: size.clone(),
+        },
+        EventParamType::GenericSlice { elem } => FnParamType::ArrayGeneric(elem.clone()),
+    };
+    FnParamDecl {
+        loc: param.loc,
+        name: param.name.clone(),
+        ty: Some(ty),
+        ty_loc: param.ty_loc,
+        default: param.default.clone(),
+    }
+}
+
 pub mod aggregate_layout;
 mod analysis_session;
 mod array_structs;
 pub mod builtins;
+mod callable_validation;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
@@ -137,6 +164,7 @@ pub struct TypedProgram {
     pub aggregate_layouts: AggregateLayoutTable,
     pub defs: Vec<TypedFunction>,
     pub events: Vec<TypedEvent>,
+    pub delegates: Vec<TypedDelegate>,
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub proc_instance_oversample_factors: HashMap<String, usize>,
@@ -167,6 +195,12 @@ pub struct TypedEvent {
     pub name: String,
     pub params: Vec<TypedEventParam>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedDelegate {
+    pub name: String,
+    pub params: Vec<TypedEventParam>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -375,6 +409,7 @@ pub struct TypedStructField {
     pub name: String,
     pub ty: TypedFieldType,
     pub default: Option<Expr>,
+    pub(crate) integer_range: Option<TypedIntegerRange>,
     pub struct_name: Option<String>,
     pub array_elem_ty: Option<PrimitiveType>,
     pub array_elem_struct: Option<String>,
@@ -434,6 +469,8 @@ pub struct TypedFunction {
     /// Compiler-owned helpers that execute with access to the program's
     /// runtime state and interface rather than in the lexical `def` scope.
     pub(crate) runtime_context: bool,
+    /// Authored lexical functions whose body directly publishes print output.
+    pub(crate) publishes_print: bool,
     pub method_of: Option<String>,
     pub type_params: Vec<String>,
     pub params: Vec<String>,
@@ -815,6 +852,18 @@ mod tests {
         assert!(
             errors.iter().any(|diag| diag.message.contains(expected)),
             "expected diagnostic containing '{expected}', got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn print_rejects_non_scalar_values_and_const_def_bodies() {
+        assert_analyze_error_contains(
+            "init:\n  values = [1, 2]\n  print(values)\nsample:\n  out1 = 0.0\n",
+            "print scalar values explicitly",
+        );
+        assert_analyze_error_contains(
+            "const def invalid() -> i32:\n  print(\"compile time\")\n  return 1\nsample:\n  out1 = 0.0\n",
+            "print is not allowed in const def",
         );
     }
 
@@ -4657,7 +4706,7 @@ const I32Values: i32[3] = [I32Value, max(i32(-7), -3), abs(i32(-11))]
 const I64Values: i64[3] = [
   I64Value,
   max(i64(9007199254740993), 9007199254740995),
-  abs(i64(-9007199254740993)),
+  abs(i64(-9007199254740993))
 ]
 const F32Values: f32[1] = [F32Value]
 const F64Values: f64[1] = [F64Value]
@@ -4969,7 +5018,7 @@ const B: f32[] = [2.0, 4.0]
 
 const def sum(xs: f32[]) -> f32:
   total = 0.0
-  for i in 0..(xs.len()):
+  for i in 0..xs.len():
     total = total + xs[i]
   return total
 
@@ -6072,6 +6121,28 @@ sample:
     }
 
     #[test]
+    fn single_slot_processor_io_surfaces_support_dynamic_indexing() {
+        let src = r#"
+proc Mono:
+  ins 1
+  outs 1
+
+  sample:
+    outs[0] = ins[0]
+
+init:
+  mono = Mono()
+
+sample:
+  out1 = mono(0.25)
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("single-slot dynamic surfaces should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("single-slot dynamic surfaces should lower to MIR");
+    }
+
+    #[test]
     fn declaration_only_library_file_does_not_require_sample_block() {
         let src = "proc Mix:\n  ins:\n    dry\n    fb\n  sample:\n    out1 = (dry + fb) * 0.5\n\ndef clip(x) {\n  return x\n}\nconst SCALE = 0.5\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -6145,33 +6216,157 @@ block:
     }
 
     #[test]
-    fn init_buffer_len_is_rejected_semantically() {
-        let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("buffer len in init should fail");
-        let diag = errors
-            .iter()
-            .find(|diag| diag.message.contains("buffer method 'src.len()'"))
-            .expect("missing init buffer len diagnostic");
+    fn proc_events_receive_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32[]
 
-        assert!(diag.message.contains("not allowed in init"));
-        assert_eq!((diag.line, diag.column), (6, 7));
-        assert_eq!(diag.end_line, 6);
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[0, frame] + f32(clip.len() + clip.chans()) + clip.samplerate()
+    clip[0, frame] = captured
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32[]
+
+events:
+  capture(frame: i32):
+    player.capture(frame)
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("proc events should receive their bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("proc event buffer access should lower to MIR");
     }
 
     #[test]
-    fn init_buffer_index_is_rejected_semantically() {
+    fn nested_proc_events_forward_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+proc Parent:
+  buffers:
+    source: f32
+
+  init:
+    player = Player(clip = source)
+
+  event capture(frame: i32):
+    player.capture(frame)
+
+  sample:
+    out1 = player()
+
+buffers:
+  source: f32
+
+events:
+  capture(frame: i32):
+    parent.capture(frame)
+
+init:
+  parent = Parent(source = source)
+
+sample:
+  out1 = parent()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("nested proc events should forward bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested proc event buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn indexed_proc_events_forward_bound_buffers() {
+        let src = r#"
+proc Player:
+  buffers:
+    clip: f32
+
+  init:
+    captured = 0.0
+
+  event capture(frame: i32):
+    captured = clip[frame]
+
+  sample:
+    out1 = captured
+
+buffers:
+  source: f32
+
+events:
+  capture(index: i32, frame: i32):
+    players[index].capture(frame)
+
+init:
+  players: Player[2] = Player(clip = source)
+
+sample:
+  out1 = players[0]() + players[1]()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        let typed = analyze(program).expect("indexed proc events should forward bound buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed proc event buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn init_buffer_len_is_allowed_semantically() {
+        let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("buffer len in init should analyze");
+    }
+
+    #[test]
+    fn buffer_bound_is_available_in_init_and_on_selected_collection_entries() {
+        let src = r#"
+buffers:
+  src: f32
+  bank: f32 {2}
+outs:
+  out1
+init:
+  source_bound = src.bound()
+  entry_bound = bank[1].bound()
+sample:
+  if source_bound || entry_bound:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("buffer bound queries should analyze");
+    }
+
+    #[test]
+    fn init_buffer_index_is_allowed_semantically() {
         let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  first = src[0]\nsample:\n  out1 = 0.0\n";
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("buffer indexing in init should fail");
-        let diag = errors
-            .iter()
-            .find(|diag| diag.message.contains("buffer indexing 'src[...]'"))
-            .expect("missing init buffer indexing diagnostic");
-
-        assert!(diag.message.contains("not allowed in init"));
-        assert_eq!((diag.line, diag.column), (6, 11));
-        assert_eq!(diag.end_line, 6);
+        analyze(program).expect("buffer indexing in init should analyze");
     }
 
     #[test]
@@ -6183,13 +6378,14 @@ buffers:
 block:
   channels = bank.chans()
   rate = bank.samplerate()
+  bound = bank.bound()
   sample:
     out1 = 0.0
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("collection metadata should require a slot");
 
-        for method in [".chans()", ".samplerate()"] {
+        for method in [".chans()", ".samplerate()", ".bound()"] {
             let diagnostic = errors
                 .iter()
                 .find(|diagnostic| diagnostic.message.contains(method))
@@ -6947,6 +7143,59 @@ sample:
     }
 
     #[test]
+    fn processor_validation_uses_resolved_overloads() {
+        let source = r#"
+def classify(value: bool) -> f32:
+  return 1.0
+
+def classify(value: i32) -> f32:
+  return 2.0
+
+def fetch(buf, frame: i32):
+  return buf[frame]
+
+def fetch(buf, channel: i32, frame: i32):
+  return buf[channel, frame]
+
+struct Classifier:
+  def value(self, input: bool) -> f32:
+    return 3.0
+
+  def value(self, input: i32) -> f32:
+    return 4.0
+
+proc Player:
+  buffers:
+    clip: f32[]
+
+  params:
+    mode: i32 = 0
+
+  init:
+    classifier = Classifier()
+
+  outs 1
+
+  sample:
+    out1 = classify(mode) + classifier.value(mode) + fetch(clip, 0, 0)
+
+buffers:
+  source: f32[]
+
+init:
+  player = Player(clip = source)
+
+sample:
+  out1 = player()
+"#;
+        let program = parse_program(source).expect("processor overload source should parse");
+        let typed = analyze(program)
+            .expect("processor validation should use the overload selected by type and arity");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved processor overload calls should lower to MIR");
+    }
+
+    #[test]
     fn overload_resolution_applies_contextual_aggregate_conversions() {
         let source = r#"
 def array_choice(values: f64[]) -> f64:
@@ -7592,6 +7841,7 @@ init:
   holder = Holder()
 
 sample:
+  holder.values = (2, 3.0)
   alias = holder.values
   (first, second) = holder.values
   selected: i32 = classify(alias[0])
@@ -7719,6 +7969,154 @@ sample:
             .any(|function| function.name.contains("integer_only.__onda_mono__g_i32")));
         lower_program_to_optimized_mir(&typed)
             .expect("destructured inferred returns should lower to MIR");
+    }
+
+    #[test]
+    fn bare_tuple_destructuring_discards_unneeded_values() {
+        let source = r#"
+def triple() -> (i32, f32, bool):
+  return (7, 2.5, true)
+
+def select() -> f32:
+  first, _, _ = triple()
+  _, second, _ = triple()
+  return f32(first) + second
+
+sample:
+  out1 = select()
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("discarded tuple entries must not introduce bindings");
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple discards should lower without storage");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_work_in_init_defs_tasks_and_executable_blocks() {
+        let source = r#"
+def pair() -> (f32, i32):
+  return (1.0, 2)
+
+def consume() -> f32:
+  local: (f64, i64) = pair()
+  return f32(local[0]) + f32(local[1])
+
+init:
+  state: (f64, i64) = pair()
+  state = pair()
+
+event reset():
+  state = pair()
+
+task worker():
+  local: (f64, i64) = pair()
+  yield
+
+block:
+  before: (f64, i64) = pair()
+  sample:
+    local: (f64, i64) = pair()
+    out1 = f32(local[0]) + f32(local[1]) + f32(state[0]) + consume()
+  after: (f64, i64) = pair()
+"#;
+        let typed = analyze(parse_program(source).expect("typed tuple source should parse"))
+            .expect("typed tuple declarations should analyze in every supported assignment owner");
+        assert_eq!(
+            typed.state_tuples.get("state"),
+            Some(&vec![PrimitiveType::F64, PrimitiveType::I64])
+        );
+        assert_eq!(
+            typed.state_tuples.get("before"),
+            Some(&vec![PrimitiveType::F64, PrimitiveType::I64])
+        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("typed tuple declarations should lower with their declared types");
+    }
+
+    #[test]
+    fn nested_init_tuples_remain_local_while_owner_tuples_become_state() {
+        let source = r#"
+init:
+  state = (1.0, 2)
+  if true:
+    local = (3.0, 4)
+    local = (5.0, 6)
+    state = local
+
+sample:
+  out1 = state[0] + f32(state[1])
+"#;
+        let typed = analyze(parse_program(source).expect("tuple scope source should parse"))
+            .expect("init tuple scopes should analyze");
+        assert!(typed.state_tuples.contains_key("state"));
+        assert!(!typed.state_tuples.contains_key("local"));
+        assert!(!typed
+            .state_vars
+            .iter()
+            .any(|name| name.starts_with("local.__")));
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested init tuple locals should lower without persistent state");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_work_in_processor_owners() {
+        let source = r#"
+def pair() -> (f32, i32):
+  return (1.0, 2)
+
+proc Voice:
+  init:
+    state: (f64, i64) = pair()
+    state = pair()
+
+  event reset():
+    state = pair()
+
+  task worker():
+    local: (f64, i64) = pair()
+    yield
+
+  block:
+    before: (f64, i64) = pair()
+    sample:
+      local: (f64, i64) = pair()
+      out1 = f32(local[0]) + f32(local[1]) + f32(state[0])
+    after: (f64, i64) = pair()
+
+proc Wrapper:
+  init:
+    voice = Voice()
+  sample:
+    out1 = voice()
+
+init:
+  wrapper = Wrapper()
+
+sample:
+  out1 = wrapper()
+"#;
+        let typed = analyze(parse_program(source).expect("processor tuple source should parse"))
+            .expect("typed tuple declarations should analyze in processor owners");
+        lower_program_to_optimized_mir(&typed)
+            .expect("processor typed tuple declarations should lower to MIR");
+    }
+
+    #[test]
+    fn typed_tuple_assignments_validate_shape_and_element_types() {
+        for (assignment, expected) in [
+            ("value: (f32, i32) = (true, 2)", "element 0 type mismatch"),
+            ("value: (f32, i32) = (1.0, 2, 3)", "has arity 3, expected 2"),
+            ("value: (f32, i32) = 1.0", "requires a tuple value"),
+        ] {
+            let source = format!("sample:\n  {assignment}\n  out1 = 0.0\n");
+            let errors =
+                analyze(parse_program(&source).expect("invalid tuple source should parse"))
+                    .expect_err("invalid typed tuple assignment should fail semantic analysis");
+            assert!(
+                errors.iter().any(|error| error.message.contains(expected)),
+                "expected '{expected}' for '{assignment}', got {errors:?}"
+            );
+        }
     }
 
     #[test]
@@ -8736,6 +9134,22 @@ sample:
                 "outs:\n  out1\ninit:\n  vals = (1, 2)\nsample:\n  vals = (0.5, 2)\n  out1 = 0.0\n",
                 "tuple assignment to 'vals' element 0 type mismatch",
             ),
+            (
+                "def broken(vals: (i32, i32)):\n  vals = (0.5, 2)\n  return 0.0\nsample:\n  out1 = broken((1, 2))\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "init:\n  if true:\n    vals = (1, 2)\n    vals = (0.5, 2)\nsample:\n  out1 = 0.0\n",
+                "tuple assignment to 'vals' element 0 type mismatch",
+            ),
+            (
+                "struct Holder:\n  vals: (i32, i32) = (0, 0)\ninit:\n  holder = Holder()\n  holder.vals = (0.5, 2)\nsample:\n  out1 = 0.0\n",
+                "tuple assignment to 'holder.vals' element 0 type mismatch",
+            ),
+            (
+                "block:\n  vals: (i32, i32) = (1, 2)\n  vals: (i32, i32) = (3, 4)\n  sample:\n    out1 = 0.0\n",
+                "typed tuple declaration for 'vals' is only allowed on first assignment",
+            ),
         ];
 
         for (source, expected) in cases {
@@ -9651,6 +10065,7 @@ sample:
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 expr_contains_proc_index_sentinel(expr)
             }
+            Stmt::Print { values, .. } => values.iter().any(expr_contains_proc_index_sentinel),
             Stmt::If {
                 cond,
                 then_branch,
@@ -9739,6 +10154,9 @@ sample:
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 expr_contains_index_base(expr, expected_base)
             }
+            Stmt::Print { values, .. } => values
+                .iter()
+                .any(|expr| expr_contains_index_base(expr, expected_base)),
             Stmt::If {
                 cond,
                 then_branch,
@@ -9982,10 +10400,10 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre input read should fail");
         assert!(
-            errors
-                .iter()
-                .any(|diag| diag.message.contains("unknown symbol 'in1'")),
-            "missing unknown-symbol diagnostic for block pre input read: {errors:#?}"
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'in1' can only be read in sample; move this read into the block's nested sample section"
+            )),
+            "missing sample-section diagnostic for block pre input read: {errors:#?}"
         );
     }
 
@@ -9995,7 +10413,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing dynamic-input diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10006,8 +10426,23 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block post dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing dynamic-input diagnostic for block post: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn block_pre_cannot_write_named_audio_outputs() {
+        let src = "outs:\n  out1\nblock:\n  out1 = 0.0\n  sample:\n    out1 = 1.0\n";
+        let program = parse_program(src).expect("parse should succeed");
+        let errors = analyze(program).expect_err("block pre output write should fail");
+        assert!(
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output 'out1' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
+            "missing sample-section diagnostic for block pre output write: {errors:#?}"
         );
     }
 
@@ -10017,7 +10452,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre dynamic output write should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("outs[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output array 'outs' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
             "missing dynamic-output diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10028,7 +10465,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre input array read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("freqs")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'freqs' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing input-array diagnostic for block pre: {errors:#?}"
         );
     }
@@ -10039,7 +10478,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("block pre output array write should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("stereo")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio output array 'stereo' can only be written in sample; move this assignment into the block's nested sample section"
+            )),
             "missing output-array diagnostic for block pre: {errors:#?}"
         );
     }
@@ -11193,7 +11634,9 @@ graph {
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("proc block pre dynamic input read should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains("ins[i]")),
+            errors.iter().any(|diag| diag.message.contains(
+                "audio input 'ins' can only be read in sample; move this read into the block's nested sample section"
+            )),
             "missing proc dynamic-input diagnostic for block pre: {errors:#?}"
         );
     }
@@ -12211,6 +12654,55 @@ sample:
     }
 
     #[test]
+    fn ranged_struct_fields_reach_flattened_state_and_method_parameters() {
+        let source = r#"
+struct Ring:
+  values: f32[8]
+  index: i32 = 0 {8, wrap}
+
+  def write(self, value: f32):
+    self.values[self.index] = value
+    self.index += 1
+
+init:
+  ring = Ring(index = 15)
+
+sample:
+  ring.write(1.0)
+  out1 = ring.values[ring.index]
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("ranged struct fields should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("ranged struct fields should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+        let range = mir
+            .state
+            .iter()
+            .find(|state| state.name == "ring.index")
+            .and_then(|state| state.integer_range)
+            .expect("flattened struct state should retain its integer range");
+        assert_eq!(range.min, onda_mir::ScalarValue::I32(0), "{dump}");
+        assert_eq!(range.max, onda_mir::ScalarValue::I32(7), "{dump}");
+        assert_eq!(range.mode, onda_mir::IntegerRangeMode::Wrap, "{dump}");
+        assert!(
+            mir.functions
+                .iter()
+                .find(|function| function.name.contains("Ring.write"))
+                .and_then(|function| {
+                    function
+                        .params
+                        .iter()
+                        .find(|parameter| parameter.name == "self.index")
+                })
+                .and_then(|parameter| parameter.integer_range)
+                .is_some(),
+            "{dump}"
+        );
+        assert!(dump.contains("] unchecked"), "{dump}");
+    }
+
+    #[test]
     fn inferred_integer_binding_range_defaults_to_i32() {
         let source = r#"
 params:
@@ -12236,7 +12728,7 @@ sample:
             else {
                 panic!("each init statement should remain a declaration");
             };
-            assert_eq!(*decl_ty, Some(PrimitiveType::I32));
+            assert_eq!(*decl_ty, Some(DeclType::Scalar(PrimitiveType::I32)));
             assert!(*is_typed_decl);
         }
         let mir = lower_program_to_optimized_mir(&typed)
@@ -12349,7 +12841,7 @@ sample:
             r#"
 init:
   value: i64 = 0 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1),
+    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1)
   }
 
 sample:
@@ -12381,7 +12873,7 @@ sample:
         let source = r#"
 init:
   value: i64 = -9223372036854775807 - 1 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807),
+    range = (-9223372036854775807 - 1)..(-9223372036854775807)
   }
 
 sample:
@@ -12553,6 +13045,60 @@ sample:
                 .is_some(),
             "{dump}"
         );
+        assert!(dump.contains("] unchecked"), "{dump}");
+        assert!(!dump.contains("] clamp"), "{dump}");
+    }
+
+    #[test]
+    fn integer_ranges_cross_value_parameters_and_scalar_returns() {
+        let source = r#"
+const N = 8
+
+def bounded(index: i32):
+  result = index {N, wrap}
+  return result
+
+def forward(index: i32):
+  return bounded(index)
+
+struct Table:
+  values: f32[N]
+
+  def read(self, index: i32):
+    return self.values[index]
+
+init:
+  table: Table
+  cursor = 0 {N, wrap}
+
+sample:
+  out1 = table.read(forward(cursor))
+  cursor += 1
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("range-carrying calls should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("range-carrying calls should lower to optimized MIR");
+        let dump = onda_mir::format_program(mir.as_program());
+
+        let (read_function, read) = mir
+            .functions
+            .iter()
+            .enumerate()
+            .find(|(_, function)| function.name.ends_with(".read"))
+            .expect("read helper should be present");
+        let read_ranges = onda_mir::analyze_program_integer_ranges(mir.as_program());
+        let read_index = read
+            .params
+            .iter()
+            .position(|parameter| parameter.name == "index")
+            .expect("read helper should retain its index parameter");
+        let range = read_ranges
+            .function(onda_mir::FunctionId::new(read_function as u32))
+            .and_then(|ranges| ranges.parameter(onda_mir::ParameterId::new(read_index as u32)))
+            .expect("the call site should constrain read's index parameter");
+        assert_eq!(range.min(), 0, "{dump}");
+        assert_eq!(range.max(), 7, "{dump}");
         assert!(dump.contains("] unchecked"), "{dump}");
         assert!(!dump.contains("] clamp"), "{dump}");
     }
@@ -13172,5 +13718,1300 @@ sample:
         );
         analyze_with_options_and_inputs(program, AnalysisOptions::default(), &inputs)
             .expect("the supplied initializer should replace the source default");
+    }
+
+    #[test]
+    fn delegates_dispatch_owner_when_handlers() {
+        let source = r#"
+delegate finished(reason: i32)
+
+init:
+  result: i32 = 0
+
+event trigger():
+  finished(7)
+
+when finished(reason):
+  result = reason
+
+sample:
+  out1 = f32(result)
+"#;
+        let program = parse_program(source).expect("delegate source should parse");
+        let typed = analyze(program).expect("delegate source should analyze");
+        assert_eq!(typed.delegates.len(), 1);
+        assert_eq!(typed.delegates[0].name, "finished");
+    }
+
+    #[test]
+    fn delegate_when_handlers_receive_owner_buffers() {
+        let source = r#"
+delegate top_fired()
+
+proc Child:
+  delegate fired()
+  buffers:
+    own: f32
+  when fired():
+    own[0] = own[0] + 2.0
+  block:
+    held = 0.0
+    sample:
+      fired()
+      out1 = held
+
+proc Parent:
+  delegate own_fired()
+  buffers:
+    own: f32
+    routed: f32
+    child_own: f32
+  init:
+    child = Child(own = child_own)
+  when own_fired():
+    own[0] = own[0] + 1.0
+  when child.fired():
+    routed[0] = routed[0] + 10.0
+  sample:
+    own_fired()
+    out1 = child()
+
+buffers:
+  top: f32
+  own: f32
+  routed: f32
+  child_own: f32
+
+when top_fired():
+  top[0] = top[0] + 100.0
+
+when parent.own_fired():
+  top[0] = top[0] + 1000.0
+
+init:
+  parent = Parent(own = own, routed = routed, child_own = child_own)
+
+sample:
+  top_fired()
+  out1 = parent()
+"#;
+        let program = parse_program(source).expect("delegate buffer source should parse");
+        let typed = analyze(program).expect("delegate handlers should receive owner buffers");
+        lower_program_to_optimized_mir(&typed)
+            .expect("delegate handler buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn indexed_child_delegate_handlers_receive_owner_buffers() {
+        let source = r#"
+proc Child:
+  delegate fired()
+  sample:
+    fired()
+    out1 = 0.0
+
+proc Parent:
+  buffers:
+    source: f32
+  init:
+    children: Child[2] = Child()
+  when children[1].fired():
+    source[0] = source[0] + 1.0
+  sample:
+    out1 = children[0]() + children[1]()
+
+buffers:
+  source: f32
+init:
+  parent = Parent(source = source)
+sample:
+  out1 = parent()
+"#;
+        let program = parse_program(source).expect("indexed delegate source should parse");
+        let typed = analyze(program).expect("indexed handler should receive its owner buffer");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed delegate handler buffer access should lower to MIR");
+    }
+
+    #[test]
+    fn delegates_reject_init_reachability_through_runtime_defs() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def publish():
+  finished()
+
+init:
+  publish()
+
+sample:
+  out1 = 0.0
+"#,
+            "init -> def publish -> delegate finished",
+        );
+    }
+
+    #[test]
+    fn delegate_reachability_uses_the_selected_overload() {
+        for source in [
+            r#"
+delegate finished()
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished()
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+def helper(value: i32):
+  finished()
+
+def helper(value: f32):
+  return
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished(value: f32)
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished(f32(value))
+
+when finished(value):
+  helper(value)
+
+sample:
+  out1 = 0.0
+"#,
+        ] {
+            let program = parse_program(source).expect("overloaded delegate source should parse");
+            analyze(program)
+                .expect("a call to the pure overload must not inherit another overload's effects");
+        }
+    }
+
+    #[test]
+    fn delegate_when_overloads_use_owner_visible_types() {
+        for source in [
+            r#"
+params:
+  selected: i32 = 1
+
+delegate finished()
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  return
+
+when finished():
+  helper(selected)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+proc Child:
+  delegate finished()
+
+  event trigger():
+    finished()
+
+  sample:
+    out1 = 0.0
+
+def helper(value: i32):
+  return
+
+def helper(value: f32):
+  return
+
+init:
+  selected: i32 = 1
+  child = Child()
+
+when child.finished():
+  helper(selected)
+
+sample:
+  out1 = child()
+"#,
+            r#"
+params:
+  selected: i64 = 1
+
+delegate finished()
+
+def identity(value):
+  return value
+
+init:
+  observed: i64 = 0
+
+when finished():
+  observed = identity(selected)
+
+sample:
+  out1 = f32(observed)
+"#,
+        ] {
+            let program = parse_program(source).expect("delegate overload source should parse");
+            let typed = analyze(program)
+                .expect("when handlers should use the same owner-visible types as other blocks");
+            lower_program_to_optimized_mir(&typed)
+                .expect("owner-typed when overload should lower to valid MIR");
+        }
+    }
+
+    #[test]
+    fn delegate_reachability_rejects_the_selected_effectful_overload() {
+        for source in [
+            r#"
+delegate finished()
+
+def helper(value: f32):
+  finished()
+
+def helper(value: i32):
+  return
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+def helper(value: i32):
+  return
+
+def helper(value: f32):
+  finished()
+
+init:
+  helper(1.0)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+struct Value:
+  x: f32
+
+def helper(value: f32):
+  return
+
+def helper(value: Value):
+  finished()
+
+init:
+  value = Value(1.0)
+  helper(value)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+buffers:
+  source: f32
+
+def helper(value: f32):
+  return
+
+def helper(value: buffer<f32>):
+  finished()
+
+init:
+  helper(source)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+const values: f32[1] = [0.0]
+
+def helper(value: i32[]):
+  return
+
+def helper(value: f32[]):
+  finished()
+
+init:
+  helper(values)
+
+sample:
+  out1 = 0.0
+"#,
+            r#"
+delegate finished()
+
+params:
+  selected: i32 = 1
+
+def helper(value: f32):
+  return
+
+def helper(value: i32):
+  finished()
+
+init:
+  helper(selected)
+
+sample:
+  out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "init code in the top-level owner cannot call or reach a delegate",
+            );
+        }
+    }
+
+    #[test]
+    fn delegates_reject_value_use() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+sample:
+  result = finished()
+  out1 = result
+"#,
+            "has no result and must be used as a statement",
+        );
+    }
+
+    #[test]
+    fn owner_local_callable_names_cannot_be_shadowed_by_value_bindings() {
+        for (source, expected) in [
+            (
+                r#"
+delegate finished()
+
+def invoke(finished: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'finished' conflicts with owner-local delegate 'finished'",
+            ),
+            (
+                r#"
+delegate finished(value: i32)
+
+when finished(finished):
+  print(finished)
+
+sample:
+  out1 = 0.0
+"#,
+                "when binding 'finished' conflicts with owner-local delegate 'finished'",
+            ),
+            (
+                r#"
+event update():
+  return
+
+sample:
+  update = 1
+  out1 = 0.0
+"#,
+                "binding 'update' conflicts with owner-local event 'update'",
+            ),
+            (
+                r#"
+task worker():
+  yield
+
+sample:
+  for worker in 0..1:
+    out1 = f32(worker)
+"#,
+                "loop variable 'worker' conflicts with owner-local task 'worker'",
+            ),
+            (
+                r#"
+def helper():
+  return
+
+def invoke(helper: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'helper' conflicts with owner-local function 'helper'",
+            ),
+            (
+                r#"
+def helper():
+  return
+
+sample:
+  const helper = 1
+  out1 = 0.0
+"#,
+                "local constant 'helper' conflicts with owner-local function 'helper'",
+            ),
+            (
+                r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+
+def inspect(Voice: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'Voice' conflicts with owner-local processor 'Voice'",
+            ),
+            (
+                r#"
+struct Pair:
+  value: f32
+
+def inspect(Pair: i32):
+  return
+
+sample:
+  out1 = 0.0
+"#,
+                "function parameter 'Pair' conflicts with owner-local struct 'Pair'",
+            ),
+            (
+                r#"
+proc Voice:
+  delegate finished()
+
+  def invoke(finished: i32):
+    return
+
+  sample:
+    out1 = 0.0
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#,
+                "function parameter 'finished' conflicts with owner-local delegate 'finished' in processor 'Voice'",
+            ),
+        ] {
+            assert_analyze_error_contains(source, expected);
+        }
+    }
+
+    #[test]
+    fn delegates_reject_unshadowed_bare_value_use() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def invalid() -> i32:
+  return finished
+
+sample:
+  out1 = 0.0
+"#,
+            "delegate 'finished' is callable only and cannot be used as a value",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_owner_member_collisions() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+event finished():
+  return
+
+sample:
+  out1 = 0.0
+"#,
+            "delegate 'finished' conflicts with event 'finished'",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_recursive_event_dispatch_with_source_names() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+event restart():
+  finished()
+
+when finished():
+  restart()
+
+sample:
+  out1 = 0.0
+"#,
+            "event restart -> delegate finished -> when finished #1 -> event restart",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_child_dispatch_cycles_with_source_names() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+when child.fired():
+  child.trigger()
+
+sample:
+  out1 = child()
+"#,
+            "when child.fired #1 -> delegate Child.fired through child -> when child.fired #1",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_resetting_the_active_dispatching_task() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+task worker():
+  finished()
+  yield
+
+when finished():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_child_dispatch_resetting_the_active_parent_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  child.trigger()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = child()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_child_step_resetting_the_active_parent_task() {
+        for source in [
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  block:
+    fired()
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  block:
+    fired()
+    value = 0.0
+
+init:
+  children: Child[2] = Child()
+  index: i32 = 0
+
+task worker():
+  value = children[index]()
+  yield
+
+when children[0].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "cannot dispatch a delegate whose synchronous handler may reset that active task",
+            );
+        }
+    }
+
+    #[test]
+    fn delegates_reject_child_task_step_resetting_the_active_parent_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  task publish():
+    fired()
+    yield
+  block:
+    await publish()
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_do_not_attribute_unawaited_child_tasks_to_proc_steps() {
+        let program = parse_program(
+            r#"
+proc Child:
+  kouts:
+    value
+  delegate fired()
+  task publish():
+    fired()
+    yield
+  block:
+    value = 0.0
+
+init:
+  child = Child()
+
+task worker():
+  value = child()
+  yield
+
+when child.fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+        )
+        .expect("unawaited child task source should parse");
+        analyze(program).expect("an unawaited child task cannot publish during a proc step");
+    }
+
+    #[test]
+    fn delegates_track_child_event_dispatch_through_local_aliases() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[1] = Child()
+  child = children[0]
+  child.trigger()
+
+sample:
+  out1 = children[0]()
+"#,
+            "init code in the top-level owner cannot call or reach a delegate",
+        );
+    }
+
+    #[test]
+    fn delegates_track_child_event_dispatch_through_conditional_aliases() {
+        for source in [
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(target):
+  target.trigger()
+
+params:
+  choose = false
+
+init:
+  children: Child[2] = Child()
+  target = children[0]
+  if choose:
+    target = children[1]
+  target.trigger()
+
+sample:
+  out1 = children[0]() + children[1]()
+"#,
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(target):
+  target.trigger()
+
+params:
+  choose = false
+
+init:
+  left = Child()
+  right = Child()
+  target = left
+  if choose:
+    target = right
+  relay(target)
+
+sample:
+  out1 = left() + right()
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+                "init code in the top-level owner cannot call or reach a delegate",
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_child_aliases_preserve_indexed_delegate_routes() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+params:
+  choose = false
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  target = children[0]
+  if choose:
+    target = children[1]
+  target.trigger()
+  yield
+
+when children[1].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn delegates_reject_forwarded_child_dispatch_resetting_the_active_task() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def relay(targets):
+  targets[0].trigger()
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  relay(children)
+  yield
+
+when children[0].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#,
+            "cannot dispatch a delegate whose synchronous handler may reset that active task",
+        );
+    }
+
+    #[test]
+    fn indexed_child_dispatch_only_applies_the_selected_delegate_route() {
+        let source = r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+
+task worker():
+  children[0].trigger()
+  yield
+
+when children[1].fired():
+  worker.reset()
+
+block:
+  await worker()
+  sample:
+    out1 = children[0]() + children[1]()
+"#;
+        let program = parse_program(source).expect("delegate route source should parse");
+        analyze(program).expect("an unrelated indexed route must not reset the active task");
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_child_receivers() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  child = Child()
+
+sample:
+  child.finished()
+  out1 = child()
+"#,
+            "cannot call delegate 'finished' through child receiver 'child'",
+        );
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_indexed_child_receivers() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[2] = Child()
+
+sample:
+  children[0].finished()
+  out1 = children[0]() + children[1]()
+"#,
+            "cannot call delegate 'finished' through child receiver 'children'",
+        );
+    }
+
+    #[test]
+    fn delegates_cannot_be_called_through_child_receiver_aliases() {
+        assert_analyze_error_contains(
+            r#"
+proc Child:
+  delegate finished()
+  sample:
+    out1 = 0.0
+
+init:
+  children: Child[1] = Child()
+
+sample:
+  child = children[0]
+  child.finished()
+  out1 = children[0]()
+"#,
+            "cannot call delegate 'finished' through child receiver 'child'",
+        );
+    }
+
+    #[test]
+    fn delegate_dispatch_analysis_reuses_repeated_helper_expansions() {
+        let mut source = String::from(
+            r#"
+proc Child:
+  delegate fired()
+  event trigger():
+    fired()
+  sample:
+    out1 = 0.0
+
+def leaf(target):
+  target.trigger()
+"#,
+        );
+        for depth in 0..20 {
+            let callee = if depth == 0 {
+                "leaf".to_owned()
+            } else {
+                format!("helper{}", depth - 1)
+            };
+            source.push_str(&format!(
+                "\ndef helper{depth}(target):\n  {callee}(target)\n  {callee}(target)\n"
+            ));
+        }
+        source.push_str(
+            r#"
+init:
+  child = Child()
+  helper19(child)
+
+sample:
+  out1 = child()
+"#,
+        );
+
+        assert_analyze_error_contains(
+            &source,
+            "init code in the top-level owner cannot call or reach a delegate",
+        );
+    }
+
+    #[test]
+    fn delegate_effectful_top_level_defs_are_owner_local() {
+        assert_analyze_error_contains(
+            r#"
+delegate finished()
+
+def publish():
+  finished()
+
+proc Child:
+  sample:
+    publish()
+    out1 = 0.0
+
+init:
+  child = Child()
+
+sample:
+  out1 = child()
+"#,
+            "may publish a delegate owned by another owner",
+        );
+    }
+
+    #[test]
+    fn processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+  out2
+init:
+  stereo = Stereo()
+sample:
+  (out1, out2) = stereo()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("processor outputs should destructure");
+    }
+
+    #[test]
+    fn processor_output_destructuring_supports_bare_targets_and_discards() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+init:
+  stereo = Stereo()
+sample:
+  out1, _ = stereo()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("processor outputs should support discarded targets");
+        lower_program_to_optimized_mir(&typed)
+            .expect("discarded processor outputs should lower without a binding");
+    }
+
+    #[test]
+    fn nested_processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+proc Parent:
+  init:
+    stereo = Stereo()
+  outs:
+    out1
+    out2
+  sample:
+    (out1, out2) = stereo()
+
+init:
+  parent = Parent()
+outs:
+  out1
+  out2
+sample:
+  (out1, out2) = parent()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("nested processor outputs should destructure");
+    }
+
+    #[test]
+    fn nested_processor_state_preserves_struct_array_field_paths() {
+        let source = r#"
+struct Data:
+  storage: f32[8]
+
+proc Line:
+  init:
+    data = Data()
+    index = 0 {8, wrap}
+  sample:
+    data.storage[index] = in1
+    out1 = data.storage[index]
+    index += 1
+
+proc Effect:
+  init:
+    line = Line()
+  sample:
+    out1 = line(in1)
+
+init:
+  effect = Effect()
+sample:
+  out1 = effect(1.0)
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested struct array state should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested struct array state should lower to MIR");
+    }
+
+    #[test]
+    fn dynamically_indexed_processor_outputs_can_be_tuple_destructured() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+  out2
+init:
+  voices: Stereo[2] = Stereo()
+sample:
+  i = 1
+  (out1, out2) = voices[i]()
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("dynamically indexed processor outputs should destructure");
+    }
+
+    #[test]
+    fn block_rate_processor_outputs_can_be_tuple_destructured_in_tasks() {
+        let source = r#"
+proc ControlPair:
+  kouts:
+    left
+    right
+  block:
+    left = 1.0
+    right = 2.0
+
+init:
+  pair = ControlPair()
+
+task worker():
+  (left, right) = pair()
+  yield
+
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("block-rate processor outputs should destructure in a task");
+    }
+
+    #[test]
+    fn processor_array_param_outputs_can_be_tuple_destructured_in_defs() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+def sum_voice(voices, i):
+  (left, right) = voices[i]()
+  return left + right
+
+outs:
+  out1
+init:
+  voices: Stereo[2] = Stereo()
+sample:
+  out1 = sum_voice(voices, 1)
+"#;
+
+        let program = parse_program(source).expect("source should parse");
+        analyze(program).expect("processor-array def outputs should destructure");
+    }
+
+    #[test]
+    fn processor_output_destructuring_reports_arity_mismatch() {
+        let source = r#"
+proc Stereo:
+  outs:
+    left
+    right
+  sample:
+    left = 1.0
+    right = 2.0
+
+outs:
+  out1
+init:
+  stereo = Stereo()
+sample:
+  (left, right, extra) = stereo()
+  out1 = left
+"#;
+        let program = parse_program(source).expect("source should parse");
+        let errors = analyze(program).expect_err("arity mismatch should fail");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:#?}");
+        assert!(errors.iter().any(|error| error.message.contains(
+            "processor output destructuring has 3 targets, but the processor has 2 outputs"
+        )));
     }
 }

@@ -1,4 +1,12 @@
-# Onda processor ABI
+---
+title: Processor API and ABI reference
+description: Host compiled Onda processor objects directly through the portable native and WebAssembly ABI.
+permalink: /docs/processor-api/
+section: reference
+eyebrow: Processor integration
+---
+
+# Processor API and ABI reference
 
 This document specifies the backend-neutral contract between a compiled Onda processor and its
 host. The contract is not WebAssembly-specific: LLVM native objects, LLVM WebAssembly objects, and
@@ -33,7 +41,16 @@ signed 32-bit values. Public LLVM entry points use the target's C calling conven
 WebAssembly modules use ordinary core-Wasm function calls.
 
 ```text
-onda_processor_init(params: Ptr, state: Ptr, mode: InitMode) -> i32
+onda_processor_init(
+  params: Ptr,
+  state: Ptr,
+  mode: InitMode,
+  buffers: Ptr,
+  buffer_frames: Ptr,
+  buffer_channels: Ptr,
+  buffer_sample_rates: Ptr,
+  output: Ptr,
+) -> i32
 
 onda_process(
   state: Ptr,
@@ -47,6 +64,7 @@ onda_process(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
+  output: Ptr,
 ) -> i32
 
 onda_event_N(
@@ -57,6 +75,7 @@ onda_event_N(
   buffer_frames: Ptr,
   buffer_channels: Ptr,
   buffer_sample_rates: Ptr,
+  output: Ptr,
 ) -> i32
 ```
 
@@ -70,9 +89,12 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 6 replaces the boolean-like `all` contract with this named mode enum. The
-instance-level C and WebAssembly host APIs use the same values. A failed initialization leaves the
-physical state indeterminate.
+Processor ABI version 5 introduces the named initialization mode, supplies current external-buffer
+descriptors to initialization, and adds one optional `ExecutionOutput` to init, process, and event
+entries. Its independently optional print and delegate batches share one call-local sequence so
+hosts can preserve source order across both streams. The instance-level C and WebAssembly host APIs
+use the same initialization-mode values. A failed initialization leaves the physical state
+indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -82,6 +104,64 @@ must not be processed until the host successfully initializes or restores it.
 The process order intentionally places state, parameters, and audio tables before segment controls
 and optional buffer tables. This keeps the hottest pointers in argument registers on common native
 C ABIs without introducing a target-specific entry point.
+
+### Call-scoped execution output
+
+For the language semantics, see [delegates](syntax.md#delegates) and
+[printing](syntax.md#printing). The internal [delegate](delegates.md) and
+[print](printing.md) integration notes contain cross-host implementation details.
+
+`output` is null when the host consumes neither occurrence stream. Otherwise it points to two
+independently nullable pointers followed by the generated call-local counter:
+
+```text
+delegate_batch: Ptr
+print_batch: Ptr
+next_sequence: u32
+```
+
+Each present pointer addresses an independent caller-owned batch with this physical shape; native
+targets use native pointers and complete wasm32 modules use little-endian 32-bit linear-memory
+offsets:
+
+```text
+storage: Ptr
+capacity_bytes: u32
+used_bytes: u32
+record_count: u32
+overflow_count: u32
+```
+
+The fixed header of every contiguous record is three `u32` values followed immediately by payload
+bytes. A delegate record stores declaration-order delegate index, payload byte count, and call-local
+sequence. Scalar and
+fixed arrays are packed in parameter order; each slice is an `i32` count followed by contiguous
+elements. The descriptor's `metadata.delegates` supplies its layout.
+
+A print record stores log-site index, payload byte count, and the same call-local sequence. Its
+payload contains only the site's
+primitive scalar arguments without padding: four bytes for `f32`/`i32`, eight for `f64`/`i64`, and
+one zero-or-one byte for `bool`. `metadata.source_files` and `metadata.log_sites` supply labels,
+source spans, lexical ownership, argument types, and fixed payload sizes. Scalar and header byte
+order is the artifact target's byte order.
+
+For one fixed-shape occurrence, exact storage is the twelve-byte record header plus the descriptor's
+`payload_size_bytes`. A dynamic delegate has no exact pre-execution size; its descriptor reports
+`payload_min_size_bytes`, including each slice's four-byte length prefix but no slice elements.
+There is no exact whole-batch size because occurrence counts, delegate selection, and slice lengths
+may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
+was insufficient.
+
+Before every init, process, or input-event entry, the host resets the counters of each supplied
+batch and resets `next_sequence` to zero. Publications into either present batch consume that shared
+counter. A complete record is appended only when it fits. Otherwise it is discarded whole and that
+batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
+batch, or storage is neutral and does not count overflow. Generated execution failure clears
+delegate results but retains print records and overflow already produced, because they may diagnose
+the failure. Storage
+is caller-owned, never allocated or retained by the processor, and is not part of snapshots. Hosts
+that expose a combined log merge the two decoded batches by `sequence`; sequences have no meaning
+across separate entry calls.
 
 ## Pointer and target profiles
 
@@ -124,7 +204,9 @@ relocatable `linking` section. It does not pretend that the object is directly i
 
 `include/onda_processor_abi.h` is the canonical C declaration of the current ABI entry points. An
 application links the emitted object, allocates storage from the exact paired descriptor, builds the
-input/output and external-buffer pointer tables, and calls `onda_processor_init`, `onda_process`, and any
+input/output and external-buffer pointer tables, optionally prepares an
+`onda_processor_execution_output_t` containing independently allocated delegate and print batches,
+resets it immediately before entry, and calls `onda_processor_init`, `onda_process`, and any
 `onda_event_N` functions directly. No Onda runtime or compiler library is required.
 
 The application must reject descriptor/ABI versions it does not implement and must verify that the
@@ -148,8 +230,16 @@ contract as an LLVM object and does not make Web Audio part of the ABI.
 
 The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
 alignments in `runtime`. It initializes parameter defaults from program metadata and calls
-`onda_processor_init(params, state, FULL)` before processing. Physical state uses the backend's selected
-target layout and is otherwise opaque.
+`onda_processor_init(params, state, FULL, buffers, buffer_frames, buffer_channels,
+buffer_sample_rates, output)` before processing. The four buffer tables describe the bindings
+current for this initialization call and follow the same rules as process and event calls. Pass
+null for `output` when initialization output is not consumed. Physical state uses the backend's
+selected target layout and is otherwise opaque.
+
+Hosts may replace buffer descriptors between entry-point calls. The next init, event, or process
+call observes the replacement; rebinding alone does not execute initialization or recompute state
+previously derived from a buffer. Supplying bindings to init is intended for one-time preprocessing
+when the host already owns the source buffers before processing begins.
 
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
@@ -165,9 +255,10 @@ persistent scalar elements in little-endian byte order, in metadata order, witho
 or scratch state. It includes pinned authored roots and compiler-owned task frames. This is
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
-Restore begins with `onda_processor_init(params, state, FULL)`, then overlays every persistent entry
-from the packed snapshot. This resets instance scratch while preserving persistent state and task
-continuations.
+Restore begins with `onda_processor_init(params, state, FULL, buffers, buffer_frames,
+buffer_channels, buffer_sample_rates, output)`, using the current bindings, then overlays every
+persistent entry from the packed snapshot. This resets instance scratch while preserving persistent
+state and task continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
@@ -220,7 +311,7 @@ differs from the compile block owns a cursor and splits callbacks at logical blo
 pointer tables continue to address complete compile-block storage; generated code derives logical
 audio indices from `start_frame`.
 
-## Parameters, events, buffers, and control outputs
+## Parameters, events, delegates, buffers, and control outputs
 
 Parameter and event-payload storage follows the exact offsets and scalar shapes in the paired
 descriptor. A dynamic event slice contains its scalar data after the fixed payload header and stores
@@ -285,8 +376,9 @@ Fixed resource arrays occupy contiguous physical slots. `metadata.buffer_arrays`
 logical group name, its first physical slot, and its length, so hosts can bind a whole bank without
 parsing generated slot names. Selection clamps once and computes `first + selector` in constant
 time. Each physical slot has its own `metadata.buffers[first + slot].may_write` value. A false value
-proves that reachable processor code does not write that slot; selectors that cannot be resolved
-statically conservatively mark every slot they may select.
+proves that code reachable from init, process, or an exported event does not write that slot;
+selectors that cannot be resolved statically conservatively mark every slot they may select. Init
+writes include writes reached transitively through top-level and proc initializer helpers.
 
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
 mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,
@@ -321,3 +413,54 @@ typed views over processor memory, uses a bulk-copy fast path for full-block f32
 host linear-memory allocation after construction. Dynamic event payload storage is preallocated to a
 configurable capacity; an oversized event fails rather than growing linear memory while audio is
 running.
+
+## C header reference
+
+The release SDK installs `include/onda_processor_abi.h` and this document together. The header is
+self-contained and header-only except for the processor-specific `onda_processor_init`,
+`onda_process`, and generated `onda_event_N` symbols supplied by the compiled object. Include it
+from C or C++; no `libonda` linkage is required to call a processor object.
+
+The public declarations fall into four groups:
+
+- ABI versions, execution results, initialization modes, and segmented-processing flags.
+- Function-pointer signatures and the generated init, process, and event entry points.
+- Caller-owned delegate, print, execution-output, occurrence, and cursor records.
+- Inline batch iteration and parameter-domain validation/conversion helpers.
+
+The inline batch iterators validate record boundaries before returning a payload view. Sequential
+iteration with `onda_processor_delegate_batch_next` or `onda_processor_print_batch_next` is linear
+in record count and constant-space. The random-access convenience functions rescan from the start
+and are therefore linear in the requested index; use a cursor when consuming a whole batch.
+
+All parameter conversion helpers are allocation-free and constant-time. Prepare and validate a
+domain once when constructing host controls rather than validating descriptor text on the audio
+thread.
+
+### Complete function index
+
+This index is checked against `include/onda_processor_abi.h` so newly exposed functions cannot be
+released without appearing in this reference.
+
+<!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
+onda_process
+onda_processor_batch_next_record
+onda_processor_delegate_batch_next
+onda_processor_delegate_batch_occurrence_at
+onda_processor_delegate_batch_reset
+onda_processor_execution_output_reset
+onda_processor_float_grid_value_matches
+onda_processor_init
+onda_processor_integer_domain_value_is_valid
+onda_processor_lincurve_normalized_to_unit
+onda_processor_lincurve_unit_to_normalized
+onda_processor_linear_plain_to_unit
+onda_processor_linear_unit_to_plain
+onda_processor_param_constrain_plain
+onda_processor_param_domain_is_valid
+onda_processor_param_normalized_to_plain
+onda_processor_param_plain_to_normalized
+onda_processor_print_batch_next
+onda_processor_print_batch_occurrence_at
+onda_processor_print_batch_reset
+<!-- END PROCESSOR C API FUNCTION INDEX -->

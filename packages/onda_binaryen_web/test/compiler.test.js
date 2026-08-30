@@ -4,6 +4,13 @@ import test from "node:test";
 import binaryen from "binaryen";
 import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
+import {
+  formatPrintBatch,
+  resetExecutionOutput,
+  writeDelegateBatch,
+  writeExecutionOutput,
+  writePrintBatch,
+} from "@onda-lang/processor-abi";
 
 import {
   OndaBinaryenError,
@@ -42,6 +49,7 @@ const statement = (kind, data) => ({
 const attributes = (origin = "source", inline = "auto") => ({
   origin,
   inline,
+  runtime_context: true,
 });
 const assign = (destination, rvalue) =>
   statement("assign", { destination, value: rvalue });
@@ -77,6 +85,7 @@ function callProcess(
   bufferFrames,
   bufferChannels,
   bufferSampleRates,
+  executionOutput = 0,
 ) {
   return process(
     state,
@@ -90,6 +99,7 @@ function callProcess(
     bufferFrames,
     bufferChannels,
     bufferSampleRates,
+    executionOutput,
   );
 }
 
@@ -145,6 +155,7 @@ function executableMir() {
     schema_version: backend.SUPPORTED_MIR_SCHEMA_VERSION,
     config: { sample_rate: 48_000, block_size: 4 },
     source_files: [],
+    log_sites: [],
     types: [type("scalar", "f32"), type("scalar", "bool"), type("scalar", "i32")],
     structs: [],
     interface: {
@@ -171,6 +182,7 @@ function executableMir() {
       ],
       buffers: [],
       events: [],
+      delegates: [],
     },
     state: [{ name: "phase", ty: 0, persistence: "snapshot", authored: true }],
     const_data: [],
@@ -462,8 +474,9 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  assert.equal(onda_processor_init(params, state, 1), 0);
-  assert.equal(onda_process.length, 11);
+  assert.equal(onda_processor_init.length, 8);
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(onda_process.length, 12);
   assert.equal(
     callProcess(onda_process, 0, outputTable, 0, 2, 1, params, state, 0, 0, 0, 0),
     0,
@@ -612,7 +625,7 @@ test("full initialization clears around pinned arrays without preclearing them",
   const stateSize = artifact.metadata.runtime.state_size_bytes;
   const bytes = new Uint8Array(memory.buffer, state, stateSize);
   bytes.fill(0xff);
-  assert.equal(onda_processor_init(params, state, 1), 0);
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.ok(bytes.every((byte) => byte === 0));
 
   const pinnedOffset =
@@ -620,10 +633,10 @@ test("full initialization clears around pinned arrays without preclearing them",
   const values = new Float32Array(memory.buffer, state + pinnedOffset, 4096);
   values[0] = 1.25;
   values[4095] = -2.5;
-  assert.equal(onda_processor_init(params, state, 0), 0);
+  assert.equal(onda_processor_init(params, state, 0, 0, 0, 0, 0, 0), 0);
   assert.equal(values[0], 1.25);
   assert.equal(values[4095], -2.5);
-  assert.equal(onda_processor_init(params, state, 1), 0);
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(values[0], 0);
   assert.equal(values[4095], 0);
 });
@@ -693,7 +706,7 @@ test("passes an addressable slice element to a reference parameter", async () =>
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.equal(view.getFloat32(state + 8, true), 7);
 });
@@ -736,7 +749,7 @@ test("spills an address-taken scalar local around reference calls", async () => 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
-  instance.exports.onda_processor_init(params, state, 1);
+  instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
   assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 9);
 });
@@ -789,7 +802,7 @@ test("does not promote a scalar reference that aliases a writable argument", asy
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
-  instance.exports.onda_processor_init(params, state, 1);
+  instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
   assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 7);
 });
@@ -851,7 +864,7 @@ test("does not promote a scalar reference written through a transitive call", as
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
-  instance.exports.onda_processor_init(params, state, 1);
+  instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
   assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 7);
 });
@@ -889,7 +902,7 @@ test("vectorizes contiguous slice fills with a scalar tail", async () => {
   const { instance } = await WebAssembly.instantiate(vectorized.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + vectorized.metadata.runtime.param_size_bytes;
-  instance.exports.onda_processor_init(params, state, 1);
+  instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(instance.exports.memory.buffer, state + 4, 10)],
@@ -961,7 +974,16 @@ test("returns failures for invalid checked make_slice and empty-slice access", a
   const clampedOutput = clampedOutputTable + 4;
   const clampedView = new DataView(clampedInstance.exports.memory.buffer);
   clampedView.setUint32(clampedOutputTable, clampedOutput, true);
-  clampedInstance.exports.onda_processor_init(clampedParams, clampedState, 1);
+  clampedInstance.exports.onda_processor_init(
+    clampedParams,
+    clampedState,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+  );
   callProcess(clampedInstance.exports.onda_process,
     0,
     clampedOutputTable,
@@ -991,7 +1013,7 @@ test("returns failures for invalid checked make_slice and empty-slice access", a
       outputTable + 4,
       true,
     );
-    instance.exports.onda_processor_init(params, state, 1);
+    instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
     assert.equal(
       callProcess(instance.exports.onda_process,
           0,
@@ -1026,7 +1048,7 @@ test("returns generated failures through nested MIR calls", async () => {
   mir.functions.push({
     name: "failing_quotient",
     kind: { kind: "user" },
-    attributes: { origin: "source", inline: "never" },
+    attributes: { origin: "source", inline: "never", runtime_context: true },
     params: [],
     results: [1],
     locals: [{ name: "result", ty: 1 }],
@@ -1050,7 +1072,7 @@ test("returns generated failures through nested MIR calls", async () => {
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
-  assert.equal(instance.exports.onda_processor_init(params, state, 1), 0);
+  assert.equal(instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(
     callProcess(
       instance.exports.onda_process,
@@ -1104,7 +1126,7 @@ test("omits failure propagation after non-failing helper calls", () => {
     {
       name: "floating_quotient",
       kind: { kind: "user" },
-      attributes: { origin: "source", inline: "never" },
+      attributes: { origin: "source", inline: "never", runtime_context: true },
       params: [],
       results: [0],
       locals: [{ name: "result", ty: 0 }],
@@ -1126,7 +1148,7 @@ test("omits failure propagation after non-failing helper calls", () => {
     {
       name: "clamped_array_element",
       kind: { kind: "user" },
-      attributes: { origin: "source", inline: "never" },
+      attributes: { origin: "source", inline: "never", runtime_context: true },
       params: [],
       results: [0],
       locals: [
@@ -1175,7 +1197,7 @@ test("propagates checked fixed-array failures through helper calls", async () =>
   mir.functions.push({
     name: "checked_array_element",
     kind: { kind: "user" },
-    attributes: { origin: "source", inline: "never" },
+    attributes: { origin: "source", inline: "never", runtime_context: true },
     params: [],
     results: [0],
     locals: [
@@ -1198,7 +1220,7 @@ test("propagates checked fixed-array failures through helper calls", async () =>
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const params = Number(instance.exports.__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
-  assert.equal(instance.exports.onda_processor_init(params, state, 1), 0);
+  assert.equal(instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(
     callProcess(
       instance.exports.onda_process,
@@ -1314,7 +1336,7 @@ test("lowers current-schema fixed-array and slice reference windows", async () =
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, state + 4, 4)],
@@ -1640,7 +1662,7 @@ test("links the complete LLVM math surface into a self-contained module", async 
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   const expectedTerms = [
     Math.sin(0.25),
@@ -1700,7 +1722,7 @@ test("implements LLVM half-away-from-zero round without reserving the math kerne
     const output = Math.ceil((outputTable + 4) / elementSize) * elementSize;
     const view = new DataView(memory.buffer);
     view.setUint32(outputTable, output, true);
-    onda_processor_init(params, state, 1);
+    onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
     const nearHalf = scalar === "f32" ? Math.fround(0.5 - 2 ** -25) : 0.5 - 2 ** -54;
     for (const input of [
@@ -1771,7 +1793,7 @@ test("links strict f32 and f64 FMA into the generated Wasm module", async () => 
     if (scalar === "f32") view.setFloat32(params, 0.25, true);
     else view.setFloat64(params, 0.25, true);
     view.setUint32(outputTable, output, true);
-    onda_processor_init(params, state, 1);
+    onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
     callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
 
     if (scalar === "f32") {
@@ -1829,7 +1851,7 @@ test("lowers signed integer abs, min, and max intrinsics", async () => {
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
@@ -1875,7 +1897,7 @@ test("implements MIR wrapping semantics for signed division overflow", async () 
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.equal(view.getInt32(state + 4, true), -0x8000_0000);
   assert.equal(view.getBigInt64(state + 8, true), -(1n << 63n));
@@ -1925,7 +1947,7 @@ test("implements MIR saturating float-to-integer casts with NaN mapping to zero"
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.equal(view.getInt32(state + 4, true), 0);
   assert.equal(view.getBigInt64(state + 8, true), -(1n << 63n));
@@ -1958,7 +1980,7 @@ test("maps NaN to the lower bound for MIR range clamps", async () => {
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual([...new Float32Array(memory.buffer, output, 1)], [-1]);
 });
@@ -2015,7 +2037,7 @@ test("wraps i32 and full-domain i64 MIR ranges exactly", async () => {
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
   assert.equal(view.getInt32(state + 4, true), 1);
   assert.equal(view.getBigInt64(state + 8, true), -1n);
@@ -2076,7 +2098,7 @@ test("forwards position-independent process flags on zero-frame calls", async ()
   const params = Number(__heap_base.value);
   const state = params + artifact.metadata.runtime.param_size_bytes;
   const view = new DataView(memory.buffer);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
   for (const [startFrame, flags] of [[4, 1], [0, 2], [2, 3], [2, 0]]) {
     callProcess(onda_process, 0, 0, startFrame, 0, flags, params, state, 0, 0, 0, 0);
@@ -2131,7 +2153,7 @@ test("lowers MIR multi-value returns and calls through Binaryen", async () => {
   const output = outputTable + 4;
   const view = new DataView(memory.buffer);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
@@ -2208,12 +2230,16 @@ test("exports packed scalar and fixed-array event handlers", async () => {
     artifact.metadata.metadata.events[0].params.map((param) => param.is_slice),
     [false, false],
   );
+  assert.deepEqual(
+    artifact.metadata.metadata.events[0].params.map((param) => param.is_array),
+    [false, true],
+  );
   assert.equal(artifact.metadata.metadata.events[0].payload_size_bytes, 12);
 
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;
-  assert.equal(onda_event_0.length, 7);
+  assert.equal(onda_event_0.length, 8);
   let heap = Number(__heap_base.value);
   const params = heap;
   heap += 16;
@@ -2229,13 +2255,272 @@ test("exports packed scalar and fixed-array event handlers", async () => {
   view.setFloat32(payload + 8, 4, true);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   onda_event_0(payload, params, state, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
     [7.25, 7.5, 7.75, 8],
   );
+});
+
+test("publishes top-level delegates into the call-scoped delegate batch", async () => {
+  const mir = executableMir();
+  mir.interface.delegates.push({
+    name: "tick",
+    params: [{ name: "value", ty: 2 }],
+  });
+  mir.functions[1].body.statements.unshift(
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: constant("i32", 42) }],
+    }),
+  );
+  const artifact = compileMir(mir, { optimize: false });
+  assert.equal(artifact.metadata.metadata.delegates[0].name, "tick");
+  assert.equal(artifact.metadata.metadata.delegates[0].params[0].is_array, false);
+  assert.equal(artifact.metadata.runtime.delegate_record_header_size_bytes, 12);
+
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += Math.max(16, artifact.metadata.runtime.param_size_bytes);
+  const state = heap;
+  heap += Math.max(16, artifact.metadata.runtime.state_size_bytes);
+  const outputTable = heap;
+  heap += 4;
+  const output = heap;
+  heap += 16;
+  const batch = heap;
+  heap += 20;
+  const executionOutput = heap;
+  heap += 12;
+  const storage = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  view.setUint32(batch, storage, true);
+  view.setUint32(batch + 4, 16, true);
+  view.setUint32(executionOutput, batch, true);
+  view.setUint32(executionOutput + 4, 0, true);
+  view.setUint32(executionOutput + 8, 0, true);
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      0,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+      executionOutput,
+    ),
+    0,
+  );
+  assert.equal(view.getUint32(batch + 8, true), 16);
+  assert.equal(view.getUint32(batch + 12, true), 1);
+  assert.equal(view.getUint32(batch + 16, true), 0);
+  assert.equal(view.getUint32(storage, true), 0);
+  assert.equal(view.getUint32(storage + 4, true), 4);
+  assert.equal(view.getUint32(storage + 8, true), 0);
+  assert.equal(view.getInt32(storage + 12, true), 42);
+});
+
+test("fails safely before copying a short fixed-array delegate payload", async () => {
+  const mir = executableMir();
+  mir.types.push(
+    type("array", { element: 2, len: 2 }),
+    type("slice", { element: "i32", access: "read_only" }),
+  );
+  mir.const_data.push({
+    name: "short_values",
+    element: "i32",
+    values: [{ type: "i32", value: 7 }],
+  });
+  mir.interface.delegates.push({
+    name: "values",
+    params: [{ name: "items", ty: 3 }],
+  });
+  mir.functions[1].locals.push({ name: "short_values", ty: 4 });
+  mir.functions[1].body.statements.unshift(
+    assign(place("local", 6), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "const_data", data: 0 },
+        start: constant("i32", 0),
+        len: constant("i32", 1),
+        bounds: "unchecked",
+        access: "read_only",
+      },
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: local(6) }],
+    }),
+  );
+
+  const artifact = compileMir(mir, { optimize: false });
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const params = heap;
+  heap += Math.max(16, artifact.metadata.runtime.param_size_bytes);
+  const state = heap;
+  heap += Math.max(16, artifact.metadata.runtime.state_size_bytes);
+  const outputTable = heap;
+  heap += 4;
+  const batch = heap;
+  heap += 20;
+  const executionOutput = heap;
+  heap += 12;
+  const storage = heap;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, storage + 32, true);
+  view.setUint32(batch, storage, true);
+  view.setUint32(batch + 4, 16, true);
+  view.setUint32(executionOutput, batch, true);
+  view.setUint32(executionOutput + 4, 0, true);
+  view.setUint32(executionOutput + 8, 0, true);
+
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      3,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    "invalid fixed-array payloads must fail even without delegate collection",
+  );
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      3,
+      params,
+      state,
+      0,
+      0,
+      0,
+      0,
+      executionOutput,
+    ),
+    PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+  );
+  assert.equal(view.getUint32(batch + 8, true), 0);
+  assert.equal(view.getUint32(batch + 12, true), 0);
+  assert.equal(view.getUint32(batch + 16, true), 0);
+});
+
+test("publishes init and process print records through execution output", async () => {
+  const mir = executableMir();
+  mir.interface.delegates.push({
+    name: "middle",
+    params: [{ name: "value", ty: 2 }],
+  });
+  mir.source_files.push({ path: "main.onda" });
+  mir.log_sites.push(
+    {
+      label: "boot\n",
+      source: { file: 0, line: 2, column: 3, end_line: 2, end_column: 17 },
+      lexical_owner: "program",
+      declaration: "init",
+      argument_types: ["i32"],
+      payload_size: 4,
+    },
+    {
+      label: "frame",
+      source: { file: 0, line: 5, column: 3, end_line: 5, end_column: 27 },
+      lexical_owner: "program",
+      declaration: "sample",
+      argument_types: ["f32", "bool"],
+      payload_size: 5,
+    },
+  );
+  mir.functions[0].body.statements.push(statement("publish_log", {
+    site: 0,
+    arguments: [constant("i32", 7)],
+  }));
+  mir.functions[1].body.statements.unshift(
+    statement("publish_log", {
+      site: 1,
+      arguments: [constant("f32", 1.25), constant("bool", true)],
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: constant("i32", 9) }],
+    }),
+  );
+
+  const artifact = compileMir(mir, { optimize: false });
+  assert.equal(artifact.metadata.runtime.print_record_header_size_bytes, 12);
+  assert.equal(artifact.metadata.metadata.log_sites[1].lexical_owner, "program");
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const allocate = (bytes, align = 4) => {
+    heap = Math.ceil(heap / align) * align;
+    const address = heap;
+    heap += bytes;
+    return address;
+  };
+  const params = allocate(Math.max(artifact.metadata.runtime.param_size_bytes, 1));
+  const state = allocate(Math.max(artifact.metadata.runtime.state_size_bytes, 1), 16);
+  const batch = allocate(20);
+  const storage = allocate(64, 8);
+  const delegateBatch = allocate(20);
+  const delegateStorage = allocate(16, 8);
+  const output = allocate(12);
+  writePrintBatch(memory, batch, storage, 64);
+  writeDelegateBatch(memory, delegateBatch, delegateStorage, 16);
+  writeExecutionOutput(memory, output, delegateBatch, batch);
+
+  resetExecutionOutput(memory, output);
+  assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, output), 0);
+  assert.deepEqual(formatPrintBatch(memory, batch, artifact.metadata), {
+    text: "boot\\n: 7\n",
+    entries: [{
+      siteIndex: 0,
+      sequence: 0,
+      label: "boot\n",
+      source: artifact.metadata.metadata.log_sites[0].source,
+      lexicalOwner: "program",
+      declaration: "init",
+      values: [{ type: "i32", value: 7 }],
+    }],
+    overflowCount: 0,
+  });
+  resetExecutionOutput(memory, output);
+  assert.equal(
+    onda_process(state, params, 0, 0, 0, 0, 0, 0, 0, 0, 0, output),
+    0,
+  );
+  assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "frame: 1.25 true\n");
+  const view = new DataView(memory.buffer);
+  assert.equal(view.getUint32(storage + 8, true), 0);
+  assert.equal(view.getUint32(delegateBatch + 12, true), 1);
+  assert.equal(view.getUint32(delegateStorage + 8, true), 1);
+  assert.equal(view.getInt32(delegateStorage + 12, true), 9);
 });
 
 test("stores control outputs in their state-backed ABI slots", async () => {
@@ -2273,7 +2558,7 @@ test("stores control outputs in their state-backed ABI slots", async () => {
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.equal(view.getFloat32(state + meter.state_byte_offset, true), 1);
 });
@@ -2301,7 +2586,7 @@ test("preserves indexing for fixed arrays of length one", async () => {
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
@@ -2355,7 +2640,7 @@ test("loads the current audio output frame through explicit MIR", async () => {
   const view = new DataView(memory.buffer);
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
 
   assert.deepEqual(
@@ -2660,7 +2945,7 @@ test("refreshes hoisted forwarded descriptors for every process call", async () 
   view.setFloat32(bufferSampleRates + 4, 48_000, true);
   view.setFloat32(firstBinding, 21, true);
   view.setFloat32(secondBinding, 43, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
   callProcess(
     onda_process,
@@ -2816,7 +3101,7 @@ test("preserves the loop-entry value of a loop-carried buffer selector", async (
   }
   view.setFloat32(bufferSampleRates, 10_000, true);
   view.setFloat32(bufferSampleRates + 4, 20_000, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
   assert.equal(
     callProcess(
@@ -2964,6 +3249,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
     { name: "$buffer_len", ty: 2 },
     { name: "$buffer_channels", ty: 2 },
     { name: "$metadata_f32", ty: 0 },
+    { name: "$buffer_bound", ty: 1 },
   );
   const thenBlock =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -2986,6 +3272,23 @@ test("loads, stores, and queries externally bound buffers", async () => {
     assign(place("local", 2), {
       kind: "binary",
       data: { op: "add", lhs: local(2), rhs: local(3) },
+    }),
+    assign(place("local", 9), { kind: "buffer_is_bound", data: 0 }),
+    statement("if", {
+      condition: local(9),
+      then_block: {
+        statements: [
+          assign(place("local", 2), {
+            kind: "binary",
+            data: {
+              op: "add",
+              lhs: local(2),
+              rhs: constant("f32", 100),
+            },
+          }),
+        ],
+      },
+      else_block: { statements: [] },
     }),
     assign(place("local", 7), { kind: "buffer_channels", data: 0 }),
     assign(place("local", 8), {
@@ -3068,7 +3371,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
   view.setFloat32(bufferSampleRates, 10, true);
   new Float32Array(memory.buffer, bufferData, 4).set([1, 2, 3, 4]);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   callProcess(onda_process,
     0,
     outputTable,
@@ -3084,11 +3387,11 @@ test("loads, stores, and queries externally bound buffers", async () => {
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
-    [16, 17, 18, 19],
+    [116, 117, 118, 119],
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, bufferData, 4)],
-    [16, 17, 18, 19],
+    [116, 117, 118, 119],
   );
 
   view.setUint32(bufferPointers, 0, true);
@@ -3218,6 +3521,7 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
       locals: [
         { name: "$sample", ty: 0 },
         { name: "$incremented", ty: 0 },
+        { name: "$bound", ty: 1 },
       ],
       body: {
         statements: [
@@ -3238,12 +3542,24 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
               rhs: constant("f32", 1),
             },
           }),
-          statement("buffer_param_store", {
-            parameter: { kind: "direct", data: 0 },
-            channel: null,
-            index: constant("i32", 0),
-            value: local(1),
-            bounds: "clamp",
+          assign(place("local", 2), {
+            kind: "buffer_param_is_bound",
+            data: { kind: "direct", data: 0 },
+          }),
+          statement("if", {
+            condition: local(2),
+            then_block: {
+              statements: [
+                statement("buffer_param_store", {
+                  parameter: { kind: "direct", data: 0 },
+                  channel: null,
+                  index: constant("i32", 0),
+                  value: local(1),
+                  bounds: "clamp",
+                }),
+              ],
+            },
+            else_block: { statements: [] },
           }),
           statement("return", { values: [local(0)] }),
         ],
@@ -3280,7 +3596,7 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
   heap += 4;
   const output = heap;
   const view = new DataView(memory.buffer);
-  view.setUint32(bufferPointers, firstBuffer, true);
+  view.setUint32(bufferPointers, 0, true);
   view.setUint32(bufferPointers + 4, secondBuffer, true);
   view.setInt32(bufferFrames, 1, true);
   view.setInt32(bufferFrames + 4, 1, true);
@@ -3291,7 +3607,7 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
   view.setFloat32(firstBuffer, 10, true);
   view.setFloat32(secondBuffer, 20, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
   callProcess(
     onda_process,
@@ -3309,9 +3625,9 @@ test("forwards dynamically selected proc buffer parameters without copying", asy
   );
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
-    [10, 20, 21, 22],
+    [0, 20, 21, 22],
   );
-  assert.equal(view.getFloat32(firstBuffer, true), 11);
+  assert.equal(view.getFloat32(firstBuffer, true), 10);
   assert.equal(view.getFloat32(secondBuffer, true), 23);
 });
 
@@ -3394,7 +3710,7 @@ test("clamps multichannel buffer coordinates independently", async () => {
   view.setFloat32(bufferSampleRates, 48_000, true);
   new Float32Array(memory.buffer, bufferData, 4).set([10, 20, 30, 40]);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
 
   callProcess(onda_process,
     0,
@@ -3496,7 +3812,7 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
   view.setInt32(bufferChannels, 2, true);
   view.setFloat32(bufferSampleRates, 48_000, true);
   view.setUint32(outputTable, output, true);
-  onda_processor_init(params, state, 1);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
   assert.equal(
     callProcess(onda_process,
         0,

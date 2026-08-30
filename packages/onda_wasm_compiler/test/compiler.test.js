@@ -3,6 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  decodeDelegateRecords,
+  formatPrintBatch,
+  readDelegateBatch,
+  resetExecutionOutput,
+  writeDelegateBatch,
+  writeExecutionOutput,
+  writePrintBatch,
+} from "@onda-lang/processor-abi";
+
+import {
   MIR_SCHEMA_VERSION,
   ONDA_VERSION,
   OndaCompileError,
@@ -52,6 +62,8 @@ test("retries direct frontend initialization after a failure", async () => {
   const { artifact } = await compiler.compileSource(SOURCE);
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   await compiler.dispose();
+  await compiler.dispose();
+  await assert.rejects(compiler.compileSource(SOURCE), /compiler was disposed/);
 });
 
 test("compiles Onda source to a complete processor artifact", async () => {
@@ -78,6 +90,215 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.equal(files.wasm.name, "gain.wasm");
   assert.equal(files.metadata.name, "gain.onda.json");
   assert.match(files.metadata.text, /"integrity"/);
+});
+
+test("initialization observes bound buffers in top-level and proc init", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`proc Reader:
+  buffers:
+    source: f32
+  init:
+    first = source[0]
+    source_bound = source.bound()
+  sample:
+    out1 = first
+
+buffers:
+  source: f32
+init:
+  selected = source[1]
+  source_bound = source.bound()
+  reader = Reader(source = source)
+sample:
+  out1 = selected + reader()
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const {
+    memory,
+    __heap_base: heapBase,
+    onda_processor_init: initialize,
+  } = instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size, align = 4) => {
+    heap = Math.ceil(heap / align) * align;
+    const address = heap;
+    heap += Math.max(size, 1);
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes, 16);
+  const neutralState = allocate(artifact.metadata.runtime.state_size_bytes, 16);
+  const samples = allocate(8);
+  const bufferPointers = allocate(4);
+  const bufferFrames = allocate(4);
+  const bufferChannels = allocate(4);
+  const bufferSampleRates = allocate(4);
+  const view = new DataView(memory.buffer);
+  view.setFloat32(samples, 2.0, true);
+  view.setFloat32(samples + 4, 5.0, true);
+  view.setUint32(bufferPointers, samples, true);
+  view.setInt32(bufferFrames, 2, true);
+  view.setInt32(bufferChannels, 1, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+
+  assert.equal(initialize(
+    params,
+    state,
+    1,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+    0,
+  ), 0);
+
+  const stateInfo = artifact.metadata.metadata.states;
+  const stateValue = (name) => {
+    const entry = stateInfo.find((candidate) => candidate.name === name);
+    assert.ok(entry, `missing state metadata for ${name}`);
+    return view.getFloat32(
+      state + Number(entry.physical_state_byte_offset),
+      true,
+    );
+  };
+  const stateBool = (base, name) => {
+    const entry = stateInfo.find((candidate) => candidate.name === name);
+    assert.ok(entry, `missing state metadata for ${name}`);
+    return view.getUint8(base + Number(entry.physical_state_byte_offset)) !== 0;
+  };
+  assert.equal(stateValue("reader.first"), 2.0);
+  assert.equal(stateValue("selected"), 5.0);
+  assert.equal(stateBool(state, "reader.source_bound"), true);
+  assert.equal(stateBool(state, "source_bound"), true);
+
+  view.setUint32(bufferPointers, 0, true);
+  assert.equal(initialize(
+    params,
+    neutralState,
+    1,
+    bufferPointers,
+    bufferFrames,
+    bufferChannels,
+    bufferSampleRates,
+    0,
+  ), 0);
+  assert.equal(stateBool(neutralState, "reader.source_bound"), false);
+  assert.equal(stateBool(neutralState, "source_bound"), false);
+});
+
+test("compiles and publishes dynamic delegate payloads end to end", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`delegate report(singleton: i32[1], code: i32, values: f32[], tags: i32[])
+
+event trigger(singleton: i32[1], values: f32[], tags: i32[]):
+  report(singleton, 7, values, tags)
+
+sample:
+  out1 = 0.0
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const {
+    memory,
+    __heap_base: heapBase,
+    onda_processor_init: initialize,
+    onda_event_0: trigger,
+  } = instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size) => {
+    const address = heap;
+    heap = (heap + Math.max(size, 1) + 15) & ~15;
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes);
+  const payload = allocate(32);
+  const batchAddress = allocate(20);
+  const storageAddress = allocate(48);
+  const executionOutputAddress = allocate(12);
+  const view = new DataView(memory.buffer);
+  let cursor = payload;
+  view.setInt32(cursor, 23, true);
+  cursor += 4;
+  view.setInt32(cursor, 2, true);
+  cursor += 4;
+  view.setFloat32(cursor, 1.25, true);
+  cursor += 4;
+  view.setFloat32(cursor, -2.5, true);
+  cursor += 4;
+  view.setInt32(cursor, 3, true);
+  cursor += 4;
+  for (const tag of [11, -4, 99]) {
+    view.setInt32(cursor, tag, true);
+    cursor += 4;
+  }
+  writeDelegateBatch(memory, batchAddress, storageAddress, 48);
+  writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
+  assert.equal(initialize(params, state, 1, 0, 0, 0, 0, 0), 0);
+  assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
+  const batch = readDelegateBatch(memory, batchAddress);
+  assert.deepEqual(batch, {
+    storageAddress,
+    capacityBytes: 48,
+    usedBytes: 48,
+    recordCount: 1,
+    overflowCount: 0,
+  });
+  const records = decodeDelegateRecords(
+    new Uint8Array(memory.buffer, storageAddress, 48),
+    batch.usedBytes,
+    artifact.metadata.metadata.delegates,
+  );
+  assert.equal(records[0].name, "report");
+  assert.equal(records[0].sequence, 0);
+  assert.equal(artifact.metadata.metadata.delegates[0].params[0].is_array, true);
+  assert.deepEqual(records[0].values, {
+    singleton: [23],
+    code: 7,
+    values: [1.25, -2.5],
+    tags: [11, -4, 99],
+  });
+  await compiler.dispose();
+});
+
+test("compiles and formats authored prints end to end", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`event report(value: i64):
+  print("event", value)
+
+init:
+  print("boot")
+
+sample:
+  out1 = 0.0
+`);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base: heapBase, onda_processor_init: initialize, onda_event_0: report } =
+    instance.exports;
+  let heap = Number(heapBase.value);
+  const allocate = (size) => {
+    const address = heap;
+    heap = (heap + Math.max(size, 1) + 15) & ~15;
+    return address;
+  };
+  const params = allocate(artifact.metadata.runtime.param_size_bytes);
+  const state = allocate(artifact.metadata.runtime.state_size_bytes);
+  const payload = allocate(8);
+  const batch = allocate(20);
+  const storage = allocate(128);
+  const output = allocate(12);
+  writePrintBatch(memory, batch, storage, 128);
+  writeExecutionOutput(memory, output, 0, batch);
+  resetExecutionOutput(memory, output);
+  assert.equal(initialize(params, state, 1, 0, 0, 0, 0, output), 0);
+  assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "boot\n");
+  new DataView(memory.buffer).setBigInt64(payload, 9_007_199_254_740_993n, true);
+  resetExecutionOutput(memory, output);
+  assert.equal(report(payload, params, state, 0, 0, 0, 0, output), 0);
+  assert.equal(
+    formatPrintBatch(memory, batch, artifact.metadata).text,
+    "event: 9007199254740993\n",
+  );
+  await compiler.dispose();
 });
 
 test("compile constants preserve every public JavaScript value type", async () => {
@@ -693,6 +914,8 @@ test("offers an asynchronous browser-worker client", async () => {
   );
   await compiler.dispose();
   assert.equal(compiler.worker.terminated, true);
+  await compiler.dispose();
+  await assert.rejects(compiler.compileSource(SOURCE), /compiler was disposed/);
 });
 
 test("terminates a worker whose frontend initialization fails", async () => {

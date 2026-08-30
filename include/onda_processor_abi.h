@@ -5,13 +5,14 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 6u
+#define ONDA_PROCESSOR_ABI_VERSION 5u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
@@ -23,10 +24,70 @@ typedef enum onda_processor_init_mode {
   ONDA_PROCESSOR_INIT_FULL = 1
 } onda_processor_init_mode_t;
 
+/* Bytes preceding the payload of every packed raw-ABI delegate occurrence. */
+enum {
+  ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE = 12u,
+  ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE,
+  ONDA_PROCESSOR_PRINT_RECORD_HEADER_SIZE = ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+};
+
+/* Caller-owned, call-scoped occurrence storage. The host resets the three result counters and the
+ * shared sequence before every init, process, or event entry. A NULL output, batch, or storage
+ * pointer disables that stream. Capacity is a host policy because occurrence counts and dynamic
+ * slice sizes may depend on runtime execution. Delegate and print batches are independent. Records
+ * carry the shared sequence so hosts can merge the streams chronologically. Generated failure
+ * clears delegate results but retains print records already emitted. */
+typedef struct onda_processor_delegate_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_processor_delegate_batch_t;
+
+typedef struct onda_processor_print_batch {
+  uint8_t* storage;
+  uint32_t capacity_bytes;
+  uint32_t used_bytes;
+  uint32_t record_count;
+  uint32_t overflow_count;
+} onda_processor_print_batch_t;
+
+typedef struct onda_processor_execution_output {
+  onda_processor_delegate_batch_t* delegate_batch;
+  onda_processor_print_batch_t* print_batch;
+  uint32_t next_sequence;
+} onda_processor_execution_output_t;
+
+typedef struct onda_processor_delegate_occurrence {
+  uint32_t delegate_index;
+  uint32_t payload_size_bytes;
+  uint32_t sequence;
+  const uint8_t* payload;
+} onda_processor_delegate_occurrence_t;
+
+typedef struct onda_processor_print_occurrence {
+  uint32_t site_index;
+  uint32_t payload_size_bytes;
+  uint32_t sequence;
+  const uint8_t* payload;
+} onda_processor_print_occurrence_t;
+
+/* Zero-initialize before iterating a delegate or print batch. Treat fields as opaque. */
+typedef struct onda_processor_batch_cursor {
+  uint32_t byte_offset;
+  uint32_t record_index;
+} onda_processor_batch_cursor_t;
+
 typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
   void* state,
-  onda_processor_init_mode_t mode
+  onda_processor_init_mode_t mode,
+  void* const* buffers,
+  const int32_t* buffer_frames,
+  const int32_t* buffer_channels,
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 /* Buffer descriptor tables remain immutable during each call and do not
@@ -43,7 +104,8 @@ typedef uint32_t (*onda_processor_process_fn)(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 typedef uint32_t (*onda_processor_event_fn)(
@@ -53,7 +115,8 @@ typedef uint32_t (*onda_processor_event_fn)(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 enum {
@@ -103,6 +166,159 @@ typedef struct onda_processor_param_domain {
 #else
 #define ONDA_PROCESSOR_STATIC_INLINE static inline
 #endif
+
+/* Clears result counters without modifying caller-owned storage or capacity. */
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_delegate_batch_reset(
+  onda_processor_delegate_batch_t* batch
+) {
+  if (batch != NULL) {
+    batch->used_bytes = 0u;
+    batch->record_count = 0u;
+    batch->overflow_count = 0u;
+  }
+}
+
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_print_batch_reset(
+  onda_processor_print_batch_t* batch
+) {
+  if (batch != NULL) {
+    batch->used_bytes = 0u;
+    batch->record_count = 0u;
+    batch->overflow_count = 0u;
+  }
+}
+
+/* Prepares every present caller-owned batch and the shared sequence for one processor entry. */
+ONDA_PROCESSOR_STATIC_INLINE void onda_processor_execution_output_reset(
+  onda_processor_execution_output_t* output
+) {
+  if (output != NULL) {
+    onda_processor_delegate_batch_reset(output->delegate_batch);
+    onda_processor_print_batch_reset(output->print_batch);
+    output->next_sequence = 0u;
+  }
+}
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
+  const uint8_t* storage,
+  uint32_t capacity_bytes,
+  uint32_t used_bytes,
+  uint32_t record_count,
+  onda_processor_batch_cursor_t* cursor,
+  uint32_t* record_index,
+  uint32_t* payload_size,
+  uint32_t* sequence,
+  const uint8_t** payload
+) {
+  if (
+    storage == NULL || cursor == NULL || record_index == NULL || payload_size == NULL ||
+    sequence == NULL || payload == NULL || used_bytes > capacity_bytes ||
+    cursor->record_index >= record_count || cursor->byte_offset > used_bytes ||
+    used_bytes - cursor->byte_offset < ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+  ) {
+    return 0;
+  }
+  uint32_t next_record_index;
+  uint32_t next_payload_size;
+  uint32_t next_sequence;
+  memcpy(&next_record_index, storage + cursor->byte_offset, sizeof(next_record_index));
+  memcpy(
+    &next_payload_size,
+    storage + cursor->byte_offset + sizeof(next_record_index),
+    sizeof(next_payload_size)
+  );
+  memcpy(
+    &next_sequence,
+    storage + cursor->byte_offset + sizeof(next_record_index) + sizeof(next_payload_size),
+    sizeof(next_sequence)
+  );
+  if (
+    next_payload_size >
+    used_bytes - cursor->byte_offset - ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+  ) {
+    return 0;
+  }
+  *record_index = next_record_index;
+  *payload_size = next_payload_size;
+  *sequence = next_sequence;
+  *payload = storage + cursor->byte_offset + ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE;
+  cursor->byte_offset += ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE + next_payload_size;
+  cursor->record_index += 1u;
+  return 1;
+}
+
+/* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
+ * invalid/malformed input. The payload view remains valid until storage is changed or reused. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_next(
+  const onda_processor_delegate_batch_t* batch,
+  onda_processor_batch_cursor_t* cursor,
+  onda_processor_delegate_occurrence_t* occurrence
+) {
+  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    cursor,
+    &occurrence->delegate_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->sequence,
+    &occurrence->payload
+  );
+}
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
+  const onda_processor_print_batch_t* batch,
+  onda_processor_batch_cursor_t* cursor,
+  onda_processor_print_occurrence_t* occurrence
+) {
+  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    cursor,
+    &occurrence->site_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->sequence,
+    &occurrence->payload
+  );
+}
+
+/* Indexed access is convenient for isolated records. Use the cursor APIs for linear iteration. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
+  const onda_processor_delegate_batch_t* batch,
+  uint32_t index,
+  onda_processor_delegate_occurrence_t* occurrence
+) {
+  if (batch == NULL || index >= batch->record_count) {
+    return 0;
+  }
+  onda_processor_batch_cursor_t cursor = { 0u, 0u };
+  for (uint32_t current = 0u; current <= index; ++current) {
+    if (!onda_processor_delegate_batch_next(batch, &cursor, occurrence)) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
+  const onda_processor_print_batch_t* batch,
+  uint32_t index,
+  onda_processor_print_occurrence_t* occurrence
+) {
+  if (batch == NULL || index >= batch->record_count) {
+    return 0;
+  }
+  onda_processor_batch_cursor_t cursor = { 0u, 0u };
+  for (uint32_t current = 0u; current <= index; ++current) {
+    if (!onda_processor_print_batch_next(batch, &cursor, occurrence)) {
+      return 0;
+    }
+  }
+  return 1;
+}
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(
   onda_processor_param_scalar scalar,
@@ -432,13 +648,20 @@ ONDA_PROCESSOR_STATIC_INLINE double onda_processor_param_plain_to_normalized(
  * storage pointers are NULL exactly when the paired descriptor reports that
  * surface count or storage size as zero.
  */
-/* Initializes processor state. FULL initializes the complete physical state and is required before
-   any process or event call on newly allocated storage. PRESERVE_PINNED reruns ordinary authored
-   initializers while preserving pinned roots and task continuations, and is valid only after FULL. */
+/* Initializes processor state against the supplied current buffer descriptors. Descriptors may be
+   replaced between entry-point calls; replacement alone does not rerun initialization. FULL
+   initializes the complete physical state and is required before any process or event call on newly
+   allocated storage. PRESERVE_PINNED reruns ordinary authored initializers while preserving pinned
+   roots and task continuations, and is valid only after FULL. */
 uint32_t onda_processor_init(
   const void* params,
   void* state,
-  onda_processor_init_mode_t mode
+  onda_processor_init_mode_t mode,
+  void* const* buffers,
+  const int32_t* buffer_frames,
+  const int32_t* buffer_channels,
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 uint32_t onda_process(
@@ -452,7 +675,8 @@ uint32_t onda_process(
   void* const* buffers,
   const int32_t* buffer_frames,
   const int32_t* buffer_channels,
-  const float* buffer_sample_rates
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
 );
 
 /* Event symbols are named onda_event_N in descriptor metadata order. */

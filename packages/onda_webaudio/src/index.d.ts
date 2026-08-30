@@ -17,9 +17,21 @@ export {
   paramPlainToNormalized,
 } from "@onda-lang/processor-abi";
 import type {
+  OndaPrintEntry,
   OndaProcessorArtifact,
   OndaProcessorMetadata,
 } from "@onda-lang/processor-abi";
+
+export interface OndaAudioPrintBatch {
+  type: "onda-print";
+  operation: string;
+  text: string;
+  entries: OndaPrintEntry[];
+  overflowCount: number;
+  transportDropCount: number;
+}
+
+export type OndaAudioPrintListener = (batch: OndaAudioPrintBatch) => void;
 
 export interface OndaAudioProcessorOptions {
   workletUrl?: string | URL;
@@ -32,6 +44,23 @@ export interface OndaAudioProcessorOptions {
   buffers?: Record<string, unknown> | unknown[];
   /** Preallocated capacity for dynamic event payloads. Defaults to 64 KiB. */
   eventPayloadCapacityBytes?: number;
+  /**
+   * Reusable call-scoped storage for delegate records. Defaults to 64 KiB; zero disables host
+   * collection. Delivery uses a bounded SharedArrayBuffer ring and therefore requires cross-origin
+   * isolation in browsers. Capacity is a host policy because occurrence counts and slice sizes may
+   * be dynamic.
+   */
+  delegateCapacityBytes?: number;
+  /**
+   * Reusable call-scoped storage for print records. Defaults to 64 KiB; zero disables delivery.
+   * Delivery uses the same bounded SharedArrayBuffer ring as delegates.
+   */
+  printCapacityBytes?: number;
+  /**
+   * Factory-only initial print listener. Pass this to capture output from
+   * createOndaAudioProcessorInitialized() initialization.
+   */
+  onPrint?: OndaAudioPrintListener;
   /** Reusable module compiled outside the audio rendering thread. */
   compiledModule?: WebAssembly.Module;
   nodeOptions?: AudioWorkletNodeOptions;
@@ -44,7 +73,12 @@ export function flattenedAudioChannelCount(ports?: unknown[]): number;
 export function ondaAudioWorkletNodeOptions(
   artifact: OndaProcessorArtifact,
   options?: OndaAudioProcessorOptions,
-): AudioWorkletNodeOptions;
+): AudioWorkletNodeOptions & {
+  processorOptions: {
+    executionOutputRing: SharedArrayBuffer | null;
+    [key: string]: unknown;
+  };
+};
 export function registerOndaAudioWorklet(
   context: BaseAudioContext,
   workletUrl?: string | URL,
@@ -64,7 +98,13 @@ export function compileOndaProcessorModule(
 ): Promise<WebAssembly.Module>;
 
 export class OndaAudioProcessor {
-  constructor(node: AudioWorkletNode, metadata?: OndaProcessorMetadata | null);
+  constructor(
+    node: AudioWorkletNode,
+    metadata?: OndaProcessorMetadata | null,
+    initialPrintListener?: OndaAudioPrintListener,
+    /** Shared ring returned in processorOptions by ondaAudioWorkletNodeOptions(). */
+    executionOutputRing?: SharedArrayBuffer | null,
+  );
   readonly node: AudioWorkletNode;
   readonly metadata: OndaProcessorMetadata | null;
   request(type: string, fields?: Record<string, unknown>, transfer?: Transferable[]): Promise<any>;
@@ -73,10 +113,32 @@ export class OndaAudioProcessor {
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */
   setParamNormalized(param: string | number, value: number): Promise<any>;
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
+  /**
+   * Subscribe to batches decoded after generated execution. Collection is active only while at
+   * least one listener is registered. overflowCount reports configured-capacity loss and
+   * transportDropCount reports bounded worklet-to-main queue loss. Returns an unsubscribe function.
+   */
+  onDelegates(
+    listener: (batch: {
+      type: "onda-delegates";
+      operation: string;
+      occurrences: Array<{
+        sequence: number;
+        index: number;
+        name: string;
+        values: Record<string, unknown>;
+      }>;
+      overflowCount: number;
+      transportDropCount: number;
+    }) => void,
+  ): () => boolean;
+  /** Collection is active only while at least one listener is registered. */
+  onPrint(listener: OndaAudioPrintListener): () => boolean;
   init(mode: OndaInitMode): Promise<any>;
   snapshot(): Promise<Uint8Array>;
   restoreSnapshot(snapshot: Uint8Array | ArrayBuffer): Promise<any>;
   readControlOutputs(): Promise<Record<string, unknown>>;
   readBuffer(buffer: string | number): Promise<any>;
+  /** Idempotently closes this adapter. Pending and subsequent operations reject. */
   close(reason?: Error): void;
 }

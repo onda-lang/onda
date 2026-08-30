@@ -342,7 +342,7 @@ fn parse_param_scale(pair: &Pair<'_, Rule>) -> Result<ParamScale, Vec<Diagnostic
     })
 }
 
-fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+pub(super) fn parse_quoted_text(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
     let raw = pair.as_str();
     let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
         return Err(vec![syntax_at_pair(
@@ -375,6 +375,10 @@ fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
         });
     }
     Ok(unit)
+}
+
+fn parse_param_unit(pair: &Pair<'_, Rule>) -> Result<String, Vec<Diagnostic>> {
+    parse_quoted_text(pair)
 }
 
 fn parse_named_param_domain_item(
@@ -1269,10 +1273,13 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
             })
         }
         Rule::tuple_target => {
-            let targets: Vec<String> = pair
+            let targets = pair
                 .into_inner()
                 .filter(|p| p.as_rule() == Rule::ident)
-                .map(|p| p.as_str().to_owned())
+                .map(|p| match p.as_str() {
+                    "_" => TupleAssignTarget::Discard,
+                    name => TupleAssignTarget::Binding(name.to_owned()),
+                })
                 .collect();
             Ok(AssignTarget::Tuple(targets))
         }

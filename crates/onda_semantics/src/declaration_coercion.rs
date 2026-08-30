@@ -41,24 +41,41 @@ pub(crate) fn coerce_struct_fields(
             ));
             continue;
         }
+        let mut integer_range = None;
         let (ty, default, struct_name_ref, array_elem_ty, array_elem_struct) = match &field.ty {
             FieldType::Scalar(prim) => {
-                if let Some(expr) = &field.default {
+                let mut default = field.default.clone();
+                let binding_range = default
+                    .as_ref()
+                    .and_then(|expr| crate::pipeline::integer_binding_range_expr(*prim, expr));
+                if let Some(expr) = &default {
+                    let value = match (binding_range.as_ref(), expr) {
+                        (Some(_), Expr::Call { args, .. }) if args.len() == 3 => &args[0],
+                        _ => expr,
+                    };
                     with_loc_diag_context(field_loc, |_diag| {
                         validate_default_expr(
-                            expr,
+                            value,
                             errors,
                             &format!("struct field '{}.{}'", struct_name, field.name),
                         );
                     });
                 }
-                (
-                    TypedFieldType::Scalar(*prim),
-                    field.default.clone(),
-                    None,
-                    None,
-                    None,
-                )
+                integer_range = binding_range.and_then(|mut range| {
+                    if !crate::pipeline::canonicalize_integer_binding_range(
+                        &mut range,
+                        field.loc.into(),
+                        options,
+                        errors,
+                    ) {
+                        return None;
+                    }
+                    if let Some(expr) = &mut default {
+                        crate::pipeline::wrap_ranged_assignment(expr, &range);
+                    }
+                    crate::pipeline::typed_integer_range(&range)
+                });
+                (TypedFieldType::Scalar(*prim), default, None, None, None)
             }
             FieldType::Generic(param) if type_param_set.contains(param) => {
                 errors.push(Diagnostic::semantic_span(
@@ -90,6 +107,7 @@ pub(crate) fn coerce_struct_fields(
                         name: field.name.clone(),
                         ty: TypedFieldType::Scalar(PrimitiveType::F32),
                         default: field.default.clone(),
+                        integer_range: None,
                         struct_name: None,
                         array_elem_ty: None,
                         array_elem_struct: None,
@@ -109,6 +127,7 @@ pub(crate) fn coerce_struct_fields(
                     name: field.name.clone(),
                     ty: TypedFieldType::Struct,
                     default: None,
+                    integer_range: None,
                     struct_name: Some(nested_struct_name.clone()),
                     array_elem_ty: None,
                     array_elem_struct: None,
@@ -119,6 +138,7 @@ pub(crate) fn coerce_struct_fields(
                             name: format!("{}.{}", field.name, nested.name),
                             ty: nested.ty,
                             default: nested.default,
+                            integer_range: nested.integer_range,
                             struct_name: nested.struct_name,
                             array_elem_ty: nested.array_elem_ty,
                             array_elem_struct: nested.array_elem_struct,
@@ -162,6 +182,7 @@ pub(crate) fn coerce_struct_fields(
                             name: field.name.clone(),
                             ty: TypedFieldType::Scalar(PrimitiveType::F32),
                             default: field.default.clone(),
+                            integer_range: None,
                             struct_name: None,
                             array_elem_ty: None,
                             array_elem_struct: None,
@@ -181,6 +202,7 @@ pub(crate) fn coerce_struct_fields(
                         name: field.name.clone(),
                         ty: TypedFieldType::Struct,
                         default: None,
+                        integer_range: None,
                         struct_name: Some(nested_struct_name.clone()),
                         array_elem_ty: None,
                         array_elem_struct: None,
@@ -191,6 +213,7 @@ pub(crate) fn coerce_struct_fields(
                                 name: format!("{}.{}", field.name, nested.name),
                                 ty: nested.ty,
                                 default: nested.default,
+                                integer_range: nested.integer_range,
                                 struct_name: nested.struct_name,
                                 array_elem_ty: nested.array_elem_ty,
                                 array_elem_struct: nested.array_elem_struct,
@@ -230,6 +253,7 @@ pub(crate) fn coerce_struct_fields(
             name: field.name.clone(),
             ty,
             default,
+            integer_range,
             struct_name: struct_name_ref,
             array_elem_ty,
             array_elem_struct,

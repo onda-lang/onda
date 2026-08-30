@@ -74,7 +74,7 @@ sample:
     voices[next_voice].amp = amp
     voices[next_voice].bang(
       freq_hz = rng.range(lo_freq, hi_freq),
-      cutoff_hz = rng.range(lo_cutoff, hi_cutoff),
+      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)
     )
     voice_pan[next_voice] = rng.range(-0.9, 0.9)
     next_voice = (next_voice + 1) % NumVoices
@@ -84,7 +84,7 @@ sample:
   mix_r = 0.0
   for i in 0..NumVoices:
     voice = voices[i]()
-    (gain_l, gain_r) = std::levels::pan_3db(voice_pan[i])
+    gain_l, gain_r = std::levels::pan_3db(voice_pan[i])
     mix_l = mix_l + voice * gain_l
     mix_r = mix_r + voice * gain_r
   out1 = tanh(mix_l * level)

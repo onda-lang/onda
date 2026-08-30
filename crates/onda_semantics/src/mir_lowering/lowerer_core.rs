@@ -19,6 +19,7 @@ impl<'a> FunctionLowerer<'a> {
         emitted_name: String,
         types: &'a mut Vec<MirType>,
         source_files: &'a mut Vec<SourceFile>,
+        log_sites: &'a mut Vec<onda_mir::LogSite>,
     ) -> Self {
         Self {
             function,
@@ -37,6 +38,7 @@ impl<'a> FunctionLowerer<'a> {
             emitted_name,
             types,
             source_files,
+            log_sites,
             runtime_globals: None,
             current_frame: None,
             oversampled_inputs: HashMap::new(),
@@ -68,6 +70,7 @@ impl<'a> FunctionLowerer<'a> {
         globals: &'a RuntimeGlobals,
         types: &'a mut Vec<MirType>,
         source_files: &'a mut Vec<SourceFile>,
+        log_sites: &'a mut Vec<onda_mir::LogSite>,
     ) -> Self {
         let mut lowerer = Self::new(
             function,
@@ -86,6 +89,7 @@ impl<'a> FunctionLowerer<'a> {
             emitted_name,
             types,
             source_files,
+            log_sites,
         );
         lowerer.runtime_globals = Some(globals);
         lowerer
@@ -1133,7 +1137,7 @@ impl<'a> FunctionLowerer<'a> {
             } else if self.runtime_globals.is_some() {
                 compiler_generated_function_attributes()
             } else {
-                source_function_attributes(&self.function.name)
+                source_function_attributes(&self.function.name, self.function.publishes_print)
             },
             params: self.params,
             results: self.results,

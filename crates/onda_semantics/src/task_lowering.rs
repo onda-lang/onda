@@ -191,6 +191,7 @@ fn validate_task_control_stmts(
             }
             Stmt::Const { .. }
             | Stmt::Assign { .. }
+            | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
@@ -208,6 +209,11 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
             proc.events
                 .iter()
                 .map(|event| (event.name.as_str(), "event")),
+        )
+        .chain(
+            proc.delegates
+                .iter()
+                .map(|delegate| (delegate.name.as_str(), "delegate")),
         )
         .chain(proc.ins.iter().map(|decl| (decl.name.as_str(), "input")))
         .chain(proc.outs.iter().map(|decl| (decl.name.as_str(), "output")))
@@ -252,6 +258,11 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
     }
     for event in &proc.events {
         for stmt in &event.body {
+            infer_io_from_stmt(stmt, &mut inferred);
+        }
+    }
+    for when in &proc.whens {
+        for stmt in &when.body {
             infer_io_from_stmt(stmt, &mut inferred);
         }
     }
@@ -316,6 +327,16 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         .flatten()
         .map(|event| event.name.clone())
         .collect::<HashSet<_>>();
+    let top_delegate_names = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .map(|delegate| delegate.name.clone())
+        .collect::<HashSet<_>>();
     if !top_tasks.is_empty() {
         let mut members = HashMap::<String, &'static str>::new();
         for (name, kind) in program.blocks.iter().filter_map(|block| match block {
@@ -329,6 +350,9 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         }
         for name in &top_event_names {
             members.entry(name.clone()).or_insert("top-level event");
+        }
+        for name in &top_delegate_names {
+            members.entry(name.clone()).or_insert("top-level delegate");
         }
         for block in &program.blocks {
             let declarations = match block {
@@ -401,6 +425,11 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                         for stmt in &event.body {
                             infer_io_from_stmt(stmt, &mut inferred);
                         }
+                    }
+                }
+                Block::When(when) => {
+                    for stmt in &when.body {
+                        infer_io_from_stmt(stmt, &mut inferred);
                     }
                 }
                 _ => {}
@@ -484,6 +513,13 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                     );
                 }
             }
+            Block::When(when) => validate_task_control_stmt_list(
+                &when.body,
+                &top_task_names,
+                TaskControlContext::Event,
+                errors,
+            ),
+            Block::Delegates(_) => {}
             Block::Tasks(_) => {}
             Block::Def(def) => validate_task_control_stmt_list(
                 &def.body,
@@ -576,6 +612,14 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                 errors,
             );
         }
+        for when in &proc.whens {
+            validate_task_control_stmt_list(
+                &when.body,
+                &task_names,
+                TaskControlContext::Event,
+                errors,
+            );
+        }
         for def in &proc.local_defs {
             validate_task_control_stmt_list(
                 &def.body,
@@ -615,7 +659,7 @@ impl TaskLocalStorage {
 
     fn storage_stmt(&self, name: String, initialize: bool) -> Stmt {
         let (decl_ty, is_typed_decl, expr) = match self {
-            Self::Scalar(ty) => (Some(*ty), true, zero_expr(*ty)),
+            Self::Scalar(ty) => (Some(DeclType::Scalar(*ty)), true, zero_expr(*ty)),
             Self::Array { spec, .. } => (
                 None,
                 true,
@@ -626,7 +670,11 @@ impl TaskLocalStorage {
                     initialize,
                 },
             ),
-            Self::Tuple(types) => (None, false, Self::tuple_zero_expr(types)),
+            Self::Tuple(types) => (
+                Some(DeclType::Tuple(types.clone())),
+                true,
+                Self::tuple_zero_expr(types),
+            ),
         };
         Stmt::Assign {
             loc: Default::default(),
@@ -864,7 +912,7 @@ fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Expr) -> Stmt 
         loc: Default::default(),
         target_loc: Default::default(),
         target: AssignTarget::Var(name.into()),
-        decl_ty: Some(ty),
+        decl_ty: Some(DeclType::Scalar(ty)),
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
@@ -1370,13 +1418,7 @@ fn register_task_owner_aggregate_storage(
                     types.scalars.entry(flat).or_insert(*ty);
                 }
                 TypedFieldType::Tuple(elements) => {
-                    types.tuples.entry(flat.clone()).or_insert(elements.clone());
-                    for (index, ty) in elements.iter().enumerate() {
-                        types
-                            .scalars
-                            .entry(format!("{flat}.__{index}"))
-                            .or_insert(*ty);
-                    }
+                    register_tuple_state(&mut types.scalars, &mut types.tuples, &flat, elements);
                 }
                 TypedFieldType::Array(len) => {
                     if let Some(element) = field.array_elem_ty {
@@ -1755,7 +1797,9 @@ fn uniquify_task_bindings(
                                 );
                             }
                             AssignTarget::Tuple(names) => {
-                                for name in names {
+                                for name in
+                                    names.iter_mut().filter_map(|target| target.binding_mut())
+                                {
                                     let source_name = name.clone();
                                     *name = self.assignment_name(&source_name, false);
                                 }
@@ -1767,6 +1811,11 @@ fn uniquify_task_bindings(
                     }
                     Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                         rewrite_task_expr(expr, &self.visible);
+                    }
+                    Stmt::Print { values, .. } => {
+                        for value in values {
+                            rewrite_task_expr(value, &self.visible);
+                        }
                     }
                     Stmt::If {
                         cond,
@@ -1945,7 +1994,7 @@ fn analyze_task_binding_storage(
         port_index_kins: None,
         proc_event_names: &owner_types.proc_event_names,
     };
-    let registration_names = HashSet::new();
+    let registration_names = HashMap::new();
     let resolved_scalars = std::cell::RefCell::new(HashMap::new());
     let resolved_arrays = std::cell::RefCell::new(HashMap::new());
     let resolved_tuples = std::cell::RefCell::new(HashMap::new());
@@ -1957,14 +2006,12 @@ fn analyze_task_binding_storage(
         state_array_struct_roots: &owner_types.state_array_struct_roots,
         nested_proc_instances: &owner_types.nested_proc_instances,
         struct_instances: &owner_types.struct_instances,
-        registration_input_names: &registration_names,
-        registration_output_names: &registration_names,
-        registration_param_names: &registration_names,
         forbidden_assign_names: &owner_types.output_names,
         forbidden_assign_array_names: &output_array_names,
         proc_array_roots: &owner_types.proc_array_roots,
         event_policy: None,
         state_tuples: &owner_types.tuples,
+        registered_state_tuples: &registration_names,
         resolved_scalar_locals: Some(&resolved_scalars),
         resolved_array_locals: Some(&resolved_arrays),
         resolved_tuple_locals: Some(&resolved_tuples),
@@ -2136,7 +2183,7 @@ fn rewrite_task_target(target: &mut AssignTarget, names: &HashMap<String, String
             }
         }
         AssignTarget::Tuple(values) => {
-            for name in values {
+            for name in values.iter_mut().filter_map(|target| target.binding_mut()) {
                 if let Some(replacement) = names.get(name) {
                     *name = replacement.clone();
                 }
@@ -2172,6 +2219,11 @@ fn rewrite_task_stmts(
                 }
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => rewrite_task_expr(expr, names),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    rewrite_task_expr(value, names);
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -2428,11 +2480,21 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                             collect_expr_uses(coordinate, &mut uses);
                         }
                     }
-                    AssignTarget::Tuple(names) => defs.extend(names.iter().cloned()),
+                    AssignTarget::Tuple(names) => defs.extend(
+                        names
+                            .iter()
+                            .filter_map(|target| target.binding())
+                            .map(str::to_owned),
+                    ),
                 }
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_expr_uses(expr, &mut uses)
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_expr_uses(value, &mut uses);
+                }
             }
             Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, &mut uses),
             _ => {}
@@ -2699,7 +2761,7 @@ fn task_stmt_can_remain_structured(stmt: &Stmt) -> bool {
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             !task_stmts_contain_resume_terminator(body)
         }
-        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } => true,
+        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } | Stmt::Print { .. } => true,
     }
 }
 
@@ -3559,6 +3621,13 @@ fn lower_top_level_tasks(
                     );
                 }
             }
+            Block::When(when) => rewrite_task_controls(
+                &mut when.body,
+                &task_names,
+                &buffer_names,
+                &unavailable,
+                TaskResumeResult::RuntimeField,
+            ),
             _ => {}
         }
     }
@@ -3726,9 +3795,19 @@ fn task_call_semantics(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> TaskCallSemantics {
     let mut defs = task_callable_defs(program);
+    let delegates = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
     let callable_symbols = defs
         .iter()
         .map(|def| def.name.clone())
+        .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
     desugar_task_callable_methods(
         &mut defs,
@@ -3744,10 +3823,16 @@ fn task_call_semantics(
         struct_defs,
         &HashMap::new(),
     );
-    let signatures = defs
+    let mut signatures = defs
         .iter()
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
-        .collect();
+        .collect::<HashMap<_, _>>();
+    signatures.extend(delegates.iter().map(|delegate| {
+        (
+            delegate.name.clone(),
+            FnSignature::from_event_params(&delegate.params),
+        )
+    }));
     TaskCallSemantics {
         overloads,
         callable_symbols,
@@ -3758,13 +3843,19 @@ fn task_call_semantics(
 
 fn proc_task_call_semantics(
     local_defs: &[FunctionDef],
+    delegates: &[DelegateDef],
     global: &TaskCallSemantics,
     env: &crate::def_semantics::CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> TaskCallSemantics {
+    let delegate_names = delegates
+        .iter()
+        .map(|delegate| delegate.name.as_str())
+        .collect::<HashSet<_>>();
     let local_names = local_defs
         .iter()
         .map(|def| def.name.as_str())
+        .chain(delegate_names.iter().copied())
         .collect::<HashSet<_>>();
     let overloads = global
         .overloads
@@ -3778,6 +3869,7 @@ fn proc_task_call_semantics(
         .iter()
         .cloned()
         .chain(local_defs.iter().map(|def| def.name.clone()))
+        .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
     desugar_task_callable_methods(&mut defs, env, struct_defs, &callable_symbols);
     let return_types = resolve_task_callable_return_types(
@@ -3793,6 +3885,14 @@ fn proc_task_call_semantics(
         defs.iter()
             .map(|def| (def.name.clone(), FnSignature::from_def(def))),
     );
+    signatures.extend(delegates.iter().map(|delegate| {
+        (
+            delegate.name.clone(),
+            FnSignature::from_event_params(&delegate.params),
+        )
+    }));
+    let mut return_types = return_types;
+    return_types.retain(|name, _| !delegate_names.contains(name.as_str()));
     TaskCallSemantics {
         overloads,
         callable_symbols,
@@ -3971,6 +4071,7 @@ pub(crate) fn lower_tasks(
         let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
         let proc_call_semantics = proc_task_call_semantics(
             &proc.local_defs,
+            &proc.delegates,
             &call_semantics,
             &preliminary_call_env,
             &struct_defs,
@@ -4079,6 +4180,15 @@ pub(crate) fn lower_tasks(
         for event in &mut proc.events {
             rewrite_task_controls(
                 &mut event.body,
+                &task_names,
+                &buffer_names,
+                &unavailable,
+                TaskResumeResult::Returned,
+            );
+        }
+        for when in &mut proc.whens {
+            rewrite_task_controls(
+                &mut when.body,
                 &task_names,
                 &buffer_names,
                 &unavailable,
@@ -5684,6 +5794,29 @@ block:
             lower_program_to_optimized_mir(&typed)
                 .expect("inferred callable task locals should lower to valid MIR");
         }
+    }
+
+    #[test]
+    fn tasks_can_publish_readonly_delegate_array_payloads() {
+        let typed = analyze(
+            parse_program(
+                r#"
+const Values: i32[2] = [3, 5]
+delegate progress(values: i32[2])
+task worker():
+  progress(Values)
+  yield
+block:
+  await worker()
+  sample:
+    out1 = 0.0
+"#,
+            )
+            .expect("task delegate source should parse"),
+        )
+        .expect("task should accept a const array as a readonly delegate payload");
+        lower_program_to_optimized_mir(&typed)
+            .expect("readonly task delegate payload should lower to valid MIR");
     }
 
     #[test]

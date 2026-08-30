@@ -188,6 +188,4 @@ block:
     c2 = ctrl2()
     c3 = ctrl3()
 
-    net(src1(), src2(), src3(), src4(), c1, c2, c3)
-    out1 = net.out1
-    out2 = net.out2
+    out1, out2 = net(src1(), src2(), src3(), src4(), c1, c2, c3)

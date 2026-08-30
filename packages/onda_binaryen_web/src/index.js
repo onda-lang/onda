@@ -42,6 +42,21 @@ const MAX_MEMORY_PAGES = 65_536;
 const WASM32_ADDRESS_SPACE_BYTES = MAX_MEMORY_PAGES * PAGE_BYTES;
 const DEFAULT_OPTIMIZE_LEVEL = 4;
 const ONDA_PROCESS_FULL_BLOCK = (1 << 0) | (1 << 1);
+const DELEGATE_RECORD_HEADER_SIZE = 12;
+const DELEGATE_BATCH_STORAGE_OFFSET = 0;
+const DELEGATE_BATCH_CAPACITY_OFFSET = 4;
+const DELEGATE_BATCH_USED_OFFSET = 8;
+const DELEGATE_BATCH_RECORD_COUNT_OFFSET = 12;
+const DELEGATE_BATCH_OVERFLOW_OFFSET = 16;
+const PRINT_RECORD_HEADER_SIZE = 12;
+const PRINT_BATCH_STORAGE_OFFSET = 0;
+const PRINT_BATCH_CAPACITY_OFFSET = 4;
+const PRINT_BATCH_USED_OFFSET = 8;
+const PRINT_BATCH_RECORD_COUNT_OFFSET = 12;
+const PRINT_BATCH_OVERFLOW_OFFSET = 16;
+const EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET = 0;
+const EXECUTION_OUTPUT_PRINT_BATCH_OFFSET = 4;
+const EXECUTION_OUTPUT_SEQUENCE_OFFSET = 8;
 const RUNTIME_FAILURE_GLOBAL = "$onda.runtime_failure";
 const INIT_ALL_GLOBAL = "$onda.init_all";
 const MATH_KERNEL_INTRINSICS = new Set([
@@ -64,6 +79,9 @@ const POINTER_GLOBALS = Object.freeze({
   params: "$onda.params",
   state: "$onda.state",
   eventPayload: "$onda.event_payload",
+  delegateBatch: "$onda.delegate_batch",
+  printBatch: "$onda.print_batch",
+  outputSequence: "$onda.output_sequence",
   buffers: "$onda.buffers",
   bufferWrites: "$onda.buffer_writes",
   bufferFrames: "$onda.buffer_frames",
@@ -820,6 +838,7 @@ class MirCompiler {
       "params",
       "buffers",
       "events",
+      "delegates",
     ]) {
       if (!Array.isArray(mir.interface[field])) {
         this.fail(`MIR interface field '${field}' must be an array`);
@@ -1029,7 +1048,8 @@ class MirCompiler {
       if (
         !func?.attributes ||
         !origins.has(func.attributes.origin) ||
-        !inlineHints.has(func.attributes.inline)
+        !inlineHints.has(func.attributes.inline) ||
+        typeof func.attributes.runtime_context !== "boolean"
       ) {
         this.fail(
           `function ${functionId} has invalid schema-${SUPPORTED_MIR_SCHEMA_VERSION} attributes`,
@@ -1557,10 +1577,15 @@ class MirCompiler {
       if (value.kind === "call" && Number.isInteger(value.data?.function)) {
         callees[functionId].add(value.data.function);
       }
+      const fixedDelegatePayloadMayFail = value.kind === "publish_delegate"
+        && this.mir.interface.delegates[value.data?.delegate]?.params.some(
+          (param) => this.type(param.ty).kind === "array",
+        );
       const bounds = value.data?.bounds;
       if (
         value.kind === "process_frame"
         || value.kind === "slice_copy"
+        || fixedDelegatePayloadMayFail
         || binaryMayFail(functionId, value)
         || (checkedBoundsKinds.has(value.kind) && bounds === "checked")
         || (dynamicBoundsKinds.has(value.kind) && bounds !== "unchecked")
@@ -1597,6 +1622,9 @@ class MirCompiler {
     this.eventLayout = this.mir.interface.events.map((event) =>
       this.layoutEventValues(event.params),
     );
+    this.delegateLayout = this.mir.interface.delegates.map((delegate) =>
+      this.layoutEventValues(delegate.params),
+    );
     this.requireWasm32Extent(
       this.stateLayout.byteLength,
       "MIR physical state storage",
@@ -1609,6 +1637,12 @@ class MirCompiler {
       this.requireWasm32Extent(
         layout.minimumByteLength,
         `MIR event ${eventId} fixed payload storage`,
+      );
+    }
+    for (const [delegateId, layout] of this.delegateLayout.entries()) {
+      this.requireWasm32Extent(
+        layout.minimumByteLength,
+        `MIR delegate ${delegateId} fixed payload storage`,
       );
     }
 
@@ -2085,7 +2119,7 @@ class MirCompiler {
         index,
         typeId,
         kind: "buffer",
-        components: ["i32", "i32", "i32", "i32", "f32"],
+        components: ["i32", "i32", "i32", "i32", "f32", "i32"],
       };
     }
     if (type.kind === "buffer_span") {
@@ -2097,7 +2131,7 @@ class MirCompiler {
         index,
         typeId,
         kind: "buffer_span",
-        components: ["i32", "i32", "i32", "i32", "i32"],
+        components: ["i32", "i32", "i32", "i32", "i32", "i32"],
       };
     }
     if (type.kind === "array") {
@@ -2126,9 +2160,9 @@ class MirCompiler {
     }
     if (layout.kind === "array") return;
     const suffixes = layout.kind === "buffer"
-      ? ["read_address", "write_address", "frames", "channels", "sample_rate"]
+      ? ["read_address", "write_address", "frames", "channels", "sample_rate", "bound"]
       : layout.kind === "buffer_span"
-        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table"]
+        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table", "bound_table"]
         : ["read_address", "write_address", "length", "stride"];
     for (const [offset, suffix] of suffixes.entries()) {
       binaryen.Function.setLocalName(
@@ -2275,6 +2309,7 @@ class MirCompiler {
         RUNTIME_FAILURE_GLOBAL,
         this.module.i32.const(PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE),
       ),
+      ...this.resetDelegateBatch(),
       this.returnFromCurrentFunction(context),
     ]);
   }
@@ -2306,6 +2341,72 @@ class MirCompiler {
     return this.functionMayFail[functionId]
       ? this.module.global.get(RUNTIME_FAILURE_GLOBAL, binaryen.i32)
       : this.module.i32.const(PROCESSOR_EXECUTION_OK);
+  }
+
+  resetDelegateBatch() {
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
+    const stores = [
+      DELEGATE_BATCH_USED_OFFSET,
+      DELEGATE_BATCH_RECORD_COUNT_OFFSET,
+      DELEGATE_BATCH_OVERFLOW_OFFSET,
+    ].map((offset) =>
+      this.module.i32.store(
+        offset,
+        4,
+        batch(),
+        this.module.i32.const(0),
+      )
+    );
+    return [
+      this.module.if(
+        this.module.i32.ne(batch(), this.module.i32.const(0)),
+        this.module.block(null, stores),
+      ),
+    ];
+  }
+
+  executionOutputBatch(outputLocal, fieldOffset) {
+    const output = () => this.module.local.get(outputLocal, binaryen.i32);
+    return this.module.if(
+      this.module.i32.ne(output(), this.module.i32.const(0)),
+      this.module.i32.load(fieldOffset, 4, output()),
+      this.module.i32.const(0),
+    );
+  }
+
+  executionOutputSequence(outputLocal) {
+    const output = () => this.module.local.get(outputLocal, binaryen.i32);
+    return this.module.if(
+      this.module.i32.ne(output(), this.module.i32.const(0)),
+      this.module.i32.add(
+        output(),
+        this.module.i32.const(EXECUTION_OUTPUT_SEQUENCE_OFFSET),
+      ),
+      this.module.i32.const(0),
+    );
+  }
+
+  advanceOutputSequence(sequenceLocal) {
+    const pointer = () =>
+      this.module.global.get(POINTER_GLOBALS.outputSequence, binaryen.i32);
+    const sequence = () => this.module.local.get(sequenceLocal, binaryen.i32);
+    return this.module.block(null, [
+      this.module.local.set(
+        sequenceLocal,
+        this.module.i32.load(0, 4, pointer()),
+      ),
+      this.module.i32.store(
+        0,
+        4,
+        pointer(),
+        this.module.select(
+          this.module.i32.eq(sequence(), this.module.i32.const(-1)),
+          sequence(),
+          this.module.i32.add(sequence(), this.module.i32.const(1)),
+        ),
+      ),
+    ]);
   }
 
   fullInitClearRanges() {
@@ -2366,6 +2467,38 @@ class MirCompiler {
         this.module.local.get(1, binaryen.i32),
       ),
       this.module.global.set(
+        POINTER_GLOBALS.buffers,
+        this.module.local.get(3, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferWrites,
+        this.module.local.get(3, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferFrames,
+        this.module.local.get(4, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferChannels,
+        this.module.local.get(5, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.bufferSampleRates,
+        this.module.local.get(6, binaryen.i32),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.delegateBatch,
+        this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.printBatch,
+        this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.outputSequence,
+        this.executionOutputSequence(7),
+      ),
+      this.module.global.set(
         INIT_ALL_GLOBAL,
         this.module.i32.ne(
           this.module.local.get(2, binaryen.i32),
@@ -2385,7 +2518,16 @@ class MirCompiler {
     ], binaryen.i32);
     this.module.addFunction(
       "$onda.abi.init",
-      binaryen.createType([binaryen.i32, binaryen.i32, binaryen.i32]),
+      binaryen.createType([
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+        binaryen.i32,
+      ]),
       binaryen.i32,
       [],
       initBody,
@@ -2393,7 +2535,7 @@ class MirCompiler {
     this.module.addFunctionExport("$onda.abi.init", "onda_processor_init");
 
     const processParams = binaryen.createType(
-      Array.from({ length: 11 }, () => binaryen.i32),
+      Array.from({ length: 12 }, () => binaryen.i32),
     );
     const startFrame = () => this.module.local.get(4, binaryen.i32);
     const frames = () => this.module.local.get(5, binaryen.i32);
@@ -2427,6 +2569,18 @@ class MirCompiler {
       ),
     );
     const processBody = this.module.block(null, [
+      this.module.global.set(
+        POINTER_GLOBALS.delegateBatch,
+        this.executionOutputBatch(11, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.printBatch,
+        this.executionOutputBatch(11, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
+      ),
+      this.module.global.set(
+        POINTER_GLOBALS.outputSequence,
+        this.executionOutputSequence(11),
+      ),
       this.module.if(
         invalidRange,
         this.module.return(
@@ -2499,6 +2653,18 @@ class MirCompiler {
       }
       const wrapperName = `$onda.abi.event.${eventId}`;
       const body = this.module.block(null, [
+        this.module.global.set(
+          POINTER_GLOBALS.delegateBatch,
+          this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
+        ),
+        this.module.global.set(
+          POINTER_GLOBALS.printBatch,
+          this.executionOutputBatch(7, EXECUTION_OUTPUT_PRINT_BATCH_OFFSET),
+        ),
+        this.module.global.set(
+          POINTER_GLOBALS.outputSequence,
+          this.executionOutputSequence(7),
+        ),
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,
@@ -2537,7 +2703,7 @@ class MirCompiler {
       ], binaryen.i32);
       this.module.addFunction(
         wrapperName,
-        binaryen.createType(Array.from({ length: 7 }, () => binaryen.i32)),
+        binaryen.createType(Array.from({ length: 8 }, () => binaryen.i32)),
         binaryen.i32,
         [],
         body,
@@ -2585,6 +2751,10 @@ class MirCompiler {
       }
       case "call":
         return this.compileCall(data, context);
+      case "publish_delegate":
+        return this.compilePublishDelegate(data, context);
+      case "publish_log":
+        return this.compilePublishLog(data, context);
       case "output_store":
         return this.compileOutputStore(data, context);
       case "control_output_store":
@@ -2850,6 +3020,561 @@ class MirCompiler {
     ]);
   }
 
+  compilePublishDelegate(data, context) {
+    const delegate = this.mir.interface.delegates[data.delegate];
+    const layout = this.delegateLayout[data.delegate];
+    if (!delegate || !layout || data.args?.length !== delegate.params.length) {
+      this.fail(`delegate id ${String(data.delegate)} has an invalid publication payload`);
+    }
+    if (context.function.attributes.runtime_context !== true) {
+      this.fail(`function '${context.function.name}' publishes without runtime context`);
+    }
+
+    const payloadBytes = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${data.delegate}.payload_bytes`,
+    );
+    const oversized = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${data.delegate}.oversized`,
+    );
+    const record = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${data.delegate}.record`,
+    );
+    const cursor = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${data.delegate}.cursor`,
+    );
+    const counter = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${data.delegate}.copy_index`,
+    );
+    const payload = () => this.module.local.get(payloadBytes, binaryen.i32);
+    const tooLarge = () => this.module.local.get(oversized, binaryen.i32);
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
+    const validationStatements = [];
+    const collectionStatements = [
+      this.module.local.set(
+        payloadBytes,
+        this.module.i32.const(layout.minimumByteLength),
+      ),
+      this.module.local.set(
+        oversized,
+        this.module.i32.const(
+          layout.minimumByteLength > 0xffff_ffff - DELEGATE_RECORD_HEADER_SIZE
+            ? 1
+            : 0,
+        ),
+      ),
+    ];
+
+    for (const [paramId, param] of delegate.params.entries()) {
+      const type = this.type(param.ty);
+      const argument = data.args[paramId];
+      if (argument?.kind !== "value") {
+        this.fail(`delegate '${delegate.name}' argument ${paramId} is not a value`);
+      }
+      if (type.kind !== "slice") continue;
+      const element = type.data.element;
+      const elementSize = this.scalarSize(element);
+      const length = () => this.compileSliceValue(argument.data, context)[2];
+      const delta = () =>
+        this.module.i32.mul(length(), this.module.i32.const(elementSize));
+      const next = () => this.module.i32.add(payload(), delta());
+      collectionStatements.push(
+        this.module.local.set(
+          oversized,
+          this.module.i32.or(
+            tooLarge(),
+            this.module.i32.or(
+              this.module.i32.gt_u(
+                length(),
+                this.module.i32.const(Math.floor(0xffff_ffff / elementSize)),
+              ),
+              this.module.i32.lt_u(next(), payload()),
+            ),
+          ),
+        ),
+        this.module.local.set(payloadBytes, next()),
+      );
+    }
+    for (const [paramId, param] of delegate.params.entries()) {
+      const type = this.type(param.ty);
+      if (type.kind !== "array") continue;
+      const argument = data.args[paramId];
+      const sliceLength = () => this.compileSliceValue(argument.data, context)[2];
+      validationStatements.push(
+        this.module.if(
+          this.module.i32.ne(
+            sliceLength(),
+            this.module.i32.const(type.data.len),
+          ),
+          this.raiseRuntimeFailure(context),
+        ),
+      );
+    }
+    collectionStatements.push(
+      this.module.local.set(
+        oversized,
+        this.module.i32.or(
+          tooLarge(),
+          this.module.i32.gt_u(
+            payload(),
+            this.module.i32.const(0xffff_ffff - DELEGATE_RECORD_HEADER_SIZE),
+          ),
+        ),
+      ),
+      this.compileDelegateBatchAppend(
+        data.delegate,
+        delegate,
+        data.args,
+        payload,
+        tooLarge,
+        record,
+        cursor,
+        counter,
+        context,
+      ),
+    );
+    return this.module.block(null, [
+      ...validationStatements,
+      this.module.if(
+        this.module.i32.ne(batch(), this.module.i32.const(0)),
+        this.module.block(null, collectionStatements),
+      ),
+    ]);
+  }
+
+  compilePublishLog(data, context) {
+    const site = this.mir.log_sites?.[data.site];
+    const args = data.arguments;
+    if (!site || !Array.isArray(args) || args.length !== site.argument_types?.length) {
+      this.fail(`log site id ${String(data.site)} has an invalid publication payload`);
+    }
+    if (context.function.attributes.runtime_context !== true) {
+      this.fail(`function '${context.function.name}' prints without runtime context`);
+    }
+
+    const payloadSize = site.payload_size;
+    const calculatedSize = site.argument_types.reduce(
+      (size, scalar) => size + this.scalarSize(scalar),
+      0,
+    );
+    if (!Number.isInteger(payloadSize) || payloadSize !== calculatedSize) {
+      this.fail(`log site id ${data.site} has an invalid payload size`);
+    }
+
+    const storageLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.storage`,
+    );
+    const capacityLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.capacity`,
+    );
+    const usedLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.used`,
+    );
+    const recordLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.record`,
+    );
+    const cursorLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.cursor`,
+    );
+    const sequenceLocal = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `log.${data.site}.sequence`,
+    );
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.printBatch, binaryen.i32);
+    const field = (offset) =>
+      this.module.i32.add(batch(), this.module.i32.const(offset));
+    const local = (id) => this.module.local.get(id, binaryen.i32);
+    const requiredSize = payloadSize + PRINT_RECORD_HEADER_SIZE;
+    const overflowAddress = () => field(PRINT_BATCH_OVERFLOW_OFFSET);
+    const overflow = () => this.module.i32.load(0, 4, overflowAddress());
+    const drop = this.module.i32.store(
+      0,
+      4,
+      overflowAddress(),
+      this.module.select(
+        this.module.i32.eq(overflow(), this.module.i32.const(-1)),
+        overflow(),
+        this.module.i32.add(overflow(), this.module.i32.const(1)),
+      ),
+    );
+    const fits = this.module.i32.and(
+      this.module.i32.le_u(local(usedLocal), local(capacityLocal)),
+      this.module.i32.le_u(
+        this.module.i32.const(requiredSize),
+        this.module.i32.sub(local(capacityLocal), local(usedLocal)),
+      ),
+    );
+    const record = () => local(recordLocal);
+    const cursor = () => local(cursorLocal);
+    const write = [
+      this.module.local.set(
+        recordLocal,
+        this.module.i32.add(local(storageLocal), local(usedLocal)),
+      ),
+      this.module.i32.store(0, 1, record(), this.module.i32.const(data.site)),
+      this.module.i32.store(4, 1, record(), this.module.i32.const(payloadSize)),
+      this.module.i32.store(8, 1, record(), local(sequenceLocal)),
+      this.module.local.set(
+        cursorLocal,
+        this.module.i32.add(record(), this.module.i32.const(PRINT_RECORD_HEADER_SIZE)),
+      ),
+    ];
+    for (const [index, scalar] of site.argument_types.entries()) {
+      write.push(
+        this.storePackedScalar(
+          scalar,
+          cursor(),
+          this.compileValue(args[index], context),
+        ),
+        this.module.local.set(
+          cursorLocal,
+          this.module.i32.add(cursor(), this.module.i32.const(this.scalarSize(scalar))),
+        ),
+      );
+    }
+    const usedAddress = () => field(PRINT_BATCH_USED_OFFSET);
+    const countAddress = () => field(PRINT_BATCH_RECORD_COUNT_OFFSET);
+    write.push(
+      this.module.i32.store(
+        0,
+        4,
+        usedAddress(),
+        this.module.i32.add(local(usedLocal), this.module.i32.const(requiredSize)),
+      ),
+      this.module.i32.store(
+        0,
+        4,
+        countAddress(),
+        this.module.i32.add(
+          this.module.i32.load(0, 4, countAddress()),
+          this.module.i32.const(1),
+        ),
+      ),
+    );
+    return this.module.if(
+      this.module.i32.ne(batch(), this.module.i32.const(0)),
+      this.module.block(null, [
+        this.advanceOutputSequence(sequenceLocal),
+        this.module.local.set(
+          storageLocal,
+          this.module.i32.load(0, 4, field(PRINT_BATCH_STORAGE_OFFSET)),
+        ),
+        this.module.if(
+          this.module.i32.ne(local(storageLocal), this.module.i32.const(0)),
+          this.module.block(null, [
+            this.module.local.set(
+              capacityLocal,
+              this.module.i32.load(0, 4, field(PRINT_BATCH_CAPACITY_OFFSET)),
+            ),
+            this.module.local.set(
+              usedLocal,
+              this.module.i32.load(0, 4, field(PRINT_BATCH_USED_OFFSET)),
+            ),
+            this.module.if(fits, this.module.block(null, write), drop),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  compileDelegateBatchAppend(
+    delegateId,
+    delegate,
+    args,
+    payload,
+    tooLarge,
+    recordLocal,
+    cursorLocal,
+    counterLocal,
+    context,
+  ) {
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
+    const field = (offset) =>
+      this.module.i32.add(batch(), this.module.i32.const(offset));
+    const storage = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.storage`,
+    );
+    const capacity = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.capacity`,
+    );
+    const used = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.used`,
+    );
+    const required = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.required`,
+    );
+    const sequence = this.allocateGeneratedLocal(
+      context,
+      "i32",
+      `delegate.${delegateId}.sequence`,
+    );
+    const local = (id) => this.module.local.get(id, binaryen.i32);
+    const write = this.compileDelegateRecord(
+      delegateId,
+      delegate,
+      args,
+      payload,
+      () => local(storage),
+      () => local(used),
+      recordLocal,
+      cursorLocal,
+      counterLocal,
+      sequence,
+      context,
+    );
+    const overflowAddress = () => field(DELEGATE_BATCH_OVERFLOW_OFFSET);
+    const overflow = () => this.module.i32.load(0, 4, overflowAddress());
+    const drop = this.module.i32.store(
+      0,
+      4,
+      overflowAddress(),
+      this.module.select(
+        this.module.i32.eq(overflow(), this.module.i32.const(-1)),
+        overflow(),
+        this.module.i32.add(overflow(), this.module.i32.const(1)),
+      ),
+    );
+    const fit = this.module.i32.and(
+      this.module.i32.eq(tooLarge(), this.module.i32.const(0)),
+      this.module.i32.and(
+        this.module.i32.le_u(local(used), local(capacity)),
+        this.module.i32.le_u(
+          local(required),
+          this.module.i32.sub(local(capacity), local(used)),
+        ),
+      ),
+    );
+    return this.module.block(null, [
+      this.advanceOutputSequence(sequence),
+      this.module.local.set(
+        storage,
+        this.module.i32.load(0, 4, field(DELEGATE_BATCH_STORAGE_OFFSET)),
+      ),
+      this.module.if(
+        this.module.i32.ne(local(storage), this.module.i32.const(0)),
+        this.module.block(null, [
+          this.module.local.set(
+            capacity,
+            this.module.i32.load(0, 4, field(DELEGATE_BATCH_CAPACITY_OFFSET)),
+          ),
+          this.module.local.set(
+            used,
+            this.module.i32.load(0, 4, field(DELEGATE_BATCH_USED_OFFSET)),
+          ),
+          this.module.local.set(
+            required,
+            this.module.i32.add(
+              payload(),
+              this.module.i32.const(DELEGATE_RECORD_HEADER_SIZE),
+            ),
+          ),
+          this.module.if(fit, write, drop),
+        ]),
+      ),
+    ]);
+  }
+
+  compileDelegateRecord(
+    delegateId,
+    delegate,
+    args,
+    payload,
+    storage,
+    used,
+    recordLocal,
+    cursorLocal,
+    counterLocal,
+    sequenceLocal,
+    context,
+  ) {
+    const batch = () =>
+      this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
+    const record = () => this.module.local.get(recordLocal, binaryen.i32);
+    const cursor = () => this.module.local.get(cursorLocal, binaryen.i32);
+    const statements = [];
+    statements.push(
+      this.module.local.set(recordLocal, this.module.i32.add(storage(), used())),
+      this.module.i32.store(0, 1, record(), this.module.i32.const(delegateId)),
+      this.module.i32.store(4, 1, record(), payload()),
+      this.module.i32.store(
+        8,
+        1,
+        record(),
+        this.module.local.get(sequenceLocal, binaryen.i32),
+      ),
+      this.module.local.set(
+        cursorLocal,
+        this.module.i32.add(
+          record(),
+          this.module.i32.const(DELEGATE_RECORD_HEADER_SIZE),
+        ),
+      ),
+    );
+    for (const [paramId, param] of delegate.params.entries()) {
+      const type = this.type(param.ty);
+      const argument = args[paramId];
+      if (type.kind === "scalar") {
+        statements.push(
+          this.storePackedScalar(
+            type.data,
+            cursor(),
+            this.compileValue(argument.data, context),
+          ),
+          this.module.local.set(
+            cursorLocal,
+            this.module.i32.add(
+              cursor(),
+              this.module.i32.const(this.scalarSize(type.data)),
+            ),
+          ),
+        );
+        continue;
+      }
+      const element = type.kind === "slice"
+        ? type.data.element
+        : this.requireScalarType(
+          type.data.element,
+          `delegate '${delegate.name}' aggregate parameter ${paramId}`,
+        );
+      const slice = () => this.compileSliceValue(argument.data, context);
+      const count = type.kind === "array"
+        ? () => this.module.i32.const(type.data.len)
+        : () => slice()[2];
+      if (type.kind === "slice") {
+        statements.push(
+          this.module.i32.store(0, 1, cursor(), count()),
+          this.module.local.set(
+            cursorLocal,
+            this.module.i32.add(cursor(), this.module.i32.const(4)),
+          ),
+        );
+      }
+      statements.push(
+        this.compilePackedSliceCopy(
+          slice,
+          count,
+          element,
+          cursor,
+          counterLocal,
+        ),
+        this.module.local.set(
+          cursorLocal,
+          this.module.i32.add(
+            cursor(),
+            this.module.i32.mul(
+              count(),
+              this.module.i32.const(this.scalarSize(element)),
+            ),
+          ),
+        ),
+      );
+    }
+    const usedAddress = () =>
+      this.module.i32.add(
+        batch(),
+        this.module.i32.const(DELEGATE_BATCH_USED_OFFSET),
+      );
+    const countAddress = () =>
+      this.module.i32.add(
+        batch(),
+        this.module.i32.const(DELEGATE_BATCH_RECORD_COUNT_OFFSET),
+      );
+    statements.push(
+      this.module.i32.store(
+        0,
+        4,
+        usedAddress(),
+        this.module.i32.add(
+          used(),
+          this.module.i32.add(
+            payload(),
+            this.module.i32.const(DELEGATE_RECORD_HEADER_SIZE),
+          ),
+        ),
+      ),
+      this.module.i32.store(
+        0,
+        4,
+        countAddress(),
+        this.module.i32.add(
+          this.module.i32.load(0, 4, countAddress()),
+          this.module.i32.const(1),
+        ),
+      ),
+    );
+    return this.module.block(null, statements);
+  }
+
+  compilePackedSliceCopy(slice, count, scalar, destination, counterLocal) {
+    const loopLabel = `$onda.delegate.copy.${this.nextLabel++}`;
+    const counter = () => this.module.local.get(counterLocal, binaryen.i32);
+    const sourceAddress = () =>
+      this.module.i32.add(
+        slice()[0],
+        this.module.i32.mul(counter(), slice()[3]),
+      );
+    const destinationAddress = () =>
+      this.module.i32.add(
+        destination(),
+        this.module.i32.mul(
+          counter(),
+          this.module.i32.const(this.scalarSize(scalar)),
+        ),
+      );
+    return this.module.block(null, [
+      this.module.local.set(counterLocal, this.module.i32.const(0)),
+      this.module.loop(
+        loopLabel,
+        this.module.if(
+          this.module.i32.lt_u(counter(), count()),
+          this.module.block(null, [
+            this.storePackedScalar(
+              scalar,
+              destinationAddress(),
+              this.loadScalar(scalar, sourceAddress()),
+            ),
+            this.module.local.set(
+              counterLocal,
+              this.module.i32.add(counter(), this.module.i32.const(1)),
+            ),
+            this.module.br(loopLabel),
+          ]),
+        ),
+      ),
+    ]);
+  }
+
   compileOutputStore(data, context) {
     this.requireProcessFrame(data.frame, context, "audio output store");
     const port = this.outputLayout[data.output];
@@ -3017,6 +3742,10 @@ class MirCompiler {
         );
       case "buffer_param_sample_rate":
         return this.loadBufferParamComponent(data, 4, "f32", context);
+      case "buffer_is_bound":
+        return this.compileBufferIsBound(data, context);
+      case "buffer_param_is_bound":
+        return this.loadBufferParamComponent(data, 5, "i32", context);
       case "slice_len":
         return this.compileSliceValue(data, context)[2];
       case "slice_load":
@@ -3419,6 +4148,20 @@ class MirCompiler {
     );
   }
 
+  compileBufferIsBound(bufferRef, context) {
+    this.requireBufferRef(bufferRef);
+    return this.withBufferRefIndex(
+      bufferRef,
+      context,
+      binaryen.i32,
+      (index, staticIndex) => this.bufferBoundFactory(
+        index,
+        staticIndex,
+        context,
+      )(),
+    );
+  }
+
   compileBufferChannels(bufferRef, context) {
     const channels = this.bufferRefChannelMetadata(bufferRef);
     if (channels.kind === "mono") return this.module.i32.const(1);
@@ -3606,6 +4349,9 @@ class MirCompiler {
       return this.loadScalar(scalar, address);
     };
     const load = (index) => {
+      if (offset === 5) {
+        return this.module.i32.ne(rawLoad(index), this.module.i32.const(0));
+      }
       if (scalar !== "i32" || (offset !== 0 && offset !== 1)) {
         return rawLoad(index);
       }
@@ -3678,7 +4424,7 @@ class MirCompiler {
   }
 
   loadBufferParamValue(parameterId, context) {
-    const components = ["i32", "i32", "i32", "i32", "f32"];
+    const components = ["i32", "i32", "i32", "i32", "f32", "i32"];
     if (parameterId?.kind !== "array_element") {
       return components.map((scalar, offset) =>
         this.loadBufferParamComponent(parameterId, offset, scalar, context),
@@ -3769,6 +4515,7 @@ class MirCompiler {
           ? this.module.i32.const(channels.count)
           : component(POINTER_GLOBALS.bufferChannels, "i32"),
       component(POINTER_GLOBALS.bufferSampleRates, "f32"),
+      this.bufferBoundFactory(descriptorIndex, staticIndex, context)(),
     ];
     if (initializeIndex !== null) {
       values[0] = this.module.block(
@@ -3791,8 +4538,9 @@ class MirCompiler {
       POINTER_GLOBALS.bufferFrames,
       POINTER_GLOBALS.bufferChannels,
       POINTER_GLOBALS.bufferSampleRates,
+      POINTER_GLOBALS.buffers,
     ];
-    const tableScalars = ["i32", "i32", "i32", "i32", "f32"];
+    const tableScalars = ["i32", "i32", "i32", "i32", "f32", "i32"];
     let tables;
     let start;
     if (spanRef.kind === "interface") {
@@ -3894,6 +4642,31 @@ class MirCompiler {
       );
     }
     return () => this.module.local.get(local, this.wasmType(scalar));
+  }
+
+  bufferBoundFactory(descriptorIndex, staticIndex, context) {
+    const load = () => this.module.i32.ne(
+      this.loadBufferTableValueAt(
+        POINTER_GLOBALS.buffers,
+        descriptorIndex(),
+        "i32",
+      ),
+      this.module.i32.const(0),
+    );
+    if (staticIndex === null) return load;
+
+    const key = `buffer_bound:${staticIndex}`;
+    let local = context.bufferDescriptorCache.get(key);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(
+        context,
+        "i32",
+        `buffer.bound.${staticIndex}`,
+      );
+      context.bufferDescriptorCache.set(key, local);
+      context.entryInitializers.push(this.module.local.set(local, load()));
+    }
+    return () => this.module.local.get(local, binaryen.i32);
   }
 
   bufferChannelsFactory(
@@ -5514,6 +6287,17 @@ class MirCompiler {
     }
   }
 
+  storePackedScalar(scalar, address, value) {
+    switch (scalar) {
+      case "bool": return this.module.i32.store8(0, 1, address, value);
+      case "i32": return this.module.i32.store(0, 1, address, value);
+      case "i64": return this.module.i64.store(0, 1, address, value);
+      case "f32": return this.module.f32.store(0, 1, address, value);
+      case "f64": return this.module.f64.store(0, 1, address, value);
+      default: this.fail(`unknown scalar type '${String(scalar)}'`);
+    }
+  }
+
   type(typeId) {
     const type = this.mir.types[typeId];
     if (!type) this.fail(`type id ${typeId} is out of range`);
@@ -5821,8 +6605,28 @@ class MirCompiler {
         param_size_bytes: paramSize,
         param_align_bytes: 16,
         requires_full_blocks: false,
+        delegate_record_header_size_bytes: DELEGATE_RECORD_HEADER_SIZE,
+        print_record_header_size_bytes: PRINT_RECORD_HEADER_SIZE,
       },
       metadata: {
+        source_files: (this.mir.source_files ?? []).map((file) => ({
+          path: file.path,
+        })),
+        log_sites: (this.mir.log_sites ?? []).map((site, index) => ({
+          index,
+          label: site.label ?? null,
+          source: {
+            file: site.source.file ?? null,
+            line: site.source.line,
+            column: site.source.column,
+            end_line: site.source.end_line,
+            end_column: site.source.end_column,
+          },
+          lexical_owner: site.lexical_owner,
+          declaration: site.declaration ?? null,
+          argument_types: [...site.argument_types],
+          payload_size_bytes: site.payload_size,
+        })),
         states: snapshot.entries,
         inputs: this.portMetadata(this.mir.interface.inputs, this.inputLayout),
         outputs: this.portMetadata(this.mir.interface.outputs, this.outputLayout),
@@ -5891,20 +6695,43 @@ class MirCompiler {
           payload_size_bytes: this.eventLayout[eventId].byteLength,
           payload_min_size_bytes: this.eventLayout[eventId].minimumByteLength,
           has_dynamic_payload: this.eventLayout[eventId].dynamic,
-          params: event.params.map((param, paramId) => ({
-            name: param.name,
-            type_repr: typeName(this.type(param.ty), this),
-            scalar: this.storageShape(param.ty).scalar,
-            array_len: this.storageShape(param.ty).length ?? 0,
-            is_slice: this.storageShape(param.ty).isSlice === true,
-            byte_offset: this.eventLayout[eventId][paramId].offset,
-            byte_size: this.eventLayout[eventId][paramId].size,
-            element_size_bytes: this.scalarSize(
-              this.storageShape(param.ty).scalar,
-            ),
-            has_default: param.default !== null && param.default !== undefined,
-            default_reprs: this.constantReprs(param.default),
-          })),
+          params: event.params.map((param, paramId) => {
+            const shape = this.storageShape(param.ty);
+            return {
+              name: param.name,
+              type_repr: typeName(this.type(param.ty), this),
+              scalar: shape.scalar,
+              array_len: shape.length ?? 0,
+              is_array: shape.isArray === true && shape.isSlice !== true,
+              is_slice: shape.isSlice === true,
+              byte_offset: this.eventLayout[eventId][paramId].offset,
+              byte_size: this.eventLayout[eventId][paramId].size,
+              element_size_bytes: this.scalarSize(shape.scalar),
+              has_default: param.default !== null && param.default !== undefined,
+              default_reprs: this.constantReprs(param.default),
+            };
+          }),
+        })),
+        delegates: this.mir.interface.delegates.map((delegate, delegateId) => ({
+          index: delegateId,
+          name: delegate.name,
+          payload_size_bytes: this.delegateLayout[delegateId].byteLength,
+          payload_min_size_bytes: this.delegateLayout[delegateId].minimumByteLength,
+          has_dynamic_payload: this.delegateLayout[delegateId].dynamic,
+          params: delegate.params.map((param, paramId) => {
+            const shape = this.storageShape(param.ty);
+            return {
+              name: param.name,
+              type_repr: typeName(this.type(param.ty), this),
+              scalar: shape.scalar,
+              array_len: shape.length ?? 0,
+              is_array: shape.isArray === true && shape.isSlice !== true,
+              is_slice: shape.isSlice === true,
+              byte_offset: this.delegateLayout[delegateId][paramId].offset,
+              byte_size: this.delegateLayout[delegateId][paramId].size,
+              element_size_bytes: this.scalarSize(shape.scalar),
+            };
+          }),
         })),
       },
     };

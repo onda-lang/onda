@@ -225,10 +225,14 @@ jobs:
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $docsDir
+          Copy-Item docs\api.md $docsDir
+          Copy-Item docs\processor-abi.md $docsDir
           Copy-Item docs\stdlib.md $docsDir
           Copy-Item examples $packageRoot -Recurse
 
           if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
+              -not (Test-Path (Join-Path $docsDir "api.md")) -or
+              -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md"))) {
             throw "release documentation was not packaged under docs"
           }
@@ -332,10 +336,14 @@ jobs:
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$docs_dir/"
+          cp docs/api.md "$docs_dir/"
+          cp docs/processor-abi.md "$docs_dir/"
           cp docs/stdlib.md "$docs_dir/"
           cp -R examples "$package_root/"
 
           test -f "$docs_dir/syntax.md"
+          test -f "$docs_dir/api.md"
+          test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
 
           cmake \
@@ -432,6 +440,7 @@ jobs:
 
       - name: Pack WebAssembly packages
         run: |
+          node ./scripts/stage-web-api-docs.mjs
           mkdir -p dist
           npm pack ./packages/onda_processor_abi --pack-destination dist
           npm pack ./packages/onda_binaryen_web --pack-destination dist

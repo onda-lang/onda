@@ -39,4 +39,6 @@ define_id!(ParamId);
 define_id!(BufferId);
 define_id!(EventId);
 define_id!(EventParamId);
+define_id!(DelegateId);
+define_id!(LogSiteId);
 define_id!(ConstDataId);

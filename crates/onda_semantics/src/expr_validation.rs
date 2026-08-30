@@ -9,10 +9,36 @@ fn push_loc_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, message: impl In
     errors.push(Diagnostic::semantic_span(message, loc));
 }
 
-fn init_buffer_runtime_message(what: &str) -> String {
-    format!(
-        "{what} is not allowed in init; buffer bindings are runtime-only and must be used in block, sample, or def scopes"
-    )
+fn block_audio_input_name<'a>(name: &'a str, env: ExprEnv<'_>) -> Option<&'a str> {
+    if env.scope != ScopeKind::Block
+        || env.locals.contains(name)
+        || env.local_aliases.contains_key(name)
+        || env.local_array_aliases.contains_key(name)
+    {
+        return None;
+    }
+    if env.input_names.contains(name)
+        || (name == "ins" && !env.input_names.is_empty())
+        || env.input_names.iter().any(|input| {
+            input
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('['))
+        })
+    {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn push_block_audio_input_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, name: &str) {
+    push_loc_error(
+        errors,
+        loc,
+        format!(
+            "audio input '{name}' can only be read in sample; move this read into the block's nested sample section"
+        ),
+    );
 }
 
 fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
@@ -321,7 +347,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
             }
         }
         AssignTarget::Tuple(names) => {
-            for name in names {
+            for name in names.iter().filter_map(|target| target.binding()) {
                 ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
             }
         }
@@ -355,6 +381,10 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             // outer aggregate/resource namespace so a loop index fully
             // shadows a same-named array, buffer, or struct.
             if env.locals.contains(name) {
+                return;
+            }
+            if let Some(name) = block_audio_input_name(name, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
                 return;
             }
             if let Some((root, field)) = name.split_once('.') {
@@ -553,6 +583,11 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_expr(index, env, errors);
                 return;
             }
+            if let Some(name) = block_audio_input_name(base, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
+                validate_expr(index, env, errors);
+                return;
+            }
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -709,15 +744,6 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 validate_expr(index, env, errors);
                 return;
             }
-            if env.scope == ScopeKind::Init
-                && has_declared_buffer_symbol_info(env.declared_symbols, base)
-            {
-                push_expr_error(
-                    errors,
-                    expr,
-                    init_buffer_runtime_message(&format!("buffer indexing '{}[...]'", base)),
-                );
-            }
             if is_declared_buffer_array_info(env.declared_symbols, base) {
                 push_expr_error(
                     errors,
@@ -791,6 +817,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 }
                 return;
             }
+            if let Some(name) = block_audio_input_name(base, env) {
+                push_block_audio_input_error(errors, expr.loc(), name);
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    validate_expr(coordinate, env, errors);
+                }
+                return;
+            }
             if let Some((root, field)) = split_field_path(base, errors) {
                 if let Some((struct_name, owner_kind)) = env
                     .param_structs
@@ -850,17 +883,6 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 io_surface_name(base, env).filter(|_| !env.io_surface_access_allowed)
             {
                 push_io_surface_scope_error(errors, expr.loc(), name);
-            } else if env.scope == ScopeKind::Init
-                && has_declared_buffer_symbol_info(env.declared_symbols, base)
-                && !(is_declared_buffer_array_info(env.declared_symbols, base)
-                    && selector.is_none()
-                    && channel.is_none())
-            {
-                push_expr_error(
-                    errors,
-                    expr,
-                    init_buffer_runtime_message(&format!("buffer slicing '{}[...]'", base)),
-                );
             } else if env.output_arrays.contains(base) {
                 push_expr_error(
                     errors,
@@ -1046,6 +1068,20 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             base,
                             args,
                             "chans",
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
+                        return;
+                    }
+                }
+                if let Some(base) = parse_buffer_bound_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        validate_buffer_metadata_builtin_call(
+                            name,
+                            base,
+                            args,
+                            "bound",
                             env,
                             expr.loc(),
                             errors,
@@ -1455,7 +1491,7 @@ fn validate_indexed_buffer_metadata_call(
     };
     if !matches!(
         method,
-        ARRAY_LEN_METHOD | BUFFER_CHANS_METHOD | BUFFER_SAMPLERATE_METHOD
+        ARRAY_LEN_METHOD | BUFFER_BOUND_METHOD | BUFFER_CHANS_METHOD | BUFFER_SAMPLERATE_METHOD
     ) {
         return false;
     }
@@ -1475,13 +1511,6 @@ fn validate_indexed_buffer_metadata_call(
             format!("indexed buffer method '{method}' requires one buffer-array element"),
         );
         return true;
-    }
-    if env.scope == ScopeKind::Init {
-        push_loc_error(
-            errors,
-            loc,
-            init_buffer_runtime_message("indexed buffer metadata query"),
-        );
     }
     if let Some(selector) = selector {
         validate_expr(&selector.expr, env, errors);
@@ -2100,13 +2129,6 @@ fn validate_data_len_builtin_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        push_loc_error(
-            errors,
-            loc,
-            init_buffer_runtime_message(&format!("buffer method '{}.len()'", base)),
-        );
-    }
     if !args.is_empty() {
         push_loc_error(
             errors,
@@ -2224,13 +2246,6 @@ fn validate_buffer_metadata_builtin_call(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if env.scope == ScopeKind::Init && has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        push_loc_error(
-            errors,
-            loc,
-            init_buffer_runtime_message(&format!("buffer method '{base}.{method}()'")),
-        );
-    }
     if !args.is_empty() {
         push_loc_error(
             errors,
@@ -2411,16 +2426,6 @@ fn validate_buffer_param_call_arg(
     }
     if let Expr::Index { base, index, .. } = arg {
         if is_declared_buffer_array_info(env.declared_symbols, base) {
-            if env.scope == ScopeKind::Init {
-                push_loc_error(
-                    errors,
-                    arg.loc().or(loc),
-                    init_buffer_runtime_message(&format!(
-                        "buffer-array element '{}' in {}",
-                        base, context
-                    )),
-                );
-            }
             validate_expr(index, env, errors);
             validate_buffer_symbol_for_param(
                 &context,
@@ -2449,13 +2454,6 @@ fn validate_buffer_param_call_arg(
             format!("{context} requires one buffer; select a slot from collection '{symbol}'"),
         );
         return;
-    }
-    if env.scope == ScopeKind::Init {
-        push_loc_error(
-            errors,
-            arg.loc().or(loc),
-            init_buffer_runtime_message(&format!("buffer argument '{}' in {}", symbol, context)),
-        );
     }
     validate_buffer_symbol_for_param(&context, expected, symbol, env, arg.loc().or(loc), errors);
 }
@@ -2628,18 +2626,6 @@ fn validate_internal_buffer_index_call(
     if let Some(first) = args.first() {
         match &first.expr {
             Expr::Var { name: base, .. } => {
-                if env.scope == ScopeKind::Init
-                    && has_declared_buffer_symbol_info(env.declared_symbols, base)
-                {
-                    push_loc_error(
-                        errors,
-                        first.expr.loc().or(loc),
-                        init_buffer_runtime_message(&format!(
-                            "buffer access '{}' in '{}'",
-                            base, name
-                        )),
-                    );
-                }
                 if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
                     push_loc_error(
                         errors,
@@ -2778,13 +2764,6 @@ fn validate_unsafe_index_call(
                 ),
             );
         }
-        if shape.is_buffer && env.scope == ScopeKind::Init {
-            push_loc_error(
-                errors,
-                first.expr.loc().or(loc),
-                init_buffer_runtime_message(&format!("unsafe buffer access '{base}'")),
-            );
-        }
         for argument in args.iter().skip(1).take(shape.index_count) {
             let index_ty = infer_call_argument_scalar_type(&argument.expr, env);
             require_expr_numeric_type(
@@ -2847,7 +2826,6 @@ struct UnsafeStorageShape {
     elem_ty: Option<PrimitiveType>,
     readable: bool,
     writable: bool,
-    is_buffer: bool,
     is_aggregate: bool,
 }
 
@@ -2858,7 +2836,6 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             elem_ty: alias.elem_struct.is_none().then_some(alias.elem_ty),
             readable: alias.elem_struct.is_some() || !env.output_arrays.contains(base),
             writable: alias.elem_struct.is_none() && alias.writable,
-            is_buffer: false,
             is_aggregate: alias.elem_struct.is_some(),
         });
     }
@@ -2880,7 +2857,6 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             elem_ty: Some(*elem_ty),
             readable: true,
             writable: true,
-            is_buffer: true,
             is_aggregate: false,
         });
     }
@@ -2891,7 +2867,6 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             elem_ty: None,
             readable: true,
             writable: false,
-            is_buffer: false,
             is_aggregate: true,
         });
     }
@@ -2902,7 +2877,6 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             elem_ty: declared_symbol_scalar_type(env.declared_symbols, base),
             readable: !env.output_arrays.contains(base),
             writable: !env.input_names.contains(base) && !env.param_names.contains(base),
-            is_buffer: false,
             is_aggregate: false,
         });
     }
@@ -2930,7 +2904,6 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
         elem_ty: Some(port.elem_ty),
         readable,
         writable,
-        is_buffer: false,
         is_aggregate: false,
     })
 }
@@ -2978,7 +2951,6 @@ fn unsafe_selected_buffer_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeSt
         elem_ty: Some(*elem_ty),
         readable: true,
         writable: true,
-        is_buffer: true,
         is_aggregate: false,
     })
 }

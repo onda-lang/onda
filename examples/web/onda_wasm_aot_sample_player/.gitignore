@@ -3,6 +3,7 @@ param-control.js
 impulse.wav
 onda-webaudio.js
 onda-wasm-processor.js
+execution-output-ring.js
 sample-player.mir.msgpack
 sample-player.onda.json
 sample-player.wasm

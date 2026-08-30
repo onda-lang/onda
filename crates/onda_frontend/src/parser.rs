@@ -12,12 +12,13 @@ use pest_derive::Parser;
 use crate::ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec,
     BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
-    CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, EventBlock, EventDef,
-    EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl, FnParamType, FunctionDef,
-    GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock, LogicalOp, OutputTiming,
-    ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType,
-    ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef, StructField, TaskBlock,
-    TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN,
+    CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateBlock, DelegateDef,
+    EventBlock, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
+    FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock,
+    LogicalOp, OutputTiming, ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock, PortDecl,
+    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
+    StructField, TaskBlock, TaskDef, TupleAssignTarget, WhenBinding, WhenDef, WhenTarget,
+    INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN,
     INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN,
     INTERNAL_BUFFER_WRITE_CHANNEL_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
     METHOD_RECEIVER_ARG, PARAM_DOMAIN_POSITIONAL_FIELDS, PARAM_SCALES,
@@ -51,6 +52,9 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "kins",
     "events",
     "event",
+    "delegates",
+    "delegate",
+    "when",
     "tasks",
     "task",
     "buffers",
@@ -83,12 +87,13 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "await",
     "yield",
     "assert",
+    "print",
     "true",
     "false",
 ];
 
 pub const RESERVED_IDENTIFIER_WORDS: &[&str] = &[
-    "while", "break", "continue", "private", "pin", "as", "pub", "config",
+    "while", "break", "continue", "private", "pin", "as", "pub", "config", "print",
 ];
 
 #[derive(Parser)]

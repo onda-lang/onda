@@ -391,6 +391,11 @@ fn validate_stmt_type_args(
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             validate_expr_type_args(expr, allowed, proc, context, errors);
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                validate_expr_type_args(value, allowed, proc, context, errors);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

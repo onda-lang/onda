@@ -6,8 +6,8 @@ use onda_mir::{ParamControl, ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
-    DeclaredBuffer, DeclaredBufferArray, DeclaredBufferChannels, DeclaredEvent, DeclaredEventParam,
-    DeclaredIo, DeclaredState, ParamDomain,
+    DeclaredBuffer, DeclaredBufferArray, DeclaredBufferChannels, DeclaredDelegate, DeclaredEvent,
+    DeclaredEventParam, DeclaredIo, DeclaredState, ParamDomain,
 };
 
 #[cfg(any(feature = "llvm-orc", test))]
@@ -17,6 +17,7 @@ pub(crate) struct ProgramMetadata {
     pub(crate) control_outputs: Vec<DeclaredIo>,
     pub(crate) params: Vec<DeclaredIo>,
     pub(crate) events: Vec<DeclaredEvent>,
+    pub(crate) delegates: Vec<DeclaredDelegate>,
     pub(crate) buffers: Vec<DeclaredBuffer>,
     pub(crate) buffer_arrays: Vec<DeclaredBufferArray>,
     pub(crate) state_entries: Vec<DeclaredState>,
@@ -25,6 +26,7 @@ pub(crate) struct ProgramMetadata {
     pub(crate) control_output_index: HashMap<String, usize>,
     pub(crate) param_index: HashMap<String, usize>,
     pub(crate) event_index: HashMap<String, usize>,
+    pub(crate) delegate_index: HashMap<String, usize>,
     pub(crate) buffer_index: HashMap<String, usize>,
 }
 
@@ -225,6 +227,28 @@ impl DeclaredEvent {
     pub fn payload_bytes(&self) -> Option<usize> {
         self.payload_bytes
     }
+
+    pub fn payload_min_bytes(&self) -> usize {
+        self.payload_min_bytes
+    }
+}
+
+impl DeclaredDelegate {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn params(&self) -> &[DeclaredEventParam] {
+        &self.params
+    }
+
+    pub fn payload_bytes(&self) -> Option<usize> {
+        self.payload_bytes
+    }
+
+    pub fn payload_min_bytes(&self) -> usize {
+        self.payload_min_bytes
+    }
 }
 
 impl DeclaredEventParam {
@@ -248,7 +272,9 @@ impl DeclaredEventParam {
         self.is_slice
     }
 
-    pub fn byte_offset(&self) -> usize {
+    /// Returns the fixed byte offset, or `None` when a preceding slice makes
+    /// this parameter's position depend on the runtime payload.
+    pub fn byte_offset(&self) -> Option<usize> {
         self.byte_offset
     }
 

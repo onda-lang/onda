@@ -1,17 +1,17 @@
 const sectionWords = new Set([
   "ins", "inputs", "outs", "outputs", "params", "kins", "kouts",
-  "buffers", "events", "init", "block", "sample", "graph",
+  "buffers", "events", "delegates", "init", "block", "sample", "graph",
 ]);
 const declarationWords = new Set([
-  "const", "def", "event", "proc", "processor", "struct", "namespace",
+  "const", "def", "event", "delegate", "proc", "processor", "struct", "namespace",
 ]);
 const nameFollowing = new Set([
-  "def", "event", "proc", "processor", "struct", "namespace",
+  "def", "event", "delegate", "proc", "processor", "struct", "namespace",
 ]);
 const keywordWords = new Set([
   "if", "elif", "else", "for", "in", "while", "loop", "break",
   "continue", "return", "assert", "import", "include", "use", "pub",
-  "as", "private", "pin", "config",
+  "as", "private", "pin", "config", "when",
 ]);
 const typeWords = new Set(["f32", "f64", "i32", "i64", "bool", "buffer"]);
 const constantWords = new Set([

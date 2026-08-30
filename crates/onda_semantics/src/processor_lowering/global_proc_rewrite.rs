@@ -25,7 +25,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
             loc: Default::default(),
             target_loc: Default::default(),
             target: AssignTarget::Var(name),
-            decl_ty: ty,
+            decl_ty: ty.map(DeclType::Scalar),
             generic_decl_ty: None,
             is_typed_decl: ty.is_some(),
             typed_decl_ty_loc: Default::default(),
@@ -640,6 +640,8 @@ fn reject_explicit_oversampled_child_calls_in_context(
                 ProcCallInstance {
                     proc_name: nested.proc_name.clone(),
                     buffer_args: Vec::new(),
+                    delegate_context_args: Vec::new(),
+                    routes_owner_delegates: false,
                 },
             )
         })
@@ -1018,6 +1020,8 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 ProcCallInstance {
                                     proc_name: ctor_name.clone(),
                                     buffer_args: buffer_args.clone(),
+                                    delegate_context_args: Vec::new(),
+                                    routes_owner_delegates: false,
                                 },
                             );
                             if let Some((array_base, slot_idx)) = array_slot.as_ref() {
@@ -1037,25 +1041,28 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 constructor_setup_indices.insert(rewritten_init.len());
                                 rewritten_init.push(assign);
                             }
+                            let mut init_args = vec![
+                                CallArg {
+                                    name: None,
+                                    expr: proc_instance_self_expr(var, &global_proc_array_slots),
+                                },
+                                CallArg {
+                                    name: None,
+                                    expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
+                                },
+                            ];
+                            init_args.extend(
+                                buffer_args
+                                    .into_iter()
+                                    .map(|expr| CallArg { name: None, expr }),
+                            );
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
                                 expr: Expr::UserCall {
                                     loc: Default::default(),
                                     name: format!("{ctor_name}{PROC_INIT_FN_SUFFIX}"),
                                     type_args: Vec::new(),
-                                    args: vec![
-                                        CallArg {
-                                            name: None,
-                                            expr: proc_instance_self_expr(
-                                                var,
-                                                &global_proc_array_slots,
-                                            ),
-                                        },
-                                        CallArg {
-                                            name: None,
-                                            expr: Expr::var(TOP_LEVEL_INIT_ALL_NAME),
-                                        },
-                                    ],
+                                    args: init_args,
                                 },
                             });
                         } else {
@@ -1371,6 +1378,13 @@ pub(super) fn rewrite_top_level_proc_calls(
                     );
                 }
             }
+            Block::When(when) => rewrite_proc_calls_in_stmts(
+                &mut when.body,
+                &global_proc_instances,
+                &global_proc_array_slots,
+                proc_api,
+                errors,
+            ),
             _ => {}
         }
     }

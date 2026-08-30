@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::*;
 use onda_frontend::{EventParamDecl, LogicalOp};
 
+mod delegate_lowering;
 mod generated_blocks;
 mod generic_proc_rewrite;
 mod global_proc_rewrite;
@@ -11,6 +12,7 @@ mod nested_paths;
 mod nested_proc_lowering;
 mod proc_local_defs;
 mod shape_helpers;
+use delegate_lowering::*;
 use generated_blocks::*;
 pub(crate) use generated_blocks::{
     guard_pinned_initializers, is_pinned_initializer_marker, mark_pinned_initializers,
@@ -24,11 +26,15 @@ use nested_proc_lowering::*;
 use proc_local_defs::*;
 use shape_helpers::*;
 
+pub(crate) fn delegate_publish_index(name: &str) -> Option<usize> {
+    delegate_lowering::publish_delegate_index(name)
+}
+
 const BUILTIN_PROC_INIT_EVENT_NAME: &str = "init";
-const INIT_ALL_PARAM_NAME: &str = "all";
+const INIT_FULL_PARAM_NAME: &str = "full";
 pub(crate) const TOP_LEVEL_INIT_ALL_NAME: &str = "__onda_init_all";
 
-fn is_builtin_proc_init_event_name(name: &str) -> bool {
+pub(crate) fn is_builtin_proc_init_event_name(name: &str) -> bool {
     name == BUILTIN_PROC_INIT_EVENT_NAME
 }
 
@@ -68,13 +74,13 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
             );
         }
         for param in &proc.params {
-            if param.name == INIT_ALL_PARAM_NAME {
+            if param.name == INIT_FULL_PARAM_NAME {
                 push_semantic(
                     DiagCtx::new(param.loc),
                     errors,
                     format!(
                         "processor '{}' parameter name '{}' is reserved for the builtin initializer event",
-                        proc.name, INIT_ALL_PARAM_NAME
+                        proc.name, INIT_FULL_PARAM_NAME
                     ),
                 );
             }
@@ -297,6 +303,7 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
     pub(crate) pinned_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) top_level_delegates: Vec<DelegateDef>,
 }
 
 fn collect_flattened_proc_field_metadata(
@@ -582,6 +589,29 @@ pub(crate) fn coerce_typed_events(
     out
 }
 
+pub(crate) fn coerce_typed_delegates(
+    delegates: &[DelegateDef],
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<TypedDelegate> {
+    let adapters = delegates
+        .iter()
+        .map(|delegate| EventDef {
+            loc: delegate.loc,
+            name: delegate.name.clone(),
+            params: delegate.params.clone(),
+            body: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    coerce_typed_events(&adapters, true, "top-level", options, errors)
+        .into_iter()
+        .map(|event| TypedDelegate {
+            name: event.name,
+            params: event.params,
+        })
+        .collect()
+}
+
 fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec {
     let mut params =
         param_specs
@@ -622,9 +652,9 @@ fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec 
             })
             .collect::<Vec<_>>();
     params.push(ProcEventParamSpec {
-        name: INIT_ALL_PARAM_NAME.to_owned(),
+        name: INIT_FULL_PARAM_NAME.to_owned(),
         slots: vec![ProcEventParamSlotSpec {
-            name: INIT_ALL_PARAM_NAME.to_owned(),
+            name: INIT_FULL_PARAM_NAME.to_owned(),
             ty: PrimitiveType::Bool,
         }],
         ty: ProcEventParamTypeSpec::Scalar {
@@ -820,6 +850,25 @@ fn expand_proc_event_specs(
     out
 }
 
+fn expand_proc_delegate_specs(
+    proc: &ProcessorDef,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> HashMap<String, ProcEventSpec> {
+    let mut adapter = proc.clone();
+    adapter.events = proc
+        .delegates
+        .iter()
+        .map(|delegate| EventDef {
+            loc: delegate.loc,
+            name: delegate.name.clone(),
+            params: delegate.params.clone(),
+            body: Vec::new(),
+        })
+        .collect();
+    expand_proc_event_specs(&adapter, &[], options, errors)
+}
+
 fn build_proc_lowering_env(
     program: &Program,
     options: AnalysisOptions,
@@ -990,31 +1039,93 @@ fn build_proc_lowering_env(
             });
         }
     }
+    let (pre_desugar_overloads, _) =
+        crate::def_semantics::prepare_function_overloads(&mut pre_desugar_defs);
+    let provisional_signatures = pre_desugar_defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
+    let provisional_return_types = infer_def_return_types(
+        &pre_desugar_defs,
+        &provisional_signatures,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &HashMap::new(),
+    );
+    for def in &mut pre_desugar_defs {
+        rewrite_source_overload_function(
+            def,
+            &crate::def_semantics::CallTypeEnv::default(),
+            &pre_desugar_overloads,
+            &provisional_return_types,
+            &typed_struct_defs,
+        );
+    }
+    let top_return_types = source_overload_return_types(
+        &pre_desugar_defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &typed_struct_defs,
+    );
+    for proc in &mut proc_defs {
+        resolve_processor_source_overloads(
+            proc,
+            options,
+            const_arrays,
+            &pre_desugar_overloads,
+            &top_return_types,
+            &typed_struct_defs,
+        );
+    }
     for proc in &proc_defs {
-        for local_def in unique_proc_local_defs(proc) {
-            pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(&proc.name, &local_def));
+        let local_defs = unique_proc_local_defs(proc);
+        let needs_buffer_capture = local_defs
+            .iter()
+            .any(|def| is_generated_proc_delegate_local(proc, &def.name));
+        let captured_buffers = if needs_buffer_capture {
+            let factor = proc_sample_oversample_factors
+                .get(&proc.name)
+                .copied()
+                .unwrap_or(1);
+            // This provisional signature pass runs before full proc-shape
+            // validation. The shape pass below reports the authoritative
+            // diagnostics for the same declarations.
+            let mut ignored_buffer_errors = Vec::new();
+            crate::declaration_coercion::coerce_buffers(
+                &proc.buffers,
+                proc_runtime_analysis_options(options, factor),
+                &mut ignored_buffer_errors,
+            )
+            .into_iter()
+            .map(|buffer| ProcBufferSpec {
+                name: buffer.name,
+                elem_ty: buffer.elem_ty,
+                channels: buffer.channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
+            })
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for local_def in local_defs {
+            let buffers = if is_generated_proc_delegate_local(proc, &local_def.name) {
+                captured_buffers.as_slice()
+            } else {
+                &[]
+            };
+            pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(
+                &proc.name, &local_def, buffers,
+            ));
         }
     }
-    let mut pre_desugar_fn_signatures = HashMap::<String, FnSignature>::new();
-    for def in &pre_desugar_defs {
-        pre_desugar_fn_signatures
-            .entry(def.name.clone())
-            .or_insert_with(|| FnSignature {
-                display_name: None,
-                requires_call_specialization: false,
-                params: def.params.iter().map(|p| p.name.clone()).collect(),
-                defaults: def.params.iter().map(|p| p.default.clone()).collect(),
-                param_types: def.params.iter().map(|p| p.ty.clone()).collect(),
-                type_params: def.type_params.clone(),
-                return_type: None,
-                readonly_array_params: HashSet::new(),
-            });
-    }
+    let pre_desugar_fn_signatures = pre_desugar_defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
     let pre_desugar_def_return_types = infer_def_return_types(
         &pre_desugar_defs,
         &pre_desugar_fn_signatures,
         &crate::def_semantics::CallTypeEnv::default(),
-        &HashMap::new(),
+        &typed_struct_defs,
     );
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);
@@ -1142,7 +1253,7 @@ fn build_proc_lowering_env(
             );
             continue;
         }
-        let shape = compute_proc_shape(
+        let mut shape = compute_proc_shape(
             proc,
             proc_sample_oversample_factors
                 .get(&proc.name)
@@ -1159,6 +1270,25 @@ fn build_proc_lowering_env(
             const_arrays,
             errors,
         );
+        if !proc.delegates.is_empty() {
+            for (name, default) in [
+                (DELEGATE_ROUTE_FIELD, 0_i64),
+                (DELEGATE_INDEX_FIELD, -1_i64),
+            ] {
+                shape
+                    .state
+                    .scalars
+                    .insert(name.to_owned(), PrimitiveType::I32);
+                shape.field_names.insert(name.to_owned());
+                shape.fields.push(StructField {
+                    loc: Default::default(),
+                    name: name.to_owned(),
+                    ty: FieldType::Scalar(PrimitiveType::I32),
+                    ty_loc: Default::default(),
+                    default: Some(Expr::int(default)),
+                });
+            }
+        }
         if shape.outs.is_empty() {
             push_semantic(
                 proc_diag,
@@ -1188,6 +1318,7 @@ fn build_proc_lowering_env(
                     timing: proc.outs_timing,
                 },
                 events: expand_proc_event_specs(proc, &shape.param_specs, options, errors),
+                delegates: expand_proc_delegate_specs(proc, options, errors),
                 buffers: shape.buffer_specs.clone(),
                 has_block: proc.has_block_block,
                 sample_oversample_factor: proc_sample_oversample_factors
@@ -1215,6 +1346,7 @@ fn build_proc_lowering_env(
             errors,
         );
     }
+    validate_proc_child_whens(&proc_defs_by_name, &lowering_shapes, options, errors);
 
     let effective_proc_blocks =
         compute_effective_proc_block_flags(&proc_order, &proc_defs_by_name, &base_shapes);
@@ -1240,6 +1372,8 @@ fn build_proc_lowering_env(
                     ProcCallInstance {
                         proc_name: nested.proc_name.clone(),
                         buffer_args: Vec::new(),
+                        delegate_context_args: Vec::new(),
+                        routes_owner_delegates: false,
                     },
                 )
             })
@@ -1305,8 +1439,11 @@ pub(crate) fn desugar_processors(
     rewrite_and_materialize_generic_processors(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
-    let runtime_def_names =
+    validate_delegate_source_model(&program, options, const_arrays, errors);
+    let mut runtime_def_names =
         crate::task_lowering::lower_tasks(&mut program, options, const_arrays, errors);
+    let prepared_delegates = prepare_delegate_source(&mut program, errors);
+    runtime_def_names.extend(prepared_delegates.runtime_defs.iter().cloned());
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
@@ -1324,7 +1461,7 @@ pub(crate) fn desugar_processors(
 
     let Some(ProcLoweringEnv {
         struct_defs_by_name,
-        proc_defs_by_name,
+        mut proc_defs_by_name,
         proc_api,
         proc_order,
         lowering_shapes,
@@ -1341,6 +1478,7 @@ pub(crate) fn desugar_processors(
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
             pinned_proc_fields: HashMap::new(),
             compiler_owned_proc_fields: HashMap::new(),
+            top_level_delegates: prepared_delegates.top_level,
         };
     };
     let existing_struct_names = program
@@ -1358,6 +1496,28 @@ pub(crate) fn desugar_processors(
         .collect::<Vec<_>>();
     proc_specialized_structs.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let top_level_proc_rewrite = rewrite_top_level_proc_calls(
+        &mut program,
+        &runtime_def_names,
+        options,
+        &proc_defs_by_name,
+        &lowering_shapes,
+        &proc_api,
+        errors,
+    );
+    lower_top_level_child_whens(
+        &mut program,
+        &top_level_proc_rewrite,
+        &mut proc_defs_by_name,
+        &proc_api,
+        options,
+        &mut runtime_def_names,
+        errors,
+    );
+    let proc_instance_oversample_factors = top_level_proc_rewrite
+        .global_proc_instance_oversample_factors
+        .clone();
+
     let (
         generated_structs,
         mut generated_defs,
@@ -1369,6 +1529,7 @@ pub(crate) fn desugar_processors(
         &lowering_shapes,
         &struct_defs_by_name,
         &proc_api,
+        options,
         errors,
     );
     crate::task_lowering::materialize_task_abort_returns(&mut generated_defs);
@@ -1379,18 +1540,6 @@ pub(crate) fn desugar_processors(
     program.blocks.extend(generated_structs);
     program.blocks.extend(generated_defs);
 
-    let top_level_proc_rewrite = rewrite_top_level_proc_calls(
-        &mut program,
-        &runtime_def_names,
-        options,
-        &proc_defs_by_name,
-        &lowering_shapes,
-        &proc_api,
-        errors,
-    );
-    let proc_instance_oversample_factors = top_level_proc_rewrite
-        .global_proc_instance_oversample_factors
-        .clone();
     let mut pinned_proc_fields = HashMap::new();
     let mut compiler_owned_proc_fields = HashMap::new();
     for proc_name in &proc_order {
@@ -1419,6 +1568,7 @@ pub(crate) fn desugar_processors(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
+        top_level_delegates: prepared_delegates.top_level,
     }
 }
 
@@ -1791,7 +1941,7 @@ sample:
                 size,
             }) if matches!(size, Expr::Int { value: 2, .. })
         ));
-        assert_eq!(init_def.params[3].name, INIT_ALL_PARAM_NAME);
+        assert_eq!(init_def.params[3].name, INIT_FULL_PARAM_NAME);
         assert!(matches!(
             init_def.params[3].ty,
             Some(FnParamType::Primitive(PrimitiveType::Bool))
@@ -1988,11 +2138,11 @@ sample:
     }
 
     #[test]
-    fn analyze_reserves_all_for_builtin_proc_init() {
+    fn analyze_reserves_full_for_builtin_proc_init() {
         let src = r#"
 proc Voice:
   params:
-    all = false
+    full = false
   sample:
     out1 = 0.0
 init:
@@ -2001,13 +2151,36 @@ sample:
   out1 = voice()
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("the builtin all option must be reserved");
+        let errors = analyze(program).expect_err("the builtin full option must be reserved");
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("parameter name 'all' is reserved for the builtin initializer event")),
-            "expected builtin all reservation diagnostic, got {errors:?}"
+                .contains("parameter name 'full' is reserved for the builtin initializer event")),
+            "expected builtin full reservation diagnostic, got {errors:?}"
         );
+    }
+
+    #[test]
+    fn analyze_allows_all_as_an_ordinary_proc_param() {
+        let src = r#"
+proc Voice:
+  params:
+    all = false
+  outs:
+    out1
+  sample:
+    out1 = 0.0
+
+outs:
+  out1
+init:
+  voice = Voice(all = true)
+  voice.init(all = false, full = true)
+sample:
+  out1 = voice()
+"#;
+        let program = parse_program(src).expect("parse should succeed");
+        analyze(program).expect("all should be available as an ordinary proc parameter");
     }
 
     #[test]
@@ -3866,6 +4039,11 @@ graph:
             }
             Stmt::Expr { expr, .. } => {
                 collect_offending_proc_event_calls_in_expr(expr, owner, offending)
+            }
+            Stmt::Print { values, .. } => {
+                for expr in values {
+                    collect_offending_proc_event_calls_in_expr(expr, owner, offending);
+                }
             }
             Stmt::If {
                 cond,

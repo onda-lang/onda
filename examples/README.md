@@ -6,7 +6,7 @@ the standalone sources directly in the browser playground.
 
 | Directory | Contents |
 | --- | --- |
-| `basic/` | Compact synthesis, oversampling, events, and polyphony. |
+| `basic/` | Compact synthesis, oversampling, typed events, and polyphony. |
 | `buffers/` | Host-bound sample and typed-buffer processing. |
 | `effects/` | Auditionable effects plus reusable processor implementations. |
 | `feedback/` | Delay matrices, graph cycles, and nonlinear feedback systems. |
@@ -16,6 +16,11 @@ the standalone sources directly in the browser playground.
 | `spectral/` | Streaming FFT effects and reusable spectral processors. |
 | `native/` | Native embedding and object-linking hosts. |
 | `web/` | Browser and WebAssembly hosts. |
+
+[`soundscapes/glass_garden.onda`](soundscapes/glass_garden.onda) is a generative glass-bell garden:
+each resonance reports when it has faded, and that completion starts the voice's next bloom. The
+top-level `bloom_faded` delegate also lets a host follow the evolving pattern; see
+[Delegates and `when`](../docs/syntax.md#delegates-and-when) for the language semantics.
 
 Run or render a standalone example from the repository or an extracted release:
 

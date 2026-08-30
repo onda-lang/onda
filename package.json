@@ -12,8 +12,9 @@
     "sync:versions": "node ./scripts/sync-package-versions.mjs",
     "docs:stdlib": "cargo run --quiet -p onda_lsp --example generate_stdlib_docs",
     "check:stdlib-docs": "cargo run --quiet -p onda_lsp --example generate_stdlib_docs -- --check",
+    "check:api-docs": "node ./scripts/verify-api-docs.mjs",
     "check:examples": "node ./scripts/verify-example-projects.mjs",
-    "build:website": "npm run docs:stdlib && npm run build --workspace @onda-lang/wasm-compiler && npm run check:examples && node ./scripts/build-website-playground.mjs",
+    "build:website": "npm run check:api-docs && npm run docs:stdlib && npm run build --workspace @onda-lang/wasm-compiler && npm run check:examples && node ./scripts/build-website-playground.mjs",
     "check:versions": "node ./scripts/sync-package-versions.mjs --check",
     "test:playground": "node --test ./ui/playground/*.test.js",
     "test:web": "npm run test:playground && npm test --workspace @onda-lang/processor-abi && npm test --workspace @onda-lang/binaryen-web && npm test --workspace @onda-lang/webaudio && npm test --workspace @onda-lang/wasm-compiler && npm run check:examples"

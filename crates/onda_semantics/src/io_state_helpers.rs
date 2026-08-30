@@ -135,7 +135,7 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         infer_numbered_base_name(name, acc);
                     }
                 }
@@ -144,6 +144,11 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
         }
         Stmt::Expr { expr, .. } => infer_io_from_expr(expr, acc),
         Stmt::Return { expr, .. } => infer_io_from_expr(expr, acc),
+        Stmt::Print { values, .. } => {
+            for value in values {
+                infer_io_from_expr(value, acc);
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -287,9 +292,25 @@ pub(crate) enum RuntimeRegistrationMode {
     BlockRoot,
 }
 
+pub(crate) fn register_tuple_state(
+    state_scalars: &mut HashMap<String, PrimitiveType>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
+    name: &str,
+    element_types: &[PrimitiveType],
+) {
+    state_scalars.extend(
+        element_types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| (format!("{name}.__{index}"), *ty)),
+    );
+    state_tuples.insert(name.to_owned(), element_types.to_vec());
+}
+
 pub(crate) fn register_scope_state<'a>(
     stmts: impl Iterator<Item = &'a Stmt>,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
@@ -298,11 +319,13 @@ pub(crate) fn register_scope_state<'a>(
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_return_types: &HashMap<String, ReturnType>,
     registration_mode: RuntimeRegistrationMode,
     buffer_alias_seed: &LocalBufferAliases,
-) {
+) -> HashMap<String, SourceLoc> {
+    let mut registered_tuples = HashMap::new();
     if matches!(registration_mode, RuntimeRegistrationMode::None) {
-        return;
+        return registered_tuples;
     }
     let mut buffer_aliases = buffer_alias_seed.clone();
     for stmt in stmts {
@@ -311,6 +334,7 @@ pub(crate) fn register_scope_state<'a>(
         register_scope_stmt_state(
             stmt,
             state_scalars,
+            state_tuples,
             visible_declared_symbols,
             state_arrays,
             state_array_struct_roots,
@@ -319,7 +343,9 @@ pub(crate) fn register_scope_state<'a>(
             output_names,
             param_names,
             struct_defs,
+            fn_return_types,
             registration_mode,
+            &mut registered_tuples,
         );
         if let Stmt::Assign {
             target: AssignTarget::Var(name),
@@ -332,11 +358,13 @@ pub(crate) fn register_scope_state<'a>(
             }
         }
     }
+    registered_tuples
 }
 
 fn register_scope_stmt_state(
     stmt: &Stmt,
     state_scalars: &mut HashMap<String, PrimitiveType>,
+    state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     declared_symbols: &DeclaredSymbolMap,
     state_arrays: &HashMap<String, usize>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
@@ -345,12 +373,15 @@ fn register_scope_stmt_state(
     output_names: &HashSet<String>,
     param_names: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    fn_return_types: &HashMap<String, ReturnType>,
     registration_mode: RuntimeRegistrationMode,
+    registered_tuples: &mut HashMap<String, SourceLoc>,
 ) {
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
+            target_loc,
             decl_ty,
             generic_decl_ty,
             is_typed_decl: _is_typed_decl,
@@ -368,17 +399,66 @@ fn register_scope_stmt_state(
                     }
                     return;
                 }
+                let fresh_plain_name = split_simple_field_path(name).is_none()
+                    && !is_builtin_constant_name(name)
+                    && !input_names.contains(name)
+                    && !output_names.contains(name)
+                    && !param_names.contains(name)
+                    && !state_scalars.contains_key(name)
+                    && !state_tuples.contains_key(name)
+                    && !state_arrays.contains_key(name)
+                    && !state_array_struct_roots.contains_key(name)
+                    && !struct_instances.contains_key(name)
+                    && !matches!(expr, Expr::ArrayCtor { .. })
+                    && generic_decl_ty.is_none();
+                if fresh_plain_name {
+                    let empty_tuple_vars = HashMap::new();
+                    let empty_local_aliases = LocalAliasTypes::new();
+                    let inferred_tuple_types = infer_tracked_tuple_types(
+                        expr,
+                        &empty_tuple_vars,
+                        &empty_local_aliases,
+                        Some(state_tuples),
+                        struct_instances,
+                        struct_defs,
+                        fn_return_types,
+                        |value| {
+                            let mut infer_errors = Vec::new();
+                            infer_expr_type_for_semantics(
+                                value,
+                                state_scalars,
+                                declared_symbols,
+                                None,
+                                &HashSet::new(),
+                                input_names,
+                                output_names,
+                                param_names,
+                                struct_instances,
+                                struct_defs,
+                                &mut infer_errors,
+                            )
+                        },
+                    );
+                    let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
+                    if let Some(types) = declared_tuple_types.or(inferred_tuple_types.as_deref()) {
+                        register_tuple_state(state_scalars, state_tuples, name, types);
+                        registered_tuples.insert(name.clone(), target_loc.as_ref().into());
+                        return;
+                    }
+                }
                 if split_simple_field_path(name).is_none()
                     && !is_builtin_constant_name(name)
                     && !input_names.contains(name)
                     && !output_names.contains(name)
                     && !param_names.contains(name)
                     && !state_scalars.contains_key(name)
+                    && !state_tuples.contains_key(name)
                     && !state_arrays.contains_key(name)
                     && !state_array_struct_roots.contains_key(name)
                     && !struct_instances.contains_key(name)
                     && !matches!(expr, Expr::ArrayCtor { .. })
                     && generic_decl_ty.is_none()
+                    && decl_ty.as_ref().and_then(DeclType::tuple).is_none()
                 {
                     let resolved_ty = match registration_mode {
                         RuntimeRegistrationMode::None => return,
@@ -409,7 +489,10 @@ fn register_scope_stmt_state(
                                     full_ty.unwrap_or(PrimitiveType::F32)
                                 }
                             };
-                            decl_ty.unwrap_or(inferred_ty)
+                            decl_ty
+                                .as_ref()
+                                .and_then(DeclType::scalar)
+                                .unwrap_or(inferred_ty)
                         }
                     };
                     state_scalars.insert(name.clone(), resolved_ty);
@@ -417,7 +500,11 @@ fn register_scope_stmt_state(
             }
         }
         Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. } => {}
-        Stmt::Expr { .. } | Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { .. }
+        | Stmt::Print { .. }
+        | Stmt::Return { .. }
+        | Stmt::Break { .. }
+        | Stmt::Continue { .. } => {}
     }
 }
 

@@ -1,37 +1,36 @@
 namespace std::filter:
   namespace mode:
-    const ONE_POLE_LOWPASS: i32 = 0
-    const ONE_POLE_HIGHPASS: i32 = 1
+    const ONE_POLE_LOWPASS = 0
+    const ONE_POLE_HIGHPASS = 1
 
-    const SVF_LOWPASS: i32 = 0
-    const SVF_HIGHPASS: i32 = 1
-    const SVF_BANDPASS: i32 = 2
-    const SVF_NOTCH: i32 = 3
-    const SVF_PEAK: i32 = 4
-    const SVF_ALLPASS: i32 = 5
+    const SVF_LOWPASS = 0
+    const SVF_HIGHPASS = 1
+    const SVF_BANDPASS = 2
+    const SVF_NOTCH = 3
+    const SVF_PEAK = 4
+    const SVF_ALLPASS = 5
 
   proc OnePole<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      cutoff = 1000.0 => update_cutoff
-      mode: i32 = mode::ONE_POLE_LOWPASS
+      cutoff = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
+      mode: i32 = mode::ONE_POLE_LOWPASS {mode::ONE_POLE_LOWPASS, mode::ONE_POLE_HIGHPASS}
 
     init<T>:
       z = 0.0
       a = 0.0
 
     def update_cutoff():
-      c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
-      a = 1.0 - exp(-TWO_PI * c / SR)
+      a = 1.0 - exp(-TWO_PI * cutoff / SR)
 
     sample:
-      z = z + a * (in1 - z)
-      low: T = z
-      high: T = in1 - low
+      z += a * (in1 - z)
+      low = z
+      high = in1 - low
 
-      if (mode == mode::ONE_POLE_HIGHPASS):
+      if mode == mode::ONE_POLE_HIGHPASS:
         out1 = high
       else:
         out1 = low
@@ -56,8 +55,8 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      freq = 1000.0 => update_coefficients
-      bandwidth = 120.0 => update_coefficients
+      freq = 1000.0 {1.0, T(SR * 0.48)} => update_coefficients
+      bandwidth = 120.0 {1.0, T(SR * 0.48)} => update_coefficients
 
     init<T>:
       y1 = 0.0
@@ -67,10 +66,8 @@ namespace std::filter:
       input_gain = 0.0
 
     def update_coefficients():
-      center = clamp(freq, T(1.0), T(SR * 0.48))
-      width = clamp(bandwidth, T(1.0), T(SR * 0.48))
-      radius = exp(-PI * width / SR)
-      coefficient = T(2.0) * radius * cos(TWO_PI * center / SR)
+      radius = exp(-PI * bandwidth / SR)
+      coefficient = T(2.0) * radius * cos(TWO_PI * freq / SR)
       radius_squared = radius * radius
       input_gain = T(1.0) - radius
 
@@ -85,9 +82,9 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      private cutoff = 1000.0
+      private cutoff = 1000.0 {0.0, T(SR * 0.48)}
       private q = 0.707107
-      mode: i32 = 0
+      mode: i32 = mode::SVF_LOWPASS {mode::SVF_LOWPASS, mode::SVF_ALLPASS}
 
     init<T>:
       z1 = 0.0
@@ -104,33 +101,32 @@ namespace std::filter:
       compute_coeffs()
 
     def compute_coeffs():
-      c: T = clamp(cutoff, T(0.0), T(SR * 0.48))
-      qv: T = max(q, T(0.01))
-      f = tan(PI * c / SR)
+      qv = max(q, T(0.01))
+      f = tan(PI * cutoff / SR)
       inv_q = 1.0 / qv
       d = 1.0 / (1.0 + inv_q * f + f * f)
       g1 = f + inv_q
 
     sample:
-      high: T = (in1 - g1 * z1 - z2) * d
-      band: T = f * high + z1
-      low: T = f * band + z2
-      notch: T = low + high
-      peak: T = low - high
-      allpass: T = notch - inv_q * band
+      high = (in1 - g1 * z1 - z2) * d
+      band = f * high + z1
+      low = f * band + z2
+      notch = low + high
+      peak = low - high
+      allpass = notch - inv_q * band
 
       z1 = f * high + band
       z2 = f * band + low
 
-      if (mode <= mode::SVF_LOWPASS):
+      if mode == mode::SVF_LOWPASS:
         out1 = low
-      elif (mode == mode::SVF_HIGHPASS):
+      elif mode == mode::SVF_HIGHPASS:
         out1 = high
-      elif (mode == mode::SVF_BANDPASS):
+      elif mode == mode::SVF_BANDPASS:
         out1 = band
-      elif (mode == mode::SVF_NOTCH):
+      elif mode == mode::SVF_NOTCH:
         out1 = notch
-      elif (mode == mode::SVF_PEAK):
+      elif mode == mode::SVF_PEAK:
         out1 = peak
       else:
         out1 = allpass

@@ -105,8 +105,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rendered = Vec::<f32>::with_capacity(render_frames * out_channels);
 
     for _ in 0..full_blocks {
-        process_checked(&mut instance, BLOCK_FRAMES)
-            .map_err(|d| format!("processing failed: {d:?}"))?;
+        process_checked(
+            &mut instance,
+            BLOCK_FRAMES,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
             BLOCK_FRAMES,
@@ -115,8 +119,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     if tail_frames > 0 {
-        process_checked(&mut instance, BLOCK_FRAMES)
-            .map_err(|d| format!("processing failed: {d:?}"))?;
+        process_checked(
+            &mut instance,
+            BLOCK_FRAMES,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
             tail_frames,

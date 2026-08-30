@@ -44,6 +44,170 @@ fn empty_function(name: &str, kind: FunctionKind) -> Function {
 }
 
 #[test]
+fn top_level_delegate_lowers_to_descriptor_and_publication() {
+    let source = r#"
+delegate finished(reason: i32)
+init:
+  result: i32 = 0
+event trigger():
+  finished(7)
+when finished(reason):
+  result = reason
+sample:
+  out1 = f32(result)
+"#;
+    let parsed = parse_program(source).expect("delegate source should parse");
+    let typed = analyze(parsed).expect("delegate source should analyze");
+    let mir = lower_test_program(&typed).expect("delegate source should lower");
+    assert_eq!(mir.interface.delegates.len(), 1);
+    assert_eq!(mir.interface.delegates[0].name, "finished");
+    let dump = format_program(&mir);
+    assert!(
+        dump.contains("publish_delegate @delegate0"),
+        "delegate publication must survive MIR optimization:\n{dump}"
+    );
+}
+
+#[test]
+fn print_sites_preserve_lexical_origins_through_nesting_methods_and_specialization() {
+    let source = r#"
+def report(value):
+  print("report", value)
+
+struct Logger:
+  value: i32
+  def emit(self):
+    print("method", self.value)
+
+proc Child:
+  sample:
+    print("child", 2)
+    out1 = 0.0
+
+proc Parent:
+  init:
+    child = Child()
+  sample:
+    print("parent", 3)
+    out1 = child()
+
+init:
+  parent = Parent()
+  logger = Logger(value = 7)
+
+sample:
+  report(1)
+  report(1.5)
+  logger.emit()
+  out1 = parent()
+"#;
+    let parsed = parse_program(source).expect("print origin source should parse");
+    let typed = analyze(parsed).expect("print origin source should analyze");
+    let mir = lower_test_program(&typed).expect("print origin source should lower");
+
+    let sites = |label: &str| {
+        mir.log_sites
+            .iter()
+            .filter(|site| site.label.as_deref() == Some(label))
+            .collect::<Vec<_>>()
+    };
+    let report = sites("report");
+    assert_eq!(
+        report.len(),
+        2,
+        "generic helper should emit two concrete sites"
+    );
+    assert!(report.iter().all(|site| {
+        site.lexical_owner == "program"
+            && site.declaration.as_deref() == Some("report")
+            && site.source.line == 3
+    }));
+    let method = sites("method");
+    assert_eq!(method.len(), 1);
+    assert!(method.iter().all(|site| {
+        site.lexical_owner == "Logger"
+            && site.declaration.as_deref() == Some("emit")
+            && site.source.line == 8
+    }));
+    let child = sites("child");
+    assert!(!child.is_empty());
+    assert!(child.iter().all(|site| {
+        site.lexical_owner == "Child"
+            && site.declaration.as_deref() == Some("sample")
+            && site.source.line == 12
+    }));
+    let parent = sites("parent");
+    assert!(!parent.is_empty());
+    assert!(parent.iter().all(|site| {
+        site.lexical_owner == "Parent"
+            && site.declaration.as_deref() == Some("sample")
+            && site.source.line == 19
+    }));
+}
+
+#[test]
+fn non_generic_print_helper_is_lowered_with_runtime_context() {
+    let source = r#"
+def report(value: i32):
+  print("value", value)
+
+sample:
+  report(1)
+  out1 = 0.0
+"#;
+    let parsed = parse_program(source).expect("print helper source should parse");
+    let typed = analyze(parsed).expect("print helper source should analyze");
+    let report = typed
+        .defs
+        .iter()
+        .find(|function| function.name == "report")
+        .expect("typed report helper");
+    assert!(!report.runtime_context);
+    assert!(report.publishes_print);
+
+    let mir = lower_test_program(&typed).expect("print helper source should lower");
+    assert_eq!(mir.log_sites.len(), 1);
+    assert_eq!(mir.log_sites[0].label.as_deref(), Some("value"));
+    let report = mir
+        .functions
+        .iter()
+        .find(|function| function.name == "report")
+        .expect("MIR report helper");
+    assert!(report.attributes.runtime_context);
+    assert_eq!(report.attributes.origin, onda_mir::FunctionOrigin::Source);
+    assert_eq!(report.attributes.inline, onda_mir::InlineHint::Auto);
+}
+
+#[test]
+fn print_literals_use_ordinary_defaults_and_explicit_types_are_preserved() {
+    let source = r#"
+init:
+  print("defaults", 3, 3.0)
+  print("explicit", i64(3), f64(3.0), true)
+sample:
+  out1 = 0.0
+"#;
+    let parsed = parse_program(source).expect("print type source should parse");
+    let typed = analyze(parsed).expect("print type source should analyze");
+    let mir = lower_test_program(&typed).expect("print type source should lower");
+
+    assert_eq!(
+        mir.log_sites[0].argument_types,
+        vec![onda_mir::ScalarType::I32, onda_mir::ScalarType::F32]
+    );
+    assert_eq!(mir.log_sites[0].payload_size, 8);
+    assert_eq!(
+        mir.log_sites[1].argument_types,
+        vec![
+            onda_mir::ScalarType::I64,
+            onda_mir::ScalarType::F64,
+            onda_mir::ScalarType::Bool,
+        ]
+    );
+    assert_eq!(mir.log_sites[1].payload_size, 17);
+}
+
+#[test]
 fn ranged_top_level_params_are_clamped_once_per_export_entry() {
     let source = r#"
 params:
@@ -122,6 +286,25 @@ sample:
         !event.contains("intrinsic range_clamp(") && !event.contains("load @param1"),
         "an event parameter must not inherit the same-named top-level parameter range:\n{event}"
     );
+}
+
+#[test]
+fn underscore_for_variables_and_loop_sugar_lower_normally() {
+    let source = r#"
+outs:
+  out1
+sample:
+  total = 0
+  for _ in 0..2:
+    total += 1
+  loop 2:
+    total += 1
+  out1 = f32(total)
+"#;
+    let typed = analyze(parse_program(source).expect("source should parse"))
+        .expect("underscore loop variables should analyze");
+    let mir = lower_test_program(&typed).expect("underscore loop variables should lower");
+    validate(&mir).expect("underscore loop variables should produce valid MIR");
 }
 
 #[test]
@@ -732,7 +915,7 @@ init:
 sample:
   out1 = consume(
     b = values[mark(values, 2):],
-    a = values[mark(values, 1):],
+    a = values[mark(values, 1):]
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -779,7 +962,7 @@ init:
 sample:
   out1 = consume(
     b = mark_pair(values, 2),
-    a = mark_pair(values, 1),
+    a = mark_pair(values, 1)
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -830,7 +1013,7 @@ init:
 sample:
   out1 = consume(
     b = cells[mark(values, 2)],
-    a = cells[mark(values, 1)],
+    a = cells[mark(values, 1)]
   ) + values[0]
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -2685,6 +2868,8 @@ def touch(buf: buffer<f32>, index: i32):
   view = buf[:]
   value = buf[index] + view[index] - view[index]
   buf[index] = value + 1.0
+  if buf.bound():
+    value = value + 1.0
   return value + f32(buf.len()) + f32(buf.chans()) + buf.samplerate()
 
 def forward(buf: buffer<f32>, index: i32):
@@ -2722,6 +2907,7 @@ sample:
     assert!(dump.contains("buffer_len @param0"));
     assert!(dump.contains("buffer_channels @param0"));
     assert!(dump.contains("buffer_sample_rate @param0"));
+    assert!(dump.contains("buffer_is_bound @param0"));
     assert!(dump.contains("make_slice @param0"));
     assert!(dump.contains("(place @p0,"));
     assert!(dump.contains("(@buffer0,"));
@@ -3331,6 +3517,8 @@ sample:
   bus[0, 3] = two_d
   from_state = values[0]
   values[1] = from_state
+  if delay.bound():
+    value = value + 1.0
   out1 = value + two_d + from_state + f32(delay.len()) + f32(delay.chans()) + delay.samplerate()
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -3351,6 +3539,7 @@ sample:
     assert!(dump.contains("buffer_len @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
+    assert!(dump.contains("buffer_is_bound @buffer0"));
     assert!(dump.contains("load_buffer @buffer1[i32(1)][i32(2)] clamp"));
     assert!(dump.contains("store_buffer @buffer1[i32(0)][i32(3)] clamp"));
     assert!(dump.contains("] clamp"));
@@ -3513,10 +3702,11 @@ params:
 block:
   selected = bank[slot]
   frames = selected.len()
+  bound = selected.bound()
 sample:
   value = selected[0]
   selected[frames - 1] = value
-  out1 = value
+  out1 = value + f32(bound)
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("buffer-reference alias should analyze");
@@ -3529,6 +3719,7 @@ sample:
         .any(|state| state.name == "__onda_buffer_alias_selector_selected"));
     let dump = format_program(&mir);
     assert!(dump.contains("buffer_len @buffer_array(first=0, len=2)"));
+    assert!(dump.contains("buffer_is_bound @buffer_array(first=0, len=2)"));
     assert!(dump.contains("load_buffer @buffer_array(first=0, len=2)"));
     assert!(dump.contains("store_buffer @buffer_array(first=0, len=2)"));
 }
@@ -3585,8 +3776,9 @@ proc Reader:
   block:
     selected = clips[slot]
     frames = selected.len()
+    bound = selected.bound()
     sample:
-      out1 = selected[0, frames - 1]
+      out1 = selected[0, frames - 1] + f32(bound)
 
 init:
   reader = Reader(clips = bank)
@@ -3606,6 +3798,7 @@ sample:
     assert!(step.contains("load_buffer_param @buffer_param_span"));
     let block_pre = formatted_function(&dump, "Reader.__onda_proc_block_pre");
     assert!(block_pre.contains("buffer_len @buffer_param_span"));
+    assert!(block_pre.contains("buffer_is_bound @buffer_param_span"));
 }
 
 #[test]

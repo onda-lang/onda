@@ -117,6 +117,12 @@ known compatible receivers where possible, with read/write direction reflected i
 completion; their free-call forms remain available as intrinsic completion. Hover and signature
 help show the memory-safety contract.
 
+Runtime diagnostics and dispatch use the same language-aware surfaces: `print` completion, hover,
+and signature help describe its optional label and variadic printable scalar values; events and
+delegates expose their typed call signatures; and `when` targets, inferred bindings, owner entries,
+and nested locals participate in completion, hover, navigation, document symbols, and semantic
+tokens. Incomplete `when` bodies retain their handler and owner scopes for semantic highlighting.
+
 ## Editor support
 
 ### VS Code
@@ -129,71 +135,10 @@ The [Onda Neovim plugin](https://github.com/onda-lang/onda-nvim) provides filety
 
 ## Embedding Onda
 
-The public C interface lives in [`include/onda.h`](https://github.com/onda-lang/onda/blob/main/include/onda.h). It exposes compiler, instance, process, parameter, buffer, event, metadata, and state operations for non-Rust hosts.
-
-### Compile-time configuration from C
-
-Every C compilation entry point accepts immutable `config const` selections through
-`onda_compile_options_t.const_inputs`. The matching inspection entry point resolves the exposed
-declarations under the same sample rate, block size, and optional partial selection:
-
-```c
-onda_compile_options_t options = {
-  .sample_rate = 48000.0f,
-  .block_size = 128,
-};
-onda_diag_t diag = {0};
-onda_compile_constants_t* constants =
-  onda_inspect_compile_constants_file("processor.onda", &options, NULL, &diag);
-if (!constants) {
-  /* diag.message describes the failure. Handle it and stop here. */
-  return 1;
-}
-
-int count = onda_compile_constants_count(constants);
-for (int i = 0; i < count; ++i) {
-  const onda_compile_const_descriptor_t* descriptor =
-    onda_compile_constants_at(constants, i);
-  /* descriptor->input is already encoded as a valid compile input. */
-}
-
-options.const_inputs = onda_compile_constants_inputs(constants);
-options.const_input_count = (size_t)count;
-onda_program_t* program = onda_compile_file("processor.onda", &options, NULL, &diag);
-onda_compile_constants_destroy(constants);
-```
-
-The returned contiguous input array reproduces the exact inspected selection and can be passed
-directly to compilation while the descriptor handle remains alive. To change values, copy the
-desired descriptor inputs into a partial selection, point `values` at the desired native C
-values, and inspect again.
-
-For example, this changes a scalar `f32` constant named `TEST` while leaving `YOYO` and every other
-declaration at its authored value:
-
-```c
-float test = 0.5f;
-onda_compile_const_input_t override = {
-  .name_utf8 = "TEST",
-  .element_type = ONDA_PRIMITIVE_F32,
-  .is_array = 0,
-  .element_count = 1,
-  .values = &test,
-};
-options.const_inputs = &override;
-options.const_input_count = 1;
-```
-
-The resulting descriptors contain defaults and fixed-array lengths resolved under those changes and
-their contiguous input array can compile that exact variant. This second inspection matters when one
-configuration constant affects another declaration's initializer or shape.
-
-Values are ordinary native C values: `uint8_t` for booleans, `int32_t`, `int64_t`, `float`, or
-`double`. Scalar entries point to one value, while arrays point to contiguous values and carry their
-resolved element count.
-
-Equivalent inspection functions are available for source strings, exact in-memory source graphs,
-and project images.
+The public C interface lives in `include/onda.h`. The
+[C API reference]({{ '/docs/api/' | relative_url }}) covers the complete hosted-library surface,
+including ownership, compilation, compile-time configuration, metadata, instances, bindings,
+processing, events, delegates, printing, snapshots, and project images.
 
 Use the pre-built shared and static libraries or build them from source with:
 

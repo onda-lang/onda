@@ -197,6 +197,17 @@ fn collect_proc_operator_helper_diags_from_stmt(
                 out,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_proc_operator_helper_diags_from_expr(
+                    value,
+                    owner_proc,
+                    nested_instances,
+                    proc_api,
+                    out,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -493,6 +504,19 @@ fn collect_non_sample_proc_operator_diags_from_stmts(
                 aliases,
                 out,
             ),
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    collect_non_sample_proc_operator_diags_from_expr(
+                        value,
+                        owner_proc,
+                        nested_instances,
+                        proc_array_slots,
+                        proc_api,
+                        aliases,
+                        out,
+                    );
+                }
+            }
             Stmt::If {
                 cond,
                 then_branch,
@@ -744,6 +768,11 @@ fn seed_called_proc_local_defs_from_stmts(
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    seed_called_proc_local_defs_from_expr(value, def_names, pending, seen_pending);
+                }
             }
             Stmt::If {
                 cond,
@@ -1080,7 +1109,7 @@ fn is_proc_output_alias_name(name: &str, timing: OutputTiming, out_count: usize)
         .unwrap_or(false)
 }
 
-fn array_infos_from_slot_map(
+pub(super) fn array_infos_from_slot_map(
     slots_by_name: &HashMap<String, Vec<String>>,
     slot_types: &HashMap<String, PrimitiveType>,
 ) -> HashMap<String, TypedArrayInfo> {
@@ -1103,7 +1132,9 @@ fn array_infos_from_slot_map(
         .collect()
 }
 
-fn array_infos_from_param_specs(param_specs: &[ProcParamSpec]) -> HashMap<String, TypedArrayInfo> {
+pub(super) fn array_infos_from_param_specs(
+    param_specs: &[ProcParamSpec],
+) -> HashMap<String, TypedArrayInfo> {
     param_specs
         .iter()
         .filter(|spec| spec.slots.len() > 1)
@@ -1198,6 +1229,7 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
         Stmt::Const { .. }
         | Stmt::Assign { .. }
         | Stmt::Expr { .. }
+        | Stmt::Print { .. }
         | Stmt::Break { .. }
         | Stmt::Continue { .. } => false,
     }
@@ -1780,7 +1812,7 @@ fn reject_hook_target_write(
         AssignTarget::Var(name) => check_symbol(name),
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => check_symbol(base),
         AssignTarget::Tuple(names) => {
-            for name in names {
+            for name in names.iter().filter_map(|target| target.binding()) {
                 check_symbol(name);
             }
         }
@@ -2056,8 +2088,8 @@ fn validate_hook_safe_stmts(
                     match target {
                         AssignTarget::Var(name) => frame.add_local(name.clone()),
                         AssignTarget::Tuple(names) => {
-                            for name in names {
-                                frame.add_local(name.clone());
+                            for name in names.iter().filter_map(|target| target.binding()) {
+                                frame.add_local(name);
                             }
                         }
                         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
@@ -2066,6 +2098,11 @@ fn validate_hook_safe_stmts(
             }
             Stmt::Expr { expr, .. } => {
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    validate_hook_safe_expr(value, ctx, frame, visiting, validated, errors);
+                }
             }
             Stmt::Return { expr, .. } => {
                 if !is_bare_return_expr(expr) {
@@ -2270,6 +2307,7 @@ fn reject_dynamic_bound_param_assignments(proc: &ProcessorDef, errors: &mut Vec<
                 Stmt::Const { .. }
                 | Stmt::Assign { .. }
                 | Stmt::Expr { .. }
+                | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
                 | Stmt::Continue { .. } => {}
@@ -2348,10 +2386,10 @@ fn proc_local_surface_expr_env<'a>(
     env
 }
 
-fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&String> {
+fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name],
-        AssignTarget::Tuple(names) => names.iter().collect(),
+        AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
         AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
@@ -2395,7 +2433,7 @@ fn validate_proc_local_def_surface_stmt(
                         io_surface_name(name, env).is_none()
                             && dynamic_param_surface_name(name, env).is_none()
                     })
-                    .cloned()
+                    .map(str::to_owned)
                     .collect::<Vec<_>>()
             };
             for name in introduced_locals {
@@ -2411,6 +2449,18 @@ fn validate_proc_local_def_surface_stmt(
                 dynamic_param_array_names,
             );
             validate_block_bound_surface_expr(expr, env, errors);
+        }
+        Stmt::Print { values, .. } => {
+            let env = proc_local_surface_expr_env(
+                scratch,
+                locals,
+                io_surface_names,
+                io_surface_array_names,
+                dynamic_param_array_names,
+            );
+            for value in values {
+                validate_block_bound_surface_expr(value, env, errors);
+            }
         }
         Stmt::If {
             cond,
@@ -2620,21 +2670,21 @@ pub(super) fn compute_proc_shape(
     // Add synthetic "ins"/"outs"/"kouts"/"params" array-slot entries for uniform scalar ports
     // so that dynamic indexing (e.g. outs[i], kouts[i], ins[i], params[i]) can be rewritten to
     // helper function calls during proc lowering.
-    if ins.len() > 1
+    if !ins.is_empty()
         && !in_array_slots.contains_key("ins")
         && uniform_port_index_info_from_names(true, &ins, &in_types).is_some()
     {
         in_array_slots.insert("ins".to_owned(), ins.clone());
     }
     if proc.outs_timing == OutputTiming::Sample
-        && outs.len() > 1
+        && !outs.is_empty()
         && !field_array_slots.contains_key("outs")
         && uniform_port_index_info_from_names(true, &outs, &out_types).is_some()
     {
         field_array_slots.insert("outs".to_owned(), outs.clone());
     }
     if proc.outs_timing == OutputTiming::Block
-        && outs.len() > 1
+        && !outs.is_empty()
         && !field_array_slots.contains_key("kouts")
         && uniform_port_index_info_from_names(true, &outs, &out_types).is_some()
     {
@@ -2787,6 +2837,24 @@ pub(super) fn compute_proc_shape(
             );
         }
     }
+    for buffer in &buffer_specs {
+        let channels = match buffer.channels {
+            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
+            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
+        };
+        insert_declared_symbol(
+            &mut state_type_hints,
+            &mut declared_symbols,
+            buffer.name.clone(),
+            DeclaredSymbolInfo::Buffer {
+                elem_ty: buffer.elem_ty,
+                channels,
+                array_len: buffer.array_len,
+                is_array: buffer.is_array,
+            },
+        );
+    }
 
     let proc_ns = namespace_of_symbol(&proc.name);
     let proc_locals = HashSet::<String>::new();
@@ -2882,26 +2950,6 @@ pub(super) fn compute_proc_shape(
         );
     }
 
-    // Add buffer prefix entries so has_declared_buffer_symbol / validate_buffer_param_call_arg work
-    for buffer in &buffer_specs {
-        let channels = match buffer.channels {
-            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
-            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
-            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
-        };
-        insert_declared_symbol(
-            &mut proc_state_scalars,
-            &mut proc_declared_symbols,
-            buffer.name.clone(),
-            DeclaredSymbolInfo::Buffer {
-                elem_ty: buffer.elem_ty,
-                channels,
-                array_len: buffer.array_len,
-                is_array: buffer.is_array,
-            },
-        );
-    }
-
     // Add flat struct field names to proc_state_scalars so block/sample validation resolves them
     for (inst_name, struct_type_name) in &proc_struct_instances {
         let type_args = init_st_type_args
@@ -2958,11 +3006,12 @@ pub(super) fn compute_proc_shape(
                         }
                     }
                     FieldType::Tuple(elem_tys) => {
-                        for (idx, prim) in elem_tys.iter().enumerate() {
-                            let elem_flat = format!("{flat}.__{idx}");
-                            proc_state_scalars.entry(elem_flat).or_insert(*prim);
-                        }
-                        proc_state_tuples.insert(flat, elem_tys.clone());
+                        register_tuple_state(
+                            &mut proc_state_scalars,
+                            &mut proc_state_tuples,
+                            &flat,
+                            elem_tys,
+                        );
                     }
                     FieldType::Generic(_) => {}
                 }
@@ -3158,7 +3207,7 @@ pub(super) fn compute_proc_shape(
             nested_proc_instances: &state.nested_procs,
             proc_array_roots: &state.nested_proc_arrays,
             struct_instances: &proc_struct_instances_typed,
-            state_tuples: &proc_state_tuples,
+            state_tuples: &mut proc_state_tuples,
         };
         analyze_owner_runtime_scopes(
             &mut runtime_state,
@@ -3340,6 +3389,13 @@ pub(super) fn compute_proc_shape(
 
     let mut state_scalar_names = state.scalars.keys().cloned().collect::<Vec<_>>();
     state_scalar_names.sort();
+    let mut state_tuple_names = state.tuples.keys().cloned().collect::<Vec<_>>();
+    state_tuple_names.sort();
+    let state_tuple_elements = state
+        .tuples
+        .iter()
+        .flat_map(|(name, elem_tys)| (0..elem_tys.len()).map(move |idx| format!("{name}.__{idx}")))
+        .collect::<HashSet<_>>();
     let mut state_data_names = state.data.keys().cloned().collect::<Vec<_>>();
     state_data_names.sort();
     let mut struct_instance_names = state.struct_instances.keys().cloned().collect::<Vec<_>>();
@@ -3403,13 +3459,25 @@ pub(super) fn compute_proc_shape(
         }
     }
     for name in &state_scalar_names {
-        if reserved.contains(name) {
+        if reserved.contains(name) || state_tuple_elements.contains(name) {
             continue;
         }
         fields.push(StructField {
             loc: Default::default(),
             name: name.clone(),
             ty: FieldType::Scalar(*state.scalars.get(name).unwrap_or(&PrimitiveType::F32)),
+            ty_loc: Default::default(),
+            default: None,
+        });
+    }
+    for name in &state_tuple_names {
+        if reserved.contains(name) {
+            continue;
+        }
+        fields.push(StructField {
+            loc: Default::default(),
+            name: name.clone(),
+            ty: FieldType::Tuple(state.tuples[name].clone()),
             ty_loc: Default::default(),
             default: None,
         });

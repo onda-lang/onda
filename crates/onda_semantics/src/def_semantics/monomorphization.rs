@@ -310,7 +310,7 @@ pub(crate) fn refresh_monomorphized_return_types(
 /// Generated definitions are implementation details, so diagnostics originating
 /// in them should point at the user expression that requested the specialization.
 /// Rebasing the complete cloned body also carries that origin through nested
-/// monomorphization (for example `readL(i32)` -> `calcIdx(i32)`).
+/// monomorphization (for example `readL(i32)` -> `_split_position(i32)`).
 fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
     match expr {
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
@@ -404,6 +404,12 @@ fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
         Stmt::Expr { loc, expr } | Stmt::Return { loc, expr } => {
             *loc = origin;
             rebase_generated_expr(expr, origin);
+        }
+        Stmt::Print { loc, values, .. } => {
+            *loc = origin;
+            for value in values {
+                rebase_generated_expr(value, origin);
+            }
         }
         Stmt::If {
             loc,
@@ -1193,7 +1199,7 @@ fn monomorphize_calls_in_stmt(
             );
             update_call_type_env_after_assign(
                 target,
-                *decl_ty,
+                decl_ty.as_ref(),
                 generic_decl_ty.as_deref(),
                 expr,
                 env,
@@ -1239,6 +1245,26 @@ fn monomorphize_calls_in_stmt(
                 owner,
             );
             StatementFlow::Terminates
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                monomorphize_calls_in_expr(
+                    value,
+                    env,
+                    mono_eligible,
+                    fn_signatures,
+                    original_defs,
+                    generic_templates,
+                    struct_defs,
+                    generated_defs,
+                    generated_sigs,
+                    mono_cache,
+                    return_types,
+                    errors,
+                    owner,
+                );
+            }
+            StatementFlow::Continues
         }
         Stmt::If {
             cond,

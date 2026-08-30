@@ -3,7 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
@@ -12,12 +12,12 @@ use_decl = { use_pub? ~ "use" ~ namespace_any_ref ~ (NEWLINE* ~ "as" ~ NEWLINE* 
 namespace_item = _{ assert_block | const_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl | use_decl }
 namespace_decl_head = { namespace_name ~ namespace_param_list? }
 namespace_name = @{ ident ~ ("::" ~ ident)* }
-namespace_param_list = { "<" ~ NEWLINE* ~ namespace_param_decl ~ (comma_sep ~ namespace_param_decl)* ~ comma_sep? ~ NEWLINE* ~ ">" }
+namespace_param_list = { "<" ~ NEWLINE* ~ namespace_param_decl ~ (comma_sep ~ namespace_param_decl)* ~ NEWLINE* ~ ">" }
 namespace_param_decl = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 namespace_any_ref = { namespace_ref_segment ~ ("::" ~ namespace_ref_segment)* }
 namespace_ref = { namespace_ref_segment ~ ("::" ~ namespace_ref_segment)+ }
 namespace_ref_segment = { ident ~ namespace_call_arg_list? }
-namespace_call_arg_list = { "<" ~ NEWLINE* ~ namespace_call_arg ~ (comma_sep ~ namespace_call_arg)* ~ comma_sep? ~ NEWLINE* ~ ">" }
+namespace_call_arg_list = { "<" ~ NEWLINE* ~ namespace_call_arg ~ (comma_sep ~ namespace_call_arg)* ~ NEWLINE* ~ ">" }
 namespace_call_arg = { (ident ~ NEWLINE* ~ "=" ~ NEWLINE*)? ~ expr }
 
 section_count = { int_lit | namespace_ref | path_ident | "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" }
@@ -67,15 +67,24 @@ events_block = { "events" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ event_list? ~ NEWLINE* ~
 event_block = { "event" ~ event_decl ~ NEWLINE* }
 event_list = { event_decl ~ (stmt_sep+ ~ event_decl)* ~ stmt_sep* }
 event_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
-event_param_list = { event_param_decl ~ (comma_sep ~ event_param_decl)* ~ comma_sep? }
+event_param_list = { event_param_decl ~ (comma_sep ~ event_param_decl)* }
 event_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ event_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
 event_param_type = { array_type | fn_typed_array_param | type_name | named_type }
+delegates_block = { "delegates" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ delegate_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+delegate_block = { "delegate" ~ delegate_decl ~ NEWLINE* }
+delegate_list = { delegate_decl ~ (stmt_sep+ ~ delegate_decl)* ~ stmt_sep* }
+delegate_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* ~ ")" }
+when_block = { "when" ~ NEWLINE* ~ when_target ~ NEWLINE* ~ "(" ~ NEWLINE* ~ when_binding_list? ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
+when_target = { when_indexed_target | path_ident }
+when_indexed_target = { ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident }
+when_binding_list = { when_binding ~ (comma_sep ~ when_binding)* }
+when_binding = { ident }
 tasks_block = { tasks_kw ~ NEWLINE* ~ "{" ~ NEWLINE* ~ task_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 task_block = { task_kw ~ task_decl ~ NEWLINE* }
 task_list = { task_decl ~ (stmt_sep+ ~ task_decl)* ~ stmt_sep* }
 task_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -103,7 +112,7 @@ graph_expr = { prefix* ~ graph_term ~ ((or_op | and_op | bit_or_op | bit_xor_op 
 graph_term = _{ call_field_expr | call_expr | slice_expr | graph_nested_indexed_member_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ NEWLINE* ~ graph_expr ~ NEWLINE* ~ ")" }
 graph_nested_indexed_member_expr = { path_ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ !"::" }
 graph_edge_targets = { graph_endpoint_set | graph_endpoint }
-graph_endpoint_set = { "{" ~ NEWLINE* ~ graph_endpoint ~ (NEWLINE* ~ "," ~ NEWLINE* ~ graph_endpoint)* ~ (NEWLINE* ~ ",")? ~ NEWLINE* ~ "}" }
+graph_endpoint_set = { "{" ~ NEWLINE* ~ graph_endpoint ~ (NEWLINE* ~ "," ~ NEWLINE* ~ graph_endpoint)* ~ NEWLINE* ~ "}" }
 graph_endpoint = { indexed_graph_endpoint | path_ident }
 indexed_graph_endpoint = { path_ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
 
@@ -121,59 +130,60 @@ await_kw = @{ "await" ~ !ident_char }
 section_default_decl_type = { "<" ~ NEWLINE* ~ (type_name | namespace_ref | qualified_ident) ~ NEWLINE* ~ ">" }
 section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 
-port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_sep* }
+port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_end_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
-tuple_type = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
-decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ comma_sep? ~ NEWLINE* ~ "}" }
-param_unit = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
+tuple_type = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ NEWLINE* ~ ")" }
+decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ NEWLINE* ~ "}" }
+quoted_text = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
+param_unit = @{ quoted_text }
 param_domain_value = _{ param_unit | expr }
 param_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ param_domain_value }
 param_domain_item = { param_domain_named | param_unit | expr }
-param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
+param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_item)* ~ NEWLINE* ~ "}" }
 port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? }
-param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_sep* }
-proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_sep* }
+param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_end_sep* }
+proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_end_sep* }
 param_private = @{ "private" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
 proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
-buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_sep* }
+buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_end_sep* }
 buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? ~ (NEWLINE* ~ buffer_count)? }
 buffer_decl_type = { buffer_type | buffer_inner }
 buffer_type = { "buffer" ~ "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 buffer_inner = { (type_name | qualified_ident) ~ ("[" ~ NEWLINE* ~ (expr)? ~ NEWLINE* ~ "]")? }
 buffer_count = { "{" ~ NEWLINE* ~ (buffer_count_named | expr) ~ NEWLINE* ~ "}" }
 buffer_count_named = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
-field_list = { field_decl ~ (field_sep+ ~ field_decl)* ~ field_sep* }
+field_list = { field_decl ~ (field_sep+ ~ field_decl)* ~ list_end_sep* }
 field_decl = {
-  (ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ field_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)?)
-  | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr)
+  (ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ field_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)?)
+  | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ (NEWLINE* ~ binding_range)?)
   | (ident ~ &field_sep)
 }
 field_type = { array_type | tuple_type | type_name | named_type }
 array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
-generic_param_list = { "<" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)* ~ comma_sep? ~ NEWLINE* ~ ">" }
-generic_type_arg_list = { "<" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)* ~ comma_sep? ~ NEWLINE* ~ ">" }
+generic_param_list = { "<" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)* ~ NEWLINE* ~ ">" }
+generic_type_arg_list = { "<" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)* ~ NEWLINE* ~ ">" }
 generic_type_arg = { type_name | ident }
-fn_param_list = { fn_param_decl ~ (comma_sep ~ fn_param_decl)* ~ comma_sep? }
+fn_param_list = { fn_param_decl ~ (comma_sep ~ fn_param_decl)* }
 fn_typed_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ NEWLINE* ~ "]" }
 fn_sized_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 fn_untyped_array_param = { "[" ~ NEWLINE* ~ "]" }
 fn_bare_buffer = { "buffer" }
-fn_tuple_param = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
+fn_tuple_param = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ NEWLINE* ~ ")" }
 fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | fn_tuple_param | type_name | namespace_ref | qualified_ident }
 fn_return_arrow = { "->" }
 fn_return_scalar_type = { type_name | namespace_ref | qualified_ident }
 fn_return_array_type = { type_name ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
-fn_return_tuple_type = { "(" ~ NEWLINE* ~ fn_return_scalar_type ~ (comma_sep ~ fn_return_scalar_type)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
+fn_return_tuple_type = { "(" ~ NEWLINE* ~ fn_return_scalar_type ~ (comma_sep ~ fn_return_scalar_type)+ ~ NEWLINE* ~ ")" }
 fn_return_type = { fn_return_tuple_type | fn_return_array_type | fn_return_scalar_type }
 fn_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ fn_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
 struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | print_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 binding_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 pinnable_assign_stmt = { typed_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
@@ -187,49 +197,53 @@ binding_range_named_count = { "count" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
 binding_range_named_range = { "range" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_spec }
 binding_range_named_mode = { "mode" ~ NEWLINE* ~ "=" ~ NEWLINE* ~ binding_range_mode }
 binding_range_item = { binding_range_named_count | binding_range_named_range | binding_range_named_mode | binding_range_mode | binding_range_spec | expr }
-binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ comma_sep? ~ NEWLINE* ~ "}" }
+binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ NEWLINE* ~ "}" }
 typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
 compound_assign_stmt = { path_ident ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
 inferred_ranged_assign_stmt = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ NEWLINE* ~ binding_range }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
 assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
-tuple_target = { "(" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
+tuple_target = { parenthesized_tuple_target | tuple_target_items }
+parenthesized_tuple_target = _{ "(" ~ NEWLINE* ~ tuple_target_items ~ NEWLINE* ~ ")" }
+tuple_target_items = _{ ident ~ (comma_sep ~ ident)+ }
 indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
 index_target = { (namespace_ref | path_ident) ~ index_group ~ index_group? }
 slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) }
 return_stmt = { return_kw ~ expr? }
 yield_stmt = { yield_kw }
 await_stmt = { await_kw ~ ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" }
+print_stmt = { "print" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ print_args? ~ NEWLINE* ~ ")" }
+print_args = { (quoted_text ~ (comma_sep ~ expr)*) | (expr ~ (comma_sep ~ expr)*) }
 call_stmt = { call_expr }
 if_cond = { expr }
 if_stmt = { "if" ~ if_cond ~ stmt_block ~ elif_clause* ~ (NEWLINE* ~ "else" ~ stmt_block)? }
 elif_clause = { NEWLINE* ~ "elif" ~ if_cond ~ stmt_block }
-for_stmt = { "for" ~ ident ~ (":" ~ type_name)? ~ for_step? ~ "in" ~ for_bound ~ for_range_op ~ for_bound ~ stmt_block }
+for_stmt = { "for" ~ ident ~ (":" ~ type_name)? ~ for_step? ~ "in" ~ expr ~ for_range_op ~ expr ~ stmt_block }
 for_step = { "@" ~ expr }
 for_range_op = { "..=" | ".." }
 while_stmt = { "while" ~ expr ~ stmt_block }
-loop_stmt = { "loop" ~ for_bound ~ stmt_block }
+loop_stmt = { "loop" ~ expr ~ stmt_block }
 break_stmt = { "break" }
 continue_stmt = { "continue" }
-for_bound = { int_lit | namespace_ref | path_ident | "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" }
 stmt_block = { "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" }
 
 comma_sep = _{ NEWLINE* ~ "," ~ NEWLINE* }
 list_sep = _{ "," | ";" | NEWLINE+ }
 field_sep = _{ "," | ";" | NEWLINE+ }
+list_end_sep = _{ ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
 expr = { prefix* ~ term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
 term = _{ call_field_expr | call_expr | slice_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | tuple_expr | "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" }
-tuple_expr = { "(" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)+ ~ comma_sep? ~ NEWLINE* ~ ")" }
-array_lit = { "[" ~ NEWLINE* ~ (expr ~ (comma_sep ~ expr)* ~ comma_sep?)? ~ NEWLINE* ~ "]" }
+tuple_expr = { "(" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)+ ~ NEWLINE* ~ ")" }
+array_lit = { "[" ~ NEWLINE* ~ (expr ~ (comma_sep ~ expr)*)? ~ NEWLINE* ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
 call_expr = { call_target ~ generic_type_arg_list? ~ "(" ~ NEWLINE* ~ arg_list? ~ NEWLINE* ~ ")" }
 call_target = { call_index_member_target | call_index_target | namespace_ref | path_ident }
 call_index_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
 call_index_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ !"::" }
-arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* ~ (NEWLINE* ~ ",")? }
+arg_list = { call_arg ~ (NEWLINE* ~ "," ~ NEWLINE* ~ call_arg)* }
 call_arg = { (ident ~ NEWLINE* ~ "=" ~ NEWLINE*)? ~ expr }
 index_expr = { (namespace_ref | path_ident) ~ index_group ~ !"::" ~ index_group? }
 indexed_member_expr = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]")? }
@@ -262,8 +276,9 @@ keyword = _{
     "import" | "include"
     | "if" | "elif" | "else"
     | "for" | "in" | "while" | "loop"
-    | "break" | "continue" | "return" | "assert"
+    | "break" | "continue" | "return" | "assert" | "print"
     | "tasks" | "task" | "await" | "yield"
+    | "delegates" | "delegate" | "when"
     | "use" | "as" | "pub" | "private" | "pin" | "config"
     | "true" | "false"
   ) ~ !ident_char

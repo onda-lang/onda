@@ -301,6 +301,7 @@ mod tests {
         process.attributes = FunctionAttributes {
             origin: FunctionOrigin::CompilerGenerated,
             inline: InlineHint::Always,
+            runtime_context: true,
         };
         process.params = process_function_params(TypeId::new(0));
         process.locals.push(Local {

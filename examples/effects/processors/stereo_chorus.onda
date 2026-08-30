@@ -1,3 +1,4 @@
+import std/delay
 import std/osc
 
 const ChorusLineSamples = i32(SR / 10)
@@ -10,22 +11,13 @@ proc ChorusTap:
     phase_offset = 0.0
 
   init:
-    line: f32[ChorusLineSamples]
-    write = 0
+    line = std::delay<ChorusLineSamples>::Linear()
     lfo = std::osc::Sine(freq = rate)
 
   sample:
-    line[write] = in1
     modulation = lfo(freq = rate, phase_offset = phase_offset * TWO_PI)
     delay_samples = (base_ms + depth_ms * modulation) * SR * 0.001
-    read_pos = wrap(write - delay_samples, 0.0, ChorusLineSamples)
-    i0 = i32(read_pos)
-    i1 = i0 + 1
-    if (i1 >= ChorusLineSamples):
-      i1 = 0
-    delayed = lerp(line[i0], line[i1], read_pos - i0)
-    write = (write + 1) % ChorusLineSamples
-    out1 = delayed
+    out1 = line(in1, delay_samples = delay_samples)
 
 proc StereoChorus:
   params:

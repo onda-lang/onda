@@ -250,8 +250,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                     incompatible!(&name, "tuple element types do not have a common type",);
                     continue;
                 }
-                tuple_vars.insert(name.clone(), then_arity);
-                replace_tracked_tuple_types(local_aliases, &name, Some(&element_types));
+                set_tracked_tuple_types(tuple_vars, local_aliases, &name, &element_types);
                 true
             }
             Some(TrackedBranchBindingKind::Array) => {
@@ -465,7 +464,7 @@ pub(crate) fn track_integer_range_declaration(
     else {
         return;
     };
-    let range = typed_integer_range_from_expr(expr, *decl_ty);
+    let range = typed_integer_range_from_expr(expr, decl_ty.as_ref().and_then(DeclType::scalar));
     if let Some(range) = range {
         ranges.insert(name.clone(), range);
     } else {
@@ -547,29 +546,6 @@ pub(crate) fn build_stmt_expr_env<'a>(
         output_names,
         param_names,
     }
-}
-
-pub(crate) fn build_scope_stmt_expr_env<'a>(
-    inputs: ScopeExprInputs<'a>,
-    known_scalars: &'a HashSet<String>,
-    local_aliases: &'a LocalAliasTypes,
-    local_array_aliases: &'a HashMap<String, LocalArrayAliasInfo>,
-    array_vars: &'a HashMap<String, usize>,
-    scope: ScopeKind,
-) -> StmtExprAnalysisEnv<'a> {
-    let mut expr_env =
-        build_scope_expr_env(inputs, known_scalars, local_aliases, array_vars, scope);
-    expr_env.local_array_aliases = local_array_aliases;
-    build_stmt_expr_env(
-        expr_env,
-        inputs.state_scalars,
-        inputs.declared_symbols,
-        local_aliases,
-        local_array_aliases,
-        inputs.input_names,
-        inputs.output_names,
-        inputs.param_names,
-    )
 }
 
 pub(crate) fn build_scope_expr_env_with_tuples<'a>(
@@ -760,6 +736,44 @@ pub(crate) fn require_tuple_expr_assignable_types(
     compatible
 }
 
+pub(crate) fn resolve_tuple_assignment_types(
+    name: &str,
+    expr: &Expr,
+    source_types: &[PrimitiveType],
+    declared_types: Option<&[PrimitiveType]>,
+    existing_types: Option<&[PrimitiveType]>,
+    allow_typed_existing: bool,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<PrimitiveType>> {
+    if let (Some(declared), Some(existing)) = (declared_types, existing_types) {
+        if declared != existing {
+            errors.push(Diagnostic::semantic_span(
+                format!("typed tuple declaration for '{name}' conflicts with its existing type"),
+                expr.loc(),
+            ));
+            return None;
+        }
+        if !allow_typed_existing {
+            errors.push(Diagnostic::semantic_span(
+                format!("typed tuple declaration for '{name}' is only allowed on first assignment"),
+                expr.loc(),
+            ));
+            return None;
+        }
+    }
+
+    let target_types = if let Some(existing) = existing_types {
+        existing
+    } else if let Some(declared) = declared_types {
+        declared
+    } else {
+        source_types
+    };
+
+    require_tuple_expr_assignable_types(name, expr, source_types, target_types, errors);
+    Some(target_types.to_vec())
+}
+
 pub(crate) fn track_tuple_var_assignment(
     tuple_vars: &mut HashMap<String, usize>,
     name: &str,
@@ -772,9 +786,19 @@ pub(crate) fn track_tuple_var_assignment(
     }
 }
 
+pub(crate) fn set_tracked_tuple_types(
+    tuple_vars: &mut HashMap<String, usize>,
+    local_aliases: &mut LocalAliasTypes,
+    name: &str,
+    types: &[PrimitiveType],
+) {
+    replace_tracked_tuple_types(local_aliases, name, Some(types));
+    track_tuple_var_assignment(tuple_vars, name, Some(types.len()));
+}
+
 pub(crate) fn clear_tuple_var_bindings<'a>(
     tuple_vars: &mut HashMap<String, usize>,
-    names: impl IntoIterator<Item = &'a String>,
+    names: impl IntoIterator<Item = &'a str>,
 ) {
     for name in names {
         tuple_vars.remove(name);
@@ -788,6 +812,50 @@ pub(crate) fn validate_and_infer_stmt_expr_type(
 ) -> Option<PrimitiveType> {
     validate_expr(expr, env.expr_env, errors);
     infer_stmt_expr_type(expr, env, errors)
+}
+
+pub(crate) fn non_printable_stmt_expr_type(
+    expr: &Expr,
+    env: StmtExprAnalysisEnv<'_>,
+) -> Option<(String, String)> {
+    match expr {
+        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } => {
+            Some(("value".to_owned(), "array".to_owned()))
+        }
+        Expr::Tuple { .. } => Some(("value".to_owned(), "tuple".to_owned())),
+        Expr::Slice { base, .. } => Some((base.clone(), "slice".to_owned())),
+        Expr::Var { name, .. } => {
+            if let Some(struct_name) = env
+                .expr_env
+                .struct_instances
+                .get(name)
+                .or_else(|| env.expr_env.param_structs.get(name))
+            {
+                return Some((name.clone(), struct_name.clone()));
+            }
+            if let Some(array) = env.local_array_aliases.get(name) {
+                let element = array
+                    .elem_struct
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", array.elem_ty).to_ascii_lowercase());
+                let ty = array
+                    .static_len
+                    .map_or_else(|| format!("{element}[]"), |len| format!("{element}[{len}]"));
+                return Some((name.clone(), ty));
+            }
+            if env.expr_env.array_vars.contains_key(name) {
+                return Some((name.clone(), "array".to_owned()));
+            }
+            if env.expr_env.tuple_vars.contains_key(name) {
+                return Some((name.clone(), "tuple".to_owned()));
+            }
+            if let Some(proc_array) = env.expr_env.proc_array_roots.get(name) {
+                return Some((name.clone(), format!("{}[]", proc_array.proc_name)));
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn infer_stmt_expr_type(

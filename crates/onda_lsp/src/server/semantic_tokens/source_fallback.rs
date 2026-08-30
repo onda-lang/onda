@@ -84,6 +84,40 @@ pub(super) fn identifier_is_in_use_namespace_name(
     start < target_start + decl_end
 }
 
+pub(super) fn identifier_is_when_delegate_target(
+    source_lines: &[&str],
+    line: u32,
+    start: u32,
+    length: u32,
+) -> bool {
+    let Some(line_text) = source_lines.get(line as usize).copied() else {
+        return false;
+    };
+    let start_column = start;
+    let Some(start_byte) = byte_index_for_utf16_column(line_text, start_column) else {
+        return false;
+    };
+    let Some(end_byte) = byte_index_for_utf16_column(line_text, start_column + length) else {
+        return false;
+    };
+    line_text[..start_byte].trim_start().starts_with("when ")
+        && line_text[end_byte..].trim_start().starts_with('(')
+}
+
+fn byte_index_for_utf16_column(text: &str, column: u32) -> Option<usize> {
+    let mut utf16 = 0_u32;
+    for (index, ch) in text.char_indices() {
+        if utf16 == column {
+            return Some(index);
+        }
+        utf16 += ch.len_utf16() as u32;
+        if utf16 > column {
+            return None;
+        }
+    }
+    (utf16 == column).then_some(text.len())
+}
+
 pub(super) fn is_reserved_word(name: &str) -> bool {
     onda_frontend::is_reserved_word(name)
 }
@@ -95,6 +129,7 @@ enum SourceProcScopeKind {
     Function,
     Event,
     Task,
+    When,
 }
 
 #[derive(Clone, Copy)]
@@ -112,6 +147,7 @@ enum SourceProcSectionKind {
     Buffers,
     Init,
     Events,
+    Delegates,
     Tasks,
     Block,
     Sample,
@@ -123,6 +159,7 @@ struct SourceProcSection {
     kind: SourceProcSectionKind,
     indent: usize,
     owner_idx: usize,
+    declaration_indent: Option<usize>,
 }
 
 fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
@@ -189,6 +226,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                 kind: section_kind,
                 indent,
                 owner_idx: proc_owner_idx,
+                declaration_indent: None,
             });
             prev_nonempty_line = line_no;
             continue;
@@ -196,6 +234,18 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
 
         if let Some(section) = section_stack.last().copied() {
             if indent > section.indent {
+                let is_grouped_declaration = matches!(
+                    section.kind,
+                    SourceProcSectionKind::Events
+                        | SourceProcSectionKind::Delegates
+                        | SourceProcSectionKind::Tasks
+                ) && is_grouped_declaration_line(
+                    &mut section_stack
+                        .last_mut()
+                        .expect("copied the active processor section above")
+                        .declaration_indent,
+                    indent,
+                );
                 match section.kind {
                     SourceProcSectionKind::Ins
                     | SourceProcSectionKind::Outs
@@ -223,41 +273,61 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceProcSectionKind::Events => {
-                        if let Some((event_name, params)) = parse_event_header(trimmed) {
-                            index.scopes[proc_owner_idx]
-                                .scope
-                                .functions
-                                .insert(event_name.to_owned());
-                            let idx = push_source_callable_scope(
-                                &mut index,
-                                Some(proc_owner_idx),
-                                line_no,
-                                true,
-                                event_name,
-                                params,
-                            );
-                            open_scopes.push(OpenLineScope {
-                                idx,
-                                indent,
-                                kind: SourceProcScopeKind::Event,
-                            });
-                            prev_nonempty_line = line_no;
-                            continue;
+                        if is_grouped_declaration {
+                            if let Some((event_name, params)) = parse_event_header(trimmed) {
+                                index.scopes[proc_owner_idx]
+                                    .scope
+                                    .events
+                                    .insert(event_name.to_owned());
+                                let idx = push_source_callable_scope(
+                                    &mut index,
+                                    Some(proc_owner_idx),
+                                    line_no,
+                                    true,
+                                    params,
+                                );
+                                open_scopes.push(OpenLineScope {
+                                    idx,
+                                    indent,
+                                    kind: SourceProcScopeKind::Event,
+                                });
+                                prev_nonempty_line = line_no;
+                                continue;
+                            }
+                        }
+                    }
+                    SourceProcSectionKind::Delegates => {
+                        if is_grouped_declaration {
+                            if let Some((delegate_name, params)) = parse_event_header(trimmed) {
+                                index.scopes[proc_owner_idx]
+                                    .scope
+                                    .delegates
+                                    .insert(delegate_name.to_owned());
+                                push_source_delegate_scope(
+                                    &mut index,
+                                    proc_owner_idx,
+                                    line_no,
+                                    delegate_name,
+                                    params,
+                                );
+                            }
                         }
                     }
                     SourceProcSectionKind::Tasks => {
-                        if let Some(task_name) = parse_grouped_task_header(trimmed) {
-                            push_source_task_scope(
-                                &mut index,
-                                proc_owner_idx,
-                                &mut open_scopes,
-                                line_no,
-                                indent,
-                                task_name,
-                                SourceProcScopeKind::Task,
-                            );
-                            prev_nonempty_line = line_no;
-                            continue;
+                        if is_grouped_declaration {
+                            if let Some(task_name) = parse_grouped_task_header(trimmed) {
+                                push_source_task_scope(
+                                    &mut index,
+                                    proc_owner_idx,
+                                    &mut open_scopes,
+                                    line_no,
+                                    indent,
+                                    task_name,
+                                    SourceProcScopeKind::Task,
+                                );
+                                prev_nonempty_line = line_no;
+                                continue;
+                            }
                         }
                     }
                     SourceProcSectionKind::Sample | SourceProcSectionKind::Graph => {}
@@ -270,14 +340,8 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                 .scope
                 .functions
                 .insert(def_name.to_owned());
-            let idx = push_source_callable_scope(
-                &mut index,
-                Some(proc_owner_idx),
-                line_no,
-                true,
-                def_name,
-                params,
-            );
+            let idx =
+                push_source_callable_scope(&mut index, Some(proc_owner_idx), line_no, true, params);
             open_scopes.push(OpenLineScope {
                 idx,
                 indent,
@@ -290,20 +354,35 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
         if let Some((event_name, params)) = parse_singular_event_header(trimmed) {
             index.scopes[proc_owner_idx]
                 .scope
-                .functions
+                .events
                 .insert(event_name.to_owned());
-            let idx = push_source_callable_scope(
-                &mut index,
-                Some(proc_owner_idx),
-                line_no,
-                true,
-                event_name,
-                params,
-            );
+            let idx =
+                push_source_callable_scope(&mut index, Some(proc_owner_idx), line_no, true, params);
             open_scopes.push(OpenLineScope {
                 idx,
                 indent,
                 kind: SourceProcScopeKind::Event,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((delegate_name, params)) = parse_singular_delegate_header(trimmed) {
+            index.scopes[proc_owner_idx]
+                .scope
+                .delegates
+                .insert(delegate_name.to_owned());
+            push_source_delegate_scope(&mut index, proc_owner_idx, line_no, delegate_name, params);
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(bindings) = parse_when_header(trimmed) {
+            let idx = push_source_when_scope(&mut index, proc_owner_idx, line_no, bindings);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceProcScopeKind::When,
             });
             prev_nonempty_line = line_no;
             continue;
@@ -333,6 +412,7 @@ fn build_source_proc_scope_index(source: &str) -> SemanticScopeIndex {
                         | SourceProcScopeKind::Function
                         | SourceProcScopeKind::Event
                         | SourceProcScopeKind::Task
+                        | SourceProcScopeKind::When
                 )
             })
             .map(|scope| scope.idx)
@@ -362,6 +442,7 @@ enum SourceTopLevelScopeKind {
     Function,
     Event,
     Task,
+    When,
 }
 
 #[derive(Clone, Copy)]
@@ -372,6 +453,7 @@ enum SourceTopLevelSectionKind {
     Buffers,
     Init,
     Events,
+    Delegates,
     Tasks,
     Block,
     Sample,
@@ -383,6 +465,7 @@ struct SourceTopLevelSection {
     kind: SourceTopLevelSectionKind,
     indent: usize,
     owner_idx: usize,
+    declaration_indent: Option<usize>,
 }
 
 fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
@@ -442,6 +525,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                 kind: section_kind,
                 indent,
                 owner_idx,
+                declaration_indent: None,
             });
             prev_nonempty_line = line_no;
             continue;
@@ -449,6 +533,18 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
 
         if let Some(section) = section_stack.last().copied() {
             if indent > section.indent {
+                let is_grouped_declaration = matches!(
+                    section.kind,
+                    SourceTopLevelSectionKind::Events
+                        | SourceTopLevelSectionKind::Delegates
+                        | SourceTopLevelSectionKind::Tasks
+                ) && is_grouped_declaration_line(
+                    &mut section_stack
+                        .last_mut()
+                        .expect("copied the active top-level section above")
+                        .declaration_indent,
+                    indent,
+                );
                 match section.kind {
                     SourceTopLevelSectionKind::Ins
                     | SourceTopLevelSectionKind::Outs
@@ -476,41 +572,61 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         }
                     }
                     SourceTopLevelSectionKind::Events => {
-                        if let Some((event_name, params)) = parse_event_header(trimmed) {
-                            index.scopes[section.owner_idx]
-                                .scope
-                                .functions
-                                .insert(event_name.to_owned());
-                            let idx = push_source_callable_scope(
-                                &mut index,
-                                Some(section.owner_idx),
-                                line_no,
-                                true,
-                                event_name,
-                                params,
-                            );
-                            open_scopes.push(OpenLineScope {
-                                idx,
-                                indent,
-                                kind: SourceTopLevelScopeKind::Event,
-                            });
-                            prev_nonempty_line = line_no;
-                            continue;
+                        if is_grouped_declaration {
+                            if let Some((event_name, params)) = parse_event_header(trimmed) {
+                                index.scopes[section.owner_idx]
+                                    .scope
+                                    .events
+                                    .insert(event_name.to_owned());
+                                let idx = push_source_callable_scope(
+                                    &mut index,
+                                    Some(section.owner_idx),
+                                    line_no,
+                                    true,
+                                    params,
+                                );
+                                open_scopes.push(OpenLineScope {
+                                    idx,
+                                    indent,
+                                    kind: SourceTopLevelScopeKind::Event,
+                                });
+                                prev_nonempty_line = line_no;
+                                continue;
+                            }
+                        }
+                    }
+                    SourceTopLevelSectionKind::Delegates => {
+                        if is_grouped_declaration {
+                            if let Some((delegate_name, params)) = parse_event_header(trimmed) {
+                                index.scopes[section.owner_idx]
+                                    .scope
+                                    .delegates
+                                    .insert(delegate_name.to_owned());
+                                push_source_delegate_scope(
+                                    &mut index,
+                                    section.owner_idx,
+                                    line_no,
+                                    delegate_name,
+                                    params,
+                                );
+                            }
                         }
                     }
                     SourceTopLevelSectionKind::Tasks => {
-                        if let Some(task_name) = parse_grouped_task_header(trimmed) {
-                            push_source_task_scope(
-                                &mut index,
-                                section.owner_idx,
-                                &mut open_scopes,
-                                line_no,
-                                indent,
-                                task_name,
-                                SourceTopLevelScopeKind::Task,
-                            );
-                            prev_nonempty_line = line_no;
-                            continue;
+                        if is_grouped_declaration {
+                            if let Some(task_name) = parse_grouped_task_header(trimmed) {
+                                push_source_task_scope(
+                                    &mut index,
+                                    section.owner_idx,
+                                    &mut open_scopes,
+                                    line_no,
+                                    indent,
+                                    task_name,
+                                    SourceTopLevelScopeKind::Task,
+                                );
+                                prev_nonempty_line = line_no;
+                                continue;
+                            }
                         }
                     }
                     SourceTopLevelSectionKind::Sample | SourceTopLevelSectionKind::Graph => {}
@@ -520,8 +636,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
 
         if let Some((def_name, params)) = parse_def_header(trimmed) {
             index.document_scope.functions.insert(def_name.to_owned());
-            let idx =
-                push_source_callable_scope(&mut index, None, line_no, false, def_name, params);
+            let idx = push_source_callable_scope(&mut index, None, line_no, false, params);
             open_scopes.push(OpenLineScope {
                 idx,
                 indent,
@@ -540,20 +655,47 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
             });
             index.scopes[owner_idx]
                 .scope
-                .functions
+                .events
                 .insert(event_name.to_owned());
-            let idx = push_source_callable_scope(
-                &mut index,
-                Some(owner_idx),
-                line_no,
-                true,
-                event_name,
-                params,
-            );
+            let idx =
+                push_source_callable_scope(&mut index, Some(owner_idx), line_no, true, params);
             open_scopes.push(OpenLineScope {
                 idx,
                 indent,
                 kind: SourceTopLevelScopeKind::Event,
+            });
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some((delegate_name, params)) = parse_singular_delegate_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                index.scopes[idx].end_line = u32::MAX;
+                index.scopes[idx].end_column = u32::MAX;
+                idx
+            });
+            index.scopes[owner_idx]
+                .scope
+                .delegates
+                .insert(delegate_name.to_owned());
+            push_source_delegate_scope(&mut index, owner_idx, line_no, delegate_name, params);
+            prev_nonempty_line = line_no;
+            continue;
+        }
+
+        if let Some(bindings) = parse_when_header(trimmed) {
+            let owner_idx = *runtime_owner_idx.get_or_insert_with(|| {
+                let idx = push_line_scope(&mut index, None, line_no, 0, true);
+                index.scopes[idx].end_line = u32::MAX;
+                index.scopes[idx].end_column = u32::MAX;
+                idx
+            });
+            let idx = push_source_when_scope(&mut index, owner_idx, line_no, bindings);
+            open_scopes.push(OpenLineScope {
+                idx,
+                indent,
+                kind: SourceTopLevelScopeKind::When,
             });
             prev_nonempty_line = line_no;
             continue;
@@ -589,6 +731,7 @@ fn build_source_top_level_scope_index(source: &str) -> SemanticScopeIndex {
                         | SourceTopLevelScopeKind::Function
                         | SourceTopLevelScopeKind::Event
                         | SourceTopLevelScopeKind::Task
+                        | SourceTopLevelScopeKind::When
                 )
             })
             .map(|scope| scope.idx)
@@ -661,16 +804,42 @@ fn push_source_callable_scope(
     parent: Option<usize>,
     line_no: u32,
     allows_implicit_ports: bool,
-    name: &str,
     params: Vec<String>,
 ) -> usize {
     let idx = push_line_scope(index, parent, line_no, 0, allows_implicit_ports);
     let scope = &mut index.scopes[idx].scope;
-    scope.functions.insert(name.to_owned());
     for param in params {
         scope.parameters.insert(param);
     }
     idx
+}
+
+fn push_source_when_scope(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    line_no: u32,
+    bindings: Vec<String>,
+) -> usize {
+    let idx = push_line_scope(index, Some(owner_idx), line_no, 0, true);
+    for binding in bindings.into_iter().filter(|binding| binding != "_") {
+        index.scopes[idx].scope.parameters.insert(binding);
+    }
+    idx
+}
+
+fn push_source_delegate_scope(
+    index: &mut SemanticScopeIndex,
+    owner_idx: usize,
+    line_no: u32,
+    name: &str,
+    params: Vec<String>,
+) {
+    let idx = push_line_scope(index, Some(owner_idx), line_no, 0, true);
+    let scope = &mut index.scopes[idx].scope;
+    scope.delegates.insert(name.to_owned());
+    for param in params {
+        scope.parameters.insert(param);
+    }
 }
 
 fn push_source_task_scope<K: Copy>(
@@ -686,8 +855,18 @@ fn push_source_task_scope<K: Copy>(
         .scope
         .functions
         .insert(name.to_owned());
-    let idx = push_source_callable_scope(index, Some(owner_idx), line_no, true, name, Vec::new());
+    let idx = push_source_callable_scope(index, Some(owner_idx), line_no, true, Vec::new());
     open_scopes.push(OpenLineScope { idx, indent, kind });
+}
+
+fn is_grouped_declaration_line(declaration_indent: &mut Option<usize>, indent: usize) -> bool {
+    match declaration_indent {
+        Some(declaration_indent) => *declaration_indent == indent,
+        None => {
+            *declaration_indent = Some(indent);
+            true
+        }
+    }
 }
 
 fn trim_section_stack<S: Copy + SectionOwner>(
@@ -790,6 +969,7 @@ fn detect_source_proc_section_header(trimmed: &str) -> Option<SourceProcSectionK
         ("buffers", SourceProcSectionKind::Buffers),
         ("init", SourceProcSectionKind::Init),
         ("events", SourceProcSectionKind::Events),
+        ("delegates", SourceProcSectionKind::Delegates),
         ("tasks", SourceProcSectionKind::Tasks),
         ("block", SourceProcSectionKind::Block),
         ("sample", SourceProcSectionKind::Sample),
@@ -806,6 +986,7 @@ fn detect_source_top_level_section_header(trimmed: &str) -> Option<SourceTopLeve
         ("buffers", SourceTopLevelSectionKind::Buffers),
         ("init", SourceTopLevelSectionKind::Init),
         ("events", SourceTopLevelSectionKind::Events),
+        ("delegates", SourceTopLevelSectionKind::Delegates),
         ("tasks", SourceTopLevelSectionKind::Tasks),
         ("block", SourceTopLevelSectionKind::Block),
         ("sample", SourceTopLevelSectionKind::Sample),
@@ -853,6 +1034,13 @@ fn parse_singular_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
     Some((name, extract_param_names_from_parens(after_name)))
 }
 
+fn parse_singular_delegate_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
+    let rest = trimmed.strip_prefix("delegate ")?.trim_start();
+    let name = extract_leading_ident(rest)?;
+    let after_name = &rest[name.len()..];
+    Some((name, extract_param_names_from_parens(after_name)))
+}
+
 fn parse_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
     let paren = trimmed.find('(')?;
     let name = trimmed[..paren].trim();
@@ -863,6 +1051,16 @@ fn parse_event_header(trimmed: &str) -> Option<(&str, Vec<String>)> {
         return None;
     }
     Some((name, extract_param_names_from_parens(&trimmed[paren..])))
+}
+
+fn parse_when_header(trimmed: &str) -> Option<Vec<String>> {
+    let rest = trimmed.strip_prefix("when ")?.trim_start();
+    let paren = rest.find('(')?;
+    let target = rest[..paren].trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(extract_param_names_from_parens(&rest[paren..]))
 }
 
 fn parse_task_header(trimmed: &str) -> Option<&str> {

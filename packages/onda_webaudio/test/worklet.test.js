@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  EXECUTION_OPERATION_PROCESS,
+  EXECUTION_OPERATION_TRANSPORT,
+  createExecutionOutputRing,
+  drainExecutionOutputRing,
+  openExecutionOutputRing,
+} from "../src/execution-output-ring.js";
 
 let Processor;
 
@@ -78,6 +85,7 @@ function metadata() {
       control_outputs: [],
       params: [],
       events: [],
+      delegates: [],
       buffers: [{
         name: "samples",
         scalar: "f32",
@@ -85,6 +93,11 @@ function metadata() {
       }],
     },
   };
+}
+
+function processorOutputRing(delegateCapacity, printCapacity, budget = 1024) {
+  const buffer = createExecutionOutputRing(delegateCapacity, printCapacity, budget);
+  return { buffer, ring: openExecutionOutputRing(buffer) };
 }
 
 test("worklet remains silent until explicit full initialization", () => {
@@ -113,11 +126,14 @@ test("failed live initialization returns the worklet to the silent pending state
     },
   });
   const originalCheckExecutionStatus = processor.checkExecutionStatus;
+  let outputPublishes = 0;
+  processor.publishExecutionOutput = () => { outputPublishes += 1; };
   processor.checkExecutionStatus = () => {
     throw new Error("simulated processor init failure");
   };
 
   assert.throws(() => processor.init(1), /simulated processor init failure/);
+  assert.equal(outputPublishes, 1);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
   assert.throws(() => processor.init(0), /full initialization is required/);
@@ -177,6 +193,232 @@ test("failed event execution invalidates the worklet", () => {
   );
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
+});
+
+test("worklet prepares execution output before every Wasm entry", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.events = [{ name: "noop", export: "onda_process", params: [] }];
+  descriptor.metadata.delegates = [{ name: "reported", params: [] }];
+  descriptor.metadata.log_sites = [{
+    index: 0,
+    label: null,
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 1 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: [],
+    payload_size_bytes: 0,
+  }];
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      delegateCapacityBytes: 16,
+      printCapacityBytes: 16,
+      printCollectionEnabled: true,
+    },
+  });
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: true,
+    subscriptionId: 1,
+  });
+  const view = new DataView(processor.memory.buffer);
+  const dirtyOutput = () => {
+    for (const batchPtr of [processor.delegateBatchPtr, processor.printBatchPtr]) {
+      view.setUint32(batchPtr + 8, 9, true);
+      view.setUint32(batchPtr + 12, 7, true);
+      view.setUint32(batchPtr + 16, 5, true);
+    }
+    view.setUint32(processor.executionOutputPtr + 8, 11, true);
+  };
+  const assertPrepared = () => {
+    for (const batchPtr of [processor.delegateBatchPtr, processor.printBatchPtr]) {
+      assert.equal(view.getUint32(batchPtr + 8, true), 0);
+      assert.equal(view.getUint32(batchPtr + 12, true), 0);
+      assert.equal(view.getUint32(batchPtr + 16, true), 0);
+    }
+    assert.equal(view.getUint32(processor.executionOutputPtr + 8, true), 0);
+  };
+
+  dirtyOutput();
+  processor.init(1);
+  assertPrepared();
+
+  dirtyOutput();
+  processor.dispatchEvent("noop", []);
+  assertPrepared();
+
+  dirtyOutput();
+  assert.equal(processor.process([], [[new Float32Array(1)]]), true);
+  assertPrepared();
+});
+
+test("worklet captures raw delegate records only while subscribed", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.delegates = [{
+    name: "report",
+    params: [
+      {
+        name: "code",
+        scalar: "i32",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        element_size_bytes: 4,
+      },
+      {
+        name: "values",
+        scalar: "f32",
+        array_len: 0,
+        is_array: false,
+        is_slice: true,
+        element_size_bytes: 4,
+      },
+    ],
+  }];
+  const output = processorOutputRing(24, 0, 80);
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      delegateCapacityBytes: 24,
+      printCapacityBytes: 0,
+      executionOutputRing: output.buffer,
+    },
+  });
+  const reusableEntry = processor.executionOutputEntry;
+  const reusableDelegateView = processor.delegateRecordView;
+  let portMessages = 0;
+  processor.port.postMessage = () => { portMessages += 1; };
+  const view = new DataView(processor.memory.buffer);
+  assert.equal(view.getUint32(processor.executionOutputPtr, true), 0);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 0);
+
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: true,
+    subscriptionId: 7,
+  });
+  assert.equal(
+    view.getUint32(processor.executionOutputPtr, true),
+    processor.delegateBatchPtr,
+  );
+  const storage = processor.delegateStoragePtr;
+  view.setUint32(storage, 0, true);
+  view.setUint32(storage + 4, 16, true);
+  view.setInt32(storage + 8, 7, true);
+  view.setInt32(storage + 12, 2, true);
+  view.setFloat32(storage + 16, 1.25, true);
+  view.setFloat32(storage + 20, -2.5, true);
+  view.setUint32(processor.delegateBatchPtr + 8, 24, true);
+  view.setUint32(processor.delegateBatchPtr + 12, 1, true);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(processor.executionOutputEntry, reusableEntry);
+  assert.equal(processor.delegateRecordView, reusableDelegateView);
+  assert.equal(portMessages, 0);
+  let first;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { first = entry; }), 1);
+  assert.equal(first.operation, EXECUTION_OPERATION_PROCESS);
+  assert.equal(first.delegateRecordCount, 1);
+  assert.equal(first.delegateOverflowCount, 0);
+  assert.equal(first.delegateTransportDropCount, 0);
+  assert.equal(first.delegateSubscriptionId, 7);
+  assert.deepEqual([...first.delegateStorage], [
+    0, 0, 0, 0, 16, 0, 0, 0,
+    7, 0, 0, 0, 2, 0, 0, 0,
+    0, 0, 160, 63, 0, 0, 32, 192,
+  ]);
+
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  view.setUint32(processor.delegateBatchPtr + 16, 2, true);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(processor.pendingDelegateDrops, 1);
+  assert.equal(processor.pendingDelegateOverflow, 2);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 1);
+  view.setUint32(processor.delegateBatchPtr + 8, 0, true);
+  view.setUint32(processor.delegateBatchPtr + 12, 0, true);
+  view.setUint32(processor.delegateBatchPtr + 16, 0, true);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  let loss;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { loss = entry; }), 1);
+  assert.equal(loss.operation, EXECUTION_OPERATION_TRANSPORT);
+  assert.equal(loss.delegateRecordCount, 0);
+  assert.equal(loss.delegateOverflowCount, 2);
+  assert.equal(loss.delegateTransportDropCount, 1);
+
+  processor.handleMessage({
+    type: "delegate-subscription",
+    enabled: false,
+    subscriptionId: 7,
+  });
+  assert.equal(view.getUint32(processor.executionOutputPtr, true), 0);
+});
+
+test("worklet transports raw print records without formatting", () => {
+  const descriptor = metadata();
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.log_sites = [{
+    index: 0,
+    label: "value",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "sample",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const inactive = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      printCapacityBytes: 16,
+    },
+  });
+  assert.notEqual(inactive.printBatchPtr, 0);
+  assert.equal(
+    new DataView(inactive.memory.buffer).getUint32(inactive.executionOutputPtr + 4, true),
+    0,
+  );
+
+  const output = processorOutputRing(0, 16);
+  const processor = new Processor({
+    processorOptions: {
+      wasmBytes: wasm,
+      metadata: descriptor,
+      delegateCapacityBytes: 0,
+      printCapacityBytes: 16,
+      printCollectionEnabled: true,
+      printSubscriptionId: 7,
+      executionOutputRing: output.buffer,
+    },
+  });
+  const view = new DataView(processor.memory.buffer);
+  view.setUint32(processor.printStoragePtr, 0, true);
+  view.setUint32(processor.printStoragePtr + 4, 4, true);
+  view.setInt32(processor.printStoragePtr + 8, 42, true);
+  view.setUint32(processor.printBatchPtr + 8, 12, true);
+  view.setUint32(processor.printBatchPtr + 12, 1, true);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  let published;
+  assert.equal(drainExecutionOutputRing(output.ring, (entry) => { published = entry; }), 1);
+  assert.equal(published.printSubscriptionId, 7);
+  assert.equal(published.printRecordCount, 1);
+  assert.equal(published.printTransportDropCount, 0);
+  assert.deepEqual(
+    [...published.printStorage],
+    [0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 0, 0],
+  );
+
+  processor.handleMessage({
+    type: "print-subscription",
+    enabled: false,
+    subscriptionId: 7,
+  });
+  assert.equal(view.getUint32(processor.executionOutputPtr + 4, true), 0);
+  processor.publishExecutionOutput(EXECUTION_OPERATION_PROCESS, 0);
+  assert.equal(drainExecutionOutputRing(output.ring, () => {}), 0);
 });
 
 test("worklet uses null pointers only for absent processor surfaces", () => {

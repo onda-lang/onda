@@ -5,8 +5,9 @@ use onda_frontend::{
 
 use crate::formatting::{
     format_buffer_decl, format_buffer_section_default_type, format_const_decl, format_decl_type,
-    format_event_signature, format_expr, format_function_signature, format_param_decl,
-    format_port_decl, format_proc_header, format_struct_field, format_struct_header,
+    format_delegate_signature, format_event_signature, format_expr, format_function_signature,
+    format_param_decl, format_port_decl, format_proc_header, format_struct_field,
+    format_struct_header,
 };
 
 const FRONT_MATTER: &str = r#"---
@@ -303,6 +304,19 @@ fn render_proc(out: &mut String, level: usize, def: &ProcessorDef) {
         def.params_deferred_default_ty.as_ref(),
     );
     push_buffer_section(&mut lines, def);
+    let delegates = def
+        .delegates
+        .iter()
+        .filter(|delegate| is_public(&delegate.name))
+        .collect::<Vec<_>>();
+    if !delegates.is_empty() {
+        lines.push("  delegates:".to_owned());
+        lines.extend(
+            delegates
+                .into_iter()
+                .map(|delegate| format!("    {}", format_delegate_signature(delegate))),
+        );
+    }
     let events = def
         .events
         .iter()
@@ -463,6 +477,7 @@ mod tests {
         assert!(docs.contains("## `std/osc`"));
         assert!(docs.contains("proc Saw<T>:"));
         assert!(docs.contains("freq: T = 440.0 => update_freq"));
+        assert!(docs.contains("    finished()"));
         assert!(docs.contains("## `std/prelude`"));
         assert!(!docs.contains("def _hann_window"));
         assert!(!docs.contains("Namespace: `std::_"));

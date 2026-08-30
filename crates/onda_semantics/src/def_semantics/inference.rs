@@ -947,6 +947,19 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
                 kinds,
             );
         }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                propagate_expr_callee_buffer_requirements_to_params(
+                    value,
+                    caller_name,
+                    caller_param_index,
+                    fn_signatures,
+                    declared_buffer_params,
+                    snapshot,
+                    kinds,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,
@@ -1482,7 +1495,7 @@ fn collect_stmt_field_usage(
                     }
                 }
                 AssignTarget::Tuple(names) => {
-                    for name in names {
+                    for name in names.iter().filter_map(|target| target.binding()) {
                         if let Some((base, field)) = split_simple_field_path(name) {
                             if let Some(param_idx) = param_index.get(base).copied() {
                                 mark_param_field_usage(
@@ -1519,6 +1532,19 @@ fn collect_stmt_field_usage(
                 usage,
                 errors,
             );
+        }
+        Stmt::Print { values, .. } => {
+            for value in values {
+                collect_expr_field_usage(
+                    value,
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                );
+            }
         }
         Stmt::If {
             cond,
@@ -1981,6 +2007,7 @@ fn build_structural_param_fields(
             name: field_name,
             ty,
             default: None,
+            integer_range: None,
             struct_name: None,
             array_elem_ty,
             array_elem_struct,

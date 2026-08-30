@@ -27,7 +27,7 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       write = 0
 
     def prepare_impulse(value_count: i32):
-      active_taps = max(min(value_count, MaxImpulseLen), 0)
+      active_taps = value_count
       clear_state()
 
     events:
@@ -45,17 +45,17 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
         clear_state()
 
     sample:
-      if (active_taps <= 0):
+      if active_taps <= 0:
         out1 = 0.0
       else:
-        write = write - 1
+        write -= 1
 
         delay[write] = in1
         delay[write + MaxImpulseLen] = in1
 
         y: T = 0.0
         for i in 0..active_taps:
-          y = y + delay[write + i] * impulse[i]
+          y += delay[write + i] * impulse[i]
 
         out1 = y
 
@@ -107,12 +107,12 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
     def reset_counters():
       # Match HISSTools: a negative offset requests a fresh scheduling phase,
       # while an explicit offset is retained and reduced modulo the hop size.
-      if (offset < 0):
+      if offset < 0:
         pending_count = rng.next_u31() % HopSize
       else:
         pending_count = offset % HopSize
-      if (pending_count < 0):
-        pending_count = pending_count + HopSize
+      if pending_count < 0:
+        pending_count += HopSize
       output_idx = HopSize
       input_position = 0
       last_partition = 0
@@ -120,7 +120,7 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       partitions_done = 0
 
     def ceil_div_i(n: i32, d: i32):
-      if (n <= 0):
+      if n <= 0:
         return 0
       return (n + d - 1) / d
 
@@ -142,26 +142,22 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       # Match the target amount of completed work for this point in the hop,
       # forcing any remainder on the sample that reaches the FFT boundary.
       partitions_to_do = 0
-      if (pending_count >= HopSize):
+      if pending_count >= HopSize:
         partitions_to_do = (valid_partitions - partitions_done) - 1
       else:
         target = ((valid_partitions - 1) * pending_count) / HopSize
         partitions_to_do = target - partitions_done
 
       for _ in 0..partitions_to_do:
-        if (last_partition >= active_partitions):
+        if last_partition >= active_partitions:
           last_partition = 0
         impulse_part = partitions_done + 1
         accumulate_partition(impulse_part, last_partition)
-        last_partition = last_partition + 1
-        partitions_done = partitions_done + 1
+        last_partition += 1
+        partitions_done += 1
 
     def prepare_impulse(value_count: i32):
-      active_taps = value_count
-      if (active_taps < 0):
-        active_taps = 0
-      if (active_taps > MaxImpulseLen):
-        active_taps = MaxImpulseLen
+      active_taps = value_count {0..=MaxImpulseLen}
       active_partitions = ceil_div_i(active_taps, HopSize)
 
       clear_state()
@@ -204,23 +200,23 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
         reset_counters()
 
     sample:
-      if (active_partitions <= 0):
+      if active_partitions <= 0:
         out1 = 0.0
       else:
         y: T = 0.0
         if (output_idx < HopSize):
           y = output[output_idx]
-          output_idx = output_idx + 1
+          output_idx += 1
         out1 = y
 
         pending[pending_count] = in1
-        pending_count = pending_count + 1
+        pending_count += 1
 
         # Complete delayed partitions gradually as the hop advances. The final
         # sample always finishes the exact budget before the new FFT is needed.
         spread_partition_work()
 
-        if (pending_count >= HopSize):
+        if pending_count >= HopSize:
           # The upper half stays zero between blocks; only refresh the live input half.
           for i in 0..HopSize:
             block_time[i] = pending[i]
@@ -253,11 +249,11 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
           pending_count = 0
           output_idx = 0
 
-          valid_partitions = valid_partitions + 1
-          if (valid_partitions > active_partitions):
+          valid_partitions += 1
+          if valid_partitions > active_partitions:
             valid_partitions = active_partitions
-          input_position = input_position - 1
-          if (input_position < 0):
+          input_position -= 1
+          if input_position < 0:
             input_position = active_partitions - 1
           last_partition = input_position + 1
           partitions_done = 0
@@ -285,10 +281,10 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
     count = 0
     if frames > 0:
       count = 1
-    count = count + stage_window_count(frames, DirectTaps, HeadStageEnd, HeadFFTSize / 2)
-    count = count + stage_window_count(frames, HeadStageEnd, MidStageEnd, MidFFTSize / 2)
-    count = count + stage_window_count(frames, MidStageEnd, LargeStageEnd, LargeFFTSize / 2)
-    count = count + stage_window_count(frames, LargeStageEnd, frames, FFTSize / 2)
+    count += stage_window_count(frames, DirectTaps, HeadStageEnd, HeadFFTSize / 2)
+    count += stage_window_count(frames, HeadStageEnd, MidStageEnd, MidFFTSize / 2)
+    count += stage_window_count(frames, MidStageEnd, LargeStageEnd, LargeFFTSize / 2)
+    count += stage_window_count(frames, LargeStageEnd, frames, FFTSize / 2)
     return count
 
   def impulse_window_end(start: i32, frames: i32) -> i32:
@@ -354,7 +350,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       apply_offset(offset)
 
     def apply_offset(value: i32):
-      if (value < 0):
+      if value < 0:
         offset = rng.next_u31() % HopSize
       else:
         offset = value

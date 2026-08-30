@@ -22,18 +22,20 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/filter`](#stdfilter) | `DCBlock`, `OnePole`, `Resonator`, `Svf`, `mode` |
 | [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `decay_coefficient`, `stage` |
 | [`std/reverb`](#stdreverb) | `Schroeder` |
-| [`std/pitch_shift`](#stdpitch_shift) | `DualWindow` |
+| [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
 | [`std/levels`](#stdlevels) | `DB_PER_NAT`, `DB_TO_GAIN_SCALE`, `HALF_PI`, `MIN_FLOAT`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
-| [`std/gain`](#stdgain) | `Constant`, `DB_TO_GAIN_SCALE`, `Db`, `Smoothed`, `SmoothedDb` |
+| [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `INV_LN_2_OVER_12`, `LN_2_OVER_12`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between` |
-| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew` |
-| [`std/delay`](#stddelay) | `Delay` |
+| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew`, `time_coefficient` |
+| [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
+| [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
+| [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
 | [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver`, `impulse_window_count`, `impulse_window_end`, `stage_window_count` |
-| [`std/lookup`](#stdlookup) | `calcIdx`, `read`, `readC`, `readCW`, `readL`, `readLW`, `wrapIdx`, `write` |
+| [`std/lookup`](#stdlookup) | `read`, `readC`, `readCW`, `readL`, `readLW`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
 | [`std/prelude`](#stdprelude) | Automatically imports `std/math`, `std/lookup`, `std/random` |
 
@@ -163,7 +165,7 @@ proc Phasor<T>:
 proc Sine<T>:
   outs<T> 1
   params:
-    freq: T = 440.0
+    freq: T = 440.0 => update_freq
     amp: T = 1.0
     phase_offset: T = 0.0
   events:
@@ -213,8 +215,8 @@ proc SawDown<T>:
 proc Pulse<T>:
   outs<T> 1
   params:
-    freq: T = 440.0 => update_shape
-    width: T = 0.5 => update_shape
+    freq: T = 440.0 => update_freq
+    width: T = 0.5 {0.001, 0.999} => update_width
     amp: T = 1.0
   events:
     reset(phase_cycles: T = 0.0):
@@ -226,8 +228,8 @@ proc Pulse<T>:
 proc Square<T>:
   outs<T> 1
   params:
-    freq: T = 440.0
-    amp: T = 1.0
+    freq: T = 440.0 => update_freq
+    amp: T = 1.0 => update_amp
   events:
     reset(phase_cycles: T = 0.0):
 ```
@@ -258,14 +260,14 @@ Namespace: `std::filter`.
 #### Constants
 
 ```onda
-const ONE_POLE_LOWPASS: i32 = 0
-const ONE_POLE_HIGHPASS: i32 = 1
-const SVF_LOWPASS: i32 = 0
-const SVF_HIGHPASS: i32 = 1
-const SVF_BANDPASS: i32 = 2
-const SVF_NOTCH: i32 = 3
-const SVF_PEAK: i32 = 4
-const SVF_ALLPASS: i32 = 5
+const ONE_POLE_LOWPASS = 0
+const ONE_POLE_HIGHPASS = 1
+const SVF_LOWPASS = 0
+const SVF_HIGHPASS = 1
+const SVF_BANDPASS = 2
+const SVF_NOTCH = 3
+const SVF_PEAK = 4
+const SVF_ALLPASS = 5
 ```
 
 ### Processor `OnePole<T>`
@@ -275,8 +277,8 @@ proc OnePole<T>:
   ins<T> 1
   outs<T> 1
   params:
-    cutoff: T = 1000.0 => update_cutoff
-    mode: i32 = mode::ONE_POLE_LOWPASS
+    cutoff: T = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
+    mode: i32 = mode::ONE_POLE_LOWPASS {mode::ONE_POLE_LOWPASS, mode::ONE_POLE_HIGHPASS}
 ```
 
 ### Processor `DCBlock<T>`
@@ -294,8 +296,8 @@ proc Resonator<T>:
   ins<T> 1
   outs<T> 1
   params:
-    freq: T = 1000.0 => update_coefficients
-    bandwidth: T = 120.0 => update_coefficients
+    freq: T = 1000.0 {1.0, T(SR * 0.48)} => update_coefficients
+    bandwidth: T = 120.0 {1.0, T(SR * 0.48)} => update_coefficients
 ```
 
 ### Processor `Svf<T>`
@@ -305,9 +307,9 @@ proc Svf<T>:
   ins<T> 1
   outs<T> 1
   params:
-    private cutoff: T = 1000.0
+    private cutoff: T = 1000.0 {0.0, T(SR * 0.48)}
     private q: T = 0.707107
-    mode: i32 = 0
+    mode: i32 = mode::SVF_LOWPASS {mode::SVF_LOWPASS, mode::SVF_ALLPASS}
   events:
     update_coeffs(cutoff_v: T, q_v: T):
 ```
@@ -334,9 +336,13 @@ proc DecayEnv<T>:
   outs<T> 1
   params:
     decay_s: T = 0.2 => update_decay
-    trigger: T = 0.0
+    end_level: T = 0.00001 {0.000000001, 1.0}
+    trigger: T = 0.0 {0.0, 1.0}
+  delegates:
+    finished()
   events:
     start(level: T = 1.0):
+    reset():
 ```
 
 ### Processor `AR<T>`
@@ -347,7 +353,12 @@ proc AR<T>:
   params:
     attack_s: T = 0.01 => update_steps
     release_s: T = 0.1 => update_steps
-    trigger: T = 0.0
+    trigger: T = 0.0 {0.0, 1.0}
+  delegates:
+    finished()
+  events:
+    start():
+    reset():
 ```
 
 ### Processor `ASR<T>`
@@ -357,9 +368,15 @@ proc ASR<T>:
   outs<T> 1
   params:
     attack_s: T = 0.01 => update_shape
-    sustain: T = 1.0 => update_shape
+    sustain: T = 1.0 {0.0, 1.0} => update_shape
     release_s: T = 0.1 => update_shape
-    gate: T = 0.0
+    gate: T = 0.0 {0.0, 1.0}
+  delegates:
+    finished()
+  events:
+    start():
+    release():
+    reset():
 ```
 
 ### Namespace `stage`
@@ -382,9 +399,15 @@ proc ADSR<T>:
   params:
     attack_s: T = 0.01 => update_shape
     decay_s: T = 0.1 => update_shape
-    sustain: T = 0.7 => update_shape
+    sustain: T = 0.7 {0.0, 1.0} => update_shape
     release_s: T = 0.2 => update_shape
-    gate: T = 0.0
+    gate: T = 0.0 {0.0, 1.0}
+  delegates:
+    finished()
+  events:
+    start():
+    release():
+    reset():
 ```
 
 
@@ -415,10 +438,10 @@ proc Reverb<T>:
   ins<T> 2
   outs<T> 2
   params:
-    room_size: T = 0.82
-    damping: T = 0.34
-    width: T = 0.92
-    mix: T = 1.0
+    room_size: T = 0.82 {0.0, 1.0}
+    damping: T = 0.34 {0.0, 0.98}
+    width: T = 0.92 {0.0, 1.0}
+    mix: T = 1.0 {0.0, 1.0}
 ```
 
 
@@ -430,6 +453,12 @@ import std/pitch_shift
 
 Namespace: `std::pitch_shift`.
 
+### Constants
+
+```onda
+const BufferSize = i32(SR / 2)
+```
+
 ### Processor `DualWindow<T>`
 
 ```onda
@@ -438,7 +467,7 @@ proc DualWindow<T>:
   outs<T> 1
   params:
     semitones: T = 12.0
-    window_s: T = 0.09
+    window_s: T = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR}
 ```
 
 
@@ -458,7 +487,7 @@ proc White<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 ### Processor `Pink<T>`
@@ -469,7 +498,7 @@ proc Pink<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 ### Processor `Brown<T>`
@@ -480,7 +509,7 @@ proc Brown<T>:
   params:
     amp: T = 1.0
   events:
-    seed(seed: i64):
+    seed(value: i64):
 ```
 
 
@@ -555,7 +584,7 @@ proc Crossfade<T>:
   outs:
     out: T[N]
   params:
-    mix: T = 0.5
+    mix: T = 0.5 {0.0, 1.0}
 ```
 
 ### Processor `MonoToStereo<T>`
@@ -594,7 +623,7 @@ proc Crossfade<T>:
   ins<T> 2
   outs<T> 1
   params:
-    mix: T = 0.5
+    mix: T = 0.5 {0.0, 1.0}
 ```
 
 
@@ -605,12 +634,6 @@ import std/gain
 ```
 
 Namespace: `std::gain`.
-
-### Constants
-
-```onda
-const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
-```
 
 ### Processor `Constant<T>`
 
@@ -692,6 +715,12 @@ import std/smoothing
 
 Namespace: `std::smoothing`.
 
+### Functions
+
+```onda
+def time_coefficient<T>(time_s: T):
+```
+
 ### Processor `Lag<T>`
 
 ```onda
@@ -725,13 +754,174 @@ proc Slew<T>:
 ```
 
 
+## `std/dynamics`
+
+```onda
+import std/dynamics
+```
+
+Namespace: `std::dynamics`.
+
+### Functions
+
+```onda
+def soft_knee_reduction_db<T>(level_db: T, threshold_db: T, ratio: T, knee_db: T):
+```
+
+### Processor `PeakFollower<T>`
+
+```onda
+proc PeakFollower<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    attack_s: T = 0.01 => update_attack
+    release_s: T = 0.1 => update_release
+  events:
+    reset():
+```
+
+### Processor `RmsFollower<T>`
+
+```onda
+proc RmsFollower<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    attack_s: T = 0.01 => update_attack
+    release_s: T = 0.1 => update_release
+  events:
+    reset():
+```
+
+### Processor `Compressor<T>`
+
+```onda
+proc Compressor<T>:
+  ins<T> 2
+  outs<T> 2
+  params:
+    threshold_db: T = -18.0
+    ratio: T = 4.0
+    attack_s: T = 0.01 => update_attack
+    release_s: T = 0.1 => update_release
+    knee_db: T = 6.0
+    makeup_db: T = 0.0
+  events:
+    reset():
+```
+
+### Processor `Limiter<T>`
+
+```onda
+proc Limiter<T>:
+  ins<T> 2
+  outs<T> 2
+  params:
+    ceiling_db: T = -0.3 => update_ceiling
+    release_s: T = 0.05 => update_release
+  events:
+    reset():
+```
+
+### Processor `Gate<T>`
+
+```onda
+proc Gate<T>:
+  ins<T> 2
+  outs<T> 2
+  params:
+    threshold_db: T = -48.0 => update_threshold
+    attack_s: T = 0.002 => update_attack
+    release_s: T = 0.08 => update_release
+  events:
+    reset():
+```
+
+
 ## `std/delay`
 
 ```onda
 import std/delay
 ```
 
-Namespace: `std::delay`.
+Namespace: `std::delay<Capacity = SR * 2>`.
+
+### Struct `Line<T>`
+
+```onda
+struct Line<T>:
+  data: std::data<Capacity>::Data<T>
+  write_index: i32 = 0 {Capacity, wrap}
+  def read(self, delay_samples: i32):
+  def readL(self, delay_samples: T):
+  def readC(self, delay_samples: T):
+  def write(self, value: T):
+  def advance(self):
+  def clear(self):
+```
+
+### Processor `Integer<T>`
+
+```onda
+proc Integer<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples = 1 {0, Capacity - 1}
+  events:
+    reset():
+```
+
+### Processor `Linear<T>`
+
+```onda
+proc Linear<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples: T = 1.0 {0.0, Capacity - 2}
+  events:
+    reset():
+```
+
+### Processor `Cubic<T>`
+
+```onda
+proc Cubic<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples: T = 1.0 {1.0, Capacity - 3}
+  events:
+    reset():
+```
+
+### Processor `Smooth<T>`
+
+```onda
+proc Smooth<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples: T = 1.0 {0.0, Capacity - 2}
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+  events:
+    reset():
+```
+
+### Processor `Crossfade<T>`
+
+```onda
+proc Crossfade<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples: T = 1.0 {0.0, Capacity - 2}
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+  events:
+    reset():
+```
 
 ### Processor `Delay<T>`
 
@@ -740,9 +930,56 @@ proc Delay<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_s: T = 0.1 => update_delay
-    feedback: T = 0.0
-    mix: T = 1.0
+    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    feedback: T = 0.0 {-0.999, 0.999}
+    mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+  events:
+    reset():
+```
+
+### Processor `CrossfadeDelay<T>`
+
+```onda
+proc CrossfadeDelay<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    feedback: T = 0.0 {-0.999, 0.999}
+    mix: T = 1.0 {0.0, 1.0}
+    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+  events:
+    reset():
+```
+
+
+## `std/sample`
+
+```onda
+import std/sample
+```
+
+Namespace: `std::sample<Channels = 2>`.
+
+### Processor `Player<T>`
+
+```onda
+proc Player<T>:
+  outs<T> Channels
+  params:
+    speed: T = 1.0
+    looping: bool = false
+  buffers:
+    clip: T[]
+  delegates:
+    finished()
+    looped()
+  events:
+    play(start_frame: T = 0.0):
+    stop():
+    seek(frame: T):
+    reset():
 ```
 
 
@@ -791,9 +1028,6 @@ const Blackman: f64[N] = _blackman_window()
 ```onda
 struct FFT<T>:
   bins: std::complex::Complex<T>[N]
-  twiddles: std::complex::Complex<T>[N]
-  bitrev: i32[N]
-  prepared: bool
   def size(self):
   def real_bin_count(self):
   def clear(self):
@@ -831,7 +1065,7 @@ struct FFT<T>:
 ```onda
 struct STFT<T>:
   fft: FFT<T>
-  window_kind: i32 = _WindowHann
+  window_kind: f32 = _WindowHann
   def size(self):
   def real_bin_count(self):
   def set_hann(self):
@@ -863,11 +1097,11 @@ struct STFT<T>:
 struct RealFFT<T>:
   fft: FFT<T>
   input: T[N]
-  window_kind: i32 = _WindowHann
-  write: i32
-  filled: i32
-  since_hop: i32
-  ready: bool
+  window_kind: f32 = _WindowHann
+  write: i32 = 0 {N, wrap}
+  filled: i32 = 0
+  since_hop: i32 = 0
+  ready: bool = false
   def size(self):
   def real_bin_count(self):
   def hop_size(self):
@@ -892,10 +1126,10 @@ struct RealIFFT<T>:
   fft: FFT<T>
   output: T[N]
   norm: T[N]
-  window_kind: i32 = _WindowHann
-  frame: i32
-  pending: i32
-  overlap_frames: i32
+  window_kind: f32 = _WindowHann
+  frame: i32 = 0 {N, wrap}
+  pending: i32 = 0
+  overlap_frames: i32 = 0
   def size(self):
   def hop_size(self):
   def set_hann(self):
@@ -1012,8 +1246,6 @@ def read(buf, i: i32):
 def read(buf, ch: i32, i: i32):
 def write(buf, i: i32, value):
 def write(buf, ch: i32, i: i32, value):
-def calcIdx(pos):
-def wrapIdx(i: i32, n: i32):
 def readL(buf, pos):
 def readL(buf, ch: i32, pos):
 def readLW(buf, pos):

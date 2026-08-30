@@ -71,6 +71,21 @@ pub(super) fn infer_stmt_calls(
             kinds,
             errors,
         ),
+        Stmt::Print { values, .. } => {
+            for value in values {
+                infer_expr_calls(
+                    value,
+                    struct_instances,
+                    struct_array_roots,
+                    proc_array_roots,
+                    array_bindings,
+                    buffer_bindings,
+                    fn_signatures,
+                    kinds,
+                    errors,
+                );
+            }
+        }
         Stmt::If {
             cond,
             then_branch,

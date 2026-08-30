@@ -1,13 +1,23 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 4;
-export const PROCESSOR_ABI_VERSION: 6;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 5;
+export const PROCESSOR_ABI_VERSION: 5;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
 export const PROCESSOR_INIT_FULL: 1;
 export type OndaProcessorInitMode = 0 | 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
+/** Bytes preceding the payload of every packed delegate occurrence. */
+export const DELEGATE_RECORD_HEADER_SIZE_BYTES: 12;
+/** wasm32 byte size of the call-scoped delegate batch descriptor. */
+export const DELEGATE_BATCH_SIZE_BYTES: 20;
+/** Bytes preceding the payload of every packed print occurrence. */
+export const PRINT_RECORD_HEADER_SIZE_BYTES: 12;
+/** wasm32 byte size of the call-scoped print batch descriptor. */
+export const PRINT_BATCH_SIZE_BYTES: 20;
+/** wasm32 byte size of the call-scoped execution-output descriptor. */
+export const EXECUTION_OUTPUT_SIZE_BYTES: 12;
 
 export type OndaScalarType = "f32" | "f64" | "i32" | "i64" | "bool";
 export type OndaArtifactKind = "webassembly_module" | "relocatable_object";
@@ -142,6 +152,7 @@ export interface OndaEventParamMetadata {
   type_repr: string;
   scalar: OndaScalarType;
   array_len: number;
+  is_array: boolean;
   is_slice: boolean;
   byte_offset: number | null;
   byte_size: number | null;
@@ -157,6 +168,27 @@ export interface OndaEventMetadata {
   payload_min_size_bytes: number;
   has_dynamic_payload: boolean;
   params: OndaEventParamMetadata[];
+}
+
+export interface OndaDelegateParamMetadata {
+  name: string;
+  type_repr: string;
+  scalar: OndaScalarType;
+  array_len: number;
+  is_array: boolean;
+  is_slice: boolean;
+  byte_offset: number | null;
+  byte_size: number | null;
+  element_size_bytes: number;
+}
+
+export interface OndaDelegateMetadata {
+  index: number;
+  name: string;
+  payload_size_bytes: number | null;
+  payload_min_size_bytes: number;
+  has_dynamic_payload: boolean;
+  params: OndaDelegateParamMetadata[];
 }
 
 export interface OndaStateMetadata {
@@ -179,9 +211,9 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 4;
+  format_version: 5;
   artifact_kind: OndaArtifactKind;
-  abi_version: 6;
+  abi_version: 5;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;
@@ -209,8 +241,12 @@ export interface OndaProcessorMetadata {
     snapshot_byte_order: "little_endian";
     snapshot_restore_base: "post_init_physical_state_image";
     requires_full_blocks: boolean;
+    delegate_record_header_size_bytes: 12;
+    print_record_header_size_bytes: 12;
   };
   metadata: {
+    source_files: Array<{ path: string }>;
+    log_sites: OndaLogSiteMetadata[];
     inputs: OndaIoMetadata[];
     outputs: OndaIoMetadata[];
     control_outputs: OndaIoMetadata[];
@@ -218,6 +254,7 @@ export interface OndaProcessorMetadata {
     buffers: OndaBufferMetadata[];
     buffer_arrays: OndaBufferArrayMetadata[];
     events: OndaEventMetadata[];
+    delegates: OndaDelegateMetadata[];
     states: OndaStateMetadata[];
   };
   required_features?: string[];
@@ -230,6 +267,16 @@ export interface OndaProcessorMetadata {
     inline_functions_with_loops: boolean;
   };
   integrity?: { algorithm: string; wasm: string };
+}
+
+export interface OndaLogSiteMetadata {
+  index: number;
+  label: string | null;
+  source: { file: number | null; line: number; column: number; end_line: number; end_column: number };
+  lexical_owner: string;
+  declaration: string | null;
+  argument_types: Array<"f32" | "f64" | "i32" | "i64" | "bool">;
+  payload_size_bytes: number;
 }
 
 export interface OndaProcessorArtifact {
@@ -272,3 +319,89 @@ export function loadProcessorArtifactFiles(
   wasm: Uint8Array | ArrayBuffer | ArrayBufferView,
   metadata: string | object,
 ): Promise<{ wasm: Uint8Array; metadata: OndaProcessorMetadata }>;
+
+export interface OndaDelegateBatch {
+  storageAddress: number;
+  capacityBytes: number;
+  usedBytes: number;
+  recordCount: number;
+  overflowCount: number;
+}
+
+export type OndaPrintBatch = OndaDelegateBatch;
+export interface OndaPrintEntry {
+  siteIndex: number;
+  sequence: number;
+  label: string | null;
+  source: OndaLogSiteMetadata["source"];
+  lexicalOwner: string;
+  declaration: string | null;
+  values: Array<{ type: "f32" | "f64" | "i32" | "i64" | "bool"; value: number | bigint | boolean }>;
+}
+
+export interface OndaDelegateOccurrence {
+  delegateIndex: number;
+  sequence: number;
+  name: string;
+  payloadByteLength: number;
+  payload: Uint8Array;
+  values: Record<string, number | bigint | boolean | Array<number | bigint | boolean>>;
+}
+
+/** Initialize one reusable wasm32 batch descriptor and clear its result counters. */
+export function writeDelegateBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+  storageAddress: number,
+  capacityBytes: number,
+): void;
+/** Read and validate the result descriptor after successful generated execution. */
+export function readDelegateBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+): OndaDelegateBatch;
+export function writePrintBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+  storageAddress: number,
+  capacityBytes: number,
+): void;
+export function readPrintBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  batchAddress: number,
+): OndaPrintBatch;
+export function writeExecutionOutput(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  outputAddress: number,
+  delegateBatchAddress?: number,
+  printBatchAddress?: number,
+): void;
+/** Prepare every present batch and the shared sequence for one processor entry call. */
+export function resetExecutionOutput(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  outputAddress: number,
+): void;
+export function decodePrintRecords(
+  storage: Uint8Array | ArrayBuffer | ArrayBufferView,
+  usedBytes: number,
+  logSites: OndaLogSiteMetadata[],
+  byteOrder?: "little_endian" | "big_endian",
+): OndaPrintEntry[];
+export function formatPrintBatch(
+  memory: WebAssembly.Memory,
+  printBatchAddress: number,
+  metadata: OndaProcessorMetadata | { log_sites: OndaLogSiteMetadata[]; target?: OndaTargetInfo },
+): { text: string; entries: OndaPrintEntry[]; overflowCount: number };
+export function formatPrintRecords(
+  storage: Uint8Array | ArrayBuffer | ArrayBufferView,
+  usedBytes: number,
+  metadata: OndaProcessorMetadata | { log_sites: OndaLogSiteMetadata[]; target?: OndaTargetInfo },
+  overflowCount?: number,
+): { text: string; entries: OndaPrintEntry[]; overflowCount: number };
+/** Decode every complete record in used storage according to delegate metadata. */
+export function decodeDelegateRecords(
+  storage: Uint8Array | ArrayBuffer | ArrayBufferView,
+  usedBytes: number,
+  delegates: OndaDelegateMetadata[],
+  byteOrder?: "little_endian" | "big_endian",
+): OndaDelegateOccurrence[];

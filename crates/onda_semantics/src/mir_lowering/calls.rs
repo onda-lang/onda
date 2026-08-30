@@ -2316,6 +2316,33 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
+        if let Some(delegate_index) = crate::processor_lowering::delegate_publish_index(name) {
+            if pending_dispatch.is_some() || returns_value {
+                return Err(self.error(
+                    "invalid generated delegate publication call shape",
+                    location,
+                ));
+            }
+            self.push_statement(
+                block,
+                StatementKind::PublishDelegate {
+                    delegate: onda_mir::DelegateId::new(delegate_index as u32),
+                    args: call_args,
+                },
+                location,
+            );
+            return Ok(Some(
+                result_types
+                    .iter()
+                    .copied()
+                    .map(|ty| LoweredValue {
+                        value: zero_value(ty),
+                        ty,
+                    })
+                    .collect(),
+            ));
+        }
+
         let result = if returns_value {
             let locals = result_types
                 .iter()
@@ -2509,6 +2536,7 @@ impl<'a> FunctionLowerer<'a> {
                 crate::builtins::ARRAY_LEN_METHOD => Some((PrimitiveType::I32, 0_u8)),
                 crate::builtins::BUFFER_CHANS_METHOD => Some((PrimitiveType::I32, 1_u8)),
                 crate::builtins::BUFFER_SAMPLERATE_METHOD => Some((PrimitiveType::F32, 2_u8)),
+                crate::builtins::BUFFER_BOUND_METHOD => Some((PrimitiveType::Bool, 3_u8)),
                 _ => None,
             };
             if let Some((ty, operation)) = operation {
@@ -2538,7 +2566,8 @@ impl<'a> FunctionLowerer<'a> {
                         let rvalue = match operation {
                             0 => Rvalue::BufferParamLen(buffer),
                             1 => Rvalue::BufferParamChannels(buffer),
-                            _ => Rvalue::BufferParamSampleRate(buffer),
+                            2 => Rvalue::BufferParamSampleRate(buffer),
+                            _ => Rvalue::BufferParamIsBound(buffer),
                         };
                         return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
                     }
@@ -2559,7 +2588,8 @@ impl<'a> FunctionLowerer<'a> {
                         let rvalue = match operation {
                             0 => Rvalue::BufferLen(buffer),
                             1 => Rvalue::BufferChannels(buffer),
-                            _ => Rvalue::BufferSampleRate(buffer),
+                            2 => Rvalue::BufferSampleRate(buffer),
+                            _ => Rvalue::BufferIsBound(buffer),
                         };
                         return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
                     }
@@ -2716,8 +2746,10 @@ impl<'a> FunctionLowerer<'a> {
             Some((base, PrimitiveType::I32, 0_u8))
         } else if let Some(base) = parse_buffer_chans_instance_base(name) {
             Some((base, PrimitiveType::I32, 1_u8))
+        } else if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+            Some((base, PrimitiveType::F32, 2_u8))
         } else {
-            parse_buffer_samplerate_instance_base(name).map(|base| (base, PrimitiveType::F32, 2_u8))
+            parse_buffer_bound_instance_base(name).map(|base| (base, PrimitiveType::Bool, 3_u8))
         };
         let Some((base, ty, operation)) = metadata else {
             return Ok(None);
@@ -2735,15 +2767,19 @@ impl<'a> FunctionLowerer<'a> {
         let rvalue = match (reference, operation) {
             (MaterializedBufferReference::Interface(buffer), 0) => Rvalue::BufferLen(buffer),
             (MaterializedBufferReference::Interface(buffer), 1) => Rvalue::BufferChannels(buffer),
-            (MaterializedBufferReference::Interface(buffer), _) => Rvalue::BufferSampleRate(buffer),
+            (MaterializedBufferReference::Interface(buffer), 2) => Rvalue::BufferSampleRate(buffer),
+            (MaterializedBufferReference::Interface(buffer), _) => Rvalue::BufferIsBound(buffer),
             (MaterializedBufferReference::Parameter(parameter), 0) => {
                 Rvalue::BufferParamLen(parameter)
             }
             (MaterializedBufferReference::Parameter(parameter), 1) => {
                 Rvalue::BufferParamChannels(parameter)
             }
-            (MaterializedBufferReference::Parameter(parameter), _) => {
+            (MaterializedBufferReference::Parameter(parameter), 2) => {
                 Rvalue::BufferParamSampleRate(parameter)
+            }
+            (MaterializedBufferReference::Parameter(parameter), _) => {
+                Rvalue::BufferParamIsBound(parameter)
             }
         };
         Ok(Some(self.emit_temp(block, ty, rvalue, location)))

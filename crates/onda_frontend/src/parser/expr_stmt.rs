@@ -42,7 +42,12 @@ fn parse_init_stmt_list_pair(
                 }
                 AssignTarget::Tuple(roots) => {
                     debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
-                    assigned_roots.extend(roots.iter().cloned());
+                    assigned_roots.extend(
+                        roots
+                            .iter()
+                            .filter_map(TupleAssignTarget::binding)
+                            .map(str::to_owned),
+                    );
                 }
                 AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
             }
@@ -265,6 +270,7 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
         Rule::return_stmt => parse_return_stmt(pair),
         Rule::yield_stmt => parse_yield_stmt(pair),
         Rule::await_stmt => parse_await_stmt(pair),
+        Rule::print_stmt => parse_print_stmt(pair),
         Rule::if_stmt => parse_if_stmt(pair),
         Rule::for_stmt => parse_for_stmt(pair),
         Rule::while_stmt => parse_while_stmt(pair),
@@ -277,6 +283,30 @@ pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> 
             "unexpected statement kind in parser",
         )]),
     }
+}
+
+fn parse_print_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let args = pair
+        .into_inner()
+        .find(|child| child.as_rule() == Rule::print_args);
+    let mut label = None;
+    let mut values = Vec::new();
+    if let Some(args) = args {
+        for argument in args.into_inner() {
+            match argument.as_rule() {
+                Rule::quoted_text => label = Some(parse_quoted_text(&argument)?),
+                Rule::expr => values.push(parse_expr(argument)?),
+                _ => {}
+            }
+        }
+    }
+    Ok(Stmt::Print {
+        loc,
+        label,
+        values,
+        origin: None,
+    })
 }
 
 fn parse_pinned_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
@@ -515,7 +545,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                        decl_ty: Some(decl_ty),
+                        decl_ty: Some(DeclType::Scalar(decl_ty)),
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
@@ -606,7 +636,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         .filter(|p| p.as_rule() == Rule::type_name)
                         .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
                         .collect();
-                    let _tuple_ty = DeclType::Tuple(elems?);
+                    let tuple_ty = DeclType::Tuple(elems?);
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![syntax_at_loc(
                             loc.as_ref(),
@@ -617,7 +647,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         loc,
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                        decl_ty: None,
+                        decl_ty: Some(tuple_ty),
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
@@ -718,7 +748,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 loc,
                 target_loc: stmt_loc_from_pair(&name_pair),
                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
-                decl_ty: has_range.then_some(PrimitiveType::I32),
+                decl_ty: has_range.then_some(DeclType::Scalar(PrimitiveType::I32)),
                 generic_decl_ty: None,
                 is_typed_decl: has_range,
                 typed_decl_ty_loc: Span::ZERO,
@@ -1021,8 +1051,8 @@ pub(super) fn parse_for_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnosti
             )]);
         }
     };
-    let start = parse_for_bound(start_pair)?;
-    let end = parse_for_bound(end_pair)?;
+    let start = parse_expr(start_pair)?;
+    let end = parse_expr(end_pair)?;
     let body = parse_stmt_block(body_pair)?;
 
     Ok(Stmt::For {
@@ -1047,7 +1077,7 @@ pub(super) fn parse_loop_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnost
         return Err(vec![syntax_at_loc(loc.as_ref(), "missing loop body")]);
     };
 
-    let count = parse_for_bound(count_pair)?;
+    let count = parse_expr(count_pair)?;
     let body = parse_stmt_block(body_pair)?;
     Ok(Stmt::For {
         loc,
@@ -1084,34 +1114,6 @@ pub(super) fn parse_break_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnos
 pub(super) fn parse_continue_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     let loc = stmt_loc_from_pair(&pair);
     Ok(Stmt::Continue { loc })
-}
-
-pub(super) fn parse_for_bound(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
-    let loc = stmt_loc_from_pair(&pair);
-    match pair.as_rule() {
-        Rule::int_lit => Ok(Expr::int(parse_int(pair.as_str())? as i64).with_loc(loc)),
-        Rule::path_ident | Rule::namespace_ref => {
-            Ok(Expr::var(pair_symbol_text(&pair)).with_loc(loc))
-        }
-        Rule::for_bound => {
-            let mut inner = pair.into_inner();
-            let Some(inner_pair) = inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing for/loop bound expression",
-                )]);
-            };
-            match inner_pair.as_rule() {
-                Rule::expr => parse_expr(inner_pair),
-                _ => parse_for_bound(inner_pair),
-            }
-        }
-        Rule::expr => parse_expr(pair),
-        _ => Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "for/loop bound must be an integer literal, variable path, or parenthesized expression",
-        )]),
-    }
 }
 
 pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Diagnostic>> {

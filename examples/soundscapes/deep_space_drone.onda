@@ -62,7 +62,7 @@ sample:
     voices[i].brightness = brightness * (0.72 + i * 0.11)
     voice = voices[i]() * (0.52 / VoiceCount)
     pan = -0.86 + 1.72 * i / (VoiceCount - 1)
-    (gain_l, gain_r) = std::levels::pan_3db(pan)
+    gain_l, gain_r = std::levels::pan_3db(pan)
     dry_l = dry_l + voice * gain_l
     dry_r = dry_r + voice * gain_r
 

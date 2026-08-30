@@ -146,7 +146,8 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => collect_buffer_parameter(*parameter, used),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => collect_buffer_parameter(*parameter, used),
         Rvalue::MakeSlice { source, .. } => collect_slice_source_parameters(source, used),
         Rvalue::InitAll
         | Rvalue::Use(_)
@@ -162,6 +163,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
+        | Rvalue::BufferIsBound(_)
         | Rvalue::ConstDataLoad { .. }
         | Rvalue::SliceLoad { .. }
         | Rvalue::SliceLen(_) => {}
@@ -189,7 +191,7 @@ fn collect_block_parameters(block: &Block, used: &mut [bool]) {
                 collect_place_parameters(destination, used);
                 collect_rvalue_parameters(value, used);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     collect_call_argument_parameters(argument, used);
                 }
@@ -207,6 +209,7 @@ fn collect_block_parameters(block: &Block, used: &mut [bool]) {
             }
             StatementKind::Loop { body } => collect_block_parameters(body, used),
             StatementKind::OutputStore { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::SliceStore { .. }
@@ -264,7 +267,8 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         Rvalue::BufferParamLoad { parameter, .. }
         | Rvalue::BufferParamLen(parameter)
         | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter) => rewrite_buffer_parameter(parameter, mapping),
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => rewrite_buffer_parameter(parameter, mapping),
         Rvalue::MakeSlice { source, .. } => rewrite_slice_source_parameters(source, mapping),
         Rvalue::InitAll
         | Rvalue::Use(_)
@@ -280,6 +284,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
+        | Rvalue::BufferIsBound(_)
         | Rvalue::ConstDataLoad { .. }
         | Rvalue::SliceLoad { .. }
         | Rvalue::SliceLen(_) => {}
@@ -307,7 +312,7 @@ fn rewrite_block_parameters(block: &mut Block, mapping: &[Option<ParameterId>]) 
                 rewrite_place_parameter(destination, mapping);
                 rewrite_rvalue_parameters(value, mapping);
             }
-            StatementKind::Call { args, .. } => {
+            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
                 for argument in args {
                     rewrite_call_argument_parameters(argument, mapping);
                 }
@@ -325,6 +330,7 @@ fn rewrite_block_parameters(block: &mut Block, mapping: &[Option<ParameterId>]) 
             }
             StatementKind::Loop { body } => rewrite_block_parameters(body, mapping),
             StatementKind::OutputStore { .. }
+            | StatementKind::PublishLog { .. }
             | StatementKind::ControlOutputStore { .. }
             | StatementKind::BufferStore { .. }
             | StatementKind::SliceStore { .. }

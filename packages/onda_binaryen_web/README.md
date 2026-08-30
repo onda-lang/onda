@@ -1,5 +1,7 @@
 # Onda Binaryen Web Backend
 
+See [api.md](api.md) for the complete public Web API shared with the released package.
+
 This package consumes Onda's versioned MIR as compact MessagePack, JSON, or an already-decoded
 object and emits an executable WebAssembly DSP module with Binaryen.js. It runs in browsers and Node
 without LLVM, `wasm-ld`, or an Onda toolchain in the code-generation environment.
@@ -30,14 +32,20 @@ such a boundary would need to reproduce every invariant enforced by `onda_mir`. 
 a JSON string, a MessagePack `ArrayBuffer`/typed-array view, or a decoded object. JSON remains useful
 for inspection; the browser compiler and test corpus use MessagePack as the production transport.
 
-The generated module exports `memory`, `__heap_base`, `onda_processor_init(params_ptr, state_ptr, all)`, the
-11-argument processor `onda_process`, and one `onda_event_N` function per declared event. Each
-function returns zero on success or a positive generated execution-failure code. These are
+The generated module exports `memory`, `__heap_base`,
+the 8-argument `onda_processor_init(params_ptr, state_ptr, mode, buffers_ptr,
+buffer_frames_ptr, buffer_channels_ptr, buffer_sample_rates_ptr, output_ptr)`, the 12-argument processor
+`onda_process`, and one `onda_event_N` function per declared event. Init, process, and event entries
+take an optional call-scoped execution-output pointer carrying independent delegate and print
+batches. Each function returns zero on success or a positive generated execution-failure code. These are
 the complete wasm32-module profile of the generic
 [`Onda processor ABI`](../../docs/processor-abi.md), not a Web Audio-specific interface. The host
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
-event payload layouts, and all exported ABI names.
+event/delegate payload layouts, print log sites, source tables, and all exported ABI names. See
+the internal [delegate host integration](../../docs/delegates.md) and
+[print host integration](../../docs/printing.md) references for batch sizing, decoding, formatting,
+and overflow handling.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,
@@ -68,7 +76,7 @@ The backend also supports primitive slice locals and reference arguments, event 
 
 The MIR schema defines three ordered `i32` process parameters:
 `(start_frame, frames, flags)`. `process_frame(offset)` is the checked source of audio-I/O
-addresses. The public 11-argument `onda_process` export keeps full-block base pointers and accepts
+addresses. The public 12-argument `onda_process` export keeps full-block base pointers and accepts
 any segment contained in the configured block. BEGIN and END flags independently gate block hooks;
 they do not assert a position or maintain a hidden ABI cursor, and zero-frame calls are valid. The
 reference AudioWorklet maintains its own compile-block cursor so Web Audio render quanta may be

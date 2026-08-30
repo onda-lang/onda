@@ -47,8 +47,16 @@ const BUILTIN_STD_MODULES: &[(&str, &str)] = &[
         include_str!("../../../../stdlib/std/smoothing.onda"),
     ),
     (
+        "std/dynamics",
+        include_str!("../../../../stdlib/std/dynamics.onda"),
+    ),
+    (
         "std/delay",
         include_str!("../../../../stdlib/std/delay.onda"),
+    ),
+    (
+        "std/sample",
+        include_str!("../../../../stdlib/std/sample.onda"),
     ),
     ("std/data", include_str!("../../../../stdlib/std/data.onda")),
     ("std/fft", include_str!("../../../../stdlib/std/fft.onda")),

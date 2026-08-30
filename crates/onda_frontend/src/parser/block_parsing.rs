@@ -476,43 +476,7 @@ fn parse_event_decl(item: Pair<'_, Rule>) -> Result<EventDef, Vec<Diagnostic>> {
                     name = Some(part.as_str().to_owned());
                 }
             }
-            Rule::event_param_list => {
-                for event_param in part.into_inner() {
-                    if event_param.as_rule() != Rule::event_param_decl {
-                        continue;
-                    }
-                    let param_loc = stmt_loc_from_pair(&event_param);
-                    let mut param_inner = event_param.into_inner();
-                    let Some(param_name_pair) = param_inner.next() else {
-                        return Err(vec![syntax_at_loc(
-                            param_loc.as_ref(),
-                            "missing event parameter name",
-                        )]);
-                    };
-                    let mut ty = EventParamType::Scalar(PrimitiveType::F32);
-                    let mut ty_loc = Span::ZERO;
-                    let mut default = None;
-                    for item in param_inner {
-                        match item.as_rule() {
-                            Rule::event_param_type => {
-                                ty_loc = stmt_loc_from_pair(&item);
-                                ty = parse_event_param_type(item)?;
-                            }
-                            Rule::expr => {
-                                default = Some(parse_expr_inner(item));
-                            }
-                            _ => {}
-                        }
-                    }
-                    params.push(EventParamDecl {
-                        loc: param_loc,
-                        name: param_name_pair.as_str().to_owned(),
-                        ty,
-                        ty_loc,
-                        default,
-                    });
-                }
-            }
+            Rule::event_param_list => params = parse_event_params(part)?,
             Rule::stmt_block => {
                 body = Some(parse_stmt_block(part)?);
             }
@@ -537,6 +501,201 @@ fn parse_event_decl(item: Pair<'_, Rule>) -> Result<EventDef, Vec<Diagnostic>> {
         params,
         body,
     })
+}
+
+pub(super) fn parse_delegates_block(
+    block_pair: Pair<'_, Rule>,
+) -> Result<DelegateBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
+    let mut delegates = Vec::new();
+    for child in block_pair.into_inner() {
+        if child.as_rule() != Rule::delegate_list {
+            continue;
+        }
+        for item in child.into_inner() {
+            if item.as_rule() == Rule::delegate_decl {
+                merge_delegate_defs(&mut delegates, vec![parse_delegate_decl(item)?])?;
+            }
+        }
+    }
+    Ok(DelegateBlock {
+        loc: block_loc,
+        delegates,
+    })
+}
+
+pub(super) fn parse_delegate_block(
+    block_pair: Pair<'_, Rule>,
+) -> Result<DelegateBlock, Vec<Diagnostic>> {
+    let block_loc = stmt_loc_from_pair(&block_pair);
+    let Some(decl) = block_pair.into_inner().next() else {
+        return Err(vec![syntax_at_loc(
+            block_loc.as_ref(),
+            "missing delegate declaration",
+        )]);
+    };
+    Ok(DelegateBlock {
+        loc: block_loc,
+        delegates: vec![parse_delegate_decl(decl)?],
+    })
+}
+
+pub(super) fn merge_delegate_defs(
+    existing: &mut Vec<DelegateDef>,
+    incoming: Vec<DelegateDef>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut seen = existing
+        .iter()
+        .map(|delegate| delegate.name.clone())
+        .collect::<HashSet<_>>();
+    for delegate in incoming {
+        if !seen.insert(delegate.name.clone()) {
+            return Err(vec![syntax_at_loc(
+                delegate.loc.as_ref(),
+                format!("duplicate delegate declaration '{}'", delegate.name),
+            )]);
+        }
+        existing.push(delegate);
+    }
+    Ok(())
+}
+
+fn parse_delegate_decl(item: Pair<'_, Rule>) -> Result<DelegateDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&item);
+    let mut name = None;
+    let mut params = Vec::new();
+    for part in item.into_inner() {
+        match part.as_rule() {
+            Rule::ident if name.is_none() => name = Some(part.as_str().to_owned()),
+            Rule::event_param_list => params = parse_event_params(part)?,
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing delegate name")]);
+    };
+    Ok(DelegateDef { loc, name, params })
+}
+
+fn parse_event_params(list: Pair<'_, Rule>) -> Result<Vec<EventParamDecl>, Vec<Diagnostic>> {
+    let mut params = Vec::new();
+    for event_param in list.into_inner() {
+        if event_param.as_rule() != Rule::event_param_decl {
+            continue;
+        }
+        let param_loc = stmt_loc_from_pair(&event_param);
+        let mut param_inner = event_param.into_inner();
+        let Some(param_name_pair) = param_inner.next() else {
+            return Err(vec![syntax_at_loc(
+                param_loc.as_ref(),
+                "missing event parameter name",
+            )]);
+        };
+        let mut ty = EventParamType::Scalar(PrimitiveType::F32);
+        let mut ty_loc = Span::ZERO;
+        let mut default = None;
+        for item in param_inner {
+            match item.as_rule() {
+                Rule::event_param_type => {
+                    ty_loc = stmt_loc_from_pair(&item);
+                    ty = parse_event_param_type(item)?;
+                }
+                Rule::expr => default = Some(parse_expr_inner(item)),
+                _ => {}
+            }
+        }
+        params.push(EventParamDecl {
+            loc: param_loc,
+            name: param_name_pair.as_str().to_owned(),
+            ty,
+            ty_loc,
+            default,
+        });
+    }
+    Ok(params)
+}
+
+pub(super) fn parse_when_block(block_pair: Pair<'_, Rule>) -> Result<WhenDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&block_pair);
+    let mut target = None;
+    let mut bindings = Vec::new();
+    let mut body = None;
+    for part in block_pair.into_inner() {
+        match part.as_rule() {
+            Rule::when_target => target = Some(parse_when_target(part)?),
+            Rule::when_binding_list => {
+                bindings = part
+                    .into_inner()
+                    .filter(|binding| binding.as_rule() == Rule::when_binding)
+                    .filter_map(|binding| binding.into_inner().next())
+                    .map(|name| WhenBinding {
+                        loc: stmt_loc_from_pair(&name),
+                        name: name.as_str().to_owned(),
+                    })
+                    .collect();
+            }
+            Rule::stmt_block => body = Some(parse_stmt_block(part)?),
+            _ => {}
+        }
+    }
+    Ok(WhenDef {
+        loc,
+        target: target.ok_or_else(|| {
+            vec![syntax_at_loc(
+                loc.as_ref(),
+                "missing delegate target in when handler",
+            )]
+        })?,
+        bindings,
+        body: body.ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing when handler body")])?,
+    })
+}
+
+fn parse_when_target(pair: Pair<'_, Rule>) -> Result<WhenTarget, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let Some(target) = pair.into_inner().next() else {
+        return Err(vec![syntax_at_loc(loc.as_ref(), "missing delegate target")]);
+    };
+    match target.as_rule() {
+        Rule::path_ident => {
+            let mut path = target
+                .as_str()
+                .split('.')
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            let delegate = path.pop().expect("path_ident is nonempty");
+            Ok(WhenTarget {
+                loc,
+                receiver: path,
+                index: None,
+                delegate,
+            })
+        }
+        Rule::when_indexed_target => {
+            let mut receiver = None;
+            let mut index = None;
+            let mut delegate = None;
+            for part in target.into_inner() {
+                match part.as_rule() {
+                    Rule::ident if receiver.is_none() => receiver = Some(part.as_str().to_owned()),
+                    Rule::ident => delegate = Some(part.as_str().to_owned()),
+                    Rule::expr => index = Some(parse_expr_inner(part)),
+                    _ => {}
+                }
+            }
+            Ok(WhenTarget {
+                loc,
+                receiver: vec![receiver.ok_or_else(|| {
+                    vec![syntax_at_loc(loc.as_ref(), "missing indexed when receiver")]
+                })?],
+                index,
+                delegate: delegate.ok_or_else(|| {
+                    vec![syntax_at_loc(loc.as_ref(), "missing indexed when delegate")]
+                })?,
+            })
+        }
+        _ => Err(vec![syntax_at_loc(loc.as_ref(), "invalid when target")]),
+    }
 }
 
 pub(super) fn parse_tasks_block(block_pair: Pair<'_, Rule>) -> Result<TaskBlock, Vec<Diagnostic>> {
@@ -876,6 +1035,8 @@ pub(super) fn parse_proc_block(
     let mut params_deferred_count: Option<Expr> = None;
     let mut params_deferred_default_ty: Option<DeclType> = None;
     let mut events = Vec::<EventDef>::new();
+    let mut delegates = Vec::<DelegateDef>::new();
+    let mut whens = Vec::<WhenDef>::new();
     let mut tasks = Vec::<TaskDef>::new();
     let mut buffers = Vec::new();
     let mut buffers_deferred_count: Option<Expr> = None;
@@ -949,6 +1110,15 @@ pub(super) fn parse_proc_block(
                 let block = parse_event_block(child)?;
                 merge_event_defs(&mut events, block.events)?;
             }
+            Rule::delegates_block => {
+                let block = parse_delegates_block(child)?;
+                merge_delegate_defs(&mut delegates, block.delegates)?;
+            }
+            Rule::delegate_block => {
+                let block = parse_delegate_block(child)?;
+                merge_delegate_defs(&mut delegates, block.delegates)?;
+            }
+            Rule::when_block => whens.push(parse_when_block(child)?),
             Rule::tasks_block => {
                 let parsed = parse_tasks_block(child)?;
                 merge_task_defs(&mut tasks, parsed.tasks)?;
@@ -1056,6 +1226,8 @@ pub(super) fn parse_proc_block(
         params_deferred_count,
         params_deferred_default_ty,
         events,
+        delegates,
+        whens,
         tasks,
         buffers,
         buffers_deferred_count,
@@ -1118,6 +1290,7 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     let mut parsed_ty = None::<FieldType>;
                     let mut ty_loc = Span::ZERO;
                     let mut default = None;
+                    let mut range = None;
                     for part in decl_inner {
                         match part.as_rule() {
                             Rule::field_type => {
@@ -1126,6 +1299,9 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                             }
                             Rule::expr => {
                                 default = Some(parse_expr_inner(part));
+                            }
+                            Rule::binding_range => {
+                                range = parse_binding_range_pair(part)?.range;
                             }
                             _ => {}
                         }
@@ -1137,6 +1313,30 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     } else {
                         FieldType::Scalar(PrimitiveType::F32)
                     };
+                    if range.is_some()
+                        && !matches!(
+                            ty,
+                            FieldType::Scalar(PrimitiveType::I32 | PrimitiveType::I64)
+                        )
+                    {
+                        return Err(vec![syntax_at_loc(
+                            field_loc.as_ref(),
+                            "binding ranges require an i32 or i64 struct field",
+                        )]);
+                    }
+                    if let Some((func, lower, upper)) = range {
+                        let Some(value) = default.take() else {
+                            return Err(vec![syntax_at_loc(
+                                field_loc.as_ref(),
+                                "ranged struct fields require a default expression",
+                            )]);
+                        };
+                        default = Some(Expr::Call {
+                            loc: field_loc,
+                            func,
+                            args: vec![value, lower, upper],
+                        });
+                    }
                     fields.push(StructField {
                         loc: field_loc,
                         name: field_name.as_str().to_owned(),

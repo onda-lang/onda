@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,8 +13,9 @@ use onda_cpal::{
     SampleConsumer, SampleProducer, StreamErrorState,
 };
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunEventInfo, RunEventValue,
-    RunOptions, RunParamInfo,
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
+    RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
+    RunPrintBatch, RunPrintEntry, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
@@ -23,11 +24,13 @@ use serde_json::{json, Value};
 
 use crate::{
     available_audio_devices, display_path, format_run_build_error, format_single_diagnostic,
-    run_buffer_json, run_event_json, run_param_json,
+    run_buffer_json, run_event_json, run_event_value_json, run_param_json,
 };
 
 const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const SCOPE_CAPACITY_FRAMES: usize = 4096;
+const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
+const PRINT_NOTIFICATION_CAPACITY: usize = 32;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -64,6 +67,7 @@ struct PlaybackStartup {
     params: Vec<RunParamInfo>,
     buffers: Vec<RunBufferInfo>,
     events: Vec<RunEventInfo>,
+    delegates: Vec<RunDelegateInfo>,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
     current_input_device: Option<String>,
@@ -81,6 +85,30 @@ struct RenderThreadContext {
     render_error: Arc<Mutex<Option<String>>>,
     startup_tx: PlaybackReply<PlaybackStartup>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
+    output_transport: Option<OutputTransport>,
+    print_transport: PrintTransport,
+}
+
+#[derive(Clone)]
+struct OutputTransport {
+    sender: mpsc::SyncSender<RunOutputBatch>,
+    dropped_delegates: Arc<AtomicU32>,
+    pending_delegate_overflow: Arc<AtomicU32>,
+    dropped_prints: Arc<AtomicU32>,
+    pending_print_overflow: Arc<AtomicU32>,
+}
+
+struct RunOutputBatch {
+    delegate_subscription_id: u64,
+    delegates: RunDelegateBatch,
+    prints: RunPrintBatch,
+}
+
+#[derive(Clone)]
+struct PrintTransport {
+    sender: mpsc::SyncSender<RunPrintBatch>,
+    dropped_occurrences: Arc<AtomicU32>,
+    pending_overflow: Arc<AtomicU32>,
 }
 
 enum PlaybackControlCommand {
@@ -104,6 +132,11 @@ enum PlaybackControlCommand {
     },
     GetDevices {
         reply: PlaybackReply<AudioDeviceLists>,
+    },
+    SetDelegateCollection {
+        enabled: bool,
+        subscription_id: u64,
+        reply: Option<PlaybackReply<()>>,
     },
     SetParam {
         name: String,
@@ -200,6 +233,26 @@ struct PlaybackControlRequest {
     max_frames: Option<usize>,
 }
 
+struct DelegateSubscriptionGuard {
+    control_tx: mpsc::Sender<PlaybackControlCommand>,
+    subscription_id: u64,
+    enabled: bool,
+}
+
+impl Drop for DelegateSubscriptionGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            let _ = self
+                .control_tx
+                .send(PlaybackControlCommand::SetDelegateCollection {
+                    enabled: false,
+                    subscription_id: self.subscription_id,
+                    reply: None,
+                });
+        }
+    }
+}
+
 pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let _signal_guard = install_run_signal_handlers();
     let audio_host = AudioHost::default();
@@ -226,6 +279,45 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     } else {
         (None, None)
     };
+    let (
+        output_transport,
+        output_rx,
+        dropped_delegate_occurrences,
+        pending_delegate_overflow,
+        dropped_control_print_occurrences,
+        pending_control_print_overflow,
+    ) = if launch.control_json {
+        let (sender, receiver) = mpsc::sync_channel(DELEGATE_NOTIFICATION_CAPACITY);
+        let dropped_delegates = Arc::new(AtomicU32::new(0));
+        let delegate_overflow = Arc::new(AtomicU32::new(0));
+        let dropped_prints = Arc::new(AtomicU32::new(0));
+        let print_overflow = Arc::new(AtomicU32::new(0));
+        (
+            Some(OutputTransport {
+                sender,
+                dropped_delegates: Arc::clone(&dropped_delegates),
+                pending_delegate_overflow: Arc::clone(&delegate_overflow),
+                dropped_prints: Arc::clone(&dropped_prints),
+                pending_print_overflow: Arc::clone(&print_overflow),
+            }),
+            Some(receiver),
+            Some(dropped_delegates),
+            Some(delegate_overflow),
+            Some(dropped_prints),
+            Some(print_overflow),
+        )
+    } else {
+        (None, None, None, None, None, None)
+    };
+    let (print_sender, print_receiver) = mpsc::sync_channel(PRINT_NOTIFICATION_CAPACITY);
+    let mut print_rx = Some(print_receiver);
+    let dropped_print_occurrences = Arc::new(AtomicU32::new(0));
+    let pending_print_overflow = Arc::new(AtomicU32::new(0));
+    let print_transport = PrintTransport {
+        sender: print_sender,
+        dropped_occurrences: Arc::clone(&dropped_print_occurrences),
+        pending_overflow: Arc::clone(&pending_print_overflow),
+    };
 
     let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
     let render_thread = spawn_run_render_thread(
@@ -238,6 +330,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             render_error: Arc::clone(&render_error),
             startup_tx,
             control_rx,
+            output_transport,
+            print_transport,
         },
     );
     let startup = startup_rx
@@ -261,6 +355,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "params": startup.params.iter().map(run_param_json).collect::<Vec<_>>(),
             "buffers": startup.buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
             "events": startup.events.iter().map(run_event_json).collect::<Vec<_>>(),
+            "delegates": startup.delegates.iter().map(run_delegate_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
@@ -274,12 +369,32 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         .map_err(|err| format!("failed to write run control startup event: {err}"))?;
         Some(spawn_run_control_server(
             listener,
-            control_tx,
-            Arc::clone(&scope_ring),
-            Arc::clone(&stop_flag),
+            RunControlServerContext {
+                control_tx,
+                scope_ring: Arc::clone(&scope_ring),
+                stop_flag: Arc::clone(&stop_flag),
+                output_rx: output_rx.expect("output receiver should exist"),
+                dropped_delegate_occurrences: dropped_delegate_occurrences
+                    .expect("delegate drop counter should exist"),
+                pending_delegate_overflow: pending_delegate_overflow
+                    .expect("delegate overflow counter should exist"),
+                dropped_print_occurrences: dropped_control_print_occurrences
+                    .expect("control print drop counter should exist"),
+                pending_print_overflow: pending_control_print_overflow
+                    .expect("control print overflow counter should exist"),
+            },
         ))
     } else {
         None
+    };
+    let print_output = if launch.control_json {
+        None
+    } else {
+        Some(spawn_run_print_stdout(
+            print_rx.take().expect("print receiver should be available"),
+            Arc::clone(&dropped_print_occurrences),
+            Arc::clone(&pending_print_overflow),
+        ))
     };
 
     if launch.show_meta && !startup.params.is_empty() {
@@ -296,10 +411,22 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             println!("{}", format_run_event_info(&startup.events));
         }
     }
+    if launch.show_meta && !startup.delegates.is_empty() {
+        if launch.control_json {
+            eprintln!("{}", format_run_delegate_info(&startup.delegates));
+        } else {
+            println!("{}", format_run_delegate_info(&startup.delegates));
+        }
+    }
     if startup.output_channels == 0 {
         stop_flag.store(true, Ordering::Release);
         let _ = render_thread.join();
-        drop(control_server);
+        if let Some(server) = control_server {
+            let _ = server.join();
+        }
+        if let Some(output) = print_output {
+            let _ = output.join();
+        }
         return Err("daemon play requires at least one output channel".to_owned());
     }
 
@@ -327,7 +454,12 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     )?;
     if stop_flag.load(Ordering::Acquire) {
         let _ = render_thread.join();
-        drop(control_server);
+        if let Some(server) = control_server {
+            let _ = server.join();
+        }
+        if let Some(output) = print_output {
+            let _ = output.join();
+        }
         return Ok(());
     }
 
@@ -353,13 +485,21 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         );
     }
 
-    wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state)?;
+    let playback_result =
+        wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state);
 
     stop_flag.store(true, Ordering::Release);
     drop(input_stream);
     drop(stream);
     let _ = render_thread.join();
-    drop(control_server);
+    if let Some(server) = control_server {
+        let _ = server.join();
+    }
+    if let Some(output) = print_output {
+        let _ = output.join();
+    }
+
+    playback_result?;
 
     if let Some(err) = error_state.message() {
         return Err(err);
@@ -433,6 +573,47 @@ fn format_run_event_info(events: &[RunEventInfo]) -> String {
     lines.join("\n")
 }
 
+fn format_run_delegate_info(delegates: &[RunDelegateInfo]) -> String {
+    let mut lines = Vec::with_capacity(delegates.len() + 1);
+    lines.push("Run delegates:".to_owned());
+    for delegate in delegates {
+        let params = delegate
+            .params
+            .iter()
+            .map(|param| format!("{}: {}", param.name, param.type_repr))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("  {}({params})", delegate.name));
+    }
+    lines.join("\n")
+}
+
+fn run_delegate_json(delegate: &RunDelegateInfo) -> Value {
+    json!({
+        "index": delegate.index,
+        "name": delegate.name,
+        "params": delegate.params.iter().map(|param| json!({
+            "index": param.index,
+            "name": param.name,
+            "type": param.type_repr,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn run_delegate_occurrence_json(occurrence: &RunDelegateOccurrence) -> Value {
+    let values = occurrence
+        .values
+        .iter()
+        .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+        .collect::<serde_json::Map<_, _>>();
+    json!({
+        "sequence": occurrence.sequence,
+        "index": occurrence.index,
+        "name": occurrence.name,
+        "values": values,
+    })
+}
+
 fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
     match dur_seconds {
         Some(dur_seconds) => format!("Playing {} for {} seconds", display_path(path), dur_seconds),
@@ -488,6 +669,8 @@ fn spawn_run_render_thread(
             render_error,
             startup_tx,
             control_rx,
+            output_transport,
+            print_transport,
         } = context;
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
@@ -541,7 +724,7 @@ fn spawn_run_render_thread(
                     &launch.compile_inputs,
                     initial_buffers,
                 )
-                .map_err(|err| format_run_build_error("daemon play start failed", &err))?;
+                .map_err(|error| format_run_build_error("daemon play start failed", &error))?;
 
             for (name, value) in &launch.param_sets {
                 session
@@ -550,6 +733,15 @@ fn spawn_run_render_thread(
                     .set_param_f64(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
+
+            publish_run_output_batch(
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be active after successful start"),
+                output_transport.as_ref(),
+                &print_transport,
+                0,
+            )?;
 
             let run = session
                 .run(&launch.input)
@@ -562,6 +754,11 @@ fn spawn_run_render_thread(
             let buffers = run.buffer_info();
             let events = if launch.show_meta || launch.control_json {
                 run.event_info()
+            } else {
+                Vec::new()
+            };
+            let delegates = if launch.show_meta || launch.control_json {
+                run.delegate_info()
             } else {
                 Vec::new()
             };
@@ -578,6 +775,7 @@ fn spawn_run_render_thread(
                 params,
                 buffers,
                 events,
+                delegates,
                 input_devices,
                 output_devices,
                 current_input_device: launch.input_device.clone(),
@@ -604,6 +802,7 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut delegate_subscription_id = 0_u64;
         let mut play_requested = true;
         let mut playing = session.run(&launch.input).is_some();
         let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
@@ -638,12 +837,19 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.restart().map_err(|diag| {
+                                    let execution = run.restart().map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play restart failed",
                                             &diag,
                                         )
-                                    })
+                                    });
+                                    publish_run_output_batch(
+                                        run,
+                                        output_transport.as_ref(),
+                                        &print_transport,
+                                        delegate_subscription_id,
+                                    )?;
+                                    execution
                                 });
                             playing = play_requested && result.is_ok();
                             if playing {
@@ -714,6 +920,35 @@ fn spawn_run_render_thread(
                         PlaybackControlCommand::GetDevices { reply } => {
                             let _ = reply.send(Ok(available_audio_devices()));
                         }
+                        PlaybackControlCommand::SetDelegateCollection {
+                            enabled,
+                            subscription_id,
+                            reply,
+                        } => {
+                            let stale_disable =
+                                !enabled && delegate_subscription_id != subscription_id;
+                            let result = if stale_disable {
+                                Ok(())
+                            } else {
+                                session
+                                    .run_mut(&launch.input)
+                                    .ok_or_else(|| "run is not active".to_owned())
+                                    .map(|run| {
+                                        run.set_delegate_collection_enabled(enabled);
+                                        delegate_subscription_id =
+                                            if enabled { subscription_id } else { 0 };
+                                        if let Some(transport) = &output_transport {
+                                            transport.dropped_delegates.store(0, Ordering::Relaxed);
+                                            transport
+                                                .pending_delegate_overflow
+                                                .store(0, Ordering::Relaxed);
+                                        }
+                                    })
+                            };
+                            if let Some(reply) = reply {
+                                let _ = reply.send(result);
+                            }
+                        }
                         PlaybackControlCommand::SetParam { name, value, reply } => {
                             let entry = pending_param_updates.entry(name).or_insert_with(|| {
                                 PendingParamUpdate {
@@ -740,12 +975,20 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.trigger_event(&name, &values).map_err(|diag| {
-                                        format_single_diagnostic(
-                                            "daemon play trigger event failed",
-                                            &diag,
-                                        )
-                                    })
+                                    let execution =
+                                        run.trigger_event(&name, &values).map_err(|diag| {
+                                            format_single_diagnostic(
+                                                "daemon play trigger event failed",
+                                                &diag,
+                                            )
+                                        });
+                                    publish_run_output_batch(
+                                        run,
+                                        output_transport.as_ref(),
+                                        &print_transport,
+                                        delegate_subscription_id,
+                                    )?;
+                                    execution
                                 });
                             if let Some(reply) = reply {
                                 let _ = reply.send(result);
@@ -761,12 +1004,20 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
-                                        format_single_diagnostic(
-                                            "daemon play bind buffer failed",
-                                            &diag,
-                                        )
-                                    })
+                                    let result =
+                                        run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
+                                            format_single_diagnostic(
+                                                "daemon play bind buffer failed",
+                                                &diag,
+                                            )
+                                        });
+                                    publish_run_output_batch(
+                                        run,
+                                        output_transport.as_ref(),
+                                        &print_transport,
+                                        delegate_subscription_id,
+                                    )?;
+                                    result
                                 });
                             if result.is_ok() {
                                 playing = play_requested;
@@ -783,12 +1034,19 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    run.clear_buffer(&name).map_err(|diag| {
+                                    let result = run.clear_buffer(&name).map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon play clear buffer failed",
                                             &diag,
                                         )
-                                    })
+                                    });
+                                    publish_run_output_batch(
+                                        run,
+                                        output_transport.as_ref(),
+                                        &print_transport,
+                                        delegate_subscription_id,
+                                    )?;
+                                    result
                                 });
                             if result.is_ok() {
                                 playing = play_requested;
@@ -817,16 +1075,30 @@ fn spawn_run_render_thread(
                 }
             }
 
-            match session.render_run_block_interleaved(&launch.input, &mut interleaved) {
-                Ok(()) => {}
-                Err(diag) => {
-                    store_thread_error(
-                        &render_error,
-                        format_single_diagnostic("daemon play render failed", &diag),
-                    );
-                    stop_flag.store(true, Ordering::Release);
-                    break;
-                }
+            let execution = session.render_run_block_interleaved(&launch.input, &mut interleaved);
+            let output_result = session
+                .run_mut(&launch.input)
+                .ok_or_else(|| "run is not active".to_owned())
+                .and_then(|run| {
+                    publish_run_output_batch(
+                        run,
+                        output_transport.as_ref(),
+                        &print_transport,
+                        delegate_subscription_id,
+                    )
+                });
+            if let Err(error) = output_result {
+                store_thread_error(&render_error, error);
+                stop_flag.store(true, Ordering::Release);
+                break;
+            }
+            if let Err(diag) = execution {
+                store_thread_error(
+                    &render_error,
+                    format_single_diagnostic("daemon play render failed", &diag),
+                );
+                stop_flag.store(true, Ordering::Release);
+                break;
             }
 
             if let Ok(mut ring) = scope_ring.try_lock() {
@@ -843,6 +1115,132 @@ fn spawn_run_render_thread(
                 offset += written;
             }
         }
+    })
+}
+
+fn publish_run_output_batch(
+    run: &mut RunSession,
+    output_transport: Option<&OutputTransport>,
+    print_transport: &PrintTransport,
+    delegate_subscription_id: u64,
+) -> Result<(), String> {
+    let delegates = run.take_delegate_batch().map_err(|diagnostic| {
+        format_single_diagnostic("daemon play delegate decoding failed", &diagnostic)
+    })?;
+    let prints = run.take_print_batch().map_err(|diagnostic| {
+        format_single_diagnostic("daemon play print decoding failed", &diagnostic)
+    })?;
+    if delegates.occurrences.is_empty()
+        && delegates.overflow_count == 0
+        && prints.entries.is_empty()
+        && prints.overflow_count == 0
+    {
+        return Ok(());
+    }
+    if let Some(transport) = output_transport {
+        let output = RunOutputBatch {
+            delegate_subscription_id,
+            delegates,
+            prints,
+        };
+        if let Err(mpsc::TrySendError::Full(output)) = transport.sender.try_send(output) {
+            record_transport_loss(
+                &transport.dropped_delegates,
+                &transport.pending_delegate_overflow,
+                output.delegates.occurrences.len(),
+                output.delegates.overflow_count,
+            );
+            record_transport_loss(
+                &transport.dropped_prints,
+                &transport.pending_print_overflow,
+                output.prints.entries.len(),
+                output.prints.overflow_count,
+            );
+        }
+        return Ok(());
+    }
+    if prints.entries.is_empty() && prints.overflow_count == 0 {
+        return Ok(());
+    }
+    if let Err(mpsc::TrySendError::Full(batch)) = print_transport.sender.try_send(prints) {
+        record_transport_loss(
+            &print_transport.dropped_occurrences,
+            &print_transport.pending_overflow,
+            batch.entries.len(),
+            batch.overflow_count,
+        );
+    }
+    Ok(())
+}
+
+fn record_transport_loss(
+    dropped_occurrences: &AtomicU32,
+    pending_overflow: &AtomicU32,
+    occurrence_count: usize,
+    overflow_count: u32,
+) {
+    atomic_saturating_add(
+        dropped_occurrences,
+        u32::try_from(occurrence_count).unwrap_or(u32::MAX),
+    );
+    atomic_saturating_add(pending_overflow, overflow_count);
+}
+
+fn atomic_saturating_add(counter: &AtomicU32, value: u32) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
+fn run_print_entry_json(entry: &RunPrintEntry) -> Value {
+    json!({
+        "sequence": entry.sequence,
+        "siteIndex": entry.site_index,
+        "label": entry.label,
+        "source": {
+            "file": entry.source_file,
+            "line": entry.line,
+            "column": entry.column,
+            "endLine": entry.end_line,
+            "endColumn": entry.end_column,
+        },
+        "lexicalOwner": entry.lexical_owner,
+        "declaration": entry.declaration,
+        "values": entry.values.iter().map(|value| json!({
+            "type": value.type_repr,
+            "value": run_event_value_json(&value.value),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn spawn_run_print_stdout(
+    receiver: mpsc::Receiver<RunPrintBatch>,
+    dropped_occurrences: Arc<AtomicU32>,
+    pending_overflow: Arc<AtomicU32>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        while let Ok(batch) = receiver.recv() {
+            print!("{}", batch.text);
+            let generated = batch
+                .overflow_count
+                .saturating_add(pending_overflow.swap(0, Ordering::Relaxed));
+            let transported = batch
+                .transport_drop_count
+                .saturating_add(dropped_occurrences.swap(0, Ordering::Relaxed));
+            if generated != 0 || transported != 0 {
+                eprintln!(
+                    "onda print delivery: {generated} generated record(s) overflowed, {transported} record(s) were dropped in transport"
+                );
+            }
+        }
+        let generated = pending_overflow.swap(0, Ordering::Relaxed);
+        let transported = dropped_occurrences.swap(0, Ordering::Relaxed);
+        if generated != 0 || transported != 0 {
+            eprintln!(
+                "onda print delivery: {generated} generated record(s) overflowed, {transported} record(s) were dropped in transport"
+            );
+        }
+        let _ = std::io::stdout().flush();
     })
 }
 
@@ -961,32 +1359,49 @@ fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
             .as_f64()
             .map(RunEventValue::Number)
             .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
+        Value::String(value) => value
+            .parse::<i64>()
+            .map(RunEventValue::I64)
+            .map_err(|_| "triggerEvent string values must be decimal i64 integers".to_owned()),
         Value::Array(values) => values
             .into_iter()
             .map(run_event_value_from_json)
             .collect::<Result<Vec<_>, _>>()
             .map(RunEventValue::Array),
-        _ => Err("triggerEvent values must be numbers, booleans, or arrays".to_owned()),
+        _ => Err(
+            "triggerEvent values must be numbers, decimal i64 strings, booleans, or arrays"
+                .to_owned(),
+        ),
     }
+}
+
+struct RunControlServerContext {
+    control_tx: mpsc::Sender<PlaybackControlCommand>,
+    scope_ring: Arc<Mutex<ScopeRing>>,
+    stop_flag: Arc<AtomicBool>,
+    output_rx: mpsc::Receiver<RunOutputBatch>,
+    dropped_delegate_occurrences: Arc<AtomicU32>,
+    pending_delegate_overflow: Arc<AtomicU32>,
+    dropped_print_occurrences: Arc<AtomicU32>,
+    pending_print_overflow: Arc<AtomicU32>,
 }
 
 fn spawn_run_control_server(
     listener: TcpListener,
-    control_tx: mpsc::Sender<PlaybackControlCommand>,
-    scope_ring: Arc<Mutex<ScopeRing>>,
-    stop_flag: Arc<AtomicBool>,
+    context: RunControlServerContext,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if listener.set_nonblocking(true).is_err() {
             return;
         }
 
-        while !stop_flag.load(Ordering::Acquire) {
+        let mut next_subscription_id = 1_u64;
+        while !context.stop_flag.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if let Err(err) =
-                        handle_run_control_client(stream, &control_tx, &scope_ring, &stop_flag)
-                    {
+                    let subscription_id = next_subscription_id;
+                    next_subscription_id = next_subscription_id.wrapping_add(1).max(1);
+                    if let Err(err) = handle_run_control_client(stream, &context, subscription_id) {
                         eprintln!("run control client error: {err}");
                     }
                 }
@@ -1004,10 +1419,14 @@ fn spawn_run_control_server(
 
 fn handle_run_control_client(
     stream: TcpStream,
-    control_tx: &mpsc::Sender<PlaybackControlCommand>,
-    scope_ring: &Arc<Mutex<ScopeRing>>,
-    stop_flag: &Arc<AtomicBool>,
+    context: &RunControlServerContext,
+    subscription_id: u64,
 ) -> Result<(), String> {
+    let mut delegate_subscription = DelegateSubscriptionGuard {
+        control_tx: context.control_tx.clone(),
+        subscription_id,
+        enabled: false,
+    };
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|err| format!("failed to set control socket read timeout: {err}"))?;
@@ -1017,7 +1436,16 @@ fn handle_run_control_client(
     let mut reader = BufReader::new(reader_stream);
     let mut writer = BufWriter::new(stream);
 
-    while !stop_flag.load(Ordering::Acquire) {
+    while !context.stop_flag.load(Ordering::Acquire) {
+        write_pending_output_batches(
+            &mut writer,
+            &context.output_rx,
+            &context.dropped_delegate_occurrences,
+            &context.pending_delegate_overflow,
+            &context.dropped_print_occurrences,
+            &context.pending_print_overflow,
+            delegate_subscription.enabled.then_some(subscription_id),
+        )?;
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => return Ok(()),
@@ -1038,13 +1466,311 @@ fn handle_run_control_client(
 
         let request: PlaybackControlRequest = serde_json::from_str(trimmed)
             .map_err(|err| format!("invalid control request json: {err}"))?;
-        let response = run_control_response(request, control_tx, scope_ring);
+        let delegate_subscription_request = match request.command.as_str() {
+            "subscribeDelegates" => Some(true),
+            "unsubscribeDelegates" => Some(false),
+            _ => None,
+        };
+        let response = run_control_response(
+            request,
+            &context.control_tx,
+            &context.scope_ring,
+            subscription_id,
+        );
+        let request_succeeded = response
+            .as_ref()
+            .and_then(|value| value.get("ok"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if request_succeeded {
+            if let Some(enabled) = delegate_subscription_request {
+                delegate_subscription.enabled = enabled;
+            }
+        }
         if let Some(response) = response {
             write_json_line(&mut writer, &response)
                 .map_err(|err| format!("failed to write control response: {err}"))?;
         }
     }
 
+    // The render producer may publish its last batch or loss counters while
+    // shutdown is being observed. Flush once after the stop transition so a
+    // connected control consumer sees terminal output even without a later
+    // authored print occurrence.
+    write_pending_output_batches(
+        &mut writer,
+        &context.output_rx,
+        &context.dropped_delegate_occurrences,
+        &context.pending_delegate_overflow,
+        &context.dropped_print_occurrences,
+        &context.pending_print_overflow,
+        delegate_subscription.enabled.then_some(subscription_id),
+    )?;
+
+    Ok(())
+}
+
+fn write_pending_output_batches(
+    writer: &mut impl Write,
+    receiver: &mpsc::Receiver<RunOutputBatch>,
+    dropped_delegates: &AtomicU32,
+    pending_delegate_overflow: &AtomicU32,
+    dropped_prints: &AtomicU32,
+    pending_print_overflow: &AtomicU32,
+    delegate_subscription_id: Option<u64>,
+) -> Result<(), String> {
+    let mut wrote_batch = false;
+    let mut wrote_matching_delegate_batch = false;
+    while let Ok(batch) = receiver.try_recv() {
+        wrote_batch = true;
+        if batch.prints.text.split_inclusive('\n').count() != batch.prints.entries.len() {
+            return Err("formatted print output does not match its decoded entries".to_owned());
+        }
+        let mut prints = batch
+            .prints
+            .entries
+            .iter()
+            .zip(batch.prints.text.split_inclusive('\n'))
+            .peekable();
+        let delegates_match = delegate_subscription_id == Some(batch.delegate_subscription_id);
+        wrote_matching_delegate_batch |= delegates_match;
+        let mut delegates = batch
+            .delegates
+            .occurrences
+            .iter()
+            .filter(|_| delegates_match)
+            .peekable();
+
+        let mut print_overflow = Some(
+            batch
+                .prints
+                .overflow_count
+                .saturating_add(pending_print_overflow.swap(0, Ordering::Relaxed)),
+        );
+        let mut print_drops = Some(
+            batch
+                .prints
+                .transport_drop_count
+                .saturating_add(dropped_prints.swap(0, Ordering::Relaxed)),
+        );
+        let mut delegate_overflow = Some(if delegates_match {
+            batch
+                .delegates
+                .overflow_count
+                .saturating_add(pending_delegate_overflow.swap(0, Ordering::Relaxed))
+        } else {
+            0
+        });
+        let mut delegate_drops = Some(if delegates_match {
+            dropped_delegates.swap(0, Ordering::Relaxed)
+        } else {
+            0
+        });
+
+        while prints.peek().is_some() || delegates.peek().is_some() {
+            let next_is_print = match (
+                prints.peek().map(|(entry, _)| entry.sequence),
+                delegates.peek().map(|occurrence| occurrence.sequence),
+            ) {
+                (Some(print), Some(delegate)) => print <= delegate,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if next_is_print {
+                let mut text = String::new();
+                let mut entries = Vec::new();
+                while let Some((entry, _)) = prints.peek() {
+                    if delegates
+                        .peek()
+                        .is_some_and(|occurrence| occurrence.sequence < entry.sequence)
+                    {
+                        break;
+                    }
+                    let (entry, line) = prints.next().expect("peeked print must exist");
+                    text.push_str(line);
+                    entries.push(run_print_entry_json(entry));
+                }
+                write_json_line(
+                    writer,
+                    &json!({
+                        "event": "print",
+                        "text": text,
+                        "entries": entries,
+                        "overflowCount": print_overflow.take().unwrap_or(0),
+                        "transportDropCount": print_drops.take().unwrap_or(0),
+                    }),
+                )
+                .map_err(|error| format!("failed to write print notification: {error}"))?;
+            } else {
+                let mut occurrences = Vec::new();
+                while let Some(occurrence) = delegates.peek() {
+                    if prints
+                        .peek()
+                        .is_some_and(|(entry, _)| entry.sequence <= occurrence.sequence)
+                    {
+                        break;
+                    }
+                    let occurrence = delegates.next().expect("peeked delegate must exist");
+                    occurrences.push(run_delegate_occurrence_json(occurrence));
+                }
+                write_json_line(
+                    writer,
+                    &json!({
+                        "event": "delegates",
+                        "occurrences": occurrences,
+                        "overflowCount": delegate_overflow.take().unwrap_or(0),
+                        "transportDropCount": delegate_drops.take().unwrap_or(0),
+                    }),
+                )
+                .map_err(|error| format!("failed to write delegate notification: {error}"))?;
+            }
+        }
+
+        if print_overflow.unwrap_or(0) != 0 || print_drops.unwrap_or(0) != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "print",
+                    "text": "",
+                    "entries": [],
+                    "overflowCount": print_overflow.unwrap_or(0),
+                    "transportDropCount": print_drops.unwrap_or(0),
+                }),
+            )
+            .map_err(|error| format!("failed to write print loss notification: {error}"))?;
+        }
+        if delegate_overflow.unwrap_or(0) != 0 || delegate_drops.unwrap_or(0) != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "delegates",
+                    "occurrences": [],
+                    "overflowCount": delegate_overflow.unwrap_or(0),
+                    "transportDropCount": delegate_drops.unwrap_or(0),
+                }),
+            )
+            .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
+        }
+    }
+    if !wrote_matching_delegate_batch && delegate_subscription_id.is_some() {
+        let delegate_overflow = pending_delegate_overflow.swap(0, Ordering::Relaxed);
+        let delegate_drops = dropped_delegates.swap(0, Ordering::Relaxed);
+        if delegate_overflow != 0 || delegate_drops != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "delegates",
+                    "occurrences": [],
+                    "overflowCount": delegate_overflow,
+                    "transportDropCount": delegate_drops,
+                }),
+            )
+            .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
+        }
+    }
+    if !wrote_batch {
+        let print_overflow = pending_print_overflow.swap(0, Ordering::Relaxed);
+        let print_drops = dropped_prints.swap(0, Ordering::Relaxed);
+        if print_overflow != 0 || print_drops != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "print",
+                    "text": "",
+                    "entries": [],
+                    "overflowCount": print_overflow,
+                    "transportDropCount": print_drops,
+                }),
+            )
+            .map_err(|error| format!("failed to write print loss notification: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_pending_print_batches(
+    writer: &mut impl Write,
+    receiver: &mpsc::Receiver<RunPrintBatch>,
+    dropped_occurrences: &AtomicU32,
+    pending_overflow: &AtomicU32,
+) -> Result<(), String> {
+    let mut wrote_batch = false;
+    while let Ok(batch) = receiver.try_recv() {
+        wrote_batch = true;
+        let notification = json!({
+            "event": "print",
+            "text": batch.text,
+            "entries": batch.entries.iter().map(run_print_entry_json).collect::<Vec<_>>(),
+            "overflowCount": batch.overflow_count.saturating_add(
+                pending_overflow.swap(0, Ordering::Relaxed)
+            ),
+            "transportDropCount": batch.transport_drop_count.saturating_add(
+                dropped_occurrences.swap(0, Ordering::Relaxed)
+            ),
+        });
+        write_json_line(writer, &notification)
+            .map_err(|error| format!("failed to write print notification: {error}"))?;
+    }
+    if !wrote_batch {
+        let overflow_count = pending_overflow.swap(0, Ordering::Relaxed);
+        let transport_drop_count = dropped_occurrences.swap(0, Ordering::Relaxed);
+        if overflow_count != 0 || transport_drop_count != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "print",
+                    "text": "",
+                    "entries": [],
+                    "overflowCount": overflow_count,
+                    "transportDropCount": transport_drop_count,
+                }),
+            )
+            .map_err(|error| format!("failed to write print loss notification: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_pending_delegate_batch(
+    writer: &mut impl Write,
+    receiver: &mpsc::Receiver<RunDelegateBatch>,
+    dropped_delegate_occurrences: &AtomicU32,
+    pending_delegate_overflow: &AtomicU32,
+) -> Result<(), String> {
+    let mut wrote_batch = false;
+    while let Ok(batch) = receiver.try_recv() {
+        wrote_batch = true;
+        let transport_drop_count = dropped_delegate_occurrences.swap(0, Ordering::Relaxed);
+        let notification = json!({
+            "event": "delegates",
+            "occurrences": batch.occurrences.iter().map(run_delegate_occurrence_json).collect::<Vec<_>>(),
+            "overflowCount": batch.overflow_count.saturating_add(
+                pending_delegate_overflow.swap(0, Ordering::Relaxed)
+            ),
+            "transportDropCount": transport_drop_count,
+        });
+        write_json_line(writer, &notification)
+            .map_err(|error| format!("failed to write delegate notification: {error}"))?;
+    }
+    if !wrote_batch {
+        let overflow_count = pending_delegate_overflow.swap(0, Ordering::Relaxed);
+        let transport_drop_count = dropped_delegate_occurrences.swap(0, Ordering::Relaxed);
+        if overflow_count != 0 || transport_drop_count != 0 {
+            write_json_line(
+                writer,
+                &json!({
+                    "event": "delegates",
+                    "occurrences": [],
+                    "overflowCount": overflow_count,
+                    "transportDropCount": transport_drop_count,
+                }),
+            )
+            .map_err(|error| format!("failed to write delegate loss notification: {error}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1052,6 +1778,7 @@ fn run_control_response(
     request: PlaybackControlRequest,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
     scope_ring: &Arc<Mutex<ScopeRing>>,
+    delegate_subscription_id: u64,
 ) -> Option<Value> {
     let request_id = request.id;
     let result = match request.command.as_str() {
@@ -1184,6 +1911,28 @@ fn run_control_response(
                             "ok": false,
                             "error": err,
                         }),
+                    })
+                })
+        }
+        "subscribeDelegates" | "unsubscribeDelegates" => {
+            let enabled = request.command == "subscribeDelegates";
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::SetDelegateCollection {
+                    enabled,
+                    subscription_id: delegate_subscription_id,
+                    reply: Some(reply_tx),
+                })
+                .map_err(|_| "run control channel closed".to_owned())
+                .and_then(|_| {
+                    reply_rx
+                        .recv()
+                        .map_err(|_| "run control reply channel closed".to_owned())
+                })
+                .map(|result| {
+                    request_id.clone().map(|id| match result {
+                        Ok(()) => json!({ "id": id, "ok": true }),
+                        Err(err) => json!({ "id": id, "ok": false, "error": err }),
                     })
                 })
         }
@@ -1385,10 +2134,374 @@ fn run_control_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{run_control_response, PlaybackControlCommand, PlaybackControlRequest, ScopeRing};
-    use onda_daemon::RunEventValue;
+    use super::{
+        run_control_response, write_pending_delegate_batch, write_pending_output_batches,
+        write_pending_print_batches, DelegateSubscriptionGuard, PlaybackControlCommand,
+        PlaybackControlRequest, RunOutputBatch, ScopeRing,
+    };
+    use onda_daemon::{
+        RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
+        RunPrintEntry, RunPrintValue,
+    };
     use serde_json::Value;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
+
+    #[test]
+    fn delegate_collection_is_disabled_until_explicitly_subscribed() {
+        let (sender, receiver) = mpsc::channel();
+        drop(DelegateSubscriptionGuard {
+            control_tx: sender.clone(),
+            subscription_id: 7,
+            enabled: false,
+        });
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        drop(DelegateSubscriptionGuard {
+            control_tx: sender,
+            subscription_id: 7,
+            enabled: true,
+        });
+        assert!(matches!(
+            receiver.recv().expect("unsubscribe command"),
+            PlaybackControlCommand::SetDelegateCollection {
+                enabled: false,
+                subscription_id: 7,
+                reply: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn run_delegate_notifications_preserve_payloads_and_drop_counts() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunDelegateBatch {
+                occurrences: vec![RunDelegateOccurrence {
+                    sequence: 0,
+                    index: 2,
+                    name: "meter".to_owned(),
+                    values: vec![
+                        RunDelegateValue {
+                            name: "level".to_owned(),
+                            value: RunEventValue::Number(0.75),
+                        },
+                        RunDelegateValue {
+                            name: "bins".to_owned(),
+                            value: RunEventValue::Array(vec![
+                                RunEventValue::Number(0.25),
+                                RunEventValue::Number(0.5),
+                            ]),
+                        },
+                    ],
+                }],
+                overflow_count: 3,
+            })
+            .expect("delegate batch should be queued");
+
+        let dropped = AtomicU32::new(4);
+        let pending_overflow = AtomicU32::new(5);
+        let mut bytes = Vec::new();
+        write_pending_delegate_batch(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("delegate batch should be serialized");
+
+        let notification: Value =
+            serde_json::from_slice(&bytes).expect("delegate batch should be valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "delegates",
+                "occurrences": [{
+                    "sequence": 0,
+                    "index": 2,
+                    "name": "meter",
+                    "values": {
+                        "level": 0.75,
+                        "bins": [0.25, 0.5],
+                    },
+                }],
+                "overflowCount": 8,
+                "transportDropCount": 4,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn run_delegate_notifications_encode_i64_as_decimal_strings() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunDelegateBatch {
+                occurrences: vec![RunDelegateOccurrence {
+                    sequence: 0,
+                    index: 0,
+                    name: "wide".to_owned(),
+                    values: vec![RunDelegateValue {
+                        name: "value".to_owned(),
+                        value: RunEventValue::I64(9_007_199_254_740_993),
+                    }],
+                }],
+                overflow_count: 0,
+            })
+            .expect("delegate batch should be queued");
+
+        let mut bytes = Vec::new();
+        write_pending_delegate_batch(
+            &mut bytes,
+            &receiver,
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+        )
+        .expect("delegate batch should serialize");
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification["occurrences"][0]["values"]["value"],
+            Value::String("9007199254740993".to_owned())
+        );
+    }
+
+    #[test]
+    fn run_delegate_transport_reports_terminal_loss_without_a_later_batch() {
+        let (_sender, receiver) = mpsc::channel();
+        let dropped = AtomicU32::new(6);
+        let pending_overflow = AtomicU32::new(9);
+        let mut bytes = Vec::new();
+
+        write_pending_delegate_batch(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("loss-only delegate notification should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "delegates",
+                "occurrences": [],
+                "overflowCount": 9,
+                "transportDropCount": 6,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn run_print_notifications_preserve_text_source_values_and_loss_counts() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunPrintBatch {
+                text: "wide: 9007199254740993\n".to_owned(),
+                entries: vec![RunPrintEntry {
+                    sequence: 0,
+                    site_index: 3,
+                    label: Some("wide".to_owned()),
+                    source_file: Some("voice.onda".to_owned()),
+                    line: 7,
+                    column: 3,
+                    end_line: 7,
+                    end_column: 24,
+                    lexical_owner: "Voice".to_owned(),
+                    declaration: Some("sample".to_owned()),
+                    values: vec![RunPrintValue {
+                        type_repr: "i64".to_owned(),
+                        value: RunEventValue::I64(9_007_199_254_740_993),
+                    }],
+                }],
+                overflow_count: 2,
+                transport_drop_count: 1,
+            })
+            .expect("print batch should be queued");
+
+        let dropped = AtomicU32::new(4);
+        let pending_overflow = AtomicU32::new(8);
+        let mut bytes = Vec::new();
+        write_pending_print_batches(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("print batch should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(notification["event"], "print");
+        assert_eq!(notification["text"], "wide: 9007199254740993\n");
+        assert_eq!(notification["overflowCount"], 10);
+        assert_eq!(notification["transportDropCount"], 5);
+        assert_eq!(notification["entries"][0]["source"]["file"], "voice.onda");
+        assert_eq!(notification["entries"][0]["lexicalOwner"], "Voice");
+        assert_eq!(
+            notification["entries"][0]["values"][0]["value"],
+            "9007199254740993"
+        );
+    }
+
+    #[test]
+    fn run_output_notifications_follow_call_local_source_order() {
+        let print_entry = |sequence, site_index| RunPrintEntry {
+            sequence,
+            site_index,
+            label: None,
+            source_file: None,
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            lexical_owner: "program".to_owned(),
+            declaration: Some("sample".to_owned()),
+            values: Vec::new(),
+        };
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunOutputBatch {
+                delegate_subscription_id: 7,
+                prints: RunPrintBatch {
+                    text: "first\nlast\n".to_owned(),
+                    entries: vec![print_entry(0, 0), print_entry(2, 1)],
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                },
+                delegates: RunDelegateBatch {
+                    occurrences: vec![RunDelegateOccurrence {
+                        sequence: 1,
+                        index: 0,
+                        name: "middle".to_owned(),
+                        values: Vec::new(),
+                    }],
+                    overflow_count: 0,
+                },
+            })
+            .expect("output batch should be queued");
+        let mut bytes = Vec::new();
+        write_pending_output_batches(
+            &mut bytes,
+            &receiver,
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+            Some(7),
+        )
+        .expect("ordered output should serialize");
+        let notifications = String::from_utf8(bytes)
+            .expect("notifications should be UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid JSON notification"))
+            .collect::<Vec<_>>();
+        assert_eq!(notifications.len(), 3);
+        assert_eq!(notifications[0]["event"], "print");
+        assert_eq!(notifications[0]["text"], "first\n");
+        assert_eq!(notifications[1]["event"], "delegates");
+        assert_eq!(notifications[1]["occurrences"][0]["sequence"], 1);
+        assert_eq!(notifications[2]["event"], "print");
+        assert_eq!(notifications[2]["text"], "last\n");
+    }
+
+    #[test]
+    fn run_output_notifications_do_not_cross_delegate_subscriptions() {
+        let delegate_batch = |name: &str, overflow_count| RunDelegateBatch {
+            occurrences: vec![RunDelegateOccurrence {
+                sequence: 0,
+                index: 0,
+                name: name.to_owned(),
+                values: Vec::new(),
+            }],
+            overflow_count,
+        };
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(RunOutputBatch {
+                delegate_subscription_id: 1,
+                delegates: delegate_batch("stale", 9),
+                prints: RunPrintBatch {
+                    text: "still visible\n".to_owned(),
+                    entries: vec![RunPrintEntry {
+                        sequence: 1,
+                        site_index: 0,
+                        label: None,
+                        source_file: None,
+                        line: 1,
+                        column: 1,
+                        end_line: 1,
+                        end_column: 1,
+                        lexical_owner: "program".to_owned(),
+                        declaration: Some("sample".to_owned()),
+                        values: Vec::new(),
+                    }],
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                },
+            })
+            .expect("stale output should be queued");
+        sender
+            .send(RunOutputBatch {
+                delegate_subscription_id: 2,
+                delegates: delegate_batch("current", 0),
+                prints: RunPrintBatch {
+                    text: String::new(),
+                    entries: Vec::new(),
+                    overflow_count: 0,
+                    transport_drop_count: 0,
+                },
+            })
+            .expect("current output should be queued");
+
+        let mut bytes = Vec::new();
+        write_pending_output_batches(
+            &mut bytes,
+            &receiver,
+            &AtomicU32::new(4),
+            &AtomicU32::new(5),
+            &AtomicU32::new(0),
+            &AtomicU32::new(0),
+            Some(2),
+        )
+        .expect("filtered output should serialize");
+
+        let notifications = String::from_utf8(bytes)
+            .expect("notifications should be UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid JSON notification"))
+            .collect::<Vec<_>>();
+        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications[0]["event"], "print");
+        assert_eq!(notifications[0]["text"], "still visible\n");
+        assert_eq!(notifications[1]["event"], "delegates");
+        assert_eq!(notifications[1]["occurrences"][0]["name"], "current");
+        assert_eq!(notifications[1]["overflowCount"], 5);
+        assert_eq!(notifications[1]["transportDropCount"], 4);
+    }
+
+    #[test]
+    fn run_print_transport_reports_terminal_loss_without_a_later_batch() {
+        let (_sender, receiver) = mpsc::channel();
+        let dropped = AtomicU32::new(6);
+        let pending_overflow = AtomicU32::new(9);
+        let mut bytes = Vec::new();
+
+        write_pending_print_batches(&mut bytes, &receiver, &dropped, &pending_overflow)
+            .expect("loss-only print notification should serialize");
+
+        let notification: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(
+            notification,
+            serde_json::json!({
+                "event": "print",
+                "text": "",
+                "entries": [],
+                "overflowCount": 9,
+                "transportDropCount": 6,
+            })
+        );
+        assert_eq!(dropped.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending_overflow.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
 
     #[test]
     fn run_set_param_notification_enqueues_without_waiting_for_reply() {
@@ -1406,6 +2519,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         );
 
         assert!(response.is_none());
@@ -1440,6 +2554,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         );
 
         assert!(response.is_none());
@@ -1497,6 +2612,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         )
         .expect("play request should return a response");
 
@@ -1532,6 +2648,7 @@ mod tests {
             },
             &control_tx,
             &scope_ring,
+            7,
         )
         .expect("resetParams request should return a response");
 

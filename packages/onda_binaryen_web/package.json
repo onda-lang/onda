@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/binaryen-web",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "type": "module",
   "description": "Binaryen backend for versioned Onda MIR in browsers and Node.js",
   "license": "MIT",
@@ -29,11 +29,13 @@
   },
   "files": [
     "src",
+    "api.md",
     "math-kernel/LICENSE-libm.txt",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
+    "prepack": "node ../../scripts/stage-web-api-docs.mjs",
     "build:math-kernel": "node ./scripts/build-math-kernel.mjs",
     "test": "node --test",
     "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
@@ -44,7 +46,7 @@
     "verify-mir": "node ./scripts/verify-mir.mjs"
   },
   "dependencies": {
-    "@onda-lang/processor-abi": "0.7.6",
+    "@onda-lang/processor-abi": "0.8.0",
     "binaryen": "130.0.0"
   },
   "publishConfig": {
