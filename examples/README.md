@@ -17,18 +17,6 @@ the standalone sources directly in the browser playground.
 | `native/` | Native embedding and object-linking hosts. |
 | `web/` | Browser and WebAssembly hosts. |
 
-[`soundscapes/glass_garden.onda`](soundscapes/glass_garden.onda) is a generative glass-bell garden:
-each resonance reports when it has faded, and that completion starts the voice's next bloom. The
-top-level `bloom_faded` delegate also lets a host follow the evolving pattern; see
-[Delegates and `when`](../docs/syntax.md#delegates-and-when) for the language semantics.
-
-Run or render a standalone example from the repository or an extracted release:
-
-```bash
-onda run examples/instruments/fm_bells.onda
-onda run render examples/soundscapes/granular_cloud.onda --output cloud.wav --dur 12
-```
-
 Musical examples with built-in sequencing expose an `auto_play` parameter and a no-argument
 `bang()` event. Effects audition themselves by default and expose `live_input` when they can process
 host audio.
@@ -39,5 +27,3 @@ Project examples carry their source and data bindings together:
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```
 
-The sample player requires a host-provided WAV or `.ondabuffer`; omitted buffers use neutral
-one-frame storage, so unbound reads return zero and writes are discarded.
