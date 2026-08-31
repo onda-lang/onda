@@ -39,7 +39,7 @@ jobs:
             arch: x64
             archive_ext: tar.xz
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-15
             platform: macos
             arch: arm64
             archive_ext: tar.xz
