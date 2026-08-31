@@ -8,17 +8,9 @@ eyebrow: Learn by listening
 
 # Example cookbook
 
-Onda's examples are a collection of finished sounds, not a second language reference. Every
-playground entry makes sound at its defaults and is meant to be heard, changed, and reused. The
-[language guide]({{ '/docs/language/' | relative_url }}) and
+The examples are a collection of patches that showcase different ways of implementing audio
+algorithms and DSP code in Onda. The [language guide]({{ '/docs/language/' | relative_url }}) and
 [standard-library reference]({{ '/docs/stdlib/' | relative_url }}) cover isolated syntax and APIs.
-
-Run or render any source example from a checkout:
-
-```bash
-onda run examples/instruments/fm_bells.onda
-onda run render examples/soundscapes/granular_cloud.onda --output cloud.wav --dur 12
-```
 
 Examples with built-in sequencing expose an `auto_play` switch. It defaults to `1`; set it to `0`
 to stop scheduling new notes while existing voices and effect tails decay naturally. Each also
@@ -89,12 +81,6 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
 
-Inspect a lowered graph with:
-
-```bash
-onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
-```
-
 ## Self-contained projects
 
 Use `.ondaproject` when data is part of a patch's identity:
@@ -133,6 +119,3 @@ See [Onda projects]({{ '/docs/projects/' | relative_url }}) for the manifest for
 - [Embedded compiler playground](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) — compile editable Onda projects in the browser.
 - [AOT WebAssembly sample player](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_aot_sample_player) — host a precompiled processor without shipping a compiler.
 
-The breadth audit was informed by the outcome-first examples in
-[MMMAudio](https://github.com/mmmaudio/mmmaudio/tree/main/examples). The granular, spectral-delay,
-formant, and spatial ideas here are original Onda implementations; no source was copied.
