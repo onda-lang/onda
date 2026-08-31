@@ -1,7 +1,7 @@
 # Rust, LLVM, and native build output
-target/
-graphify-out/
-.deps/
+/target/
+/graphify-out/
+/.deps/
 /build/
 /out/
 /dist/
@@ -88,8 +88,6 @@ venv/
 *.gcno
 perf.data*
 gmon.out
-core
-core.*
 vgcore.*
 *.stackdump
 *.pid

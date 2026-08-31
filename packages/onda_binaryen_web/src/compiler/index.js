@@ -1896,4 +1896,5 @@ export class MirCompiler extends MirCompilerLowering {
 
   fail(message) {
     throw new OndaBinaryenError(message);
-  }}
+  }
+}

@@ -2294,5 +2294,4 @@ export class MirCompilerLowering extends MirCompilerCore {
     }
     this.fail(`unknown bounds mode '${String(bounds)}'`);
   }
-
 }
