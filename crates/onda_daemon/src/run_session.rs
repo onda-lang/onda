@@ -181,6 +181,13 @@ pub enum RunEventValue {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct RunScheduledEvent<'a> {
+    pub frame: usize,
+    pub name: &'a str,
+    pub values: &'a [RunEventValue],
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum RunBufferChannels {
     Mono,
     Static(usize),
@@ -600,42 +607,9 @@ impl RunSession {
         name: &str,
         values: &[RunEventValue],
     ) -> Result<(), Diagnostic> {
-        let Some(index) = self.jit.event_index(name) else {
-            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
-        };
-        let Some(desc) = self.jit.event_descriptor(index) else {
-            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
-        };
-        let payload = event_payload_bytes(desc, values)?;
         self.begin_delegate_batch();
         self.begin_print_batch();
-        let mut batch = Self::next_delegate_batch(
-            &mut self.delegate_storage,
-            self.delegate_used,
-            self.delegate_collection_enabled,
-        );
-        let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
-        let result = trigger_event_by_index(
-            &mut self.instance,
-            index,
-            &payload,
-            ExecutionOutput {
-                delegate_batch: batch.as_mut(),
-                print_batch: prints.as_mut(),
-            },
-        );
-        let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
-            (batch.used_bytes, batch.record_count, batch.overflow_count)
-        });
-        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
-            (batch.used_bytes, batch.record_count, batch.overflow_count)
-        });
-        self.finish_delegate_batch(batch_result);
-        self.finish_print_batch(print_result);
-        if result.is_err() {
-            self.begin_delegate_batch();
-        }
-        result
+        self.trigger_event_in_batch(name, values, 0).map(|_| ())
     }
 
     pub fn render_block(&mut self) -> Result<Vec<Vec<f32>>, Diagnostic> {
@@ -682,6 +656,79 @@ impl RunSession {
         )
     }
 
+    /// Renders one block while dispatching events at exact frame boundaries.
+    /// Events must be ordered by frame and target a frame within the block.
+    pub fn render_block_events_interleaved(
+        &mut self,
+        rendered: &mut [f32],
+        events: &[RunScheduledEvent<'_>],
+    ) -> Result<(), Diagnostic> {
+        if events.is_empty() {
+            return self.render_block_interleaved(rendered);
+        }
+        let mut previous_frame = 0;
+        for (index, event) in events.iter().enumerate() {
+            if event.frame >= self.options.block_size {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "run event '{}' targets frame {}, outside block size {}",
+                        event.name, event.frame, self.options.block_size
+                    ),
+                    0,
+                    0,
+                ));
+            }
+            if index != 0 && event.frame < previous_frame {
+                return Err(Diagnostic::runtime(
+                    "run block events must be ordered by frame",
+                    0,
+                    0,
+                ));
+            }
+            previous_frame = event.frame;
+        }
+
+        self.begin_block_render(rendered)?;
+        let mut sequence_base = 0_u32;
+        let mut cursor = 0;
+        let mut began_block = false;
+        for event in events {
+            if event.frame > cursor || !began_block {
+                let flags = if began_block {
+                    0
+                } else {
+                    began_block = true;
+                    onda_runtime::PROCESS_BEGIN_BLOCK
+                };
+                sequence_base = sequence_base.saturating_add(self.process_segment_in_batch(
+                    cursor,
+                    event.frame - cursor,
+                    flags,
+                    sequence_base,
+                )?);
+                cursor = event.frame;
+            }
+            sequence_base = sequence_base.saturating_add(self.trigger_event_in_batch(
+                event.name,
+                event.values,
+                sequence_base,
+            )?);
+        }
+        let flags = if began_block {
+            onda_runtime::PROCESS_END_BLOCK
+        } else {
+            onda_runtime::PROCESS_FULL_BLOCK
+        };
+        self.process_segment_in_batch(
+            cursor,
+            self.options.block_size - cursor,
+            flags,
+            sequence_base,
+        )?;
+        self.interleave_outputs(rendered);
+        Ok(())
+    }
+
     /// Renders one block through an explicit segmented process schedule.
     /// Segments may include zero-frame begin/end notifications and must each
     /// satisfy the runtime process ABI.
@@ -690,8 +737,28 @@ impl RunSession {
         rendered: &mut [f32],
         segments: &[(usize, usize, u32)],
     ) -> Result<(), Diagnostic> {
-        let output_channels = self.jit.required_out_channels();
-        let expected_samples = self.options.block_size.saturating_mul(output_channels);
+        self.begin_block_render(rendered)?;
+        let mut sequence_base = 0_u32;
+        // SAFETY: all input, output, and declared-buffer bindings are installed
+        // and prepared during build/rebuild. Their backing allocations remain
+        // stable for the lifetime of this instance.
+        for &(start_frame, frames, flags) in segments {
+            sequence_base = sequence_base.saturating_add(self.process_segment_in_batch(
+                start_frame,
+                frames,
+                flags,
+                sequence_base,
+            )?);
+        }
+        self.interleave_outputs(rendered);
+        Ok(())
+    }
+
+    fn begin_block_render(&mut self, rendered: &[f32]) -> Result<(), Diagnostic> {
+        let expected_samples = self
+            .options
+            .block_size
+            .saturating_mul(self.jit.required_out_channels());
         if rendered.len() != expected_samples {
             return Err(Diagnostic::runtime(
                 format!(
@@ -702,70 +769,136 @@ impl RunSession {
                 0,
             ));
         }
-
         self.apply_smoothed_params()?;
         self.begin_delegate_batch();
         self.begin_print_batch();
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
-        let mut sequence_base = 0_u32;
-        // SAFETY: all input, output, and declared-buffer bindings are installed
-        // and prepared during build/rebuild. Their backing allocations remain
-        // stable for the lifetime of this instance.
-        for &(start_frame, frames, flags) in segments {
-            let delegate_start = self.delegate_used;
-            let print_start = self.print_used;
-            let mut batch = Self::next_delegate_batch(
-                &mut self.delegate_storage,
-                self.delegate_used,
-                self.delegate_collection_enabled,
-            );
-            let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
-            let result = unsafe {
-                process_unchecked_segment(
-                    &mut self.instance,
-                    start_frame,
-                    frames,
-                    flags,
-                    ExecutionOutput {
-                        delegate_batch: batch.as_mut(),
-                        print_batch: prints.as_mut(),
-                    },
-                )
-            };
-            let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
-                (batch.used_bytes, batch.record_count, batch.overflow_count)
-            });
-            let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
-                (batch.used_bytes, batch.record_count, batch.overflow_count)
-            });
-            let delegate_end = delegate_start + batch_result.0 as usize;
-            let print_end = print_start + print_result.0 as usize;
-            rebase_packed_output_sequences(
-                &mut self.delegate_storage[delegate_start..delegate_end],
-                sequence_base,
-            );
-            rebase_packed_output_sequences(
-                &mut self.print_storage[print_start..print_end],
-                sequence_base,
-            );
-            self.finish_delegate_batch(batch_result);
-            self.finish_print_batch(print_result);
-            sequence_base = sequence_base
-                .saturating_add(batch_result.1)
-                .saturating_add(batch_result.2)
-                .saturating_add(print_result.1)
-                .saturating_add(print_result.2);
-            match result.and_then(check_execution_status) {
-                Ok(()) => {}
-                Err(error) => {
-                    self.begin_delegate_batch();
-                    return Err(error);
-                }
-            }
-        }
+        Ok(())
+    }
 
+    fn process_segment_in_batch(
+        &mut self,
+        start_frame: usize,
+        frames: usize,
+        flags: u32,
+        sequence_base: u32,
+    ) -> Result<u32, Diagnostic> {
+        let delegate_start = self.delegate_used;
+        let print_start = self.print_used;
+        let mut batch = Self::next_delegate_batch(
+            &mut self.delegate_storage,
+            self.delegate_used,
+            self.delegate_collection_enabled,
+        );
+        let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
+        // SAFETY: all bindings are installed during build/rebuild and their
+        // backing allocations remain stable for the lifetime of the instance.
+        let result = unsafe {
+            process_unchecked_segment(
+                &mut self.instance,
+                start_frame,
+                frames,
+                flags,
+                ExecutionOutput {
+                    delegate_batch: batch.as_mut(),
+                    print_batch: prints.as_mut(),
+                },
+            )
+        };
+        let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
+        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
+        self.finish_execution_output(
+            delegate_start,
+            print_start,
+            batch_result,
+            print_result,
+            sequence_base,
+        );
+        result.and_then(check_execution_status).inspect_err(|_| {
+            self.begin_delegate_batch();
+        })?;
+        Ok(output_sequence_count(batch_result, print_result))
+    }
+
+    fn trigger_event_in_batch(
+        &mut self,
+        name: &str,
+        values: &[RunEventValue],
+        sequence_base: u32,
+    ) -> Result<u32, Diagnostic> {
+        let Some(index) = self.jit.event_index(name) else {
+            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+        };
+        let Some(desc) = self.jit.event_descriptor(index) else {
+            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+        };
+        let payload = event_payload_bytes(desc, values)?;
+        let delegate_start = self.delegate_used;
+        let print_start = self.print_used;
+        let mut batch = Self::next_delegate_batch(
+            &mut self.delegate_storage,
+            self.delegate_used,
+            self.delegate_collection_enabled,
+        );
+        let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
+        let result = trigger_event_by_index(
+            &mut self.instance,
+            index,
+            &payload,
+            ExecutionOutput {
+                delegate_batch: batch.as_mut(),
+                print_batch: prints.as_mut(),
+            },
+        );
+        let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
+        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+            (batch.used_bytes, batch.record_count, batch.overflow_count)
+        });
+        self.finish_execution_output(
+            delegate_start,
+            print_start,
+            batch_result,
+            print_result,
+            sequence_base,
+        );
+        result.inspect_err(|_| {
+            self.begin_delegate_batch();
+        })?;
+        Ok(output_sequence_count(batch_result, print_result))
+    }
+
+    fn finish_execution_output(
+        &mut self,
+        delegate_start: usize,
+        print_start: usize,
+        delegate: (u32, u32, u32),
+        print: (u32, u32, u32),
+        sequence_base: u32,
+    ) {
+        let delegate_end = delegate_start + delegate.0 as usize;
+        let print_end = print_start + print.0 as usize;
+        rebase_packed_output_sequences(
+            &mut self.delegate_storage[delegate_start..delegate_end],
+            sequence_base,
+        );
+        rebase_packed_output_sequences(
+            &mut self.print_storage[print_start..print_end],
+            sequence_base,
+        );
+        self.finish_delegate_batch(delegate);
+        self.finish_print_batch(print);
+    }
+
+    fn interleave_outputs(&self, rendered: &mut [f32]) {
+        let output_channels = self.jit.required_out_channels();
         let mut output_channel = 0;
         for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
             for ch in 0..desc.array_len() {
@@ -777,7 +910,6 @@ impl RunSession {
                 output_channel += 1;
             }
         }
-        Ok(())
     }
 
     pub fn take_delegate_batch(&mut self) -> Result<RunDelegateBatch, Diagnostic> {
@@ -1440,6 +1572,14 @@ fn rebase_packed_output_sequences(storage: &mut [u8], base: u32) {
         cursor = record_end;
     }
     debug_assert_eq!(cursor, storage.len());
+}
+
+fn output_sequence_count(delegate: (u32, u32, u32), print: (u32, u32, u32)) -> u32 {
+    delegate
+        .1
+        .saturating_add(delegate.2)
+        .saturating_add(print.1)
+        .saturating_add(print.2)
 }
 
 fn decode_run_print_batch(

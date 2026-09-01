@@ -11,6 +11,7 @@ the standalone sources directly in the browser playground.
 | `effects/` | Auditionable effects plus reusable processor implementations. |
 | `feedback/` | Delay matrices, graph cycles, and nonlinear feedback systems. |
 | `instruments/` | Self-playing and host-triggerable musical instruments. |
+| `plugins/` | MIDI instruments and live-input effects shared with `onda-plugin`. |
 | `projects/` | Complete `.ondaproject` patches with source modules and embedded data. |
 | `soundscapes/` | Granular, generative, and slowly evolving patches. |
 | `spectral/` | Streaming FFT effects and reusable spectral processors. |
@@ -26,4 +27,3 @@ Project examples carry their source and data bindings together:
 ```bash
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```
-

@@ -440,6 +440,30 @@ mod platform {
                 }
                 true
             }
+            "setMidiInputDevice" => {
+                if let Some(controller) = controller.as_mut() {
+                    let _ = controller
+                        .set_midi_input_device(msg.get("name").and_then(|value| value.as_str()));
+                }
+                true
+            }
+            "midiNote" => {
+                if let (Some(key), Some(pressed)) = (
+                    msg.get("key")
+                        .and_then(|value| value.as_i64())
+                        .and_then(|value| i32::try_from(value).ok()),
+                    msg.get("pressed").and_then(|value| value.as_bool()),
+                ) {
+                    let velocity = msg
+                        .get("velocity")
+                        .and_then(|value| value.as_f64())
+                        .unwrap_or(0.0) as f32;
+                    if let Some(controller) = controller.as_mut() {
+                        controller.trigger_midi_note(key, velocity, pressed);
+                    }
+                }
+                false
+            }
             "chooseBufferFile" => {
                 if let Some(name) = msg.get("name").and_then(|value| value.as_str()) {
                     let buffer_name = name.to_owned();
@@ -498,6 +522,7 @@ mod platform {
             "outputChannels": 0,
             "buffers": [],
             "events": [],
+            "midi": { "available": false, "noteOn": false, "noteOff": false },
             "logText": "",
             "logEntries": [],
             "logRevealed": false,
@@ -508,8 +533,10 @@ mod platform {
             "params": [],
             "inputDevices": [],
             "outputDevices": [],
+            "midiInputDevices": [],
             "currentInputDevice": null,
             "currentOutputDevice": null,
+            "currentMidiInputDevice": null,
             "supportsSourceSelection": true,
             "supportsTransport": true,
             "supportsDeviceSelection": true,
@@ -540,6 +567,7 @@ mod platform {
             "outputChannels": state.output_channels,
             "buffers": state.buffers,
             "events": state.events,
+            "midi": state.midi,
             "logText": state.log_text,
             "logEntries": state.log_entries,
             "logRevealed": state.log_revealed,
@@ -550,8 +578,10 @@ mod platform {
             "params": state.params,
             "inputDevices": state.input_devices,
             "outputDevices": state.output_devices,
+            "midiInputDevices": state.midi_input_devices,
             "currentInputDevice": state.current_input_device,
             "currentOutputDevice": state.current_output_device,
+            "currentMidiInputDevice": state.current_midi_input_device,
             "supportsSourceSelection": true,
             "supportsTransport": true,
             "supportsDeviceSelection": true,

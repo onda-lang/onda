@@ -12,6 +12,7 @@ members = [
   "crates/onda_project",
   "crates/onda_runtime",
   "crates/onda_realtime",
+  "crates/onda_host_protocol",
   "crates/onda_api",
   "crates/onda_cpal",
   "crates/onda_run",
@@ -28,7 +29,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["onda contributors"]
 
 [workspace.lints.clippy]

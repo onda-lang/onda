@@ -30,29 +30,48 @@ state. Live-input processing and any additional instrument events remain availab
 
 ## Instruments
 
-| Example | What it makes | Change first |
-| --- | --- | --- |
-| [Acid bassline]({{ '/playground/?example=instruments/acid_bassline.onda' | relative_url }}) | A resonant 16-step bass line with accents and slides | `cutoff`, `env_amount`, `drive` |
-| [Drum machine]({{ '/playground/?example=instruments/drum_machine.onda' | relative_url }}) | Synthesized kick, snare, and metallic hats | `swing`, decay times, `drive` |
-| [FM bells]({{ '/playground/?example=instruments/fm_bells.onda' | relative_url }}) | A spacious polyphonic struck-metal pattern | `brightness`, `decay_s`, `root_note` |
-| [Formant percussion]({{ '/playground/?example=instruments/formant_percussion.onda' | relative_url }}) | Vowel-like resonant percussion | `vowel`, `resonance`, `decay_s` |
-| [Karplus–Strong]({{ '/playground/?example=instruments/karplus_strong.onda' | relative_url }}) | Warm plucked strings from short delay lines | `damping`, `brightness` |
+| Example | What it makes |
+| --- | --- |
+| [Acid bassline]({{ '/playground/?example=instruments/acid_bassline.onda' | relative_url }}) | A resonant 16-step bass line with accents and slides |
+| [Drum machine]({{ '/playground/?example=instruments/drum_machine.onda' | relative_url }}) | Synthesized kick, snare, and metallic hats |
+| [FM bells]({{ '/playground/?example=instruments/fm_bells.onda' | relative_url }}) | A spacious polyphonic struck-metal pattern |
+| [Formant percussion]({{ '/playground/?example=instruments/formant_percussion.onda' | relative_url }}) | Vowel-like resonant percussion |
+| [Karplus–Strong]({{ '/playground/?example=instruments/karplus_strong.onda' | relative_url }}) | Warm plucked strings from short delay lines |
 
 The polyphonic instruments self-play and also keep their host-facing strike/pluck events where that
 interaction is part of the instrument.
 
+## MIDI and plug-in host surfaces
+
+These patches are shared with `onda-plugin`. The instruments use the exact canonical MIDI events,
+so opening either patch with `onda run` reveals the bottom piano and MIDI Input selector. The
+computer keyboard is active by default; in the browser, choose **Connect MIDI device…** for hardware
+MIDI or play the on-screen keys.
+
+| Example | Host interaction |
+| --- | --- |
+| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
+| [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
+| [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
+| [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
+| [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
+| [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
+
+The four effects require a selected audio input or browser microphone. Canonical `plugin_host`
+events are hidden but inactive in standalone hosts; a DAW supplies them through the plug-in.
+
 ## Effects
 
-| Example | What it does | Change first |
-| --- | --- | --- |
-| [Stereo chorus]({{ '/playground/?example=effects/stereo_chorus.onda' | relative_url }}) | Fractional-delay ensemble motion | `depth_ms`, `width` |
-| [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter | `feedback`, `tone`, `wow` |
-| [Live tape looper]({{ '/playground/?example=effects/live_tape_looper.onda' | relative_url }}) | Capture, varispeed, reverse, and overdub on a virtual tape | `speed`, `overdub`, the `reverse` event |
-| [Shimmer echo]({{ '/playground/?example=effects/shimmer_echo.onda' | relative_url }}) | Cross-fed echoes with octave-shifted regeneration | `shimmer`, `shift`, `window_s` |
-| [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Animated folded harmonics | `folds`, `bias` |
-| [Compressor]({{ '/playground/?example=effects/compressor.onda' | relative_url }}) | Stereo-linked soft-knee compression | `threshold_db`, `attack_ms` |
-| [Schroeder reverb]({{ '/playground/?example=effects/schroeder_reverb.onda' | relative_url }}) | A bright classic comb-and-allpass room | `room_size`, `damping` |
-| [FDN reverb]({{ '/playground/?example=effects/fdn_reverb.onda' | relative_url }}) | A dense eight-line matrix tail | `decay`, `diffusion` |
+| Example | What it does |
+| --- | --- |
+| [Stereo chorus]({{ '/playground/?example=effects/stereo_chorus.onda' | relative_url }}) | Fractional-delay ensemble motion |
+| [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
+| [Live tape looper]({{ '/playground/?example=effects/live_tape_looper.onda' | relative_url }}) | Capture, varispeed, reverse, and overdub on a virtual tape |
+| [Shimmer echo]({{ '/playground/?example=effects/shimmer_echo.onda' | relative_url }}) | Cross-fed echoes with octave-shifted regeneration |
+| [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Animated folded harmonics |
+| [Compressor]({{ '/playground/?example=effects/compressor.onda' | relative_url }}) | Stereo-linked soft-knee compression |
+| [Schroeder reverb]({{ '/playground/?example=effects/schroeder_reverb.onda' | relative_url }}) | A bright classic comb-and-allpass room |
+| [FDN reverb]({{ '/playground/?example=effects/fdn_reverb.onda' | relative_url }}) | A dense eight-line matrix tail |
 
 Effects audition themselves by default. Set `live_input` to `1` to process `in1` and `in2`. The
 Schroeder and FDN wrappers are also compact, musical graph-syntax examples: their `graph` blocks
@@ -118,4 +137,3 @@ See [Onda projects]({{ '/docs/projects/' | relative_url }}) for the manifest for
 - [Raw native processor object](https://github.com/onda-lang/onda/tree/main/examples/native/raw_processor_object) — compile and call an Onda processor from C.
 - [Embedded compiler playground](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) — compile editable Onda projects in the browser.
 - [AOT WebAssembly sample player](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_aot_sample_player) — host a precompiled processor without shipping a compiler.
-

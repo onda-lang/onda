@@ -75,11 +75,29 @@ onda run examples/basic/sine.onda
 
 The native egui host is the default. Pass `--webview` to select the webview host. Common options select the sample rate, block size, audio devices, and color theme.
 
+Programs that declare the canonical `note_on` event get a piano at the bottom of either run UI.
+The MIDI selector defaults to **Computer Keyboard**, using
+`A W S E D F T G Y H U J K O L P`; the piano remains playable with a pointer or touch when another
+input is selected. Linux, macOS, and Windows builds also list physical MIDI inputs. The online
+playground offers the same virtual inputs and can request Web MIDI access from supporting browsers.
+
+Canonical `plugin_midi` and `plugin_host` events are host-owned and do not appear as editable user
+events. Their names require the exact signatures offered by language-server completion. Standalone
+hosts dispatch declared MIDI events, but do not synthesize DAW transport or timeline context for
+`plugin_host` events.
+
 For playback without the standalone UI:
 
 ```bash
 onda run play examples/basic/sine.onda --dur 2
 onda run play examples/basic/sine.onda --forever --set freq=220
+```
+
+Headless playback can connect a physical MIDI input by exact name:
+
+```bash
+onda run play examples/plugins/instruments/poly_saw.onda \
+  --forever --midi-input-device "Your MIDI Device"
 ```
 
 Buffer bindings are optional. Omitted scalar buffers and individual fixed-array slots use neutral

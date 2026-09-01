@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -15,22 +15,27 @@ use onda_cpal::{
 use onda_daemon::{
     DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunPrintBatch, RunPrintEntry, RunSession,
+    RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::midi::{self, MidiMessage, TimedMidiMessage};
 use crate::{
-    available_audio_devices, display_path, format_run_build_error, format_single_diagnostic,
-    run_buffer_json, run_event_json, run_event_value_json, run_param_json,
+    available_audio_devices, classify_host_events, display_path, format_run_build_error,
+    format_single_diagnostic, run_buffer_json, run_event_json, run_event_value_json,
+    run_param_json, RunMidiCapabilities,
 };
 
 const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const SCOPE_CAPACITY_FRAMES: usize = 4096;
 const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
 const PRINT_NOTIFICATION_CAPACITY: usize = 32;
+const MIDI_INPUT_CAPACITY: usize = 256;
+const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
+const MAX_RENDER_AHEAD_BLOCKS: usize = 2;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -45,6 +50,7 @@ pub struct PlaybackLaunch {
     pub opt_level: TargetOptLevel,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    pub midi_input_device: Option<String>,
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
@@ -67,11 +73,14 @@ struct PlaybackStartup {
     params: Vec<RunParamInfo>,
     buffers: Vec<RunBufferInfo>,
     events: Vec<RunEventInfo>,
+    midi: RunMidiCapabilities,
     delegates: Vec<RunDelegateInfo>,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
+    midi_input_devices: Vec<String>,
     current_input_device: Option<String>,
     current_output_device: Option<String>,
+    current_midi_input_device: Option<String>,
 }
 
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
@@ -80,6 +89,9 @@ type AudioDeviceLists = (Vec<String>, Vec<String>);
 struct RenderThreadContext {
     sample_queue: SampleProducer,
     input_queue: SampleConsumer,
+    midi_rx: mpsc::Receiver<TimedMidiMessage>,
+    midi_overflowed: Arc<AtomicBool>,
+    midi_reset_requested: Arc<AtomicBool>,
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
@@ -146,6 +158,7 @@ enum PlaybackControlCommand {
     TriggerEvent {
         name: String,
         values: Vec<RunEventValue>,
+        timestamp: Instant,
         reply: Option<PlaybackReply<()>>,
     },
     BindBufferWav {
@@ -174,6 +187,45 @@ struct ScopeRing {
 struct PendingParamUpdate {
     value: f64,
     replies: Vec<PlaybackReply<()>>,
+}
+
+struct PendingRunEvent {
+    frame: u64,
+    sequence: u64,
+    name: String,
+    values: Vec<RunEventValue>,
+    physical_midi: Option<MidiMessage>,
+    reply: Option<PlaybackReply<()>>,
+}
+
+#[derive(Default)]
+struct MidiTimeline {
+    anchor: Option<(Instant, u64)>,
+    next_sequence: u64,
+}
+
+impl MidiTimeline {
+    fn frame_at(&mut self, timestamp: Instant, current_frame: u64, sample_rate: u32) -> (u64, u64) {
+        let (anchor_time, anchor_frame) = match self.anchor {
+            Some(anchor) if timestamp >= anchor.0 => anchor,
+            _ => {
+                self.anchor = Some((timestamp, current_frame));
+                (timestamp, current_frame)
+            }
+        };
+        let elapsed = timestamp.saturating_duration_since(anchor_time);
+        let elapsed_frames = (elapsed.as_secs_f64() * f64::from(sample_rate)).round() as u64;
+        let frame = anchor_frame
+            .saturating_add(elapsed_frames)
+            .max(current_frame);
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        (frame, sequence)
+    }
+
+    fn reset(&mut self) {
+        self.anchor = None;
+    }
 }
 
 impl ScopeRing {
@@ -269,6 +321,9 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         .max(1024);
     let (sample_producer, sample_consumer) = sample_ring(queue_capacity);
     let (input_producer, input_consumer) = sample_ring(queue_capacity);
+    let (midi_tx, midi_rx) = mpsc::sync_channel(MIDI_INPUT_CAPACITY);
+    let midi_overflowed = Arc::new(AtomicBool::new(false));
+    let midi_reset_requested = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
     let render_error = Arc::new(Mutex::new(None::<String>));
     let error_state = StreamErrorState::default();
@@ -325,6 +380,9 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         RenderThreadContext {
             sample_queue: sample_producer,
             input_queue: input_consumer,
+            midi_rx,
+            midi_overflowed: Arc::clone(&midi_overflowed),
+            midi_reset_requested: Arc::clone(&midi_reset_requested),
             scope_ring: Arc::clone(&scope_ring),
             stop_flag: Arc::clone(&stop_flag),
             render_error: Arc::clone(&render_error),
@@ -355,12 +413,15 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "params": startup.params.iter().map(run_param_json).collect::<Vec<_>>(),
             "buffers": startup.buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
             "events": startup.events.iter().map(run_event_json).collect::<Vec<_>>(),
+            "midi": startup.midi,
             "delegates": startup.delegates.iter().map(run_delegate_json).collect::<Vec<_>>(),
             "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
+            "midiInputDevices": startup.midi_input_devices,
             "currentInputDevice": startup.current_input_device,
             "currentOutputDevice": startup.current_output_device,
+            "currentMidiInputDevice": startup.current_midi_input_device,
         });
         write_json_line(
             &mut BufWriter::new(std::io::stdout().lock()),
@@ -445,6 +506,22 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     } else {
         None
     };
+    let mut midi_input = if startup.midi.available {
+        launch
+            .midi_input_device
+            .as_deref()
+            .map(|name| {
+                midi::MidiInputManager::open(
+                    name,
+                    midi_tx,
+                    Arc::clone(&midi_overflowed),
+                    Arc::clone(&midi_reset_requested),
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
 
     wait_for_prefill(
         &sample_consumer,
@@ -485,11 +562,17 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         );
     }
 
-    let playback_result =
-        wait_for_playback_completion(launch.dur_seconds, &stop_flag, &render_error, &error_state);
+    let playback_result = wait_for_playback_completion(
+        launch.dur_seconds,
+        &stop_flag,
+        &render_error,
+        &error_state,
+        midi_input.as_mut(),
+    );
 
     stop_flag.store(true, Ordering::Release);
     drop(input_stream);
+    drop(midi_input);
     drop(stream);
     let _ = render_thread.join();
     if let Some(server) = control_server {
@@ -626,6 +709,7 @@ fn wait_for_playback_completion(
     stop_flag: &Arc<AtomicBool>,
     render_error: &Arc<Mutex<Option<String>>>,
     error_state: &StreamErrorState,
+    mut midi_input: Option<&mut midi::MidiInputManager>,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
@@ -651,6 +735,9 @@ fn wait_for_playback_completion(
         if let Some(err) = error_state.message() {
             return Err(err);
         }
+        if let Some(input) = midi_input.as_deref_mut() {
+            input.poll();
+        }
         thread::sleep(Duration::from_millis(50));
     }
     Ok(())
@@ -664,6 +751,9 @@ fn spawn_run_render_thread(
         let RenderThreadContext {
             sample_queue,
             input_queue,
+            midi_rx,
+            midi_overflowed,
+            midi_reset_requested,
             scope_ring,
             stop_flag,
             render_error,
@@ -687,6 +777,8 @@ fn spawn_run_render_thread(
                 ..RunOptions::default()
             },
         });
+        let mut midi_event_names = HashSet::new();
+        let mut active_midi_notes = HashSet::<(i32, i32)>::new();
 
         let startup = (|| -> Result<PlaybackStartup, String> {
             let mut initial_buffers = Vec::with_capacity(
@@ -752,8 +844,15 @@ fn spawn_run_render_thread(
                 Vec::new()
             };
             let buffers = run.buffer_info();
+            let all_events = run.event_info();
+            let (visible_events, midi) = classify_host_events(all_events.clone())?;
+            midi_event_names.extend(all_events.iter().filter_map(|event| {
+                onda_host_protocol::event_by_name(&event.name)
+                    .filter(|expected| expected.family == onda_host_protocol::HostEventFamily::Midi)
+                    .map(|_| event.name.clone())
+            }));
             let events = if launch.show_meta || launch.control_json {
-                run.event_info()
+                visible_events
             } else {
                 Vec::new()
             };
@@ -764,6 +863,7 @@ fn spawn_run_render_thread(
             };
             let input_devices = Vec::new();
             let output_devices = Vec::new();
+            let midi_input_devices = midi::input_devices();
             let input_channels = run.input_channel_count();
             let output_channels = run.output_channel_count();
             let path = run.path().to_path_buf();
@@ -775,11 +875,14 @@ fn spawn_run_render_thread(
                 params,
                 buffers,
                 events,
+                midi,
                 delegates,
                 input_devices,
                 output_devices,
+                midi_input_devices,
                 current_input_device: launch.input_device.clone(),
                 current_output_device: launch.output_device.clone(),
+                current_midi_input_device: launch.midi_input_device.clone(),
             })
         })();
 
@@ -802,6 +905,9 @@ fn spawn_run_render_thread(
         };
 
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
+        let mut pending_run_events = Vec::<PendingRunEvent>::with_capacity(MIDI_INPUT_CAPACITY);
+        let mut midi_timeline = MidiTimeline::default();
+        let mut rendered_frame = 0_u64;
         let mut delegate_subscription_id = 0_u64;
         let mut play_requested = true;
         let mut playing = session.run(&launch.input).is_some();
@@ -819,10 +925,16 @@ fn spawn_run_render_thread(
                         PlaybackControlCommand::Pause { reply } => {
                             play_requested = false;
                             playing = false;
+                            cancel_pending_run_events(
+                                &mut pending_run_events,
+                                "event cancelled because playback was paused",
+                            );
+                            midi_timeline.reset();
                             let _ = reply.send(Ok(()));
                         }
                         PlaybackControlCommand::Play { reply } => {
                             play_requested = true;
+                            midi_timeline.reset();
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
                                 &mut session,
@@ -913,8 +1025,10 @@ fn spawn_run_render_thread(
                             );
                             let result = session
                                 .run(&launch.input)
-                                .map(|run| run.event_info())
-                                .ok_or_else(|| "run is not active".to_owned());
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    classify_host_events(run.event_info()).map(|(events, _)| events)
+                                });
                             let _ = reply.send(result);
                         }
                         PlaybackControlCommand::GetDevices { reply } => {
@@ -964,6 +1078,7 @@ fn spawn_run_render_thread(
                         PlaybackControlCommand::TriggerEvent {
                             name,
                             values,
+                            timestamp,
                             reply,
                         } => {
                             flush_pending_param_updates(
@@ -971,6 +1086,22 @@ fn spawn_run_render_thread(
                                 &mut session,
                                 &launch.input,
                             );
+                            if playing && midi_event_names.contains(&name) {
+                                let (frame, sequence) = midi_timeline.frame_at(
+                                    timestamp,
+                                    rendered_frame,
+                                    launch.sample_rate_hz,
+                                );
+                                pending_run_events.push(PendingRunEvent {
+                                    frame,
+                                    sequence,
+                                    name,
+                                    values,
+                                    physical_midi: None,
+                                    reply,
+                                });
+                                continue;
+                            }
                             let result = session
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
@@ -1063,9 +1194,89 @@ fn spawn_run_render_thread(
             }
 
             if !playing {
+                while midi_rx.try_recv().is_ok() {}
+                midi_overflowed.store(false, Ordering::Release);
+                midi_reset_requested.store(false, Ordering::Release);
+                cancel_pending_run_events(
+                    &mut pending_run_events,
+                    "event cancelled because playback is inactive",
+                );
+                midi_timeline.reset();
+                active_midi_notes.clear();
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }
+
+            let render_ahead_samples = launch
+                .block_frames
+                .saturating_mul(render_output_channels)
+                .saturating_mul(MAX_RENDER_AHEAD_BLOCKS);
+            if sample_queue.len() >= render_ahead_samples {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+
+            let reset_midi = midi_overflowed.swap(false, Ordering::AcqRel)
+                | midi_reset_requested.swap(false, Ordering::AcqRel);
+            if reset_midi {
+                while midi_rx.try_recv().is_ok() {}
+                pending_run_events.retain(|event| event.physical_midi.is_none());
+                midi_timeline.reset();
+                if midi_event_names.contains("note_off") {
+                    let recovery_time = Instant::now();
+                    for &(channel, key) in &active_midi_notes {
+                        let message = MidiMessage {
+                            kind: crate::midi::MidiMessageKind::NoteOff,
+                            channel,
+                            key_or_controller: key,
+                            value: 0.0,
+                        };
+                        let (name, values) = message.event();
+                        let (frame, sequence) = midi_timeline.frame_at(
+                            recovery_time,
+                            rendered_frame,
+                            launch.sample_rate_hz,
+                        );
+                        pending_run_events.push(PendingRunEvent {
+                            frame,
+                            sequence,
+                            name: name.to_owned(),
+                            values,
+                            physical_midi: Some(message),
+                            reply: None,
+                        });
+                    }
+                } else {
+                    active_midi_notes.clear();
+                }
+            }
+
+            for _ in 0..MAX_MIDI_MESSAGES_PER_RENDER_BLOCK {
+                let Ok(timed) = midi_rx.try_recv() else {
+                    break;
+                };
+                let message = timed.message;
+                let (name, values) = message.event();
+                if !midi_event_names.contains(name) {
+                    continue;
+                }
+                let (frame, sequence) =
+                    midi_timeline.frame_at(timed.timestamp, rendered_frame, launch.sample_rate_hz);
+                pending_run_events.push(PendingRunEvent {
+                    frame,
+                    sequence,
+                    name: name.to_owned(),
+                    values,
+                    physical_midi: Some(message),
+                    reply: None,
+                });
+            }
+
+            pending_run_events.sort_by_key(|event| (event.frame, event.sequence));
+            let block_end = rendered_frame.saturating_add(launch.block_frames as u64);
+            let due_count = pending_run_events.partition_point(|event| event.frame < block_end);
+            let future_events = pending_run_events.split_off(due_count);
+            let due_events = std::mem::replace(&mut pending_run_events, future_events);
 
             if render_input_channels > 0 {
                 let input_channels = render_input_channels;
@@ -1075,7 +1286,19 @@ fn spawn_run_render_thread(
                 }
             }
 
-            let execution = session.render_run_block_interleaved(&launch.input, &mut interleaved);
+            let scheduled_events = due_events
+                .iter()
+                .map(|event| RunScheduledEvent {
+                    frame: event.frame.saturating_sub(rendered_frame) as usize,
+                    name: &event.name,
+                    values: &event.values,
+                })
+                .collect::<Vec<_>>();
+            let execution = session.render_run_block_events_interleaved(
+                &launch.input,
+                &mut interleaved,
+                &scheduled_events,
+            );
             let output_result = session
                 .run_mut(&launch.input)
                 .ok_or_else(|| "run is not active".to_owned())
@@ -1088,18 +1311,20 @@ fn spawn_run_render_thread(
                     )
                 });
             if let Err(error) = output_result {
+                reply_to_run_events(due_events, Err(error.clone()), &mut active_midi_notes);
                 store_thread_error(&render_error, error);
                 stop_flag.store(true, Ordering::Release);
                 break;
             }
             if let Err(diag) = execution {
-                store_thread_error(
-                    &render_error,
-                    format_single_diagnostic("daemon play render failed", &diag),
-                );
+                let error = format_single_diagnostic("daemon play render failed", &diag);
+                reply_to_run_events(due_events, Err(error.clone()), &mut active_midi_notes);
+                store_thread_error(&render_error, error);
                 stop_flag.store(true, Ordering::Release);
                 break;
             }
+            reply_to_run_events(due_events, Ok(()), &mut active_midi_notes);
+            rendered_frame = block_end;
 
             if let Ok(mut ring) = scope_ring.try_lock() {
                 ring.push_interleaved(&interleaved);
@@ -1171,6 +1396,39 @@ fn publish_run_output_batch(
         );
     }
     Ok(())
+}
+
+fn cancel_pending_run_events(events: &mut Vec<PendingRunEvent>, reason: &str) {
+    for event in events.drain(..) {
+        if let Some(reply) = event.reply {
+            let _ = reply.send(Err(reason.to_owned()));
+        }
+    }
+}
+
+fn reply_to_run_events(
+    events: Vec<PendingRunEvent>,
+    result: Result<(), String>,
+    active_midi_notes: &mut HashSet<(i32, i32)>,
+) {
+    for event in events {
+        if result.is_ok() {
+            if let Some(message) = event.physical_midi {
+                match message.kind {
+                    crate::midi::MidiMessageKind::NoteOn => {
+                        active_midi_notes.insert((message.channel, message.key_or_controller));
+                    }
+                    crate::midi::MidiMessageKind::NoteOff => {
+                        active_midi_notes.remove(&(message.channel, message.key_or_controller));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(reply) = event.reply {
+            let _ = reply.send(result.clone());
+        }
+    }
 }
 
 fn record_transport_loss(
@@ -2007,6 +2265,7 @@ fn run_control_response(
                     .send(PlaybackControlCommand::TriggerEvent {
                         name,
                         values,
+                        timestamp: Instant::now(),
                         reply: None,
                     })
                     .map_err(|_| "run control channel closed".to_owned())?;
@@ -2017,6 +2276,7 @@ fn run_control_response(
                 .send(PlaybackControlCommand::TriggerEvent {
                     name,
                     values,
+                    timestamp: Instant::now(),
                     reply: Some(reply_tx),
                 })
                 .map_err(|_| "run control channel closed".to_owned())?;
@@ -2136,8 +2396,8 @@ fn run_control_response(
 mod tests {
     use super::{
         run_control_response, write_pending_delegate_batch, write_pending_output_batches,
-        write_pending_print_batches, DelegateSubscriptionGuard, PlaybackControlCommand,
-        PlaybackControlRequest, RunOutputBatch, ScopeRing,
+        write_pending_print_batches, DelegateSubscriptionGuard, MidiTimeline,
+        PlaybackControlCommand, PlaybackControlRequest, RunOutputBatch, ScopeRing,
     };
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
@@ -2145,6 +2405,17 @@ mod tests {
     };
     use serde_json::Value;
     use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn midi_timeline_preserves_timestamp_spacing_within_a_block() {
+        let mut timeline = MidiTimeline::default();
+        let start = Instant::now();
+        let (first, _) = timeline.frame_at(start, 1_024, 48_000);
+        let (second, _) = timeline.frame_at(start + Duration::from_millis(5), 1_024, 48_000);
+        assert_eq!(first, 1_024);
+        assert_eq!(second, 1_264);
+    }
 
     #[test]
     fn delegate_collection_is_disabled_until_explicitly_subscribed() {
@@ -2566,6 +2837,7 @@ mod tests {
                 name,
                 values,
                 reply,
+                ..
             } => {
                 assert_eq!(name, "note_on");
                 assert_eq!(

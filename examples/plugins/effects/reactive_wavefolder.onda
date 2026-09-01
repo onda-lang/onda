@@ -1,0 +1,59 @@
+import std/filter
+import std/osc
+import std/smoothing
+
+def triangle_fold(x):
+  y = wrap(x + 1.0, 0.0, 4.0)
+  if y > 2.0:
+    y = 4.0 - y
+  return y - 1.0
+
+proc Wavefolder:
+  params:
+    folds = 2.0
+    bias = 0.0
+
+  sample 8:
+    out1 = triangle_fold(in1 * folds + bias)
+
+params:
+  input_gain = 1.6 {0.25, 6.0}
+  folds = 1.8 {1.0, 7.0}
+  response = 4.0 {0.0, 12.0}
+  release_s = 0.12 {0.01, 1.0, log, "s"}
+  tone = 5200.0 {200.0, 16000.0, log, "Hz"}
+  resonance = 0.8 {0.5, 4.0}
+  motion = 0.18 {0.0, 0.8}
+  mix = 0.72 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  detector = std::smoothing::LagUD(attack_s = 0.001, release_s = release_s)
+  folder_l = Wavefolder()
+  folder_r = Wavefolder()
+  tone_l = std::filter::Svf()
+  tone_r = std::filter::Svf()
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
+  motion_l = std::osc::Sine(freq = 0.11)
+  motion_r = std::osc::Sine(freq = 0.073)
+
+block:
+  detector.release_s = release_s
+  tone_l.update_coeffs(tone, resonance)
+  tone_r.update_coeffs(tone * 0.94, resonance)
+
+  sample:
+    envelope = detector(max(abs(in1), abs(in2)))
+    dynamic_folds = folds + envelope * response
+    bias_l = motion_l() * motion
+    bias_r = motion_r() * motion
+    folded_l = folder_l(in1 * input_gain, folds = dynamic_folds, bias = bias_l)
+    folded_r = folder_r(in2 * input_gain, folds = dynamic_folds, bias = bias_r)
+    dark_l = tone_l(folded_l)
+    dark_r = tone_r(folded_r)
+    brightness = clamp(envelope * response * 0.25, 0.0, 1.0)
+    wet_l = dc_l(lerp(dark_l, folded_l, brightness))
+    wet_r = dc_r(lerp(dark_r, folded_r, brightness))
+    out1 = lerp(in1, wet_l, mix) * level
+    out2 = lerp(in2, wet_r, mix) * level

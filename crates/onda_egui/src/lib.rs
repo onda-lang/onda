@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui;
 use onda_run::{
     ParamDomain, ParamScalarType, ParamScale, RunController, RunHostOptions, RunThemeMode,
-    CONTROLLER_POLL_INTERVAL,
+    COMPUTER_KEYBOARD_MIDI_INPUT, CONTROLLER_POLL_INTERVAL,
 };
 use serde_json::{Number, Value};
 
@@ -166,6 +166,10 @@ struct RunApp {
     current_icon_dark: Option<bool>,
     applied_theme_dark: Option<bool>,
     param_layout: ParamLayout,
+    keyboard_octave: i32,
+    keyboard_velocity: f32,
+    computer_notes: HashMap<egui::Key, i32>,
+    pointer_note: Option<i32>,
 }
 
 impl RunApp {
@@ -186,9 +190,257 @@ impl RunApp {
             current_icon_dark,
             applied_theme_dark: None,
             param_layout,
+            keyboard_octave: 4,
+            keyboard_velocity: 0.8,
+            computer_notes: HashMap::new(),
+            pointer_note: None,
         };
         app.sync_event_inputs();
         app
+    }
+
+    fn send_midi_note(&mut self, key: i32, pressed: bool) {
+        if let Some(controller) = self.controller.as_mut() {
+            controller.trigger_midi_note(
+                key,
+                if pressed { self.keyboard_velocity } else { 0.0 },
+                pressed,
+            );
+        }
+    }
+
+    fn release_virtual_notes(&mut self) {
+        let notes = self
+            .computer_notes
+            .drain()
+            .map(|(_, note)| note)
+            .chain(self.pointer_note.take())
+            .collect::<HashSet<_>>();
+        for note in notes {
+            self.send_midi_note(note, false);
+        }
+    }
+
+    fn release_computer_notes(&mut self) {
+        let pointer_note = self.pointer_note;
+        let notes = self
+            .computer_notes
+            .drain()
+            .map(|(_, note)| note)
+            .filter(|note| pointer_note != Some(*note))
+            .collect::<HashSet<_>>();
+        for note in notes {
+            self.send_midi_note(note, false);
+        }
+    }
+
+    fn handle_computer_keyboard(&mut self, ctx: &egui::Context) {
+        let Some(state) = self
+            .controller
+            .as_ref()
+            .map(|controller| controller.state())
+        else {
+            self.release_virtual_notes();
+            return;
+        };
+        let enabled = state.connected
+            && state.midi.note_on
+            && state.current_midi_input_device.as_deref() == Some(COMPUTER_KEYBOARD_MIDI_INPUT);
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(true));
+        if !focused {
+            self.release_virtual_notes();
+            return;
+        }
+        if !enabled {
+            self.release_computer_notes();
+            return;
+        }
+
+        let accepts_new_notes = !ctx.wants_keyboard_input();
+        let events = ctx.input(|input| input.events.clone());
+        for event in events {
+            let egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            let Some(offset) = computer_key_offset(key) else {
+                continue;
+            };
+            if computer_key_press_blocked(pressed, modifiers) {
+                continue;
+            }
+            if pressed {
+                if repeat || !accepts_new_notes || self.computer_notes.contains_key(&key) {
+                    continue;
+                }
+                let note = ((self.keyboard_octave + 1) * 12 + offset).clamp(0, 127);
+                let already_held = self.pointer_note == Some(note)
+                    || self.computer_notes.values().any(|held| *held == note);
+                self.computer_notes.insert(key, note);
+                if !already_held {
+                    self.send_midi_note(note, true);
+                }
+            } else if let Some(note) = self.computer_notes.remove(&key) {
+                if self.pointer_note != Some(note)
+                    && !self.computer_notes.values().any(|held| *held == note)
+                {
+                    self.send_midi_note(note, false);
+                }
+            }
+        }
+    }
+
+    fn render_midi_keyboard(&mut self, ui: &mut egui::Ui, theme: &RunTheme) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("MIDI Keyboard");
+            ui.separator();
+            ui.label("Octave");
+            let previous_octave = self.keyboard_octave;
+            ui.add(
+                egui::DragValue::new(&mut self.keyboard_octave)
+                    .range(-1..=7)
+                    .speed(0.1),
+            );
+            if self.keyboard_octave != previous_octave {
+                self.release_virtual_notes();
+            }
+            ui.label("Velocity");
+            ui.add_sized(
+                [150.0, ui.spacing().interact_size.y],
+                egui::Slider::new(&mut self.keyboard_velocity, 0.0..=1.0)
+                    .show_value(true)
+                    .max_decimals(2),
+            );
+        });
+        ui.add_space(6.0);
+
+        const WHITE_NOTES: [i32; 14] = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23];
+        const BLACK_NOTES: [(i32, usize); 10] = [
+            (1, 1),
+            (3, 2),
+            (6, 4),
+            (8, 5),
+            (10, 6),
+            (13, 8),
+            (15, 9),
+            (18, 11),
+            (20, 12),
+            (22, 13),
+        ];
+
+        let desired_size = egui::vec2(ui.available_width(), 104.0);
+        let (response, painter) = ui.allocate_painter(desired_size, egui::Sense::drag());
+        let rect = response.rect;
+        let white_width = rect.width() / WHITE_NOTES.len() as f32;
+        let black_width = white_width * 0.62;
+        let black_height = rect.height() * 0.62;
+        let base_note = (self.keyboard_octave + 1) * 12;
+
+        let note_at = |position| {
+            BLACK_NOTES
+                .iter()
+                .find_map(|(offset, boundary)| {
+                    let center = rect.left() + *boundary as f32 * white_width;
+                    let key_rect = egui::Rect::from_min_size(
+                        egui::pos2(center - black_width * 0.5, rect.top()),
+                        egui::vec2(black_width, black_height),
+                    );
+                    key_rect.contains(position).then_some(base_note + offset)
+                })
+                .or_else(|| {
+                    rect.contains(position).then(|| {
+                        let index = ((position.x - rect.left()) / white_width)
+                            .floor()
+                            .clamp(0.0, WHITE_NOTES.len() as f32 - 1.0)
+                            as usize;
+                        base_note + WHITE_NOTES[index]
+                    })
+                })
+        };
+        let hovered_note = ui
+            .input(|input| input.pointer.hover_pos())
+            .and_then(note_at);
+        let pointer_note = response.interact_pointer_pos().and_then(note_at);
+        let pointer_down = ui.input(|input| input.pointer.primary_down());
+        let next_pointer_note = pointer_down.then_some(pointer_note).flatten();
+        if next_pointer_note != self.pointer_note {
+            if let Some(previous) = self.pointer_note.take() {
+                if !self.computer_notes.values().any(|note| *note == previous) {
+                    self.send_midi_note(previous, false);
+                }
+            }
+            if let Some(next) = next_pointer_note {
+                let already_held = self.computer_notes.values().any(|note| *note == next);
+                self.pointer_note = Some(next);
+                if !already_held {
+                    self.send_midi_note(next, true);
+                }
+            }
+        }
+
+        let is_held = |note: i32| {
+            self.pointer_note == Some(note)
+                || self.computer_notes.values().any(|held| *held == note)
+        };
+        painter.rect_filled(rect, 0.0, theme.piano.bed);
+        for (index, offset) in WHITE_NOTES.iter().enumerate() {
+            let note = base_note + offset;
+            let key_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + index as f32 * white_width, rect.top()),
+                egui::pos2(
+                    rect.left() + (index + 1) as f32 * white_width,
+                    rect.bottom(),
+                ),
+            );
+            let fill = if is_held(note) {
+                theme.piano.white_active
+            } else if hovered_note == Some(note) {
+                theme.piano.white_hover
+            } else {
+                theme.piano.white
+            };
+            painter.rect_filled(key_rect, 0.0, fill);
+            painter.rect_stroke(
+                key_rect,
+                0.0,
+                egui::Stroke::new(1.0_f32, theme.piano.border),
+                egui::StrokeKind::Inside,
+            );
+        }
+        for (offset, boundary) in BLACK_NOTES {
+            let note = base_note + offset;
+            let center = rect.left() + boundary as f32 * white_width;
+            let key_rect = egui::Rect::from_min_size(
+                egui::pos2(center - black_width * 0.5, rect.top()),
+                egui::vec2(black_width, black_height),
+            );
+            let fill = if is_held(note) {
+                theme.piano.black_active
+            } else if hovered_note == Some(note) {
+                theme.piano.black_hover
+            } else {
+                theme.piano.black
+            };
+            painter.rect_filled(key_rect, 0.0, fill);
+            painter.rect_stroke(
+                key_rect,
+                0.0,
+                egui::Stroke::new(1.0_f32, theme.piano.border),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0_f32, theme.piano.border),
+            egui::StrokeKind::Inside,
+        );
     }
 
     fn sync_event_inputs(&mut self) {
@@ -852,6 +1104,7 @@ impl eframe::App for RunApp {
                 self.sync_event_inputs();
             }
         }
+        self.handle_computer_keyboard(ctx);
         if self.controller.is_some() {
             ctx.request_repaint_after(CONTROLLER_POLL_INTERVAL);
         }
@@ -870,6 +1123,23 @@ impl eframe::App for RunApp {
                 )
                 .show(ctx, |ui| self.render_file_picker(ui, &theme, file_hovered));
             return;
+        }
+        let show_midi_keyboard = self.controller.as_ref().is_some_and(|controller| {
+            let state = controller.state();
+            state.connected && state.midi.note_on
+        });
+        if show_midi_keyboard {
+            egui::TopBottomPanel::bottom("midi-keyboard")
+                .resizable(false)
+                .frame(
+                    egui::Frame::default()
+                        .fill(theme.panel_fill)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .stroke(egui::Stroke::new(1.0_f32, theme.border)),
+                )
+                .show(ctx, |ui| self.render_midi_keyboard(ui, &theme));
+        } else {
+            self.release_virtual_notes();
         }
         egui::CentralPanel::default()
             .frame(
@@ -956,6 +1226,7 @@ impl eframe::App for RunApp {
                                                 )
                                                 .clicked()
                                             {
+                                                self.release_virtual_notes();
                                                 self.controller
                                                     .as_mut()
                                                     .expect("loaded run controller")
@@ -974,6 +1245,7 @@ impl eframe::App for RunApp {
                                                 .add_sized(button_size, run_button("Unload"))
                                                 .clicked()
                                             {
+                                                self.release_virtual_notes();
                                                 self.unload(ctx);
                                             }
                                         },
@@ -1001,7 +1273,8 @@ impl eframe::App for RunApp {
                                     let control_gap = 12.0;
                                     let combo_count =
                                         (!state.input_devices.is_empty() as usize)
-                                            + (!state.output_devices.is_empty() as usize);
+                                            + (!state.output_devices.is_empty() as usize)
+                                            + (state.midi.available as usize);
                                     let control_count = combo_count + 1;
                                     let total_width = combo_width * combo_count as f32
                                         + refresh_width
@@ -1022,6 +1295,7 @@ impl eframe::App for RunApp {
                                                                     render_device_combo(
                                                                     ui,
                                                                     "Input Device",
+                                                                    Some("Default"),
                                                                     &state.input_devices,
                                                                     state
                                                                         .current_input_device
@@ -1048,6 +1322,7 @@ impl eframe::App for RunApp {
                                                                     render_device_combo(
                                                                     ui,
                                                                     "Output Device",
+                                                                    Some("Default"),
                                                                     &state.output_devices,
                                                                     state
                                                                         .current_output_device
@@ -1063,6 +1338,34 @@ impl eframe::App for RunApp {
                                                                                 selection,
                                                                             );
                                                                     },
+                                                                    );
+                                                                },
+                                                            );
+                                                        }
+                                                        if state.midi.available {
+                                                            ui.allocate_ui(
+                                                                egui::vec2(combo_width, 56.0),
+                                                                |ui| {
+                                                                    render_device_combo(
+                                                                        ui,
+                                                                        "MIDI Input",
+                                                                        None,
+                                                                        &state.midi_input_devices,
+                                                                        state
+                                                                            .current_midi_input_device
+                                                                            .as_deref(),
+                                                                        |selection| {
+                                                                            self.release_virtual_notes();
+                                                                            let _ = self
+                                                                                .controller
+                                                                                .as_mut()
+                                                                                .expect(
+                                                                                    "loaded run controller",
+                                                                                )
+                                                                                .set_midi_input_device(
+                                                                                    selection,
+                                                                                );
+                                                                        },
                                                                     );
                                                                 },
                                                             );
@@ -1294,6 +1597,32 @@ impl eframe::App for RunApp {
     }
 }
 
+fn computer_key_offset(key: egui::Key) -> Option<i32> {
+    Some(match key {
+        egui::Key::A => 0,
+        egui::Key::W => 1,
+        egui::Key::S => 2,
+        egui::Key::E => 3,
+        egui::Key::D => 4,
+        egui::Key::F => 5,
+        egui::Key::T => 6,
+        egui::Key::G => 7,
+        egui::Key::Y => 8,
+        egui::Key::H => 9,
+        egui::Key::U => 10,
+        egui::Key::J => 11,
+        egui::Key::K => 12,
+        egui::Key::O => 13,
+        egui::Key::L => 14,
+        egui::Key::P => 15,
+        _ => return None,
+    })
+}
+
+fn computer_key_press_blocked(pressed: bool, modifiers: egui::Modifiers) -> bool {
+    pressed && (modifiers.command || modifiers.ctrl || modifiers.alt)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ParamLayout {
     #[default]
@@ -1395,19 +1724,28 @@ fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
 fn render_device_combo(
     ui: &mut egui::Ui,
     label: &str,
+    default_label: Option<&str>,
     devices: &[String],
     current: Option<&str>,
     mut on_change: impl FnMut(Option<&str>),
 ) {
     ui.vertical_centered(|ui| {
         ui.label(label);
-        let selected = current.unwrap_or("Default");
+        let selected = current
+            .or_else(|| devices.first().map(String::as_str))
+            .or(default_label)
+            .unwrap_or("");
         egui::ComboBox::from_id_salt(label)
             .width(ui.available_width())
             .selected_text(ellipsize_middle(selected, 18))
             .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_none(), "Default").clicked() {
-                    on_change(None);
+                if let Some(default_label) = default_label {
+                    if ui
+                        .selectable_label(current.is_none(), default_label)
+                        .clicked()
+                    {
+                        on_change(None);
+                    }
                 }
                 for device in devices {
                     if ui
@@ -2356,6 +2694,19 @@ struct RunTheme {
     scope_background: egui::Color32,
     scope_grid: egui::Color32,
     scope_strokes: [egui::Color32; 4],
+    piano: PianoTheme,
+}
+
+#[derive(Clone, Copy)]
+struct PianoTheme {
+    bed: egui::Color32,
+    white: egui::Color32,
+    white_hover: egui::Color32,
+    white_active: egui::Color32,
+    black: egui::Color32,
+    black_hover: egui::Color32,
+    black_active: egui::Color32,
+    border: egui::Color32,
 }
 
 impl RunTheme {
@@ -2380,6 +2731,16 @@ impl RunTheme {
                     egui::Color32::from_rgb(122, 215, 186),
                     egui::Color32::from_rgb(243, 181, 123),
                 ],
+                piano: PianoTheme {
+                    bed: egui::Color32::from_rgb(8, 21, 34),
+                    white: egui::Color32::from_rgb(175, 194, 217),
+                    white_hover: egui::Color32::from_rgb(201, 219, 242),
+                    white_active: egui::Color32::from_rgb(123, 173, 230),
+                    black: egui::Color32::from_rgb(9, 19, 31),
+                    black_hover: egui::Color32::from_rgb(22, 46, 73),
+                    black_active: egui::Color32::from_rgb(95, 145, 201),
+                    border: egui::Color32::from_rgb(53, 78, 109),
+                },
             }
         } else {
             Self {
@@ -2401,6 +2762,16 @@ impl RunTheme {
                     egui::Color32::from_rgb(33, 149, 110),
                     egui::Color32::from_rgb(191, 121, 37),
                 ],
+                piano: PianoTheme {
+                    bed: egui::Color32::from_rgb(219, 232, 247),
+                    white: egui::Color32::from_rgb(248, 251, 255),
+                    white_hover: egui::Color32::from_rgb(234, 242, 251),
+                    white_active: egui::Color32::from_rgb(155, 184, 216),
+                    black: egui::Color32::from_rgb(20, 58, 99),
+                    black_hover: egui::Color32::from_rgb(36, 84, 127),
+                    black_active: egui::Color32::from_rgb(47, 118, 197),
+                    border: egui::Color32::from_rgb(145, 170, 197),
+                },
             }
         }
     }
@@ -2699,10 +3070,11 @@ mod tests {
 
     use super::{
         buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label, buffer_waveform_scale,
-        control_decimals, event_arg_signature, event_array_grid_columns, event_array_len,
-        event_array_scalar_type, format_run_status, log_entry_context, param_grid_columns,
-        prepared_param_domain, render_compact_param_value_editor, scalar_drag_speed, scalar_step,
-        KnobDragState, ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
+        computer_key_offset, computer_key_press_blocked, control_decimals, event_arg_signature,
+        event_array_grid_columns, event_array_len, event_array_scalar_type, format_run_status,
+        log_entry_context, param_grid_columns, prepared_param_domain,
+        render_compact_param_value_editor, scalar_drag_speed, scalar_step, KnobDragState,
+        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
         PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
@@ -2718,6 +3090,27 @@ mod tests {
         }
 
         fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn computer_piano_continues_above_k_without_punctuation_keys() {
+        assert_eq!(computer_key_offset(egui::Key::K), Some(12));
+        assert_eq!(computer_key_offset(egui::Key::I), None);
+        assert_eq!(computer_key_offset(egui::Key::O), Some(13));
+        assert_eq!(computer_key_offset(egui::Key::L), Some(14));
+        assert_eq!(computer_key_offset(egui::Key::P), Some(15));
+        assert_eq!(computer_key_offset(egui::Key::Semicolon), None);
+        assert_eq!(computer_key_offset(egui::Key::Quote), None);
+    }
+
+    #[test]
+    fn computer_piano_modifiers_never_block_key_releases() {
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            ..egui::Modifiers::default()
+        };
+        assert!(computer_key_press_blocked(true, modifiers));
+        assert!(!computer_key_press_blocked(false, modifiers));
     }
 
     #[test]

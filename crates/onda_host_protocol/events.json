@@ -1,0 +1,84 @@
+{
+  "events": [
+    {
+      "name": "note_on",
+      "family": "midi",
+      "params": [["id", "i32"], ["channel", "i32"], ["key", "i32"], ["velocity", "f32"]]
+    },
+    {
+      "name": "note_off",
+      "family": "midi",
+      "params": [["id", "i32"], ["channel", "i32"], ["key", "i32"], ["velocity", "f32"]]
+    },
+    {
+      "name": "poly_pressure",
+      "family": "midi",
+      "params": [["channel", "i32"], ["key", "i32"], ["pressure", "f32"]]
+    },
+    {
+      "name": "pitch_bend",
+      "family": "midi",
+      "params": [["channel", "i32"], ["value", "f32"]]
+    },
+    {
+      "name": "channel_pressure",
+      "family": "midi",
+      "params": [["channel", "i32"], ["pressure", "f32"]]
+    },
+    {
+      "name": "cc",
+      "family": "midi",
+      "params": [["channel", "i32"], ["index", "i32"], ["value", "f32"]]
+    },
+    {
+      "name": "program_change",
+      "family": "midi",
+      "params": [["channel", "i32"], ["program", "i32"]]
+    },
+    {
+      "name": "transport",
+      "family": "host_context",
+      "params": [["playing", "bool"], ["recording", "bool"], ["looping", "bool"]]
+    },
+    {
+      "name": "sample_position",
+      "family": "host_context",
+      "params": [["sample", "i64"]]
+    },
+    {
+      "name": "time_position",
+      "family": "host_context",
+      "params": [["seconds", "f64"]]
+    },
+    {
+      "name": "tempo",
+      "family": "host_context",
+      "params": [["bpm", "f64"]]
+    },
+    {
+      "name": "musical_position",
+      "family": "host_context",
+      "params": [["quarter_note", "f64"]]
+    },
+    {
+      "name": "bar_position",
+      "family": "host_context",
+      "params": [["start_quarter_note", "f64"]]
+    },
+    {
+      "name": "time_signature",
+      "family": "host_context",
+      "params": [["numerator", "i32"], ["denominator", "i32"]]
+    },
+    {
+      "name": "loop_region",
+      "family": "host_context",
+      "params": [["start_quarter_note", "f64"], ["end_quarter_note", "f64"]]
+    },
+    {
+      "name": "render_mode",
+      "family": "host_context",
+      "params": [["realtime", "bool"]]
+    }
+  ]
+}

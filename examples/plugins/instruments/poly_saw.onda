@@ -1,0 +1,250 @@
+import std/env
+import std/filter
+import std/levels
+import std/osc
+import std/pitch
+
+const VoiceCount = 8
+const MidiChannelCount = 16
+
+proc StereoSaturator:
+  params:
+    drive = 2.0
+
+  sample 4:
+    out1 = tanh(in1 * drive)
+    out2 = tanh(in2 * drive)
+
+proc Voice:
+  delegate finished()
+
+  params:
+    key = 60
+    velocity = 0.0
+    bend = 0.0
+    detune = 0.08
+    attack_s = 0.008
+    decay_s = 0.16
+    sustain = 0.68
+    release_s = 0.32
+
+  init:
+    saw_l = std::osc::Saw()
+    saw_r = std::osc::Saw()
+    envelope = std::env::ADSR()
+
+  def update_pitch():
+    frequency = std::pitch::note_to_hz(f32(key) + bend)
+    detune_ratio = std::pitch::ratio_between(0.0, detune)
+    saw_l.freq = frequency / detune_ratio
+    saw_r.freq = frequency * detune_ratio
+
+  def update_envelope():
+    envelope.attack_s = attack_s
+    envelope.decay_s = decay_s
+    envelope.sustain = sustain
+    envelope.release_s = release_s
+
+  event start(key_value: i32, velocity_value, bend_value):
+    key = key_value
+    velocity = velocity_value
+    bend = bend_value
+    update_pitch()
+    update_envelope()
+    saw_l.reset()
+    saw_r.reset(0.5)
+    envelope.start()
+
+  event set_bend(value):
+    bend = value
+    update_pitch()
+
+  event release():
+    envelope.release()
+
+  when envelope.finished():
+    finished()
+
+  block:
+    update_pitch()
+    update_envelope()
+
+    sample:
+      amplitude = envelope() * velocity
+      out1 = (saw_l() + saw_r()) * 0.5 * amplitude
+
+struct VoiceManager:
+  ids: i32[VoiceCount]
+  channels: i32[VoiceCount]
+  keys: i32[VoiceCount]
+  pans: f32[VoiceCount]
+  active: bool[VoiceCount]
+  held: bool[VoiceCount]
+  bends: f32[MidiChannelCount]
+  next_voice: i32 = 0
+
+  def configure(
+    self,
+    voices: Voice[],
+    index: i32,
+    detune_value,
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value
+  ):
+    voices[index].detune = detune_value
+    voices[index].attack_s = attack_value
+    voices[index].decay_s = decay_value
+    voices[index].sustain = sustain_value
+    voices[index].release_s = release_value
+
+  def note_on(
+    self,
+    voices: Voice[],
+    id: i32,
+    channel: i32,
+    key: i32,
+    velocity,
+    spread,
+    detune_value,
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value
+  ):
+    selected = -1
+    for offset in 0..VoiceCount:
+      candidate = (self.next_voice + offset) % VoiceCount
+      if selected < 0 && !self.active[candidate]:
+        selected = candidate
+
+    if selected < 0:
+      selected = self.next_voice
+
+    self.ids[selected] = id
+    self.channels[selected] = channel
+    self.keys[selected] = key
+    self.pans[selected] = (-1.0 + f32(selected) * 2.0 / f32(VoiceCount - 1)) * spread
+    self.active[selected] = true
+    self.held[selected] = true
+    self.configure(
+      voices, selected, detune_value, attack_value,
+      decay_value, sustain_value, release_value
+    )
+    voices[selected].start(key, velocity, self.bends[channel])
+    self.next_voice = (selected + 1) % VoiceCount
+
+  def note_off(self, voices: Voice[], id: i32, channel: i32, key: i32):
+    for i in 0..VoiceCount:
+      id_matches = id >= 0 && self.ids[i] == id && self.channels[i] == channel
+      key_matches = id < 0 && self.channels[i] == channel && self.keys[i] == key
+      if self.active[i] && self.held[i] && (id_matches || key_matches):
+        self.held[i] = false
+        voices[i].release()
+
+  def pitch_bend(
+    self,
+    voices: Voice[],
+    channel: i32,
+    value,
+    bend_range
+  ):
+    self.bends[channel] = (value - 0.5) * 2.0 * bend_range
+    for i in 0..VoiceCount:
+      if self.active[i] && self.channels[i] == channel:
+        voices[i].set_bend(self.bends[channel])
+
+  def update(
+    self,
+    voices: Voice[],
+    spread,
+    detune_value,
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value
+  ):
+    for i in 0..VoiceCount:
+      if self.active[i]:
+        self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
+        self.configure(
+          voices, i, detune_value, attack_value,
+          decay_value, sustain_value, release_value
+        )
+
+  def finish(self, index: i32):
+    self.active[index] = false
+
+  def render(self, voices: Voice[]):
+    mix_l = 0.0
+    mix_r = 0.0
+    for i in 0..VoiceCount:
+      if self.active[i]:
+        voice = voices[i]()
+        gain_l, gain_r = std::levels::pan_3db(self.pans[i])
+        mix_l += voice * gain_l
+        mix_r += voice * gain_r
+    return (mix_l, mix_r)
+
+params:
+  cutoff = 1800.0 {80.0, 12000.0, log, "Hz"}
+  resonance = 1.2 {0.1, 8.0}
+  detune = 0.08 {0.0, 0.35}
+  attack_s = 0.008 {0.001, 1.0, log, "s"}
+  decay_s = 0.16 {0.01, 2.0, log, "s"}
+  sustain = 0.68 {0.0, 1.0}
+  release_s = 0.32 {0.01, 4.0, log, "s"}
+  spread = 0.72 {0.0, 1.0}
+  drive = 1.5 {1.0, 5.0}
+  bend_range = 2.0 {1.0, 24.0, step = 1.0, unit = "semitones"}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  voices: Voice[VoiceCount]
+  voice_manager = VoiceManager()
+  filter_l = std::filter::Svf()
+  filter_r = std::filter::Svf()
+  saturator = StereoSaturator()
+
+when voices.finished(index):
+  VoiceManager.finish(voice_manager, index)
+
+event note_on(id: i32, channel: i32, key: i32, velocity):
+  voice_manager.note_on(
+    voices, id, channel, key, velocity,
+    spread = spread,
+    detune_value = detune,
+    attack_value = attack_s,
+    decay_value = decay_s,
+    sustain_value = sustain,
+    release_value = release_s
+  )
+
+event note_off(id: i32, channel: i32, key: i32, velocity):
+  voice_manager.note_off(voices, id, channel, key)
+
+event pitch_bend(channel: i32, value):
+  voice_manager.pitch_bend(voices, channel, value, bend_range)
+
+block:
+  filter_cutoff = clamp(cutoff, 30.0, SR * 0.45)
+  filter_l.update_coeffs(filter_cutoff, resonance)
+  filter_r.update_coeffs(filter_cutoff, resonance)
+  voice_manager.update(
+    voices,
+    spread = spread,
+    detune_value = detune,
+    attack_value = attack_s,
+    decay_value = decay_s,
+    sustain_value = sustain,
+    release_value = release_s
+  )
+
+  sample:
+    mix_l, mix_r = voice_manager.render(voices)
+    filtered_l = filter_l(mix_l)
+    filtered_r = filter_r(mix_r)
+    saturated_l, saturated_r = saturator(filtered_l, filtered_r, drive = drive)
+    out1 = saturated_l * level
+    out2 = saturated_r * level

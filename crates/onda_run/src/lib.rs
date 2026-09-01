@@ -21,10 +21,12 @@ use onda_daemon::{
     RunEventValue, RunParamInfo,
 };
 use onda_frontend::{load_program_file, Diagnostic};
+use onda_host_protocol::{event_by_name, signature_matches, HostEventFamily};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+mod midi;
 mod playback;
 mod project_io;
 
@@ -44,6 +46,7 @@ const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Periodic controller polling interval used while a native run frontend is loaded.
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 256;
+pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -65,6 +68,7 @@ pub struct RunHostOptions {
     pub opt_level: String,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+    pub midi_input_device: Option<String>,
     pub fast_math: bool,
     pub show_meta: bool,
     pub theme: RunThemeMode,
@@ -79,6 +83,7 @@ impl Default for RunHostOptions {
             opt_level: "3".to_owned(),
             input_device: None,
             output_device: None,
+            midi_input_device: None,
             fast_math: false,
             show_meta: false,
             theme: RunThemeMode::Auto,
@@ -97,6 +102,7 @@ pub struct RunState {
     pub output_channels: usize,
     pub buffers: Vec<Value>,
     pub events: Vec<Value>,
+    pub midi: RunMidiCapabilities,
     pub delegates: Vec<Value>,
     pub log_text: String,
     pub log_entries: Vec<Value>,
@@ -108,8 +114,10 @@ pub struct RunState {
     pub params: Vec<Value>,
     pub input_devices: Vec<String>,
     pub output_devices: Vec<String>,
+    pub midi_input_devices: Vec<String>,
     pub current_input_device: Option<String>,
     pub current_output_device: Option<String>,
+    pub current_midi_input_device: Option<String>,
     pub scope_channels: usize,
     pub scope_samples: Vec<f32>,
 }
@@ -125,6 +133,7 @@ impl RunState {
             output_channels: 0,
             buffers: Vec::new(),
             events: Vec::new(),
+            midi: RunMidiCapabilities::default(),
             delegates: Vec::new(),
             log_text: String::new(),
             log_entries: Vec::new(),
@@ -136,12 +145,22 @@ impl RunState {
             params: Vec::new(),
             input_devices: list_input_devices(),
             output_devices: list_output_devices(),
+            midi_input_devices: list_midi_input_devices(),
             current_input_device: options.input_device.clone(),
             current_output_device: options.output_device.clone(),
+            current_midi_input_device: options.midi_input_device.clone(),
             scope_channels: 0,
             scope_samples: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunMidiCapabilities {
+    pub available: bool,
+    pub note_on: bool,
+    pub note_off: bool,
 }
 
 pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
@@ -152,7 +171,7 @@ pub fn available_audio_devices() -> (Vec<String>, Vec<String>) {
 enum ControllerEvent {
     ChildReady {
         generation: u64,
-        ready: ReadyEvent,
+        ready: Box<ReadyEvent>,
     },
     TcpResponse {
         generation: u64,
@@ -219,12 +238,15 @@ struct ReadyEvent {
     params: Vec<Value>,
     buffers: Vec<Value>,
     events: Vec<Value>,
+    midi: RunMidiCapabilities,
     delegates: Vec<Value>,
     output_channels: usize,
     input_devices: Vec<String>,
     output_devices: Vec<String>,
+    midi_input_devices: Vec<String>,
     current_input_device: Option<String>,
     current_output_device: Option<String>,
+    current_midi_input_device: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +257,8 @@ struct RawReadyEvent {
     params: Option<Vec<RunParamWire>>,
     buffers: Option<Vec<Value>>,
     events: Option<Vec<Value>>,
+    #[serde(default)]
+    midi: RunMidiCapabilities,
     delegates: Option<Vec<Value>>,
     #[serde(rename = "outputChannels")]
     output_channels: Option<usize>,
@@ -242,10 +266,14 @@ struct RawReadyEvent {
     input_devices: Option<Vec<String>>,
     #[serde(rename = "outputDevices")]
     output_devices: Option<Vec<String>>,
+    #[serde(rename = "midiInputDevices")]
+    midi_input_devices: Option<Vec<String>>,
     #[serde(rename = "currentInputDevice")]
     current_input_device: Option<String>,
     #[serde(rename = "currentOutputDevice")]
     current_output_device: Option<String>,
+    #[serde(rename = "currentMidiInputDevice")]
+    current_midi_input_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,7 +331,10 @@ pub struct PollResult {
 }
 
 impl RunController {
-    pub fn new(onda_path: &Path, options: RunHostOptions) -> Result<Self, String> {
+    pub fn new(onda_path: &Path, mut options: RunHostOptions) -> Result<Self, String> {
+        if options.midi_input_device.is_none() {
+            options.midi_input_device = Some(COMPUTER_KEYBOARD_MIDI_INPUT.to_owned());
+        }
         onda_frontend::ensure_no_symlink_components(onda_path).map_err(|error| {
             format!("cannot watch Onda input '{}': {error}", onda_path.display())
         })?;
@@ -464,7 +495,7 @@ impl RunController {
             }
             match event {
                 ControllerEvent::ChildReady { ready, .. } => {
-                    self.handle_child_ready(ready);
+                    self.handle_child_ready(*ready);
                     result.state_changed = true;
                 }
                 ControllerEvent::TcpResponse { line, .. } => {
@@ -556,6 +587,7 @@ impl RunController {
         let (input_devices, output_devices) = available_audio_devices();
         self.state.input_devices = input_devices;
         self.state.output_devices = output_devices;
+        self.state.midi_input_devices = list_midi_input_devices();
         self.state.error = None;
     }
 
@@ -615,6 +647,27 @@ impl RunController {
         self.state.error = None;
     }
 
+    pub fn trigger_midi_note(&mut self, key: i32, velocity: f32, pressed: bool) {
+        let name = if pressed {
+            if !self.state.midi.note_on {
+                return;
+            }
+            "note_on"
+        } else if self.state.midi.note_off {
+            "note_off"
+        } else {
+            return;
+        };
+        let _ = self.bridge.send_command(
+            "triggerEvent",
+            &json!({
+                "name": name,
+                "values": [-1, 0, key.clamp(0, 127), velocity.clamp(0.0, 1.0)],
+            }),
+        );
+        self.state.error = None;
+    }
+
     pub fn bind_buffer_file(&mut self, name: &str, file_path: &str) {
         if let Some(id) = self
             .bridge
@@ -669,6 +722,22 @@ impl RunController {
         };
         self.options.output_device = next;
         self.state.current_output_device = self.options.output_device.clone();
+        self.restart_with_status("Restarting...")
+    }
+
+    pub fn set_midi_input_device(&mut self, name: Option<&str>) -> Result<(), String> {
+        let next = match validated_device(
+            name.or(Some(COMPUTER_KEYBOARD_MIDI_INPUT)),
+            &self.state.midi_input_devices,
+        ) {
+            Ok(next) => next,
+            Err(err) => {
+                self.state.error = Some(err.clone());
+                return Err(err);
+            }
+        };
+        self.options.midi_input_device = next;
+        self.state.current_midi_input_device = self.options.midi_input_device.clone();
         self.restart_with_status("Restarting...")
     }
 
@@ -835,6 +904,7 @@ impl RunController {
             &ready.events,
         );
         self.state.events = ready.events;
+        self.state.midi = ready.midi;
         self.state.delegates = ready.delegates;
         apply_preserved_event_state(&mut self.state.events, &self.preserved_events);
         self.state.log_text.clear();
@@ -856,8 +926,19 @@ impl RunController {
         } else if self.state.output_devices.is_empty() {
             self.state.output_devices = list_output_devices();
         }
+        if !ready.midi_input_devices.is_empty() {
+            self.state.midi_input_devices = with_computer_keyboard(ready.midi_input_devices);
+        } else if self.state.midi_input_devices.is_empty() {
+            self.state.midi_input_devices = list_midi_input_devices();
+        }
         self.state.current_input_device = ready.current_input_device;
         self.state.current_output_device = ready.current_output_device;
+        self.state.current_midi_input_device =
+            if self.options.midi_input_device.as_deref() == Some(COMPUTER_KEYBOARD_MIDI_INPUT) {
+                self.options.midi_input_device.clone()
+            } else {
+                ready.current_midi_input_device
+            };
         self.state.connected = self.bridge.is_connected();
         self.state.error = bridge_error;
 
@@ -1525,6 +1606,13 @@ impl ChildSession {
         if let Some(output_device) = &options.output_device {
             cmd.arg("--output-device").arg(output_device);
         }
+        if let Some(midi_input_device) = options
+            .midi_input_device
+            .as_deref()
+            .filter(|name| *name != COMPUTER_KEYBOARD_MIDI_INPUT)
+        {
+            cmd.arg("--midi-input-device").arg(midi_input_device);
+        }
         if options.fast_math {
             cmd.arg("--fast-math");
         }
@@ -1605,14 +1693,20 @@ impl ChildSession {
                             params,
                             buffers: raw.buffers.unwrap_or_default(),
                             events: raw.events.unwrap_or_default(),
+                            midi: raw.midi,
                             delegates: raw.delegates.unwrap_or_default(),
                             output_channels: raw.output_channels.unwrap_or(0),
                             input_devices: raw.input_devices.unwrap_or_default(),
                             output_devices: raw.output_devices.unwrap_or_default(),
+                            midi_input_devices: raw.midi_input_devices.unwrap_or_default(),
                             current_input_device: raw.current_input_device,
                             current_output_device: raw.current_output_device,
+                            current_midi_input_device: raw.current_midi_input_device,
                         };
-                        let _ = event_tx.send(ControllerEvent::ChildReady { generation, ready });
+                        let _ = event_tx.send(ControllerEvent::ChildReady {
+                            generation,
+                            ready: Box::new(ready),
+                        });
                         continue;
                     }
                 }
@@ -2480,6 +2574,15 @@ fn list_output_devices() -> Vec<String> {
     onda_cpal::output_audio_devices()
 }
 
+fn list_midi_input_devices() -> Vec<String> {
+    with_computer_keyboard(midi::input_devices())
+}
+
+fn with_computer_keyboard(mut devices: Vec<String>) -> Vec<String> {
+    devices.insert(0, COMPUTER_KEYBOARD_MIDI_INPUT.to_owned());
+    devices
+}
+
 fn validated_device(name: Option<&str>, devices: &[String]) -> Result<Option<String>, String> {
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
         return Ok(None);
@@ -2489,6 +2592,37 @@ fn validated_device(name: Option<&str>, devices: &[String]) -> Result<Option<Str
     } else {
         Err(format!("unknown device '{name}'"))
     }
+}
+
+fn classify_host_events(
+    events: Vec<RunEventInfo>,
+) -> Result<(Vec<RunEventInfo>, RunMidiCapabilities), String> {
+    let mut visible = Vec::with_capacity(events.len());
+    let mut midi = RunMidiCapabilities::default();
+    for event in events {
+        let Some(expected) = event_by_name(&event.name) else {
+            visible.push(event);
+            continue;
+        };
+        if !signature_matches(
+            expected,
+            event
+                .params
+                .iter()
+                .map(|param| (param.name.as_str(), param.type_repr.as_str())),
+        ) {
+            return Err(format!(
+                "canonical host event '{}' must use the exact signature ({})",
+                expected.name, expected.signature
+            ));
+        }
+        if expected.family == HostEventFamily::Midi {
+            midi.available = true;
+            midi.note_on |= expected.name == "note_on";
+            midi.note_off |= expected.name == "note_off";
+        }
+    }
+    Ok((visible, midi))
 }
 
 fn child_exit_error(code: Option<i32>) -> String {
@@ -2726,14 +2860,14 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        compiled_snapshot_is_current, events_are_compatible_for_preservation,
+        classify_host_events, compiled_snapshot_is_current, events_are_compatible_for_preservation,
         format_delegate_log_line, params_are_compatible_for_preservation,
         reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
         relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
         source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
         ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
-        PreservedBufferBinding, RunHostOptions, RunParamInfo, RunParamWire, SourceCompilationState,
-        SourceWatchRevision,
+        PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunEventValue, RunHostOptions,
+        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -2745,6 +2879,63 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_256_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_frames, 256);
+    }
+
+    #[test]
+    fn canonical_host_events_are_hidden_and_enable_midi_capabilities() {
+        let events = vec![
+            host_event(
+                "note_on",
+                &[
+                    ("id", "i32"),
+                    ("channel", "i32"),
+                    ("key", "i32"),
+                    ("velocity", "f32"),
+                ],
+            ),
+            host_event("tempo", &[("bpm", "f64")]),
+            host_event("gate", &[("enabled", "bool")]),
+        ];
+        let (visible, midi) = classify_host_events(events).expect("valid host event signatures");
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "gate");
+        assert!(midi.available);
+        assert!(midi.note_on);
+        assert!(!midi.note_off);
+    }
+
+    #[test]
+    fn canonical_host_event_names_reject_incompatible_signatures() {
+        let error = classify_host_events(vec![host_event(
+            "note_on",
+            &[
+                ("id", "i32"),
+                ("channel", "i32"),
+                ("note", "i32"),
+                ("velocity", "f32"),
+            ],
+        )])
+        .expect_err("reserved signature must be exact");
+
+        assert!(error.contains("exact signature"));
+    }
+
+    fn host_event(name: &str, params: &[(&str, &str)]) -> RunEventInfo {
+        RunEventInfo {
+            index: 0,
+            name: name.to_owned(),
+            params: params
+                .iter()
+                .enumerate()
+                .map(|(index, (name, type_repr))| RunEventParamInfo {
+                    index,
+                    name: (*name).to_owned(),
+                    type_repr: (*type_repr).to_owned(),
+                    value: RunEventValue::Number(0.0),
+                })
+                .collect(),
+        }
     }
 
     #[test]

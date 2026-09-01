@@ -153,6 +153,7 @@ Useful flags:
 - `--block-size`
 - `--input-device`
 - `--output-device`
+- `--midi-input-device`
 - `--theme`
 
 ### `onda run play`
@@ -171,6 +172,7 @@ Useful flags:
 - `--block-size`
 - `--input-device`
 - `--output-device`
+- `--midi-input-device`
 - `--set name=value`
 - `--buffer name=path`
 
