@@ -3908,7 +3908,7 @@ graph:
     #[test]
     fn proc_graph_block_rejects_sample_coexistence() {
         let src = r#"
-proc Main:
+proc Test:
   outs:
     out1
   sample:
@@ -3928,7 +3928,7 @@ proc Main:
     #[test]
     fn proc_graph_block_rejects_block_coexistence() {
         let src = r#"
-proc Main:
+proc Test:
   outs:
     out1
   block:

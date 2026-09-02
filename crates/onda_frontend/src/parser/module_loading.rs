@@ -29,6 +29,8 @@ struct LoadState {
     stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
     top_level_const_names: HashSet<String>,
+    has_main_entry: bool,
+    has_unwrapped_entry: bool,
 }
 
 impl LoadState {
@@ -464,6 +466,7 @@ pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
                     start_line.saturating_sub(1),
                     &[],
                     &source_line_map,
+                    true,
                     &mut state,
                 )
                 .map_err(|diags| {
@@ -649,6 +652,7 @@ fn parse_program_preprocessed(
     line_offset: usize,
     trace: &[String],
     source_line_map: &[usize],
+    allow_main_entry: bool,
     state: &mut LoadState,
 ) -> Result<Program, Vec<Diagnostic>> {
     with_parse_loc_context(file_path, line_offset, trace, source_line_map, || {
@@ -661,70 +665,154 @@ fn parse_program_preprocessed(
         let mut blocks = Vec::new();
         let mut top_level_const_names = state.top_level_const_names.clone();
         for pair in program_pair.into_inner() {
-            match pair.as_rule() {
-                Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
-                Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
-                Rule::kouts_block => blocks.push(Block::KOuts(parse_port_block(pair)?)),
-                Rule::params_block | Rule::kins_block => {
-                    blocks.push(Block::Params(parse_params_block(pair)?))
-                }
-                Rule::const_block | Rule::config_const_block => {
-                    let decl = parse_const_decl(pair)?;
-                    if !top_level_const_names.insert(decl.name.clone()) {
-                        return Err(vec![Diagnostic::semantic_span(
-                            format!("duplicate top-level constant '{}'", decl.name),
-                            decl.loc.as_ref(),
-                        )]);
-                    }
-                    state.top_level_const_names = top_level_const_names.clone();
-                    blocks.push(Block::Const(decl));
-                }
-                Rule::events_block => {
-                    append_or_merge_event_block(&mut blocks, parse_events_block(pair)?)?
-                }
-                Rule::event_block => {
-                    append_or_merge_event_block(&mut blocks, parse_event_block(pair)?)?
-                }
-                Rule::delegates_block => {
-                    append_or_merge_delegate_block(&mut blocks, parse_delegates_block(pair)?)?
-                }
-                Rule::delegate_block => {
-                    append_or_merge_delegate_block(&mut blocks, parse_delegate_block(pair)?)?
-                }
-                Rule::when_block => blocks.push(Block::When(parse_when_block(pair)?)),
-                Rule::tasks_block => {
-                    append_or_merge_task_block(&mut blocks, parse_tasks_block(pair)?)?
-                }
-                Rule::task_block => {
-                    append_or_merge_task_block(&mut blocks, parse_task_block(pair)?)?
-                }
-                Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
-                Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
-                Rule::proc_block => blocks.push(Block::Proc(parse_proc_block(pair)?)),
-                Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
-                Rule::def_block => {
-                    let def = parse_def_block(pair)?;
-                    blocks.push(Block::Def(def));
-                }
-                Rule::namespace_block => {
-                    blocks.push(Block::Namespace(parse_namespace_decl_ast(pair)?));
-                }
-                Rule::namespace_alias_decl => {
-                    blocks.push(Block::NamespaceAlias(parse_namespace_alias_decl_ast(pair)?));
-                }
-                Rule::use_decl => {
-                    blocks.push(Block::Use(parse_use_decl_ast(pair)?));
-                }
-                Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
-                Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
-                Rule::sample_block => blocks.push(Block::Sample(parse_sample_block(pair)?)),
-                Rule::graph_block => blocks.push(Block::Graph(parse_graph_block(pair)?)),
-                _ => {}
-            }
+            parse_program_item(
+                pair,
+                false,
+                allow_main_entry,
+                &mut blocks,
+                &mut top_level_const_names,
+                state,
+            )?;
         }
 
         Ok(Program { blocks })
     })
+}
+
+fn parse_program_item(
+    pair: Pair<'_, Rule>,
+    inside_main: bool,
+    allow_main_entry: bool,
+    blocks: &mut Vec<Block>,
+    top_level_const_names: &mut HashSet<String>,
+    state: &mut LoadState,
+) -> Result<(), Vec<Diagnostic>> {
+    let rule = pair.as_rule();
+    if rule == Rule::main_block {
+        let loc = stmt_loc_from_pair(&pair);
+        if !allow_main_entry {
+            return Err(vec![Diagnostic::semantic_span(
+                "top-level proc Main is only allowed in an entry or included file",
+                loc.as_ref(),
+            )]);
+        }
+        if state.has_main_entry {
+            return Err(vec![Diagnostic::semantic_span(
+                "duplicate top-level proc Main",
+                loc.as_ref(),
+            )]);
+        }
+        if state.has_unwrapped_entry {
+            return Err(vec![Diagnostic::semantic_span(
+                "top-level proc Main cannot be mixed with unwrapped top-level processor sections",
+                loc.as_ref(),
+            )]);
+        }
+        state.has_main_entry = true;
+        for item in pair.into_inner() {
+            if item.as_rule() == Rule::generic_param_list {
+                return Err(vec![Diagnostic::semantic_span(
+                    "top-level proc Main cannot be generic",
+                    stmt_loc_from_pair(&item).as_ref(),
+                )]);
+            }
+            parse_program_item(
+                item,
+                true,
+                allow_main_entry,
+                blocks,
+                top_level_const_names,
+                state,
+            )?;
+        }
+        return Ok(());
+    }
+
+    let is_entry_section = matches!(
+        rule,
+        Rule::ins_block
+            | Rule::outs_block
+            | Rule::kouts_block
+            | Rule::params_block
+            | Rule::kins_block
+            | Rule::events_block
+            | Rule::event_block
+            | Rule::delegates_block
+            | Rule::delegate_block
+            | Rule::when_block
+            | Rule::tasks_block
+            | Rule::task_block
+            | Rule::buffers_block
+            | Rule::init_block
+            | Rule::block_exec_block
+            | Rule::sample_block
+            | Rule::graph_block
+    );
+    if is_entry_section && !inside_main {
+        if state.has_main_entry {
+            return Err(vec![Diagnostic::semantic_span(
+                "top-level proc Main cannot be mixed with unwrapped top-level processor sections",
+                stmt_loc_from_pair(&pair).as_ref(),
+            )]);
+        }
+        state.has_unwrapped_entry = true;
+    }
+
+    match rule {
+        Rule::ins_block => blocks.push(Block::Ins(parse_port_block(pair)?)),
+        Rule::outs_block => blocks.push(Block::Outs(parse_port_block(pair)?)),
+        Rule::kouts_block => blocks.push(Block::KOuts(parse_port_block(pair)?)),
+        Rule::params_block | Rule::kins_block => {
+            blocks.push(Block::Params(parse_params_block(pair)?))
+        }
+        Rule::const_block | Rule::config_const_block => {
+            let decl = parse_const_decl(pair)?;
+            if !top_level_const_names.insert(decl.name.clone()) {
+                return Err(vec![Diagnostic::semantic_span(
+                    format!("duplicate top-level constant '{}'", decl.name),
+                    decl.loc.as_ref(),
+                )]);
+            }
+            state.top_level_const_names = top_level_const_names.clone();
+            blocks.push(Block::Const(decl));
+        }
+        Rule::events_block => append_or_merge_event_block(blocks, parse_events_block(pair)?)?,
+        Rule::event_block => append_or_merge_event_block(blocks, parse_event_block(pair)?)?,
+        Rule::delegates_block => {
+            append_or_merge_delegate_block(blocks, parse_delegates_block(pair)?)?
+        }
+        Rule::delegate_block => {
+            append_or_merge_delegate_block(blocks, parse_delegate_block(pair)?)?
+        }
+        Rule::when_block => blocks.push(Block::When(parse_when_block(pair)?)),
+        Rule::tasks_block => append_or_merge_task_block(blocks, parse_tasks_block(pair)?)?,
+        Rule::task_block => append_or_merge_task_block(blocks, parse_task_block(pair)?)?,
+        Rule::buffers_block => blocks.push(Block::Buffers(parse_buffers_block(pair)?)),
+        Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
+        Rule::proc_block => {
+            let proc_def = parse_proc_block(pair)?;
+            if inside_main && proc_def.name == "Main" {
+                return Err(vec![Diagnostic::semantic_span(
+                    "duplicate top-level proc Main",
+                    proc_def.loc.as_ref(),
+                )]);
+            }
+            blocks.push(Block::Proc(proc_def));
+        }
+        Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
+        Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
+        Rule::namespace_block => blocks.push(Block::Namespace(parse_namespace_decl_ast(pair)?)),
+        Rule::namespace_alias_decl => {
+            blocks.push(Block::NamespaceAlias(parse_namespace_alias_decl_ast(pair)?))
+        }
+        Rule::use_decl => blocks.push(Block::Use(parse_use_decl_ast(pair)?)),
+        Rule::init_block => blocks.push(Block::Init(parse_exec_block(pair)?)),
+        Rule::block_exec_block => blocks.push(Block::Block(parse_block_exec_block(pair)?)),
+        Rule::sample_block => blocks.push(Block::Sample(parse_sample_block(pair)?)),
+        Rule::graph_block => blocks.push(Block::Graph(parse_graph_block(pair)?)),
+        _ => {}
+    }
+    Ok(())
 }
 
 fn load_program_blocks_from_file(
@@ -798,6 +886,7 @@ fn load_program_blocks_from_file(
                         start_line.saturating_sub(1),
                         trace,
                         &source_line_map,
+                        !import_module_mode,
                         state,
                     )
                     .map_err(|diags| {
@@ -1518,6 +1607,7 @@ fn load_builtin_module_blocks(
                         start_line.saturating_sub(1),
                         trace,
                         &source_line_map,
+                        !import_module_mode,
                         state,
                     )
                     .map_err(|diags| {

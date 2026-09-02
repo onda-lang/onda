@@ -89,6 +89,29 @@ contain only declarations. The next chapter covers the source notation;
 [Execution and State](#3-execution-and-state) defines precisely when `init`,
 `block`, and `sample` run and how values move between them.
 
+An entry file may alternatively wrap its top-level program in a non-generic
+`proc Main`:
+
+```onda
+proc Main:
+  params:
+    gain = 0.5 {0.0, 1.0}
+
+  sample:
+    out1 = gain
+```
+
+This is only an entry wrapper, not a reusable processor declaration. Its contents use the exact
+top-level grammar and semantics, including `kins`, host parameter domains, `config const`, defs,
+structs, processors, and namespaces. The parser removes the wrapper, so later compiler stages see
+the same program as if its contents had been written directly at top level.
+
+Only one top-level `proc Main` may occur across the entry and its included files, it cannot have
+generic parameters, and wrapped and unwrapped host-facing or executable sections cannot be mixed.
+Imports and reusable declarations may remain outside the wrapper. An imported declaration module
+cannot supply the entry wrapper. A `proc Main` declared inside a namespace remains an ordinary
+reusable processor and has no special entry behavior.
+
 ## 2. Source Files
 
 Onda supports indentation syntax and brace syntax. These two programs are
@@ -2453,6 +2476,7 @@ Rules:
 | `def` | Runtime helper functions. |
 | `struct` | Nominal data types. |
 | `proc`, `processor` | Reusable DSP processors. |
+| top-level `proc Main` | Optional non-generic wrapper for the entry file's top-level program. |
 | `namespace` | Qualified declaration groups and integer templates. |
 | `use`, `pub use` | Unqualified lookup imports and re-exports. |
 

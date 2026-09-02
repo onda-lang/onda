@@ -2249,3 +2249,24 @@ sample:
             "processor output destructuring has 3 targets, but the processor has 2 outputs"
         )));
     }
+
+    #[test]
+    fn top_level_main_uses_the_normal_entry_semantics() {
+        let source = r#"
+proc Main:
+  params:
+    gain = 0.5 {0.0, 1.0, unit = "x"}
+  outs:
+    output
+  init:
+    state = 1.0
+  sample:
+    output = state * gain
+"#;
+
+        let typed = analyze(parse_program(source).expect("Main entry should parse"))
+            .expect("Main entry should analyze as a top-level program");
+        assert_eq!(typed.outs, ["output"]);
+        assert_eq!(typed.param_default("gain"), Some(0.5));
+        assert!(typed.state_vars.iter().any(|name| name == "state"));
+    }
