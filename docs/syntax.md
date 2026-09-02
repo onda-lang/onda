@@ -35,10 +35,10 @@ compile-time programming, and modules.
 ## 1. What Is Onda?
 
 Onda is an expressive and performant JIT-compiled audio programming language.
-Its central abstraction is not a `main` function that runs to completion, but a
-processor that stays alive while an audio host drives it. That processor has an
-interface of signals and controls, memory that persists as audio passes through
-it, and code that advances the sound at explicitly named rates.
+An Onda program defines how sound is generated or transformed through
+successive blocks of samples. It exposes signals and controls, preserves state across processing,
+and organizes code explicitly by when it runs: during initialization, once per block, or once per
+sample.
 
 Time is therefore visible in the structure of an Onda program. An `init`
 section constructs long-lived state, `block` performs work once for a group of
