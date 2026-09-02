@@ -658,14 +658,13 @@ impl RunController {
         } else {
             return;
         };
-        let _ = self.bridge.send_command(
+        self.bridge.send_command_notification(
             "triggerEvent",
             &json!({
                 "name": name,
                 "values": [-1, 0, key.clamp(0, 127), velocity.clamp(0.0, 1.0)],
             }),
         );
-        self.state.error = None;
     }
 
     pub fn bind_buffer_file(&mut self, name: &str, file_path: &str) {

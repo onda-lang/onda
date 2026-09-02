@@ -2805,10 +2805,10 @@ mod tests {
     }
 
     #[test]
-    fn run_trigger_event_notification_enqueues_full_payload() {
+    fn run_trigger_event_notifications_queue_without_waiting_for_replies() {
         let (control_tx, control_rx) = mpsc::channel();
         let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
-        let response = run_control_response(
+        let note_on_response = run_control_response(
             PlaybackControlRequest {
                 id: None,
                 command: "triggerEvent".to_owned(),
@@ -2827,12 +2827,29 @@ mod tests {
             &scope_ring,
             7,
         );
+        let note_off_response = run_control_response(
+            PlaybackControlRequest {
+                id: None,
+                command: "triggerEvent".to_owned(),
+                name: Some("note_off".to_owned()),
+                path: None,
+                value: None,
+                values: Some(vec![
+                    Value::from(-1),
+                    Value::from(0),
+                    Value::from(60),
+                    Value::from(0.0),
+                ]),
+                max_frames: None,
+            },
+            &control_tx,
+            &scope_ring,
+            7,
+        );
 
-        assert!(response.is_none());
-        match control_rx
-            .try_recv()
-            .expect("triggerEvent should be queued")
-        {
+        assert!(note_on_response.is_none());
+        assert!(note_off_response.is_none());
+        match control_rx.try_recv().expect("note_on should be queued") {
             PlaybackControlCommand::TriggerEvent {
                 name,
                 values,
@@ -2856,6 +2873,14 @@ mod tests {
             }
             _ => panic!("expected triggerEvent command"),
         }
+        assert!(matches!(
+            control_rx.try_recv(),
+            Ok(PlaybackControlCommand::TriggerEvent {
+                name,
+                reply: None,
+                ..
+            }) if name == "note_off"
+        ));
     }
 
     #[test]
