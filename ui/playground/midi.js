@@ -109,7 +109,9 @@ export class BrowserMidiInputs {
     this.onError = onError;
     this.access = null;
     this.current = COMPUTER_KEYBOARD_MIDI_INPUT;
+    this.currentId = null;
     this.inputs = new Map();
+    this.inputIds = new Map();
     this.declared = new Set();
     this.activeNotes = new Map();
     this.permissionUnavailable = false;
@@ -128,20 +130,17 @@ export class BrowserMidiInputs {
 
   async select(name) {
     if (!name) {
-      this.disconnect();
-      this.current = COMPUTER_KEYBOARD_MIDI_INPUT;
+      await this.disconnect();
       this.publish();
       return;
     }
     if (name === COMPUTER_KEYBOARD_MIDI_INPUT) {
-      this.disconnect();
-      this.current = name;
+      await this.disconnect();
       this.publish();
       return;
     }
     if (name === CONNECT_MIDI_INPUT) {
       await this.ensureAccess();
-      this.current = COMPUTER_KEYBOARD_MIDI_INPUT;
       this.rebuildInputs();
       return;
     }
@@ -149,8 +148,10 @@ export class BrowserMidiInputs {
     this.rebuildInputs(false);
     const input = this.inputs.get(name);
     if (!input) throw new Error(`MIDI input '${name}' is no longer available`);
-    if (name !== this.current) this.disconnect();
+    const id = this.inputIds.get(name);
+    if (id !== this.currentId) await this.disconnect();
     this.current = name;
+    this.currentId = id;
     this.connectCurrent();
     this.publish();
   }
@@ -174,9 +175,19 @@ export class BrowserMidiInputs {
     return this.access;
   }
 
-  disconnect() {
+  async disconnect() {
+    const input = this.inputs.get(this.current);
     this.releaseActiveNotes();
     this.detachInputs();
+    this.current = COMPUTER_KEYBOARD_MIDI_INPUT;
+    this.currentId = null;
+    if (typeof input?.close === "function") {
+      try {
+        await input.close();
+      } catch {
+        // A port that disappeared while selected is already unavailable.
+      }
+    }
   }
 
   detachInputs() {
@@ -221,13 +232,16 @@ export class BrowserMidiInputs {
   }
 
   rebuildInputs(publish = true) {
-    const previous = this.current;
-    const previousInput = this.inputs.get(previous);
+    const previousId = this.currentId;
+    const previousInput = this.inputs.get(this.current);
     this.detachInputs();
     this.inputs.clear();
+    this.inputIds.clear();
     const names = new Map([[COMPUTER_KEYBOARD_MIDI_INPUT, 1]]);
     const used = new Set([COMPUTER_KEYBOARD_MIDI_INPUT]);
-    for (const input of this.access?.inputs.values() ?? []) {
+    const labelsById = new Map();
+    for (const [portId, input] of this.access?.inputs.entries() ?? []) {
+      const id = String(input.id ?? portId);
       const base = input.name || input.manufacturer || "MIDI Input";
       const occurrence = (names.get(base) || 0) + 1;
       names.set(base, occurrence);
@@ -239,15 +253,20 @@ export class BrowserMidiInputs {
       }
       used.add(name);
       this.inputs.set(name, input);
+      this.inputIds.set(name, id);
+      labelsById.set(id, name);
     }
-    if (previous && previous !== COMPUTER_KEYBOARD_MIDI_INPUT) {
-      const currentInput = this.inputs.get(previous);
-      if (!currentInput) {
+    if (previousId !== null) {
+      const current = labelsById.get(previousId);
+      const currentInput = current === undefined ? undefined : this.inputs.get(current);
+      if (currentInput === undefined) {
         this.releaseActiveNotes();
         this.current = COMPUTER_KEYBOARD_MIDI_INPUT;
+        this.currentId = null;
       } else if (currentInput !== previousInput) {
         this.releaseActiveNotes();
       }
+      if (currentInput !== undefined) this.current = current;
     }
     this.connectCurrent();
     if (publish) this.publish();

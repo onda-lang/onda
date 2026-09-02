@@ -82,6 +82,8 @@ descriptor once and returns bound conversion methods.
 
 Controlled `i64` domains use the descriptor's exact binary64 integer range. Full-width unranged
 `i64` values continue to use `bigint` when written directly.
+Event `i64` values accept bigint, safe integers, or decimal integer strings and reject values
+outside the signed 64-bit range.
 
 The artifact must be compiled for exactly `audioContext.sampleRate`; the adapter rejects a mismatch
 before registering the node so sample-rate-derived language semantics cannot silently drift. A Web

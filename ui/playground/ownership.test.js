@@ -169,13 +169,18 @@ test("the shared run view preserves explicit false scalar values", async () => {
 
 test("the shared run view keeps i64 event values outside JavaScript numbers", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
-  const helper = runView.match(/function eventScalarValue\(type, value\) \{[\s\S]*?\n      \}/)?.[0];
+  const helper = runView.match(/function parseEventI64\(value\) \{[\s\S]*?\n      \}/)?.[0];
 
   assert.ok(helper);
-  const eventScalarValue = Function(`return (${helper})`)();
-  assert.equal(eventScalarValue("i64", "9007199254740993"), "9007199254740993");
-  assert.equal(eventScalarValue("i64", "9223372036854775807"), "9223372036854775807");
-  assert.equal(eventScalarValue("i64", "not-an-integer"), "0");
+  const parseEventI64 = Function(`return (${helper})`)();
+  assert.equal(parseEventI64("9007199254740993"), "9007199254740993");
+  assert.equal(parseEventI64("-9223372036854775808"), "-9223372036854775808");
+  assert.equal(parseEventI64("9223372036854775807"), "9223372036854775807");
+  assert.equal(parseEventI64("00042"), "42");
+  assert.equal(parseEventI64("9223372036854775808"), null);
+  assert.equal(parseEventI64("-9223372036854775809"), null);
+  assert.equal(parseEventI64(Number.MAX_SAFE_INTEGER + 1), null);
+  assert.equal(parseEventI64("not-an-integer"), null);
   assert.match(runView, /input\.type = type === "i64" \? "text" : "number"/);
   assert.doesNotMatch(
     runView,

@@ -2589,12 +2589,17 @@
         renderedParamSignature = signature;
       }
 
+      function parseEventI64(value) {
+        if (typeof value === "number" && !Number.isSafeInteger(value)) return null;
+        const text = String(value ?? "0");
+        if (!/^-?[0-9]+$/.test(text)) return null;
+        const integer = BigInt(text);
+        return BigInt.asIntN(64, integer) === integer ? integer.toString() : null;
+      }
+
       function eventScalarValue(type, value) {
         if (type === "bool") return booleanScalarValue(value);
-        if (type === "i64") {
-          const text = String(value ?? "0");
-          return /^-?[0-9]+$/.test(text) ? text : "0";
-        }
+        if (type === "i64") return parseEventI64(value) ?? "0";
         const number = Number(value);
         return Number.isFinite(number) ? number : 0;
       }
@@ -2697,9 +2702,7 @@
         input.value = String(eventScalarValue(type, value));
         input.disabled = !state.connected;
         const parsedValue = () => {
-          if (type === "i64") {
-            return /^-?[0-9]+$/.test(input.value) ? input.value : null;
-          }
+          if (type === "i64") return parseEventI64(input.value);
           const nextValue = Number(input.value);
           if (!Number.isFinite(nextValue)) return null;
           return integer ? Math.round(nextValue) : nextValue;

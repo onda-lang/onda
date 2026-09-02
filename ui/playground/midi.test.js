@@ -129,7 +129,13 @@ test("Web MIDI routes declared messages and falls back after disconnection", asy
 
 test("switching physical MIDI inputs detaches the previous device", async () => {
   const events = [];
-  const first = { name: "First", manufacturer: "", onmidimessage: null };
+  let firstCloseCount = 0;
+  const first = {
+    name: "First",
+    manufacturer: "",
+    onmidimessage: null,
+    close: async () => { firstCloseCount += 1; },
+  };
   const second = { name: "Second", manufacturer: "", onmidimessage: null };
   const access = {
     inputs: new Map([["first", first], ["second", second]]),
@@ -147,8 +153,33 @@ test("switching physical MIDI inputs detaches the previous device", async () => 
   await inputs.select("Second");
 
   assert.equal(first.onmidimessage, null);
+  assert.equal(firstCloseCount, 1);
   assert.equal(typeof second.onmidimessage, "function");
   assert.deepEqual(events.at(-1), { name: "note_off", values: [-1, 0, 60, 0] });
+});
+
+test("duplicate-name MIDI selection survives another device disconnecting", async () => {
+  const states = [];
+  const first = { id: "first", name: "Keys", manufacturer: "", onmidimessage: null };
+  const selected = { id: "selected", name: "Keys", manufacturer: "", onmidimessage: null };
+  const access = {
+    inputs: new Map([[first.id, first], [selected.id, selected]]),
+    onstatechange: null,
+  };
+  const inputs = new BrowserMidiInputs({
+    onState: (state) => states.push(state),
+    requestAccess: async () => access,
+  });
+
+  await inputs.select("Keys (2)");
+  access.inputs.delete(first.id);
+  access.onstatechange();
+
+  assert.deepEqual(states.at(-1), {
+    devices: [COMPUTER_KEYBOARD_MIDI_INPUT, "Keys"],
+    current: "Keys",
+  });
+  assert.equal(typeof selected.onmidimessage, "function");
 });
 
 test("physical MIDI names cannot collide with the computer keyboard", async () => {
