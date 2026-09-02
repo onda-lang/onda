@@ -237,6 +237,38 @@ test("preserves event array shapes instead of presenting them as scalars", () =>
   ]);
 });
 
+test("preserves full-range i64 event values as decimal strings", () => {
+  const [event] = mergeEvents([{
+    name: "select",
+    params: [
+      {
+        name: "scalar",
+        type_repr: "i64",
+        scalar: "i64",
+        array_len: 1,
+        is_slice: false,
+        default_reprs: ["9007199254740993"],
+      },
+      {
+        name: "fixed",
+        type_repr: "i64[2]",
+        scalar: "i64",
+        array_len: 2,
+        is_slice: false,
+        default_reprs: ["-9223372036854775808", "9223372036854775807"],
+      },
+    ],
+  }], []);
+
+  assert.equal(event.args[0].default, "9007199254740993");
+  assert.equal(event.args[0].value, "9007199254740993");
+  assert.deepEqual(event.args[1].default, [
+    "-9223372036854775808",
+    "9223372036854775807",
+  ]);
+  assert.deepEqual(event.args[1].value, event.args[1].default);
+});
+
 test("preserves event values only while the argument shape matches", () => {
   const scalarEvent = {
     name: "load",

@@ -1,5 +1,6 @@
 // Shared browser adapter for the transport-neutral Onda run view.
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
+import { partitionHostEvents } from "./midi.js";
 
 export class BrowserRunViewHost {
   constructor(iframe, handlers = {}) {
@@ -17,11 +18,14 @@ export class BrowserRunViewHost {
       outputChannels: 0,
       buffers: [],
       events: [],
+      midi: { available: false, noteOn: false, noteOff: false },
       params: [],
       inputDevices: [],
       outputDevices: [],
+      midiInputDevices: [],
       currentInputDevice: null,
       currentOutputDevice: null,
+      currentMidiInputDevice: null,
       supportsSourceSelection: false,
       supportsTransport: true,
       supportsDeviceSelection: false,
@@ -75,8 +79,11 @@ export class BrowserRunViewHost {
 
   setArtifact(artifact, bufferFiles) {
     const metadata = artifact.metadata.metadata;
+    const hostEvents = partitionHostEvents(metadata.events ?? []);
     this.state.params = mergeParams(metadata.params ?? [], this.state.params);
-    this.state.events = mergeEvents(metadata.events ?? [], this.state.events);
+    this.state.events = mergeEvents(hostEvents.visible, this.state.events);
+    this.state.midi = hostEvents.midi;
+    this.handlers.midiEventsChanged?.(hostEvents.declaredMidi);
     this.state.buffers = mergeBuffers(metadata.buffers ?? [], this.state.buffers, bufferFiles);
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
     const sampleRateHz = Number(artifact.metadata.compile?.sample_rate);
@@ -103,8 +110,10 @@ export class BrowserRunViewHost {
       outputChannels: 0,
       buffers: [],
       events: [],
+      midi: { available: false, noteOn: false, noteOff: false },
       params: [],
     });
+    this.handlers.midiEventsChanged?.(new Set());
     this.postScope(0, []);
   }
 
@@ -176,6 +185,21 @@ export class BrowserRunViewHost {
     this.postState();
   }
 
+  setMidiInputs(devices, current) {
+    this.setState({
+      midiInputDevices: devices,
+      currentMidiInputDevice: current,
+    });
+  }
+
+  sendComputerKey(code, pressed) {
+    this.post({ type: "computerKey", code, pressed });
+  }
+
+  releaseVirtualMidiNotes() {
+    this.post({ type: "releaseVirtualMidiNotes" });
+  }
+
   postState() {
     this.post({ type: "state", state: this.state });
   }
@@ -221,6 +245,19 @@ export class BrowserRunViewHost {
         case "triggerEvent":
           await this.handlers.triggerEvent?.(message.name, message.values ?? []);
           break;
+        case "midiNote": {
+          const name = message.pressed
+            ? (this.state.midi.noteOn ? "note_on" : null)
+            : (this.state.midi.noteOff ? "note_off" : null);
+          if (name) {
+            const key = Math.max(0, Math.min(127, Number(message.key) || 0));
+            const velocity = message.pressed
+              ? Math.max(0, Math.min(1, Number(message.velocity) || 0))
+              : 0;
+            await this.handlers.triggerEvent?.(name, [-1, 0, key, velocity]);
+          }
+          break;
+        }
         case "bindBufferFile":
           await this.handlers.bindBufferFile?.(message.name, message.file);
           break;
@@ -228,6 +265,11 @@ export class BrowserRunViewHost {
           await this.handlers.clearBuffer?.(message.name);
           break;
         case "refreshDevices":
+          await this.handlers.refreshMidiInputs?.();
+          break;
+        case "setMidiInputDevice":
+          await this.handlers.setMidiInputDevice?.(message.name ?? null);
+          break;
         case "setInputDevice":
         case "setOutputDevice":
         case "chooseBufferFile":
@@ -369,12 +411,12 @@ export function mergeEvents(events, existing) {
           default: param.is_slice
             ? []
             : param.array_len === 1
-              ? decodeScalarRepr(param.scalar, param.default_reprs?.[0])
+              ? decodeEventScalarRepr(param.scalar, param.default_reprs?.[0])
               : Array.from(
                 { length: param.array_len },
                 (_, valueIndex) =>
-                  decodeScalarRepr(param.scalar, param.default_reprs?.[valueIndex])
-                  ?? (param.scalar === "bool" ? false : 0),
+                  decodeEventScalarRepr(param.scalar, param.default_reprs?.[valueIndex])
+                  ?? (param.scalar === "bool" ? false : param.scalar === "i64" ? "0" : 0),
               ),
         };
         return {
@@ -430,7 +472,13 @@ function initialEventArgValue(arg) {
     return Array.isArray(arg.default) ? [...arg.default] : [];
   }
   if (arg.type === "bool") return Boolean(arg.default);
+  if (arg.type === "i64") return typeof arg.default === "string" ? arg.default : "0";
   return Number.isFinite(Number(arg.default)) ? Number(arg.default) : 0;
+}
+
+function decodeEventScalarRepr(type, value) {
+  if (type === "i64") return value === null || value === undefined ? null : String(value);
+  return decodeScalarRepr(type, value);
 }
 
 function decodeScalarRepr(type, value) {

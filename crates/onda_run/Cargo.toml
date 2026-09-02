@@ -7,11 +7,13 @@ authors.workspace = true
 
 [dependencies]
 libc = "0.2"
+midir = "0.11"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_cpal = { path = "../onda_cpal" }
 onda_frontend = { path = "../onda_frontend" }
+onda_host_protocol = { path = "../onda_host_protocol" }
 onda_project = { path = "../onda_project" }
 onda_semantics = { path = "../onda_semantics" }
 serde = { version = "1.0", features = ["derive"] }

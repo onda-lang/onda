@@ -708,3 +708,151 @@ fn rejects_duplicate_delegates_across_singular_and_plural_forms() {
         .message
         .contains("duplicate delegate declaration 'done'")));
 }
+
+#[test]
+fn top_level_main_wraps_the_existing_program_grammar() {
+    let source = r#"
+def identity(value: f32):
+  return value
+
+proc Main:
+  config const Channels = 2
+
+  kins:
+    gain = 0.5 {0.0, 1.0, curve = -4.0, unit = "x"}
+
+  outs Channels
+
+  namespace Nested:
+    proc Main:
+      sample:
+        out1 = 0.0
+
+  sample:
+    out1 = identity(gain)
+    out2 = identity(gain)
+"#;
+
+    let program = parse_program(source).expect("top-level Main should parse");
+    assert!(!program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Proc(proc) if proc.name == "Main")));
+    assert!(program.blocks.iter().any(
+        |block| matches!(block, Block::Const(decl) if decl.name == "Channels" && decl.configurable)
+    ));
+    assert!(program.blocks.iter().any(|block| {
+        matches!(block, Block::Params(params)
+            if params.deferred_prefix == "kin"
+                && params.decls[0].control.unit.as_deref() == Some("x"))
+    }));
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Sample(_))));
+    assert!(program.blocks.iter().any(|block| {
+        matches!(block, Block::Namespace(namespace)
+            if namespace.items.iter().any(
+                |item| matches!(item, NamespaceItem::Proc(proc) if proc.name == "Main")
+            ))
+    }));
+}
+
+#[test]
+fn namespace_main_remains_an_ordinary_processor() {
+    let source = r#"
+namespace DSP:
+  proc Main:
+    outs 1
+    sample:
+      out1 = 0.0
+
+sample:
+  out1 = 0.0
+"#;
+
+    let program = parse_program(source).expect("namespace Main should not be an entry wrapper");
+    assert!(program.blocks.iter().any(|block| {
+        matches!(block, Block::Namespace(namespace)
+            if namespace.items.iter().any(
+                |item| matches!(item, NamespaceItem::Proc(proc) if proc.name == "Main")
+            ))
+    }));
+    assert!(program
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::Sample(_))));
+}
+
+#[test]
+fn rejects_generic_or_duplicate_top_level_main() {
+    let generic = parse_program("proc Main<T>:\n  sample:\n    out1 = 0.0\n")
+        .expect_err("generic Main should fail");
+    assert!(generic
+        .iter()
+        .any(|error| error.message.contains("proc Main cannot be generic")));
+
+    let duplicate = parse_program(
+        "proc Main:\n  sample:\n    out1 = 0.0\nproc Main:\n  sample:\n    out1 = 0.0\n",
+    )
+    .expect_err("duplicate Main should fail");
+    assert!(duplicate
+        .iter()
+        .any(|error| error.message.contains("duplicate top-level proc Main")));
+}
+
+#[test]
+fn rejects_mixing_main_with_unwrapped_entry_sections_in_either_order() {
+    for source in [
+        "sample:\n  out1 = 0.0\nproc Main:\n  sample:\n    out1 = 0.0\n",
+        "proc Main:\n  sample:\n    out1 = 0.0\nsample:\n  out1 = 0.0\n",
+    ] {
+        let errors = parse_program(source).expect_err("mixed entry styles should fail");
+        assert!(errors.iter().any(|error| error
+            .message
+            .contains("cannot be mixed with unwrapped top-level processor sections")));
+    }
+}
+
+#[test]
+fn imported_modules_cannot_contribute_a_top_level_main_entry() {
+    let root = PathBuf::from("/workspace");
+    let entry = root.join("main.onda");
+    let module = root.join("library.onda");
+    let mut sources = std::collections::HashMap::new();
+    sources.insert(entry.clone(), "import library\nsample:\n  out1 = 0.0\n".to_owned());
+    sources.insert(
+        module,
+        "proc Main:\n  def identity(value: f32):\n    return value\n".to_owned(),
+    );
+
+    let errors = super::parse_program_file_from_virtual_sources(&root, &entry, &sources)
+        .expect_err("an imported Main entry should fail");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("proc Main is only allowed in an entry or included file")));
+}
+
+#[test]
+fn imported_namespace_main_remains_supported() {
+    let root = PathBuf::from("/workspace");
+    let entry = root.join("main.onda");
+    let module = root.join("library.onda");
+    let mut sources = std::collections::HashMap::new();
+    sources.insert(entry.clone(), "import library\nsample:\n  out1 = 0.0\n".to_owned());
+    sources.insert(
+        module,
+        "namespace Library:\n  proc Main:\n    sample:\n      out1 = 0.0\n"
+            .to_owned(),
+    );
+
+    let program = super::parse_program_file_from_virtual_sources(&root, &entry, &sources)
+        .expect("an imported namespace Main should remain a declaration");
+    assert!(program.blocks.iter().any(|block| {
+        matches!(block, Block::Namespace(namespace)
+            if namespace.name == "Library"
+                && namespace.items.iter().any(
+                    |item| matches!(item, NamespaceItem::Proc(proc) if proc.name == "Main")
+                ))
+    }));
+}

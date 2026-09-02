@@ -32,6 +32,36 @@ test("the shared run view only shows its scope when supported and during playbac
   assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
 });
 
+test("the shared MIDI keyboard uses themed keys without a computer-key legend", async () => {
+  const [runView, playground, runViewHost] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
+    readFile(resolve(repoRoot, "ui/playground/run-view-host.js"), "utf8"),
+  ]);
+
+  assert.match(runView, /--piano-white-top:/);
+  assert.match(runView, /:root\[data-theme="light"\][\s\S]*?--piano-white-top:/);
+  assert.match(runView, /\.piano-key\.white:hover:not\(\.active\)/);
+  assert.match(runView, /\.piano-key\.black\.active/);
+  assert.doesNotMatch(runView, /computer-key-hint|Keys: A W S E D/);
+  assert.match(runView, /body \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) auto;[\s\S]*?overflow: hidden/);
+  assert.match(runView, /\.shell \{[\s\S]*?overflow-y: auto/);
+  assert.match(
+    runView,
+    /<\/div>\s*<section class="midi-keyboard" id="midi-keyboard" hidden>/,
+  );
+  assert.match(runView, /\.midi-keyboard \{[\s\S]*?border-radius: 0/);
+  assert.match(runView, /\.io-settings\.midi-only[\s\S]*?justify-content: center/);
+  assert.match(
+    runView,
+    /ioSettingsNode\.classList\.toggle\([\s\S]*?"midi-only"[\s\S]*?!supportsDeviceSelection && supportsMidiInput/,
+  );
+  assert.match(runView, /message\.type === "computerKey"/);
+  assert.match(runViewHost, /sendComputerKey\(code, pressed\)/);
+  assert.match(playground, /isMidiKeyboardEditingTarget\(event\.target\)/);
+  assert.match(playground, /document\.addEventListener\("keyup"[\s\S]*?sendComputerKey/);
+});
+
 test("the native buffer cards render bounded peak-preserving waveform previews", async () => {
   const [runView, daemon] = await Promise.all([
     readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
@@ -135,6 +165,27 @@ test("the shared run view preserves explicit false scalar values", async () => {
   assert.equal(booleanScalarValue(true), true);
   assert.equal(booleanScalarValue(0), false);
   assert.equal(booleanScalarValue(1), true);
+});
+
+test("the shared run view keeps i64 event values outside JavaScript numbers", async () => {
+  const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
+  const helper = runView.match(/function parseEventI64\(value\) \{[\s\S]*?\n      \}/)?.[0];
+
+  assert.ok(helper);
+  const parseEventI64 = Function(`return (${helper})`)();
+  assert.equal(parseEventI64("9007199254740993"), "9007199254740993");
+  assert.equal(parseEventI64("-9223372036854775808"), "-9223372036854775808");
+  assert.equal(parseEventI64("9223372036854775807"), "9223372036854775807");
+  assert.equal(parseEventI64("00042"), "42");
+  assert.equal(parseEventI64("9223372036854775808"), null);
+  assert.equal(parseEventI64("-9223372036854775809"), null);
+  assert.equal(parseEventI64(Number.MAX_SAFE_INTEGER + 1), null);
+  assert.equal(parseEventI64("not-an-integer"), null);
+  assert.match(runView, /input\.type = type === "i64" \? "text" : "number"/);
+  assert.doesNotMatch(
+    runView,
+    /arg\.type === "bool"\s*\? Boolean\(arg\.value\)\s*:\s*Number\(arg\.value\)/,
+  );
 });
 
 test("the empty native run view owns its compile settings", async () => {

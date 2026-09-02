@@ -16,6 +16,7 @@ import { compilationKey } from "./compile-cache.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
 import { loadExampleProject } from "./examples.js";
 import { OndaBrowserLsp } from "./lsp-client.js";
+import { BrowserMidiInputs, isMidiKeyboardEditingTarget } from "./midi.js";
 import { BrowserMicrophoneInput } from "./microphone.js";
 import { BrowserRunViewHost, BrowserScopeSource } from "./run-view-host.js";
 import {
@@ -73,6 +74,7 @@ let requestedExampleProject = null;
 let requestedExampleError = null;
 const bufferFiles = new Map();
 const microphoneInput = new BrowserMicrophoneInput();
+let midiInputs = null;
 
 runViewFrame.src = hostedAssets.runViewUrl ?? "./run.html";
 const runView = new BrowserRunViewHost(runViewFrame, {
@@ -81,6 +83,23 @@ const runView = new BrowserRunViewHost(runViewFrame, {
   resetParams: () => resetRunParams(),
   setParam: (name, value) => audioProcessor?.setParam(name, value),
   triggerEvent: (name, values) => audioProcessor?.trigger(name, values),
+  midiEventsChanged: (events) => midiInputs?.setDeclared(events),
+  refreshMidiInputs: async () => {
+    try {
+      await midiInputs?.refresh(true);
+      runView.showError("");
+    } catch (error) {
+      runView.showError(error);
+    }
+  },
+  setMidiInputDevice: async (name) => {
+    try {
+      await midiInputs?.select(name);
+      runView.showError("");
+    } catch (error) {
+      runView.showError(error);
+    }
+  },
   bindBufferFile: (name, file) => bindBufferFile(name, file),
   clearBuffer: (name) => clearBuffer(name),
   error: (error) => {
@@ -88,7 +107,34 @@ const runView = new BrowserRunViewHost(runViewFrame, {
     setErrorStatus();
   },
 });
+midiInputs = new BrowserMidiInputs({
+  onState: ({ devices, current }) => runView.setMidiInputs(devices, current),
+  onEvent: (name, values) => audioProcessor?.trigger(name, values),
+  onError: (error) => {
+    runView.setError(error);
+    setErrorStatus();
+  },
+});
 const scopeSource = new BrowserScopeSource(runView);
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.repeat
+    || event.isComposing
+    || event.ctrlKey
+    || event.metaKey
+    || event.altKey
+    || isMidiKeyboardEditingTarget(event.target)
+  ) return;
+  runView.sendComputerKey(event.code, true);
+}, { capture: true });
+document.addEventListener("keyup", (event) => {
+  runView.sendComputerKey(event.code, false);
+}, { capture: true });
+window.addEventListener("blur", () => runView.releaseVirtualMidiNotes());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) runView.releaseVirtualMidiNotes();
+});
 
 function setStatus(text, kind = "") {
   statusEl.textContent = text;

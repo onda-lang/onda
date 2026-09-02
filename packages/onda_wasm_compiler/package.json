@@ -1,6 +1,6 @@
 {
   "name": "@onda-lang/wasm-compiler",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Onda source-to-WebAssembly compiler for browsers and Node.js",
   "license": "MIT",
@@ -60,7 +60,7 @@
     "prepack": "npm run build && node ../../scripts/stage-web-api-docs.mjs"
   },
   "dependencies": {
-    "@onda-lang/processor-abi": "0.8.0",
+    "@onda-lang/processor-abi": "0.8.1",
     "binaryen": "130.0.0"
   },
   "publishConfig": {

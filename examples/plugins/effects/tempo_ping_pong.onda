@@ -1,0 +1,47 @@
+import std/delay
+import std/filter
+import std/smoothing
+
+const DelayCapacity = i32(SR * 4)
+
+params:
+  beats = 0.75 {0.125, 2.0, step = 0.125, unit = "beats"}
+  feedback = 0.58 {0.0, 0.92}
+  tone = 4200.0 {300.0, 16000.0, log, "Hz"}
+  drive = 1.4 {1.0, 4.0}
+  transition_s = 0.08 {0.005, 0.5, log, "s"}
+  mix = 0.38 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  line_l = std::delay<DelayCapacity>::Line()
+  line_r = std::delay<DelayCapacity>::Line()
+  feedback_tone_l = std::filter::OnePole()
+  feedback_tone_r = std::filter::OnePole()
+  host_bpm = 120.0
+  current_delay = SR * 0.375
+  transition_coefficient = 0.0
+
+event tempo(bpm: f64):
+  host_bpm = clamp(f32(bpm), 20.0, 400.0)
+
+block:
+  target_delay = clamp(60.0 * beats / host_bpm * SR, 1.0, f32(DelayCapacity - 2))
+  transition_coefficient = std::smoothing::time_coefficient(transition_s)
+  feedback_tone_l.cutoff = tone
+  feedback_tone_r.cutoff = tone * 0.92
+
+  sample:
+    current_delay = target_delay + (current_delay - target_delay) * transition_coefficient
+    delayed_l = line_l.readL(current_delay)
+    delayed_r = line_r.readL(current_delay)
+
+    dark_l = feedback_tone_l(delayed_l)
+    dark_r = feedback_tone_r(delayed_r)
+    line_l.write(in1 + tanh(dark_r * drive) * feedback)
+    line_r.write(in2 + tanh(dark_l * drive) * feedback)
+    line_l.advance()
+    line_r.advance()
+
+    out1 = lerp(in1, delayed_l, mix) * level
+    out2 = lerp(in2, delayed_r, mix) * level

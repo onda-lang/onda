@@ -7,6 +7,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.8.1]
+
+### Added
+
+- Added first-class `plugin_midi` support to `onda run` across the egui, native webview,
+  and online playground hosts. Canonical MIDI and host-context events are validated
+  against shared signatures and omitted from user events; MIDI events work in standalone
+  hosts while DAW-only host context remains inactive.
+- Added physical MIDI input discovery and selection on Linux, macOS, and Windows,
+  including `--midi-input-device` for windowed and headless realtime playback. The
+  online playground uses Web MIDI with device hot-plug support.
+- Added a musical keyboard at the bottom of the run view when a canonical `note_on`
+  event is present. It supports pointer and touch input, octave and velocity controls,
+  and uses the computer keyboard as the default MIDI input.
+- Added the MIDI instrument and live-input effect examples from `onda-plugin` to the
+  repository and online example catalog.
+
+### Changed
+
+- Centralized the canonical MIDI and host-context event signatures used by the LSP and
+  runtime hosts in `onda_host_protocol`.
+- Restyled the musical keyboard for dark and light themes and made it a full-width,
+  fixed bottom surface in the webview. Browser keyboard input works across the page but
+  is suppressed while editing code or typing in other controls.
+
+### Fixed
+
+- Prevented stuck virtual notes when focus is lost, the page is hidden or unloaded,
+  playback stops, MIDI inputs change, or controllers disconnect and reconnect.
+- Ignored malformed Web MIDI packets and prevented editor keystrokes from triggering
+  musical notes.
+
 ## [0.8.0]
 
 ### Added
@@ -612,6 +644,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.1]: https://github.com/onda-lang/onda/compare/0.8.0...0.8.1
 [0.8.0]: https://github.com/onda-lang/onda/compare/0.7.5...0.8.0
 [0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5
 [0.7.4]: https://github.com/onda-lang/onda/compare/0.7.3...0.7.4

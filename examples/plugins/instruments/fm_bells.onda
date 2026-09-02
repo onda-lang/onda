@@ -1,0 +1,246 @@
+import std/delay
+import std/env
+import std/filter
+import std/levels
+import std/noise
+import std/osc
+import std/pitch
+
+const VoiceCount = 8
+
+proc BellVoice:
+  delegate finished()
+
+  params:
+    note = 60.0
+    velocity = 0.0
+    attack_s = 0.003
+    decay_s = 1.8
+    sustain = 0.08
+    release_s = 1.2
+    brightness = 0.65
+    ratio = 2.01
+    strike_level = 0.18
+
+  init:
+    carrier = std::osc::Sine()
+    partial = std::osc::Sine()
+    modulator = std::osc::Sine()
+    amplitude = std::env::ADSR()
+    modulation = std::env::DecayEnv()
+    strike_envelope = std::env::DecayEnv(decay_s = 0.024)
+    noise = std::noise::White()
+    strike_filter = std::filter::OnePole(mode = std::filter::mode::ONE_POLE_HIGHPASS)
+
+  def update_pitch():
+    frequency = std::pitch::note_to_hz(note)
+    carrier.freq = frequency
+    partial.freq = frequency * 2.41
+    modulator.freq = frequency * ratio
+
+  def update_envelope():
+    amplitude.attack_s = attack_s
+    amplitude.decay_s = decay_s
+    amplitude.sustain = sustain
+    amplitude.release_s = release_s
+
+  event trigger(key: i32, velocity_value):
+    note = f32(key)
+    velocity = velocity_value
+    update_pitch()
+    update_envelope()
+    carrier.reset()
+    partial.reset(0.17)
+    modulator.reset()
+    amplitude.start()
+    modulation.start(1.0)
+    strike_envelope.start(velocity)
+
+  event release():
+    amplitude.release()
+
+  when amplitude.finished():
+    finished()
+
+  block:
+    update_envelope()
+    update_pitch()
+    modulation.decay_s = decay_s * 0.32
+    strike_filter.cutoff = clamp(1800.0 + brightness * 9000.0, 30.0, SR * 0.45)
+
+    sample:
+      envelope = amplitude() * velocity
+      shimmer = modulation()
+      index = shimmer * brightness * (3.0 + velocity * 7.0)
+      phase_modulation = modulator() * index
+      fundamental = carrier(phase_offset = phase_modulation)
+      overtone = partial(phase_offset = phase_modulation * 0.31)
+      overtone_level = brightness * (0.12 + shimmer * 0.24)
+      strike_noise = strike_filter(noise()) * strike_envelope() * strike_level
+      out1 = (fundamental * (1.0 - overtone_level) + overtone * overtone_level) * envelope + strike_noise
+
+struct BellVoiceManager:
+  ids: i32[VoiceCount]
+  channels: i32[VoiceCount]
+  keys: i32[VoiceCount]
+  pans: f32[VoiceCount]
+  active: bool[VoiceCount]
+  held: bool[VoiceCount]
+  next_voice: i32 = 0
+
+  def configure(
+    self,
+    voices: BellVoice[],
+    index: i32,
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value,
+    brightness_value,
+    ratio_value,
+    strike_value
+  ):
+    voices[index].attack_s = attack_value
+    voices[index].decay_s = decay_value
+    voices[index].sustain = sustain_value
+    voices[index].release_s = release_value
+    voices[index].brightness = brightness_value
+    voices[index].ratio = ratio_value
+    voices[index].strike_level = strike_value
+
+  def note_on(
+    self,
+    voices: BellVoice[],
+    id: i32,
+    channel: i32,
+    key: i32,
+    velocity,
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value,
+    brightness_value,
+    ratio_value,
+    strike_value,
+    spread
+  ):
+    selected = -1
+    for offset in 0..VoiceCount:
+      candidate = (self.next_voice + offset) % VoiceCount
+      if selected < 0 && !self.active[candidate]:
+        selected = candidate
+
+    if selected < 0:
+      selected = self.next_voice
+
+    self.ids[selected] = id
+    self.channels[selected] = channel
+    self.keys[selected] = key
+    self.pans[selected] = (-1.0 + f32(selected) * 2.0 / f32(VoiceCount - 1)) * spread
+    self.active[selected] = true
+    self.held[selected] = true
+    self.configure(
+      voices, selected, attack_value, decay_value, sustain_value,
+      release_value, brightness_value, ratio_value, strike_value
+    )
+    voices[selected].trigger(key, velocity)
+    self.next_voice = (selected + 1) % VoiceCount
+
+  def note_off(self, voices: BellVoice[], id: i32, channel: i32, key: i32):
+    for i in 0..VoiceCount:
+      id_matches = id >= 0 && self.ids[i] == id && self.channels[i] == channel
+      key_matches = id < 0 && self.channels[i] == channel && self.keys[i] == key
+      if self.active[i] && self.held[i] && (id_matches || key_matches):
+        self.held[i] = false
+        voices[i].release()
+
+  def update(
+    self,
+    voices: BellVoice[],
+    attack_value,
+    decay_value,
+    sustain_value,
+    release_value,
+    brightness_value,
+    ratio_value,
+    strike_value,
+    spread
+  ):
+    for i in 0..VoiceCount:
+      if self.active[i]:
+        self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
+        self.configure(
+          voices, i, attack_value, decay_value, sustain_value,
+          release_value, brightness_value, ratio_value, strike_value
+        )
+
+  def finish(self, index: i32):
+    self.active[index] = false
+
+  def render(self, voices: BellVoice[]):
+    mix_l = 0.0
+    mix_r = 0.0
+    for i in 0..VoiceCount:
+      if self.active[i]:
+        voice = voices[i]()
+        gain_l, gain_r = std::levels::pan_3db(self.pans[i])
+        mix_l += voice * gain_l
+        mix_r += voice * gain_r
+    return (mix_l, mix_r)
+
+params:
+  attack_s = 0.003 {0.001, 0.5, log, "s"}
+  decay_s = 1.8 {0.05, 6.0, log, "s"}
+  sustain = 0.08 {0.0, 1.0}
+  release_s = 1.2 {0.02, 6.0, log, "s"}
+  brightness = 0.65 {0.0, 1.0}
+  ratio = 2.01 {0.5, 5.0}
+  strike = 0.18 {0.0, 0.6}
+  space = 0.22 {0.0, 0.65}
+  spread = 0.7 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0} 
+
+init:
+  voices: BellVoice[VoiceCount]
+  voice_manager = BellVoiceManager()
+  delay_l = std::delay::Delay(delay_s = 0.29, feedback = 0.36, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.41, feedback = 0.32, mix = 1.0)
+
+when voices.finished(index):
+  BellVoiceManager.finish(voice_manager, index)
+
+event note_on(id: i32, channel: i32, key: i32, velocity):
+  voice_manager.note_on(
+    voices, id, channel, key, velocity,
+    attack_value = attack_s,
+    decay_value = decay_s,
+    sustain_value = sustain,
+    release_value = release_s,
+    brightness_value = brightness,
+    ratio_value = ratio,
+    strike_value = strike,
+    spread = spread
+  )
+
+event note_off(id: i32, channel: i32, key: i32, velocity):
+  voice_manager.note_off(voices, id, channel, key)
+
+block:
+  voice_manager.update(
+    voices,
+    attack_value = attack_s,
+    decay_value = decay_s,
+    sustain_value = sustain,
+    release_value = release_s,
+    brightness_value = brightness,
+    ratio_value = ratio,
+    strike_value = strike,
+    spread = spread
+  )
+
+  sample:
+    mix_l, mix_r = voice_manager.render(voices)
+    wet_l = delay_l(mix_l + mix_r * 0.15)
+    wet_r = delay_r(mix_r + mix_l * 0.15)
+    out1 = tanh((mix_l + wet_l * space) * level)
+    out2 = tanh((mix_r + wet_r * space) * level)

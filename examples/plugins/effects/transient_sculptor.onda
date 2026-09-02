@@ -1,0 +1,53 @@
+import std/levels
+import std/smoothing
+
+params:
+  attack_db = 5.0 {-12.0, 12.0, unit = "dB"}
+  sustain_db = -2.0 {-12.0, 12.0, unit = "dB"}
+  response = 8.0 {1.0, 24.0}
+  slow_attack_s = 0.018 {0.003, 0.08, log, "s"}
+  release_s = 0.16 {0.02, 0.8, log, "s"}
+  stereo_link = 0.8 {0.0, 1.0}
+  mix = 1.0 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  fast_l = std::smoothing::LagUD()
+  fast_r = std::smoothing::LagUD()
+  slow_l = std::smoothing::LagUD()
+  slow_r = std::smoothing::LagUD()
+
+block:
+  fast_l.attack_s = 0.0005
+  fast_r.attack_s = 0.0005
+  fast_l.release_s = release_s * 0.22
+  fast_r.release_s = release_s * 0.22
+  slow_l.attack_s = slow_attack_s
+  slow_r.attack_s = slow_attack_s
+  slow_l.release_s = release_s
+  slow_r.release_s = release_s
+
+  sample:
+    quick_l = fast_l(abs(in1))
+    quick_r = fast_r(abs(in2))
+    body_l = slow_l(abs(in1))
+    body_r = slow_r(abs(in2))
+
+    linked_quick = max(quick_l, quick_r)
+    linked_body = max(body_l, body_r)
+    detector_quick_l = lerp(quick_l, linked_quick, stereo_link)
+    detector_quick_r = lerp(quick_r, linked_quick, stereo_link)
+    detector_body_l = lerp(body_l, linked_body, stereo_link)
+    detector_body_r = lerp(body_r, linked_body, stereo_link)
+
+    attack_l = max(detector_quick_l - detector_body_l, 0.0)
+    attack_r = max(detector_quick_r - detector_body_r, 0.0)
+    tail_l = max(detector_body_l - detector_quick_l, 0.0)
+    tail_r = max(detector_body_r - detector_quick_r, 0.0)
+    gain_db_l = clamp((attack_l * attack_db + tail_l * sustain_db) * response, -18.0, 18.0)
+    gain_db_r = clamp((attack_r * attack_db + tail_r * sustain_db) * response, -18.0, 18.0)
+
+    shaped_l = in1 * std::levels::db_to_gain(gain_db_l)
+    shaped_r = in2 * std::levels::db_to_gain(gain_db_r)
+    out1 = lerp(in1, shaped_l, mix) * level
+    out2 = lerp(in2, shaped_r, mix) * level

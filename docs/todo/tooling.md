@@ -15,6 +15,12 @@
   `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
 - Improve run panel UX:
   better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
+- Expand the declared-event-aware MIDI performance surface beyond piano notes:
+  - show pitch bend, modulation (CC 1), sustain (CC 64), channel pressure, and configurable CC
+    controls only when the corresponding canonical event is declared
+  - share control behavior and reset/lifecycle semantics across egui, native webview, and browser
+  - evaluate sample-accurate native timestamp alignment separately from the current block-accurate
+    dispatch, and add hardware-backed Linux/macOS/Windows plus browser coverage
 - Improve print/delegate Log UX:
   - report UI-history eviction separately from generated batch overflow and transport loss
   - decide and consistently apply whether explicit processor restarts retain or clear visible history

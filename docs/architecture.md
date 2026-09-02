@@ -26,6 +26,7 @@ For build, CLI usage, and editor integrations, see the [getting-started guide](h
 | `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
 | `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated current-schema MIR MessagePack or JSON. |
 | `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
+| `onda_host_protocol` | Canonical host-owned MIDI and transport event catalog shared by native tooling and browser hosts. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
 | `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
@@ -171,6 +172,12 @@ Non-crate directories of note:
 
 ### `onda_realtime` (`crates/onda_realtime/src`)
 - `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
+
+### `onda_host_protocol` (`crates/onda_host_protocol`)
+
+- `events.json` — single canonical MIDI and host-context event catalog consumed by browser hosts and
+  generated into Rust constants for runtime validation and language-server completion.
+- `src/lib.rs` — catalog types plus exact name, type, and parameter-order matching.
 
 ### `onda_processor_abi`
 

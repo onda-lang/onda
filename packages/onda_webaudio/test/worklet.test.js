@@ -195,6 +195,60 @@ test("failed event execution invalidates the worklet", () => {
   assert.equal(processor.process, processor.processPending);
 });
 
+test("worklet rejects i64 event values outside the signed 64-bit range", () => {
+  const descriptor = metadata();
+  descriptor.metadata.events = [{
+    name: "wide",
+    export: "onda_process",
+    payload_size_bytes: 24,
+    params: [
+      {
+        name: "scalar",
+        scalar: "i64",
+        array_len: 1,
+        is_array: false,
+        is_slice: false,
+        byte_size: 8,
+      },
+      {
+        name: "fixed",
+        scalar: "i64",
+        array_len: 2,
+        is_array: true,
+        is_slice: false,
+        byte_size: 16,
+      },
+    ],
+  }];
+  const processor = new Processor({
+    processorOptions: { wasmBytes: wasm, metadata: descriptor },
+  });
+
+  assert.doesNotThrow(() => processor.dispatchEvent("wide", [
+    "-9223372036854775808",
+    ["0", "9223372036854775807"],
+  ]));
+  const view = new DataView(processor.memory.buffer);
+  assert.equal(view.getBigInt64(processor.eventPayloadPtr, true), -9_223_372_036_854_775_808n);
+  assert.equal(view.getBigInt64(processor.eventPayloadPtr + 8, true), 0n);
+  assert.equal(
+    view.getBigInt64(processor.eventPayloadPtr + 16, true),
+    9_223_372_036_854_775_807n,
+  );
+  assert.throws(
+    () => processor.dispatchEvent("wide", ["9223372036854775808", ["0", "0"]]),
+    /outside the signed 64-bit range/,
+  );
+  assert.throws(
+    () => processor.dispatchEvent("wide", ["0", ["-9223372036854775809", "0"]]),
+    /outside the signed 64-bit range/,
+  );
+  assert.throws(
+    () => processor.dispatchEvent("wide", [Number.MAX_SAFE_INTEGER + 1, ["0", "0"]]),
+    /bigint, safe integer, or decimal integer string/,
+  );
+});
+
 test("worklet prepares execution output before every Wasm entry", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];

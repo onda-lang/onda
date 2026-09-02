@@ -20,6 +20,23 @@ const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
+function exactI64(value) {
+  let integer;
+  if (typeof value === "bigint") {
+    integer = value;
+  } else if (typeof value === "number" && Number.isSafeInteger(value)) {
+    integer = BigInt(value);
+  } else if (typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    integer = BigInt(value);
+  } else {
+    throw new TypeError("i64 value must be a bigint, safe integer, or decimal integer string");
+  }
+  if (BigInt.asIntN(64, integer) !== integer) {
+    throw new RangeError(`i64 value '${integer}' is outside the signed 64-bit range`);
+  }
+  return integer;
+}
+
 class OndaWasmProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -1230,7 +1247,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         }
       } else if (scalar === "i64") {
         for (let index = 0; index < length; index += 1) {
-          target[index] = BigInt(values[index]);
+          target[index] = exactI64(values[index]);
         }
       } else {
         target.set(values);
@@ -1262,7 +1279,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   writeScalar(address, scalar, value, view = this.memoryView()) {
     if (scalar === "bool") view.setUint8(address, value ? 1 : 0);
     else if (scalar === "i32") view.setInt32(address, Number(value), true);
-    else if (scalar === "i64") view.setBigInt64(address, BigInt(value), true);
+    else if (scalar === "i64") view.setBigInt64(address, exactI64(value), true);
     else if (scalar === "f32") view.setFloat32(address, Number(value), true);
     else if (scalar === "f64") view.setFloat64(address, Number(value), true);
     else throw new Error(`unsupported ABI scalar '${String(scalar)}'`);

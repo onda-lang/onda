@@ -595,6 +595,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
+    let mut midi_input_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
     let mut theme = RunThemeMode::Auto;
@@ -632,6 +633,12 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 output_device = Some(value);
             }
+            "--midi-input-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--midi-input-device requires a device name".to_owned());
+                };
+                midi_input_device = Some(value);
+            }
             "--theme" => {
                 let Some(value) = args.next() else {
                     return Err("--theme requires one of: auto, dark, light".to_owned());
@@ -660,6 +667,9 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             _ if arg.starts_with("--output-device=") => {
                 output_device = Some(arg["--output-device=".len()..].to_owned());
             }
+            _ if arg.starts_with("--midi-input-device=") => {
+                midi_input_device = Some(arg["--midi-input-device=".len()..].to_owned());
+            }
             _ if arg.starts_with("--theme=") => {
                 theme = parse_run_theme_mode(&arg["--theme=".len()..])?;
             }
@@ -678,6 +688,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         opt_level,
         input_device,
         output_device,
+        midi_input_device,
         fast_math,
         show_meta,
         theme,
@@ -707,6 +718,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
+    let mut midi_input_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
     let mut control_json = false;
@@ -767,6 +779,12 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 };
                 output_device = Some(value);
             }
+            "--midi-input-device" => {
+                let Some(value) = args.next() else {
+                    return Err("--midi-input-device requires a device name".to_owned());
+                };
+                midi_input_device = Some(value);
+            }
             "--forever" => {
                 if dur_seconds != Some(DEFAULT_DUR_SECONDS) {
                     return Err("--forever cannot be combined with --dur".to_owned());
@@ -802,6 +820,9 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             _ if arg.starts_with("--output-device=") => {
                 output_device = Some(arg["--output-device=".len()..].to_owned());
             }
+            _ if arg.starts_with("--midi-input-device=") => {
+                midi_input_device = Some(arg["--midi-input-device=".len()..].to_owned());
+            }
             _ if arg.starts_with("--set=") => {
                 param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
             }
@@ -820,6 +841,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         opt_level,
         input_device,
         output_device,
+        midi_input_device,
         fast_math,
         show_meta,
         control_json,

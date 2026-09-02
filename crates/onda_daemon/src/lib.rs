@@ -5,7 +5,7 @@ pub use run_session::{
     InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBufferWaveform, RunBuildError,
     RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo,
     RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunPrintBatch, RunPrintEntry, RunPrintValue, RunSession,
+    RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent, RunSession,
 };
 
 use std::collections::HashMap;
@@ -208,6 +208,23 @@ impl DaemonSession {
             )
         })?;
         run.render_block_interleaved(rendered)
+    }
+
+    pub fn render_run_block_events_interleaved(
+        &mut self,
+        path: impl AsRef<Path>,
+        rendered: &mut [f32],
+        events: &[RunScheduledEvent<'_>],
+    ) -> Result<(), Diagnostic> {
+        let normalized = normalize_session_path(path.as_ref());
+        let run = self.runs.get_mut(&normalized).ok_or_else(|| {
+            Diagnostic::runtime(
+                format!("run is not active for '{}'", normalized.display()),
+                0,
+                0,
+            )
+        })?;
+        run.render_block_events_interleaved(rendered, events)
     }
 }
 
@@ -476,6 +493,79 @@ mod tests {
             vec![1, 3, 5, 7]
         );
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scheduled_events_change_state_at_exact_sample_boundaries() {
+        let dir = mk_temp_dir("run_scheduled_events");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "init:\n  gate: i32 = 0\nevent note_on():\n  gate = 1\nevent note_off():\n  gate = 0\nsample:\n  out1 = f32(gate)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 8,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        let events = [
+            RunScheduledEvent {
+                frame: 2,
+                name: "note_on",
+                values: &[],
+            },
+            RunScheduledEvent {
+                frame: 5,
+                name: "note_off",
+                values: &[],
+            },
+        ];
+        let mut rendered = vec![0.0; 8];
+        run.render_block_events_interleaved(&mut rendered, &events)
+            .expect("scheduled render should succeed");
+
+        assert_eq!(rendered, vec![0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn frame_zero_events_run_before_block_initialization() {
+        let dir = mk_temp_dir("run_frame_zero_event");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "init:\n  gate: i32 = 0\n  block_gate: i32 = 0\nevent note_on():\n  gate = 1\nblock:\n  block_gate = gate\n  sample:\n    out1 = f32(block_gate)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 4,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        let events = [RunScheduledEvent {
+            frame: 0,
+            name: "note_on",
+            values: &[],
+        }];
+        let mut rendered = vec![0.0; 4];
+        run.render_block_events_interleaved(&mut rendered, &events)
+            .expect("scheduled render should succeed");
+
+        assert_eq!(rendered, vec![1.0; 4]);
         fs::remove_dir_all(&dir).ok();
     }
 

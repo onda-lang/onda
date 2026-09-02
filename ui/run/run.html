@@ -29,6 +29,20 @@
         --scrollbar-track: #081522;
         --scrollbar-thumb: #2d5278;
         --scrollbar-thumb-hover: #47739f;
+        --piano-bed: #081522;
+        --piano-white-top: #c4d3e4;
+        --piano-white-bottom: #9fb5cc;
+        --piano-white-hover-top: #d9e6f4;
+        --piano-white-hover-bottom: #b8cbe0;
+        --piano-white-active-top: #8db8e7;
+        --piano-white-active-bottom: #5e91ca;
+        --piano-black-top: #14283e;
+        --piano-black-bottom: #09131f;
+        --piano-black-hover-top: #21405f;
+        --piano-black-hover-bottom: #10283f;
+        --piano-black-active-top: #90bce9;
+        --piano-black-active-bottom: #5f91c9;
+        --piano-key-border: #354e6d;
         --shadow: 0 20px 60px rgba(3, 10, 18, 0.34);
         --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         /* Shared with the native view: controls 5, groups 8, cards 9, sections 12. */
@@ -64,6 +78,20 @@
         --scrollbar-track: #e8f1fc;
         --scrollbar-thumb: #9bb8d8;
         --scrollbar-thumb-hover: #6f94ba;
+        --piano-bed: #dbe8f7;
+        --piano-white-top: #ffffff;
+        --piano-white-bottom: #e7eff8;
+        --piano-white-hover-top: #f8fbff;
+        --piano-white-hover-bottom: #dbe8f7;
+        --piano-white-active-top: #b9d3ef;
+        --piano-white-active-bottom: #8eb4dc;
+        --piano-black-top: #214b73;
+        --piano-black-bottom: #102b48;
+        --piano-black-hover-top: #2f638f;
+        --piano-black-hover-bottom: #173f65;
+        --piano-black-active-top: #4f8ccd;
+        --piano-black-active-bottom: #275f9b;
+        --piano-key-border: #91aac5;
         --shadow: 0 18px 44px rgba(76, 109, 145, 0.18);
       }
 
@@ -73,6 +101,7 @@
         scrollbar-width: thin;
       }
       html {
+        height: 100%;
         min-height: 100%;
         scrollbar-width: auto;
         background: var(--bg);
@@ -89,8 +118,12 @@
       *::-webkit-scrollbar-corner { background: var(--scrollbar-track); }
       body {
         margin: 0;
-        min-height: 100vh;
-        padding: 18px;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        height: 100vh;
+        min-height: 0;
+        padding: 0;
+        overflow: hidden;
         background: transparent;
         color: var(--text);
         font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
@@ -102,6 +135,9 @@
         gap: 16px;
         width: 100%;
         margin: 0 auto;
+        padding: 18px;
+        overflow-x: hidden;
+        overflow-y: auto;
       }
 
       .file-picker {
@@ -220,9 +256,14 @@
 
       .io-settings {
         display: none;
-        grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
         align-items: end;
         gap: 10px;
+      }
+
+      .io-settings.midi-only {
+        grid-template-columns: minmax(0, 180px) auto;
+        justify-content: center;
       }
 
       .refresh-devices {
@@ -709,6 +750,138 @@
         text-transform: uppercase;
       }
 
+      .midi-keyboard {
+        position: relative;
+        z-index: 5;
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        padding: 14px 18px 18px;
+        border: 0;
+        border-top: 1px solid var(--border);
+        border-radius: 0;
+        background: var(--panel);
+        box-shadow: 0 -12px 36px rgba(3, 10, 18, 0.24);
+        backdrop-filter: blur(8px);
+      }
+
+      .midi-toolbar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 9px;
+      }
+
+      .midi-toolbar .params-title {
+        margin-right: auto;
+      }
+
+      .midi-control {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .midi-control input[type="number"] {
+        width: 56px;
+      }
+
+      .midi-control input[type="range"] {
+        width: 120px;
+      }
+
+      .piano {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(14, minmax(22px, 1fr));
+        height: 112px;
+        overflow: hidden;
+        border: 1px solid var(--piano-key-border);
+        border-radius: var(--radius-group);
+        background: var(--piano-bed);
+        box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent) 14%, transparent);
+        touch-action: none;
+        user-select: none;
+      }
+
+      .piano-key {
+        min-width: 0;
+        height: 100%;
+        padding: 0;
+        border: 1px solid var(--piano-key-border);
+        border-radius: 0 0 3px 3px;
+        cursor: pointer;
+        touch-action: none;
+        transition: filter 100ms ease;
+      }
+
+      .piano-key:focus-visible {
+        z-index: 3;
+        outline: 2px solid var(--accent);
+        outline-offset: -3px;
+      }
+
+      .piano-key.white {
+        background: linear-gradient(
+          to bottom,
+          var(--piano-white-top),
+          var(--piano-white-bottom)
+        );
+        box-shadow: inset 0 -4px 0 color-mix(in srgb, var(--piano-bed) 24%, transparent);
+      }
+
+      .piano-key.white:hover:not(.active) {
+        background: linear-gradient(
+          to bottom,
+          var(--piano-white-hover-top),
+          var(--piano-white-hover-bottom)
+        );
+      }
+
+      .piano-key.white.active {
+        background: linear-gradient(
+          to bottom,
+          var(--piano-white-active-top),
+          var(--piano-white-active-bottom)
+        );
+      }
+
+      .piano-key.black {
+        position: absolute;
+        z-index: 2;
+        top: 0;
+        width: calc((100% / 14) * 0.62);
+        height: 63%;
+        transform: translateX(-50%);
+        border-color: var(--piano-key-border);
+        background: linear-gradient(
+          to bottom,
+          var(--piano-black-top),
+          var(--piano-black-bottom)
+        );
+        box-shadow: 0 4px 7px rgba(3, 10, 18, 0.42);
+      }
+
+      .piano-key.black:hover:not(.active) {
+        background: linear-gradient(
+          to bottom,
+          var(--piano-black-hover-top),
+          var(--piano-black-hover-bottom)
+        );
+      }
+
+      .piano-key.black.active {
+        background: linear-gradient(
+          to bottom,
+          var(--piano-black-active-top),
+          var(--piano-black-active-bottom)
+        );
+      }
+
       .param-controls {
         display: grid;
         gap: 10px;
@@ -998,13 +1171,17 @@
       }
 
       @media (max-width: 640px) {
-        body {
+        .shell {
           padding: 12px;
         }
 
         .header, .buffers, .events, .params, .scope-section {
           padding: 12px;
           border-radius: var(--radius-section);
+        }
+
+        .midi-keyboard {
+          padding: 12px;
         }
 
         .hero {
@@ -1120,6 +1297,10 @@
               <div class="param-setting-label">Output Device</div>
               <select class="param-select" id="output-device"></select>
             </div>
+            <div class="param-setting" id="midi-input-setting">
+              <div class="param-setting-label">MIDI Input</div>
+              <select class="param-select" id="midi-input-device"></select>
+            </div>
             <button class="secondary refresh-devices" id="refresh-devices">Refresh Devices</button>
           </div>
         </div>
@@ -1230,6 +1411,21 @@
         </div>
       </section>
     </div>
+    <section class="midi-keyboard" id="midi-keyboard" hidden>
+      <div class="midi-toolbar">
+        <div class="params-title">MIDI Keyboard</div>
+        <label class="midi-control">
+          Octave
+          <input class="param-number" id="midi-octave" type="number" min="-1" max="7" value="4" />
+        </label>
+        <label class="midi-control">
+          Velocity
+          <input id="midi-velocity" type="range" min="0" max="1" step="0.01" value="0.8" />
+          <span id="midi-velocity-value">0.80</span>
+        </label>
+      </div>
+      <div class="piano" id="piano" aria-label="Musical keyboard"></div>
+    </section>
     <script>
       // ---------------------------------------------------------------------------
       // Host bridge abstraction
@@ -1393,10 +1589,13 @@
         delegateOverflowCount: 0,
         delegateTransportDropCount: 0,
         params: [],
+        midi: { available: false, noteOn: false, noteOff: false },
         inputDevices: [],
         outputDevices: [],
+        midiInputDevices: [],
         currentInputDevice: null,
         currentOutputDevice: null,
+        currentMidiInputDevice: null,
         supportsSourceSelection: false,
         supportsProjectExport: false,
         canExportProject: false,
@@ -1434,6 +1633,8 @@
       const ioSettingsNode = document.getElementById("io-settings");
       const inputDeviceNode = document.getElementById("input-device");
       const outputDeviceNode = document.getElementById("output-device");
+      const midiInputSettingNode = document.getElementById("midi-input-setting");
+      const midiInputDeviceNode = document.getElementById("midi-input-device");
       refreshDevicesButton.hidden = !state.supportsDeviceSelection;
       ioSettingsNode.hidden = !state.supportsDeviceSelection;
       const buffersSection = document.getElementById("buffers-section");
@@ -1446,6 +1647,11 @@
       const clearLogButton = document.getElementById("clear-log");
       const paramsSection = document.getElementById("params-section");
       const paramsNode = document.getElementById("params");
+      const midiKeyboardNode = document.getElementById("midi-keyboard");
+      const pianoNode = document.getElementById("piano");
+      const midiOctaveNode = document.getElementById("midi-octave");
+      const midiVelocityNode = document.getElementById("midi-velocity");
+      const midiVelocityValueNode = document.getElementById("midi-velocity-value");
       const scopeSection = document.getElementById("scope-section");
       const scopeToggle = document.getElementById("scope-toggle");
       const scopeBody = document.getElementById("scope-body");
@@ -1471,6 +1677,8 @@
       let pendingScopeFrame = 0;
       let latestScopeData = { channels: 0, samples: [] };
       let currentTheme = "";
+      const virtualMidiSources = new Map();
+      const virtualMidiNoteCounts = new Map();
       const sectionState = {
         scope: true,
         buffers: true,
@@ -1504,6 +1712,7 @@
         hostBridge.postMessage({ type: "start", path: state.path || undefined });
       });
       stopButton.addEventListener("click", () => {
+        releaseAllVirtualMidiNotes();
         hostBridge.postMessage({ type: "stop" });
       });
       resetParamsButton.addEventListener("click", () => {
@@ -1540,6 +1749,7 @@
       runSampleRateNode.addEventListener("change", updateRunSettings);
       runBlockSizeNode.addEventListener("change", updateRunSettings);
       unloadButton.addEventListener("click", () => {
+        releaseAllVirtualMidiNotes();
         hostBridge.postMessage({ type: "unload" });
       });
       inputDeviceNode.addEventListener("change", () => {
@@ -1547,6 +1757,13 @@
       });
       outputDeviceNode.addEventListener("change", () => {
         hostBridge.postMessage({ type: "setOutputDevice", name: outputDeviceNode.value || null });
+      });
+      midiInputDeviceNode.addEventListener("change", () => {
+        releaseAllVirtualMidiNotes();
+        hostBridge.postMessage({
+          type: "setMidiInputDevice",
+          name: midiInputDeviceNode.value || null,
+        });
       });
       document.addEventListener("keydown", (event) => {
         if (
@@ -1566,6 +1783,147 @@
           ? { type: "start", path: state.path || undefined }
           : { type: "stop" });
       }, { capture: true });
+
+      const COMPUTER_MIDI_KEYS = new Map([
+        ["KeyA", 0], ["KeyW", 1], ["KeyS", 2], ["KeyE", 3], ["KeyD", 4],
+        ["KeyF", 5], ["KeyT", 6], ["KeyG", 7], ["KeyY", 8], ["KeyH", 9],
+        ["KeyU", 10], ["KeyJ", 11], ["KeyK", 12],
+        ["KeyO", 13], ["KeyL", 14], ["KeyP", 15],
+      ]);
+      const WHITE_MIDI_NOTES = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23];
+      const BLACK_MIDI_NOTES = [
+        [1, 1], [3, 2], [6, 4], [8, 5], [10, 6],
+        [13, 8], [15, 9], [18, 11], [20, 12], [22, 13],
+      ];
+
+      function midiBaseNote() {
+        const octave = Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0));
+        return (octave + 1) * 12;
+      }
+
+      function midiVelocity() {
+        return Math.max(0, Math.min(1, Number(midiVelocityNode.value) || 0));
+      }
+
+      function postVirtualMidiNote(note, pressed) {
+        hostBridge.postMessage({
+          type: "midiNote",
+          key: Math.max(0, Math.min(127, note)),
+          velocity: pressed ? midiVelocity() : 0,
+          pressed,
+        });
+      }
+
+      function pressVirtualMidiNote(source, note) {
+        if (virtualMidiSources.has(source)) return;
+        const count = virtualMidiNoteCounts.get(note) || 0;
+        virtualMidiSources.set(source, note);
+        virtualMidiNoteCounts.set(note, count + 1);
+        if (count === 0) postVirtualMidiNote(note, true);
+        renderVirtualMidiNotes();
+      }
+
+      function releaseVirtualMidiNote(source) {
+        const note = virtualMidiSources.get(source);
+        if (note === undefined) return;
+        virtualMidiSources.delete(source);
+        const count = Math.max(0, (virtualMidiNoteCounts.get(note) || 1) - 1);
+        if (count === 0) {
+          virtualMidiNoteCounts.delete(note);
+          postVirtualMidiNote(note, false);
+        } else {
+          virtualMidiNoteCounts.set(note, count);
+        }
+        renderVirtualMidiNotes();
+      }
+
+      function releaseAllVirtualMidiNotes() {
+        for (const note of virtualMidiNoteCounts.keys()) postVirtualMidiNote(note, false);
+        virtualMidiSources.clear();
+        virtualMidiNoteCounts.clear();
+        renderVirtualMidiNotes();
+      }
+
+      function renderVirtualMidiNotes() {
+        const base = midiBaseNote();
+        for (const key of pianoNode.children) {
+          const note = base + Number(key.dataset.noteOffset);
+          key.classList.toggle("active", virtualMidiNoteCounts.has(note));
+        }
+      }
+
+      function appendPianoKey(offset, className, boundary) {
+        const key = document.createElement("button");
+        key.type = "button";
+        key.className = "piano-key " + className;
+        key.dataset.noteOffset = String(offset);
+        key.setAttribute("aria-label", "MIDI note " + offset);
+        if (boundary !== undefined) key.style.left = (boundary / 14 * 100) + "%";
+        key.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          key.setPointerCapture(event.pointerId);
+          pressVirtualMidiNote("pointer:" + event.pointerId, midiBaseNote() + offset);
+        });
+        const release = (event) => releaseVirtualMidiNote("pointer:" + event.pointerId);
+        key.addEventListener("pointerup", release);
+        key.addEventListener("pointercancel", release);
+        key.addEventListener("lostpointercapture", release);
+        pianoNode.appendChild(key);
+      }
+
+      for (const offset of WHITE_MIDI_NOTES) appendPianoKey(offset, "white");
+      for (const [offset, boundary] of BLACK_MIDI_NOTES) {
+        appendPianoKey(offset, "black", boundary);
+      }
+
+      midiOctaveNode.addEventListener("change", () => {
+        releaseAllVirtualMidiNotes();
+        midiOctaveNode.value = String(Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0)));
+        renderVirtualMidiNotes();
+      });
+      midiVelocityNode.addEventListener("input", () => {
+        midiVelocityValueNode.textContent = midiVelocity().toFixed(2);
+      });
+
+      function handleComputerMidiKey(code, pressed) {
+        const offset = COMPUTER_MIDI_KEYS.get(code);
+        if (offset === undefined) return false;
+        const source = "key:" + code;
+        if (!pressed) {
+          releaseVirtualMidiNote(source);
+          return true;
+        }
+        if (
+          state.midi?.noteOn !== true
+          || state.currentMidiInputDevice !== "Computer Keyboard"
+        ) return false;
+        pressVirtualMidiNote(source, midiBaseNote() + offset);
+        return true;
+      }
+
+      document.addEventListener("keydown", (event) => {
+        const target = event.target;
+        const editing = target instanceof HTMLInputElement
+          || target instanceof HTMLTextAreaElement
+          || target instanceof HTMLSelectElement
+          || target?.isContentEditable;
+        if (
+          event.repeat
+          || event.isComposing
+          || event.ctrlKey
+          || event.metaKey
+          || event.altKey
+          || editing
+        ) return;
+        if (handleComputerMidiKey(event.code, true)) event.preventDefault();
+      });
+      document.addEventListener("keyup", (event) => {
+        handleComputerMidiKey(event.code, false);
+      });
+      window.addEventListener("blur", releaseAllVirtualMidiNotes);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) releaseAllVirtualMidiNotes();
+      });
 
       // ---------------------------------------------------------------------------
       // Scope rendering
@@ -2231,28 +2589,35 @@
         renderedParamSignature = signature;
       }
 
+      function parseEventI64(value) {
+        if (typeof value === "number" && !Number.isSafeInteger(value)) return null;
+        const text = String(value ?? "0");
+        if (!/^-?[0-9]+$/.test(text)) return null;
+        const integer = BigInt(text);
+        return BigInt.asIntN(64, integer) === integer ? integer.toString() : null;
+      }
+
+      function eventScalarValue(type, value) {
+        if (type === "bool") return booleanScalarValue(value);
+        if (type === "i64") return parseEventI64(value) ?? "0";
+        const number = Number(value);
+        return Number.isFinite(number) ? number : 0;
+      }
+
       function initialEventArgValue(arg) {
         if (isArrayEventArg(arg)) {
-          return Array.isArray(arg.default) ? arg.default.slice() : [];
+          const scalar = eventArrayScalarType(arg);
+          return Array.isArray(arg.default)
+            ? arg.default.map((value) => eventScalarValue(scalar, value))
+            : [];
         }
         if (arg.default !== null && arg.default !== undefined) {
-          if (arg.type === "bool") {
-            return booleanScalarValue(arg.default);
-          }
-          const defaultValue = Number(arg.default);
-          return Number.isFinite(defaultValue) ? defaultValue : 0;
-        }
-        if (arg.type === "bool") {
-          if (arg.value !== null && arg.value !== undefined) {
-            return booleanScalarValue(arg.value);
-          }
-          return false;
+          return eventScalarValue(arg.type, arg.default);
         }
         if (arg.value !== null && arg.value !== undefined) {
-          const value = Number(arg.value);
-          return Number.isFinite(value) ? value : 0;
+          return eventScalarValue(arg.type, arg.value);
         }
-        return 0;
+        return eventScalarValue(arg.type, 0);
       }
 
       function hydrateEvents(events, existingEvents) {
@@ -2278,10 +2643,10 @@
                 : initialEventArgValue(arg);
               return Object.assign({}, arg, {
                 value: isArrayEventArg(arg)
-                  ? (Array.isArray(value) ? value : [])
-                  : arg.type === "bool"
-                    ? Boolean(value)
-                    : (Number.isFinite(Number(value)) ? Number(value) : 0),
+                  ? (Array.isArray(value)
+                    ? value.map((item) => eventScalarValue(eventArrayScalarType(arg), item))
+                    : [])
+                  : eventScalarValue(arg.type, value),
               });
             }) : [],
           });
@@ -2325,28 +2690,33 @@
           return toggle;
         }
 
-        const number = document.createElement("input");
-        number.className = "param-number";
-        number.type = "number";
+        const input = document.createElement("input");
+        input.className = "param-number";
+        input.type = type === "i64" ? "text" : "number";
+        if (type === "i64") {
+          input.inputMode = "numeric";
+          input.pattern = "-?[0-9]+";
+        }
         const integer = type === "i32" || type === "i64";
-        number.step = integer ? "1" : "0.001";
-        number.value = String(typeof value === "number" ? value : 0);
-        number.disabled = !state.connected;
+        input.step = integer ? "1" : "0.001";
+        input.value = String(eventScalarValue(type, value));
+        input.disabled = !state.connected;
         const parsedValue = () => {
-          const nextValue = Number(number.value);
+          if (type === "i64") return parseEventI64(input.value);
+          const nextValue = Number(input.value);
           if (!Number.isFinite(nextValue)) return null;
           return integer ? Math.round(nextValue) : nextValue;
         };
-        number.addEventListener("input", () => {
+        input.addEventListener("input", () => {
           const nextValue = parsedValue();
           if (nextValue !== null) onChange(nextValue);
         });
-        number.addEventListener("change", () => {
-          const nextValue = parsedValue() ?? 0;
+        input.addEventListener("change", () => {
+          const nextValue = parsedValue() ?? eventScalarValue(type, 0);
           onChange(nextValue);
-          number.value = String(nextValue);
+          input.value = String(nextValue);
         });
-        return number;
+        return input;
       }
 
       // ---------------------------------------------------------------------------
@@ -2355,6 +2725,14 @@
 
       hostBridge.onMessage((message) => {
         if (!message) {
+          return;
+        }
+        if (message.type === "computerKey") {
+          handleComputerMidiKey(message.code, message.pressed === true);
+          return;
+        }
+        if (message.type === "releaseVirtualMidiNotes") {
+          releaseAllVirtualMidiNotes();
           return;
         }
         if (message.type === "scopeData") {
@@ -2374,6 +2752,14 @@
         }
         if (incoming.events) {
           incoming.events = hydrateEvents(incoming.events, state.events);
+        }
+        if (
+          (incoming.running === false && state.running === true)
+          || (incoming.currentMidiInputDevice !== undefined
+            && incoming.currentMidiInputDevice !== state.currentMidiInputDevice)
+          || incoming.midi?.noteOn === false
+        ) {
+          releaseAllVirtualMidiNotes();
         }
         Object.assign(state, incoming);
         render();
@@ -2434,6 +2820,7 @@
         const supportsBufferEmbedding = state.supportsBufferEmbedding === true;
         const supportsTransport = state.supportsTransport === true;
         const supportsDeviceSelection = state.supportsDeviceSelection === true;
+        const supportsMidiInput = state.midi?.available === true;
         const supportsRunSettings = state.supportsRunSettings === true;
         const supportsScope = state.supportsScope === true;
         const hasSource = Boolean(state.path);
@@ -2481,15 +2868,32 @@
         eventsSection.style.display = hasEvents ? "" : "none";
         logSection.style.display = state.logRevealed === true ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
-        refreshDevicesButton.hidden = !supportsDeviceSelection;
-        ioSettingsNode.hidden = !supportsDeviceSelection;
-        ioSettingsNode.style.display = supportsDeviceSelection ? "grid" : "none";
+        refreshDevicesButton.hidden = !supportsDeviceSelection && !supportsMidiInput;
+        ioSettingsNode.hidden = !supportsDeviceSelection && !supportsMidiInput;
+        ioSettingsNode.style.display = supportsDeviceSelection || supportsMidiInput ? "grid" : "none";
+        ioSettingsNode.classList.toggle(
+          "midi-only",
+          !supportsDeviceSelection && supportsMidiInput,
+        );
+        inputDeviceNode.closest(".param-setting").hidden = !supportsDeviceSelection;
+        outputDeviceNode.closest(".param-setting").hidden = !supportsDeviceSelection;
+        midiInputSettingNode.hidden = !supportsMidiInput;
         startButton.hidden = !supportsTransport;
         stopButton.hidden = !supportsTransport;
         startButton.disabled = !state.path || state.running;
         stopButton.disabled = !state.running;
         renderDeviceOptions(inputDeviceNode, state.inputDevices, state.currentInputDevice, true);
         renderDeviceOptions(outputDeviceNode, state.outputDevices, state.currentOutputDevice, true);
+        renderDeviceOptions(
+          midiInputDeviceNode,
+          state.midiInputDevices,
+          state.currentMidiInputDevice,
+          supportsMidiInput,
+          null,
+        );
+        const showMidiKeyboard = state.midi?.noteOn === true;
+        midiKeyboardNode.hidden = !showMidiKeyboard;
+        if (!showMidiKeyboard && virtualMidiSources.size > 0) releaseAllVirtualMidiNotes();
 
         buffersNode.replaceChildren();
         if (hasBuffers) {
@@ -2662,7 +3066,8 @@
                     render();
                   });
                   add.addEventListener("click", () => {
-                    arg.value.push(eventArrayScalarType(arg) === "bool" ? false : 0);
+                    const scalar = eventArrayScalarType(arg);
+                    arg.value.push(eventScalarValue(scalar, 0));
                     render();
                   });
                   actions.append(remove, add);
@@ -2723,9 +3128,7 @@
                 values: (event.args || []).map((arg) =>
                   isArrayEventArg(arg)
                     ? arg.value
-                    : arg.type === "bool"
-                      ? Boolean(arg.value)
-                      : Number(arg.value)
+                    : eventScalarValue(arg.type, arg.value)
                 ),
               });
             });
@@ -3141,22 +3544,24 @@
         select.value = stringValue;
       }
 
-      function renderDeviceOptions(node, devices, selected, enabled) {
+      function renderDeviceOptions(node, devices, selected, enabled, defaultLabel = "Default") {
         if (!node) {
           return;
         }
         node.replaceChildren();
-        const defaultOption = document.createElement("option");
-        defaultOption.value = "";
-        defaultOption.textContent = "Default";
-        node.appendChild(defaultOption);
+        if (defaultLabel !== null) {
+          const defaultOption = document.createElement("option");
+          defaultOption.value = "";
+          defaultOption.textContent = defaultLabel;
+          node.appendChild(defaultOption);
+        }
         for (const device of devices || []) {
           const option = document.createElement("option");
           option.value = device;
           option.textContent = device;
           node.appendChild(option);
         }
-        node.value = selected || "";
+        node.value = selected || node.options[0]?.value || "";
         node.disabled = !enabled;
       }
 
