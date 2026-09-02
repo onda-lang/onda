@@ -84,7 +84,6 @@ struct PlaybackStartup {
 }
 
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
-type AudioDeviceLists = (Vec<String>, Vec<String>);
 
 struct RenderThreadContext {
     sample_queue: SampleProducer,
@@ -141,9 +140,6 @@ enum PlaybackControlCommand {
     },
     GetEvents {
         reply: PlaybackReply<Vec<RunEventInfo>>,
-    },
-    GetDevices {
-        reply: PlaybackReply<AudioDeviceLists>,
     },
     SetDelegateCollection {
         enabled: bool,
@@ -1030,9 +1026,6 @@ fn spawn_run_render_thread(
                                     classify_host_events(run.event_info()).map(|(events, _)| events)
                                 });
                             let _ = reply.send(result);
-                        }
-                        PlaybackControlCommand::GetDevices { reply } => {
-                            let _ = reply.send(Ok(available_audio_devices()));
                         }
                         PlaybackControlCommand::SetDelegateCollection {
                             enabled,
@@ -2145,32 +2138,17 @@ fn run_control_response(
                 })
         }
         "getDevices" => {
-            let (reply_tx, reply_rx) = mpsc::channel();
-            control_tx
-                .send(PlaybackControlCommand::GetDevices { reply: reply_tx })
-                .map_err(|_| "run control channel closed".to_owned())
-                .and_then(|_| {
-                    reply_rx
-                        .recv()
-                        .map_err(|_| "run control reply channel closed".to_owned())
-                })
-                .map(|result| {
-                    Some(match result {
-                        Ok((input_devices, output_devices)) => json!({
-                            "id": request_id,
-                            "ok": true,
-                            "result": {
-                                "inputDevices": input_devices,
-                                "outputDevices": output_devices,
-                            }
-                        }),
-                        Err(err) => json!({
-                            "id": request_id,
-                            "ok": false,
-                            "error": err,
-                        }),
-                    })
-                })
+            let (input_devices, output_devices) = available_audio_devices();
+            let midi_input_devices = midi::input_devices();
+            Ok(Some(json!({
+                "id": request_id,
+                "ok": true,
+                "result": run_device_lists_json(
+                    input_devices,
+                    output_devices,
+                    midi_input_devices,
+                ),
+            })))
         }
         "subscribeDelegates" | "unsubscribeDelegates" => {
             let enabled = request.command == "subscribeDelegates";
@@ -2392,12 +2370,24 @@ fn run_control_response(
     }
 }
 
+fn run_device_lists_json(
+    input_devices: Vec<String>,
+    output_devices: Vec<String>,
+    midi_input_devices: Vec<String>,
+) -> Value {
+    json!({
+        "inputDevices": input_devices,
+        "outputDevices": output_devices,
+        "midiInputDevices": midi_input_devices,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        run_control_response, write_pending_delegate_batch, write_pending_output_batches,
-        write_pending_print_batches, DelegateSubscriptionGuard, MidiTimeline,
-        PlaybackControlCommand, PlaybackControlRequest, RunOutputBatch, ScopeRing,
+        run_control_response, run_device_lists_json, write_pending_delegate_batch,
+        write_pending_output_batches, write_pending_print_batches, DelegateSubscriptionGuard,
+        MidiTimeline, PlaybackControlCommand, PlaybackControlRequest, RunOutputBatch, ScopeRing,
     };
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
@@ -2415,6 +2405,22 @@ mod tests {
         let (second, _) = timeline.frame_at(start + Duration::from_millis(5), 1_024, 48_000);
         assert_eq!(first, 1_024);
         assert_eq!(second, 1_264);
+    }
+
+    #[test]
+    fn run_device_lists_include_midi_inputs() {
+        assert_eq!(
+            run_device_lists_json(
+                vec!["Microphone".to_owned()],
+                vec!["Speakers".to_owned()],
+                vec!["MIDI Controller".to_owned()],
+            ),
+            serde_json::json!({
+                "inputDevices": ["Microphone"],
+                "outputDevices": ["Speakers"],
+                "midiInputDevices": ["MIDI Controller"],
+            })
+        );
     }
 
     #[test]
