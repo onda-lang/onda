@@ -352,8 +352,10 @@ Non-crate directories of note:
 - `npm run build --workspace @onda-lang/wasm-compiler` builds the Rust frontend and JavaScript glue
   with `wasm-pack --release`, then runs the npm-pinned Binaryen `wasm-opt -O4` over the frontend
   module. The internal `--no-opt` flag prevents wasm-pack from downloading and running a different
-  optimizer release. `dist/build.json` records the optimizer policy and size reduction, and package
-  tests verify that the optimized bytes are the ones shipped. Generated DSP modules use their
+  optimizer release. The build also uses `cargo-about` 0.9.2 to generate complete Rust dependency
+  license text from the locked cross-platform dependency graph. `dist/build.json` records the
+  optimizer policy and size reduction, and package tests verify that the optimized bytes are the
+  ones shipped. Generated DSP modules use their
   independent Binaryen O4 compilation policy and are not redundantly post-optimized.
 - `npm run test:web` tests the ABI, Binaryen, Web Audio, and compiler workspaces.
   `npm run test:pack --workspace @onda-lang/wasm-compiler` packs and installs all four public

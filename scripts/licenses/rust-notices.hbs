@@ -1,0 +1,19 @@
+Third-party Rust licenses
+=========================
+
+This file is generated from Cargo.lock. It lists the Rust crates included in
+Onda's native or WebAssembly distributions and the license text discovered in
+their published source packages.
+
+{{#each licenses}}
+-------------------------------------------------------------------------------
+{{{name}}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

@@ -30,6 +30,15 @@ try {
   ) {
     throw new Error("compiler build does not record an effective wasm-opt O4 frontend pass");
   }
+  const rustLicenses = await readFile(
+    resolve(packageRoot, "dist/licenses/RUST-DEPENDENCIES.txt"),
+    "utf8",
+  );
+  for (const required of ["wasm-bindgen", "serde", "MIT License"]) {
+    if (!rustLicenses.includes(required)) {
+      throw new Error(`Rust dependency licenses are missing ${required}`);
+    }
+  }
   const compilerPack = firstPackRecord(runJson("npm", [
     "pack",
     packageRoot,
@@ -42,11 +51,14 @@ try {
   for (const required of [
     "api.md",
     "bin/onda-wasm.js",
+    "THIRD_PARTY_NOTICES.md",
     "dist/frontend/onda_compiler_web_bg.wasm",
     "dist/build.json",
     "dist/version.js",
-    "dist/licenses/BINARYEN-LICENSE",
-    "dist/licenses/LIBM-LICENSE",
+    "dist/licenses/BINARYEN-LICENSE.txt",
+    "dist/licenses/LIBM-LICENSE.txt",
+    "dist/licenses/ONDA-LICENSE.txt",
+    "dist/licenses/RUST-DEPENDENCIES.txt",
     "src/index.d.ts",
     "src/index.js",
   ]) {

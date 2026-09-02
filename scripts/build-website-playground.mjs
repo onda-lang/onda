@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
 import { bundlePlayground } from "./bundle-web-playground.mjs";
+import { writeBundledJavaScriptLicenses } from "./bundled-javascript-licenses.mjs";
 import { buildExampleProjectCatalog } from "./example-projects.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -49,7 +50,8 @@ const assetsRoot = resolve(generatedRoot, "assets/play", `v${version}`);
 await rm(generatedRoot, { recursive: true, force: true });
 await mkdir(assetsRoot, { recursive: true });
 
-await Promise.all([
+const [playgroundBuild] = await Promise.all([
+  bundlePlayground(resolve(assetsRoot, "playground.js")),
   cp(resolve(compilerRoot, "src"), resolve(assetsRoot, "compiler/src"), {
     recursive: true,
   }),
@@ -57,6 +59,10 @@ await Promise.all([
     recursive: true,
   }),
   cp(resolve(compilerRoot, "dist/version.js"), resolve(assetsRoot, "compiler/dist/version.js")),
+  cp(resolve(compilerRoot, "dist/licenses"), resolve(assetsRoot, "licenses"), {
+    recursive: true,
+  }),
+  cp(resolve(repoRoot, "THIRD_PARTY_NOTICES.md"), resolve(assetsRoot, "THIRD_PARTY_NOTICES.md")),
   cp(
     frontendWasm,
     resolve(assetsRoot, "onda_compiler_web_bg.wasm"),
@@ -69,7 +75,6 @@ await Promise.all([
     resolve(webAudioRoot, "src/execution-output-ring.js"),
     resolve(assetsRoot, "execution-output-ring.js"),
   ),
-  bundlePlayground(resolve(assetsRoot, "playground.js")),
   buildExampleProjectCatalog(examplesRoot).then((catalog) => writeFile(
     resolve(assetsRoot, "example-projects.json"),
     `${JSON.stringify(catalog)}\n`,
@@ -77,7 +82,7 @@ await Promise.all([
   cp(resolve(repoRoot, "ui/run/run.html"), resolve(assetsRoot, "run.html")),
 ]);
 
-await build({
+const workerBuild = await build({
   entryPoints: [resolve(compilerRoot, "src/worker.js")],
   outfile: resolve(assetsRoot, "compiler-worker.js"),
   bundle: true,
@@ -85,11 +90,27 @@ await build({
   platform: "browser",
   target: "es2022",
   minify: true,
+  metafile: true,
   legalComments: "none",
   // Binaryen's universal bundle keeps Node-only dynamic imports behind an
   // environment guard. Preserve those unreachable specifiers for browsers.
   external: ["node:*"],
 });
+
+const bundledLicenses = resolve(
+  assetsRoot,
+  "licenses/BUNDLED-JAVASCRIPT-LICENSES.txt",
+);
+await writeBundledJavaScriptLicenses(
+  [playgroundBuild.metafile, workerBuild.metafile],
+  bundledLicenses,
+);
+const bundledLicenseText = await readFile(bundledLicenses, "utf8");
+for (const packageName of ["@codemirror/view", "binaryen"]) {
+  if (!bundledLicenseText.includes(packageName)) {
+    throw new Error(`bundled JavaScript licenses are missing ${packageName}`);
+  }
+}
 
 await writeFile(
   resolve(generatedRoot, "manifest.json"),

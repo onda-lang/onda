@@ -79,6 +79,9 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.98.0
 
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.2 --locked --features cli
+
       - name: Check generated standard-library reference
         shell: bash
         run: cargo run --quiet -p onda_lsp --example generate_stdlib_docs -- --check
@@ -188,6 +191,18 @@ jobs:
             -DOnda_DIR="$PWD/cmake"
           cmake --build target/cmake-sdk --parallel
 
+      - name: Generate Rust third-party licenses
+        shell: bash
+        run: |
+          node ./scripts/generate-rust-third-party-licenses.mjs \
+            target/release-licenses/RUST-DEPENDENCIES.txt
+          node ./scripts/copy-copyleft-rust-sources.mjs \
+            target/release-licenses/MPL-2.0-SOURCES
+
+      - name: Verify packaged LLVM license
+        shell: bash
+        run: node ./scripts/verify-llvm-licenses.mjs ".deps/llvm/$LLVM_VERSION"
+
       - name: Package release on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -198,12 +213,14 @@ jobs:
           $libDir = Join-Path $packageRoot "lib"
           $includeDir = Join-Path $packageRoot "include"
           $docsDir = Join-Path $packageRoot "docs"
+          $licensesDir = Join-Path $packageRoot "licenses"
           $cmakeDir = Join-Path $libDir "cmake\Onda"
 
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           New-Item -ItemType Directory -Force -Path $libDir | Out-Null
           New-Item -ItemType Directory -Force -Path $includeDir | Out-Null
           New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $licensesDir | Out-Null
           New-Item -ItemType Directory -Force -Path $cmakeDir | Out-Null
 
           Copy-Item target\release\onda.exe $binDir
@@ -222,6 +239,16 @@ jobs:
           Copy-Item include\onda_processor_abi.h $includeDir
           Copy-Item cmake\OndaConfig.cmake $cmakeDir
           Copy-Item LICENSE $packageRoot
+          Copy-Item THIRD_PARTY_NOTICES.md $packageRoot
+          Copy-Item licenses\LLVM-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-BLAKE3-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-XXHASH-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-MD5-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-REGEX-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-UNICODE-LICENSE.txt $licensesDir
+          Copy-Item licenses\LLVM-MSVCSETUPAPI-LICENSE.txt $licensesDir
+          Copy-Item target\release-licenses\RUST-DEPENDENCIES.txt $licensesDir
+          Copy-Item target\release-licenses\MPL-2.0-SOURCES $licensesDir -Recurse
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $docsDir
@@ -233,8 +260,17 @@ jobs:
           if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
               -not (Test-Path (Join-Path $docsDir "api.md")) -or
               -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
-              -not (Test-Path (Join-Path $docsDir "stdlib.md"))) {
-            throw "release documentation was not packaged under docs"
+              -not (Test-Path (Join-Path $docsDir "stdlib.md")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-BLAKE3-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-XXHASH-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-MD5-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-REGEX-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-UNICODE-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "LLVM-MSVCSETUPAPI-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "RUST-DEPENDENCIES.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "MPL-2.0-SOURCES\README.txt"))) {
+            throw "release documentation or license notices were not packaged"
           }
 
           $packagedCmakeBuildDir = Join-Path $PWD "target\cmake-sdk-packaged"
@@ -261,9 +297,10 @@ jobs:
           lib_dir="$package_root/lib"
           include_dir="$package_root/include"
           docs_dir="$package_root/docs"
+          licenses_dir="$package_root/licenses"
           cmake_dir="$lib_dir/cmake/Onda"
 
-          mkdir -p "$bin_dir" "$lib_dir" "$include_dir" "$docs_dir" "$cmake_dir"
+          mkdir -p "$bin_dir" "$lib_dir" "$include_dir" "$docs_dir" "$licenses_dir" "$cmake_dir"
 
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
@@ -333,6 +370,16 @@ jobs:
           cp include/onda_processor_abi.h "$include_dir/"
           cp cmake/OndaConfig.cmake "$cmake_dir/"
           cp LICENSE "$package_root/"
+          cp THIRD_PARTY_NOTICES.md "$package_root/"
+          cp licenses/LLVM-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-BLAKE3-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-XXHASH-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-MD5-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-REGEX-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-UNICODE-LICENSE.txt "$licenses_dir/"
+          cp licenses/LLVM-MSVCSETUPAPI-LICENSE.txt "$licenses_dir/"
+          cp target/release-licenses/RUST-DEPENDENCIES.txt "$licenses_dir/"
+          cp -R target/release-licenses/MPL-2.0-SOURCES "$licenses_dir/"
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$docs_dir/"
@@ -345,6 +392,15 @@ jobs:
           test -f "$docs_dir/api.md"
           test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
+          test -s "$licenses_dir/LLVM-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-BLAKE3-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-XXHASH-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-MD5-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-REGEX-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-UNICODE-LICENSE.txt"
+          test -s "$licenses_dir/LLVM-MSVCSETUPAPI-LICENSE.txt"
+          test -s "$licenses_dir/RUST-DEPENDENCIES.txt"
+          test -s "$licenses_dir/MPL-2.0-SOURCES/README.txt"
 
           cmake \
             -S tests/cmake_sdk \
@@ -412,6 +468,9 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: wasm32-unknown-unknown
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.2 --locked --features cli
 
       - name: Set up Node.js
         uses: actions/setup-node@v6

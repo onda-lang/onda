@@ -232,3 +232,9 @@ version. Run `scripts/sync-versions.sh` or `scripts/sync-versions.ps1` after cha
 The underlying `scripts/sync-package-versions.mjs` updates the workspace-owned `Cargo.lock` entries,
 discovers every `@onda-lang/*` package, and synchronizes its manifest and lockfile. Compiler builds
 and release jobs run it automatically; `ONDA_VERSION` is generated into the packaged distribution.
+
+## Building from a source checkout
+
+In addition to Rust, Node.js, and `wasm-pack`, source builds require `cargo-about` 0.9.2 with its
+`cli` feature. The build packages complete Rust dependency license text generated from the locked
+cross-platform workspace graph.

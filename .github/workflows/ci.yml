@@ -133,6 +133,7 @@ jobs:
         run: |
           npm ci
           cargo install wasm-pack --locked
+          cargo install cargo-about --version 0.9.2 --locked --features cli
 
       - name: Test browser and npm packages
         run: |
