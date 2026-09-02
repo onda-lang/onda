@@ -9,7 +9,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export async function bundlePlayground(outfile) {
   const outputPath = resolve(outfile);
   await mkdir(dirname(outputPath), { recursive: true });
-  await build({
+  return build({
     entryPoints: [resolve(repoRoot, "ui/playground/live.js")],
     outfile: outputPath,
     bundle: true,
@@ -17,6 +17,7 @@ export async function bundlePlayground(outfile) {
     platform: "browser",
     target: "es2022",
     minify: true,
+    metafile: true,
     legalComments: "none",
     loader: { ".onda": "text" },
     external: [

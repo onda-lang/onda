@@ -4,6 +4,10 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  generateRustThirdPartyLicenses,
+} from "../../../scripts/generate-rust-third-party-licenses.mjs";
+
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageRoot, "../..");
 const distRoot = resolve(packageRoot, "dist");
@@ -62,11 +66,16 @@ await rm(resolve(frontendOut, ".gitignore"), { force: true });
 await mkdir(licensesOut, { recursive: true });
 await cp(
   resolve(repoRoot, "packages/onda_binaryen_web/math-kernel/LICENSE-libm.txt"),
-  resolve(licensesOut, "LIBM-LICENSE"),
+  resolve(licensesOut, "LIBM-LICENSE.txt"),
 );
 await cp(
   resolve(binaryenRoot, "LICENSE"),
-  resolve(licensesOut, "BINARYEN-LICENSE"),
+  resolve(licensesOut, "BINARYEN-LICENSE.txt"),
+);
+await cp(resolve(repoRoot, "LICENSE"), resolve(licensesOut, "ONDA-LICENSE.txt"));
+await generateRustThirdPartyLicenses(
+  resolve(licensesOut, "RUST-DEPENDENCIES.txt"),
+  resolve(repoRoot, "crates/onda_compiler_web/Cargo.toml"),
 );
 
 const packageManifest = JSON.parse(

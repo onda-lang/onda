@@ -29,7 +29,7 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 version = "0.8.0"
-authors = ["onda contributors"]
+authors = ["Francesco Cameli"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
