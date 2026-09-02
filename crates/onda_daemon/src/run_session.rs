@@ -693,7 +693,7 @@ impl RunSession {
         let mut cursor = 0;
         let mut began_block = false;
         for event in events {
-            if event.frame > cursor || !began_block {
+            if event.frame > cursor {
                 let flags = if began_block {
                     0
                 } else {

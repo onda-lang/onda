@@ -537,6 +537,39 @@ mod tests {
     }
 
     #[test]
+    fn frame_zero_events_run_before_block_initialization() {
+        let dir = mk_temp_dir("run_frame_zero_event");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "init:\n  gate: i32 = 0\n  block_gate: i32 = 0\nevent note_on():\n  gate = 1\nblock:\n  block_gate = gate\n  sample:\n    out1 = f32(block_gate)\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run_with_options(
+                &main,
+                RunOptions {
+                    block_size: 4,
+                    ..RunOptions::default()
+                },
+            )
+            .expect("run should start");
+        let run = session.run_mut(&main).expect("active run");
+        let events = [RunScheduledEvent {
+            frame: 0,
+            name: "note_on",
+            values: &[],
+        }];
+        let mut rendered = vec![0.0; 4];
+        run.render_block_events_interleaved(&mut rendered, &events)
+            .expect("scheduled render should succeed");
+
+        assert_eq!(rendered, vec![1.0; 4]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn failed_initialization_returns_only_the_runtime_diagnostic() {
         let dir = mk_temp_dir("run_failed_init_prints");
         let main = dir.join("main.onda");
