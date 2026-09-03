@@ -597,6 +597,37 @@ jobs:
             exit 1
           fi
 
+      - name: Extract release notes from changelog
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          awk -v heading="## [$version]" '
+            $0 == heading {
+              found = 1
+              capture = 1
+              next
+            }
+            capture && /^## \[/ {
+              exit
+            }
+            capture {
+              print
+              if ($0 !~ /^[[:space:]]*$/) {
+                has_content = 1
+              }
+            }
+            END {
+              if (!found) {
+                print "missing changelog section " heading > "/dev/stderr"
+                exit 1
+              }
+              if (!has_content) {
+                print "changelog section " heading " is empty" > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' CHANGELOG.md > release-notes.md
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v7
         with:
@@ -627,8 +658,10 @@ jobs:
           fi
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME"
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME" --notes-file release-notes.md
             gh release upload "$RELEASE_TAG" "${release_files[@]}" --clobber
           else
-            gh release create "$RELEASE_TAG" "${release_files[@]}" --title "$RELEASE_NAME" --notes ""
+            gh release create "$RELEASE_TAG" "${release_files[@]}" \
+              --title "$RELEASE_NAME" \
+              --notes-file release-notes.md
           fi
