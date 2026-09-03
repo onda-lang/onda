@@ -71,7 +71,7 @@ export class BrowserRunViewHost {
       path,
       running: false,
       connected: false,
-      status: "Compiling",
+      status: "Compiling...",
       error: "",
       sampleRateHz: options?.sampleRate ?? this.state.sampleRateHz,
       blockFrames: options?.blockSize ?? this.state.blockFrames,

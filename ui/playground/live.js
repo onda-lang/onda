@@ -252,9 +252,9 @@ async function runProject() {
   const needsCompilation = !artifact || artifactCompilationKey !== key;
   if (needsCompilation) {
     runView.setCompiling(project.entry, options);
-    setStatus("Compiling");
+    setStatus("Compiling...");
   } else {
-    setStatus("Starting");
+    setStatus("Starting...");
   }
   try {
     if (needsCompilation) {
@@ -842,7 +842,7 @@ function scheduleProjectSave(project) {
 }
 
 async function loadToolchain() {
-  setStatus("Loading");
+  setStatus("Loading compiler...");
   const compilerLoading = createCompiler({
     worker: true,
     workerUrl: hostedAssets.workerUrl,
@@ -914,7 +914,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
     initialProject: storedProject ?? {
       entry: "main.onda",
       active: "main.onda",
-      sources: { "main.onda": "# Loading the bundled Onda example…\n" },
+      sources: { "main.onda": "# Loading the bundled Onda example...\n" },
     },
   });
   projectEditor.setFontSize(editorFontSize);
