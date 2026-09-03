@@ -773,6 +773,15 @@
         margin-bottom: 9px;
       }
 
+      .midi-keyboard.monitor-only .midi-toolbar {
+        display: none;
+      }
+
+      .midi-keyboard.monitor-only .piano-key {
+        cursor: default;
+        pointer-events: none;
+      }
+
       .midi-toolbar .params-title {
         margin-right: auto;
       }
@@ -1590,6 +1599,7 @@
         delegateTransportDropCount: 0,
         params: [],
         midi: { available: false, noteOn: false, noteOff: false },
+        midiKeyboardInteractive: true,
         inputDevices: [],
         outputDevices: [],
         midiInputDevices: [],
@@ -1679,6 +1689,7 @@
       let currentTheme = "";
       const virtualMidiSources = new Map();
       const virtualMidiNoteCounts = new Map();
+      const monitoredMidiNotes = new Set();
       const sectionState = {
         scope: true,
         buffers: true,
@@ -1815,6 +1826,7 @@
       }
 
       function pressVirtualMidiNote(source, note) {
+        if (state.midiKeyboardInteractive === false) return;
         if (virtualMidiSources.has(source)) return;
         const count = virtualMidiNoteCounts.get(note) || 0;
         virtualMidiSources.set(source, note);
@@ -1848,8 +1860,23 @@
         const base = midiBaseNote();
         for (const key of pianoNode.children) {
           const note = base + Number(key.dataset.noteOffset);
-          key.classList.toggle("active", virtualMidiNoteCounts.has(note));
+          key.classList.toggle(
+            "active",
+            virtualMidiNoteCounts.has(note) || monitoredMidiNotes.has(note),
+          );
         }
+      }
+
+      function setMonitoredMidiNotes(notes) {
+        monitoredMidiNotes.clear();
+        if (Array.isArray(notes)) {
+          for (const note of notes) {
+            if (Number.isInteger(note) && note >= 0 && note <= 127) {
+              monitoredMidiNotes.add(note);
+            }
+          }
+        }
+        renderVirtualMidiNotes();
       }
 
       function appendPianoKey(offset, className, boundary) {
@@ -1886,6 +1913,7 @@
       });
 
       function handleComputerMidiKey(code, pressed) {
+        if (state.midiKeyboardInteractive === false) return false;
         const offset = COMPUTER_MIDI_KEYS.get(code);
         if (offset === undefined) return false;
         const source = "key:" + code;
@@ -2735,6 +2763,10 @@
           releaseAllVirtualMidiNotes();
           return;
         }
+        if (message.type === "midiActivity") {
+          setMonitoredMidiNotes(message.activeNotes);
+          return;
+        }
         if (message.type === "scopeData") {
           scheduleScopeDraw(message.channels, message.samples);
           return;
@@ -2760,6 +2792,7 @@
           || incoming.midi?.noteOn === false
         ) {
           releaseAllVirtualMidiNotes();
+          setMonitoredMidiNotes([]);
         }
         Object.assign(state, incoming);
         render();
@@ -2893,6 +2926,9 @@
         );
         const showMidiKeyboard = state.midi?.noteOn === true;
         midiKeyboardNode.hidden = !showMidiKeyboard;
+        const monitorOnly = state.midiKeyboardInteractive === false;
+        midiKeyboardNode.classList.toggle("monitor-only", monitorOnly);
+        for (const key of pianoNode.children) key.tabIndex = monitorOnly ? -1 : 0;
         if (!showMidiKeyboard && virtualMidiSources.size > 0) releaseAllVirtualMidiNotes();
 
         buffersNode.replaceChildren();

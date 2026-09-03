@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 release; earlier releases are available on the
 [GitHub releases page](https://github.com/onda-lang/onda/releases).
 
+## [0.8.2]
+
+### Added
+
+- Added a display-only mode for the shared musical keyboard so external hosts can visualize held
+  MIDI notes without accepting pointer or computer-keyboard input.
+
+### Fixed
+
+- Fixed device refresh in native run hosts to include the current MIDI input devices alongside
+  audio input and output devices.
+
 ## [0.8.1]
 
 ### Added
@@ -644,6 +656,7 @@ release; earlier releases are available on the
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.2]: https://github.com/onda-lang/onda/compare/0.8.1...0.8.2
 [0.8.1]: https://github.com/onda-lang/onda/compare/0.8.0...0.8.1
 [0.8.0]: https://github.com/onda-lang/onda/compare/0.7.5...0.8.0
 [0.7.5]: https://github.com/onda-lang/onda/compare/0.7.4...0.7.5

@@ -423,3 +423,39 @@ test("allows browser playback while buffers are unbound", async () => {
     globalThis.MutationObserver = previousMutationObserver;
   }
 });
+
+test("forwards MIDI activity to the shared run view", () => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousMutationObserver = globalThis.MutationObserver;
+  const messages = [];
+  globalThis.window = {
+    location: { href: "https://onda.test/play/" },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.document = { documentElement: { dataset: {} } };
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  const iframe = {
+    src: "https://onda.test/play/run.html",
+    contentWindow: { postMessage: (message) => messages.push(message) },
+    addEventListener() {},
+  };
+
+  try {
+    const host = new BrowserRunViewHost(iframe);
+    host.setMidiActivity([60, 64, 127]);
+    assert.deepEqual(messages.at(-1), {
+      __ondaRunHost: true,
+      message: { type: "midiActivity", activeNotes: [60, 64, 127] },
+    });
+    host.dispose();
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.MutationObserver = previousMutationObserver;
+  }
+});

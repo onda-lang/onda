@@ -15,6 +15,9 @@ and the standalone `examples/web/onda_wasm_playground` host.
 
 Hosts provide the required DOM elements and `globalThis.__ONDA_PLAYGROUND_ASSETS__`; they do not own
 copies of the IDE runtime. `scripts/bundle-web-playground.mjs` is the single bundling entry point.
+External hosts can configure `midiKeyboardInteractive: false` to use the shared
+keyboard as a display-only monitor and publish its held keys with
+`{ type: "midiActivity", activeNotes: [...] }` messages.
 
 The editor uses compact, draggable project tabs, calls the compiler entry point the **Main file**, runs with
 Cmd/Ctrl+Enter, stops with Ctrl+Period, and follows definitions with Cmd/Ctrl+click. Play and stop

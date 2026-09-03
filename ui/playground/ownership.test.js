@@ -57,7 +57,10 @@ test("the shared MIDI keyboard uses themed keys without a computer-key legend", 
     /ioSettingsNode\.classList\.toggle\([\s\S]*?"midi-only"[\s\S]*?!supportsDeviceSelection && supportsMidiInput/,
   );
   assert.match(runView, /message\.type === "computerKey"/);
+  assert.match(runView, /message\.type === "midiActivity"/);
+  assert.match(runView, /state\.midiKeyboardInteractive === false/);
   assert.match(runViewHost, /sendComputerKey\(code, pressed\)/);
+  assert.match(runViewHost, /setMidiActivity\(activeNotes\)/);
   assert.match(playground, /isMidiKeyboardEditingTarget\(event\.target\)/);
   assert.match(playground, /document\.addEventListener\("keyup"[\s\S]*?sendComputerKey/);
 });

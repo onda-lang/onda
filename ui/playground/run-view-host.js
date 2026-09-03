@@ -19,6 +19,7 @@ export class BrowserRunViewHost {
       buffers: [],
       events: [],
       midi: { available: false, noteOn: false, noteOff: false },
+      midiKeyboardInteractive: true,
       params: [],
       inputDevices: [],
       outputDevices: [],
@@ -198,6 +199,10 @@ export class BrowserRunViewHost {
 
   releaseVirtualMidiNotes() {
     this.post({ type: "releaseVirtualMidiNotes" });
+  }
+
+  setMidiActivity(activeNotes) {
+    this.post({ type: "midiActivity", activeNotes });
   }
 
   postState() {
