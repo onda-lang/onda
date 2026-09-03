@@ -3,9 +3,7 @@
 All notable changes to Onda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). This changelog starts with the 0.5.0
-release; earlier releases are available on the
-[GitHub releases page](https://github.com/onda-lang/onda/releases).
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ## [0.8.2]
 
