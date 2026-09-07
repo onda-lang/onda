@@ -42,6 +42,7 @@ $backendArtifactSource = Get-Content (Join-Path $compilerPackage "dist\backend\a
 $backendArtifactSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $compilerOut "dist\backend\artifact.js") -NoNewline
 Copy-Item (Join-Path $webAudioPackage "src\worklet.js") (Join-Path $webAudioOut "worklet.js") -Force
+Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
 Copy-Item (Join-Path $repoRoot "ui\run\run.html") (Join-Path $demoDir "run.html") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $webAudioOut "processor-abi.js") -Force
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw

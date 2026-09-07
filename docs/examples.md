@@ -32,6 +32,7 @@ state. Live-input processing and any additional instrument events remain availab
 
 | Example | What it makes |
 | --- | --- |
+| [Additive synth]({{ '/playground/?example=instruments/additive_synth.onda' | relative_url }}) | Eight sine partials with independent level, ratio, detune, pan, and mute controls |
 | [Acid bassline]({{ '/playground/?example=instruments/acid_bassline.onda' | relative_url }}) | A resonant 16-step bass line with accents and slides |
 | [Drum machine]({{ '/playground/?example=instruments/drum_machine.onda' | relative_url }}) | Synthesized kick, snare, and metallic hats |
 | [FM bells]({{ '/playground/?example=instruments/fm_bells.onda' | relative_url }}) | A spacious polyphonic struck-metal pattern |

@@ -27,3 +27,14 @@ Project examples carry their source and data bindings together:
 ```bash
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```
+
+Explore parameter arrays with the sustained [additive synth](instruments/additive_synth.onda):
+
+```bash
+onda run examples/instruments/additive_synth.onda
+```
+
+Start with only the first partial enabled, then add harmonics using the `levels` controls.
+Each partial also has independent `ratios`, `detune_cents`, `pan`, and `enabled` controls.
+Mute the even harmonics for a hollow tone, or set two ratios equal and detune one slightly
+for beating. Non-integer ratios create inharmonic, metallic timbres.

@@ -758,7 +758,13 @@ Rules:
 - Omitted param types without defaults become `f32`.
 - Omitted param types with defaults infer from the default.
 - `gain = 0.5` becomes `f32`; `mode = 0` becomes `i32`.
-- Scalar params can have host-control domains. Array params cannot.
+- Scalar params and fixed-size top-level parameter arrays can have host-control domains.
+- Proc parameter arrays support per-element numeric ranges and scalar or list defaults,
+  using the same clamp-on-store rules as scalar proc params. Host-control attributes
+  such as scale, curve, unit, and step remain top-level only.
+- An array's range, scale, curve, unit, and step apply independently to every element.
+  A scalar default fills the array; a list supplies one default per element and must match its length.
+  Arrays support `f32`, `f64`, `i32`, `i64`, and `bool`. Boolean arrays use toggles without numeric ranges.
 - `params N` expands to `param1..paramN`; top-level `kins N` expands to `kin1..kinN`.
 - Top-level code may declare either `params` or `kins`, not both.
 - Top-level `paramN` or `kinN` usage can implicitly create params up to that ordinal.
@@ -779,6 +785,9 @@ params:
   envelope = 0.5 {0, 1, curve = -4}
   voices: i32 = 4 {min = 0, max = 16, step = 1}
   gain = 1.0 {max = 2, scale = linear}
+  offsets: f32[4] = 0.0 {-2000, 2000, unit = "Hz"}
+  harmonics: i32[3] = [1, 2, 4] {1, 16}
+  enabled: bool[3] = true
 ```
 
 Positional fields must precede named fields, fields cannot be repeated, and
@@ -815,6 +824,10 @@ calculation:
 The step count is the number of intervals from `min` to `max` and must fit the
 host descriptor. Normalization, snapping, and units are host-boundary
 semantics; Onda code reads the resulting plain parameter value.
+
+`onda run` groups array elements under their logical name, with addresses such as `offsets[0]`.
+Each element can be edited, automated, and reset independently; **Reset** restores all declared
+parameter defaults. CLI writes use the same addresses, for example `--set 'offsets[1]=7'`.
 
 The range itself is also a DSP boundary invariant. Generated code clamps each
 used ranged top-level parameter once at the start of `init`, once at the start

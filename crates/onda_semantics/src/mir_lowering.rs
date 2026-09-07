@@ -1,5 +1,9 @@
 #![deny(clippy::all)]
 
+#[cfg(test)]
+mod param_array_tests;
+mod param_arrays;
+
 mod aggregates;
 mod audio_outputs;
 mod calls;
@@ -481,6 +485,7 @@ fn lower_program_to_raw_mir(
     // Processor lowering intentionally begins with uniform flattened ABIs.
     // Prune unused leaves before whole-program range propagation and initial
     // validation so every subsequent compiler stage sees only live state.
+    param_arrays::clamp_parameter_arrays(&mut mir);
     onda_mir::prune_unused_function_parameters(&mut mir);
     propagate_integer_storage_ranges(&mut mir);
     normalize_mir_source_paths(&mut mir);
@@ -1141,21 +1146,12 @@ fn populate_interface(
                 .iter()
                 .map(|param| mir_constant(param.default))
                 .collect::<Vec<_>>();
-            if program.params[index..index + info.len]
-                .iter()
-                .any(|param| param.range.is_some())
-            {
-                errors.push(MirLoweringError::new(
-                    format!("parameter array '{name}' unexpectedly has a scalar range"),
-                    SourceLoc::ZERO,
-                ));
-            }
             mir.interface.params.push(onda_mir::Param {
                 name: name.clone(),
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
-                range: None,
-                control: onda_mir::ParamControl::default(),
+                range: program.params[index].range.map(mir_range),
+                control: mir_param_control(&program.params[index].control),
             });
             globals
                 .param_arrays

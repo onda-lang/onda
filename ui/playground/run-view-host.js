@@ -351,16 +351,17 @@ export class BrowserScopeSource {
 }
 
 export function mergeParams(params, existing) {
-  return params
-    .filter((param) => param.array_len === 1)
-    .map((param, index) => {
+  return params.flatMap((root, index) => Array.from({ length: root.array_len }, (_, element) => {
+      const isArray = root.type_repr !== root.scalar;
+      const param = { ...root, name: isArray ? `${root.name}[${element}]` : root.name };
+
       const previous = existing.find((item) => item.name === param.name);
       const control = param.param_control;
       const next = {
         index,
         name: param.name,
         type: param.scalar,
-        default: decodeScalarRepr(param.scalar, param.default_reprs?.[0]),
+        default: decodeScalarRepr(param.scalar, param.default_reprs?.[element]),
         rangeMin: decodeScalarRepr(param.scalar, param.range_min_repr),
         rangeMax: decodeScalarRepr(param.scalar, param.range_max_repr),
         scale: control?.scale ?? null,
@@ -369,6 +370,7 @@ export function mergeParams(params, existing) {
         step: decodeScalarRepr(param.scalar, control?.step_repr),
         stepCount: control?.step_count ?? null,
         scalar: true,
+        array: isArray ? { name: root.name, length: root.array_len, index: element } : null,
       };
       return {
         ...next,
@@ -376,7 +378,7 @@ export function mergeParams(params, existing) {
           ? previous.value
           : initialParamValue(next),
       };
-    });
+    }));
 }
 
 function mergeBuffers(buffers, existing, bufferFiles) {
@@ -437,6 +439,8 @@ export function mergeEvents(events, existing) {
 
 function paramShapeMatches(left, right) {
   return left.type === right.type
+    && left.array?.name === right.array?.name
+    && left.array?.length === right.array?.length
     && left.default === right.default
     && left.rangeMin === right.rangeMin
     && left.rangeMax === right.rangeMax

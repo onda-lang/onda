@@ -558,7 +558,11 @@ impl Validator<'_> {
                 ));
             }
             if let Some(range) = param.range {
-                if let Some(reason) = self.value_range_validation_error(range, param.ty) {
+                let element_ty = match self.program.types.get(param.ty.index()) {
+                    Some(Type::Array { element, .. }) => *element,
+                    _ => param.ty,
+                };
+                if let Some(reason) = self.value_range_validation_error(range, element_ty) {
                     self.program_error(format!("parameter '{}' range {reason}", param.name));
                 } else if !self.constant_is_within_range(&param.default, range) {
                     self.program_error(format!(
@@ -4271,6 +4275,24 @@ impl Validator<'_> {
     ) -> Option<String> {
         use crate::{ParamScale, ScalarType, ScalarValue, Type};
 
+        if let Some(Type::Array { element, .. }) = self.program.types.get(param.ty.index()) {
+            let crate::ConstantValue::Aggregate(defaults) = &param.default else {
+                return Some("requires array defaults".to_owned());
+            };
+            return defaults.iter().find_map(|default| {
+                self.param_control_validation_error(
+                    &crate::Param {
+                        ty: *element,
+                        default: default.clone(),
+                        name: param.name.clone(),
+                        range: param.range,
+                        control: param.control.clone(),
+                    },
+                    range,
+                )
+            });
+        }
+
         if param
             .control
             .unit
@@ -4418,6 +4440,11 @@ impl Validator<'_> {
         value: &crate::ConstantValue,
         range: crate::ValueRange,
     ) -> bool {
+        if let crate::ConstantValue::Aggregate(values) = value {
+            return values
+                .iter()
+                .all(|value| self.constant_is_within_range(value, range));
+        }
         match (value, range.min, range.max) {
             (
                 crate::ConstantValue::Scalar(crate::ScalarValue::F32(value)),

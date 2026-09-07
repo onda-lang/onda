@@ -1689,7 +1689,7 @@ export class MirCompiler extends MirCompilerLowering {
           default_reprs: this.constantReprs(param.default),
           range_min_repr: this.scalarRepr(param.range?.min),
           range_max_repr: this.scalarRepr(param.range?.max),
-          param_control: this.storageShape(param.ty).length === 1 && param.range
+          param_control: param.range
             ? {
                 scale: param.control.scale,
                 curve: param.control.curve,

@@ -353,8 +353,10 @@ For a scalar numeric parameter, normalized-to-plain conversion is:
 Plain-to-normalized first performs the same plain clamping and step snapping, preserves exact
 endpoints, then applies the inverse curved, linear, or logarithmic mapping. Boolean plain and
 normalized host-control values use the threshold `value >= 0.5` and store one byte containing zero
-or one. Parameter arrays and un-ranged numeric parameters do not have normalized host-control
-domains.
+or one. Fixed parameter arrays retain their logical name, type, length, and per-element defaults.
+Their numeric range and control metadata apply independently to each element, addressed in storage
+at `byte_offset + index * element_size_bytes`. Unranged numeric parameters have no normalized
+host-control domain.
 
 Because the shared host-control surface uses binary64 values, an `i64` control domain and its
 range width are restricted to the exactly representable integer interval

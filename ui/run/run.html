@@ -2559,6 +2559,7 @@
           params.map((param) => [
             param.name,
             param.label,
+            param.array,
             param.type,
             param.default,
             param.rangeMin,
@@ -3232,6 +3233,13 @@
         }
         resetRenderedParams(paramSignature);
         for (const param of state.params) {
+          if (param.array?.index === 0) {
+            const heading = document.createElement("div");
+            heading.className = "param-array-heading";
+            heading.style.gridColumn = "1 / -1";
+            heading.textContent = `${param.array.name} [${param.array.length}]`;
+            paramsNode.appendChild(heading);
+          }
           const card = document.createElement("div");
           card.className = "param";
 

@@ -52,7 +52,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
     }),
   ], []);
 
-  assert.deepEqual(params, [
+  assert.deepEqual(params.slice(0, 3), [
     {
       index: 0,
       name: "freq",
@@ -66,6 +66,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       step: null,
       stepCount: null,
       scalar: true,
+      array: null,
       value: 440,
     },
     {
@@ -81,6 +82,7 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       step: null,
       stepCount: null,
       scalar: true,
+      array: null,
       value: true,
     },
     {
@@ -96,8 +98,13 @@ test("maps scalar artifact defaults and ranges to run-view params", () => {
       step: null,
       stepCount: null,
       scalar: true,
+      array: null,
       value: false,
     },
+  ]);
+  assert.deepEqual(params.slice(3).map(param => [param.name, param.default, param.array]), [
+    ["partials[0]", 0.5, { name: "partials", length: 2, index: 0 }],
+    ["partials[1]", 0.25, { name: "partials", length: 2, index: 1 }],
   ]);
 });
 

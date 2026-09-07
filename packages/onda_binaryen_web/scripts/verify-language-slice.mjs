@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -270,6 +271,30 @@ try {
       `unexpected primitive-slice render: ${JSON.stringify([...sliceOutput])}; messages: ${JSON.stringify(sliceProcessor.port.messages)}`,
     );
   }
+
+  const arrayMirPath = join(temporary, "param-array-snapshots.mir.msgpack");
+  execFileSync(ondaCli, [
+    "compile", join(packageDir, "test/fixtures/param-array-snapshots.onda"),
+    "--emit", "mir-messagepack", "--output", arrayMirPath, "--block-size", "4",
+  ], { cwd: repoDir, stdio: "inherit" });
+  const arrayArtifact = compileMir(readFileSync(arrayMirPath));
+  const arrayProcessor = new WorkletProcessor({ processorOptions: {
+    wasmBytes: arrayArtifact.wasm, metadata: arrayArtifact.metadata, initialize: true,
+  } });
+  const renderArray = (frames) => {
+    const output = new Float32Array(frames);
+    arrayProcessor.process([], [[output]]);
+    return [...output];
+  };
+  assert.deepEqual(renderArray(2), [0.5, 0.5]);
+  arrayProcessor.setParam("gains[0]", 2);
+  arrayProcessor.port.onmessage({ data: { type: "event", event: "capture", values: {} } });
+  // The event sees the new clamped value; the unfinished process block keeps its snapshot.
+  assert.deepEqual(renderArray(2), [1.25, 1.25]);
+  assert.deepEqual(renderArray(4), [2, 2, 2, 2]);
+  arrayProcessor.setParam("gains[0]", NaN);
+  arrayProcessor.port.onmessage({ data: { type: "event", event: "capture", values: {} } });
+  assert.deepEqual(renderArray(4), [0, 0, 0, 0]);
 
   process.stdout.write(
     `Verified Onda -> MIR -> Binaryen -> Wasm -> AudioWorklet: tuples/events/control ${artifact.wasm.byteLength} bytes; buffers ${bufferArtifact.wasm.byteLength} bytes; slices ${sliceArtifact.wasm.byteLength} bytes; samples ${samples.join(", ")}; buffer samples ${[...bufferOutput].join(", ")}; slice samples ${[...sliceOutput].join(", ")}\n`,

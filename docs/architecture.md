@@ -129,6 +129,11 @@ Non-crate directories of note:
   canonical segmented process schedule.
   - `mir_lowering/{lowerer_core,scheduling,control_flow,expressions,calls,aggregates,slices,values}.rs`
     — focused construction domains kept behind one lowering transaction.
+  - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process
+    snapshots persist across segments, init/event snapshots are invocation-local, and helpers
+    receive read-only references to the calling boundary’s snapshot. Logical host array
+    metadata is preserved. `param_arrays/reads.rs` follows slice origins and transitive helper
+    reads so unused arrays and length-only views do not allocate snapshots.
   - `mir_lowering/audio_outputs.rs` — per-sample audio-output cache initialization and single ordered
     commit, kept separate as the optimization-facing output transaction boundary.
   - `mir_lowering/tests.rs` — complete-program lowering regression coverage.

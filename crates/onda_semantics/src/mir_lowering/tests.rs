@@ -26,7 +26,7 @@ fn long_expression_compiles_on_a_worker_stack() {
 
 /// Test-only raw access for structural assertions. Production callers retain
 /// the proof-carrying `OptimizedProgram` returned by semantic lowering.
-fn lower_test_program(program: &TypedProgram) -> Result<Program, Vec<MirLoweringError>> {
+pub(super) fn lower_test_program(program: &TypedProgram) -> Result<Program, Vec<MirLoweringError>> {
     lower_program_to_optimized_mir(program).map(onda_mir::OptimizedProgram::into_program)
 }
 

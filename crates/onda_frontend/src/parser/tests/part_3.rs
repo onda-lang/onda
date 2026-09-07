@@ -890,3 +890,31 @@ fn quoted_punctuation_preserves_blocks_and_source_directives() {
         );
     }
 }
+
+#[test]
+fn processor_and_proc_are_equivalent_declaration_keywords() {
+    for keyword in ["proc", "processor"] {
+        let source = format!(
+            "{keyword} Voice<T>:\n  params:\n    gains: T[2] = 0.5 {{0, 1}}\n  sample:\n    out1 = 0.0\n\
+             namespace Nested:\n  {keyword} Voice:\n    sample:\n      out1 = 0.0\n\
+             {keyword} Main:\n  sample:\n    out1 = 0.0\n"
+        );
+        let program = parse_program(&source).unwrap_or_else(|errors| panic!("{keyword}: {errors:?}"));
+        assert!(program.blocks.iter().any(|block| matches!(block,
+            Block::Proc(proc) if proc.name == "Voice" && proc.type_params == ["T"]
+                && proc.params.len() == 1)));
+        assert!(program.blocks.iter().any(|block| matches!(block,
+            Block::Namespace(namespace) if namespace.items.iter().any(|item|
+                matches!(item, NamespaceItem::Proc(proc) if proc.name == "Voice")))));
+        assert!(!program.blocks.iter().any(|block| matches!(block,
+            Block::Proc(proc) if proc.name == "Main")));
+        assert!(program.blocks.iter().any(|block| matches!(block, Block::Sample(_))));
+    }
+}
+
+#[test]
+fn processor_keywords_require_an_identifier_boundary() {
+    for keyword in ["procVoice", "processorVoice"] {
+        assert!(parse_program(&format!("{keyword}:\n  sample:\n    out1 = 0.0\n")).is_err());
+    }
+}

@@ -1,3 +1,4 @@
+import { paramAddress } from "./param-metadata.js";
 import {
   EXECUTION_OPERATION_EVENT,
   EXECUTION_OPERATION_INIT,
@@ -477,13 +478,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   setParam(selector, value) {
-    const paramId = Number.isInteger(selector)
-      ? selector
-      : this.paramInfo.findIndex((param) => param.name === selector);
-    const param = this.paramInfo[paramId];
-    if (!param) {
-      throw new Error(`unknown Onda parameter '${String(selector)}'`);
-    }
+    const { info: param, element } = paramAddress(this.paramInfo, selector);
     if (value === undefined) {
       throw new Error(`Onda parameter '${param.name}' requires a value`);
     }
@@ -501,6 +496,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       offset + byteSize > this.paramSizeBytes
     ) {
       throw new Error(`Onda parameter '${param.name}' has invalid storage metadata`);
+    }
+    if (element !== null) {
+      this.writeScalar(this.paramsPtr + offset + element * this.scalarByteSize(param.scalar), param.scalar, value, this.memoryView());
+      return;
     }
     this.writeStorage(
       this.paramsPtr + offset,

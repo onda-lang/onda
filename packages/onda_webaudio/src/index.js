@@ -1,5 +1,7 @@
+import { paramAddress } from "./param-metadata.js";
 import {
   createParamControl,
+  paramElementMetadata,
   decodeDelegateRecords,
   formatPrintRecords,
   validateProcessorArtifact,
@@ -152,18 +154,24 @@ function configuredExecutionOutputCapacity(
   return capacity;
 }
 
-function paramInfoFor(paramInfo, selector) {
-  const info = Number.isInteger(selector)
-    ? paramInfo[selector]
-    : paramInfo.find((candidate) => candidate.name === selector);
-  if (!info) {
-    throw new Error(`unknown Onda parameter '${String(selector)}'`);
+function paramElementInfo(info, element, cache = null) {
+  if (!cache) return paramElementMetadata(info, element);
+  let elements = cache.get(info);
+  if (!elements) {
+    elements = new Map();
+    cache.set(info, elements);
   }
-  return info;
+  if (!elements.has(element)) elements.set(element, paramElementMetadata(info, element));
+  return elements.get(element);
+}
+
+function paramInfoFor(params, selector, cache = null) {
+  const { info, element } = paramAddress(params, selector);
+  return element === null ? info : paramElementInfo(info, element, cache);
 }
 
 function preparedParamControl(info, cache = null) {
-  if (Number(info.array_len) !== 1) return null;
+  if (info.type_repr !== info.scalar) return null;
   if (info.scalar !== "bool" && info.param_control === null) return null;
   let control = cache?.get(info);
   if (!control) {
@@ -173,7 +181,15 @@ function preparedParamControl(info, cache = null) {
   return control;
 }
 
-function constrainParamValue(info, value, cache = null) {
+function constrainParamValue(info, value, cache = null, elements = null) {
+  if (info.type_repr !== info.scalar) {
+    if ((!Array.isArray(value) && !ArrayBuffer.isView(value)) || value.length !== info.array_len) {
+      throw new Error(`Onda parameter '${info.name}' requires exactly ${info.array_len} values`);
+    }
+    return Array.from(value, (item, index) => constrainParamValue(
+      paramElementInfo(info, index, elements), item, cache, elements,
+    ));
+  }
   return preparedParamControl(info, cache)?.constrainPlain(value) ?? value;
 }
 
@@ -291,6 +307,7 @@ export class OndaAudioProcessor {
     this.metadata = metadata;
     this.paramInfo = metadata?.metadata?.params ?? null;
     this.paramControls = new WeakMap();
+    this.paramElements = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
     this.delegateListeners = new Set();
@@ -580,10 +597,10 @@ export class OndaAudioProcessor {
       if (!Array.isArray(this.paramInfo)) {
         return this.request("set-param", { param, value });
       }
-      const info = paramInfoFor(this.paramInfo ?? [], param);
+      const info = paramInfoFor(this.paramInfo ?? [], param, this.paramElements);
       return this.request("set-param", {
         param,
-        value: constrainParamValue(info, value, this.paramControls),
+        value: constrainParamValue(info, value, this.paramControls, this.paramElements),
       });
     } catch (error) {
       return Promise.reject(error);
@@ -597,7 +614,7 @@ export class OndaAudioProcessor {
           "setParamNormalized requires processor metadata; construct the adapter with createOndaAudioProcessor()",
         );
       }
-      const info = paramInfoFor(this.paramInfo, param);
+      const info = paramInfoFor(this.paramInfo, param, this.paramElements);
       const control = preparedParamControl(info, this.paramControls);
       if (!control) {
         throw new Error(`Onda parameter '${info.name}' has no scalar host-control domain`);

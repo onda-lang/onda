@@ -44,7 +44,21 @@ export class MirCompilerLowering extends MirCompilerCore {
             );
           }
         }
-        if (this.type(this.placeTypeId(data.destination, context)).kind === "slice") {
+        const destinationType = this.placeTypeId(data.destination, context);
+        if (this.type(destinationType).kind === "array") {
+          const source = data.value.kind === "load"
+            ? data.value.data
+            : data.value.kind === "use" && data.value.data.kind === "local"
+              ? { base: data.value.data, projections: [] }
+              : null;
+          if (!source) this.fail("array assignment requires an array load or local value");
+          return this.module.memory.copy(
+            this.placeAddress(data.destination, context),
+            this.placeAddress(source, context),
+            this.module.i32.const(this.typeLayout(destinationType).size),
+          );
+        }
+        if (this.type(destinationType).kind === "slice") {
           return this.storeSlicePlace(
             data.destination,
             this.compileSliceRvalue(data.value, context),

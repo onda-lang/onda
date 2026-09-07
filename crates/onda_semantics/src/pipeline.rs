@@ -1703,6 +1703,7 @@ pub fn analyze_with_options_and_inputs(
         .collect::<HashMap<_, _>>();
     let param_ranges = typed_params
         .iter()
+        .filter(|p| !p.name.contains('['))
         .filter_map(|p| p.range.map(|r| (p.name.clone(), r)))
         .collect::<HashMap<_, _>>();
     let mut occupied_temp_names = HashSet::<String>::new();

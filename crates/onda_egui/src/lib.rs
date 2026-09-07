@@ -978,6 +978,21 @@ impl RunApp {
     }
 
     fn render_params(&mut self, ui: &mut egui::Ui, params: Vec<Value>) {
+        for group in params.chunk_by(|a, b| a.pointer("/array/name") == b.pointer("/array/name")) {
+            ui.push_id(param_name(&group[0]), |ui| {
+                if let Some(name) = group[0].pointer("/array/name").and_then(Value::as_str) {
+                    egui::CollapsingHeader::new(format!("{name} [{}]", group.len()))
+                        .default_open(true)
+                        .show(ui, |ui| self.render_param_grid(ui, group));
+                } else {
+                    self.render_param_grid(ui, group);
+                }
+            });
+            ui.add_space(8.0);
+        }
+    }
+
+    fn render_param_grid(&mut self, ui: &mut egui::Ui, params: &[Value]) {
         let gap = 8.0;
         let columns = param_grid_columns(ui.available_width(), self.param_layout);
         let card_width =
@@ -986,16 +1001,13 @@ impl RunApp {
             ParamLayout::Sliders => 80.0,
             ParamLayout::Knobs => 140.0,
         };
-        let mut params = params.into_iter();
-        let mut row_index = 0;
-        loop {
-            let row = params.by_ref().take(columns).collect::<Vec<_>>();
-            if row.is_empty() {
-                break;
+        for (row_index, row) in params.chunks(columns).enumerate() {
+            if row_index > 0 {
+                ui.add_space(gap);
             }
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                for (column_index, param) in row.into_iter().enumerate() {
+                for (column_index, param) in row.iter().enumerate() {
                     let (card_rect, _) = ui.allocate_exact_size(
                         egui::vec2(card_width, card_height),
                         egui::Sense::hover(),
@@ -1017,20 +1029,16 @@ impl RunApp {
                     self.render_param(&mut card_ui, param, self.param_layout == ParamLayout::Knobs);
                 }
             });
-            if params.len() > 0 {
-                ui.add_space(gap);
-            }
-            row_index += 1;
         }
     }
 
-    fn render_param(&mut self, ui: &mut egui::Ui, mut param: Value, compact: bool) {
-        let Some(name) = param_name(&param).map(str::to_owned) else {
+    fn render_param(&mut self, ui: &mut egui::Ui, param: &Value, compact: bool) {
+        let Some(name) = param_name(param).map(str::to_owned) else {
             return;
         };
-        let ty = param_type(&param);
+        let ty = param_type(param);
         let default = param.get("default").and_then(Value::as_f64);
-        let domain = prepared_param_domain(&param);
+        let domain = prepared_param_domain(param);
         let unit = domain.and_then(ParamDomain::unit);
         let display_name = unit
             .filter(|unit| !unit.is_empty())
@@ -1063,7 +1071,6 @@ impl RunApp {
                     .map(|value| json_number(spec.constrain_plain(value)))
                     .unwrap_or(next_value);
                 self.number_drafts.remove(&name);
-                set_param_value(&mut param, next_value.clone());
                 self.controller
                     .as_mut()
                     .expect("loaded run controller")
@@ -3054,12 +3061,6 @@ fn json_number(value: f64) -> Value {
     Number::from_f64(value)
         .map(Value::Number)
         .unwrap_or_else(|| Value::Number(Number::from(0)))
-}
-
-fn set_param_value(param: &mut Value, value: Value) {
-    if let Some(obj) = param.as_object_mut() {
-        obj.insert("value".to_owned(), value);
-    }
 }
 
 #[cfg(test)]

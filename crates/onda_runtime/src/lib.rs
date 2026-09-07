@@ -1632,6 +1632,43 @@ pub fn set_param_by_index(
     Ok(())
 }
 
+/// Writes one primitive parameter element without touching its siblings.
+pub fn set_param_element_by_index(
+    instance: &mut Instance,
+    index: usize,
+    element: usize,
+    value_bytes: &[u8],
+) -> Result<(), Diagnostic> {
+    let desc = instance
+        .program
+        .param_descriptor(index)
+        .ok_or_else(|| Diagnostic::runtime(format!("unknown parameter index {index}"), 0, 0))?;
+    let width = desc.byte_size() / desc.array_len();
+    if element >= desc.array_len() || value_bytes.len() != width {
+        return Err(Diagnostic::runtime(
+            format!(
+                "invalid element {element} or value size for parameter '{}'",
+                desc.name()
+            ),
+            0,
+            0,
+        ));
+    }
+    let start = desc.byte_offset() + element * width;
+    let storage = instance
+        .params
+        .get_mut(start..start + width)
+        .ok_or_else(|| {
+            Diagnostic::runtime(
+                "parameter element storage is out of bounds".to_owned(),
+                0,
+                0,
+            )
+        })?;
+    storage.copy_from_slice(value_bytes);
+    Ok(())
+}
+
 pub fn set_param_plain_f64(
     instance: &mut Instance,
     index: usize,
@@ -1710,6 +1747,13 @@ pub fn set_param_normalized(
             0,
         ));
     };
+    if desc.is_array() {
+        return Err(Diagnostic::runtime(
+            format!("parameter '{}' is not a scalar", desc.name()),
+            0,
+            0,
+        ));
+    }
     if desc.elem_ty() == PrimitiveType::Bool && !desc.is_array() {
         return set_param_by_index(instance, index, &[u8::from(normalized >= 0.5)]);
     }

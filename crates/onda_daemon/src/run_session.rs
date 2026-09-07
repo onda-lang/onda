@@ -71,6 +71,14 @@ pub struct RunParamInfo {
     pub step: Option<f64>,
     pub step_count: Option<u32>,
     pub scalar: bool,
+    pub array: Option<RunParamArrayElement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunParamArrayElement {
+    pub name: String,
+    pub length: usize,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -486,21 +494,21 @@ impl RunSession {
     }
 
     pub fn param_info(&self) -> Vec<RunParamInfo> {
-        (0..self.jit.param_count())
-            .filter_map(|index| {
-                let desc = self.jit.param_descriptor(index)?;
-                let value = self
-                    .param_values
-                    .get(desc.name())
-                    .copied()
-                    .or_else(|| desc.default_as_f64());
+        let mut params = Vec::new();
+        for index in 0..self.jit.param_count() {
+            let Some(desc) = self.jit.param_descriptor(index) else {
+                continue;
+            };
+            for element in 0..desc.array_len() {
+                let name = param_element_name(desc, element);
+                let default = default_run_param_element(desc, element);
                 let domain = desc.param_domain();
-                Some(RunParamInfo {
+                params.push(RunParamInfo {
                     index,
-                    name: desc.name().to_owned(),
-                    type_repr: desc.type_repr(),
-                    value,
-                    default: desc.default_as_f64(),
+                    value: Some(self.param_values.get(&name).copied().unwrap_or(default)),
+                    name,
+                    type_repr: desc.type_repr().split('[').next().unwrap().to_owned(),
+                    default: Some(default),
                     range_min: desc.range_min_as_f64(),
                     range_max: desc.range_max_as_f64(),
                     scale: domain.map(|domain| domain.scale_name().to_owned()),
@@ -510,10 +518,16 @@ impl RunSession {
                         .map(ToOwned::to_owned),
                     step: domain.and_then(|domain| domain.step()),
                     step_count: domain.and_then(|domain| domain.step_count()),
-                    scalar: desc.array_len() == 1,
-                })
-            })
-            .collect()
+                    scalar: true,
+                    array: desc.is_array().then(|| RunParamArrayElement {
+                        name: desc.name().to_owned(),
+                        length: desc.array_len(),
+                        index: element,
+                    }),
+                });
+            }
+        }
+        params
     }
 
     pub fn buffer_info(&self) -> Vec<RunBufferInfo> {
@@ -601,7 +615,7 @@ impl RunSession {
     }
 
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
-        let Some(index) = self.jit.param_index(name) else {
+        let Some((index, element)) = param_element_address(&self.jit, name) else {
             return Err(Diagnostic::runtime(
                 format!("unknown parameter '{name}'"),
                 0,
@@ -615,13 +629,6 @@ impl RunSession {
                 0,
             ));
         };
-        if desc.array_len() != 1 {
-            return Err(Diagnostic::runtime(
-                format!("parameter '{name}' is not scalar"),
-                0,
-                0,
-            ));
-        }
         let value = if desc.elem_ty() == PrimitiveType::Bool {
             if value >= 0.5 {
                 1.0
@@ -641,10 +648,15 @@ impl RunSession {
         {
             self.param_runtime_values
                 .entry(name.to_owned())
-                .or_insert_with(|| default_run_param_value(desc));
+                .or_insert_with(|| default_run_param_element(desc, element));
         } else {
             let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
-            set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
+            onda_runtime::set_param_element_by_index(
+                &mut self.instance,
+                index,
+                element,
+                bytes.as_slice(),
+            )?;
             self.param_runtime_values.insert(name.to_owned(), value);
         }
         Ok(())
@@ -1235,7 +1247,7 @@ impl RunSession {
     fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
         if self.options.float_param_smoothing_ms <= 0.0 {
             for (name, &target_value) in &self.param_values {
-                let Some(index) = self.jit.param_index(name) else {
+                let Some((index, element)) = param_element_address(&self.jit, name) else {
                     continue;
                 };
                 let Some(desc) = self.jit.param_descriptor(index) else {
@@ -1249,7 +1261,12 @@ impl RunSession {
                     continue;
                 }
                 let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
-                set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
+                onda_runtime::set_param_element_by_index(
+                    &mut self.instance,
+                    index,
+                    element,
+                    bytes.as_slice(),
+                )?;
                 *self
                     .param_runtime_values
                     .get_mut(name)
@@ -1261,7 +1278,7 @@ impl RunSession {
             / f64::from(self.options.sample_rate.max(1.0));
         let alpha = (block_ms / self.options.float_param_smoothing_ms).clamp(0.0, 1.0);
         for (name, &target_value) in &self.param_values {
-            let Some(index) = self.jit.param_index(name) else {
+            let Some((index, element)) = param_element_address(&self.jit, name) else {
                 continue;
             };
             let Some(desc) = self.jit.param_descriptor(index) else {
@@ -1278,13 +1295,18 @@ impl RunSession {
                 .param_runtime_values
                 .get(name)
                 .copied()
-                .unwrap_or_else(|| default_run_param_value(desc));
+                .unwrap_or_else(|| default_run_param_element(desc, element));
             let mut next_value = current_value + (target_value - current_value) * alpha;
             if (target_value - next_value).abs() <= f64::max(0.0001, target_value.abs() * 0.001) {
                 next_value = target_value;
             }
             let bytes = scalar_param_bytes(desc.elem_ty(), next_value)?;
-            set_param_by_index(&mut self.instance, index, bytes.as_slice())?;
+            onda_runtime::set_param_element_by_index(
+                &mut self.instance,
+                index,
+                element,
+                bytes.as_slice(),
+            )?;
             *self
                 .param_runtime_values
                 .get_mut(name)
@@ -1472,7 +1494,7 @@ fn create_bound_instance(
         }
     }
     for (name, value) in param_values {
-        let Some(index) = jit.param_index(name) else {
+        let Some((index, element)) = param_element_address(jit, name) else {
             continue;
         };
         let Some(desc) = jit.param_descriptor(index) else {
@@ -1480,7 +1502,7 @@ fn create_bound_instance(
         };
         let runtime_value = param_runtime_values.get(name).copied().unwrap_or(*value);
         let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
-        set_param_by_index(&mut instance, index, bytes.as_slice())?;
+        onda_runtime::set_param_element_by_index(&mut instance, index, element, bytes.as_slice())?;
     }
 
     init_with_output(&mut instance, InitMode::Full, output)?;
@@ -1949,9 +1971,35 @@ fn event_number_value(
     }
 }
 
-fn default_run_param_value(desc: &onda_codegen_llvm::DeclaredIo) -> f64 {
-    desc.default_as_f64()
-        .or_else(|| desc.range_min_as_f64())
+fn param_element_name(desc: &onda_codegen_llvm::DeclaredIo, element: usize) -> String {
+    if desc.is_array() {
+        format!("{}[{element}]", desc.name())
+    } else {
+        desc.name().to_owned()
+    }
+}
+
+fn param_element_address(jit: &JitProgram, name: &str) -> Option<(usize, usize)> {
+    if let Some(index) = jit.param_index(name) {
+        return (!jit.param_descriptor(index)?.is_array()).then_some((index, 0));
+    }
+    let (root, suffix) = name.rsplit_once('[')?;
+    let digits = suffix.strip_suffix(']')?;
+    let element = digits.parse::<usize>().ok()?;
+    if !digits.bytes().all(|digit| digit.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    let index = jit.param_index(root)?;
+    let desc = jit.param_descriptor(index)?;
+    (desc.is_array() && element < desc.array_len()).then_some((index, element))
+}
+
+fn default_run_param_element(desc: &onda_codegen_llvm::DeclaredIo, element: usize) -> f64 {
+    desc.default_values()
+        .and_then(|values| values.get(element))
+        .map(|value| value.as_f64())
         .unwrap_or(0.0)
 }
 
@@ -2041,3 +2089,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "param_array_tests.rs"]
+mod param_array_tests;

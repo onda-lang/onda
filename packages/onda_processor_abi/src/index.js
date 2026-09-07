@@ -20,6 +20,7 @@ export const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 export const {
   createParamDomain,
   createParamControl,
+  paramElementMetadata,
   constrainParamPlain,
   paramNormalizedToPlain,
   paramPlainToNormalized,
@@ -392,19 +393,12 @@ function validateIoMetadata(value, path, isParameter) {
   if (value.param_control !== null && value.range_min_repr === null) {
     throw new OndaArtifactError(`${path}.param_control requires range bounds`);
   }
-  if (
-    value.param_control !== null
-    && (value.array_len !== 1 || value.type_repr !== value.scalar)
-  ) {
-    throw new OndaArtifactError(`${path}.param_control requires a scalar parameter`);
-  }
   if (value.param_control !== null && !isParameter) {
     throw new OndaArtifactError(`${path}.param_control is only valid for parameters`);
   }
   if (
     isParameter
     && value.range_min_repr !== null
-    && value.type_repr === value.scalar
     && value.scalar !== "bool"
     && value.param_control === null
   ) {
@@ -412,7 +406,9 @@ function validateIoMetadata(value, path, isParameter) {
   }
   if (value.param_control !== null) {
     try {
-      PARAM_CONTROL.validateParamControlDomain(value, true);
+      for (let index = 0; index < value.array_len; ++index) {
+        PARAM_CONTROL.validateParamControlDomain(paramElementMetadata(value, index), true);
+      }
     } catch (error) {
       throw new OndaArtifactError(`${path}.param_control is invalid: ${error.message}`);
     }

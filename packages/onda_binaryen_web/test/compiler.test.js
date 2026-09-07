@@ -3830,3 +3830,63 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
     PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   );
 });
+
+test("parameter array descriptors retain per-element control metadata", () => {
+  const mir = executableMir();
+  const scalar = mir.interface.params[0].ty;
+  const array = mir.types.length;
+  mir.types.push(type("array", { element: scalar, len: 2 }));
+  mir.interface.params.push({
+    name: "offsets", ty: array,
+    default: { kind: "aggregate", data: [0, 2].map(value => ({ kind: "scalar", data: { type: "f32", value } })) },
+    range: { min: { type: "f32", value: -10 }, max: { type: "f32", value: 10 } },
+    control: { scale: "linear", curve: null, unit: "Hz", step: { type: "f32", value: 2 }, step_count: 10 },
+  });
+  const artifact = compileMir(mir);
+  validateProcessorArtifact(artifact);
+  const param = artifact.metadata.metadata.params[1];
+  assert.equal(param.name, "offsets");
+  assert.equal(param.type_repr, "f32[2]");
+  assert.deepEqual(param.default_reprs, ["0", "2"]);
+  assert.equal(param.param_control.unit, "Hz");
+  assert.equal(param.param_control.step_count, 10);
+  param.default_reprs[1] = "3";
+  assert.throws(() => validateProcessorArtifact(artifact), /step grid/);
+});
+
+test("copies whole primitive arrays through local values without aliasing their source", async () => {
+  for (const scalar of ["f32", "f64", "i32", "i64", "bool"]) {
+    const mir = executableMir();
+    const element = mir.types.length;
+    const array = element + 1;
+    mir.types.push(type("scalar", scalar), type("array", { element, len: 3 }));
+    mir.state.push(
+      { name: "source", ty: array, persistence: "snapshot", authored: true, pinned: true },
+      { name: "copy", ty: array, persistence: "snapshot", authored: true },
+    );
+    mir.functions[0].locals.push({ name: null, ty: array });
+    mir.functions[0].body.statements.push(
+      assign(place("local", 0), { kind: "load", data: place("state", 1) }),
+      assign({
+        ...place("state", 1),
+        projections: [{ kind: "index", data: { index: constant("i32", 0), bounds: "unchecked" } }],
+      }, { kind: "use", data: constant(scalar, scalar === "bool" ? false : scalar === "i64" ? "0" : 0) }),
+      assign(place("state", 2), { kind: "use", data: local(0) }),
+    );
+    const artifact = compileMir(mir);
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
+    const { memory, __heap_base, onda_processor_init } = instance.exports;
+    const params = Number(__heap_base.value);
+    const state = params + 16;
+    const entries = artifact.metadata.metadata.states;
+    const source = entries.find(entry => entry.name === "source");
+    const copy = entries.find(entry => entry.name === "copy");
+    const sourceBytes = new Uint8Array(memory.buffer, state + source.physical_state_byte_offset, source.byte_size);
+    // Use exact bytes, including 64-bit payloads that cannot be represented as JS numbers.
+    const expected = Uint8Array.from(sourceBytes, (_, index) => scalar === "bool" ? 1 : index + 1);
+    sourceBytes.set(expected);
+    assert.equal(onda_processor_init(params, state, 0, 0, 0, 0, 0, 0), 0);
+    assert.equal(sourceBytes[0], 0);
+    assert.deepEqual(new Uint8Array(memory.buffer, state + copy.physical_state_byte_offset, copy.byte_size), expected, scalar);
+  }
+});

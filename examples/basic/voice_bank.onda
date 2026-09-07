@@ -1,0 +1,21 @@
+# A shared fundamental with independent per-voice offsets, levels, and switches.
+import std/osc
+
+const VoiceCount = 4
+
+params:
+  fundamental = 220.0 {20, 2000, log, "Hz"}
+  offsets: f32[VoiceCount] = [-3.0, -1.0, 1.0, 3.0] {-100, 100, unit = "Hz"}
+  levels: f32[VoiceCount] = 0.25 {0, 1}
+  enabled: bool[VoiceCount] = true
+
+init:
+  voices: std::osc::Sine[VoiceCount]
+
+sample:
+  mixed = 0.0
+  for i in 0..VoiceCount:
+    tone = voices[i](freq = max(1.0, fundamental + offsets[i]))
+    if enabled[i]:
+      mixed = mixed + tone * levels[i]
+  out1 = mixed * 0.2

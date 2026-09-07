@@ -9,12 +9,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added grouped controls for fixed parameter arrays in native and browser run hosts, including
+  all primitive types, per-element ranges and stepping, broadcast/list defaults, indexed writes,
+  and reset support. Added a voice-bank example with independent frequency offsets.
+
 - Added `onda_init_unchecked` for prepared-instance resets that return generated failure codes
   without allocating diagnostics, while preserving pinned-state and full-reset semantics.
 - Added `onda_project_image_with_buffer_overrides` to checkpoint host buffer overrides while
   preserving project sources, compile-time constants, and unchanged assets.
 
 ### Fixed
+
+- Fixed `processor` parsing as an alias for `proc`, including generic declarations and `processor Main`.
 
 - Replaced recursive expression traversal in compiler passes with shared iterative traversal
   to prevent stack overflows when compiling long operator chains.

@@ -293,6 +293,7 @@ struct RunParamWire {
     step_repr: Option<String>,
     step_count: Option<u32>,
     scalar: bool,
+    array: Option<Value>,
 }
 
 pub struct RunController {
@@ -1456,6 +1457,9 @@ impl From<&RunParamInfo> for RunParamWire {
             step_repr: param.step.map(scalar_repr),
             step_count: param.step_count,
             scalar: param.scalar,
+            array: param.array.as_ref().map(
+                |array| json!({ "name": array.name, "length": array.length, "index": array.index }),
+            ),
         }
     }
 }
@@ -1485,6 +1489,7 @@ impl RunParamWire {
             "step": step,
             "stepCount": self.step_count,
             "scalar": self.scalar,
+            "array": self.array,
         }))
     }
 }
@@ -2700,6 +2705,7 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("step") == new_param.get("step")
         && old_param.get("stepCount") == new_param.get("stepCount")
         && old_param.get("scalar") == new_param.get("scalar")
+        && old_param.get("array") == new_param.get("array")
 }
 
 fn reconcile_preserved_events(
@@ -2997,6 +3003,7 @@ mod tests {
             step: None,
             step_count: None,
             scalar: true,
+            array: None,
         };
         let stepped = RunParamInfo {
             index: 1,
@@ -3012,6 +3019,7 @@ mod tests {
             step: Some(f64::from(0.1_f32)),
             step_count: Some(3),
             scalar: true,
+            array: None,
         };
         let gate = RunParamInfo {
             index: 2,
@@ -3027,6 +3035,7 @@ mod tests {
             step: None,
             step_count: None,
             scalar: true,
+            array: None,
         };
         let wire_params = vec![
             run_param_json(&coupling),

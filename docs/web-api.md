@@ -125,7 +125,11 @@ versions rather than guessing layout compatibility.
 ### Parameter controls
 
 `createParamControl(metadata)` validates one scalar parameter descriptor and returns a reusable
-`OndaPreparedParamControl`. `createParamDomain(domain)` does the same from already-decoded values.
+`OndaPreparedParamControl`. For an array, `createParamControl(metadata, index)` prepares one element;
+`paramElementMetadata(metadata, index)` projects its scalar descriptor, default, and storage offset.
+The Web Audio adapter accepts indexed names such as `offsets[1]` in `setParam` and
+`setParamNormalized`, and exact-length arrays in `setParam("offsets", values)`.
+`createParamDomain(domain)` does the same from already-decoded values.
 Prepared controls expose `constrainPlain`, `normalizedToPlain`, and `plainToNormalized` methods.
 
 The one-shot `constrainParamPlain`, `paramNormalizedToPlain`, and `paramPlainToNormalized`
@@ -277,6 +281,7 @@ PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
 constrainParamPlain
 createParamControl
+paramElementMetadata
 createParamDomain
 createProcessorArtifactFiles
 decodeDelegateRecords

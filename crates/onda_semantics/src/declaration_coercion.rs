@@ -733,21 +733,25 @@ pub(crate) fn coerce_params(
                 continue;
             }
             Some(DeclType::Array { elem, size }) => {
-                if param.range.is_some() {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "param '{}.{}' range is not supported for array declarations",
-                            "<top-level>", param.name
-                        ),
-                        param_loc,
-                    ));
-                }
-                let size_context = format!("param '{}.{}' array size", "<top-level>", param.name);
+                let context = format!("param '{}' array size", param.name);
                 let Some(len) = with_loc_diag_context(param_loc, |_diag| {
-                    eval_data_size_expr(size, options, &size_context, errors)
+                    eval_data_size_expr(size, options, &context, errors)
                 }) else {
                     continue;
                 };
+                if let Some(Expr::ArrayLiteral { values, .. }) = &param.default {
+                    if values.len() != len {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "param '{}' default expects {len} elements, got {}",
+                                param.name,
+                                values.len()
+                            ),
+                            param_loc,
+                        ));
+                        continue;
+                    }
+                }
                 arrays.insert(
                     param.name.clone(),
                     TypedArrayInfo {
@@ -756,71 +760,22 @@ pub(crate) fn coerce_params(
                         offset: out.len(),
                     },
                 );
-
-                let defaults = match &param.default {
-                    None => vec![coerce_const_default_to_typed(0.0, *elem); len],
-                    Some(Expr::ArrayLiteral { values, .. }) => {
-                        if values.len() != len {
-                            errors.push(Diagnostic::semantic_span(
-                                format!(
-                                    "param '{}.{}' default expects {len} elements, got {}",
-                                    "<top-level>",
-                                    param.name,
-                                    values.len()
-                                ),
-                                param_loc,
-                            ));
-                        }
-                        let mut defaults = Vec::with_capacity(len);
-                        for idx in 0..len {
-                            let value = values.get(idx).and_then(|expr| {
-                                with_loc_diag_context(param_loc, |_diag| {
-                                    eval_typed_const_expr(
-                                        expr,
-                                        *elem,
-                                        options,
-                                        &format!(
-                                            "param '{}.{}' default element {idx}",
-                                            "<top-level>", param.name
-                                        ),
-                                        is_float_type(*elem),
-                                        matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
-                                        errors,
-                                    )
-                                })
-                            });
-                            defaults.push(
-                                value.unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem)),
-                            );
-                        }
-                        defaults
-                    }
-                    Some(expr) => {
-                        let value = with_loc_diag_context(param_loc, |_diag| {
-                            eval_typed_const_expr(
-                                expr,
-                                *elem,
-                                options,
-                                &format!("param '{}.{}' default", "<top-level>", param.name),
-                                is_float_type(*elem),
-                                matches!(*elem, PrimitiveType::I32 | PrimitiveType::I64),
-                                errors,
-                            )
-                        })
-                        .unwrap_or_else(|| coerce_const_default_to_typed(0.0, *elem));
-                        vec![value; len]
-                    }
-                };
-
-                for (idx, default) in defaults.into_iter().enumerate() {
-                    out.push(TypedParam {
-                        name: format!("{}[{idx}]", param.name),
-                        ty: *elem,
-                        default,
-                        range: None,
-                        control: TypedParamControl::default(),
-                    });
-                }
+                // Every element follows exactly the scalar typing and domain rules.
+                let mut template = param.clone();
+                template.default = None;
+                let elements = (0..len)
+                    .map(|index| {
+                        let mut element = template.clone();
+                        element.name = format!("{}[{index}]", param.name);
+                        element.ty = Some(DeclType::Scalar(*elem));
+                        element.default = match &param.default {
+                            Some(Expr::ArrayLiteral { values, .. }) => Some(values[index].clone()),
+                            default => default.clone(),
+                        };
+                        element
+                    })
+                    .collect::<Vec<_>>();
+                out.extend(coerce_params(&elements, options, errors).0);
             }
         }
     }

@@ -95,6 +95,28 @@ try {
       `field ${index} reconciles host state when focus leaves without an edit`);
   }
 
+  const arrayParams = ["f32", "f64", "i32", "i64", "bool"].flatMap(type =>
+    [0, 1].map(index => ({ name: `${type}Values[${index}]`, type,
+      value: type === "bool" ? false : index, default: type === "bool" ? false : index,
+      rangeMin: type === "bool" ? null : 0, rangeMax: type === "bool" ? null : 10,
+      scale: type === "bool" ? null : "linear",
+      step: type.startsWith("i") ? 1 : null, stepCount: type.startsWith("i") ? 10 : null,
+      array: { name: `${type}Values`, length: 2, index },
+    })));
+  send({ params: arrayParams });
+  check(document.querySelectorAll(".param-array-heading").length === 5,
+    "primitive arrays have one group heading each");
+  check(document.querySelectorAll("#params .param").length === 10,
+    "array controls follow their declared lengths");
+  const boolInput = document.querySelector('#params input[type="checkbox"]');
+  boolInput.click();
+  check(window.__testMessages.at(-1).name === "boolValues[0]"
+    && window.__testMessages.at(-1).value === true,
+    "boolean array controls send an indexed address");
+  send({ params: arrayParams });
+  check(document.querySelector('#params input[type="checkbox"]') === boolInput,
+    "array controls survive metadata refreshes");
+
   send({ connected: false });
   check(document.querySelector(".event-trigger").disabled
     && document.querySelector("#events input").disabled,

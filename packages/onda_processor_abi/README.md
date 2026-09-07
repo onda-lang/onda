@@ -93,7 +93,9 @@ they are valid bindings, not an incomplete artifact.
 `constrainPlain()`, `normalizedToPlain()`, and `plainToNormalized()` methods. It preserves exact
 endpoints, clamps out-of-range values, applies linear, logarithmic, or SuperCollider-style curved
 mapping, and snaps stepped domains. The package also exports one-shot functions with the same
-behavior. Numeric parameters without a control domain and parameter arrays are rejected. These
+behavior. Use `createParamControl(param, index)` for an array element or
+`paramElementMetadata(param, index)` to obtain its scalar descriptor. Numeric parameters without
+a control domain are rejected. These
 APIs are synchronous and do not require a compiler, WebAssembly instance, or `AudioWorklet`, so
 editors can prepare controls once and use them responsively.
 Boolean plain and normalized numeric inputs use the same `value >= 0.5` threshold as the native

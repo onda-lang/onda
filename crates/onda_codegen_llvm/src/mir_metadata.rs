@@ -292,23 +292,7 @@ fn build_io_descriptor(
     state_byte_offset: Option<usize>,
 ) -> Result<DeclaredIo, MirMetadataError> {
     let shape = scalar_array_shape(program, ty, "runtime I/O")?;
-    if shape.is_array && range.is_some() {
-        return Err(MirMetadataError::new(format!(
-            "MIR array descriptor '{name}' unexpectedly has a scalar range"
-        )));
-    }
-    if shape.is_array
-        && control
-            .as_ref()
-            .is_some_and(|control| *control != onda_mir::ParamControl::default())
-    {
-        return Err(MirMetadataError::new(format!(
-            "MIR array descriptor '{name}' unexpectedly has parameter control metadata"
-        )));
-    }
-    let control = (!shape.is_array && range.is_some())
-        .then_some(control)
-        .flatten();
+    let control = range.is_some().then_some(control).flatten();
     let default_bytes = default
         .map(|value| constant_bytes(program, value, ty))
         .transpose()?;

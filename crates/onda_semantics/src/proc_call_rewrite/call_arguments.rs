@@ -1462,15 +1462,6 @@ pub(crate) fn expand_proc_param_specs(
                         param.loc.as_ref(),
                     ));
                 }
-                if param.range.is_some() {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "processor '{proc_name}' param '{}' range is not supported for array declarations",
-                            param.name
-                        ),
-                        param.loc.as_ref(),
-                    ));
-                }
                 errors.push(Diagnostic::semantic_span(
                     format!(
                         "processor '{proc_name}' param '{}' uses unresolved generic array element type '{}'",
@@ -1565,15 +1556,6 @@ pub(crate) fn expand_proc_param_specs(
                         param.loc.as_ref(),
                     ));
                 }
-                if param.range.is_some() {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "processor '{proc_name}' param '{}' range is not supported for array declarations",
-                            param.name
-                        ),
-                        param.loc.as_ref(),
-                    ));
-                }
                 let size_context =
                     format!("processor '{proc_name}' param '{}' array size", param.name);
                 let Some(len) = with_expr_diag_context(size, |_diag| {
@@ -1581,56 +1563,42 @@ pub(crate) fn expand_proc_param_specs(
                 }) else {
                     continue;
                 };
-                let mut slot_defaults = Vec::<Option<Expr>>::with_capacity(len);
-                match &param.default {
-                    None => {
-                        for _ in 0..len {
-                            slot_defaults.push(Some(Expr::number(0.0)));
-                        }
-                    }
-                    Some(default_expr @ Expr::ArrayLiteral { values, .. }) => {
-                        if values.len() != len {
-                            with_expr_diag_context(default_expr, |expr_diag| {
-                                push_semantic(
-                                    expr_diag,
-                                    errors,
-                                    format!(
-                                        "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
-                                        param.name,
-                                        values.len()
-                                    ),
-                                );
-                            });
-                        }
-                        for idx in 0..len {
-                            slot_defaults
-                                .push(values.get(idx).cloned().or(Some(Expr::number(0.0))));
-                        }
-                    }
-                    Some(expr) => {
-                        for _ in 0..len {
-                            slot_defaults.push(Some(expr.clone()));
-                        }
+                if let Some(Expr::ArrayLiteral { values, .. }) = &param.default {
+                    if values.len() != len {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
+                                param.name, values.len()
+                            ),
+                            param.loc.as_ref(),
+                        ));
+                        continue;
                     }
                 }
-                let mut slots = Vec::<ProcParamSlotSpec>::with_capacity(len);
-                let mut slot_names = Vec::<String>::with_capacity(len);
-                for idx in 0..len {
-                    let slot_name = format!("{}[{idx}]", param.name);
-                    slot_names.push(slot_name.clone());
-                    slots.push(ProcParamSlotSpec {
-                        name: slot_name,
-                        private: param.private,
-                        ty: *elem,
-                        default: slot_defaults
-                            .get(idx)
-                            .cloned()
-                            .unwrap_or(Some(Expr::number(0.0))),
-                        range: None,
-                        bind: None,
-                    });
-                }
-                field_array_slots.insert(param.name.clone(), slot_names);
+                let mut template = param.clone();
+                template.default = None;
+                let elements = (0..len)
+                    .map(|index| {
+                        let mut element = template.clone();
+                        element.name = format!("{}[{index}]", param.name);
+                        element.ty = Some(DeclType::Scalar(*elem));
+                        element.bind = None;
+                        element.default = match &param.default {
+                            Some(Expr::ArrayLiteral { values, .. }) => Some(values[index].clone()),
+                            default => default.clone(),
+                        };
+                        element
+                    })
+                    .collect::<Vec<_>>();
+                let slots = expand_proc_param_specs(proc_name, &elements, options, errors)
+                    .0
+                    .into_iter()
+                    .flat_map(|spec| spec.slots)
+                    .collect::<Vec<_>>();
+                field_array_slots.insert(
+                    param.name.clone(),
+                    slots.iter().map(|slot| slot.name.clone()).collect(),
+                );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
                     slots,

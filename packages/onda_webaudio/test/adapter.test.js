@@ -655,3 +655,41 @@ test("constrains plain parameters before posting to the worklet", async () => {
   await pending;
   processor.close();
 });
+
+test("array updates constrain each element and accept indexed normalized writes", async () => {
+  const source = artifact();
+  source.metadata.runtime.param_size_bytes = 8;
+  source.metadata.runtime.param_align_bytes = 4;
+  source.metadata.metadata.params = [{
+    name: "modes", type_repr: "i32[2]", scalar: "i32", array_len: 2,
+    element_size_bytes: 4, slot_offset: 0, byte_offset: 0, state_byte_offset: null,
+    byte_size: 8, default_reprs: ["0", "4"], range_min_repr: "0", range_max_repr: "10",
+    param_control: { scale: "linear", curve: null, unit: null, step_repr: "2", step_count: 5 },
+  }];
+  const options = ondaAudioWorkletNodeOptions(source, { params: { modes: [3, 100] } });
+  assert.deepEqual(options.processorOptions.params, { modes: [4, 10] });
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+  const pending = processor.setParamNormalized("modes[1]", 0.6);
+  const request = node.port.messages.at(-1);
+  assert.equal(request.param, "modes[1]");
+  assert.equal(request.value, 6);
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
+  await assert.rejects(processor.setParam("modes[2]", 0), /out of bounds/);
+  const elements = processor.paramElements.get(processor.paramInfo[0]);
+  const control = processor.paramControls.get(elements.get(1));
+  for (const update of [
+    () => processor.setParam("modes[1]", 5),
+    () => processor.setParamNormalized("modes[1]", 0.6),
+    () => processor.setParam("modes", [3, 5]),
+  ]) {
+    const pending = update();
+    const request = node.port.messages.at(-1);
+    node.port.reply({ type: "onda-ok", requestId: request.requestId });
+    await pending;
+    assert.equal(processor.paramControls.get(elements.get(1)), control);
+  }
+  assert.equal(elements.size, 2);
+  processor.close();
+});

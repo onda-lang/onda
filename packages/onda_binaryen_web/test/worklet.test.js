@@ -203,6 +203,7 @@ globalThis.registerProcessor = (name, processor) => {
 const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
 try {
   await Promise.all([
+    copyFile(new URL("../../onda_webaudio/src/param-metadata.js", import.meta.url), join(workletFixture, "param-metadata.js")),
     copyFile(
       fileURLToPath(
         new URL(

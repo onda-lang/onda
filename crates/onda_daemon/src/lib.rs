@@ -5,8 +5,8 @@ pub use run_session::{
     InitialBufferBinding, PreparedRunBuffer, RetiredRunBuffer, RunBufferChannels, RunBufferInfo,
     RunBufferWaveform, RunBuildError, RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence,
     RunDelegateParamInfo, RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue,
-    RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent,
-    RunSession,
+    RunOptions, RunParamArrayElement, RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue,
+    RunScheduledEvent, RunSession,
 };
 
 use std::collections::HashMap;

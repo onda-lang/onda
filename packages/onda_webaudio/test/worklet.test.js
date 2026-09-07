@@ -679,3 +679,26 @@ test("worklet writes adapter-canonical parameter values without reconversion", (
   processor.setParam("mode", 10);
   assert.equal(view.getInt32(processor.paramsPtr, true), 10);
 });
+
+test("worklet indexed array writes preserve sibling values for every primitive", () => {
+  for (const scalar of ["f32", "f64", "i32", "i64", "bool"]) {
+    const descriptor = metadata();
+    const width = scalar === "bool" ? 1 : scalar.endsWith("64") ? 8 : 4;
+    descriptor.runtime.param_size_bytes = width * 2;
+    descriptor.metadata.buffers = [];
+    descriptor.metadata.params = [{
+      name: "values", type_repr: `${scalar}[2]`, scalar, array_len: 2,
+      element_size_bytes: width, slot_offset: 0, byte_offset: 0, state_byte_offset: null,
+      byte_size: width * 2, default_reprs: scalar === "bool" ? ["true", "false"] : ["2", "4"],
+      range_min_repr: null, range_max_repr: null, param_control: null,
+    }];
+    const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: descriptor } });
+    const before = new Uint8Array(processor.memory.buffer, processor.paramsPtr, width).slice();
+    processor.setParam("values[1]", scalar === "bool" ? true : 8);
+    assert.deepEqual(new Uint8Array(processor.memory.buffer, processor.paramsPtr, width), before);
+    const view = new DataView(processor.memory.buffer);
+    const read = { f32: "getFloat32", f64: "getFloat64", i32: "getInt32", i64: "getBigInt64", bool: "getUint8" }[scalar];
+    assert.equal(view[read](processor.paramsPtr + width, true), scalar === "bool" ? 1 : scalar === "i64" ? 8n : 8);
+    assert.throws(() => processor.setParam("values[2]", 0), /out of bounds/);
+  }
+});

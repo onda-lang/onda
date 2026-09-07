@@ -1,0 +1,48 @@
+import std/osc
+import std/levels
+import std/smoothing
+
+const PartialCount = 8
+
+params:
+  fundamental = 110.0 {30, 2000, log, "Hz"}
+  master = 1.0 {0, 1}
+  levels: f32[PartialCount] = [1.0, 0.5, 0.333, 0.25, 0.2, 0.167, 0.143, 0.125] {0, 1}
+  ratios: f32[PartialCount] = [1, 2, 3, 4, 5, 6, 7, 8] {0.25, 16}
+  detune_cents: f32[PartialCount] = 0.0 {-50, 50, unit = "cents"}
+  pan: f32[PartialCount] = 0.0 {-1, 1}
+  enabled: bool[PartialCount] = true
+
+init:
+  sines: std::osc::Sine[PartialCount]
+  smooth_left: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(time_s = 0.015)
+  smooth_right: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(time_s = 0.015)
+  left_gain: f32[PartialCount]
+  right_gain: f32[PartialCount]
+
+block:
+  total_level = 0.0
+  for i in 0..PartialCount:
+    total_level += levels[i]
+  gain = master / max(1.0, total_level)
+
+  for i in 0..PartialCount:
+    frequency = fundamental * ratios[i] * pow(2.0, detune_cents[i] / 1200.0)
+    band_gain = clamp((SR * 0.5 - frequency) / (SR * 0.05), 0.0, 1.0)
+    sines[i].freq = min(frequency, SR * 0.5)
+    amplitude = 0.0
+    if enabled[i]:
+      amplitude = levels[i] * gain * band_gain
+    gain_l, gain_r = std::levels::pan_3db(pan[i])
+    left_gain[i] = amplitude * gain_l
+    right_gain[i] = amplitude * gain_r
+
+  sample:
+    left = 0.0
+    right = 0.0
+    for i in 0..PartialCount:
+      tone = sines[i]()
+      left += tone * smooth_left[i](left_gain[i])
+      right += tone * smooth_right[i](right_gain[i])
+    out1 = left
+    out2 = right

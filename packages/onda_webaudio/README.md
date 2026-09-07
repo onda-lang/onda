@@ -75,10 +75,12 @@ const sliderValueFor440Hz = paramPlainToNormalized(cutoff, 440);
 ```
 
 The helpers preserve exact endpoints, clamp and snap consistently with adapter writes, and reject
-arrays or numeric parameters without a host-control domain. `scale`, `curve`, `unit`, `step_repr`,
+numeric parameters without a host-control domain. Select array elements with indexed names such
+as `offsets[0]`, or supply an exact-length array to `setParam("offsets", values)`. `scale`, `curve`, `unit`, `step_repr`,
 and `step_count` remain available on each parameter's descriptor metadata for control construction
 and formatting. For repeated UI conversion, `createParamControl(param)` prepares and validates the
-descriptor once and returns bound conversion methods.
+descriptor once and returns bound conversion methods; pass an element index as its second argument
+for an array.
 
 Controlled `i64` domains use the descriptor's exact binary64 integer range. Full-width unranged
 `i64` values continue to use `bigint` when written directly.

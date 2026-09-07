@@ -108,7 +108,10 @@ export interface OndaParamDomain {
 export function createParamDomain(domain: OndaParamDomain): OndaPreparedParamControl;
 
 /** Validate and decode descriptor metadata once for repeated host-control use. */
-export function createParamControl(param: OndaIoMetadata): OndaPreparedParamControl;
+export function createParamControl(param: OndaIoMetadata, element?: number): OndaPreparedParamControl;
+
+/** Project one array element to scalar metadata, including its default and storage offset. */
+export function paramElementMetadata(param: OndaIoMetadata, element: number): OndaIoMetadata;
 
 /** Clamp and snap a plain scalar value according to descriptor metadata. */
 export function constrainParamPlain(

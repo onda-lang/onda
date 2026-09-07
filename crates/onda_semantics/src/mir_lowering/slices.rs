@@ -443,10 +443,30 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        if let Some((state, element, len)) = self
-            .runtime_globals
-            .and_then(|globals| globals.state_arrays.get(base).copied())
-        {
+        let global_array = self.runtime_globals.and_then(|globals| {
+            globals
+                .param_arrays
+                .get(base)
+                .map(|&(id, element, len)| {
+                    (
+                        PlaceBase::Param(id),
+                        element,
+                        len,
+                        onda_mir::AccessMode::ReadOnly,
+                    )
+                })
+                .or_else(|| {
+                    globals.state_arrays.get(base).map(|&(id, element, len)| {
+                        (
+                            PlaceBase::State(id),
+                            element,
+                            len,
+                            onda_mir::AccessMode::ReadWrite,
+                        )
+                    })
+                })
+        });
+        if let Some((array_base, element, len, access)) = global_array {
             if selector.is_some() || channel.is_some() {
                 return Err(self.error(
                     format!("array '{base}' does not support buffer coordinates"),
@@ -455,7 +475,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             return Ok((
                 onda_mir::SliceSource::Place(Place {
-                    base: PlaceBase::State(state),
+                    base: array_base,
                     projections: Vec::new(),
                 }),
                 LoweredValue {
@@ -463,7 +483,7 @@ impl<'a> FunctionLowerer<'a> {
                     ty: PrimitiveType::I32,
                 },
                 element,
-                onda_mir::AccessMode::ReadWrite,
+                access,
             ));
         }
         if let Some((data, element, len)) = self.const_arrays.get(base).copied() {

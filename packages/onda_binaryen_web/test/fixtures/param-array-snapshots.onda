@@ -1,0 +1,14 @@
+params:
+  gains: f32[2] = 0.25 {0, 1}
+
+def first(values: f32[]):
+  return values[0]
+
+init:
+  captured = first(gains)
+
+event capture():
+  captured = gains[0]
+
+sample:
+  out1 = first(gains) + captured

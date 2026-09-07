@@ -18,6 +18,27 @@
     throw new TypeError(`Onda parameter${name} ${message}`);
   }
 
+  function paramElementMetadata(param, index) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= param?.array_len) {
+      fail(param, "element index is out of bounds");
+    }
+    if (param.type_repr === param.scalar && param.array_len === 1) return param;
+    if (param.type_repr !== `${param.scalar}[${param.array_len}]`) {
+      fail(param, "has invalid array shape metadata");
+    }
+    const width = param.element_size_bytes;
+    return {
+      ...param,
+      name: `${param.name}[${index}]`,
+      type_repr: param.scalar,
+      array_len: 1,
+      byte_offset: param.byte_offset === null ? null : param.byte_offset + index * width,
+      byte_size: width,
+      slot_offset: param.slot_offset + index,
+      default_reprs: param.default_reprs === null ? null : [param.default_reprs?.[index]],
+    };
+  }
+
   function scalarKind(param) {
     if (!param || typeof param !== "object" || Array.isArray(param)) {
       fail(param, "metadata must be an object");
@@ -363,7 +384,8 @@
     return Math.min(1, Math.max(0, normalized));
   }
 
-  function createParamControl(param) {
+  function createParamControl(param, element) {
+    if (element !== undefined) param = paramElementMetadata(param, element);
     const scalar = scalarKind(param);
     if (scalar === "bool") {
       return Object.freeze({
@@ -450,6 +472,7 @@
       validateParamControlDomain,
       createParamDomain,
       createParamControl,
+      paramElementMetadata,
       constrainParamPlain,
       paramNormalizedToPlain,
       paramPlainToNormalized,
