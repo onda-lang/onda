@@ -887,6 +887,20 @@ int onda_init(
   onda_init_mode_t mode,
   onda_execution_output_t* output
 );
+/* Reruns initialization without binding validation. The instance must have
+   completed full initialization at least once, and buffer descriptors must
+   have been validated since the last rebind (for example by
+   onda_prepare_unchecked_process or onda_validate_buffers). Bound storage
+   must retain its validity and exclusive-access guarantees. Both success and
+   generated-runtime failure paths allocate nothing. Returns 0 on success, a
+   positive generated-runtime failure code, or a negative API error. Failure
+   invalidates state; ONDA_INIT_FULL can recover it, while
+   ONDA_INIT_PRESERVE_PINNED requires currently initialized state. */
+int onda_init_unchecked(
+  onda_instance_t* instance,
+  onda_init_mode_t mode,
+  onda_execution_output_t* output
+);
 /* Returns the byte size of the instance state snapshot, or -1 on invalid instance handle. */
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*

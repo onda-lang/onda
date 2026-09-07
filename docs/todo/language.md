@@ -138,6 +138,15 @@
     selector exactly once.
 
 - Array and slice follow-ups
+  - Add per-element host-control domains to fixed-size top-level parameter arrays, for example
+    `frequencies: f32[VoiceCount] = 220.0 {20, 20000, log, "Hz"}` or
+    `offsets: f32[VoiceCount] = 0.0 {-2000, 2000, linear, "Hz"}`.
+    Reuse scalar domain validation, clamping, normalization, and stepping independently for each
+    element. Preserve the logical array name and length in host metadata while exposing individually
+    addressable elements such as `frequencies[0]` for control and automation. Generate grouped
+    per-element controls in native and browser hosts from this metadata, with the control count
+    following the declared array length. Add a voice-bank example with a shared fundamental and
+    independently controlled frequency offsets.
   - Preserve the statically provable length of constant-bound slices so an exact-length slice can
     satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.

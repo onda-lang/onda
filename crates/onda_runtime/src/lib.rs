@@ -910,12 +910,22 @@ impl AllocatedState {
         &mut self,
         operation: impl FnOnce(&mut RuntimeState) -> Result<(), Diagnostic>,
     ) -> Result<(), Diagnostic> {
+        self.attempt_status(|state| {
+            operation(state).map(|()| onda_codegen_llvm::PROCESSOR_EXECUTION_OK)
+        })
+        .map(|_| ())
+    }
+
+    fn attempt_status(
+        &mut self,
+        operation: impl FnOnce(&mut RuntimeState) -> Result<u32, Diagnostic>,
+    ) -> Result<u32, Diagnostic> {
         // Generated entry points mutate the live image in place. Invalidate it
         // before entering generated code so errors and unwinding cannot leave
         // partially mutated state observable as ready.
         self.initialized = false;
         let result = operation(&mut self.storage);
-        self.initialized = result.is_ok();
+        self.initialized = matches!(result, Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_OK));
         result
     }
 }
@@ -1531,6 +1541,52 @@ pub fn init_with_output(
                 )
             }
         }),
+    })
+}
+
+/// Reruns initialization without binding validation or allocating diagnostics
+/// on generated failure. Full mode can recover storage invalidated by a failed
+/// call; preserve-pinned mode requires currently initialized state.
+///
+/// # Safety
+///
+/// The instance must have completed full initialization at least once. Its
+/// current buffer descriptors must have been validated since the last rebind,
+/// and all bound storage must retain its lifetime, extent, alignment, and
+/// exclusive-access guarantees. No other instance operation may overlap.
+pub unsafe fn init_unchecked(
+    instance: &mut Instance,
+    mode: InitMode,
+    mut output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
+    configure_current_thread_audio_fp_mode();
+    output.reset();
+    debug_assert!(
+        instance.buffers_validated,
+        "init_unchecked requires validated buffers"
+    );
+    let state = match &mut instance.state {
+        InstanceState::Allocated(state) if mode == InitMode::Full || state.initialized => state,
+        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
+        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
+    };
+    state.attempt_status(|state| {
+        // SAFETY: storage belongs to this instance's program, and the caller
+        // guarantees that the prepared buffer bindings remain valid.
+        with_processor_execution_output(output, |output| unsafe {
+            instance.program.initialize_state_in_place_unchecked(
+                &instance.params,
+                state,
+                mode == InitMode::Full,
+                BufferDescriptorTables::new(
+                    &instance.buffer_ptrs,
+                    &instance.buffer_frames,
+                    &instance.buffer_channels,
+                    &instance.buffer_sample_rates,
+                ),
+                output,
+            )
+        })
     })
 }
 

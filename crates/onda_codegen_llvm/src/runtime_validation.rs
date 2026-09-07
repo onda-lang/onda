@@ -685,6 +685,38 @@ impl JitProgram {
         }
     }
 
+    /// Reruns initialization without validation or diagnostic construction on
+    /// generated failure.
+    ///
+    /// # Safety
+    ///
+    /// State and parameter storage must match this program. Buffer descriptors
+    /// must be validated and retain [`Self::initialize_state_in_place`]'s
+    /// lifetime, extent, alignment, exclusivity, and aliasing guarantees.
+    pub unsafe fn initialize_state_in_place_unchecked(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        full: bool,
+        buffers: BufferDescriptorTables<'_>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        #[cfg(feature = "llvm-orc")]
+        {
+            Ok(unsafe {
+                self.compiled
+                    .initialize_state_in_place_unchecked(params, state, full, buffers, output)
+            })
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (params, state, full, buffers, output);
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
     /// Validates ABI shape before entering generated code.
     ///
     /// # Safety

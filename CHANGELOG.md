@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Added `onda_init_unchecked` for prepared-instance resets that return generated failure codes
+  without allocating diagnostics, while preserving pinned-state and full-reset semantics.
 - Added `onda_project_image_with_buffer_overrides` to checkpoint host buffer overrides while
   preserving project sources, compile-time constants, and unchanged assets.
 

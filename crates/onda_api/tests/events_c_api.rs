@@ -2569,6 +2569,106 @@ sample { out1 = amp + pinned }
 }
 
 #[test]
+fn c_api_unchecked_init_preserves_pins_reports_failure_and_recovers() {
+    unsafe {
+        let program = compile_program(
+            r#"
+outs { out1 }
+delegate observed(value: i32)
+init {
+  pin divisor = i32(2)
+  print("reset", divisor)
+  value = i32(8) / divisor
+}
+event set_divisor(next: i32) { divisor = next; observed(next) }
+sample { out1 = f32(value) }
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
+        assert!(!instance.is_null(), "{}", diag_message(&diag));
+        let instance = InstanceHandle(instance);
+        let mut samples = [0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                samples.as_mut_ptr().cast(),
+                std::mem::size_of_val(&samples) as i32
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
+
+        let mut print_storage = [0_u8; 256];
+        let mut delegate_storage = [0_u8; 256];
+        let mut prints = onda_print_batch_t {
+            storage: print_storage.as_mut_ptr(),
+            capacity_bytes: print_storage.len() as u32,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        };
+        let mut delegates = onda_delegate_batch_t {
+            storage: delegate_storage.as_mut_ptr(),
+            capacity_bytes: delegate_storage.len() as u32,
+            used_bytes: 0,
+            record_count: 0,
+            overflow_count: 0,
+        };
+        let mut output = onda_execution_output_t {
+            delegate_batch: &mut delegates,
+            print_batch: &mut prints,
+        };
+        let set_divisor = |value: i32, output: *mut onda_execution_output_t| {
+            assert_eq!(
+                onda_trigger_event_by_index_unchecked(
+                    instance.0,
+                    0,
+                    (&value as *const i32).cast(),
+                    4,
+                    output,
+                ),
+                0
+            );
+        };
+        set_divisor(4, &mut output);
+        assert_eq!(delegates.record_count, 1);
+        assert_eq!(onda_init_unchecked(instance.0, 0, &mut output), 0);
+        assert_eq!((prints.record_count, delegates.record_count), (1, 0));
+        assert_eq!(onda_process_unchecked(instance.0, std::ptr::null_mut()), 0);
+        assert!(samples.iter().all(|sample| *sample == 2.0));
+
+        set_divisor(0, &mut output);
+        assert_eq!(delegates.record_count, 1);
+        assert_eq!(
+            onda_init_unchecked(instance.0, 0, &mut output),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert_eq!((prints.record_count, delegates.record_count), (1, 0));
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            -2
+        );
+        assert_eq!(onda_init_unchecked(instance.0, 0, &mut output), -2);
+        assert_eq!((prints.record_count, delegates.record_count), (0, 0));
+
+        assert_eq!(onda_init_unchecked(instance.0, 1, &mut output), 0);
+        assert_eq!((prints.record_count, delegates.record_count), (1, 0));
+        assert_eq!(onda_process_unchecked(instance.0, std::ptr::null_mut()), 0);
+        assert!(samples.iter().all(|sample| *sample == 4.0));
+
+        assert_eq!(onda_init_unchecked(instance.0, 2, &mut output), -1);
+        assert_eq!((prints.record_count, delegates.record_count), (0, 0));
+        assert_eq!(
+            onda_init_unchecked(std::ptr::null_mut(), 0, &mut output),
+            -1
+        );
+    }
+}
+
+#[test]
 fn c_api_formats_prints_from_initialized_and_process_calls() {
     unsafe {
         let program = compile_program(

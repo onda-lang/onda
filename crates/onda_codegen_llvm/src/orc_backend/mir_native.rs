@@ -2716,6 +2716,26 @@ impl MirJitProgram {
         }
         validate_buffer_abi(&self.mir, buffers)?;
         let status = unsafe {
+            self.initialize_state_in_place_unchecked(params, state, full, buffers, output)
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Reruns initialization without validation or diagnostic construction.
+    ///
+    /// # Safety
+    ///
+    /// State and parameter storage must match this program, and host buffers
+    /// and output must satisfy [`Self::initialize_state_in_place`]'s contract.
+    pub unsafe fn initialize_state_in_place_unchecked(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        full: bool,
+        buffers: BufferDescriptorTables<'_>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> u32 {
+        unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
@@ -2726,8 +2746,7 @@ impl MirJitProgram {
                 abi_const_ptr(buffers.sample_rates),
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
-        };
-        crate::check_execution_status(status)
+        }
     }
 
     /// Validates the process ABI shape before entering generated code.

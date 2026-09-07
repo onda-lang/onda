@@ -31,9 +31,9 @@ use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     format_print_batch as runtime_format_print_batch,
     format_print_batch_into as runtime_format_print_batch_into,
-    init_with_output as runtime_init_with_output, prepare_unchecked_process, process_checked,
-    process_checked_segment, process_unchecked, process_unchecked_segment,
-    read_control_output_bytes, set_param_by_index,
+    init_unchecked as runtime_init_unchecked, init_with_output as runtime_init_with_output,
+    prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
+    process_unchecked_segment, read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
     trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
@@ -70,6 +70,14 @@ fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
     match status {
         Ok(value) => i32::try_from(value).unwrap_or(-2),
         Err(_) => -2,
+    }
+}
+
+fn init_mode_from_c(mode: i32) -> Option<InitMode> {
+    match mode {
+        0 => Some(InitMode::PreservePinned),
+        1 => Some(InitMode::Full),
+        _ => None,
     }
 }
 
@@ -4429,18 +4437,33 @@ pub unsafe extern "C" fn onda_init(
         reset_c_execution_output(output);
         return -1;
     }
-    let mode = match mode {
-        0 => InitMode::PreservePinned,
-        1 => InitMode::Full,
-        _ => {
-            reset_c_execution_output(output);
-            return -1;
-        }
+    let Some(mode) = init_mode_from_c(mode) else {
+        reset_c_execution_output(output);
+        return -1;
     };
     with_runtime_execution_output(output, |output| {
         runtime_init_with_output(&mut (*instance).inner, mode, output)
     })
     .map_or(-2, |()| 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_init_unchecked(
+    instance: *mut onda_instance,
+    mode: i32,
+    output: *mut onda_execution_output_t,
+) -> i32 {
+    if instance.is_null() {
+        reset_c_execution_output(output);
+        return -1;
+    }
+    let Some(mode) = init_mode_from_c(mode) else {
+        reset_c_execution_output(output);
+        return -1;
+    };
+    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
+        runtime_init_unchecked(&mut (*instance).inner, mode, output)
+    }))
 }
 
 #[no_mangle]

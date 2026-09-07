@@ -262,7 +262,7 @@ test("the shared run view preserves controls across independent parameter update
   assert.match(runView, /const paramBindings = new Map\(\)/);
   assert.match(
     runView,
-    /if \(activeParamGestures\.has\(incoming\.name\)\) \{\s+binding\.param\.value = localValue;\s+\} else \{\s+binding\.setValue\(incoming\.value\);/,
+    /if \(activeParamGestures\.has\(incoming\.name\)\) \{\s+binding\.param\.value = localValue;\s+\} else if \(!binding\.isEditing\?\.\(\)\) \{\s+binding\.setValue\(incoming\.value\);/,
   );
   assert.match(
     runView,

@@ -474,6 +474,16 @@ binding.
 The successful path allocates nothing. A failed initialization leaves state indeterminate; the
 instance rejects stateful operations until a full initialization or snapshot restore succeeds.
 
+`onda_init_unchecked(instance, mode, output)` is the realtime reset variant for instances that
+have completed full initialization at least once. Validate current buffer descriptors after any
+rebind with `onda_validate_buffers` or `onda_prepare_unchecked_process`, and retain the same bound
+storage guarantees as unchecked processing. This call does not revalidate bindings or construct a
+diagnostic on generated failure: it returns zero on success, a positive generated-runtime failure
+code, or a negative API error. Both success and generated failure allocate nothing. A failed call
+invalidates state; unchecked `ONDA_INIT_FULL` can recover it, while preserve-pinned mode requires
+currently initialized state. Print records survive generated failure and delegate records are
+cleared, as with other execution entry points.
+
 ## Parameters and bindings
 
 ### Parameter writes
