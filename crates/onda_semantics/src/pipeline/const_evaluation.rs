@@ -799,113 +799,74 @@ pub(super) fn fold_const_array_expr(
     errors: &mut Vec<Diagnostic>,
     inline_array_vars: bool,
 ) {
-    let loc = expr.loc();
-    if let Expr::Var { name, .. } = expr {
-        if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
-            *expr = typed_const_expr_with_loc(*value, loc);
-            return;
-        }
-    }
     if inline_array_vars {
         if let Expr::Var { name, .. } = expr {
             if let Some(ConstValue::Array { values, .. }) = const_values.get(name) {
-                *expr = const_array_literal_expr(values, loc);
+                *expr = const_array_literal_expr(values, expr.loc());
                 return;
             }
         }
     }
 
-    match expr {
-        Expr::Index { base, index, .. } => {
-            fold_const_array_expr(index, const_values, options, errors, false);
-            let Some(ConstValue::Array { len, values, .. }) = const_values.get(base) else {
-                return;
-            };
-            if !can_eval_const_expr_exact_int(index) {
+    expr.visit_mut_postorder(|expr| {
+        let loc = expr.loc();
+        if let Expr::Var { name, .. } = expr {
+            if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
+                *expr = typed_const_expr_with_loc(*value, loc);
                 return;
             }
-            let Some(raw_idx) = eval_const_expr_i64_exact(
-                index,
-                options,
-                &format!("const array '{base}' index"),
-                errors,
-            ) else {
-                return;
-            };
-            let Ok(idx) = usize::try_from(raw_idx) else {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
+        }
+
+        match expr {
+            Expr::Index { base, index, .. } => {
+                let Some(ConstValue::Array { len, values, .. }) = const_values.get(base) else {
+                    return;
+                };
+                if !can_eval_const_expr_exact_int(index) {
+                    return;
+                }
+                let Some(raw_idx) = eval_const_expr_i64_exact(
+                    index,
+                    options,
+                    &format!("const array '{base}' index"),
+                    errors,
+                ) else {
+                    return;
+                };
+                let Ok(idx) = usize::try_from(raw_idx) else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
                         "const array '{base}' index {raw_idx} is out of bounds for length {len}"
                     ),
-                    expr.loc(),
-                ));
-                return;
-            };
-            let Some(value) = values.get(idx).copied() else {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
+                        expr.loc(),
+                    ));
+                    return;
+                };
+                let Some(value) = values.get(idx).copied() else {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
                         "const array '{base}' index {raw_idx} is out of bounds for length {len}"
                     ),
-                    expr.loc(),
-                ));
-                return;
-            };
-            *expr = typed_const_expr_with_loc(value, loc);
-        }
-        Expr::UserCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                fold_const_array_expr(&mut arg.expr, const_values, options, errors, false);
+                        expr.loc(),
+                    ));
+                    return;
+                };
+                *expr = typed_const_expr_with_loc(value, loc);
             }
-            if !args.is_empty() {
-                return;
-            }
-            let Some(base) = parse_array_len_instance_base(name) else {
-                return;
-            };
-            if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
-                *expr = Expr::int(*len as i64).with_loc(loc);
-            }
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                fold_const_array_expr(coordinate, const_values, options, errors, false);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            fold_const_array_expr(&mut spec.size, const_values, options, errors, false);
-            if let Some(init) = init {
-                for value in init {
-                    fold_const_array_expr(value, const_values, options, errors, false);
+            Expr::UserCall { name, args, .. } => {
+                if !args.is_empty() {
+                    return;
+                }
+                let Some(base) = parse_array_len_instance_base(name) else {
+                    return;
+                };
+                if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
+                    *expr = Expr::int(*len as i64).with_loc(loc);
                 }
             }
+            _ => {}
         }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            fold_const_array_expr(lhs, const_values, options, errors, false);
-            fold_const_array_expr(rhs, const_values, options, errors, false);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                fold_const_array_expr(arg, const_values, options, errors, false);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            fold_const_array_expr(expr, const_values, options, errors, false);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                fold_const_array_expr(value, const_values, options, errors, false);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+    });
 }
 
 pub(super) fn const_def_param_signature(

@@ -2,10 +2,11 @@ mod run_session;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
-    InitialBufferBinding, RunBufferChannels, RunBufferInfo, RunBufferWaveform, RunBuildError,
-    RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence, RunDelegateParamInfo,
-    RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent, RunSession,
+    InitialBufferBinding, PreparedRunBuffer, RetiredRunBuffer, RunBufferChannels, RunBufferInfo,
+    RunBufferWaveform, RunBuildError, RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence,
+    RunDelegateParamInfo, RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue,
+    RunOptions, RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent,
+    RunSession,
 };
 
 use std::collections::HashMap;
@@ -847,6 +848,39 @@ mod tests {
             .all(|sample| (*sample - 0.25).abs() < 1e-6));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prepared_buffer_owns_a_file_snapshot_and_failed_replace_retains_storage() {
+        let dir = mk_temp_dir("prepared_buffer_replace");
+        let main = dir.join("main.onda");
+        let wav = dir.join("sample.wav");
+        write_file(
+            &main,
+            "buffers:\n  src: buffer<f32>\nsample:\n  out1 = src[0]\n",
+        );
+        write_wav(&wav, 1, 48_000, &[0.25]);
+        let mut prepared = Some(PreparedRunBuffer::load_file(&wav).unwrap());
+        // The disk path can disappear or be atomically replaced while the
+        // completed load is waiting for its block-boundary commit.
+        fs::rename(&wav, dir.join("previous.wav")).unwrap();
+        write_wav(&wav, 1, 48_000, &[0.75]);
+        let mut session = DaemonSession::default();
+        session.start_run(&main).unwrap();
+        let run = session.run_mut(&main).unwrap();
+        drop(run.replace_prepared_buffer("src", &mut prepared).unwrap());
+        assert!(prepared.is_none());
+        assert_eq!(run.render_block().unwrap()[0][0], 0.25);
+        prepared = Some(PreparedRunBuffer::load_file(&wav).unwrap());
+        assert!(run
+            .replace_prepared_buffer("missing", &mut prepared)
+            .is_err());
+        assert!(prepared.is_some());
+        assert_eq!(run.render_block().unwrap()[0][0], 0.25);
+        let retired = run.replace_prepared_buffer("src", &mut prepared).unwrap();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+        assert_eq!(run.render_block().unwrap()[0][0], 0.75);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

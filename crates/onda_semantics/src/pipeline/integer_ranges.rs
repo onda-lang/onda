@@ -475,83 +475,35 @@ pub(crate) fn normalize_struct_constructor_ranges_in_expr(
     expr: &mut Expr,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
-    match expr {
-        Expr::Index { index, .. } => {
-            normalize_struct_constructor_ranges_in_expr(index, struct_defs);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                normalize_struct_constructor_ranges_in_expr(coordinate, struct_defs);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            normalize_struct_constructor_ranges_in_expr(&mut spec.size, struct_defs);
-            if let Some(values) = init {
-                for value in values {
-                    normalize_struct_constructor_ranges_in_expr(value, struct_defs);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            normalize_struct_constructor_ranges_in_expr(lhs, struct_defs);
-            normalize_struct_constructor_ranges_in_expr(rhs, struct_defs);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                normalize_struct_constructor_ranges_in_expr(arg, struct_defs);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args.iter_mut() {
-                normalize_struct_constructor_ranges_in_expr(&mut arg.expr, struct_defs);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            normalize_struct_constructor_ranges_in_expr(expr, struct_defs);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                normalize_struct_constructor_ranges_in_expr(value, struct_defs);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
-
-    let Expr::UserCall { name, args, .. } = expr else {
-        return;
-    };
-    let Some(fields) = struct_defs.get(name) else {
-        return;
-    };
-    let scalar_fields = fields
-        .iter()
-        .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
-        .collect::<Vec<_>>();
-    let mut positional_index = 0usize;
-    for arg in args {
-        let field = if let Some(arg_name) = &arg.name {
-            scalar_fields
-                .iter()
-                .copied()
-                .find(|field| field.name == *arg_name)
-        } else {
-            let field = scalar_fields.get(positional_index).copied();
-            positional_index += 1;
-            field
+    expr.visit_mut_postorder(|expr| {
+        let Expr::UserCall { name, args, .. } = expr else {
+            return;
         };
-        let Some(range) = field.and_then(|field| field.integer_range.as_ref()) else {
-            continue;
+        let Some(fields) = struct_defs.get(name) else {
+            return;
         };
-        wrap_ranged_assignment(&mut arg.expr, &integer_binding_range_from_typed(range));
-    }
+        let scalar_fields = fields
+            .iter()
+            .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
+            .collect::<Vec<_>>();
+        let mut positional_index = 0usize;
+        for arg in args {
+            let field = if let Some(arg_name) = &arg.name {
+                scalar_fields
+                    .iter()
+                    .copied()
+                    .find(|field| field.name == *arg_name)
+            } else {
+                let field = scalar_fields.get(positional_index).copied();
+                positional_index += 1;
+                field
+            };
+            let Some(range) = field.and_then(|field| field.integer_range.as_ref()) else {
+                continue;
+            };
+            wrap_ranged_assignment(&mut arg.expr, &integer_binding_range_from_typed(range));
+        }
+    });
 }
 
 pub(crate) fn normalize_struct_constructor_ranges_in_list(

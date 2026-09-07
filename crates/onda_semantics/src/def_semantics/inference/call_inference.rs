@@ -258,267 +258,69 @@ fn infer_expr_calls(
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
-        Expr::Number { .. }
-        | Expr::Int { .. }
-        | Expr::Bool { .. }
-        | Expr::ArrayCtor { .. }
-        | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                infer_expr_calls(
-                    value,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
-                    array_bindings,
-                    buffer_bindings,
-                    fn_signatures,
-                    kinds,
-                    errors,
-                );
-            }
-        }
-        Expr::Index { index, .. } => {
-            infer_expr_calls(
-                index,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                infer_expr_calls(
-                    coordinate,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
-                    array_bindings,
-                    buffer_bindings,
-                    fn_signatures,
-                    kinds,
-                    errors,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
-            infer_expr_calls(
-                lhs,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-            infer_expr_calls(
-                rhs,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            infer_expr_calls(
-                expr,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-        }
-        Expr::Logical { lhs, rhs, .. } => {
-            infer_expr_calls(
-                lhs,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-            infer_expr_calls(
-                rhs,
-                struct_instances,
-                struct_array_roots,
-                proc_array_roots,
-                array_bindings,
-                buffer_bindings,
-                fn_signatures,
-                kinds,
-                errors,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                infer_expr_calls(
-                    arg,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
-                    array_bindings,
-                    buffer_bindings,
-                    fn_signatures,
-                    kinds,
-                    errors,
-                );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            if let Some(sig) = fn_signatures.get(name) {
-                let display_name = sig.display_name.as_deref().unwrap_or(name);
-                let resolved = resolve_call_args_at(
-                    args,
-                    &sig.params,
-                    &sig.defaults,
-                    false,
-                    false,
-                    &format!("function '{display_name}' call"),
-                    expr.loc(),
-                    errors,
-                );
-                if let Some(param_kinds) = kinds.get_mut(name) {
-                    for (idx, arg) in resolved.into_iter().enumerate() {
-                        if let Some(arg) = arg {
-                            if let Some(slot) = param_kinds.get_mut(idx) {
-                                if let Some(struct_name) = slot.method_self_struct.clone() {
-                                    // A synthesized method `self` parameter has an authoritative
-                                    // owner shape. Method/index sugar can turn its call-site
-                                    // expression into an internal selector that is intentionally
-                                    // absent from the ordinary instance map.
-                                    slot.saw_structs.insert(struct_name);
-                                    continue;
-                                }
-                                match arg {
-                                    Expr::Var { name: v, .. } => {
-                                        if let Some(struct_name) = struct_instances.get(v) {
-                                            slot.saw_structs.insert(struct_name.clone());
-                                        } else if let Some(proc_array_info) =
-                                            proc_array_roots.get(v)
-                                        {
-                                            if !slot.saw_proc_arrays.iter().any(|seen| {
-                                                seen.proc_name == proc_array_info.proc_name
-                                                    && seen.len == proc_array_info.len
-                                            }) {
-                                                slot.saw_proc_arrays.push(proc_array_info.clone());
-                                            }
-                                        } else if let Some(struct_name) = struct_array_roots.get(v)
-                                        {
-                                            if !slot
-                                                .saw_struct_arrays
-                                                .iter()
-                                                .any(|seen| seen.struct_name == *struct_name)
-                                            {
-                                                slot.saw_struct_arrays.push(
-                                                    InferredStructArrayParam {
-                                                        struct_name: struct_name.clone(),
-                                                    },
-                                                );
-                                            }
-                                        } else if let Some(array_info) = array_bindings.get(v) {
-                                            if !slot.saw_arrays.iter().any(|seen| {
-                                                seen.elem_ty == array_info.elem_ty
-                                                    && seen.len == array_info.len
-                                            }) {
-                                                slot.saw_arrays.push(array_info.clone());
-                                            }
-                                        } else if let Some(binding) = buffer_bindings.get(v) {
-                                            for buffer_info in &binding.candidates {
-                                                push_buffer_observation(
-                                                    slot,
-                                                    buffer_info.clone(),
-                                                    true,
-                                                );
-                                            }
-                                        } else if let Some(struct_name) = sig
-                                            .param_types
-                                            .get(idx)
-                                            .and_then(|ty| ty.as_ref())
-                                            .and_then(|ty| match ty {
-                                                FnParamType::Struct(name) => Some(name),
-                                                _ => None,
-                                            })
-                                        {
-                                            slot.saw_structs.insert(struct_name.clone());
-                                        } else {
-                                            slot.saw_scalar = true;
-                                        }
+    expr.visit(|expr| {
+        match expr {
+            Expr::UserCall { name, args, .. } => {
+                if let Some(sig) = fn_signatures.get(name) {
+                    let display_name = sig.display_name.as_deref().unwrap_or(name);
+                    let resolved = resolve_call_args_at(
+                        args,
+                        &sig.params,
+                        &sig.defaults,
+                        false,
+                        false,
+                        &format!("function '{display_name}' call"),
+                        expr.loc(),
+                        errors,
+                    );
+                    if let Some(param_kinds) = kinds.get_mut(name) {
+                        for (idx, arg) in resolved.into_iter().enumerate() {
+                            if let Some(arg) = arg {
+                                if let Some(slot) = param_kinds.get_mut(idx) {
+                                    if let Some(struct_name) = slot.method_self_struct.clone() {
+                                        // A synthesized method `self` parameter has an authoritative
+                                        // owner shape. Method/index sugar can turn its call-site
+                                        // expression into an internal selector that is intentionally
+                                        // absent from the ordinary instance map.
+                                        slot.saw_structs.insert(struct_name);
+                                        continue;
                                     }
-                                    Expr::Index { base, .. } => {
-                                        if let Some(struct_name) = struct_array_roots.get(base) {
-                                            slot.saw_structs.insert(struct_name.clone());
-                                        } else if let Some(binding) = buffer_bindings
-                                            .get(base)
-                                            .filter(|binding| binding.is_array)
-                                        {
-                                            for buffer_info in &binding.candidates {
-                                                push_buffer_observation(
-                                                    slot,
-                                                    buffer_info.clone(),
-                                                    true,
-                                                );
-                                            }
-                                        } else if let Some(struct_name) = sig
-                                            .param_types
-                                            .get(idx)
-                                            .and_then(|ty| ty.as_ref())
-                                            .and_then(|ty| match ty {
-                                                FnParamType::Struct(name) => Some(name),
-                                                _ => None,
-                                            })
-                                        {
-                                            slot.saw_structs.insert(struct_name.clone());
-                                        } else {
-                                            slot.saw_scalar = true;
-                                        }
-                                    }
-                                    Expr::UserCall {
-                                        name: selector_name,
-                                        args: selector_args,
-                                        ..
-                                    } if selector_name == PROC_INDEX_BUFFER_SELECT_SENTINEL => {
-                                        let mut saw_any_buffer = false;
-                                        let mut saw_invalid_slot = false;
-                                        for selector_arg in selector_args {
-                                            if selector_arg.name.as_deref()
-                                                == Some(PROC_INDEX_BASE_ARG)
-                                                || selector_arg.name.as_deref()
-                                                    == Some(PROC_INDEX_EXPR_ARG)
+                                    match arg {
+                                        Expr::Var { name: v, .. } => {
+                                            if let Some(struct_name) = struct_instances.get(v) {
+                                                slot.saw_structs.insert(struct_name.clone());
+                                            } else if let Some(proc_array_info) =
+                                                proc_array_roots.get(v)
                                             {
-                                                continue;
-                                            }
-                                            let Expr::Var { name: v, .. } = &selector_arg.expr
-                                            else {
-                                                saw_invalid_slot = true;
-                                                continue;
-                                            };
-                                            if let Some(binding) = buffer_bindings.get(v) {
-                                                saw_any_buffer = true;
+                                                if !slot.saw_proc_arrays.iter().any(|seen| {
+                                                    seen.proc_name == proc_array_info.proc_name
+                                                        && seen.len == proc_array_info.len
+                                                }) {
+                                                    slot.saw_proc_arrays
+                                                        .push(proc_array_info.clone());
+                                                }
+                                            } else if let Some(struct_name) =
+                                                struct_array_roots.get(v)
+                                            {
+                                                if !slot
+                                                    .saw_struct_arrays
+                                                    .iter()
+                                                    .any(|seen| seen.struct_name == *struct_name)
+                                                {
+                                                    slot.saw_struct_arrays.push(
+                                                        InferredStructArrayParam {
+                                                            struct_name: struct_name.clone(),
+                                                        },
+                                                    );
+                                                }
+                                            } else if let Some(array_info) = array_bindings.get(v) {
+                                                if !slot.saw_arrays.iter().any(|seen| {
+                                                    seen.elem_ty == array_info.elem_ty
+                                                        && seen.len == array_info.len
+                                                }) {
+                                                    slot.saw_arrays.push(array_info.clone());
+                                                }
+                                            } else if let Some(binding) = buffer_bindings.get(v) {
                                                 for buffer_info in &binding.candidates {
                                                     push_buffer_observation(
                                                         slot,
@@ -526,33 +328,106 @@ fn infer_expr_calls(
                                                         true,
                                                     );
                                                 }
+                                            } else if let Some(struct_name) = sig
+                                                .param_types
+                                                .get(idx)
+                                                .and_then(|ty| ty.as_ref())
+                                                .and_then(|ty| match ty {
+                                                    FnParamType::Struct(name) => Some(name),
+                                                    _ => None,
+                                                })
+                                            {
+                                                slot.saw_structs.insert(struct_name.clone());
                                             } else {
-                                                saw_invalid_slot = true;
+                                                slot.saw_scalar = true;
                                             }
                                         }
-                                        if !saw_any_buffer || saw_invalid_slot {
-                                            slot.saw_scalar = true;
+                                        Expr::Index { base, .. } => {
+                                            if let Some(struct_name) = struct_array_roots.get(base)
+                                            {
+                                                slot.saw_structs.insert(struct_name.clone());
+                                            } else if let Some(binding) = buffer_bindings
+                                                .get(base)
+                                                .filter(|binding| binding.is_array)
+                                            {
+                                                for buffer_info in &binding.candidates {
+                                                    push_buffer_observation(
+                                                        slot,
+                                                        buffer_info.clone(),
+                                                        true,
+                                                    );
+                                                }
+                                            } else if let Some(struct_name) = sig
+                                                .param_types
+                                                .get(idx)
+                                                .and_then(|ty| ty.as_ref())
+                                                .and_then(|ty| match ty {
+                                                    FnParamType::Struct(name) => Some(name),
+                                                    _ => None,
+                                                })
+                                            {
+                                                slot.saw_structs.insert(struct_name.clone());
+                                            } else {
+                                                slot.saw_scalar = true;
+                                            }
                                         }
-                                    }
-                                    _ => {
-                                        // Indexed/nested struct method sugar may already have
-                                        // been rewritten to an internal selector expression by
-                                        // this point. The declared callee signature remains the
-                                        // authoritative shape for that argument; treating every
-                                        // non-Var/non-Index expression as scalar makes `self`
-                                        // appear both scalar and struct during MIR preparation.
-                                        if let Some(struct_name) = sig
-                                            .param_types
-                                            .get(idx)
-                                            .and_then(|ty| ty.as_ref())
-                                            .and_then(|ty| match ty {
-                                                FnParamType::Struct(name) => Some(name),
-                                                _ => None,
-                                            })
-                                        {
-                                            slot.saw_structs.insert(struct_name.clone());
-                                        } else {
-                                            slot.saw_scalar = true;
+                                        Expr::UserCall {
+                                            name: selector_name,
+                                            args: selector_args,
+                                            ..
+                                        } if selector_name == PROC_INDEX_BUFFER_SELECT_SENTINEL => {
+                                            let mut saw_any_buffer = false;
+                                            let mut saw_invalid_slot = false;
+                                            for selector_arg in selector_args {
+                                                if selector_arg.name.as_deref()
+                                                    == Some(PROC_INDEX_BASE_ARG)
+                                                    || selector_arg.name.as_deref()
+                                                        == Some(PROC_INDEX_EXPR_ARG)
+                                                {
+                                                    continue;
+                                                }
+                                                let Expr::Var { name: v, .. } = &selector_arg.expr
+                                                else {
+                                                    saw_invalid_slot = true;
+                                                    continue;
+                                                };
+                                                if let Some(binding) = buffer_bindings.get(v) {
+                                                    saw_any_buffer = true;
+                                                    for buffer_info in &binding.candidates {
+                                                        push_buffer_observation(
+                                                            slot,
+                                                            buffer_info.clone(),
+                                                            true,
+                                                        );
+                                                    }
+                                                } else {
+                                                    saw_invalid_slot = true;
+                                                }
+                                            }
+                                            if !saw_any_buffer || saw_invalid_slot {
+                                                slot.saw_scalar = true;
+                                            }
+                                        }
+                                        _ => {
+                                            // Indexed/nested struct method sugar may already have
+                                            // been rewritten to an internal selector expression by
+                                            // this point. The declared callee signature remains the
+                                            // authoritative shape for that argument; treating every
+                                            // non-Var/non-Index expression as scalar makes `self`
+                                            // appear both scalar and struct during MIR preparation.
+                                            if let Some(struct_name) = sig
+                                                .param_types
+                                                .get(idx)
+                                                .and_then(|ty| ty.as_ref())
+                                                .and_then(|ty| match ty {
+                                                    FnParamType::Struct(name) => Some(name),
+                                                    _ => None,
+                                                })
+                                            {
+                                                slot.saw_structs.insert(struct_name.clone());
+                                            } else {
+                                                slot.saw_scalar = true;
+                                            }
                                         }
                                     }
                                 }
@@ -561,21 +436,11 @@ fn infer_expr_calls(
                     }
                 }
             }
-            for arg in args {
-                infer_expr_calls(
-                    &arg.expr,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
-                    array_bindings,
-                    buffer_bindings,
-                    fn_signatures,
-                    kinds,
-                    errors,
-                );
-            }
+            Expr::ArrayCtor { .. } => return false,
+            _ => {}
         }
-    }
+        true
+    });
 }
 
 fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam> {

@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Replaced recursive expression traversal in compiler passes with shared iterative traversal
+  to prevent stack overflows when compiling long operator chains.
+- Moved native `onda run` buffer file loading, decoding, validation, waveform preparation, and
+  retired storage cleanup to a background worker shared by the egui and webview hosts.
+  Controls remain responsive during loading, and later binds or clears supersede pending loads.
 - Gave Windows SDK archives the same top-level package layout as Unix archives and
   added a CMake consumer check against the extracted Windows archive.
 - Pinned native macOS releases to macOS 15.0 and verify the deployment target of

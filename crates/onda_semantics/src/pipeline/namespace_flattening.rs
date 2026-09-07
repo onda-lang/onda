@@ -4689,287 +4689,159 @@ fn rewrite_expr_scoped(
     errors: &mut Vec<Diagnostic>,
     local_scope: &RewriteNameScope,
 ) {
-    let use_site_loc = expr.loc();
-    if let Expr::Var { name, .. } = expr {
-        if let Some(value) = template_consts.get(name).cloned() {
-            *expr = value.with_loc(use_site_loc);
-            return;
+    expr.visit_mut(|expr| {
+        let use_site_loc = expr.loc();
+        if let Expr::Var { name, .. } = expr {
+            if let Some(value) = template_consts.get(name).cloned() {
+                *expr = value.with_loc(use_site_loc);
+                return false;
+            }
         }
-    }
 
-    match expr {
-        Expr::Var { name, .. } => {
-            let qualified = if local_scope.contains_value_name(name) {
-                None
-            } else {
-                resolve_visible_unqualified_member_name(
-                    name,
-                    current_ns,
-                    state,
-                    use_site_loc,
-                    errors,
-                )
-            };
-            if let Some(qualified) = qualified {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                if let Some(resolved) = resolve_namespace_symbol_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    use_site_loc.span(),
-                ) {
-                    *name = resolved;
-                }
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            let qualified = if local_scope.contains_value_name(base) {
-                None
-            } else {
-                resolve_visible_unqualified_member_name(
-                    base,
-                    current_ns,
-                    state,
-                    use_site_loc,
-                    errors,
-                )
-            };
-            if let Some(qualified) = qualified {
-                *base = qualified;
-            } else if looks_like_namespace_ref(base) {
-                if let Some(resolved) = resolve_namespace_symbol_name(
-                    base,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    use_site_loc.span(),
-                ) {
-                    *base = resolved;
-                }
-            }
-            rewrite_expr_scoped(
-                index,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            let qualified = if local_scope.contains_value_name(base) {
-                None
-            } else {
-                resolve_visible_unqualified_member_name(
-                    base,
-                    current_ns,
-                    state,
-                    use_site_loc,
-                    errors,
-                )
-            };
-            if let Some(qualified) = qualified {
-                *base = qualified;
-            } else if looks_like_namespace_ref(base) {
-                if let Some(resolved) = resolve_namespace_symbol_name(
-                    base,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    use_site_loc.span(),
-                ) {
-                    *base = resolved;
-                }
-            }
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_scoped(
-                    coordinate,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    local_scope,
-                );
-            }
-        }
-        Expr::ArrayCtor {
-            loc, spec, init, ..
-        } => {
-            if let ArrayElemType::Struct(name) = &mut spec.elem {
-                rewrite_named_type_ref_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    loc.as_ref(),
-                );
-            }
-            rewrite_expr_scoped(
-                &mut spec.size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_expr_scoped(
-                        value,
+        match expr {
+            Expr::Var { name, .. } => {
+                let qualified = if local_scope.contains_value_name(name) {
+                    None
+                } else {
+                    resolve_visible_unqualified_member_name(
+                        name,
+                        current_ns,
+                        state,
+                        use_site_loc,
+                        errors,
+                    )
+                };
+                if let Some(qualified) = qualified {
+                    *name = qualified;
+                } else if looks_like_namespace_ref(name) {
+                    if let Some(resolved) = resolve_namespace_symbol_name(
+                        name,
                         current_ns,
                         template_consts,
                         options,
                         state,
                         generated,
                         errors,
-                        local_scope,
+                        use_site_loc.span(),
+                    ) {
+                        *name = resolved;
+                    }
+                }
+            }
+            Expr::Index { base, .. } => {
+                let qualified = if local_scope.contains_value_name(base) {
+                    None
+                } else {
+                    resolve_visible_unqualified_member_name(
+                        base,
+                        current_ns,
+                        state,
+                        use_site_loc,
+                        errors,
+                    )
+                };
+                if let Some(qualified) = qualified {
+                    *base = qualified;
+                } else if looks_like_namespace_ref(base) {
+                    if let Some(resolved) = resolve_namespace_symbol_name(
+                        base,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        use_site_loc.span(),
+                    ) {
+                        *base = resolved;
+                    }
+                }
+            }
+            Expr::Slice { base, .. } => {
+                let qualified = if local_scope.contains_value_name(base) {
+                    None
+                } else {
+                    resolve_visible_unqualified_member_name(
+                        base,
+                        current_ns,
+                        state,
+                        use_site_loc,
+                        errors,
+                    )
+                };
+                if let Some(qualified) = qualified {
+                    *base = qualified;
+                } else if looks_like_namespace_ref(base) {
+                    if let Some(resolved) = resolve_namespace_symbol_name(
+                        base,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        use_site_loc.span(),
+                    ) {
+                        *base = resolved;
+                    }
+                }
+            }
+            Expr::ArrayCtor { loc, spec, .. } => {
+                if let ArrayElemType::Struct(name) = &mut spec.elem {
+                    rewrite_named_type_ref_name(
+                        name,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        loc.as_ref(),
                     );
                 }
             }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr_scoped(
-                lhs,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-            rewrite_expr_scoped(
-                rhs,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_expr_scoped(
-                    arg,
+            Expr::UserCall { name, .. } => {
+                qualify_instance_method_call_name(
+                    name,
                     current_ns,
                     template_consts,
                     options,
                     state,
                     generated,
                     errors,
+                    use_site_loc,
                     local_scope,
                 );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            qualify_instance_method_call_name(
-                name,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                use_site_loc,
-                local_scope,
-            );
-            let qualified = if local_scope.contains_value_name(name) {
-                None
-            } else {
-                resolve_visible_unqualified_member_name(
-                    name,
-                    current_ns,
-                    state,
-                    use_site_loc,
-                    errors,
-                )
-            };
-            if let Some(qualified) = qualified {
-                *name = qualified;
-            } else if looks_like_namespace_ref(name) {
-                if let Some(resolved) = resolve_namespace_symbol_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    use_site_loc.span(),
-                ) {
-                    *name = resolved;
+                let qualified = if local_scope.contains_value_name(name) {
+                    None
+                } else {
+                    resolve_visible_unqualified_member_name(
+                        name,
+                        current_ns,
+                        state,
+                        use_site_loc,
+                        errors,
+                    )
+                };
+                if let Some(qualified) = qualified {
+                    *name = qualified;
+                } else if looks_like_namespace_ref(name) {
+                    if let Some(resolved) = resolve_namespace_symbol_name(
+                        name,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        use_site_loc.span(),
+                    ) {
+                        *name = resolved;
+                    }
                 }
             }
-            for arg in args {
-                rewrite_expr_scoped(
-                    &mut arg.expr,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    local_scope,
-                );
-            }
+            _ => {}
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_expr_scoped(
-                expr,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_expr_scoped(
-                    value,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    local_scope,
-                );
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
+        true
+    });
 }

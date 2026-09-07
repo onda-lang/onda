@@ -673,100 +673,26 @@ fn rewrite_overloaded_calls_in_expr_impl(
     errors: &mut Vec<Diagnostic>,
     resolved: &mut usize,
 ) {
-    with_expr_diag_context_mut(expr, |diag, expr| match expr {
-        Expr::Index { index, .. } => {
-            rewrite_overloaded_calls_in_expr_impl(
-                index, env, context, owner, overloads, errors, resolved,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_overloaded_calls_in_expr_impl(
-                    coordinate, env, context, owner, overloads, errors, resolved,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_overloaded_calls_in_expr_impl(
-                &mut spec.size,
-                env,
-                context,
-                owner,
-                overloads,
-                errors,
-                resolved,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_overloaded_calls_in_expr_impl(
-                        value, env, context, owner, overloads, errors, resolved,
-                    );
+    expr.visit_mut_postorder(|expr| {
+        with_expr_diag_context_mut(expr, |diag, expr| {
+            if let Expr::UserCall {
+                name,
+                type_args,
+                args,
+                ..
+            } = expr
+            {
+                if let Some(resolved_name) = resolve_overloaded_call_name(
+                    name, type_args, args, env, context, owner, overloads, diag, errors,
+                ) {
+                    if *name != resolved_name {
+                        *name = resolved_name;
+                        *resolved += 1;
+                    }
                 }
             }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_overloaded_calls_in_expr_impl(
-                lhs, env, context, owner, overloads, errors, resolved,
-            );
-            rewrite_overloaded_calls_in_expr_impl(
-                rhs, env, context, owner, overloads, errors, resolved,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_overloaded_calls_in_expr_impl(
-                    arg, env, context, owner, overloads, errors, resolved,
-                );
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_overloaded_calls_in_expr_impl(
-                expr, env, context, owner, overloads, errors, resolved,
-            );
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_overloaded_calls_in_expr_impl(
-                    value, env, context, owner, overloads, errors, resolved,
-                );
-            }
-        }
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            for arg in args.iter_mut() {
-                rewrite_overloaded_calls_in_expr_impl(
-                    &mut arg.expr,
-                    env,
-                    context,
-                    owner,
-                    overloads,
-                    errors,
-                    resolved,
-                );
-            }
-            if let Some(resolved_name) = resolve_overloaded_call_name(
-                name, type_args, args, env, context, owner, overloads, diag, errors,
-            ) {
-                if *name != resolved_name {
-                    *name = resolved_name;
-                    *resolved += 1;
-                }
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    })
+        });
+    });
 }
 
 fn rewrite_overloaded_calls_in_assign_target(

@@ -29,6 +29,12 @@ use crate::{
     run_param_json, RunMidiCapabilities,
 };
 
+mod buffer_worker;
+use buffer_worker::{
+    buffer_load_response, submit_buffer_load, write_buffer_replies, BufferLoadStatus, BufferWorker,
+    PendingBufferReply,
+};
+
 const MAX_CONTROL_COMMANDS_PER_RENDER_BLOCK: usize = 64;
 const SCOPE_CAPACITY_FRAMES: usize = 4096;
 const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
@@ -160,7 +166,7 @@ enum PlaybackControlCommand {
     BindBufferWav {
         name: String,
         path: PathBuf,
-        reply: PlaybackReply<()>,
+        reply: PlaybackReply<BufferLoadStatus>,
     },
     ClearBuffer {
         name: String,
@@ -760,6 +766,7 @@ fn spawn_run_render_thread(
         } = context;
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
+        let mut buffer_worker = BufferWorker::new();
         let mut session = DaemonSession::new(DaemonConfig {
             analysis: AnalysisOptions {
                 sample_rate: launch.sample_rate_hz as f32,
@@ -1119,6 +1126,10 @@ fn spawn_run_render_thread(
                             }
                         }
                         PlaybackControlCommand::BindBufferWav { name, path, reply } => {
+                            buffer_worker.load(name, path, reply);
+                        }
+                        PlaybackControlCommand::ClearBuffer { name, reply } => {
+                            buffer_worker.invalidate(&name);
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
                                 &mut session,
@@ -1128,42 +1139,17 @@ fn spawn_run_render_thread(
                                 .run_mut(&launch.input)
                                 .ok_or_else(|| "run is not active".to_owned())
                                 .and_then(|run| {
-                                    let result =
-                                        run.bind_buffer_wav_path(&name, &path).map_err(|diag| {
+                                    let result = run
+                                        .replace_prepared_buffer(&name, &mut None)
+                                        .map(|retired| {
+                                            buffer_worker.reclaim(None, Some(retired));
+                                        })
+                                        .map_err(|diag| {
                                             format_single_diagnostic(
-                                                "daemon play bind buffer failed",
+                                                "daemon play clear buffer failed",
                                                 &diag,
                                             )
                                         });
-                                    publish_run_output_batch(
-                                        run,
-                                        output_transport.as_ref(),
-                                        &print_transport,
-                                        delegate_subscription_id,
-                                    )?;
-                                    result
-                                });
-                            if result.is_ok() {
-                                playing = play_requested;
-                            }
-                            let _ = reply.send(result);
-                        }
-                        PlaybackControlCommand::ClearBuffer { name, reply } => {
-                            flush_pending_param_updates(
-                                &mut pending_param_updates,
-                                &mut session,
-                                &launch.input,
-                            );
-                            let result = session
-                                .run_mut(&launch.input)
-                                .ok_or_else(|| "run is not active".to_owned())
-                                .and_then(|run| {
-                                    let result = run.clear_buffer(&name).map_err(|diag| {
-                                        format_single_diagnostic(
-                                            "daemon play clear buffer failed",
-                                            &diag,
-                                        )
-                                    });
                                     publish_run_output_batch(
                                         run,
                                         output_transport.as_ref(),
@@ -1184,6 +1170,44 @@ fn spawn_run_render_thread(
                     &mut session,
                     &launch.input,
                 );
+            }
+
+            if let Some(mut loaded) = buffer_worker.poll() {
+                let mut retired = None;
+                let result = if !buffer_worker.is_current(&loaded) {
+                    Ok(BufferLoadStatus::Superseded)
+                } else {
+                    match &mut loaded.prepared {
+                        Err(error) => Err(error.clone()),
+                        Ok(prepared) => session
+                            .run_mut(&launch.input)
+                            .ok_or_else(|| "run is not active".to_owned())
+                            .and_then(|run| {
+                                let result = run
+                                    .replace_prepared_buffer(&loaded.name, prepared)
+                                    .map(|old| retired = Some(old))
+                                    .map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "daemon play bind buffer failed",
+                                            &diag,
+                                        )
+                                    });
+                                publish_run_output_batch(
+                                    run,
+                                    output_transport.as_ref(),
+                                    &print_transport,
+                                    delegate_subscription_id,
+                                )?;
+                                result
+                            }),
+                    }
+                    .map(|()| BufferLoadStatus::Applied)
+                };
+                buffer_worker.reclaim(loaded.prepared.ok().flatten(), retired);
+                if matches!(result, Ok(BufferLoadStatus::Applied)) {
+                    playing = play_requested;
+                }
+                let _ = loaded.reply.send(result);
             }
 
             if !playing {
@@ -1686,8 +1710,10 @@ fn handle_run_control_client(
         .map_err(|err| format!("failed to clone control socket: {err}"))?;
     let mut reader = BufReader::new(reader_stream);
     let mut writer = BufWriter::new(stream);
+    let mut pending_buffer_replies = Vec::new();
 
     while !context.stop_flag.load(Ordering::Acquire) {
+        write_buffer_replies(&mut pending_buffer_replies, &mut writer)?;
         write_pending_output_batches(
             &mut writer,
             &context.output_rx,
@@ -1717,6 +1743,24 @@ fn handle_run_control_client(
 
         let request: PlaybackControlRequest = serde_json::from_str(trimmed)
             .map_err(|err| format!("invalid control request json: {err}"))?;
+        if request.command == "bindBufferWav" {
+            match submit_buffer_load(request.name, request.path, &context.control_tx) {
+                Ok(result) => pending_buffer_replies.push(PendingBufferReply {
+                    id: request.id,
+                    result,
+                }),
+                Err(error) => {
+                    if let Some(id) = request.id {
+                        write_json_line(
+                            &mut writer,
+                            &json!({ "id": id, "ok": false, "error": error }),
+                        )
+                        .map_err(|error| format!("failed to write buffer response: {error}"))?;
+                    }
+                }
+            }
+            continue;
+        }
         let delegate_subscription_request = match request.command.as_str() {
             "subscribeDelegates" => Some(true),
             "unsubscribeDelegates" => Some(false),
@@ -1728,6 +1772,11 @@ fn handle_run_control_client(
             &context.scope_ring,
             subscription_id,
         );
+        // A bind may have committed while we waited for this command. Publish
+        // its reply first so a later clear cannot be overwritten in client
+        // state by the delayed bind acknowledgement. Still-pending loads are
+        // nonblocking and will be superseded by the render producer's clear.
+        write_buffer_replies(&mut pending_buffer_replies, &mut writer)?;
         let request_succeeded = response
             .as_ref()
             .and_then(|value| value.get("ok"))
@@ -2278,38 +2327,13 @@ fn run_control_response(
             }
         })(),
         "bindBufferWav" => (|| -> Result<Option<Value>, String> {
-            let name = request
-                .name
-                .ok_or_else(|| "bindBufferWav requires 'name'".to_owned())?;
-            let path = request
-                .path
-                .ok_or_else(|| "bindBufferWav requires 'path'".to_owned())?;
-            let (reply_tx, reply_rx) = mpsc::channel();
-            control_tx
-                .send(PlaybackControlCommand::BindBufferWav {
-                    name,
-                    path: PathBuf::from(path),
-                    reply: reply_tx,
-                })
-                .map_err(|_| "run control channel closed".to_owned())?;
-            match reply_rx
+            let reply_rx = submit_buffer_load(request.name, request.path, control_tx)?;
+            let result = reply_rx
                 .recv()
-                .map_err(|_| "run control reply channel closed".to_owned())?
-            {
-                Ok(()) => Ok(request_id.clone().map(|id| {
-                    json!({
-                        "id": id,
-                        "ok": true,
-                    })
-                })),
-                Err(err) => Ok(request_id.clone().map(|id| {
-                    json!({
-                        "id": id,
-                        "ok": false,
-                        "error": err,
-                    })
-                })),
-            }
+                .map_err(|_| "run control reply channel closed".to_owned())?;
+            Ok(request_id
+                .clone()
+                .map(|id| buffer_load_response(id, result)))
         })(),
         "getScopeData" => scope_ring
             .lock()

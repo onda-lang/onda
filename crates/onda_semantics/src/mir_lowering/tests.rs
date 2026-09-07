@@ -4,6 +4,26 @@ use onda_mir::{format_program, CompileConfig, Function, FunctionKind, Program};
 use super::*;
 use crate::{analyze, analyze_with_options};
 
+#[test]
+fn long_expression_compiles_on_a_worker_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let expression = std::iter::repeat_n("x", 1024)
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let parsed = parse_program(&format!(
+                "params:\n  x = 0.1\nsample:\n  out1 = {expression}\n"
+            ))
+            .unwrap();
+            let typed = analyze(parsed).unwrap();
+            lower_program_to_optimized_mir(&typed).unwrap();
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// Test-only raw access for structural assertions. Production callers retain
 /// the proof-carrying `OptimizedProgram` returned by semantic lowering.
 fn lower_test_program(program: &TypedProgram) -> Result<Program, Vec<MirLoweringError>> {

@@ -1772,100 +1772,53 @@ pub(super) fn fold_direct_const_def_call_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let direct_call = match expr {
-        Expr::UserCall {
-            name,
-            args,
-            type_args,
-            ..
-        } if artifacts.const_defs.contains_key(name) => Some((
-            name.clone(),
-            args.clone(),
-            !type_args.is_empty(),
-            expr.loc(),
-        )),
-        _ => None,
-    };
-    if let Some((name, args, has_type_args, loc)) = direct_call {
-        if has_type_args {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context}: const def calls cannot use explicit type arguments"),
+    expr.visit_mut(|expr| {
+        let direct_call = match expr {
+            Expr::UserCall {
+                name,
+                args,
+                type_args,
+                ..
+            } if artifacts.const_defs.contains_key(name) => Some((
+                name.clone(),
+                args.clone(),
+                !type_args.is_empty(),
+                expr.loc(),
+            )),
+            _ => None,
+        };
+        if let Some((name, args, has_type_args, loc)) = direct_call {
+            if has_type_args {
+                errors.push(Diagnostic::semantic_span(
+                    format!("{context}: const def calls cannot use explicit type arguments"),
+                    loc,
+                ));
+                return false;
+            }
+            let locals = HashMap::new();
+            let local_arrays = HashMap::new();
+            if let Some(value) = eval_const_def_call(
+                &name,
+                &args,
+                &locals,
+                &local_arrays,
+                &artifacts.const_values,
+                const_def_registry(artifacts),
+                options,
+                context,
+                &mut Vec::new(),
+                errors,
                 loc,
-            ));
-            return;
-        }
-        let locals = HashMap::new();
-        let local_arrays = HashMap::new();
-        if let Some(value) = eval_const_def_call(
-            &name,
-            &args,
-            &locals,
-            &local_arrays,
-            &artifacts.const_values,
-            const_def_registry(artifacts),
-            options,
-            context,
-            &mut Vec::new(),
-            errors,
-            loc,
-        ) {
-            *expr = match value {
-                ConstEvalValue::Scalar(value) => typed_const_expr_with_loc(value, loc),
-                ConstEvalValue::Array(array) => const_array_literal_expr(&array.values, loc),
-            };
-        }
-        return;
-    }
-
-    match expr {
-        Expr::Index { index, .. } => {
-            fold_direct_const_def_call_expr(index, artifacts, options, context, errors);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                fold_direct_const_def_call_expr(coordinate, artifacts, options, context, errors);
+            ) {
+                *expr = match value {
+                    ConstEvalValue::Scalar(value) => typed_const_expr_with_loc(value, loc),
+                    ConstEvalValue::Array(array) => const_array_literal_expr(&array.values, loc),
+                };
             }
+            return false;
         }
-        Expr::ArrayCtor { spec, init, .. } => {
-            fold_direct_const_def_call_expr(&mut spec.size, artifacts, options, context, errors);
-            if let Some(init) = init {
-                for value in init {
-                    fold_direct_const_def_call_expr(value, artifacts, options, context, errors);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            fold_direct_const_def_call_expr(lhs, artifacts, options, context, errors);
-            fold_direct_const_def_call_expr(rhs, artifacts, options, context, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                fold_direct_const_def_call_expr(arg, artifacts, options, context, errors);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                fold_direct_const_def_call_expr(&mut arg.expr, artifacts, options, context, errors);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            fold_direct_const_def_call_expr(expr, artifacts, options, context, errors);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                fold_direct_const_def_call_expr(value, artifacts, options, context, errors);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+        true
+    });
 }
 
 pub(super) fn fold_direct_const_def_decl_type(
@@ -2586,63 +2539,14 @@ pub(super) fn fold_local_scalar_const_expr(
     expr: &mut Expr,
     local_consts: &HashMap<String, TypedConstValue>,
 ) {
-    let loc = expr.loc();
-    if let Expr::Var { name, .. } = expr {
-        if let Some(value) = local_consts.get(name).copied() {
-            *expr = typed_const_expr_with_loc(value, loc);
-            return;
-        }
-    }
-
-    match expr {
-        Expr::Index { index, .. } => {
-            fold_local_scalar_const_expr(index, local_consts);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                fold_local_scalar_const_expr(coordinate, local_consts);
+    expr.visit_mut(|expr| {
+        if let Expr::Var { loc, name } = expr {
+            if let Some(value) = local_consts.get(name).copied() {
+                *expr = typed_const_expr_with_loc(value, (*loc).into());
             }
         }
-        Expr::ArrayCtor { spec, init, .. } => {
-            fold_local_scalar_const_expr(&mut spec.size, local_consts);
-            if let Some(init) = init {
-                for value in init {
-                    fold_local_scalar_const_expr(value, local_consts);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            fold_local_scalar_const_expr(lhs, local_consts);
-            fold_local_scalar_const_expr(rhs, local_consts);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                fold_local_scalar_const_expr(arg, local_consts);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                fold_local_scalar_const_expr(&mut arg.expr, local_consts);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            fold_local_scalar_const_expr(expr, local_consts);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                fold_local_scalar_const_expr(value, local_consts);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+        true
+    });
 }
 
 pub(super) fn fold_local_scalar_const_decl_type(

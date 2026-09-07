@@ -1189,6 +1189,12 @@ impl RunController {
                 return poll;
             }
             let id = resp.get("id").and_then(Value::as_u64);
+            if resp.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                if let Some(id) = id {
+                    self.pending_commands.remove(&id);
+                }
+                return poll;
+            }
             let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
             if let Some(command) = id.and_then(|id| self.pending_commands.remove(&id)) {
                 if succeeded {

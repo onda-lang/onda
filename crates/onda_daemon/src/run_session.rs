@@ -279,6 +279,54 @@ struct BufferBindingReplacement<'a> {
     binding: Option<&'a mut RunBufferBinding>,
 }
 
+/// Validated sample storage and its precomputed display data. Prepare this on a
+/// worker, then transfer exclusive ownership to the render thread.
+#[derive(Debug)]
+pub struct PreparedRunBuffer(RunBufferBinding);
+
+impl PreparedRunBuffer {
+    pub fn from_asset(
+        asset: BufferAsset,
+        loaded_path: Option<PathBuf>,
+    ) -> Result<Self, Diagnostic> {
+        asset
+            .validate(&ProjectLimits::default())
+            .map_err(|error| Diagnostic::runtime(format!("invalid buffer asset: {error}"), 0, 0))?;
+        let waveform = buffer_waveform(
+            &asset.samples,
+            asset.frames as usize,
+            asset.channels as usize,
+        );
+        Ok(Self(RunBufferBinding {
+            samples: asset.samples,
+            frames: asset.frames as usize,
+            channels: asset.channels as usize,
+            sample_rate_hz: asset.sample_rate,
+            loaded_path,
+            waveform,
+        }))
+    }
+
+    pub fn load_file(path: &Path) -> Result<Self, Diagnostic> {
+        let asset =
+            onda_project::load_buffer_file(path, ProjectLimits::default()).map_err(|error| {
+                Diagnostic::runtime(
+                    format!("failed to load buffer asset '{}': {error}", path.display()),
+                    0,
+                    0,
+                )
+            })?;
+        Self::from_asset(asset, Some(path.to_path_buf()))
+    }
+}
+
+/// Holds replaced allocations until the worker can reclaim them. The instance
+/// drops first, before the sample storage its descriptors may reference.
+pub struct RetiredRunBuffer {
+    _instance: Instance,
+    _binding: Option<RunBufferBinding>,
+}
+
 impl RunSession {
     pub fn build(
         analysis: &AnalysisSession,
@@ -1070,16 +1118,8 @@ impl RunSession {
         name: &str,
         path: impl AsRef<Path>,
     ) -> Result<(), Diagnostic> {
-        let path = path.as_ref();
-        let asset =
-            onda_project::load_buffer_file(path, ProjectLimits::default()).map_err(|error| {
-                Diagnostic::runtime(
-                    format!("failed to load buffer asset '{}': {error}", path.display()),
-                    0,
-                    0,
-                )
-            })?;
-        self.bind_buffer_asset_with_path(name, asset, Some(path.to_path_buf()))
+        let mut prepared = Some(PreparedRunBuffer::load_file(path.as_ref())?);
+        self.replace_prepared_buffer(name, &mut prepared).map(drop)
     }
 
     pub fn bind_buffer_samples(
@@ -1119,20 +1159,7 @@ impl RunSession {
     }
 
     pub fn clear_buffer(&mut self, name: &str) -> Result<(), Diagnostic> {
-        let Some(index) = self.jit.buffer_index(name) else {
-            return Err(Diagnostic::runtime(
-                format!("unknown buffer '{name}'"),
-                0,
-                0,
-            ));
-        };
-        let instance = self.build_instance(Some(BufferBindingReplacement {
-            index,
-            binding: None,
-        }))?;
-        self.instance = instance;
-        self.buffer_bindings[index] = None;
-        Ok(())
+        self.replace_prepared_buffer(name, &mut None).map(drop)
     }
 
     fn bind_buffer_asset_with_path(
@@ -1141,14 +1168,35 @@ impl RunSession {
         asset: BufferAsset,
         loaded_path: Option<PathBuf>,
     ) -> Result<(), Diagnostic> {
-        let (index, mut binding) = validated_buffer_binding(&self.jit, name, asset, loaded_path)?;
+        let mut prepared = Some(PreparedRunBuffer::from_asset(asset, loaded_path)?);
+        self.replace_prepared_buffer(name, &mut prepared).map(drop)
+    }
+
+    /// Commit at a block boundary. Failure retains both the active binding and
+    /// the prepared replacement; callers can reclaim either result off-thread.
+    pub fn replace_prepared_buffer(
+        &mut self,
+        name: &str,
+        prepared: &mut Option<PreparedRunBuffer>,
+    ) -> Result<RetiredRunBuffer, Diagnostic> {
+        let index = self
+            .jit
+            .buffer_index(name)
+            .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
+        if let Some(binding) = prepared.as_ref() {
+            validate_buffer_element(&self.jit, index, name, binding.0.samples.element())?;
+        }
         let instance = self.build_instance(Some(BufferBindingReplacement {
             index,
-            binding: Some(&mut binding),
+            binding: prepared.as_mut().map(|prepared| &mut prepared.0),
         }))?;
-        self.instance = instance;
-        self.buffer_bindings[index] = Some(binding);
-        Ok(())
+        Ok(RetiredRunBuffer {
+            _instance: mem::replace(&mut self.instance, instance),
+            _binding: mem::replace(
+                &mut self.buffer_bindings[index],
+                prepared.take().map(|prepared| prepared.0),
+            ),
+        })
     }
 
     fn rebuild_instance(&mut self) -> Result<(), Diagnostic> {
@@ -1259,14 +1307,19 @@ fn validated_buffer_binding(
             0,
         ));
     };
-    let desc = jit
-        .buffers()
-        .get(index)
-        .ok_or_else(|| Diagnostic::runtime(format!("unknown buffer '{name}'"), 0, 0))?;
-    asset.validate(&ProjectLimits::default()).map_err(|error| {
-        Diagnostic::runtime(format!("invalid asset for buffer '{name}': {error}"), 0, 0)
-    })?;
-    let elem_ty = primitive_type_for_buffer_element(asset.element());
+    let prepared = PreparedRunBuffer::from_asset(asset, loaded_path)?;
+    validate_buffer_element(jit, index, name, prepared.0.samples.element())?;
+    Ok((index, prepared.0))
+}
+
+fn validate_buffer_element(
+    jit: &JitProgram,
+    index: usize,
+    name: &str,
+    element: BufferElement,
+) -> Result<(), Diagnostic> {
+    let desc = &jit.buffers()[index];
+    let elem_ty = primitive_type_for_buffer_element(element);
     if desc.elem_ty() != elem_ty {
         return Err(Diagnostic::runtime(
             format!(
@@ -1279,22 +1332,7 @@ fn validated_buffer_binding(
             0,
         ));
     }
-    let waveform = buffer_waveform(
-        &asset.samples,
-        asset.frames as usize,
-        asset.channels as usize,
-    );
-    Ok((
-        index,
-        RunBufferBinding {
-            samples: asset.samples,
-            frames: asset.frames as usize,
-            channels: asset.channels as usize,
-            sample_rate_hz: asset.sample_rate,
-            loaded_path,
-            waveform,
-        },
-    ))
+    Ok(())
 }
 
 fn buffer_waveform(samples: &BufferSamples, frames: usize, channels: usize) -> RunBufferWaveform {

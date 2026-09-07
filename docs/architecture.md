@@ -62,6 +62,10 @@ Non-crate directories of note:
 ### `onda_frontend` (`crates/onda_frontend/src`)
 - `lib.rs` — public AST types and diagnostic context.
 - `ast.rs` — AST node definitions.
+- `expr_traversal.rs` — shared iterative expression walking, pruned rewrites, postorder
+  rewrites, and result folding. Semantic passes use heap-backed traversal for long
+  operator chains instead of growing the thread stack; MIR folds eager operators
+  in evaluation order while retaining dedicated control-flow lowering for short-circuit expressions.
 - `diagnostics.rs` — diagnostic construction.
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
@@ -205,6 +209,8 @@ Non-crate directories of note:
 - `analysis_session.rs` — in-memory document overlays and `analyze_document` snapshots.
 - `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
   param updates, and `render_block`.
+  `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
+  returns retired instance/storage ownership for reclamation outside the render producer.
 
 ### `onda_run` (`crates/onda_run/src`)
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
@@ -212,6 +218,13 @@ Non-crate directories of note:
   unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
   watcher coverage.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
+- `playback/buffer_worker.rs` — bounded background file loading, decoding, validation,
+  waveform preparation, and retired-storage reclamation. Per-buffer revisions reject
+  loads superseded by a later bind or clear. Control clients remain responsive during
+  loading; the render producer commits prepared storage between blocks. Replacement
+  still rebuilds and initializes the instance at commit, since init may access other
+  writable buffers. File contents are owned snapshots after loading; later path changes
+  cannot invalidate their memory, and project asset watching retains its reload policy.
 
 ### `onda_lsp` (`crates/onda_lsp/src`)
 - `lib.rs` — public LSP entry point used by `onda lsp`.

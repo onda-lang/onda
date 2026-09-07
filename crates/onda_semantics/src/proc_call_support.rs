@@ -57,7 +57,7 @@ fn rewrite_proc_alias_calls_in_expr_impl(
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     rewrite_var_fields: bool,
 ) {
-    match expr {
+    expr.visit_mut_postorder(|expr| match expr {
         Expr::Var { name, .. } => {
             if rewrite_var_fields {
                 if let Some((base, field)) = split_dot_path(name.as_str()) {
@@ -92,43 +92,7 @@ fn rewrite_proc_alias_calls_in_expr_impl(
                 }
             }
         }
-        Expr::Index { index, .. } => {
-            rewrite_proc_alias_calls_in_expr_impl(index, aliases, rewrite_var_fields)
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_proc_alias_calls_in_expr_impl(coordinate, aliases, rewrite_var_fields);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_proc_alias_calls_in_expr_impl(&mut spec.size, aliases, rewrite_var_fields);
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_proc_alias_calls_in_expr_impl(value, aliases, rewrite_var_fields);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_proc_alias_calls_in_expr_impl(lhs, aliases, rewrite_var_fields);
-            rewrite_proc_alias_calls_in_expr_impl(rhs, aliases, rewrite_var_fields);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_proc_alias_calls_in_expr_impl(arg, aliases, rewrite_var_fields);
-            }
-        }
         Expr::UserCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                rewrite_proc_alias_calls_in_expr_impl(&mut arg.expr, aliases, rewrite_var_fields);
-            }
             if let Some(alias) = aliases.get(name) {
                 *name = PROC_INDEX_CALL_SENTINEL.to_owned();
                 prepend_proc_index_alias_args(args, alias);
@@ -141,18 +105,8 @@ fn rewrite_proc_alias_calls_in_expr_impl(
                 }
             }
         }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            rewrite_proc_alias_calls_in_expr_impl(inner, aliases, rewrite_var_fields);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_proc_alias_calls_in_expr_impl(value, aliases, rewrite_var_fields);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
+        _ => {}
+    });
 }
 
 pub(crate) fn rewrite_proc_alias_calls_in_expr(

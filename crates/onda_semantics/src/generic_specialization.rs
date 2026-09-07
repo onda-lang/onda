@@ -738,150 +738,104 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
     errors: &mut Vec<Diagnostic>,
     locals: &mut GenericInferenceLocals,
 ) {
-    let diag = DiagCtx::new(expr.loc());
-    match expr {
-        Expr::Index { index, .. } => {
-            rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_generic_struct_ctor_expr(coordinate, templates, generated, errors, locals);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
-                let elem_text = elem_name.clone();
-                let (template_lookup_name, explicit_type_args) =
-                    match parse_array_struct_elem_with_type_args(&elem_text) {
-                        Some((base, type_args)) => (base, Some(type_args)),
-                        None => (elem_text.clone(), None),
-                    };
-                if let Some(template) = templates.get(template_lookup_name.as_str()) {
-                    if !template.type_params.is_empty() {
-                        let type_args_to_use = if let Some(type_args) = explicit_type_args {
-                            let Some(resolved) = resolve_explicit_call_type_args(
-                                &type_args,
-                                &format!("array element type '{}'", elem_text),
-                                diag,
-                                errors,
-                            ) else {
-                                return;
-                            };
-                            if resolved.len() != template.type_params.len() {
-                                push_semantic(
+    expr.visit_mut_postorder(|expr| {
+        let diag = DiagCtx::new(expr.loc());
+        match expr {
+            Expr::ArrayCtor { spec, .. } => {
+                if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
+                    let elem_text = elem_name.clone();
+                    let (template_lookup_name, explicit_type_args) =
+                        match parse_array_struct_elem_with_type_args(&elem_text) {
+                            Some((base, type_args)) => (base, Some(type_args)),
+                            None => (elem_text.clone(), None),
+                        };
+                    if let Some(template) = templates.get(template_lookup_name.as_str()) {
+                        if !template.type_params.is_empty() {
+                            let type_args_to_use = if let Some(type_args) = explicit_type_args {
+                                let Some(resolved) = resolve_explicit_call_type_args(
+                                    &type_args,
+                                    &format!("array element type '{}'", elem_text),
                                     diag,
                                     errors,
-                                    format!(
+                                ) else {
+                                    return;
+                                };
+                                if resolved.len() != template.type_params.len() {
+                                    push_semantic(
+                                        diag,
+                                        errors,
+                                        format!(
                                         "array element type '{}' expects {} type arguments, got {}",
                                         template_lookup_name.as_str(),
                                         template.type_params.len(),
                                         resolved.len()
                                     ),
-                                );
-                                return;
+                                    );
+                                    return;
+                                }
+                                resolved
+                            } else {
+                                vec![PrimitiveType::F32; template.type_params.len()]
+                            };
+                            if let Some(specialized) = specialize_generic_struct_template(
+                                template,
+                                &type_args_to_use,
+                                errors,
+                            ) {
+                                let specialized_name = specialized.name.clone();
+                                generated
+                                    .entry(specialized_name.clone())
+                                    .or_insert(specialized);
+                                *elem_name = specialized_name;
                             }
-                            resolved
-                        } else {
-                            vec![PrimitiveType::F32; template.type_params.len()]
-                        };
-                        if let Some(specialized) =
-                            specialize_generic_struct_template(template, &type_args_to_use, errors)
-                        {
-                            let specialized_name = specialized.name.clone();
-                            generated
-                                .entry(specialized_name.clone())
-                                .or_insert(specialized);
-                            *elem_name = specialized_name;
                         }
                     }
                 }
             }
-            rewrite_generic_struct_ctor_expr(&mut spec.size, templates, generated, errors, locals);
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_generic_struct_ctor_expr(value, templates, generated, errors, locals);
+            Expr::UserCall {
+                name,
+                type_args,
+                args,
+                ..
+            } => {
+                if let Some(template) = templates.get(name) {
+                    let type_args_to_use = if type_args.is_empty() {
+                        infer_generic_struct_ctor_type_args(
+                            template,
+                            args,
+                            &locals.scalar_types,
+                            &locals.array_elem_types,
+                            locals.default_ctor_missing_type_params_to_f32,
+                            diag,
+                            errors,
+                        )
+                    } else {
+                        resolve_explicit_call_type_args(
+                            type_args,
+                            &format!("struct constructor '{}'", name),
+                            diag,
+                            errors,
+                        )
+                    };
+                    let Some(type_args_to_use) = type_args_to_use else {
+                        return;
+                    };
+                    let Some(specialized) =
+                        specialize_generic_struct_template(template, &type_args_to_use, errors)
+                    else {
+                        return;
+                    };
+                    let specialized_name = specialized.name.clone();
+                    generated
+                        .entry(specialized_name.clone())
+                        .or_insert(specialized);
+                    *name = specialized_name;
+                    type_args.clear();
                 }
             }
+            _ => {}
         }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_generic_struct_ctor_expr(lhs, templates, generated, errors, locals);
-            rewrite_generic_struct_ctor_expr(rhs, templates, generated, errors, locals);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_generic_struct_ctor_expr(arg, templates, generated, errors, locals);
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            rewrite_generic_struct_ctor_expr(inner, templates, generated, errors, locals);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_generic_struct_ctor_expr(value, templates, generated, errors, locals);
-            }
-        }
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            for arg in args.iter_mut() {
-                rewrite_generic_struct_ctor_expr(
-                    &mut arg.expr,
-                    templates,
-                    generated,
-                    errors,
-                    locals,
-                );
-            }
-            if let Some(template) = templates.get(name) {
-                let type_args_to_use = if type_args.is_empty() {
-                    infer_generic_struct_ctor_type_args(
-                        template,
-                        args,
-                        &locals.scalar_types,
-                        &locals.array_elem_types,
-                        locals.default_ctor_missing_type_params_to_f32,
-                        diag,
-                        errors,
-                    )
-                } else {
-                    resolve_explicit_call_type_args(
-                        type_args,
-                        &format!("struct constructor '{}'", name),
-                        diag,
-                        errors,
-                    )
-                };
-                let Some(type_args_to_use) = type_args_to_use else {
-                    return;
-                };
-                let Some(specialized) =
-                    specialize_generic_struct_template(template, &type_args_to_use, errors)
-                else {
-                    return;
-                };
-                let specialized_name = specialized.name.clone();
-                generated
-                    .entry(specialized_name.clone())
-                    .or_insert(specialized);
-                *name = specialized_name;
-                type_args.clear();
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+    });
 }
 
 pub(crate) fn rewrite_generic_struct_ctor_stmt(

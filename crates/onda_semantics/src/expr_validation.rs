@@ -356,11 +356,25 @@ pub(crate) fn validate_block_bound_surface_assign_target(
 }
 
 pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diagnostic>) {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        let start = pending.len();
+        validate_expr_node(expr, env, errors, &mut pending);
+        pending[start..].reverse();
+    }
+}
+
+fn validate_expr_node<'a>(
+    expr: &'a Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+    children: &mut Vec<&'a Expr>,
+) {
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
         Expr::ArrayLiteral { values, .. } => {
             for value in values {
-                validate_expr(value, env, errors);
+                children.push(value);
             }
             push_expr_error(
                 errors,
@@ -370,7 +384,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
         }
         Expr::Tuple { values, .. } => {
             for value in values {
-                validate_expr(value, env, errors);
+                children.push(value);
             }
         }
         Expr::Var { name, .. } => {
@@ -580,12 +594,12 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     format!("loop variable '{lexical_root}' is scalar and cannot be indexed"),
                 );
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if let Some(name) = block_audio_input_name(base, env) {
                 push_block_audio_input_error(errors, expr.loc(), name);
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if let Some((root, field)) = split_field_path(base, errors) {
@@ -658,7 +672,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                             }
                         }
                     } else {
-                        validate_expr(index, env, errors);
+                        children.push(index);
                     }
                     return;
                 }
@@ -679,7 +693,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             if let Some(name) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, expr.loc(), name);
-                    validate_expr(index, env, errors);
+                    children.push(index);
                     return;
                 }
             }
@@ -687,7 +701,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 if !env.dynamic_param_indexing_allowed {
                     push_dynamic_param_index_scope_error(errors, expr, name);
                 }
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if matches!(base.as_str(), "outs" | "kouts") {
@@ -699,7 +713,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         base
                     ),
                 );
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if env.output_arrays.contains(base) {
@@ -710,7 +724,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         "cannot read output array symbol '{base}[...]' owned by the current program/proc"
                     ),
                 );
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if (match base.as_str() {
@@ -726,7 +740,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         format!("'{base}[...]' is not allowed in init scope"),
                     );
                 }
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if matches!(base.as_str(), "ins" | "outs" | "kouts" | "params" | "kins") {
@@ -741,7 +755,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     expr,
                     format!("'{base}[i]' requires an {requirement}"),
                 );
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if is_declared_buffer_array_info(env.declared_symbols, base) {
@@ -752,7 +766,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                         "buffer collection element '{base}[...]' is a reference and is only valid as a buffer argument or method receiver"
                     ),
                 );
-                validate_expr(index, env, errors);
+                children.push(index);
                 return;
             }
             if !env.array_vars.contains_key(base)
@@ -795,7 +809,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     ),
                 );
             }
-            validate_expr(index, env, errors);
+            children.push(index);
         }
         Expr::Slice {
             base,
@@ -813,14 +827,14 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     format!("loop variable '{lexical_root}' is scalar and cannot be sliced"),
                 );
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    validate_expr(coordinate, env, errors);
+                    children.push(coordinate);
                 }
                 return;
             }
             if let Some(name) = block_audio_input_name(base, env) {
                 push_block_audio_input_error(errors, expr.loc(), name);
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    validate_expr(coordinate, env, errors);
+                    children.push(coordinate);
                 }
                 return;
             }
@@ -958,7 +972,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             .into_iter()
             .flatten()
             {
-                validate_expr(coordinate, env, errors);
+                children.push(coordinate);
             }
         }
         Expr::ArrayCtor { init, .. } => {
@@ -971,24 +985,24 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             }
             if let Some(values) = init {
                 for value in values {
-                    validate_expr(value, env, errors);
+                    children.push(value);
                 }
             }
         }
         Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            validate_expr(expr, env, errors);
+            children.push(expr);
         }
         Expr::Logical { lhs, rhs, .. } => {
-            validate_expr(lhs, env, errors);
-            validate_expr(rhs, env, errors);
+            children.push(lhs);
+            children.push(rhs);
         }
         Expr::Compare { lhs, rhs, .. } => {
-            validate_expr(lhs, env, errors);
-            validate_expr(rhs, env, errors);
+            children.push(lhs);
+            children.push(rhs);
         }
         Expr::Call { func, args, .. } => {
             for arg in args {
-                validate_expr(arg, env, errors);
+                children.push(arg);
             }
             let expected = builtin_arity(*func);
             if args.len() != expected {
@@ -1109,7 +1123,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     if is_internal_proc_index_validation_arg(args, idx, arg.name.as_deref()) {
                         continue;
                     }
-                    validate_expr(&arg.expr, env, errors);
+                    children.push(&arg.expr);
                 }
                 return;
             }
@@ -1243,13 +1257,13 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 );
                             }
                             if matches!(arg, Expr::Slice { .. }) {
-                                validate_expr(arg, env, errors);
+                                children.push(arg);
                             } else if let Expr::ArrayLiteral { values, .. } = arg {
                                 for value in values {
-                                    validate_expr(value, env, errors);
+                                    children.push(value);
                                 }
                             } else if matches!(arg, Expr::ArrayCtor { .. }) {
-                                validate_expr(arg, env, errors);
+                                children.push(arg);
                             }
                             // Array params accept data-like args.
                             continue;
@@ -1345,7 +1359,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                                 );
                             }
                         }
-                        validate_expr(arg, env, errors);
+                        children.push(arg);
                     } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {
                         validate_default_expr(
                             default,
@@ -1421,7 +1435,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                     ),
                 );
                 for arg in args {
-                    validate_expr(&arg.expr, env, errors);
+                    children.push(&arg.expr);
                 }
                 return;
             }
@@ -1435,7 +1449,7 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
                 });
                 if has_indexed_proc_receiver {
                     for arg in args {
-                        validate_expr(&arg.expr, env, errors);
+                        children.push(&arg.expr);
                     }
                     return;
                 }
@@ -1456,8 +1470,8 @@ pub(crate) fn validate_expr(expr: &Expr, env: ExprEnv<'_>, errors: &mut Vec<Diag
             );
         }
         Expr::Binary { lhs, rhs, .. } => {
-            validate_expr(lhs, env, errors);
-            validate_expr(rhs, env, errors);
+            children.push(lhs);
+            children.push(rhs);
         }
     }
 }

@@ -6,6 +6,27 @@ impl<'a> FunctionLowerer<'a> {
         expression: &Expr,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        expression.try_fold(
+            |expr, children| match expr {
+                Expr::Binary { .. }
+                | Expr::Compare { .. }
+                | Expr::Cast { .. }
+                | Expr::UnaryNot { .. }
+                | Expr::UnaryBitNot { .. } => expr.children(children),
+                // Logical operators own control-flow blocks; calls and indexed
+                // references have context-dependent argument preparation.
+                _ => {}
+            },
+            |expression, children| self.lower_expr_node(expression, children, block),
+        )
+    }
+
+    fn lower_expr_node(
+        &mut self,
+        expression: &Expr,
+        children: &mut std::vec::Drain<'_, LoweredValue>,
+        block: &mut MirBlock,
+    ) -> Result<LoweredValue, MirLoweringError> {
         match expression {
             Expr::Number { value, .. } => Ok(LoweredValue {
                 value: Value::Constant(ScalarValue::F64(*value)),
@@ -20,12 +41,28 @@ impl<'a> FunctionLowerer<'a> {
                 ty: PrimitiveType::Bool,
             }),
             Expr::Var { name, .. } => self.lower_variable(name, expression.loc(), block),
-            Expr::Binary { op, lhs, rhs, .. } => {
-                self.lower_binary(*op, lhs, rhs, expression.loc(), block)
-            }
-            Expr::Compare { op, lhs, rhs, .. } => {
-                self.lower_compare(*op, lhs, rhs, expression.loc(), block)
-            }
+            Expr::Binary { op, lhs, rhs, .. } => self.lower_binary(
+                *op,
+                lhs,
+                rhs,
+                [
+                    children.next().expect("left operand"),
+                    children.next().expect("right operand"),
+                ],
+                expression.loc(),
+                block,
+            ),
+            Expr::Compare { op, lhs, rhs, .. } => self.lower_compare(
+                *op,
+                lhs,
+                rhs,
+                [
+                    children.next().expect("left operand"),
+                    children.next().expect("right operand"),
+                ],
+                expression.loc(),
+                block,
+            ),
             Expr::Call { func, args, .. } => {
                 self.lower_intrinsic(*func, args, expression.loc(), block)
             }
@@ -63,12 +100,12 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 Ok(values[0])
             }
-            Expr::Cast { to, expr, .. } => {
-                let value = self.lower_expr(expr, block)?;
+            Expr::Cast { to, .. } => {
+                let value = children.next().expect("unary operand");
                 self.lower_explicit_cast(value, *to, block, expression.loc())
             }
-            Expr::UnaryNot { expr, .. } => {
-                let operand = self.lower_expr(expr, block)?;
+            Expr::UnaryNot { .. } => {
+                let operand = children.next().expect("unary operand");
                 let operand = self.coerce(operand, PrimitiveType::Bool, block, expression.loc())?;
                 Ok(self.emit_temp(
                     block,
@@ -80,8 +117,8 @@ impl<'a> FunctionLowerer<'a> {
                     expression.loc(),
                 ))
             }
-            Expr::UnaryBitNot { expr, .. } => {
-                let operand = self.lower_expr(expr, block)?;
+            Expr::UnaryBitNot { .. } => {
+                let operand = children.next().expect("unary operand");
                 if !matches!(operand.ty, PrimitiveType::I32 | PrimitiveType::I64) {
                     return Err(self.error(
                         "bitwise not operand is not an integer after semantic analysis",
@@ -1029,11 +1066,11 @@ impl<'a> FunctionLowerer<'a> {
         op: AstBinaryOp,
         lhs: &Expr,
         rhs: &Expr,
+        operands: [LoweredValue; 2],
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
-        let left = self.lower_expr(lhs, block)?;
-        let right = self.lower_expr(rhs, block)?;
+        let [left, right] = operands;
         let (left_ty, right_ty) = adapt_binary_operand_types(lhs, rhs, left.ty, right.ty);
         let result_ty = if matches!(
             op,
@@ -1071,11 +1108,11 @@ impl<'a> FunctionLowerer<'a> {
         op: CmpOp,
         lhs: &Expr,
         rhs: &Expr,
+        operands: [LoweredValue; 2],
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
-        let left = self.lower_expr(lhs, block)?;
-        let right = self.lower_expr(rhs, block)?;
+        let [left, right] = operands;
         let (left_ty, right_ty) = adapt_binary_operand_types(lhs, rhs, left.ty, right.ty);
         let operand_ty = if left_ty == PrimitiveType::Bool && right_ty == PrimitiveType::Bool {
             PrimitiveType::Bool

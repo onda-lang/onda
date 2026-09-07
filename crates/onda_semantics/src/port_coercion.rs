@@ -544,179 +544,43 @@ pub(super) fn rewrite_top_level_range_clamps_in_expr(
     clamp_params: bool,
     usage: &mut TopLevelRangeClampUsage,
 ) {
-    match expr {
-        Expr::Var { name, .. } => {
-            if shadowed.contains(name) {
-                return;
-            }
-            if clamp_inputs {
-                if let Some(alias) = input_aliases.get(name) {
-                    usage.aliases.insert(alias.clone());
-                    *expr = Expr::var(alias.clone());
-                    return;
+    expr.visit_mut(|expr| {
+        match expr {
+            Expr::Var { name, .. } => {
+                if shadowed.contains(name) {
+                    return false;
+                }
+                if clamp_inputs {
+                    if let Some(alias) = input_aliases.get(name) {
+                        usage.aliases.insert(alias.clone());
+                        *expr = Expr::var(alias.clone());
+                        return false;
+                    }
+                }
+                if clamp_params {
+                    if let Some(alias) = param_aliases.get(name) {
+                        usage.aliases.insert(alias.clone());
+                        *expr = Expr::var(alias.clone());
+                    }
                 }
             }
-            if clamp_params {
-                if let Some(alias) = param_aliases.get(name) {
-                    usage.aliases.insert(alias.clone());
-                    *expr = Expr::var(alias.clone());
+            Expr::Index { base, .. } => {
+                if base == "ins" && clamp_inputs {
+                    usage.aliases.extend(input_aliases.values().cloned());
+                    usage
+                        .dynamic_input_aliases
+                        .extend(input_aliases.values().cloned());
+                } else if matches!(base.as_str(), "params" | "kins") && clamp_params {
+                    usage.aliases.extend(param_aliases.values().cloned());
+                    usage
+                        .dynamic_param_aliases
+                        .extend(param_aliases.values().cloned());
                 }
             }
+            _ => {}
         }
-        Expr::Index { base, index, .. } => {
-            if base == "ins" && clamp_inputs {
-                usage.aliases.extend(input_aliases.values().cloned());
-                usage
-                    .dynamic_input_aliases
-                    .extend(input_aliases.values().cloned());
-            } else if matches!(base.as_str(), "params" | "kins") && clamp_params {
-                usage.aliases.extend(param_aliases.values().cloned());
-                usage
-                    .dynamic_param_aliases
-                    .extend(param_aliases.values().cloned());
-            }
-            rewrite_top_level_range_clamps_in_expr(
-                index,
-                input_aliases,
-                param_aliases,
-                shadowed,
-                clamp_inputs,
-                clamp_params,
-                usage,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_top_level_range_clamps_in_expr(
-                    coordinate,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_top_level_range_clamps_in_expr(
-                &mut spec.size,
-                input_aliases,
-                param_aliases,
-                shadowed,
-                clamp_inputs,
-                clamp_params,
-                usage,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_top_level_range_clamps_in_expr(
-                        value,
-                        input_aliases,
-                        param_aliases,
-                        shadowed,
-                        clamp_inputs,
-                        clamp_params,
-                        usage,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_top_level_range_clamps_in_expr(
-                lhs,
-                input_aliases,
-                param_aliases,
-                shadowed,
-                clamp_inputs,
-                clamp_params,
-                usage,
-            );
-            rewrite_top_level_range_clamps_in_expr(
-                rhs,
-                input_aliases,
-                param_aliases,
-                shadowed,
-                clamp_inputs,
-                clamp_params,
-                usage,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_top_level_range_clamps_in_expr(
-                    arg,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            rewrite_top_level_range_clamps_in_expr(
-                inner,
-                input_aliases,
-                param_aliases,
-                shadowed,
-                clamp_inputs,
-                clamp_params,
-                usage,
-            );
-        }
-        Expr::ArrayLiteral { values, .. } => {
-            for value in values {
-                rewrite_top_level_range_clamps_in_expr(
-                    value,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                rewrite_top_level_range_clamps_in_expr(
-                    &mut arg.expr,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-        }
-        Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_top_level_range_clamps_in_expr(
-                    value,
-                    input_aliases,
-                    param_aliases,
-                    shadowed,
-                    clamp_inputs,
-                    clamp_params,
-                    usage,
-                );
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
+        true
+    });
 }
 
 pub(super) fn rewrite_top_level_range_clamps_in_stmt(

@@ -156,211 +156,55 @@ pub(super) fn qualify_expr_namespaced_symbols(
     context: &str,
     array_elem_diag: Option<DiagCtx>,
 ) {
-    match expr {
-        Expr::UserCall {
-            name, args, loc, ..
-        } => {
-            let diag = DiagCtx::new(*loc);
-            for arg in args {
-                qualify_expr_namespaced_symbols(
-                    &mut arg.expr,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-            if is_builtin_function_name(name)
-                || is_internal_buffer_2d_fn(name)
-                || name.contains('.')
-            {
-                return;
-            }
-            if name.contains("::") {
-                if let Some(resolved) = resolve_qualified_symbol_name(
-                    name,
-                    callable_symbols,
-                    callable_namespaces,
-                    context,
-                    diag,
-                    errors,
-                ) {
-                    *name = resolved;
+    let mut array_elem_diag = array_elem_diag;
+    expr.visit_mut(|expr| {
+        let array_elem_diag = array_elem_diag.take();
+        match expr {
+            Expr::UserCall { name, loc, .. } => {
+                let diag = DiagCtx::new(*loc);
+                if is_builtin_function_name(name)
+                    || is_internal_buffer_2d_fn(name)
+                    || name.contains('.')
+                {
+                    return true;
                 }
-                return;
-            }
-            if let Some(resolved) =
-                resolve_unqualified_symbol_name(name, current_ns, callable_symbols)
-            {
-                *name = resolved;
-            }
-        }
-        Expr::ArrayCtor {
-            loc, spec, init, ..
-        } => {
-            if let ArrayElemType::Struct(name) = &mut spec.elem {
-                qualify_named_type_name(
-                    name,
-                    current_ns,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    context,
-                    array_elem_diag.unwrap_or_else(|| DiagCtx::new(*loc)),
-                    false,
-                    errors,
-                );
-            }
-            qualify_expr_namespaced_symbols(
-                &mut spec.size,
-                current_ns,
-                callable_symbols,
-                callable_namespaces,
-                nominal_symbols,
-                nominal_namespaces,
-                errors,
-                context,
-                None,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    qualify_expr_namespaced_symbols(
-                        value,
-                        current_ns,
+                if name.contains("::") {
+                    if let Some(resolved) = resolve_qualified_symbol_name(
+                        name,
                         callable_symbols,
                         callable_namespaces,
+                        context,
+                        diag,
+                        errors,
+                    ) {
+                        *name = resolved;
+                    }
+                    return true;
+                }
+                if let Some(resolved) =
+                    resolve_unqualified_symbol_name(name, current_ns, callable_symbols)
+                {
+                    *name = resolved;
+                }
+            }
+            Expr::ArrayCtor { loc, spec, .. } => {
+                if let ArrayElemType::Struct(name) = &mut spec.elem {
+                    qualify_named_type_name(
+                        name,
+                        current_ns,
                         nominal_symbols,
                         nominal_namespaces,
-                        errors,
                         context,
-                        None,
+                        array_elem_diag.unwrap_or_else(|| DiagCtx::new(*loc)),
+                        false,
+                        errors,
                     );
                 }
             }
+            _ => {}
         }
-        Expr::Index { index, .. } => qualify_expr_namespaced_symbols(
-            index,
-            current_ns,
-            callable_symbols,
-            callable_namespaces,
-            nominal_symbols,
-            nominal_namespaces,
-            errors,
-            context,
-            None,
-        ),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                qualify_expr_namespaced_symbols(
-                    coordinate,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            qualify_expr_namespaced_symbols(
-                lhs,
-                current_ns,
-                callable_symbols,
-                callable_namespaces,
-                nominal_symbols,
-                nominal_namespaces,
-                errors,
-                context,
-                None,
-            );
-            qualify_expr_namespaced_symbols(
-                rhs,
-                current_ns,
-                callable_symbols,
-                callable_namespaces,
-                nominal_symbols,
-                nominal_namespaces,
-                errors,
-                context,
-                None,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                qualify_expr_namespaced_symbols(
-                    arg,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-        }
-        Expr::Cast { expr: arg, .. }
-        | Expr::UnaryNot { expr: arg, .. }
-        | Expr::UnaryBitNot { expr: arg, .. } => {
-            qualify_expr_namespaced_symbols(
-                arg,
-                current_ns,
-                callable_symbols,
-                callable_namespaces,
-                nominal_symbols,
-                nominal_namespaces,
-                errors,
-                context,
-                None,
-            );
-        }
-        Expr::ArrayLiteral { values, .. } => {
-            for value in values {
-                qualify_expr_namespaced_symbols(
-                    value,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-        }
-        Expr::Tuple { values, .. } => {
-            for value in values {
-                qualify_expr_namespaced_symbols(
-                    value,
-                    current_ns,
-                    callable_symbols,
-                    callable_namespaces,
-                    nominal_symbols,
-                    nominal_namespaces,
-                    errors,
-                    context,
-                    None,
-                );
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+        true
+    });
 }
 
 pub(super) fn qualify_stmt_namespaced_symbols(

@@ -3451,110 +3451,8 @@ pub(super) fn desugar_expr_instance_method_calls(
         Some((base?, index?, access))
     }
 
-    match expr {
-        Expr::Index { index, .. } => desugar_expr_instance_method_calls(
-            index,
-            struct_instances,
-            struct_array_roots,
-            current_ns,
-            callable_symbols,
-        ),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                desugar_expr_instance_method_calls(
-                    coordinate,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            desugar_expr_instance_method_calls(
-                &mut spec.size,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    desugar_expr_instance_method_calls(
-                        value,
-                        struct_instances,
-                        struct_array_roots,
-                        current_ns,
-                        callable_symbols,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            desugar_expr_instance_method_calls(
-                lhs,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            desugar_expr_instance_method_calls(
-                rhs,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                desugar_expr_instance_method_calls(
-                    arg,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Expr::Cast { expr: arg, .. }
-        | Expr::UnaryNot { expr: arg, .. }
-        | Expr::UnaryBitNot { expr: arg, .. } => desugar_expr_instance_method_calls(
-            arg,
-            struct_instances,
-            struct_array_roots,
-            current_ns,
-            callable_symbols,
-        ),
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                desugar_expr_instance_method_calls(
-                    value,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            for arg in args.iter_mut() {
-                desugar_expr_instance_method_calls(
-                    &mut arg.expr,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
+    expr.visit_mut_postorder(|expr| {
+        if let Expr::UserCall { name, args, .. } = expr {
             if let Some(CallArg {
                 name: receiver_name,
                 expr: Expr::Index { base, .. },
@@ -3722,8 +3620,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                 }
             }
         }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+    });
 }
 
 pub(crate) fn desugar_init_instance_method_calls(

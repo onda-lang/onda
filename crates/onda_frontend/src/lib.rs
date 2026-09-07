@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod diagnostics;
+pub mod expr_traversal;
 pub mod parser;
 
 pub use ast::{

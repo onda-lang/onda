@@ -607,6 +607,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
     defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    expr.visit_mut(|expr| {
     match expr {
         Expr::UserCall {
             name, args, loc, ..
@@ -616,25 +617,16 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
         {
             let loc = *loc;
             let Some((base, idx, field, access)) = extract_proc_index_field_args(args) else {
-                for arg in args.iter_mut() {
-                    rewrite_struct_array_inline_field_expr(&mut arg.expr, roots, defs, errors);
-                }
-                return;
+                return true;
             };
 
             let Some(root_info) = roots.get(&base) else {
-                for arg in args.iter_mut() {
-                    rewrite_struct_array_inline_field_expr(&mut arg.expr, roots, defs, errors);
-                }
-                return;
+                return true;
             };
             let Some(fields) = defs.get(&root_info.struct_name) else {
                 // Proc arrays also share the state_array_struct_roots map but are handled later by
                 // proc dispatch rewriting, not by struct-array flattening.
-                for arg in args.iter_mut() {
-                    rewrite_struct_array_inline_field_expr(&mut arg.expr, roots, defs, errors);
-                }
-                return;
+                return true;
             };
 
             let Some(target_field) = fields.iter().find(|f| f.name == field) else {
@@ -642,7 +634,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
                 ));
-                return;
+                return false;
             };
 
             match target_field.ty {
@@ -684,7 +676,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 _ => Span::ZERO,
             };
             let Expr::UserCall { args, .. } = expr else {
-                return;
+                return false;
             };
             let (base, idx, field, fidx) = match extract_safi_args(args) {
                 Some(v) => v,
@@ -693,7 +685,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                         "malformed struct array field index expression",
                         loc,
                     ));
-                    return;
+                    return false;
                 }
             };
 
@@ -702,7 +694,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     format!("'{base}' is not a struct array; cannot use {base}[...].{field}[...]"),
                     loc,
                 ));
-                return;
+                return false;
             };
 
             let Some(fields) = defs.get(&root_info.struct_name) else {
@@ -713,7 +705,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     ),
                     loc,
                 ));
-                return;
+                return false;
             };
 
             let Some(target_field) = fields.iter().find(|f| f.name == field) else {
@@ -721,7 +713,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
                 ));
-                return;
+                return false;
             };
 
             let stride = match target_field.ty {
@@ -736,7 +728,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                         ),
                         loc,
                     ));
-                    return;
+                    return false;
                 }
             };
 
@@ -770,57 +762,10 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 index: Box::new(flat_index),
             };
         }
-        // Recurse into sub-expressions
-        Expr::Binary { lhs, rhs, .. }
-        | Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            rewrite_struct_array_inline_field_expr(lhs, roots, defs, errors);
-            rewrite_struct_array_inline_field_expr(rhs, roots, defs, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_struct_array_inline_field_expr(arg, roots, defs, errors);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                rewrite_struct_array_inline_field_expr(&mut arg.expr, roots, defs, errors);
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            rewrite_struct_array_inline_field_expr(inner, roots, defs, errors);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for v in values {
-                rewrite_struct_array_inline_field_expr(v, roots, defs, errors);
-            }
-        }
-        Expr::Index { index, .. } => {
-            rewrite_struct_array_inline_field_expr(index, roots, defs, errors);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_struct_array_inline_field_expr(coordinate, roots, defs, errors);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_struct_array_inline_field_expr(&mut spec.size, roots, defs, errors);
-            if let Some(values) = init {
-                for v in values {
-                    rewrite_struct_array_inline_field_expr(v, roots, defs, errors);
-                }
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+        _ => return true,
     }
+    false
+    });
 }
 
 fn extract_safi_args(args: &mut [CallArg]) -> Option<(String, Expr, String, Expr)> {

@@ -312,54 +312,10 @@ pub(crate) fn refresh_monomorphized_return_types(
 /// Rebasing the complete cloned body also carries that origin through nested
 /// monomorphization (for example `readL(i32)` -> `_split_position(i32)`).
 fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
-    match expr {
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rebase_generated_expr(value, origin);
-            }
-        }
-        Expr::Index { index, .. } => rebase_generated_expr(index, origin),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for value in [selector, channel, start, end].into_iter().flatten() {
-                rebase_generated_expr(value, origin);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rebase_generated_expr(&mut spec.size, origin);
-            if let Some(values) = init {
-                for value in values {
-                    rebase_generated_expr(value, origin);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rebase_generated_expr(lhs, origin);
-            rebase_generated_expr(rhs, origin);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rebase_generated_expr(arg, origin);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                rebase_generated_expr(&mut arg.expr, origin);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rebase_generated_expr(expr, origin)
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
-    expr.set_loc(origin);
+    expr.visit_mut(|expr| {
+        expr.set_loc(origin);
+        true
+    });
 }
 
 fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
@@ -1560,32 +1516,14 @@ fn monomorphize_calls_in_expr(
     errors: &mut Vec<Diagnostic>,
     owner: MonoOwnerContext<'_>,
 ) {
-    match expr {
-        Expr::UserCall {
+    expr.visit_mut_postorder(|expr| {
+        if let Expr::UserCall {
             loc,
             name,
             type_args,
             args,
-        } => {
-            // Recurse into arg expressions first
-            for arg in args.iter_mut() {
-                monomorphize_calls_in_expr(
-                    &mut arg.expr,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-
+        } = expr
+        {
             if !mono_eligible.contains(name.as_str()) {
                 // Also allow mono for calls with tuple literal args to untyped-param defs
                 let has_tuple_arg = args.iter().any(|a| matches!(a.expr, Expr::Tuple { .. }));
@@ -1885,177 +1823,7 @@ fn monomorphize_calls_in_expr(
             // Clear type_args on the rewritten call — the mono copy is concrete.
             type_args.clear();
         }
-        Expr::Binary { lhs, rhs, .. }
-        | Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            monomorphize_calls_in_expr(
-                lhs,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            monomorphize_calls_in_expr(
-                rhs,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args.iter_mut() {
-                monomorphize_calls_in_expr(
-                    arg,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            monomorphize_calls_in_expr(
-                inner,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-        }
-        Expr::ArrayLiteral { values: elems, .. } | Expr::Tuple { values: elems, .. } => {
-            for elem in elems.iter_mut() {
-                monomorphize_calls_in_expr(
-                    elem,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-        }
-        Expr::Index { index, .. } => {
-            monomorphize_calls_in_expr(
-                index,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                monomorphize_calls_in_expr(
-                    coordinate,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            monomorphize_calls_in_expr(
-                &mut spec.size,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    monomorphize_calls_in_expr(
-                        value,
-                        env,
-                        mono_eligible,
-                        fn_signatures,
-                        original_defs,
-                        generic_templates,
-                        struct_defs,
-                        generated_defs,
-                        generated_sigs,
-                        mono_cache,
-                        return_types,
-                        errors,
-                        owner,
-                    );
-                }
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+    });
 }
 
 #[cfg(test)]
