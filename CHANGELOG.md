@@ -681,6 +681,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.3]: https://github.com/onda-lang/onda/compare/0.8.2...0.8.3
 [0.8.2]: https://github.com/onda-lang/onda/compare/0.8.1...0.8.2
 [0.8.1]: https://github.com/onda-lang/onda/compare/0.8.0...0.8.1
 [0.8.0]: https://github.com/onda-lang/onda/compare/0.7.5...0.8.0
