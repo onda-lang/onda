@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnostics::Diagnostic;
 
-use super::preprocess::split_comment;
+use super::preprocess::{split_comment, unquoted_chars};
 use super::STDLIB_MODULE_PREFIX;
 
 pub(super) const ONDA_SOURCE_EXTENSIONS: &[&str] = &["onda", "on"];
@@ -179,7 +179,7 @@ pub(super) fn split_top_level_items(
         code.push('\n');
         code_line_map.push(preprocessed_line_map.get(idx).copied().unwrap_or(line_no));
 
-        for ch in code_part.chars() {
+        for (_, ch) in unquoted_chars(code_part) {
             match ch {
                 '{' => brace_depth += 1,
                 '}' => brace_depth -= 1,

@@ -856,3 +856,37 @@ fn imported_namespace_main_remains_supported() {
                 ))
     }));
 }
+
+#[test]
+fn quoted_punctuation_preserves_blocks_and_source_directives() {
+    for decoded in ["#", "(", "[", "}", "{", "é \"# ([{}])", "\\", "\\\"#"] {
+        let quoted = format!("\"{}\"", decoded.replace('\\', "\\\\").replace('"', "\\\""));
+        let source = format!(
+            "params:\n  p = 0.5 {{0.0, 1.0, unit = {quoted}}}\n\
+             init:\n  print({quoted}) # actual comment: ([{{\n\
+             import std/math\n\
+             sample:\n  out1 = p\n"
+        );
+        let program = parse_program(&source)
+            .unwrap_or_else(|errors| panic!("quoted text {quoted} should parse: {errors:?}"));
+        let init = program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Init(init) => Some(init),
+                _ => None,
+            })
+            .expect("init block");
+        assert!(
+            matches!(init.body.as_slice(), [Stmt::Print { label: Some(label), .. }] if label == decoded)
+        );
+        assert_eq!(
+            program
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, Block::Sample(_)))
+                .count(),
+            1
+        );
+    }
+}

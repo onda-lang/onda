@@ -1228,17 +1228,21 @@ impl Instance {
             if was_pending {
                 self.program.overlay_state_snapshot(state, bytes)
             } else {
-                self.program.restore_state_snapshot(
-                    &self.params,
-                    state,
-                    bytes,
-                    BufferDescriptorTables::new(
-                        &self.buffer_ptrs,
-                        &self.buffer_frames,
-                        &self.buffer_channels,
-                        &self.buffer_sample_rates,
-                    ),
-                )
+                // SAFETY: buffer bindings were validated above, and their
+                // pointees remain valid under the instance binding contract.
+                unsafe {
+                    self.program.restore_state_snapshot(
+                        &self.params,
+                        state,
+                        bytes,
+                        BufferDescriptorTables::new(
+                            &self.buffer_ptrs,
+                            &self.buffer_frames,
+                            &self.buffer_channels,
+                            &self.buffer_sample_rates,
+                        ),
+                    )
+                }
             }
         })
     }
@@ -1482,17 +1486,21 @@ pub fn init_with_output(
     }
     with_processor_execution_output(output, |output| match (&mut instance.state, mode) {
         (InstanceState::Pending(state), InitMode::Full) => {
-            let initialized = instance.program.initialize_allocated_state(
-                &instance.params,
-                state,
-                BufferDescriptorTables::new(
-                    &instance.buffer_ptrs,
-                    &instance.buffer_frames,
-                    &instance.buffer_channels,
-                    &instance.buffer_sample_rates,
-                ),
-                output,
-            )?;
+            // SAFETY: validated bindings retain their host-memory contract;
+            // execution output borrows exclusive storage and was reset above.
+            let initialized = unsafe {
+                instance.program.initialize_allocated_state(
+                    &instance.params,
+                    state,
+                    BufferDescriptorTables::new(
+                        &instance.buffer_ptrs,
+                        &instance.buffer_frames,
+                        &instance.buffer_channels,
+                        &instance.buffer_sample_rates,
+                    ),
+                    output,
+                )
+            }?;
             instance.state = InstanceState::Allocated(AllocatedState {
                 storage: initialized,
                 initialized: true,
@@ -1506,18 +1514,22 @@ pub fn init_with_output(
             Err(invalid_instance_error())
         }
         (InstanceState::Allocated(state), mode) => state.attempt(|state| {
-            instance.program.initialize_state_in_place(
-                &instance.params,
-                state,
-                matches!(mode, InitMode::Full),
-                BufferDescriptorTables::new(
-                    &instance.buffer_ptrs,
-                    &instance.buffer_frames,
-                    &instance.buffer_channels,
-                    &instance.buffer_sample_rates,
-                ),
-                output,
-            )
+            // SAFETY: the same validated host bindings and exclusive, reset
+            // output storage are used as for first initialization above.
+            unsafe {
+                instance.program.initialize_state_in_place(
+                    &instance.params,
+                    state,
+                    matches!(mode, InitMode::Full),
+                    BufferDescriptorTables::new(
+                        &instance.buffer_ptrs,
+                        &instance.buffer_frames,
+                        &instance.buffer_channels,
+                        &instance.buffer_sample_rates,
+                    ),
+                    output,
+                )
+            }
         }),
     })
 }

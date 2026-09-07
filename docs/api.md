@@ -303,6 +303,7 @@ size queries with a `NULL` or undersized destination.
 | --- | --- |
 | `onda_project_image_capture` | Capture a successful source manifest below a source root and associate canonical assets. |
 | `onda_project_image_load_files` | Load an editable project from a complete in-memory relative-file set. |
+| `onda_project_image_with_buffer_overrides` | Return a new image with supplied buffer bindings replaced or added, retaining sources, constants, and unmentioned buffers. |
 | `onda_project_image_deserialize` | Validate and own a serialized canonical image. |
 | `onda_project_image_serialize` | Serialize an image with a two-call size query. |
 | `onda_project_image_content_digest` | Borrow the canonical content digest. |
@@ -311,6 +312,12 @@ size queries with a `NULL` or undersized destination.
 `onda_project_image_load_files` accepts `.ondabuffer`, WAV, and inline project buffers. If the file
 set contains multiple `.ondaproject` files, select one explicitly; otherwise pass `NULL` and require
 an unambiguous project.
+
+`onda_project_image_with_buffer_overrides` takes canonical `onda_project_buffer_asset_t`
+assets and leaves the input image unchanged, including on failure. Duplicate
+names and invalid assets are rejected. Unreferenced assets are discarded, and
+declaration compatibility is checked when compiling the resulting image. Pass
+`NULL` with a zero count to obtain an independently owned copy.
 
 ### Inspecting and compiling images
 
@@ -734,6 +741,7 @@ onda_current_stdlib_digest
 onda_buffer_asset_encode
 onda_buffer_asset_decode
 onda_project_image_capture
+onda_project_image_with_buffer_overrides
 onda_project_image_deserialize
 onda_project_image_load_files
 onda_project_image_serialize

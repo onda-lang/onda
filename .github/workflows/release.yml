@@ -3,6 +3,7 @@ name: Build Onda Releases
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   LLVM_VERSION: 21.1.2
+  MACOSX_DEPLOYMENT_TARGET: "15.0"
 
 on:
   workflow_dispatch:
@@ -29,7 +30,7 @@ jobs:
       matrix:
         include:
           - name: windows-x64
-            runner: windows-2022
+            runner: windows-latest
             platform: windows
             arch: x64
             archive_ext: zip
@@ -39,7 +40,7 @@ jobs:
             arch: x64
             archive_ext: tar.xz
           - name: macos-arm64
-            runner: macos-15
+            runner: macos-latest
             platform: macos
             arch: arm64
             archive_ext: tar.xz
@@ -152,6 +153,7 @@ jobs:
           $llvmBinDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
+          cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cargo build --release -p onda_cli
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
@@ -184,12 +186,21 @@ jobs:
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
+          cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cmake \
             -S tests/cmake_sdk \
             -B target/cmake-sdk \
             -DCMAKE_BUILD_TYPE=Release \
             -DOnda_DIR="$PWD/cmake"
           cmake --build target/cmake-sdk --parallel
+
+      - name: Verify macOS deployment targets
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash tests/cmake_sdk/check-macos-deployment-target.sh \
+            "$MACOSX_DEPLOYMENT_TARGET" \
+            target/release/onda target/release/libonda.dylib target/release/libonda.a
 
       - name: Generate Rust third-party licenses
         shell: bash
@@ -285,7 +296,13 @@ jobs:
           if (Test-Path $archive) {
             Remove-Item $archive -Force
           }
-          Compress-Archive -Path "$packageRoot\*" -DestinationPath $archive
+          Compress-Archive -Path $packageRoot -DestinationPath $archive
+          $extractRoot = Join-Path $env:RUNNER_TEMP "onda-sdk-extracted"
+          Expand-Archive -Path $archive -DestinationPath $extractRoot
+          $extractedPackage = Join-Path $extractRoot (Split-Path $packageRoot -Leaf)
+          cmake -S tests\cmake_sdk -B target\cmake-sdk-extracted -A x64 `
+            "-DCMAKE_PREFIX_PATH=$extractedPackage"
+          cmake --build target\cmake-sdk-extracted --config Release
 
       - name: Package release on Unix
         if: runner.os != 'Windows'

@@ -1,6 +1,33 @@
 use super::*;
 
 impl FunctionEmitter<'_, '_> {
+    unsafe fn buffer_argument_place(
+        &self,
+        descriptor: LLVMValueRef,
+        ty: onda_mir::TypeId,
+    ) -> Result<PlaceRef, MirCodegenError> {
+        // Allocate once per invocation, even when this call site is inside a
+        // loop. Entry-block allocas also remain eligible for LLVM promotion.
+        let entry = LLVMGetEntryBasicBlock(self.declaration.value);
+        let first = LLVMGetFirstInstruction(entry);
+        if first.is_null() {
+            LLVMPositionBuilderAtEnd(self.prologue_builder, entry);
+        } else {
+            LLVMPositionBuilderBefore(self.prologue_builder, first);
+        }
+        let ptr = LLVMBuildAlloca(
+            self.prologue_builder,
+            self.module.types.get(ty),
+            c_name("buffer_argument")?.as_ptr(),
+        );
+        LLVMBuildStore(self.builder, descriptor, ptr);
+        Ok(PlaceRef {
+            ptr,
+            ty,
+            alignment: self.module.layouts.type_alignments[ty.index()],
+        })
+    }
+
     pub(super) unsafe fn allocate_storage(&mut self) -> Result<(), MirCodegenError> {
         for (index, local) in self.function.locals.iter().enumerate() {
             let name = c_name(&format!("local_{index}"))?;
@@ -1299,18 +1326,7 @@ impl FunctionEmitter<'_, '_> {
                         CallArgument::Buffer(buffer) => {
                             let descriptor =
                                 self.build_external_buffer_descriptor(*buffer, parameter.ty)?;
-                            let ptr = LLVMBuildAlloca(
-                                self.builder,
-                                self.module.types.get(parameter.ty),
-                                c_name("buffer_argument")?.as_ptr(),
-                            );
-                            LLVMBuildStore(self.builder, descriptor, ptr);
-                            PlaceRef {
-                                ptr,
-                                ty: parameter.ty,
-                                alignment: self.module.layouts.type_alignments
-                                    [parameter.ty.index()],
-                            }
+                            self.buffer_argument_place(descriptor, parameter.ty)?
                         }
                         _ => {
                             return Err(MirCodegenError::unsupported(format!(
@@ -3086,17 +3102,7 @@ impl FunctionEmitter<'_, '_> {
                 .ok_or_else(|| MirCodegenError::invalid("buffer parameter is out of range"));
         }
         let descriptor = self.buffer_param_descriptor(parameter)?;
-        let ptr = LLVMBuildAlloca(
-            self.builder,
-            self.module.types.get(ty),
-            c_name("buffer_argument")?.as_ptr(),
-        );
-        LLVMBuildStore(self.builder, descriptor, ptr);
-        Ok(PlaceRef {
-            ptr,
-            ty,
-            alignment: self.module.layouts.type_alignments[ty.index()],
-        })
+        self.buffer_argument_place(descriptor, ty)
     }
 
     unsafe fn lower_buffer_param_metadata(

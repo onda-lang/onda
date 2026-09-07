@@ -105,11 +105,35 @@ pub(super) fn preprocess_indentation_blocks(
 }
 
 pub(super) fn split_comment(line: &str) -> (&str, Option<&str>) {
-    if let Some(idx) = line.find('#') {
+    if let Some((idx, _)) = unquoted_chars(line).find(|(_, ch)| *ch == '#') {
         (&line[..idx], Some(&line[idx + 1..]))
     } else {
         (line, None)
     }
+}
+
+/// Structural characters outside quoted text, preserving their source offsets.
+/// Quoted text is line-local; malformed strings are diagnosed by the grammar.
+pub(super) fn unquoted_chars(line: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut quoted = false;
+    let mut escaped = false;
+    line.char_indices().filter(move |&(_, ch)| {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            false
+        } else if ch == '"' {
+            quoted = true;
+            false
+        } else {
+            true
+        }
+    })
 }
 
 fn leading_indent_width(line: &str) -> usize {
@@ -126,7 +150,7 @@ fn leading_indent_width(line: &str) -> usize {
 
 fn apply_continuation_delta(mut depth: usize, line: &str) -> usize {
     let line_trimmed = line.trim_end();
-    for (idx, ch) in line.char_indices() {
+    for (idx, ch) in unquoted_chars(line) {
         match ch {
             '(' | '[' => depth = depth.saturating_add(1),
             '{' if is_continuation_opening_brace(line, idx) => {

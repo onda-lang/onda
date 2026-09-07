@@ -2327,6 +2327,113 @@ sample:
 }
 
 #[test]
+fn buffer_call_scratch_is_bounded_at_o0_and_eliminated_at_o3() {
+    let sources = [
+        r#"
+buffers:
+  data: f32
+def read(buf: buffer<f32>, index: i32):
+  return buf[index]
+sample:
+  total = 0.0
+  for i in 0..2048:
+    total += read(data, i)
+  out1 = total
+"#,
+        r#"
+buffers:
+  data: f32 {2}
+def read(buf: buffer<f32>, index: i32):
+  return buf[index]
+proc Reader:
+  buffers:
+    bank: f32 {2}
+  sample:
+    total = 0.0
+    for i in 0..2048:
+      total += read(bank[i % 2], i)
+    out1 = total
+init:
+  reader = Reader(bank = data)
+sample:
+  out1 = reader()
+"#,
+    ];
+    for source in sources {
+        let (_, mir) = source_program(source, 64);
+        for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+            let options = MirCompileOptions {
+                fast_math: false,
+                opt_level,
+            };
+            let ir = lower_mir_to_llvm_ir_with_options(&mir, options).expect("buffer call IR");
+            let mut block = "";
+            let mut scratch_allocations = 0;
+            for line in ir.lines() {
+                if !line.starts_with(' ') {
+                    if let Some((label, _)) = line.split_once(':') {
+                        block = label;
+                    }
+                }
+                if line.contains("buffer_argument") && line.contains(" = alloca ") {
+                    assert_eq!(block, "entry", "stack allocation in loop: {line}");
+                    scratch_allocations += 1;
+                }
+            }
+            if opt_level == TargetOptLevel::O0 {
+                assert!(
+                    scratch_allocations > 0,
+                    "exercise reference descriptor scratch"
+                );
+            } else {
+                assert_eq!(
+                    scratch_allocations, 0,
+                    "O3 must eliminate descriptor scratch"
+                );
+            }
+
+            let native = lower_mir_and_jit_with_options(mir.clone(), options).expect("JIT");
+            // Repeated calls consumed several MiB per block before entry-block
+            // scratch allocation. Keep a small stack and validate actual output.
+            std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || {
+                    let params = native.default_param_bytes();
+                    let mut state = native.initialize_state(&params).expect("initialize");
+                    let mut output = [0.0_f32; 64];
+                    let mut values = [1.0_f32, 3.0_f32];
+                    let pointers = (0..native.buffer_count())
+                        .map(|index| {
+                            // Each descriptor owns a distinct one-element region.
+                            (&mut values[index] as *mut f32).cast::<u8>()
+                        })
+                        .collect::<Vec<_>>();
+                    native
+                        .test_process_checked(
+                            &mut state,
+                            &params,
+                            0,
+                            64,
+                            onda_mir::PROCESS_FULL_BLOCK as u32,
+                            &[],
+                            &[output.as_mut_ptr().cast()],
+                            &pointers,
+                            &vec![1; pointers.len()],
+                            &vec![1; pointers.len()],
+                            &vec![48_000.0; pointers.len()],
+                        )
+                        .expect("process on bounded stack");
+                    let expected = if pointers.len() == 1 { 2048.0 } else { 4096.0 };
+                    assert!(output.iter().all(|sample| *sample == expected));
+                })
+                .expect("spawn")
+                .join()
+                .expect("bounded processing should succeed");
+        }
+    }
+}
+
+#[test]
 fn raw_checked_buffer_abi_accepts_null_unbound_descriptors() {
     let (_, mir) = source_program(
         r#"

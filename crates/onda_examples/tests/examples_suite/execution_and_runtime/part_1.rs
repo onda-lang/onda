@@ -786,6 +786,109 @@ sample:
 }
 
 #[test]
+fn stdlib_asr_release_survives_sustain_and_release_time_automation() {
+    fn event(instance: &mut onda_runtime::Instance, name: &str, value: Option<f32>) {
+        let index = instance.event_index(name).expect("event exists");
+        let payload = value.map(f32::to_le_bytes);
+        trigger_event_by_index(
+            instance,
+            index,
+            payload.as_ref().map_or(&[], |bytes| bytes.as_slice()),
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .expect("event should succeed");
+    }
+    fn frame(instance: &mut onda_runtime::Instance, level: f32, completions: f32) {
+        let mut output = [0.0_f32; 2];
+        process_interleaved(instance, &[], &mut output, 1).expect("render envelope");
+        assert_near(output[0], level, 1e-6);
+        assert_eq!(output[1], completions);
+    }
+    let source = r#"
+import std/env
+init:
+  env = std::env::ASR<$T>(attack_s = 0.0, sustain = 0.5, release_s = 8.0 / SR)
+  completions = 0
+event start():
+  env.start()
+event release():
+  env.release()
+event gate(value: f32):
+  env.gate = $T(value)
+event sustain(value: f32):
+  env.sustain = $T(value)
+event duration(samples: f32):
+  env.release_s = $T(samples) / SR
+event attack(samples: f32):
+  env.attack_s = $T(samples) / SR
+when env.finished():
+  completions += 1
+sample:
+  out1 = f32(env())
+  out2 = f32(completions)
+"#;
+    for scalar in ["f32", "f64"] {
+        // Change sustain at note-off and during release, using both event and
+        // parameter gates. Increasing sustain must not reshape the tail either.
+        for (change_after, sustain, parameter_gate) in
+            [(0, 0.0, false), (2, 0.0, true), (2, 1.0, false)]
+        {
+            let (mut instance, _, _) = compile_instance(&source.replace("$T", scalar), 1);
+            event(&mut instance, "start", None);
+            frame(&mut instance, 0.5, 0.0);
+            if parameter_gate {
+                event(&mut instance, "gate", Some(0.0));
+            } else {
+                event(&mut instance, "release", None);
+            }
+            for sample in 0..8 {
+                if sample == change_after {
+                    event(&mut instance, "sustain", Some(sustain));
+                }
+                frame(
+                    &mut instance,
+                    0.5 - (sample + 1) as f32 / 16.0,
+                    if sample == 7 { 1.0 } else { 0.0 },
+                );
+            }
+            frame(&mut instance, 0.0, 1.0);
+        }
+        let (mut instance, _, _) = compile_instance(&source.replace("$T", scalar), 1);
+        event(&mut instance, "start", None);
+        frame(&mut instance, 0.5, 0.0);
+        event(&mut instance, "release", None);
+        frame(&mut instance, 0.4375, 0.0);
+        event(&mut instance, "duration", Some(4.0));
+        frame(&mut instance, 0.3125, 0.0);
+        event(&mut instance, "duration", Some(0.0));
+        frame(&mut instance, 0.0, 1.0);
+        frame(&mut instance, 0.0, 1.0);
+        event(&mut instance, "start", None);
+        frame(&mut instance, 0.5, 1.0);
+        event(&mut instance, "release", None);
+        frame(&mut instance, 0.0, 2.0);
+
+        // Releasing during attack takes the requested time from the current
+        // level, rather than using the still-unreached sustain target.
+        event(&mut instance, "attack", Some(8.0));
+        event(&mut instance, "duration", Some(8.0));
+        event(&mut instance, "start", None);
+        frame(&mut instance, 0.0625, 2.0);
+        event(&mut instance, "sustain", Some(0.0));
+        event(&mut instance, "release", None);
+        for sample in 0..8 {
+            frame(
+                &mut instance,
+                0.0625 - (sample + 1) as f32 / 128.0,
+                if sample == 7 { 3.0 } else { 2.0 },
+            );
+        }
+        frame(&mut instance, 0.0, 3.0);
+    }
+}
+
+
+#[test]
 fn stdlib_delay_lines_use_wrapped_cursors_and_zero_delay_is_direct() {
     let source = r#"
 import std/delay
@@ -3989,4 +4092,3 @@ fn builtin_consts_support_lowercase_samplerate_alias() {
 
     assert_near(output[3], 0.0, 1e-5);
 }
-

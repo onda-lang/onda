@@ -496,7 +496,13 @@ impl JitProgram {
         Ok(())
     }
 
-    pub fn restore_state_snapshot(
+    /// Reinitializes state with the current buffers before applying a snapshot.
+    ///
+    /// # Safety
+    ///
+    /// The buffer pointees must satisfy [`Self::initialize_state_in_place`]'s
+    /// lifetime, extent, alignment, and aliasing requirements.
+    pub unsafe fn restore_state_snapshot(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
@@ -504,7 +510,7 @@ impl JitProgram {
         buffers: BufferDescriptorTables<'_>,
     ) -> Result<(), Diagnostic> {
         self.validate_state_snapshot(snapshot)?;
-        self.initialize_state_in_place(params, state, true, buffers, None)?;
+        unsafe { self.initialize_state_in_place(params, state, true, buffers, None)? };
         self.overlay_state_snapshot(state, snapshot)
     }
 
@@ -605,7 +611,27 @@ impl JitProgram {
         }
     }
 
-    pub fn initialize_allocated_state(
+    /// Initializes previously allocated state using borrowed host buffers and output storage.
+    ///
+    /// # Safety
+    ///
+    /// Every non-null buffer pointer must remain valid and naturally aligned for
+    /// its described extent throughout the call, readable and writable as required
+    /// by the program. Buffer storage must not overlap other buffers, descriptor
+    /// tables, state, parameters, or execution-output storage. Every non-null output
+    /// batch pointer and its non-null storage pointer must be valid, exclusively
+    /// writable, and correctly sized/aligned for the call. Output counters must be
+    /// reset before entry. Descriptor validation cannot establish these properties.
+    ///
+    /// ```compile_fail,E0133
+    /// use onda_codegen_llvm::{BufferDescriptorTables, JitProgram, UninitializedRuntimeState};
+    /// fn initialize(program: &JitProgram, state: &mut UninitializedRuntimeState) {
+    ///     program.initialize_allocated_state(
+    ///         &[], state, BufferDescriptorTables::new(&[], &[], &[], &[]), None,
+    ///     );
+    /// }
+    /// ```
+    pub unsafe fn initialize_allocated_state(
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
@@ -614,8 +640,10 @@ impl JitProgram {
     ) -> Result<RuntimeState, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled
-                .initialize_allocated_state(params, state, buffers, output)
+            unsafe {
+                self.compiled
+                    .initialize_allocated_state(params, state, buffers, output)
+            }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -626,7 +654,14 @@ impl JitProgram {
         }
     }
 
-    pub fn initialize_state_in_place(
+    /// Reruns initialization in existing state storage.
+    ///
+    /// # Safety
+    ///
+    /// Host buffers and output storage must satisfy
+    /// [`Self::initialize_allocated_state`]'s lifetime, extent, alignment,
+    /// exclusivity, and aliasing requirements.
+    pub unsafe fn initialize_state_in_place(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
@@ -636,8 +671,10 @@ impl JitProgram {
     ) -> Result<(), Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
-            self.compiled
-                .initialize_state_in_place(params, state, full, buffers, output)
+            unsafe {
+                self.compiled
+                    .initialize_state_in_place(params, state, full, buffers, output)
+            }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {

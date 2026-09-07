@@ -3208,6 +3208,160 @@ pub unsafe extern "C" fn onda_buffer_asset_decode(
     copy_sized_result(samples, out_samples, out_capacity).unwrap_or(-1)
 }
 
+type ProjectBuffers = (BTreeMap<String, AssetId>, BTreeMap<AssetId, BufferAsset>);
+
+unsafe fn read_project_buffers(
+    buffers: *const onda_project_buffer_asset_t,
+    buffer_count: usize,
+    out_diag: *mut onda_diag_t,
+) -> Option<ProjectBuffers> {
+    if buffer_count > 0 && buffers.is_null() {
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return None;
+    }
+    let limits = ProjectLimits::default();
+    if buffer_count > limits.max_buffer_bindings {
+        write_diag(
+            out_diag,
+            project_error_diag(format!(
+                "project contains {buffer_count} buffers, exceeding the {} binding limit",
+                limits.max_buffer_bindings
+            )),
+        );
+        return None;
+    }
+    let mut buffer_bindings = BTreeMap::new();
+    let mut assets = BTreeMap::<AssetId, BufferAsset>::new();
+    let mut total_asset_bytes = 0usize;
+    if buffer_count > 0 {
+        for buffer in slice::from_raw_parts(buffers, buffer_count) {
+            let name = match parse_required_c_string(buffer.name_utf8, "project buffer name") {
+                Ok(value) => value,
+                Err(error) => {
+                    write_diag(out_diag, diag_to_c(&error));
+                    return None;
+                }
+            };
+            if buffer_bindings.contains_key(&name) {
+                write_diag(
+                    out_diag,
+                    project_error_diag(format!("duplicate project buffer '{name}'")),
+                );
+                return None;
+            }
+            if buffer.ondabuffer_byte_count > 0 && buffer.ondabuffer_bytes.is_null() {
+                write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+                return None;
+            }
+            let bytes = if buffer.ondabuffer_byte_count == 0 {
+                &[][..]
+            } else {
+                slice::from_raw_parts(
+                    buffer.ondabuffer_bytes.cast::<u8>(),
+                    buffer.ondabuffer_byte_count,
+                )
+            };
+            let validated = match validate_ondabuffer(bytes, limits) {
+                Ok(validated) => validated,
+                Err(error) => {
+                    write_diag(out_diag, project_error_diag(error));
+                    return None;
+                }
+            };
+            let id = AssetId::from_buffer_digest(validated.content_digest());
+            if !assets.contains_key(&id) {
+                let asset =
+                    match validated.decode_with_remaining_asset_budget(limits, total_asset_bytes) {
+                        Ok(asset) => asset,
+                        Err(error) => {
+                            write_diag(out_diag, project_error_diag(error));
+                            return None;
+                        }
+                    };
+                total_asset_bytes = match total_asset_bytes.checked_add(asset.payload_bytes()) {
+                    Some(total) if total <= limits.max_total_asset_bytes => total,
+                    Some(_) => {
+                        write_diag(
+                            out_diag,
+                            project_error_diag(format!(
+                                "project buffer payloads exceed the {} byte limit",
+                                limits.max_total_asset_bytes
+                            )),
+                        );
+                        return None;
+                    }
+                    None => {
+                        write_diag(
+                            out_diag,
+                            project_error_diag("project buffer byte total overflows"),
+                        );
+                        return None;
+                    }
+                };
+                assets.insert(id.clone(), asset);
+            }
+            buffer_bindings.insert(name, id);
+        }
+    }
+    Some((buffer_bindings, assets))
+}
+
+/// Returns an independent image with the supplied buffer bindings replaced or
+/// added. Sources, compile constants and unmentioned buffers are preserved.
+#[no_mangle]
+pub unsafe extern "C" fn onda_project_image_with_buffer_overrides(
+    image: *const onda_project_image,
+    buffers: *const onda_project_buffer_asset_t,
+    buffer_count: usize,
+    out_diag: *mut onda_diag_t,
+) -> *mut onda_project_image {
+    let Some(image) = image.as_ref() else {
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return ptr::null_mut();
+    };
+    let Some((mut bindings, mut assets)) = read_project_buffers(buffers, buffer_count, out_diag)
+    else {
+        return ptr::null_mut();
+    };
+    let limits = ProjectLimits::default();
+    let mut total_asset_bytes: usize = assets.values().map(BufferAsset::payload_bytes).sum();
+    for (name, id) in image.inner.buffer_bindings() {
+        if !bindings.contains_key(name) {
+            bindings.insert(name.clone(), id.clone());
+            if !assets.contains_key(id) {
+                let asset = &image.inner.assets()[id];
+                if asset.payload_bytes()
+                    > limits
+                        .max_total_asset_bytes
+                        .saturating_sub(total_asset_bytes)
+                {
+                    write_diag(
+                        out_diag,
+                        project_error_diag("updated project exceeds the asset byte limit"),
+                    );
+                    return ptr::null_mut();
+                }
+                total_asset_bytes += asset.payload_bytes();
+                assets.insert(id.clone(), asset.clone());
+            }
+        }
+    }
+    let updated = ProjectImage::new_with_constants(
+        image.inner.sources().clone(),
+        image.inner.constants().clone(),
+        bindings,
+        assets,
+    )
+    .and_then(project_image_handle);
+    match updated {
+        Ok(image) => image,
+        Err(error) => {
+            write_diag(out_diag, project_error_diag(error));
+            ptr::null_mut()
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn onda_project_image_capture(
     entry_path_utf8: *const c_char,
@@ -3251,90 +3405,10 @@ pub unsafe extern "C" fn onda_project_image_capture(
             return ptr::null_mut();
         }
     };
-    let limits = ProjectLimits::default();
-    if buffer_count > limits.max_buffer_bindings {
-        write_diag(
-            out_diag,
-            project_error_diag(format!(
-                "project contains {buffer_count} buffers, exceeding the {} binding limit",
-                limits.max_buffer_bindings
-            )),
-        );
+    let Some((buffer_bindings, assets)) = read_project_buffers(buffers, buffer_count, out_diag)
+    else {
         return ptr::null_mut();
-    }
-    let mut buffer_bindings = BTreeMap::new();
-    let mut assets = BTreeMap::<AssetId, BufferAsset>::new();
-    let mut total_asset_bytes = 0usize;
-    if buffer_count > 0 {
-        for buffer in slice::from_raw_parts(buffers, buffer_count) {
-            let name = match parse_required_c_string(buffer.name_utf8, "project buffer name") {
-                Ok(value) => value,
-                Err(error) => {
-                    write_diag(out_diag, diag_to_c(&error));
-                    return ptr::null_mut();
-                }
-            };
-            if buffer_bindings.contains_key(&name) {
-                write_diag(
-                    out_diag,
-                    project_error_diag(format!("duplicate project buffer '{name}'")),
-                );
-                return ptr::null_mut();
-            }
-            if buffer.ondabuffer_byte_count > 0 && buffer.ondabuffer_bytes.is_null() {
-                write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
-                return ptr::null_mut();
-            }
-            let bytes = if buffer.ondabuffer_byte_count == 0 {
-                &[][..]
-            } else {
-                slice::from_raw_parts(
-                    buffer.ondabuffer_bytes.cast::<u8>(),
-                    buffer.ondabuffer_byte_count,
-                )
-            };
-            let validated = match validate_ondabuffer(bytes, limits) {
-                Ok(validated) => validated,
-                Err(error) => {
-                    write_diag(out_diag, project_error_diag(error));
-                    return ptr::null_mut();
-                }
-            };
-            let id = AssetId::from_buffer_digest(validated.content_digest());
-            if !assets.contains_key(&id) {
-                let asset =
-                    match validated.decode_with_remaining_asset_budget(limits, total_asset_bytes) {
-                        Ok(asset) => asset,
-                        Err(error) => {
-                            write_diag(out_diag, project_error_diag(error));
-                            return ptr::null_mut();
-                        }
-                    };
-                total_asset_bytes = match total_asset_bytes.checked_add(asset.payload_bytes()) {
-                    Some(total) if total <= limits.max_total_asset_bytes => total,
-                    Some(_) => {
-                        write_diag(
-                            out_diag,
-                            project_error_diag(format!(
-                                "project buffer payloads exceed the {} byte limit",
-                                limits.max_total_asset_bytes
-                            )),
-                        );
-                        return ptr::null_mut();
-                    }
-                    None => {
-                        write_diag(
-                            out_diag,
-                            project_error_diag("project buffer byte total overflows"),
-                        );
-                        return ptr::null_mut();
-                    }
-                };
-                assets.insert(id.clone(), asset);
-            }
-            buffer_bindings.insert(name, id);
-        }
-    }
+    };
     let image = match ProjectImage::new(sources, buffer_bindings, assets) {
         Ok(image) => image,
         Err(error) => {

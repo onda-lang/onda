@@ -5,6 +5,20 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.3]
+
+### Added
+
+- Added `onda_project_image_with_buffer_overrides` to checkpoint host buffer overrides while
+  preserving project sources, compile-time constants, and unchanged assets.
+
+### Fixed
+
+- Gave Windows SDK archives the same top-level package layout as Unix archives and
+  added a CMake consumer check against the extracted Windows archive.
+- Pinned native macOS releases to macOS 15.0 and verify the deployment target of
+  the CLI and every object in the C SDK before packaging.
+
 ## [0.8.2]
 
 ### Added

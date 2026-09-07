@@ -567,6 +567,17 @@ onda_project_image_t* onda_project_image_deserialize(
   size_t byte_count,
   onda_diag_t* out_diag
 );
+/* Returns a new independently owned image with the supplied buffer bindings
+   replaced or added. Preserves sources, compile constants and all unmentioned
+   buffers; removes unreferenced assets. The input image is never modified.
+   Duplicate names and invalid assets fail atomically. NULL buffers is accepted
+   when buffer_count is zero. Declaration compatibility is checked at compile. */
+onda_project_image_t* onda_project_image_with_buffer_overrides(
+  const onda_project_image_t* image,
+  const onda_project_buffer_asset_t* buffers,
+  size_t buffer_count,
+  onda_diag_t* out_diag
+);
 /* Loads an editable project from a complete set of relative files, validating
    and decoding every referenced .ondabuffer, WAV, and inline buffer into
    image-owned typed storage. Pass the selected .ondaproject path when the set

@@ -2566,7 +2566,9 @@ impl MirJitProgram {
     ) -> Result<RuntimeState, Diagnostic> {
         let mut state = self.allocate_state_with_allocator(allocator)?;
         let buffers = self.neutral_buffer_descriptors()?;
-        self.initialize_allocated_state(params, &mut state, buffers.as_borrowed(), None)
+        // SAFETY: the owned tables describe only unbound buffers; there are no
+        // host buffer or output pointers to dereference.
+        unsafe { self.initialize_allocated_state(params, &mut state, buffers.as_borrowed(), None) }
     }
 
     fn neutral_buffer_descriptors(&self) -> Result<OwnedBufferDescriptorTables, Diagnostic> {
@@ -2609,7 +2611,14 @@ impl MirJitProgram {
         })
     }
 
-    pub fn initialize_allocated_state(
+    /// Initializes pending state with borrowed host buffers and output storage.
+    ///
+    /// # Safety
+    ///
+    /// Buffer and output pointees must satisfy the lifetime, extent, alignment,
+    /// exclusivity, and aliasing contract of
+    /// [`crate::JitProgram::initialize_allocated_state`].
+    pub unsafe fn initialize_allocated_state(
         &self,
         params: &[u8],
         state: &mut UninitializedRuntimeState,
@@ -2670,7 +2679,13 @@ impl MirJitProgram {
         })
     }
 
-    pub fn initialize_state_in_place(
+    /// Reruns initialization in existing state storage.
+    ///
+    /// # Safety
+    ///
+    /// Host buffers and output storage must satisfy
+    /// [`Self::initialize_allocated_state`]'s safety requirements.
+    pub unsafe fn initialize_state_in_place(
         &self,
         params: &[u8],
         state: &mut RuntimeState,

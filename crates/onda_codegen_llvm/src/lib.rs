@@ -1900,14 +1900,16 @@ sample:
             .try_clone_with_allocator(None)
             .expect("state should clone");
         unsafe { live.bytes_mut() }.fill(0xff);
-        program
-            .restore_state_snapshot(
+        // SAFETY: these programs have no external buffers or output batches.
+        unsafe {
+            program.restore_state_snapshot(
                 &params,
                 &mut live,
                 &snapshot,
                 BufferDescriptorTables::new(&[], &[], &[], &[]),
             )
-            .expect("snapshot should restore");
+        }
+        .expect("snapshot should restore");
         assert_eq!(live.bytes(), initial.bytes());
     }
 
@@ -1934,14 +1936,16 @@ sample:
         let mut snapshot = vec![0_u8; program.state_size_bytes()];
         snapshot[0..8].copy_from_slice(&(99_i64).to_le_bytes());
         snapshot[8..12].copy_from_slice(&(-1_i32).to_le_bytes());
-        program
-            .restore_state_snapshot(
+        // SAFETY: these programs have no external buffers or output batches.
+        unsafe {
+            program.restore_state_snapshot(
                 &params,
                 &mut live,
                 &snapshot,
                 BufferDescriptorTables::new(&[], &[], &[], &[]),
             )
-            .expect("snapshot should restore");
+        }
+        .expect("snapshot should restore");
         program
             .write_state_snapshot(&live, &mut snapshot)
             .expect("normalized state should snapshot");

@@ -1392,6 +1392,137 @@ fn c_project_file_loader_accepts_an_explicit_manifest_selection() {
 }
 
 #[test]
+fn project_buffer_updates_preserve_the_checkpoint_and_fail_atomically() {
+    use onda_project::{
+        BufferAsset, BufferSamples, ProjectConstValue, ProjectImage, ProjectLimits, SourceDocument,
+        SourceImage,
+    };
+    use std::collections::BTreeMap;
+
+    let asset = |value| BufferAsset::new(1, 1, 48000.0, BufferSamples::F32(vec![value])).unwrap();
+    let original = ProjectImage::from_buffer_assets_with_constants(
+        SourceImage {
+            entry: "main.onda".into(),
+            stdlib_digest: onda_project::current_stdlib_digest(),
+            documents: vec![SourceDocument {
+                path: "main.onda".into(),
+                contents: "outs 1\nsample:\n  out1 = 0.0\n".into(),
+            }],
+            resolutions: vec![],
+        },
+        BTreeMap::from([("Enabled".into(), ProjectConstValue::Bool(true))]),
+        BTreeMap::from([
+            ("clip".into(), asset(0.25)),
+            ("unchanged".into(), asset(0.5)),
+        ]),
+    )
+    .unwrap();
+    let encoded = original.serialize().unwrap();
+    let replacement = onda_project::encode_ondabuffer(&asset(0.75)).unwrap();
+    let name = CString::new("clip").unwrap();
+    let mut diag = empty_diag();
+    unsafe {
+        let input = ProjectImageHandle(onda_project_image_deserialize(
+            encoded.as_ptr().cast(),
+            encoded.len(),
+            &mut *diag,
+        ));
+        assert!(!input.0.is_null(), "{}", diag_message(&diag));
+        let binding = || onda_project_buffer_asset_t {
+            name_utf8: name.as_ptr(),
+            ondabuffer_bytes: replacement.as_ptr().cast(),
+            ondabuffer_byte_count: replacement.len(),
+        };
+        let read_image = |handle| {
+            let size =
+                onda_project_image_serialize(handle, std::ptr::null_mut(), 0, std::ptr::null_mut());
+            assert!(size > 0);
+            let mut bytes = vec![0u8; size as usize];
+            assert_eq!(
+                onda_project_image_serialize(
+                    handle,
+                    bytes.as_mut_ptr().cast(),
+                    bytes.len(),
+                    std::ptr::null_mut()
+                ),
+                size
+            );
+            ProjectImage::deserialize(&bytes, ProjectLimits::default()).unwrap()
+        };
+        let updated = ProjectImageHandle(onda_project_image_with_buffer_overrides(
+            input.0,
+            &binding(),
+            1,
+            &mut *diag,
+        ));
+        assert!(!updated.0.is_null(), "{}", diag_message(&diag));
+        let actual = read_image(updated.0);
+        assert_eq!(actual.sources(), original.sources());
+        assert_eq!(actual.constants(), original.constants());
+        assert_ne!(actual.content_digest(), original.content_digest());
+        assert_eq!(
+            actual.assets().len(),
+            2,
+            "unreferenced old asset must be removed"
+        );
+        assert_eq!(
+            actual.assets()[&actual.buffer_bindings()["clip"]],
+            asset(0.75)
+        );
+        assert_eq!(
+            actual.assets()[&actual.buffer_bindings()["unchanged"]],
+            asset(0.5)
+        );
+        assert_eq!(read_image(input.0), original, "input was modified");
+
+        let unchanged = ProjectImageHandle(onda_project_image_with_buffer_overrides(
+            input.0,
+            std::ptr::null(),
+            0,
+            &mut *diag,
+        ));
+        assert!(!unchanged.0.is_null());
+        assert_eq!(read_image(unchanged.0), original);
+        let duplicates = [binding(), binding()];
+        assert!(onda_project_image_with_buffer_overrides(
+            input.0,
+            duplicates.as_ptr(),
+            2,
+            &mut *diag
+        )
+        .is_null());
+        assert!(diag_message(&diag).contains("duplicate"));
+        diag.clear();
+        let invalid = onda_project_buffer_asset_t {
+            name_utf8: name.as_ptr(),
+            ondabuffer_bytes: std::ptr::null(),
+            ondabuffer_byte_count: 1,
+        };
+        assert!(
+            onda_project_image_with_buffer_overrides(input.0, &invalid, 1, &mut *diag).is_null()
+        );
+        diag.clear();
+        assert!(
+            onda_project_image_with_buffer_overrides(input.0, std::ptr::null(), 1, &mut *diag)
+                .is_null()
+        );
+        diag.clear();
+        assert!(onda_project_image_with_buffer_overrides(
+            std::ptr::null(),
+            &binding(),
+            1,
+            &mut *diag
+        )
+        .is_null());
+        assert_eq!(
+            read_image(input.0),
+            original,
+            "failed update modified input"
+        );
+    }
+}
+
+#[test]
 fn project_instances_share_immutable_defaults_and_allow_host_overrides() {
     unsafe {
         let paths = [
