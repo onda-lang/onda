@@ -804,6 +804,7 @@ onda_reset_buffer_to_project_default
 onda_process_checked
 onda_process_checked_segment
 onda_init
+onda_init_unchecked
 onda_instance_state_bytes
 onda_instance_snapshot_state
 onda_instance_restore_state
