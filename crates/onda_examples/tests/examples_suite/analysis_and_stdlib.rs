@@ -1486,6 +1486,37 @@ fn stdlib_fft_impulse_compile_and_run() {
 
 #[test]
 
+fn stdlib_complex_mul_assign_overlapping_arguments() {
+    for scalar in ["f32", "f64"] {
+        let source = format!(
+            r#"
+import std/complex
+outs 4
+init:
+  direct: std::complex::Complex<{scalar}>
+  values: std::complex::Complex<{scalar}>[2]
+  index = 1
+sample:
+  direct.set(1.0, 2.0)
+  direct.mul_assign(direct)
+  values[index].re = 1.0
+  values[index].im = 2.0
+  values[index].mul_assign(values[99])
+  out1 = f32(direct.re)
+  out2 = f32(direct.im)
+  out3 = f32(values[index].re)
+  out4 = f32(values[index].im)
+"#
+        );
+        let (mut instance, _, out_channels) = compile_instance(&source, 1);
+        assert_eq!(out_channels, 4);
+        let mut output = [0.0_f32; 4];
+        process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+        assert_eq!(output, [-3.0, 4.0, -3.0, 4.0], "{scalar}");
+    }
+}
+
+#[test]
 fn stdlib_complex_struct_compile_and_run() {
     let frames = 1;
 

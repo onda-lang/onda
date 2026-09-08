@@ -42,10 +42,7 @@ namespace std::complex:
       self.im -= im
 
     def mul_assign(self, other: Complex):
-      old_re = self.re
-      old_im = self.im
-      self.re = old_re * other.re - old_im * other.im
-      self.im = old_re * other.im + old_im * other.re
+      self.mul_parts(other.re, other.im)
 
     def mul_parts(self, re, im):
       old_re = self.re
