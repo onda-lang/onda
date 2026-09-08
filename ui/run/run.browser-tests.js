@@ -108,6 +108,29 @@ try {
     "primitive arrays have one group heading each");
   check(document.querySelectorAll("#params .param").length === 10,
     "array controls follow their declared lengths");
+  const arrayGroups = [...document.querySelectorAll("#params .param-array")];
+  check(arrayGroups.every(group => group.open && group.querySelectorAll(".param").length === 2),
+    "each array starts expanded with its own controls");
+  arrayGroups[0].querySelector("summary").click();
+  check(!arrayGroups[0].open && arrayGroups.slice(1).every(group => group.open),
+    "array headings collapse their own group independently");
+  arrayParams[0].value = 3;
+  send({ params: arrayParams });
+  check(document.querySelector(".param-array") === arrayGroups[0] && !arrayGroups[0].open,
+    "collapsed arrays survive host refreshes");
+  arrayGroups[0].querySelector("summary").click();
+  check(arrayGroups[0].open
+    && Number(arrayGroups[0].querySelector('input[type="number"]').value) === 3,
+    "expanding an array shows values updated while collapsed");
+  arrayGroups[0].querySelector("summary").click();
+  for (const layout of ["knobs", "sliders"]) {
+    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    const group = document.querySelector(".param-array");
+    check(!group.open && document.querySelectorAll(".param-array[open]").length === 4,
+      `${layout} layout preserves each array's fold state`);
+    check(document.querySelectorAll(`#params .param-${layout === "knobs" ? "knob" : "slider"}`).length === 8,
+      `${layout} layout renders numeric array controls`);
+  }
   const boolInput = document.querySelector('#params input[type="checkbox"]');
   boolInput.click();
   check(window.__testMessages.at(-1).name === "boolValues[0]"

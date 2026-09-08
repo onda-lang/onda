@@ -694,9 +694,23 @@
         display: grid;
         grid-template-columns: repeat(
           auto-fit,
-          minmax(min(100%, 200px), 1fr)
+          minmax(min(100%, var(--param-card-min, 200px)), 1fr)
         );
         gap: 8px;
+      }
+
+      .param-array {
+        grid-column: 1 / -1;
+        min-width: 0;
+      }
+
+      .param-array-heading {
+        cursor: pointer;
+        padding: 4px 0;
+      }
+
+      .param-array[open] > .param-array-heading {
+        margin-bottom: 8px;
       }
 
       .param {
@@ -1053,11 +1067,7 @@
       }
 
       #params[data-layout="knobs"] {
-        grid-template-columns: repeat(
-          auto-fit,
-          minmax(min(100%, 140px), 1fr)
-        );
-        gap: 8px;
+        --param-card-min: 140px;
       }
 
       #params[data-layout="knobs"] .param {
@@ -3231,14 +3241,31 @@
         if (updateRenderedParams(state.params)) {
           return;
         }
+        const arrayOpenStates = new Map(
+          [...paramsNode.querySelectorAll(".param-array")]
+            .map(group => [group.dataset.name, group.open]),
+        );
         resetRenderedParams(paramSignature);
+        const arrayContainers = new Map();
         for (const param of state.params) {
-          if (param.array?.index === 0) {
-            const heading = document.createElement("div");
-            heading.className = "param-array-heading";
-            heading.style.gridColumn = "1 / -1";
-            heading.textContent = `${param.array.name} [${param.array.length}]`;
-            paramsNode.appendChild(heading);
+          let container = paramsNode;
+          if (param.array) {
+            const { name, length } = param.array;
+            container = arrayContainers.get(name);
+            if (!container) {
+              const group = document.createElement("details");
+              group.className = "param-array";
+              group.dataset.name = name;
+              group.open = arrayOpenStates.get(name) ?? true;
+              const heading = document.createElement("summary");
+              heading.className = "param-array-heading";
+              heading.textContent = `${name} [${length}]`;
+              container = document.createElement("div");
+              container.className = "param-list";
+              group.append(heading, container);
+              paramsNode.appendChild(group);
+              arrayContainers.set(name, container);
+            }
           }
           const card = document.createElement("div");
           card.className = "param";
@@ -3379,7 +3406,7 @@
 
           }
 
-          paramsNode.appendChild(card);
+          container.appendChild(card);
         }
       }
 

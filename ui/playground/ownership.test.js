@@ -229,7 +229,7 @@ test("the shared run view offers a device-cached knob layout", async () => {
   );
   assert.match(
     runView,
-    /#params\[data-layout="knobs"\] \{[\s\S]*?minmax\(min\(100%, 140px\), 1fr\)/,
+    /#params\[data-layout="knobs"\] \{\s+--param-card-min: 140px;/,
   );
   assert.match(
     runView,
@@ -266,7 +266,7 @@ test("the shared run view preserves controls across independent parameter update
   );
   assert.match(
     runView,
-    /if \(updateRenderedParams\(state\.params\)\) \{\s+return;\s+\}\s+resetRenderedParams\(paramSignature\);/,
+    /if \(updateRenderedParams\(state\.params\)\) \{\s+return;\s+\}[\s\S]*?resetRenderedParams\(paramSignature\);/,
   );
   assert.equal(
     runView.match(/paramsNode\.replaceChildren\(\)/g)?.length,
