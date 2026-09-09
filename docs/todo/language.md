@@ -3,6 +3,14 @@
 ## Language follow-ups
 
 - Structured-data implementation cleanups
+  - Revisit implicit struct-method receivers. The intended source model omits `self` from method
+    declarations, makes fields and sibling methods available by bare name like proc-local state,
+    and keeps `self.member` only as an explicit escape hatch when a lexical binding shadows an
+    owner member. Calls remain receiver-based (`voice.tick(...)`); the receiver is compiler-owned
+    and should be introduced only when lowering the method, not inserted into the source-level AST.
+    Implement this through shared owner-aware name resolution and receiver capture for struct
+    methods and proc-local defs. Avoid a separate textual qualification pass or synthetic shadow
+    bindings that leak into typed events, MIR, or tooling.
   - Reuse fixed `InstanceScratch` storage across call sites whose aggregate-result lifetimes do not
     overlap, while preserving fully prepared per-instance storage and allocation-free execution.
   - Consolidate hosted event payload validation so one diagnostic host pass precedes the mandatory
