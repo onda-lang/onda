@@ -329,6 +329,40 @@ unsafe fn delegate_param_descriptor<'a>(
         .and_then(|delegate| delegate.params().get(param_index as usize))
 }
 
+unsafe fn message_payload_sizes(
+    message: Option<&DeclaredMessage>,
+    slice_lengths: *const i32,
+    slice_length_count: i32,
+    out_payload_bytes: *mut i32,
+    out_workspace_bytes: *mut i32,
+) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    if slice_length_count < 0 || out_payload_bytes.is_null() || out_workspace_bytes.is_null() {
+        return false;
+    }
+    let lengths = if slice_length_count == 0 {
+        &[]
+    } else {
+        if slice_lengths.is_null() {
+            return false;
+        }
+        slice::from_raw_parts(slice_lengths, slice_length_count as usize)
+    };
+    let Ok((payload_bytes, workspace_bytes)) = message.payload_plan().sizes(lengths) else {
+        return false;
+    };
+    let (Ok(payload_bytes), Ok(workspace_bytes)) =
+        (i32::try_from(payload_bytes), i32::try_from(workspace_bytes))
+    else {
+        return false;
+    };
+    *out_payload_bytes = payload_bytes;
+    *out_workspace_bytes = workspace_bytes;
+    true
+}
+
 unsafe fn state_descriptor<'a>(
     program: *const onda_program,
     index: i32,
@@ -724,6 +758,53 @@ pub unsafe extern "C" fn onda_event_payload_bytes(program: *const onda_program, 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn onda_event_payload_min_bytes(
+    program: *const onda_program,
+    index: i32,
+) -> i32 {
+    if program.is_null() {
+        return -1;
+    }
+    bytes_from_index(index, |idx| {
+        (&*program).inner.jit.event_payload_min_bytes(idx)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_event_schema_json(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(&*program).inner.event_schema_json, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_event_payload_sizes(
+    program: *const onda_program,
+    index: i32,
+    slice_lengths: *const i32,
+    slice_length_count: i32,
+    out_payload_bytes: *mut i32,
+    out_workspace_bytes: *mut i32,
+) -> bool {
+    let message = if program.is_null() || index < 0 {
+        None
+    } else {
+        (&*program).inner.jit.event_descriptor(index as usize)
+    };
+    message_payload_sizes(
+        message,
+        slice_lengths,
+        slice_length_count,
+        out_payload_bytes,
+        out_workspace_bytes,
+    )
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn onda_delegate_payload_bytes(
     program: *const onda_program,
     index: i32,
@@ -747,6 +828,40 @@ pub unsafe extern "C" fn onda_delegate_payload_min_bytes(
     bytes_from_index(index, |idx| {
         (&*program).inner.jit.delegate_payload_min_bytes(idx)
     })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_schema_json(
+    program: *const onda_program,
+    index: i32,
+) -> *const c_char {
+    if program.is_null() {
+        return ptr::null();
+    }
+    cstr_ptr_at(&(&*program).inner.delegate_schema_json, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_delegate_payload_sizes(
+    program: *const onda_program,
+    index: i32,
+    slice_lengths: *const i32,
+    slice_length_count: i32,
+    out_payload_bytes: *mut i32,
+    out_workspace_bytes: *mut i32,
+) -> bool {
+    let message = if program.is_null() || index < 0 {
+        None
+    } else {
+        (&*program).inner.jit.delegate_descriptor(index as usize)
+    };
+    message_payload_sizes(
+        message,
+        slice_lengths,
+        slice_length_count,
+        out_payload_bytes,
+        out_workspace_bytes,
+    )
 }
 
 #[no_mangle]

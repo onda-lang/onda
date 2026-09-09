@@ -1415,6 +1415,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         },
                         init: Some(vec![Expr::bool(false); len]),
                         initialize: true,
+                        init_is_value: false,
                     },
                 });
             }

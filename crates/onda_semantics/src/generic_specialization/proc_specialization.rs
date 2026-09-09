@@ -46,69 +46,27 @@ fn parse_explicit_proc_array_elem_type_args(
 pub(crate) fn specialize_generic_proc_event_param_type(
     ty: &EventParamType,
     type_bindings: &HashMap<String, PrimitiveType>,
-    proc_name: &str,
-    event_name: &str,
-    param_name: &str,
-    diag: DiagCtx,
-    errors: &mut Vec<Diagnostic>,
 ) -> EventParamType {
     match ty {
-        EventParamType::Scalar(prim) => EventParamType::Scalar(*prim),
-        EventParamType::GenericScalar { name } => match type_bindings.get(name).copied() {
-            Some(bound) => EventParamType::Scalar(bound),
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic scalar type '{}'",
-                        proc_name, event_name, param_name, name
-                    ),
-                );
-                EventParamType::Scalar(PrimitiveType::F32)
-            }
-        },
-        EventParamType::Array { elem, size } => EventParamType::Array {
-            elem: *elem,
-            size: size.clone(),
-        },
-        EventParamType::GenericArray { elem, size } => match type_bindings.get(elem).copied() {
-            Some(bound) => EventParamType::Array {
-                elem: bound,
+        EventParamType::GenericScalar { name } => type_bindings
+            .get(name)
+            .copied()
+            .map(EventParamType::Scalar)
+            .unwrap_or_else(|| ty.clone()),
+        EventParamType::GenericArray { elem, size } => type_bindings
+            .get(elem)
+            .copied()
+            .map(|elem| EventParamType::Array {
+                elem,
                 size: size.clone(),
-            },
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic array element type '{}'",
-                        proc_name, event_name, param_name, elem
-                    ),
-                );
-                EventParamType::Array {
-                    elem: PrimitiveType::F32,
-                    size: size.clone(),
-                }
-            }
-        },
-        EventParamType::Slice { elem } => EventParamType::Slice { elem: *elem },
-        EventParamType::GenericSlice { elem } => match type_bindings.get(elem).copied() {
-            Some(bound) => EventParamType::Slice { elem: bound },
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic slice element type '{}'",
-                        proc_name, event_name, param_name, elem
-                    ),
-                );
-                EventParamType::Slice {
-                    elem: PrimitiveType::F32,
-                }
-            }
-        },
+            })
+            .unwrap_or_else(|| ty.clone()),
+        EventParamType::GenericSlice { elem } => type_bindings
+            .get(elem)
+            .copied()
+            .map(|elem| EventParamType::Slice { elem })
+            .unwrap_or_else(|| ty.clone()),
+        _ => ty.clone(),
     }
 }
 
@@ -123,6 +81,14 @@ pub(crate) fn specialize_generic_proc_decl_type(
 ) -> DeclType {
     match ty {
         DeclType::Scalar(prim) => DeclType::Scalar(*prim),
+        DeclType::Slice(element) => DeclType::Slice(match element {
+            ArrayElemType::Struct(name) => type_bindings
+                .get(name)
+                .copied()
+                .map(ArrayElemType::Primitive)
+                .unwrap_or_else(|| element.clone()),
+            _ => element.clone(),
+        }),
         DeclType::Generic(param) => match type_bindings.get(param).copied() {
             Some(bound) => DeclType::Scalar(bound),
             None => {
@@ -696,15 +662,7 @@ pub(crate) fn specialize_generic_proc_template(
     let mut tasks = template.tasks.clone();
     for event in &mut events {
         for param in &mut event.params {
-            param.ty = specialize_generic_proc_event_param_type(
-                &param.ty,
-                &type_bindings,
-                &template.name,
-                &event.name,
-                &param.name,
-                DiagCtx::new(param.ty_loc.or(param.loc)),
-                errors,
-            );
+            param.ty = specialize_generic_proc_event_param_type(&param.ty, &type_bindings);
             if let Some(default) = &mut param.default {
                 rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
@@ -721,15 +679,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for delegate in &mut delegates {
         for param in &mut delegate.params {
-            param.ty = specialize_generic_proc_event_param_type(
-                &param.ty,
-                &type_bindings,
-                &template.name,
-                &delegate.name,
-                &param.name,
-                DiagCtx::new(param.ty_loc.or(param.loc)),
-                errors,
-            );
+            param.ty = specialize_generic_proc_event_param_type(&param.ty, &type_bindings);
             if let Some(default) = &mut param.default {
                 rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
@@ -758,7 +708,10 @@ pub(crate) fn specialize_generic_proc_template(
             DeclType::Scalar(_) | DeclType::Generic(_) => {
                 init.default_ty = Some(specialized);
             }
-            DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
+            DeclType::Slice(_)
+            | DeclType::Array { .. }
+            | DeclType::ArrayGeneric { .. }
+            | DeclType::Tuple(_) => {
                 push_semantic(
                     DiagCtx::new(init.default_ty_loc.or(init.loc)),
                     errors,
@@ -974,7 +927,7 @@ pub(crate) fn specialize_generic_proc_template(
                     FnReturnType::Scalar(specialize_return_scalar(scalar))
                 }
                 FnReturnType::Array { elem, size } => FnReturnType::Array {
-                    elem: *elem,
+                    elem: specialize_return_scalar(elem),
                     size: size.clone(),
                 },
                 FnReturnType::Tuple(elems) => {

@@ -958,7 +958,7 @@ Rules:
 - Negative bounds are supported.
 - Slice expressions lower to primitive slice views of type `T[]`.
 - Buffer slicing also yields `T[]`.
-- Struct-element arrays are not sliceable in the current implementation.
+- Struct-element arrays follow the same slice rules; see [Struct Arrays](#struct-arrays).
 
 Writable slice assignment is statement-only:
 
@@ -1065,8 +1065,8 @@ Return rules:
 - A value-returning `def` must return a value on every reachable path. A
   return nested only in a `for` or `while` loop is not sufficient because the
   loop may execute zero times.
-- Explicit annotations can use primitive scalars, tuples of primitive scalars, and generic primitive placeholders belonging to the current generic owner.
-- Returning structs, arrays, or buffers is not supported.
+- Explicit annotations can use primitive scalars, primitive tuples, nominal structs, and fixed primitive or struct arrays, including resolved generic types.
+- Struct and fixed-array returns capture independent contents. Unsized slices and buffers cannot be returned.
 - Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
 - Runtime def call graphs must be acyclic. Direct and mutual recursion are
   rejected because they do not provide a statically bounded realtime workload.
@@ -1080,6 +1080,35 @@ Primitive scalar and tuple arguments are values. Arrays, slices, structs, procs,
 reference-like arguments: the callee receives access to the original aggregate or resource, subject
 to its mutability and lifetime rules. This is why a def can update an array element or struct field
 without returning the aggregate.
+
+Nominal data parameters cannot have defaults. A defaulted struct or struct-array parameter would
+need hidden backing storage despite the parameter being a reference to caller-owned data. Create
+the value explicitly at the call site instead:
+
+```onda
+struct Settings:
+  gain = 1.0
+
+def apply(settings: Settings):
+  settings.gain *= 0.5
+
+sample:
+  apply(Settings())       # Legal: explicit temporary storage lives through this call.
+  settings = Settings()
+  apply(settings)
+  out1 = settings.gain
+```
+
+Passing `Settings()` explicitly is different from declaring `settings: Settings = Settings()` in
+the function signature. The call-site constructor is an expression with a clear owner and a
+well-defined lifetime: the caller materializes it for the synchronous call. An omitted nominal
+default would require the callee or dispatch machinery to invent hidden reference backing. Bind the
+constructor to a name first only when its contents must remain observable after the call.
+
+The same restriction applies to methods because `self` and any additional nominal data parameters
+use the ordinary `def` calling convention. Scalar and tuple defaults remain values. Fixed primitive
+array defaults retain their existing constant-array behavior; unsized arrays, buffers, procs,
+structs, and fixed or unsized struct arrays do not support defaults.
 
 Names declared as callables by an owner cannot be reused by value bindings in
 that owner's executable scopes. This includes defs, events, tasks, delegates,
@@ -1156,9 +1185,9 @@ struct Voice:
 ```
 
 A bare field defaults to `f32`. A field with `= expr` infers its type from that compile-time
-default. A typed field accepts an optional compatible default; otherwise its scalar, tuple, array,
-or nested-struct value is initialized from that type's defaults. An `i32` or `i64` field may use
-the same [finite storage domain](#assignments) as an integer local or state binding. Constructor
+default. Typed scalar and tuple fields accept compatible defaults. Array and nested-struct fields
+are initialized from their type's defaults; supply explicit values through constructor arguments.
+An `i32` or `i64` field may use the same [finite storage domain](#assignments) as an integer local or state binding. Constructor
 arguments and every later field assignment are normalized on storage, and the compiler retains the
 domain on flattened state and reference parameters for index-range proofs.
 
@@ -1178,13 +1207,60 @@ Rules:
 - Methods can read and write struct fields through `self`.
 - Call a method with `voice.tick(...)`; the equivalent explicit form is `Voice.tick(voice, ...)`.
 - Constructor arguments bind fields positionally or by name. Omitted fields use their defaults.
-- Typed struct declarations are `init`-only.
+- Struct constructors and typed struct declarations also work in runtime locals.
 - Declaration-only form such as `d: Voice` desugars to default-constructor initialization.
 - For generic structs, typed declarations require explicit type args when the type is still generic.
 
-Struct instances have reference semantics when passed to defs or bound to an alias. A method or def
-that assigns a field updates the original instance; assignment does not implicitly deep-copy an
-aggregate.
+Struct arguments and new untyped aliases refer to existing storage. A typed declaration creates
+independent storage; assigning an established struct copies its contents without redirecting it.
+The storage-creating declaration must introduce a new name: annotating an existing alias is an
+error, including for specialized generic types such as `Box<f32>`. Returning a fixed struct captures
+independent contents, including when returning an argument.
+Bind a returned aggregate to a name before indexing it or selecting its fields. Use intermediate
+aliases for deeper selections.
+
+```onda
+struct Coefficients:
+  gain = 1.0
+  bias = 0.0
+
+def prepare(gain) -> Coefficients:
+  return Coefficients(gain = gain)
+
+def reset(value: Coefficients):
+  value = Coefficients()
+
+init:
+  initial = prepare(0.5)
+
+sample:
+  current = prepare(0.25)
+  alias = current
+  saved: Coefficients = current
+  reset(alias)             # Replaces current; saved stays independent.
+  out1 = saved.gain + current.gain
+```
+
+These operations require the same nominal struct type. Tuple fields retain scalar-value semantics.
+Constructor fields capture their initial contents in argument order, including named arguments.
+Fixed primitive and struct arrays can also be returned (`-> f32[4]`, `-> Coefficients[4]`),
+independently initialized from a matching fixed array, and replaced through an existing fixed
+binding. Fixed helper parameters retain their declared shapes for these operations. Helper write
+permissions are inferred through aliases and transitive calls; independently copied data does
+not require write access to its source.
+Unsized slices cannot be returned. Init selections retain their captured storage selection until
+initialization runs again. Block-owned data and selected views survive segmented processing,
+intervening events, and snapshots, including inside procs. Selections are captured once in
+block-pre; later changes to a selector do not redirect a view. Each proc instance owns its backing
+storage and captured coordinates.
+
+A typed slice initialized directly from fresh array data retains that backing for its declaration's
+scope. Fresh init backing is reset by preserve-pinned initialization; explicitly owned pinned roots
+retain their contents. A view cannot itself be pinned. An alias does not extend the lifetime of an
+existing init-local owner; use a typed fixed declaration to retain independent contents.
+Views into external buffer memory cannot cross process boundaries. Structured-message delivery
+borrows its source only for synchronous dispatch; retain message contents by copying them into
+owned storage.
 
 ### Struct Arrays
 
@@ -1205,25 +1281,50 @@ sample:
   out1 = selected.value + broadcast[0].value
 ```
 
-The broadcast form constructs every element from the same constructor arguments; it does not make
-all slots aliases of one instance. Selecting an element produces an alias to that element, so the
+These declarations also work in runtime scopes. Broadcast captures its initializer once and fills
+independent elements. An explicit list must contain exactly the declared number of elements;
+`[Marker()]` is a one-element list. Selecting an element produces an alias to that element, so the
 compound assignment above updates `listed[1].value`. Runtime selectors are clamped just like
 primitive-array selectors.
 
+Primitive and struct slices can be explicitly typed. The annotation binds a view and requires an
+initializer. Bounds are captured when the view is selected, and aliases preserve source permissions.
+
+```onda
+sample:
+  markers: Marker[4] = Marker(value = 2.0)
+  selected: Marker[] = markers[1:]
+  markers[1:] = markers[:3]     # Overlap-safe contents copy.
+  selected[:] = Marker(value = 5.0)
+  saved: Marker[2] = markers[-2:]  # Exact length is proven at compile time.
+  out1 = saved[0].value
+```
+
+Slice assignment copies the fitting prefix and preserves the destination tail. Struct fill
+captures its element once, including for an empty destination. Existing slice bindings cannot be
+rebound; use `view[:] = source` to copy contents. Fixed initialization from a slice requires a proven
+matching length and never adds a runtime shape assertion.
+
 ### Indexed Struct-Array Field Access
 
-For arrays of data structs, one inline field-access dot is supported:
+For arrays of data structs, an element can be selected from any stable named path and then read
+through one inline field-access dot:
 
 ```onda
 sample:
   gain = voices[i].level
   tap = voices[i].taps[j]
+  velocity = current.notes[i].velocity
 ```
 
 Accepted forms:
 
-- `base[idx].field`
-- `base[idx].field[fidx]`
+- `named.path[idx].field`
+- `named.path[idx].field[fidx]`
+
+The path before `[idx]` can cross ordinary named struct fields, as in
+`current.notes[0].velocity`. The index is what crosses the struct-array boundary; spelling
+`current.notes.velocity[0]` is not the source-level structural model.
 
 Deeper inline chains are rejected:
 
@@ -1237,6 +1338,12 @@ sample:
   v = voices[i]
   gain = v.settings.level
 ```
+
+The root must be stable named storage. A function-result temporary such as
+`current().notes[0].velocity` cannot be borrowed for field selection; bind the returned struct
+first. Constructor arguments are the intentional exception at call boundaries, so
+`apply(Settings())` is valid because the caller explicitly materializes the constructor result for
+the duration of `apply`.
 
 Proc arrays use their own indexed forms such as `voices[i].gain`,
 `voices[i](...)`, and `voices[i].note_on(...)`.
@@ -1715,14 +1822,18 @@ declarations and an `events:` block can be mixed in the same owner.
 Supported top-level event parameter types:
 
 - Primitive scalars.
-- Fixed-size primitive arrays: `T[N]`.
-- Read-only primitive slices: `T[]`.
+- Primitive-only tuples and nominal structs, including nested fixed fields.
+- Fixed-size primitive or struct arrays: `T[N]`.
+- Primitive or struct slices: `T[]`.
 
 Rules:
 
 - Event params without explicit types default to `f32`.
-- Defaults work for scalar and fixed-size array params.
-- Fixed-array and slice params are read-only in handlers.
+- Constant defaults work for scalars, tuples, and fixed primitive arrays. Structs and struct arrays
+  are borrowed payloads and cannot have parameter defaults. A no-argument event may construct and
+  forward an explicitly owned default value when that API is useful.
+- All payload parameters are read-only. Aggregates are live views for synchronous dispatch.
+  A typed fixed-data declaration captures independent contents when needed.
 - Top-level events run immediately on the audio thread.
 - Handlers cannot write inputs, outputs, or top-level params.
 - Handlers can read, write, and query declared buffers using the instance's current bindings.
@@ -1730,7 +1841,77 @@ Rules:
   `init`.
 - Unknown top-level event indices are ignored at runtime.
 - A known top-level event with the wrong payload size is a runtime error.
-- Top-level host events with slice params use payload layout `i32 len` followed by contiguous element bytes.
+- Hosts encode logical values using the recursive message schema. Struct arrays use canonical
+  structure-of-arrays tensors; a struct slice has one logical length followed by its field tensors.
+
+### Structured Events and Delegates
+
+Events and delegates can carry a complete nominal object instead of forcing an API to flatten it
+into parallel scalar parameters. Nested structs, tuples, fixed primitive arrays, fixed struct
+arrays, and struct slices retain their declared shape across top-level events, proc events,
+delegates, and `when` bindings.
+
+```onda
+struct Note:
+  frequency = 440.0
+  velocity = 1.0
+
+struct Patch:
+  notes: Note[4]
+  transpose: f32 = 0.0
+
+proc VoiceBank:
+  init:
+    current: Patch
+
+  delegate configured(patch: Patch)
+
+  event configure(patch: Patch):
+    current = patch          # Copy into proc-owned state.
+    configured(current)      # Borrow that state while dispatching.
+
+  sample:
+    out1 = current.notes[0].velocity
+
+init:
+  bank = VoiceBank()
+  observed: Patch
+
+when bank.configured(patch):
+  observed = patch           # Retain independent contents after dispatch.
+
+event configure(patch: Patch):
+  bank.configure(patch)      # Forward the same read-only payload view.
+
+event reset_bank():
+  defaults: Patch
+  bank.configure(defaults)   # Explicit storage replaces a parameter default.
+
+sample:
+  out1 = bank() + observed.transpose
+```
+
+Without structured payloads, `Patch` would have to be exposed as separate arrays and scalars, with
+the caller, event, proc, delegate, and subscriber independently agreeing on their lengths and field
+ordering. The nominal type now carries that contract end to end. Adding a nested field updates one
+type and its recursive host schema instead of multiplying parallel parameters throughout the API.
+
+The ownership rules are intentionally visible:
+
+- A top-level host event supplies one logical object or array matching the published recursive
+  schema. Integer field domains are normalized before the handler observes them.
+- Event, delegate, and `when` aggregate bindings are read-only references valid for that synchronous
+  dispatch. Forwarding them does not copy every element.
+- Assignment into an already declared struct or fixed array copies contents and preserves the
+  destination's identity. This is how a handler retains a payload in state.
+- `local = payload` creates another alias; it does not retain the data. Use
+  `local: Patch = payload` for an independent local copy.
+- A struct slice carries its runtime length and field views. A fixed struct array additionally
+  requires the exact declared length. Neither may have a parameter default.
+- Aggregate parameters are required at every call site. If an API needs default behavior, expose a
+  separate no-argument event or helper that constructs named local storage, as `reset_bank` does.
+- Host output records snapshot delegate contents when published, even though in-language forwarding
+  uses live synchronous views.
 
 ### Proc Events
 
@@ -1759,6 +1940,7 @@ Proc-event rules:
 - Proc handlers can read, write, and query their declared buffers using the instance's current bindings.
 - Proc handlers cannot write inputs or outputs.
 - Generic proc events can use generic primitive placeholders such as `T`, `T[N]`, and `T[]`.
+- Struct and struct-array arguments are required and use the structured borrowing rules above.
 
 Every proc also gets a reserved builtin `init(...)` event. It mirrors the proc
 params in declaration order and adds `full: bool = false`, assigns
@@ -1845,9 +2027,10 @@ when stopped(reason):
   last_reason = reason
 ```
 
-Delegate parameters have the same scalar, fixed-array, slice, generic specialization, default, and
-argument-binding rules as event parameters; an omitted type defaults to `f32`. Delegate calls have
-no result. They are valid in
+Delegate parameters have the same scalar, tuple, struct, fixed-array, slice, generic specialization,
+and argument-binding rules as event parameters; an omitted type defaults to `f32`. Defaults are
+limited to scalar, tuple, and fixed primitive-array values, so every struct or struct-array argument
+must be supplied by the emitting call. Delegate calls have no result. They are valid in
 `sample`, structured `block` code, tasks, event and `when` handlers, and owner-local runtime defs.
 They are invalid in `init` and in runtime defs reachable from `init`. Only the declaring owner can
 call a delegate; `child.finished()` is not a callable surface.
@@ -1983,11 +2166,17 @@ clear task-frame storage: restarting the task executes its declarations and
 initializers before that storage can be observed again. Full initialization
 still initializes the complete continuation image.
 
-Locals that are live across a `yield`, including fixed aggregates and loop
-control, become statically allocated continuation state. Runtime handles cannot
-cross a suspension point: buffer descriptors, slices, proc aliases, and other
-reference-like values must be dead at `yield` and reacquired after resumption.
-The compiler rejects only references that are live across the boundary.
+Locals that are live across a `yield`, including fixed structs, arrays, and loop
+control, become statically allocated continuation state. Data views may cross `yield`
+when their backing storage survives suspension: the continuation retains the selected
+coordinates and branch choice, then reconstructs access on resumption. This includes
+views into task-owned data, owner state, and persistent init selections. A typed slice
+initialized from fresh array data retains its backing through suspension.
+
+Views into external buffer memory cannot cross `yield`, because the buffer may be
+rebound before resumption. Other resource handles retain their existing restrictions;
+they must be dead at `yield` and reacquired after resumption. The compiler rejects
+references only when they are live across the boundary.
 
 Tasks read owner params and current buffer mappings whenever they resume.
 Changing a parameter or rebinding a buffer does not reset a task automatically;
@@ -2584,6 +2773,9 @@ def read_first(buf: buffer):
 An unsized primitive, struct, or proc array parameter accepts any compatible runtime length and
 supports `.len()`. A fixed parameter additionally requires the call-site length to match exactly.
 Untyped and unsized aggregate parameters are specialized from their concrete call sites.
+Nominal struct and struct-array parameters borrow the caller's storage and therefore cannot declare
+defaults. Their write permission is inferred from the body and transitive calls; pass const or
+read-only data only to a fully read-only call chain.
 
 Untyped parameters can be specialized structurally:
 
@@ -2697,8 +2889,7 @@ remain writable by their owning proc according to the processor rules.
 ### Common Current Limits
 
 - Proc-local defs are not overloadable.
-- Returning structs, arrays, or buffers from runtime `def` is unsupported.
-- Struct-element arrays are not sliceable.
+- Returning unsized slices or buffers from runtime `def` is unsupported.
 - `graph` source expressions cannot call user-defined functions or procs.
 - `graph` does not support `kouts` or block-rate proc outputs.
 - `graph` has no event-routing syntax.

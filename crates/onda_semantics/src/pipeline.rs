@@ -15,6 +15,7 @@ use crate::*;
 
 mod const_evaluation;
 mod const_rewriting;
+mod data_permissions;
 mod integer_ranges;
 mod post_analysis;
 
@@ -533,37 +534,11 @@ fn register_generated_method_owners(
 
 fn bind_event_param_call_types(env: &mut crate::def_semantics::CallTypeEnv, event: &EventDef) {
     for param in &event.params {
-        env.shadow_binding(&param.name);
-        match &param.ty {
-            EventParamType::Scalar(ty) => {
-                env.scalar_types.insert(param.name.clone(), *ty);
-            }
-            EventParamType::Array { elem, size } => {
-                env.array_types.insert(
-                    param.name.clone(),
-                    crate::def_semantics::CallArrayType::primitive(
-                        *elem,
-                        crate::def_semantics::const_positive_usize_for_call_type(size),
-                    ),
-                );
-            }
-            EventParamType::Slice { elem } => {
-                env.array_types.insert(
-                    param.name.clone(),
-                    crate::def_semantics::CallArrayType::primitive(*elem, None),
-                );
-            }
-            EventParamType::GenericScalar { .. }
-            | EventParamType::GenericArray { .. }
-            | EventParamType::GenericSlice { .. } => {}
-        }
+        let parameter = event_param_as_fn_param(param);
+        env.bind_function_param_type(&param.name, parameter.ty.as_ref(), &[]);
     }
 }
 
-/// Resolves source-level call-shape expressions once before overload
-/// resolution, return inference, and monomorphization inspect signatures or
-/// array constructors. Those passes can then share a small literal-only shape
-/// representation without each reimplementing compile-time evaluation.
 fn normalize_runtime_call_shape_exprs(
     defs: &mut [FunctionDef],
     events: &mut [EventDef],
@@ -586,53 +561,12 @@ fn normalize_runtime_call_shape_exprs(
     }
 
     fn normalize_expr(expr: &mut Expr, options: AnalysisOptions) {
-        match expr {
-            Expr::ArrayCtor { spec, init, .. } => {
+        expr.visit_mut(|expr| {
+            if let Expr::ArrayCtor { spec, .. } = expr {
                 normalize(&mut spec.size, options, "array constructor length");
-                if let Some(values) = init {
-                    for value in values {
-                        normalize_expr(value, options);
-                    }
-                }
             }
-            Expr::Index { index, .. } => normalize_expr(index, options),
-            Expr::Slice {
-                selector,
-                channel,
-                start,
-                end,
-                ..
-            } => {
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    normalize_expr(coordinate, options);
-                }
-            }
-            Expr::Compare { lhs, rhs, .. }
-            | Expr::Logical { lhs, rhs, .. }
-            | Expr::Binary { lhs, rhs, .. } => {
-                normalize_expr(lhs, options);
-                normalize_expr(rhs, options);
-            }
-            Expr::Call { args, .. } => {
-                for arg in args {
-                    normalize_expr(arg, options);
-                }
-            }
-            Expr::UserCall { args, .. } => {
-                for arg in args {
-                    normalize_expr(&mut arg.expr, options);
-                }
-            }
-            Expr::Cast { expr, .. }
-            | Expr::UnaryNot { expr, .. }
-            | Expr::UnaryBitNot { expr, .. } => normalize_expr(expr, options),
-            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-                for value in values {
-                    normalize_expr(value, options);
-                }
-            }
-            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        }
+            true
+        });
     }
 
     fn normalize_target(target: &mut AssignTarget, options: AnalysisOptions) {
@@ -985,7 +919,7 @@ pub fn analyze_with_options_and_inputs(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
-        top_level_delegates,
+        mut top_level_delegates,
     } = desugar_processors(program, options, &const_array_infos, &mut errors);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
@@ -1063,7 +997,6 @@ pub fn analyze_with_options_and_inputs(
         Some(Block::Events(v)) => v.events.clone(),
         _ => Vec::new(),
     };
-    let typed_delegates = coerce_typed_delegates(&top_level_delegates, options, &mut errors);
     let buffers = match program.block(BlockKind::Buffers) {
         Some(Block::Buffers(v)) => v.decls.clone(),
         _ => Vec::new(),
@@ -1445,6 +1378,12 @@ pub fn analyze_with_options_and_inputs(
                 }
             }
             for method in &mut s.methods {
+                rewrite_explicit_generic_struct_function_types(
+                    method,
+                    &generic_templates,
+                    &mut generated_specializations,
+                    &mut errors,
+                );
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut method.body,
                     &generic_templates,
@@ -1454,6 +1393,12 @@ pub fn analyze_with_options_and_inputs(
             }
         }
         for def in &mut defs {
+            rewrite_explicit_generic_struct_function_types(
+                def,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut def.body,
                 &generic_templates,
@@ -1486,8 +1431,22 @@ pub fn analyze_with_options_and_inputs(
             &mut errors,
         );
         for event in &mut events {
+            rewrite_explicit_generic_struct_event_types(
+                &mut event.params,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut event.body,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
+        }
+        for delegate in &mut top_level_delegates {
+            rewrite_explicit_generic_struct_event_types(
+                &mut delegate.params,
                 &generic_templates,
                 &mut generated_specializations,
                 &mut errors,
@@ -2430,27 +2389,44 @@ pub fn analyze_with_options_and_inputs(
                 );
             }
             if let Some(default) = &p.default {
-                if matches!(
-                    p.ty,
-                    Some(FnParamType::Buffer(_))
-                        | Some(FnParamType::Array(_))
-                        | Some(FnParamType::ArrayGeneric(_))
-                        | Some(FnParamType::BareBuffer)
-                ) {
+                let borrowed = match p.ty.as_ref() {
+                    Some(FnParamType::Struct(name)) => !def.type_params.contains(name),
+                    Some(FnParamType::SizedArray {
+                        generic_name: Some(name),
+                        ..
+                    }) => !def.type_params.contains(name),
+                    Some(
+                        FnParamType::Buffer(_)
+                        | FnParamType::BufferArray { .. }
+                        | FnParamType::Array(_)
+                        | FnParamType::ArrayGeneric(_)
+                        | FnParamType::BareBuffer,
+                    ) => true,
+                    Some(
+                        FnParamType::Primitive(_)
+                        | FnParamType::SizedArray {
+                            generic_name: None, ..
+                        }
+                        | FnParamType::Tuple(_),
+                    )
+                    | None => false,
+                };
+                if borrowed {
                     push_semantic(
                         param_diag,
                         &mut errors,
                         format!(
-                            "function parameter '{}.{}' is a buffer and cannot have a default value",
+                            "function parameter '{}.{}' borrows storage and cannot have a default value",
                             public_name, p.name
                         ),
                     );
+                } else {
+                    validate_default_expr(
+                        default,
+                        &mut errors,
+                        &format!("function parameter '{}.{}'", public_name, p.name),
+                    );
                 }
-                validate_default_expr(
-                    default,
-                    &mut errors,
-                    &format!("function parameter '{}.{}'", public_name, p.name),
-                );
             }
         }
     }
@@ -2861,11 +2837,7 @@ pub fn analyze_with_options_and_inputs(
     let param_names: HashSet<String> = typed_params.iter().map(|p| p.name.clone()).collect();
     let def_return_types =
         infer_def_return_types(&defs, &fn_signatures, &function_env_seed, &struct_defs);
-    for (name, return_type) in &def_return_types {
-        if let Some(signature) = fn_signatures.get_mut(name) {
-            signature.return_type = Some(return_type.clone());
-        }
-    }
+    FnSignature::resolve_returns(&mut fn_signatures, &def_return_types);
     validate_def_return_types(
         &defs,
         &fn_signatures,
@@ -2885,7 +2857,14 @@ pub fn analyze_with_options_and_inputs(
             "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
         ))
         .or_insert_with(|| internal_proc_index_call_signature(true));
-    update_readonly_array_param_signatures(&defs, &mut fn_signatures);
+    data_permissions::update_readonly_data_param_signatures(
+        &defs,
+        &events,
+        &mut fn_signatures,
+        &function_env_seed,
+        &struct_defs,
+        &mut errors,
+    );
 
     let mut state_scalars = HashMap::<String, PrimitiveType>::new();
     let mut declared_symbols = DeclaredSymbolMap::new();
@@ -2992,6 +2971,19 @@ pub fn analyze_with_options_and_inputs(
         state_scalars,
     );
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
+    let init_bindings = persistent_init_bindings(&init, &init_st, &pinned_state_roots, &mut errors);
+    let init_local_data_names = init_st
+        .local_array_aliases
+        .keys()
+        .filter(|name| !init_bindings.local_array_aliases.contains_key(*name))
+        .chain(
+            init_st
+                .local_struct_aliases
+                .keys()
+                .filter(|name| !init_bindings.local_struct_aliases.contains_key(*name)),
+        )
+        .cloned()
+        .collect();
     guard_pinned_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
@@ -3098,7 +3090,16 @@ pub fn analyze_with_options_and_inputs(
         None
     };
 
-    let typed_events = coerce_typed_events(&events, true, "top-level", options, &mut errors);
+    let typed_delegates =
+        coerce_typed_delegates(&top_level_delegates, &struct_defs, options, &mut errors);
+    let typed_events = coerce_typed_events(
+        &events,
+        true,
+        "top-level",
+        &struct_defs,
+        options,
+        &mut errors,
+    );
     let analysis_plan_seeds = build_top_level_owner_analysis_plan_seeds(
         &param_names,
         &input_names,
@@ -3113,6 +3114,7 @@ pub fn analyze_with_options_and_inputs(
     );
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {
+            init_bindings: Some(&init_bindings),
             state_scalars: &mut state_scalars,
             declared_symbols: &declared_symbols,
             state_arrays: &state_arrays,
@@ -3160,6 +3162,7 @@ pub fn analyze_with_options_and_inputs(
                 .filter(|def| runtime_def_names.contains(&def.name))
                 .map(|def| {
                     let mut plan = RuntimeScopePlan {
+                        params: &def.params,
                         stmts: &def.body,
                         ..helper_plan.clone()
                     };
@@ -3173,6 +3176,7 @@ pub fn analyze_with_options_and_inputs(
                                 plan.runtime_local_array_aliases.insert(
                                     param.name.clone(),
                                     LocalArrayAliasInfo {
+                                        proven_len: None,
                                         len: 1,
                                         static_len: None,
                                         elem_ty: *elem,
@@ -3192,6 +3196,7 @@ pub fn analyze_with_options_and_inputs(
                                 plan.runtime_local_array_aliases.insert(
                                     param.name.clone(),
                                     LocalArrayAliasInfo {
+                                        proven_len: None,
                                         len,
                                         static_len: Some(len),
                                         elem_ty: *elem,
@@ -3512,6 +3517,7 @@ pub fn analyze_with_options_and_inputs(
             fn_local_data_aliases.insert(
                 param_name.clone(),
                 LocalArrayAliasInfo {
+                    proven_len: None,
                     len: 1,
                     static_len: param_array_static_lens.get(param_name.as_str()).copied(),
                     elem_ty: *elem_ty,
@@ -3530,6 +3536,7 @@ pub fn analyze_with_options_and_inputs(
                     fn_local_data_aliases.insert(
                         format!("{param_name}.{}", param.name),
                         LocalArrayAliasInfo {
+                            proven_len: None,
                             len,
                             static_len: Some(len),
                             elem_ty: param.ty,
@@ -3549,6 +3556,7 @@ pub fn analyze_with_options_and_inputs(
                         fn_local_data_aliases.insert(
                             format!("{param_name}.{output}"),
                             LocalArrayAliasInfo {
+                                proven_len: None,
                                 len,
                                 static_len: Some(len),
                                 elem_ty,
@@ -3570,6 +3578,7 @@ pub fn analyze_with_options_and_inputs(
             fn_local_data_aliases.insert(
                 active_symbol.clone(),
                 LocalArrayAliasInfo {
+                    proven_len: None,
                     len,
                     static_len: Some(len),
                     elem_ty: PrimitiveType::Bool,
@@ -3929,7 +3938,7 @@ pub fn analyze_with_options_and_inputs(
                 });
             }
         }
-        let aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
+        let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
             Ok(layouts) => layouts,
             Err(layout_errors) => {
                 errors.extend(
@@ -3940,6 +3949,16 @@ pub fn analyze_with_options_and_inputs(
                 AggregateLayoutTable::default()
             }
         };
+
+        aggregate_layouts.populate_message_defaults(
+            typed_events
+                .iter()
+                .flat_map(|event| &event.params)
+                .chain(typed_delegates.iter().flat_map(|delegate| &delegate.params)),
+            &def_struct_defs,
+            options,
+            &mut errors,
+        );
 
         // Specialization and nested-state flattening can create additional
         // generated defs after the first range rewrite. Reapply the storage
@@ -4018,9 +4037,9 @@ pub fn analyze_with_options_and_inputs(
                     .get(&d.name)
                     .cloned()
                     .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
-                let readonly_array_params = fn_signatures
+                let readonly_data_params = fn_signatures
                     .get(&d.name)
-                    .map(|signature| signature.readonly_array_params.clone())
+                    .map(|signature| signature.readonly_data_params.clone())
                     .unwrap_or_default();
                 TypedFunction {
                     runtime_context: runtime_def_names.contains(&d.name),
@@ -4029,7 +4048,7 @@ pub fn analyze_with_options_and_inputs(
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
                     param_kinds,
-                    readonly_array_params,
+                    readonly_data_params,
                     integer_range_params: def_integer_range_params
                         .get(&d.name)
                         .cloned()
@@ -4228,6 +4247,14 @@ pub fn analyze_with_options_and_inputs(
             state_tuples,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
+            init_local_data_names,
+            init_view_names: init_bindings
+                .local_array_aliases
+                .keys()
+                .chain(init_bindings.local_struct_aliases.keys())
+                .cloned()
+                .collect(),
+            struct_roots: struct_instances,
             nested_proc_arrays: typed_nested_proc_arrays,
             ins_explicit,
             audio_outs_explicit,

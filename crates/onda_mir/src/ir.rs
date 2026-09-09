@@ -410,6 +410,7 @@ impl BufferRef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
+    pub schema: onda_processor_abi::payload::PayloadSchema,
     pub name: String,
     pub params: Vec<EventParam>,
     pub handler: FunctionId,
@@ -424,6 +425,7 @@ pub struct EventParam {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Delegate {
+    pub schema: onda_processor_abi::payload::PayloadSchema,
     pub name: String,
     pub params: Vec<DelegateParam>,
 }
@@ -559,6 +561,16 @@ pub enum PassingMode {
     Value,
     ReadOnlyReference,
     ReadWriteReference,
+    /// Caller-owned fixed result storage, completely initialized on normal
+    /// return. This contract requires trusted producer validation and does not
+    /// imply exclusivity. The caller need not initialize its prior contents.
+    ResultReference,
+}
+
+impl PassingMode {
+    pub const fn is_writable_reference(self) -> bool {
+        matches!(self, Self::ReadWriteReference | Self::ResultReference)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -640,14 +652,17 @@ pub enum StatementKind {
         destination: Value,
         value: Value,
     },
-    /// Copies `min(destination.len, source.len)` elements.
+    /// Copies independent leaves, each with `min(destination.len, source.len)`
+    /// elements. All overlap checks precede the first write in the group.
+    /// Pairs execute in listed order, each with memmove semantics. A producer
+    /// requiring a snapshot across pairs must prove separate leaf storage or
+    /// capture cross-pair aliases before this operation.
     ///
     /// Equal-stride/contiguous overlap is memmove-safe. If unequal-stride views
     /// overlap, execution deterministically fails; MIR does not imply hidden
     /// realtime scratch allocation.
     SliceCopy {
-        destination: Value,
-        source: Value,
+        copies: Vec<SliceCopy>,
     },
     If {
         condition: Value,
@@ -705,6 +720,15 @@ pub enum Rvalue {
     /// backend one canonical place to implement segmented-frame semantics.
     ProcessFrame {
         offset: Value,
+    },
+    /// Normalizes an index against a runtime collection length. `Clamp`
+    /// selects the nearest existing element and fails when the collection is
+    /// empty. `Checked` rejects an out-of-range index. `Unchecked` requires the
+    /// producer to prove the index valid.
+    NormalizeIndex {
+        index: Value,
+        length: Value,
+        bounds: BoundsMode,
     },
     InputLoad {
         input: InputId,
@@ -782,6 +806,13 @@ pub enum SliceSource {
         channel: Option<Value>,
     },
     ConstData(ConstDataId),
+}
+
+/// One independently stored leaf in an aggregate copy.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SliceCopy {
+    pub destination: Value,
+    pub source: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

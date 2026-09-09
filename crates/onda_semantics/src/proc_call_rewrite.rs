@@ -88,6 +88,7 @@ pub(super) fn build_proc_read_helper(
 ) -> FunctionDef {
     let mut params = Vec::<onda_frontend::FnParamDecl>::new();
     params.push(onda_frontend::FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: "idx".to_owned(),
         ty: None,
@@ -96,6 +97,7 @@ pub(super) fn build_proc_read_helper(
     });
     for i in 0..len {
         params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: format!("s{i}"),
             ty: None,
@@ -226,6 +228,7 @@ pub(super) fn build_proc_write_helper(
 ) -> FunctionDef {
     let params = vec![
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(owner_proc.to_owned())),
@@ -233,6 +236,7 @@ pub(super) fn build_proc_write_helper(
             default: None,
         },
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "idx".to_owned(),
             ty: None,
@@ -240,6 +244,7 @@ pub(super) fn build_proc_write_helper(
             default: None,
         },
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "value".to_owned(),
             ty: None,

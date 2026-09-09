@@ -1643,8 +1643,12 @@ fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
             .map(run_event_value_from_json)
             .collect::<Result<Vec<_>, _>>()
             .map(RunEventValue::Array),
+        Value::Object(values) => values.into_iter()
+            .map(|(name, value)| run_event_value_from_json(value).map(|value| (name, value)))
+            .collect::<Result<_, _>>()
+            .map(RunEventValue::Struct),
         _ => Err(
-            "triggerEvent values must be numbers, decimal i64 strings, booleans, or arrays"
+            "triggerEvent values must be numbers, decimal i64 strings, booleans, arrays, or objects"
                 .to_owned(),
         ),
     }

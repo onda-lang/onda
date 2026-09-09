@@ -2995,7 +2995,7 @@ sample:
         );
     }
     #[test]
-    fn const_arrays_can_be_passed_to_readonly_array_params() {
+    fn const_arrays_can_be_passed_to_readonly_data_params() {
         let src = r#"
 const Table: f32[3] = [1.0, 2.0, 3.0]
 
@@ -3013,7 +3013,7 @@ sample:
     }
 
     #[test]
-    fn const_array_slices_can_be_passed_to_readonly_array_params() {
+    fn const_array_slices_can_be_passed_to_readonly_data_params() {
         let src = r#"
 const Table: f32[3] = [1.0, 2.0, 3.0]
 
@@ -3103,7 +3103,7 @@ sample:
     }
 
     #[test]
-    fn const_arrays_can_be_forwarded_through_readonly_array_params() {
+    fn const_arrays_can_be_forwarded_through_readonly_data_params() {
         let src = r#"
 const Table: f32[3] = [1.0, 2.0, 3.0]
 

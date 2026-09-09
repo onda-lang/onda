@@ -2836,3 +2836,36 @@ sample { out1 = caller(1.0) }
         "error should mention unknown/unresolved generic type arg, got: {msg}"
     );
 }
+
+#[test]
+fn untyped_def_monomorphizes_generic_struct_parameters_and_infers_struct_results() {
+    let src = r#"
+struct Box<T>:
+  value: T = 0
+def identity(value):
+  return value
+sample:
+  gain = identity(Box<f64>(value = 3.25))
+  count = identity(Box<i32>(value = 4))
+  out1 = f32(gain.value) + f32(count.value)
+"#;
+
+    let parsed = parse_program(src).expect("parse should succeed");
+    let typed = analyze(parsed).expect("untyped struct identity should analyze");
+    let specializations = typed
+        .defs
+        .iter()
+        .filter(|def| def.name.starts_with("identity.__onda_mono"))
+        .map(|def| def.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(specializations.len(), 2, "{specializations:?}");
+    assert_ne!(specializations[0], specializations[1]);
+
+    let frames = 4;
+    let (mut instance, _, _) = compile_instance(src, frames);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 7.25, 1e-6);
+    }
+}

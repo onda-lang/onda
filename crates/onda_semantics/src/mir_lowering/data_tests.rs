@@ -1,0 +1,1029 @@
+use super::*;
+
+fn compile(source: &str) -> onda_mir::Program {
+    let parsed = onda_frontend::parse_program(source).expect("data source parses");
+    let typed = crate::analyze(parsed).expect("data source analyzes");
+    lower_program_to_optimized_mir(&typed)
+        .expect("data source lowers")
+        .into_program()
+}
+
+#[test]
+fn init_views_share_captured_selections_with_process_and_events() {
+    let program = compile(
+        r#"
+struct Note:
+  value = 1.0
+  bins: f32[2]
+init:
+  notes: Note[4]
+  index: i32 = 1
+  selected = notes[index]
+  window: Note[] = notes[index:]
+  bins = selected.bins
+  fresh: f32[] = [2.0, 3.0]
+event change():
+  selected.value = 9.0
+  fresh[0] = 7.0
+sample:
+  index = 3
+  first = window[0]
+  out1 = selected.value + first.value + bins[0] + fresh[0]
+"#,
+    );
+    assert!(program
+        .state
+        .iter()
+        .any(|slot| slot.name.starts_with("__onda_init.selection")));
+    assert!(program
+        .state
+        .iter()
+        .any(|slot| slot.name.starts_with("__onda_init.storage")));
+    assert!(program
+        .state
+        .iter()
+        .all(|slot| !matches!(program.types[slot.ty.index()], MirType::Slice { .. })));
+}
+
+#[test]
+fn persistent_views_reject_expired_init_locals_and_pinning() {
+    for binding in ["saved = temporary", "saved: Note[] = temporary[:]"] {
+        let (declaration, read) = if binding.contains("[]") {
+            (
+                "temporary: Note[2]",
+                "selected = saved[0]\n  out1 = selected.value",
+            )
+        } else {
+            ("temporary = Note()", "out1 = saved.value")
+        };
+        let source = format!("struct Note:\n  value = 1.0\ninit:\n  if true:\n    {declaration}\n  else:\n    {declaration}\n  {binding}\nsample:\n  {read}\n");
+        let parsed = onda_frontend::parse_program(&source).unwrap();
+        let typed = crate::analyze(parsed).expect("alias types are valid");
+        let errors = lower_program_to_optimized_mir(&typed).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("init-local")),
+            "{errors:?}"
+        );
+    }
+    for declaration in ["pin selected = notes[0]", "pin selected: Note[] = notes[:]"] {
+        let source = format!("struct Note:\n  value = 1.0\ninit:\n  notes: Note[2]\n  {declaration}\nsample:\n  out1 = 0.0\n");
+        let parsed = onda_frontend::parse_program(&source).unwrap();
+        let errors = crate::analyze(parsed).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("cannot be pinned")),
+            "{errors:?}"
+        );
+    }
+    compile(
+        r#"
+struct Note:
+  value = 1.0
+init:
+  if true:
+    temporary = Note()
+  else:
+    temporary = Note()
+  saved: Note = temporary
+sample:
+  out1 = saved.value
+"#,
+    );
+}
+
+#[test]
+fn owned_structured_task_frames_use_normal_data_replacement() {
+    for owner in [false, true] {
+        let body = r#"
+init:
+  pin result = 0.0
+task prepare():
+  note: Note = Note(value = 4.0)
+  notes: Note[2] = Note(value = 3.0)
+  yield
+  note.value += 1.0
+  selected = notes[1]
+  result = note.value + selected.value
+block:
+  await prepare()
+  sample:
+    out1 = result
+"#;
+        let body = if owner {
+            format!(
+                "proc Worker:\n{}\ninit:\n  worker = Worker()\nsample:\n  out1 = worker()\n",
+                body.lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| format!("  {line}\n"))
+                    .collect::<String>()
+            )
+        } else {
+            body.to_owned()
+        };
+        compile(&format!(
+            "struct Note:\n  value = 1.0\n  bins: f32[2]\n{body}"
+        ));
+    }
+}
+
+#[test]
+fn task_views_capture_selections_and_keep_owned_backing_in_the_frame() {
+    compile(
+        r#"
+struct Note:
+  value = 1.0
+  bins: f32[2]
+init:
+  notes: Note[4]
+  index: i32 = 1
+  choose = true
+  result = 0.0
+task prepare():
+  owned: Note[2] = Note(value = 3.0)
+  if choose:
+    selected = notes[index]
+  else:
+    selected = owned[0]
+  view: Note[] = notes[index:]
+  bins = selected.bins
+  yield
+  selected.value = 5.0
+  first = view[0]
+  result = selected.value + first.value + bins[0]
+block:
+  await prepare()
+  sample:
+    out1 = result
+"#,
+    );
+}
+
+#[test]
+fn proc_views_and_block_owned_data_live_on_each_instance() {
+    compile(
+        r#"
+struct Note:
+  value = 1.0
+  bins: f32[2]
+proc Worker:
+  init:
+    notes: Note[4]
+    index: i32 = 1
+    initial = notes[index]
+    fresh: f32[] = [2.0, 3.0]
+  event change():
+    initial.value = 9.0
+  block:
+    owned: Note[2] = Note(value = 4.0)
+    selected = notes[index]
+    kept: Note[] = owned[:]
+    sample:
+      index = 3
+      selected.value += 1.0
+      first = kept[0]
+      out1 = initial.value + selected.value + first.value + fresh[0]
+init:
+  a = Worker()
+  b = Worker()
+sample:
+  out1 = a() + b()
+"#,
+    );
+}
+
+#[test]
+fn block_data_views_retain_storage_and_captured_selections() {
+    let program = compile(
+        r#"
+struct Note:
+  value = 1.0
+  bins: f32[2]
+init:
+  notes: Note[4]
+  index: i32 = 1
+block:
+  selected = notes[index]
+  owned = [2.0, 3.0]
+  window: f32[] = owned[:]
+  sample:
+    index = 3
+    selected.value = selected.value + 1.0
+    window[0] = window[0] + 2.0
+    out1 = selected.value + window[0]
+"#,
+    );
+    assert!(program
+        .state
+        .iter()
+        .any(|slot| slot.name.starts_with("__onda_block.storage")));
+    assert!(program
+        .state
+        .iter()
+        .any(|slot| slot.name.starts_with("__onda_block.selection")));
+    assert!(program
+        .state
+        .iter()
+        .all(|slot| !matches!(program.types[slot.ty.index()], MirType::Slice { .. })));
+}
+
+#[test]
+fn block_view_selection_storage_is_independent_of_array_length() {
+    let compile_size = |size| {
+        compile(&format!(
+            r#"
+struct Note:
+  value = 1.0
+block:
+  notes: Note[{size}]
+  selected = notes[1]
+  sample:
+    out1 = selected.value
+"#
+        ))
+    };
+    let small = compile_size(4);
+    let large = compile_size(8192);
+    let descriptors = |program: &onda_mir::Program| {
+        program
+            .state
+            .iter()
+            .filter(|slot| slot.name.starts_with("__onda_block.selection"))
+            .count()
+    };
+    assert!(descriptors(&small) > 0);
+    assert_eq!(descriptors(&small), descriptors(&large));
+    for program in [&small, &large] {
+        let arrays = program
+            .state
+            .iter()
+            .filter(|slot| matches!(program.types[slot.ty.index()], MirType::Array { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arrays.len(),
+            1,
+            "retained backing must not also allocate invocation scratch"
+        );
+        assert_eq!(arrays[0].persistence, onda_mir::StatePersistence::Snapshot);
+    }
+}
+
+#[test]
+fn fresh_block_slice_backing_is_retained_but_external_views_cannot_escape() {
+    compile(
+        r#"
+block:
+  values: f32[] = [2.0, 3.0]
+  sample:
+    values[0] = values[0] + 1.0
+    out1 = values[0]
+"#,
+    );
+    let source = onda_frontend::parse_program(
+        r#"
+buffers:
+  input: f32
+block:
+  view = input[:]
+  sample:
+    out1 = view[0]
+"#,
+    )
+    .unwrap();
+    let typed = crate::analyze(source).unwrap();
+    let errors = lower_program_to_optimized_mir(&typed).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("cannot survive a process boundary")));
+}
+
+#[test]
+fn named_returned_storage_supports_nested_selections() {
+    compile(
+        r#"
+struct Filter:
+  gain = 1.0
+struct Voice:
+  filter: Filter
+struct Patch:
+  voices: Voice[2]
+def make_patch() -> Patch:
+  return Patch()
+sample:
+  patch = make_patch()
+  voices = patch.voices
+  voice = voices[1]
+  filter = voice.filter
+  filter.gain = 2.0
+  out1 = filter.gain
+"#,
+    );
+    assert!(onda_frontend::parse_program("sample:\n  selected = make_patch()[0]\n").is_err());
+}
+
+#[test]
+fn fixed_array_results_support_generic_elements_and_nominal_annotations() {
+    compile(
+        r#"
+struct Note:
+  value = 1.0
+def pair<T>(value: T) -> T[2]:
+  return [value, value]
+def notes(value: Note) -> Note[2]:
+  return [value, value]
+sample:
+  items = notes(Note())
+  values = pair<f32>(3.0)
+  first = items[0]
+  out1 = first.value + values[1]
+"#,
+    );
+}
+
+#[test]
+fn resolved_generic_struct_types_work_across_data_signatures() {
+    compile(
+        r#"
+struct Box<T>:
+  value: T
+def copy(value: Box<f32>) -> Box<f32>:
+  return value
+def fallback(value: Box<f32>) -> Box<f32>:
+  return value
+def pair(value: Box<f32>) -> Box<f32>[2]:
+  return [value, value]
+def last(values: Box<f32>[2]) -> Box<f32>:
+  return values[1]
+def first(values: Box<f32>[]) -> Box<f32>:
+  return values[0]
+event inspect(values: Box<f32>[], default_value: Box<f32>):
+  selected = copy(default_value)
+sample:
+  boxes: Box<f32>[2] = pair(Box<f32>(3.0))
+  view: Box<f32>[] = boxes[:]
+  selected = copy(first(view))
+  selected = last(boxes)
+  copied: Box<f32> = selected
+  defaulted = fallback(Box<f32>(4.0))
+  out1 = copied.value + defaulted.value
+"#,
+    );
+}
+
+#[test]
+fn struct_return_captures_reference_parameter() {
+    let program = compile(
+        r#"
+struct Note:
+  frequency = 440.0
+  velocity = 1.0
+def duplicate(note: Note) -> Note:
+  return note
+init:
+  original = Note()
+sample:
+  captured = duplicate(original)
+  original.frequency = 220.0
+  out1 = captured.frequency
+"#,
+    );
+    let function = program
+        .functions
+        .iter()
+        .find(|function| function.name == "duplicate")
+        .unwrap();
+    assert!(function.results.is_empty());
+    assert!(function
+        .params
+        .iter()
+        .any(|parameter| parameter.name == "__onda_result.frequency"));
+}
+
+#[test]
+fn runtime_construction_copy_and_replacement_share_storage_rules() {
+    compile(
+        r#"
+struct Note:
+  frequency = 440.0
+  velocity = 1.0
+def make(frequency) -> Note:
+  return Note(frequency = frequency)
+def reset(note: Note):
+  note = Note()
+sample:
+  original = make(220.0)
+  alias = original
+  saved: Note = original
+  alias = make(110.0)
+  reset(original)
+  out1 = saved.frequency + alias.frequency
+"#,
+    );
+}
+
+#[test]
+fn typed_data_declaration_rejects_redeclaration() {
+    let parsed = onda_frontend::parse_program(
+        r#"
+struct Note:
+  frequency = 440.0
+sample:
+  note = Note()
+  alias = note
+  alias: Note = note
+  out1 = alias.frequency
+"#,
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must introduce a new name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn generic_typed_data_declaration_rejects_redeclaration() {
+    let parsed = onda_frontend::parse_program(
+        r#"
+struct Box<T>:
+  value: T
+def reset(box: Box<f32>):
+  box: Box<f32>
+sample:
+  box = Box<f32>(1.0)
+  reset(box)
+  out1 = box.value
+"#,
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must introduce a new name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn struct_array_fields_keep_constant_width_return_signature() {
+    let program = compile(
+        r#"
+struct Spectrum:
+  real: f32[4096]
+  imaginary: f32[4096]
+def duplicate(value: Spectrum) -> Spectrum:
+  return value
+init:
+  source = Spectrum()
+sample:
+  result = duplicate(source)
+  out1 = result.real[0]
+"#,
+    );
+    let function = program
+        .functions
+        .iter()
+        .find(|function| function.name == "duplicate")
+        .unwrap();
+    assert!(function.params.len() <= 4);
+}
+
+#[test]
+fn fixed_array_results_can_be_bound_returned_and_forwarded() {
+    compile(
+        r#"
+def make() -> f32[2]:
+  return [1.0, 2.0]
+def duplicate(values: f32[2]) -> f32[2]:
+  return values
+def first(values: f32[]):
+  return values[0]
+sample:
+  values = duplicate(make())
+  values[0] = 3.0
+  out1 = values[0] + first(make())
+"#,
+    );
+}
+
+#[test]
+fn fixed_copy_diagnostics_reject_wrong_shapes_and_slice_rebinding() {
+    for statement in [
+        "saved: f32[3] = values",
+        "saved: f32[2] = 1.0",
+        "view = values[:]\n  view = values",
+        "values = [1.0]",
+        "values = [1.0, true]",
+    ] {
+        let source = format!("sample:\n  values: f32[2]\n  {statement}\n  out1 = 0.0\n");
+        let parsed = onda_frontend::parse_program(&source).expect("data expressions parse");
+        assert!(
+            crate::analyze(parsed).is_err(),
+            "invalid fixed-data operation analyzed: {source}"
+        );
+    }
+}
+
+#[test]
+fn structured_array_and_slice_contracts_reject_invalid_initializers() {
+    for scope in ["init", "sample"] {
+        for initializer in ["[Note()]", "[Note(), Other()]"] {
+            let source = format!("struct Note:\n  value = 1.0\nstruct Other:\n  value = 2.0\n{scope}:\n  notes: Note[2] = {initializer}\n");
+            let parsed = onda_frontend::parse_program(&source).unwrap();
+            assert!(crate::analyze(parsed).is_err(), "{source}");
+        }
+    }
+    for body in [
+        "notes: Note[2] = [Note()]",
+        "notes: Note[2] = [Note(), Other()]",
+        "notes: Note[2]\n  notes[0] = Other()",
+        "notes: Note[2]\n  notes[:] = Other()",
+        "notes: Note[2]\n  view: Other[] = notes[:]",
+        "notes: Note[2]\n  view = notes[:]\n  view = notes[:]",
+        "notes: Note[2]\n  bound = 1\n  copy: Note[1] = notes[bound:]",
+        "values: f32[2]\n  bound = 1\n  copy: f32[1] = values[bound:]",
+        "values: f32[2]\n  copy: f32[1] = values[1:1]",
+    ] {
+        let source = format!("struct Note:\n  value = 1.0\nstruct Other:\n  value = 2.0\nsample:\n  {body}\n  out1 = 0.0\n");
+        let parsed = onda_frontend::parse_program(&source).expect("invalid operation should parse");
+        assert!(
+            crate::analyze(parsed).is_err(),
+            "invalid operation was accepted: {source}"
+        );
+    }
+    assert!(onda_frontend::parse_program("sample:\n  view: f32[]\n  out1 = 0.0\n").is_err());
+}
+
+#[test]
+fn struct_slice_fill_is_valid_in_top_level_and_proc_init() {
+    compile(
+        r#"
+struct Note:
+  value = 0.0
+
+proc Bank:
+  init:
+    notes: Note[2]
+    notes[:] = Note(value = 3.0)
+  sample:
+    first = notes[0]
+    out1 = first.value
+
+init:
+  notes: Note[2]
+  fill = Note(value = 4.0)
+  notes[:] = fill
+  bank = Bank()
+
+sample:
+  first = notes[0]
+  out1 = first.value + bank()
+"#,
+    );
+}
+
+#[test]
+fn data_permissions_track_branch_origins_and_independent_copies() {
+    let mir = compile(
+        r#"
+struct Note:
+  value = 1.0
+def mutate(note: Note):
+  note.value = 7.0
+def mutate_selected(a: Note, b: Note, choose: bool):
+  if choose:
+    selected = a
+  else:
+    selected = b
+  mutate(selected)
+def read_selected(a: Note, b: Note, choose: bool):
+  if choose:
+    selected = a
+  else:
+    selected = b
+  return selected.value
+def changed_copy(note: Note):
+  copy: Note = note
+  mutate(copy)
+  return copy.value
+sample:
+  a = Note()
+  b = Note()
+  mutate_selected(a, b, false)
+  out1 = read_selected(a, b, true) + changed_copy(a)
+"#,
+    );
+    let get = |name: &str| {
+        mir.functions
+            .iter()
+            .find(|function| function.name == name)
+            .unwrap()
+    };
+    for name in ["a.value", "b.value"] {
+        assert_eq!(
+            get("mutate_selected")
+                .params
+                .iter()
+                .find(|param| param.name == name)
+                .unwrap()
+                .mode,
+            onda_mir::PassingMode::ReadWriteReference
+        );
+        assert_eq!(
+            get("read_selected")
+                .params
+                .iter()
+                .find(|param| param.name == name)
+                .unwrap()
+                .mode,
+            onda_mir::PassingMode::ReadOnlyReference
+        );
+    }
+    assert_eq!(
+        get("changed_copy").params[0].mode,
+        onda_mir::PassingMode::ReadOnlyReference
+    );
+}
+
+#[test]
+fn proc_retention_respects_backing_lifetimes() {
+    let source = r#"
+struct Note:
+  value = 1.0
+proc Worker:
+  init:
+    if true:
+      temporary = Note()
+    else:
+      temporary = Note()
+    saved = temporary
+  sample:
+    out1 = saved.value
+init:
+  worker = Worker()
+sample:
+  out1 = worker()
+"#;
+    let errors = crate::analyze(onda_frontend::parse_program(source).unwrap()).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("init-local")),
+        "{errors:?}"
+    );
+    compile(
+        r#"
+proc Worker:
+  buffers:
+    source: f32
+  block:
+    view = source[:]
+    count = view.len()
+    sample:
+      out1 = f32(count)
+buffers:
+  input: f32
+init:
+  worker = Worker(source = input)
+sample:
+  out1 = worker()
+"#,
+    );
+}
+
+#[test]
+fn retained_view_metadata_is_independent_of_array_extent() {
+    let source = |len| {
+        format!(
+            r#"
+struct Note:
+  value = 1.0
+  bins: f32[2]
+proc Worker:
+  init:
+    notes: Note[{len}]
+    index: i32 = 1
+    initial = notes[index]
+  block:
+    selected = notes[index]
+    sample:
+      out1 = selected.value + initial.value
+init:
+  worker = Worker()
+sample:
+  out1 = worker()
+"#
+        )
+    };
+    let small = compile(&source(4));
+    let large = compile(&source(4096));
+    assert_eq!(small.state.len(), large.state.len());
+    assert_eq!(small.functions.len(), large.functions.len());
+    assert_eq!(
+        small
+            .functions
+            .iter()
+            .map(|function| function.locals.len())
+            .collect::<Vec<_>>(),
+        large
+            .functions
+            .iter()
+            .map(|function| function.locals.len())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn message_payload_permissions_follow_aliases_and_transitive_calls() {
+    for body in [
+        "alias = values\n  alias[0] = 9",
+        "alias = values[:1]\n  alias[:] = [9]",
+        "mutate(values)",
+        "alias = values\n  forward(alias)",
+    ] {
+        let source = format!(
+            r#"
+def mutate(values: i32[]):
+  values[0] = 9
+def forward(values: i32[]):
+  mutate(values)
+delegate changed(values: i32[])
+when changed(values):
+  {body}
+init:
+  values: i32[2] = [1, 2]
+sample:
+  changed(values)
+  out1 = 0.0
+"#
+        );
+        let errors = crate::analyze(onda_frontend::parse_program(&source).unwrap()).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("read-only")),
+            "{errors:?}"
+        );
+    }
+    compile(
+        r#"
+def mutate(values: i32[]):
+  values[0] = 9
+delegate changed(values: i32[2])
+when changed(values):
+  independent: i32[2] = values
+  mutate(independent)
+init:
+  values: i32[2] = [1, 2]
+sample:
+  changed(values)
+  out1 = 0.0
+"#,
+    );
+}
+
+#[test]
+fn nominal_event_payloads_borrow_canonical_fixed_tensors() {
+    compile(
+        r#"
+struct Note:
+  gain: f64
+  bins: f32[2]
+def read(note: Note) -> f64:
+  return note.gain + f64(note.bins[0])
+init:
+  result: f64 = 0.0
+event changed(note: Note):
+  result = read(note)
+sample:
+  out1 = f32(result)
+"#,
+    );
+}
+
+#[test]
+fn nominal_delegate_payloads_forward_live_references() {
+    compile(
+        r#"
+struct Note:
+  gain: f64
+  bins: f32[2]
+init:
+  note: Note
+  result: f64 = 0.0
+delegate changed(note: Note)
+when changed(next):
+  result = next.gain + f64(next.bins[0])
+sample:
+  changed(note)
+  out1 = f32(result)
+"#,
+    );
+}
+
+#[test]
+fn proc_events_forward_nominal_payloads_to_delegates() {
+    compile(
+        r#"
+struct Note:
+  gain: f64
+  bins: f32[2]
+proc Worker:
+  init:
+    note: Note
+  delegate changed(note: Note)
+  event change(next: Note):
+    note = next
+    changed(note)
+  sample:
+    out1 = f32(note.gain)
+init:
+  worker = Worker()
+  result: f64 = 0.0
+when worker.changed(next):
+  result = next.gain
+event changed(note: Note):
+  worker.change(note)
+sample:
+  out1 = worker() + f32(result)
+"#,
+    );
+}
+
+#[test]
+fn tuple_message_values_and_defaults_survive_routing() {
+    compile(
+        r#"
+proc Worker:
+  init:
+    result: f64 = 0.0
+  delegate changed(pair: (i32, f64))
+  event change(pair: (i32, f64) = (3, 5.0)):
+    a, b = pair
+    result = f64(a) + b
+    changed(pair)
+  sample:
+    out1 = f32(result)
+init:
+  worker = Worker()
+  result: f64 = 0.0
+delegate changed(pair: (i32, f64))
+when worker.changed(pair):
+  changed(pair)
+when changed(pair):
+  a, b = pair
+  result = f64(a) + b
+event change(pair: (i32, f64) = (7, 11.0)):
+  worker.change(pair)
+sample:
+  worker.change()
+  out1 = worker() + f32(result)
+"#,
+    );
+}
+
+#[test]
+fn runtime_struct_slices_route_through_events_delegates_and_proc_handlers() {
+    let source = r#"
+struct Note:
+  enabled: bool
+  gain: f64
+  bins: f32[2]
+proc Bank:
+  delegate accepted(notes: Note[])
+  event configure(notes: Note[]):
+    accepted(notes)
+  sample:
+    out1 = 0.0
+init:
+  bank = Bank()
+  saved: Note[2]
+  count: i32 = 0
+delegate configured(notes: Note[])
+when configured(notes):
+  saved[:] = notes[:]
+  count = notes.len()
+when bank.accepted(notes):
+  configured(notes)
+event configure(notes: Note[]):
+  bank.configure(notes)
+sample:
+  note = saved[0]
+  out1 = f32(note.gain) + f32(count)
+"#;
+    let mir = compile(source);
+    assert_eq!(mir.interface.events[0].params.len(), 4);
+}
+
+#[test]
+fn borrowed_data_parameters_reject_defaults() {
+    for source in [
+        "struct N:\n  x = 1.0\ndef f(value: N = N()):\n  return value.x\nsample:\n  out1 = 0.0\n",
+        "struct N:\n  x = 1.0\ndef f(values: N[2] = N()):\n  return values[0].x\nsample:\n  out1 = 0.0\n",
+        "struct N:\n  x = 1.0\nevent set(value: N = N()):\n  selected = value\nsample:\n  out1 = 0.0\n",
+        "struct N:\n  x = 1.0\ndelegate sent(value: N = N())\nsample:\n  out1 = 0.0\n",
+        "struct N:\n  x = 1.0\nproc P:\n  event set(value: N = N()):\n    selected = value\n  sample:\n    out1 = 0.0\ninit:\n  p = P()\nsample:\n  out1 = p()\n",
+        "struct N:\n  x = 1.0\nproc P:\n  delegate sent(values: N[2] = N())\n  sample:\n    out1 = 0.0\ninit:\n  p = P()\nsample:\n  out1 = p()\n",
+    ] {
+        let parsed = onda_frontend::parse_program(source).unwrap();
+        let errors = crate::analyze(parsed).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error
+                .message
+                .contains("cannot have a default")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn named_struct_array_field_chains_and_explicit_constructor_arguments_compile() {
+    let source = r#"
+struct Note:
+  velocity = 1.0
+  bins: f32[2]
+struct Patch:
+  notes: Note[2]
+struct Settings:
+  gain = 1.0
+def apply(settings: Settings):
+  settings.gain *= 0.5
+sample:
+  current: Patch
+  current.notes[0].velocity = 0.75
+  apply(Settings())
+  out1 = current.notes[0].velocity + current.notes[0].bins[1]
+"#;
+    compile(source);
+
+    compile(
+        r#"
+struct Note:
+  velocity = 1.0
+struct Patch:
+  notes: Note[2]
+proc Holder:
+  init:
+    current: Patch
+  sample:
+    current.notes[0].velocity = 0.25
+    out1 = current.notes[0].velocity
+init:
+  holder = Holder()
+sample:
+  out1 = holder()
+"#,
+    );
+}
+
+#[test]
+fn aggregate_constructor_and_primitive_default_errors_keep_element_and_shape_checks() {
+    for (source, expected) in [
+        (
+            "struct N:\n  a: f32[2]\nsample:\n  n = N(a = [3.0])\n  out1 = 0.0\n",
+            "expects 2 elements",
+        ),
+        (
+            "struct N:\n  a: f32[2]\nsample:\n  n = N(a = [true, false])\n  out1 = 0.0\n",
+            "array initializer",
+        ),
+        (
+            "def f(a: f32[2] = [1.0]):\n  return a[0]\nsample:\n  out1 = f()\n",
+            "expects array length 2",
+        ),
+        (
+            "def f(a: f32[2] = [unknown, 1.0]):\n  return a[0]\nsample:\n  out1 = f()\n",
+            "non-constant symbol",
+        ),
+    ] {
+        let parsed = onda_frontend::parse_program(source).unwrap();
+        let errors = crate::analyze(parsed).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "{expected}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn call_result_field_selection_uses_source_level_diagnostic() {
+    let parsed = onda_frontend::parse_program(
+        "struct Box:\n  value: f32\ndef make() -> Box:\n  return Box(1.0)\nsample:\n  out1 = make().value\n",
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("field selection on function result 'make(...)' is not supported; bind the result first")
+    }), "{errors:?}");
+    assert!(errors
+        .iter()
+        .all(|error| !error.message.contains("__onda_proc_field__")));
+}

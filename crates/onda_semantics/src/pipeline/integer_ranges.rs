@@ -463,7 +463,7 @@ pub(crate) fn struct_array_param_integer_ranges(
 ) -> HashMap<String, IntegerBindingRange> {
     let mut ranges = HashMap::new();
     for (param, kind) in def.params.iter().zip(param_kinds) {
-        let TypedFnParam::StructArray { struct_name } = kind else {
+        let TypedFnParam::StructArray { struct_name, .. } = kind else {
             continue;
         };
         extend_struct_field_integer_ranges(&mut ranges, &param.name, struct_name, struct_defs);

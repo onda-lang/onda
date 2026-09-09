@@ -1,3 +1,4 @@
+import { PayloadPlan } from "@onda-lang/processor-abi";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -188,14 +189,14 @@ test("failed event execution invalidates the worklet", () => {
   });
 
   assert.throws(
-    () => processor.dispatchEvent("fail", []),
+    () => processor.dispatchEvent("fail", new Uint8Array()),
     /event 'fail' failed with Onda execution status 1/,
   );
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
 });
 
-test("worklet rejects i64 event values outside the signed 64-bit range", () => {
+test("event encoding preserves exact i64 values before worklet dispatch", () => {
   const descriptor = metadata();
   descriptor.metadata.events = [{
     name: "wide",
@@ -224,7 +225,12 @@ test("worklet rejects i64 event values outside the signed 64-bit range", () => {
     processorOptions: { wasmBytes: wasm, metadata: descriptor },
   });
 
-  assert.doesNotThrow(() => processor.dispatchEvent("wide", [
+  const plan = new PayloadPlan({ params: [
+    { name: "scalar", ty: { kind: "scalar", encoding: "i64" } },
+    { name: "fixed", ty: { kind: "array", len: 2, element: { kind: "scalar", encoding: "i64" } } },
+  ] });
+  const dispatch = (values) => processor.dispatchEvent("wide", plan.encode(values));
+  assert.doesNotThrow(() => dispatch([
     "-9223372036854775808",
     ["0", "9223372036854775807"],
   ]));
@@ -236,16 +242,16 @@ test("worklet rejects i64 event values outside the signed 64-bit range", () => {
     9_223_372_036_854_775_807n,
   );
   assert.throws(
-    () => processor.dispatchEvent("wide", ["9223372036854775808", ["0", "0"]]),
+    () => dispatch(["9223372036854775808", ["0", "0"]]),
     /outside the signed 64-bit range/,
   );
   assert.throws(
-    () => processor.dispatchEvent("wide", ["0", ["-9223372036854775809", "0"]]),
+    () => dispatch(["0", ["-9223372036854775809", "0"]]),
     /outside the signed 64-bit range/,
   );
   assert.throws(
-    () => processor.dispatchEvent("wide", [Number.MAX_SAFE_INTEGER + 1, ["0", "0"]]),
-    /bigint, safe integer, or decimal integer string/,
+    () => dispatch([Number.MAX_SAFE_INTEGER + 1, ["0", "0"]]),
+    /exact integer/,
   );
 });
 
@@ -300,7 +306,7 @@ test("worklet prepares execution output before every Wasm entry", () => {
   assertPrepared();
 
   dirtyOutput();
-  processor.dispatchEvent("noop", []);
+  processor.dispatchEvent("noop", new Uint8Array());
   assertPrepared();
 
   dirtyOutput();

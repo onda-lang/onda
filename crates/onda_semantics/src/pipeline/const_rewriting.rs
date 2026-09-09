@@ -10,7 +10,10 @@ pub(super) fn fold_decl_type_const_arrays(
         Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
             fold_const_array_expr(size, const_values, options, errors, false);
         }
-        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+        Some(
+            DeclType::Slice(_) | DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_),
+        )
+        | None => {}
     }
 }
 
@@ -448,49 +451,32 @@ pub(super) fn reject_forward_const_refs_expr(
     future_consts: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
-        Expr::Var { name, .. } => {
-            reject_forward_const_ref_name(name, expr.loc(), visible_consts, future_consts, errors);
-        }
-        Expr::Index { base, index, .. } => {
-            reject_forward_const_ref_name(base, expr.loc(), visible_consts, future_consts, errors);
-            reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            reject_forward_const_ref_name(base, expr.loc(), visible_consts, future_consts, errors);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                reject_forward_const_refs_expr(coordinate, visible_consts, future_consts, errors);
+    for expr in expr.walk() {
+        match expr {
+            Expr::Var { name, .. }
+            | Expr::Index { base: name, .. }
+            | Expr::Slice { base: name, .. } => {
+                reject_forward_const_ref_name(
+                    name,
+                    expr.loc(),
+                    visible_consts,
+                    future_consts,
+                    errors,
+                );
             }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            reject_forward_const_refs_expr(&spec.size, visible_consts, future_consts, errors);
-            if let Some(init) = init {
-                for value in init {
-                    reject_forward_const_refs_expr(value, visible_consts, future_consts, errors);
+            Expr::UserCall { name, args, .. } => {
+                if args.is_empty() {
+                    if let Some(base) = parse_array_len_instance_base(name) {
+                        reject_forward_const_ref_name(
+                            base,
+                            expr.loc(),
+                            visible_consts,
+                            future_consts,
+                            errors,
+                        );
+                    }
                 }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            reject_forward_const_refs_expr(lhs, visible_consts, future_consts, errors);
-            reject_forward_const_refs_expr(rhs, visible_consts, future_consts, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                reject_forward_const_refs_expr(arg, visible_consts, future_consts, errors);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            if args.is_empty() {
-                if let Some(base) = parse_array_len_instance_base(name) {
+                if let Some((base, _)) = name.rsplit_once('.') {
                     reject_forward_const_ref_name(
                         base,
                         expr.loc(),
@@ -500,28 +486,8 @@ pub(super) fn reject_forward_const_refs_expr(
                     );
                 }
             }
-            if let Some((base, _method)) = name.rsplit_once('.') {
-                reject_forward_const_ref_name(
-                    base,
-                    expr.loc(),
-                    visible_consts,
-                    future_consts,
-                    errors,
-                );
-            }
-            for arg in args {
-                reject_forward_const_refs_expr(&arg.expr, visible_consts, future_consts, errors);
-            }
+            _ => {}
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            reject_forward_const_refs_expr(expr, visible_consts, future_consts, errors);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                reject_forward_const_refs_expr(value, visible_consts, future_consts, errors);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
     }
 }
 
@@ -535,7 +501,10 @@ pub(super) fn reject_forward_const_refs_decl_type(
         Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
             reject_forward_const_refs_expr(size, visible_consts, future_consts, errors);
         }
-        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+        Some(
+            DeclType::Slice(_) | DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_),
+        )
+        | None => {}
     }
 }
 
@@ -1832,7 +1801,10 @@ pub(super) fn fold_direct_const_def_decl_type(
         Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
             fold_direct_const_def_call_expr(size, artifacts, options, context, errors);
         }
-        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+        Some(
+            DeclType::Slice(_) | DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_),
+        )
+        | None => {}
     }
 }
 
@@ -2557,7 +2529,10 @@ pub(super) fn fold_local_scalar_const_decl_type(
         Some(DeclType::Array { size, .. }) | Some(DeclType::ArrayGeneric { size, .. }) => {
             fold_local_scalar_const_expr(size, local_consts);
         }
-        Some(DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_)) | None => {}
+        Some(
+            DeclType::Slice(_) | DeclType::Scalar(_) | DeclType::Generic(_) | DeclType::Tuple(_),
+        )
+        | None => {}
     }
 }
 

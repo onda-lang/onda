@@ -6,6 +6,7 @@ import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 import {
   formatPrintBatch,
+  writeEventInput,
   resetExecutionOutput,
   writeDelegateBatch,
   writeExecutionOutput,
@@ -15,13 +16,28 @@ import {
 import {
   OndaBinaryenError,
   PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
-  compileTrustedMir as compileMir,
+  compileTrustedMir,
   createProcessorArtifactFiles,
   createDefaultImports,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
   validateProcessorArtifact,
 } from "../src/index.js";
+
+// Hand-authored MIR fixtures retain logical schemas alongside executable tensors.
+function compileMir(mir, options) {
+  const payloadType = (id) => {
+    const type = mir.types[id];
+    if (type.kind === "scalar") return { kind: "scalar", encoding: type.data };
+    if (type.kind === "slice") return { kind: "slice", element: { kind: "scalar", encoding: type.data.element } };
+    if (type.kind === "array") return { kind: "array", element: payloadType(type.data.element), len: type.data.len };
+    throw new Error("unsupported fixture message type");
+  };
+  for (const message of [...mir.interface.events, ...mir.interface.delegates]) {
+    message.schema ??= { params: message.params.map((param) => ({ name: param.name, ty: payloadType(param.ty) })) };
+  }
+  return compileTrustedMir(mir, options);
+}
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -910,7 +926,7 @@ test("vectorizes contiguous slice fills with a scalar tail", async () => {
   );
 });
 
-test("returns failures for invalid checked make_slice and empty-slice access", async () => {
+test("returns failures for invalid slices and logical index normalization", async () => {
   const makeMir = ({ start, len, bounds, load }) => {
     const mir = executableMir();
     mir.types.push(
@@ -959,6 +975,24 @@ test("returns failures for invalid checked make_slice and empty-slice access", a
     thenStatements.unshift(...statements);
     return mir;
   };
+  const normalizeMir = () => {
+    const mir = executableMir();
+    const process = mir.functions[mir.entry_points.process];
+    const result = process.locals.length;
+    process.locals.push({ name: "normalized", ty: 1 });
+    process.body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements.unshift(
+        assign(place("local", result), {
+          kind: "normalize_index",
+          data: {
+            index: constant("i32", 0),
+            length: constant("i32", 0),
+            bounds: "clamp",
+          },
+        }),
+      );
+    return mir;
+  };
 
   const clamped = compileMir(
     makeMir({ start: -2, len: 99, bounds: "clamp", load: false }),
@@ -1002,6 +1036,7 @@ test("returns failures for invalid checked make_slice and empty-slice access", a
   for (const mir of [
     makeMir({ start: 5, len: 0, bounds: "checked", load: false }),
     makeMir({ start: 4, len: 0, bounds: "checked", load: true }),
+    normalizeMir(),
   ]) {
     const artifact = compileMir(mir);
     const { instance } = await WebAssembly.instantiate(artifact.wasm);
@@ -2166,6 +2201,10 @@ test("exports packed scalar and fixed-array event handlers", async () => {
   mir.types.push(type("array", { element: 0, len: 2 }));
   mir.interface.events.push({
     name: "set_phase",
+    schema: { params: [
+      { name: "step", ty: { kind: "scalar", encoding: "i32" } },
+      { name: "values", ty: { kind: "array", len: 2, element: { kind: "scalar", encoding: "f32" } }, default: ["0.25", "0.75"] },
+    ] },
     params: [
       { name: "step", ty: 2, default: null },
       {
@@ -2256,12 +2295,87 @@ test("exports packed scalar and fixed-array event handlers", async () => {
   view.setFloat32(params, 0.25, true);
   view.setUint32(outputTable, output, true);
   onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
-  onda_event_0(payload, params, state, 0, 0, 0, 0);
+  const descriptor = (output + 16 + 7) & ~7;
+  const workspace = descriptor + 16;
+  writeEventInput(memory, descriptor, payload, 12, workspace, 16);
+  assert.equal(onda_event_0(descriptor, params, state, 0, 0, 0, 0), 0);
+  const savedState = new Uint8Array(memory.buffer, state, artifact.metadata.runtime.state_size_bytes).slice();
+  const preparedBytes = new Uint8Array(memory.buffer, workspace, 16);
+  preparedBytes.fill(0xa5);
+  for (const size of [...Array(12).keys(), 13]) {
+    writeEventInput(memory, descriptor, payload, size, workspace, 16);
+    assert.equal(onda_event_0(descriptor, params, state, 0, 0, 0, 0), 2);
+    assert.deepEqual(new Uint8Array(memory.buffer, state, savedState.length), savedState);
+    assert.deepEqual([...preparedBytes], Array(16).fill(0xa5));
+  }
+  writeEventInput(memory, descriptor, payload, 12, workspace, 8);
+  assert.equal(onda_event_0(descriptor, params, state, 0, 0, 0, 0), 2);
+  assert.equal(onda_event_0(0, params, state, 0, 0, 0, 0), 2);
+  writeEventInput(memory, descriptor, payload, 12, workspace, 16);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(
     [...new Float32Array(memory.buffer, output, 4)],
     [7.25, 7.5, 7.75, 8],
   );
+});
+
+test("rejects event tensor byte-size overflow before dispatch", async () => {
+  const mir = executableMir();
+  mir.types.push(
+    type("scalar", "f64"),
+    type("slice", { element: "f64", access: "read_only" }),
+  );
+  mir.interface.events.push({
+    name: "ingest",
+    schema: { params: [{
+      name: "items",
+      ty: {
+        kind: "slice",
+        element: {
+          kind: "struct",
+          name: "Huge",
+          fields: [{
+            name: "bins",
+            ty: { kind: "array", len: 1_514_507_160, element: { kind: "scalar", encoding: "f64" } },
+          }],
+        },
+      },
+    }] },
+    params: [
+      { name: "items", ty: 2, default: null },
+      { name: "items.bins", ty: 4, default: null },
+    ],
+    handler: 2,
+  });
+  mir.functions.push({
+    name: "onda_event::ingest",
+    kind: { kind: "event", data: 0 },
+    attributes: attributes("compiler_generated", "always"),
+    params: [],
+    results: [],
+    locals: [],
+    body: { statements: [] },
+    source: unknownSource,
+  });
+
+  const artifact = compileMir(mir, { optimize: false });
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_event_0 } = instance.exports;
+  const payloadBytes = 4 + 7_424;
+  let heap = Number(__heap_base.value);
+  const payload = heap;
+  heap += payloadBytes;
+  const descriptor = (heap + 7) & ~7;
+  const workspace = descriptor + 16;
+  const requiredBytes = workspace + 7_432;
+  if (requiredBytes > memory.buffer.byteLength) {
+    memory.grow(Math.ceil((requiredBytes - memory.buffer.byteLength) / 65_536));
+  }
+  // 1_522_503_868 * 1_514_507_160 == 2^61 + 928; multiplying
+  // by sizeof(f64) would wrap an unchecked i64 byte count to 7_424.
+  new DataView(memory.buffer).setInt32(payload, 1_522_503_868, true);
+  writeEventInput(memory, descriptor, payload, payloadBytes, workspace, 7_432);
+  assert.equal(onda_event_0(descriptor, 0, 0, 0, 0, 0, 0, 0), 2);
 });
 
 test("publishes top-level delegates into the call-scoped delegate batch", async () => {
@@ -2332,7 +2446,7 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   assert.equal(view.getInt32(storage + 12, true), 42);
 });
 
-test("fails safely before copying a short fixed-array delegate payload", async () => {
+for (const structured of [false, true]) test(`rejects inconsistent ${structured ? "struct-slice" : "fixed-array"} delegate lengths`, async () => {
   const mir = executableMir();
   mir.types.push(
     type("array", { element: 2, len: 2 }),
@@ -2345,7 +2459,8 @@ test("fails safely before copying a short fixed-array delegate payload", async (
   });
   mir.interface.delegates.push({
     name: "values",
-    params: [{ name: "items", ty: 3 }],
+    params: structured ? [{ name: "items", ty: 2 }, { name: "items.value", ty: 4 }] : [{ name: "items", ty: 3 }],
+    ...(structured ? { schema: { params: [{ name: "items", ty: { kind: "slice", element: { kind: "struct", name: "Item", fields: [{ name: "value", ty: { kind: "scalar", encoding: "i32" } }] } } }] } } : {}),
   });
   mir.functions[1].locals.push({ name: "short_values", ty: 4 });
   mir.functions[1].body.statements.unshift(
@@ -2361,7 +2476,7 @@ test("fails safely before copying a short fixed-array delegate payload", async (
     }),
     statement("publish_delegate", {
       delegate: 0,
-      args: [{ kind: "value", data: local(6) }],
+      args: [...(structured ? [{ kind: "value", data: constant("i32", 2) }] : []), { kind: "value", data: local(6) }],
     }),
   );
 
@@ -2406,7 +2521,7 @@ test("fails safely before copying a short fixed-array delegate payload", async (
       0,
     ),
     PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
-    "invalid fixed-array payloads must fail even without delegate collection",
+    "invalid payload lengths must fail even without delegate collection",
   );
   assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
   assert.equal(
@@ -3728,7 +3843,8 @@ test("clamps multichannel buffer coordinates independently", async () => {
   assert.equal(new Float32Array(memory.buffer, output, 1)[0], 50);
 });
 
-test("returns a failure for overlapping slice copies with unequal strides", async () => {
+for (const grouped of [false, true]) {
+test(`rejects unequal-stride overlap before writing ${grouped ? "any copy-group leaf" : "a slice"}`, async () => {
   const mir = executableMir();
   mir.types.push(
     type("slice", { element: "f32", access: "read_write" }),
@@ -3742,6 +3858,7 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
   mir.functions[1].locals.push(
     { name: "channel", ty: 3 },
     { name: "whole", ty: 3 },
+    { name: "tail", ty: 3 },
   );
   const thenStatements =
     mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
@@ -3779,9 +3896,19 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
         access: "read_write",
       },
     }),
+    assign(place("local", 8), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "place", data: place("local", 7) },
+        start: constant("i32", 1), len: constant("i32", 3),
+        bounds: "unchecked", access: "read_write",
+      },
+    }),
     statement("slice_copy", {
-      destination: local(6),
-      source: local(7),
+      copies: [
+        ...(grouped ? [{ destination: local(8), source: local(7) }] : []),
+        { destination: local(6), source: local(7) },
+      ],
     }),
   );
 
@@ -3813,6 +3940,7 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
   view.setFloat32(bufferSampleRates, 48_000, true);
   view.setUint32(outputTable, output, true);
   onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+  new Float32Array(memory.buffer, bufferData, 4).set([1, 2, 3, 4]);
   assert.equal(
     callProcess(onda_process,
         0,
@@ -3829,7 +3957,9 @@ test("returns a failure for overlapping slice copies with unequal strides", asyn
       ),
     PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   );
+  assert.deepEqual([...new Float32Array(memory.buffer, bufferData, 4)], [1, 2, 3, 4]);
 });
+}
 
 test("parameter array descriptors retain per-element control metadata", () => {
   const mir = executableMir();

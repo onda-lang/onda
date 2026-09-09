@@ -1,5 +1,7 @@
 use super::*;
 
+mod messages;
+
 impl FunctionEmitter<'_, '_> {
     unsafe fn buffer_argument_place(
         &self,
@@ -73,7 +75,8 @@ impl FunctionEmitter<'_, '_> {
                             });
                         }
                         onda_mir::PassingMode::ReadOnlyReference
-                        | onda_mir::PassingMode::ReadWriteReference => {
+                        | onda_mir::PassingMode::ReadWriteReference
+                        | onda_mir::PassingMode::ResultReference => {
                             self.parameters.push(PlaceRef {
                                 ptr: incoming,
                                 ty: parameter.ty,
@@ -85,114 +88,6 @@ impl FunctionEmitter<'_, '_> {
             }
             FunctionKind::Event(event) => self.allocate_event_parameters(event)?,
             FunctionKind::Init => {}
-        }
-        Ok(())
-    }
-
-    unsafe fn allocate_event_parameters(
-        &mut self,
-        event: onda_mir::EventId,
-    ) -> Result<(), MirCodegenError> {
-        let payload = load_context_field(
-            self.module,
-            self.builder,
-            self.runtime_context,
-            12,
-            "event_payload",
-        )?;
-        let i8_ty = LLVMInt8TypeInContext(self.module.context);
-        let i32_ty = LLVMInt32TypeInContext(self.module.context);
-        let mut offset = LLVMConstInt(i32_ty, 0, 0);
-        let parameters = &self.module.program.interface.events[event.index()].params;
-        self.event_parameters.reserve(parameters.len());
-        for (index, parameter) in parameters.iter().enumerate() {
-            match self.module.program.types[parameter.ty.index()] {
-                Type::Slice { element, .. } => {
-                    let len_ptr = LLVMBuildGEP2(
-                        self.builder,
-                        i8_ty,
-                        payload,
-                        [offset].as_mut_ptr(),
-                        1,
-                        c_name("event_slice_len_ptr")?.as_ptr(),
-                    );
-                    let len = LLVMBuildLoad2(
-                        self.builder,
-                        i32_ty,
-                        len_ptr,
-                        c_name("event_slice_len")?.as_ptr(),
-                    );
-                    LLVMSetAlignment(len, 1);
-                    let data_offset = LLVMBuildAdd(
-                        self.builder,
-                        offset,
-                        LLVMConstInt(i32_ty, 4, 0),
-                        c_name("event_slice_data_offset")?.as_ptr(),
-                    );
-                    let data_ptr = LLVMBuildGEP2(
-                        self.builder,
-                        i8_ty,
-                        payload,
-                        [data_offset].as_mut_ptr(),
-                        1,
-                        c_name("event_slice_data")?.as_ptr(),
-                    );
-                    let stride = LLVMConstInt(i32_ty, scalar_store_size(element), 0);
-                    let descriptor =
-                        self.build_slice_descriptor(parameter.ty, data_ptr, data_ptr, len, stride)?;
-                    let name = c_name(&format!("event_slice_{index}"))?;
-                    let ptr = LLVMBuildAlloca(
-                        self.builder,
-                        self.module.types.get(parameter.ty),
-                        name.as_ptr(),
-                    );
-                    LLVMBuildStore(self.builder, descriptor, ptr);
-                    self.event_parameters.push(PlaceRef {
-                        ptr,
-                        ty: parameter.ty,
-                        alignment: self.module.layouts.type_alignments[parameter.ty.index()],
-                    });
-                    let data_bytes = LLVMBuildMul(
-                        self.builder,
-                        len,
-                        stride,
-                        c_name("event_slice_data_bytes")?.as_ptr(),
-                    );
-                    offset = LLVMBuildAdd(
-                        self.builder,
-                        data_offset,
-                        data_bytes,
-                        c_name("event_payload_next")?.as_ptr(),
-                    );
-                }
-                _ => {
-                    let ptr = LLVMBuildGEP2(
-                        self.builder,
-                        i8_ty,
-                        payload,
-                        [offset].as_mut_ptr(),
-                        1,
-                        c_name("event_parameter")?.as_ptr(),
-                    );
-                    self.event_parameters.push(PlaceRef {
-                        ptr,
-                        ty: parameter.ty,
-                        alignment: 1,
-                    });
-                    let size = fixed_payload_type_size(self.module.program, parameter.ty)?
-                        .ok_or_else(|| {
-                            MirCodegenError::invalid(
-                                "event payload has an unexpected nested dynamic type",
-                            )
-                        })?;
-                    offset = LLVMBuildAdd(
-                        self.builder,
-                        offset,
-                        LLVMConstInt(i32_ty, size as u64, 0),
-                        c_name("event_payload_next")?.as_ptr(),
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -261,10 +156,16 @@ impl FunctionEmitter<'_, '_> {
             StatementKind::SliceFill { destination, value } => {
                 self.lower_slice_fill(*destination, *value)?;
             }
-            StatementKind::SliceCopy {
-                destination,
-                source,
-            } => self.lower_slice_copy(*destination, *source)?,
+            StatementKind::SliceCopy { copies } => {
+                if copies.len() > 1 {
+                    for copy in copies {
+                        self.lower_slice_copy(copy.destination, copy.source, true)?;
+                    }
+                }
+                for copy in copies {
+                    self.lower_slice_copy(copy.destination, copy.source, false)?;
+                }
+            }
             StatementKind::If {
                 condition,
                 then_block,
@@ -328,457 +229,6 @@ impl FunctionEmitter<'_, '_> {
             sequence_ptr,
         );
         Ok(sequence)
-    }
-
-    unsafe fn lower_publish_delegate(
-        &mut self,
-        delegate: onda_mir::DelegateId,
-        args: &[CallArgument],
-    ) -> Result<(), MirCodegenError> {
-        let descriptor = &self.module.program.interface.delegates[delegate.index()];
-        let i8_ty = LLVMInt8TypeInContext(self.module.context);
-        let i32_ty = LLVMInt32TypeInContext(self.module.context);
-        let i64_ty = LLVMInt64TypeInContext(self.module.context);
-        let mut fixed_array_length_invalid = None;
-        for (param, argument) in descriptor.params.iter().zip(args) {
-            let CallArgument::Value(value) = argument else {
-                return Err(MirCodegenError::invalid(
-                    "delegate publication payload is not an evaluated value",
-                ));
-            };
-            let Type::Array { len, .. } = self.module.program.types[param.ty.index()] else {
-                continue;
-            };
-            let parts = self.slice_parts(*value)?;
-            let wrong_length = LLVMBuildICmp(
-                self.builder,
-                LLVMIntPredicate::LLVMIntNE,
-                parts.len,
-                LLVMConstInt(i32_ty, u64::from(len), 0),
-                c_name("delegate_fixed_array_wrong_length")?.as_ptr(),
-            );
-            fixed_array_length_invalid = Some(match fixed_array_length_invalid {
-                Some(previous) => LLVMBuildOr(
-                    self.builder,
-                    previous,
-                    wrong_length,
-                    c_name("delegate_fixed_array_length_invalid")?.as_ptr(),
-                ),
-                None => wrong_length,
-            });
-        }
-        if let Some(fixed_array_length_invalid) = fixed_array_length_invalid {
-            self.emit_failure_if(fixed_array_length_invalid, "delegate_fixed_array_length_ok")?;
-        }
-
-        let batch = load_context_field(
-            self.module,
-            self.builder,
-            self.runtime_context,
-            DELEGATE_BATCH_CONTEXT_INDEX,
-            "delegate_batch",
-        )?;
-        let batch_present = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntNE,
-            batch,
-            LLVMConstPointerNull(self.module.ptr_ty),
-            c_name("delegate_batch_present")?.as_ptr(),
-        );
-        let inspect = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_inspect_batch",
-        )?;
-        let done = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_done",
-        )?;
-        LLVMBuildCondBr(self.builder, batch_present, inspect, done);
-        LLVMPositionBuilderAtEnd(self.builder, inspect);
-        let sequence = self.next_output_sequence()?;
-
-        let mut payload_bytes = LLVMConstInt(i64_ty, 0, 0);
-        for (param, argument) in descriptor.params.iter().zip(args) {
-            let CallArgument::Value(value) = argument else {
-                unreachable!("validated above")
-            };
-            let bytes = match self.module.program.types[param.ty.index()] {
-                Type::Slice { element, .. } => {
-                    let parts = self.slice_parts(*value)?;
-                    let len = LLVMBuildZExt(
-                        self.builder,
-                        parts.len,
-                        i64_ty,
-                        c_name("delegate_slice_len_i64")?.as_ptr(),
-                    );
-                    LLVMBuildAdd(
-                        self.builder,
-                        LLVMConstInt(i64_ty, 4, 0),
-                        LLVMBuildMul(
-                            self.builder,
-                            len,
-                            LLVMConstInt(i64_ty, scalar_store_size(element), 0),
-                            c_name("delegate_slice_bytes")?.as_ptr(),
-                        ),
-                        c_name("delegate_dynamic_param_bytes")?.as_ptr(),
-                    )
-                }
-                _ => LLVMConstInt(
-                    i64_ty,
-                    fixed_payload_type_size(self.module.program, param.ty)?.ok_or_else(|| {
-                        MirCodegenError::invalid("delegate payload contains a nested dynamic type")
-                    })? as u64,
-                    0,
-                ),
-            };
-            payload_bytes = LLVMBuildAdd(
-                self.builder,
-                payload_bytes,
-                bytes,
-                c_name("delegate_payload_bytes")?.as_ptr(),
-            );
-        }
-
-        let storage_ptr = LLVMBuildStructGEP2(
-            self.builder,
-            self.module.delegate_batch_ty,
-            batch,
-            0,
-            c_name("delegate_storage_ptr")?.as_ptr(),
-        );
-        let storage = LLVMBuildLoad2(
-            self.builder,
-            self.module.ptr_ty,
-            storage_ptr,
-            c_name("delegate_storage")?.as_ptr(),
-        );
-        let storage_present = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntNE,
-            storage,
-            LLVMConstPointerNull(self.module.ptr_ty),
-            c_name("delegate_storage_present")?.as_ptr(),
-        );
-        let capacity_ptr = LLVMBuildStructGEP2(
-            self.builder,
-            self.module.delegate_batch_ty,
-            batch,
-            1,
-            c_name("delegate_capacity_ptr")?.as_ptr(),
-        );
-        let used_ptr = LLVMBuildStructGEP2(
-            self.builder,
-            self.module.delegate_batch_ty,
-            batch,
-            2,
-            c_name("delegate_used_ptr")?.as_ptr(),
-        );
-        let capacity = LLVMBuildLoad2(
-            self.builder,
-            i32_ty,
-            capacity_ptr,
-            c_name("delegate_capacity")?.as_ptr(),
-        );
-        let used = LLVMBuildLoad2(
-            self.builder,
-            i32_ty,
-            used_ptr,
-            c_name("delegate_used")?.as_ptr(),
-        );
-        let capacity_i64 = LLVMBuildZExt(
-            self.builder,
-            capacity,
-            i64_ty,
-            c_name("delegate_capacity_i64")?.as_ptr(),
-        );
-        let used_i64 = LLVMBuildZExt(
-            self.builder,
-            used,
-            i64_ty,
-            c_name("delegate_used_i64")?.as_ptr(),
-        );
-        let required = LLVMBuildAdd(
-            self.builder,
-            payload_bytes,
-            LLVMConstInt(
-                i64_ty,
-                onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE as u64,
-                0,
-            ),
-            c_name("delegate_required")?.as_ptr(),
-        );
-        let used_valid = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntULE,
-            used_i64,
-            capacity_i64,
-            c_name("delegate_used_valid")?.as_ptr(),
-        );
-        let available = LLVMBuildSub(
-            self.builder,
-            capacity_i64,
-            used_i64,
-            c_name("delegate_available")?.as_ptr(),
-        );
-        let required_fits = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntULE,
-            required,
-            available,
-            c_name("delegate_required_fits")?.as_ptr(),
-        );
-        let fits = LLVMBuildAnd(
-            self.builder,
-            storage_present,
-            LLVMBuildAnd(
-                self.builder,
-                used_valid,
-                required_fits,
-                c_name("delegate_capacity_valid")?.as_ptr(),
-            ),
-            c_name("delegate_record_fits")?.as_ptr(),
-        );
-        let write = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_write",
-        )?;
-        let dropped = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_dropped",
-        )?;
-        let no_storage = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_no_storage",
-        )?;
-        let capacity_ok = append_block(
-            self.module.context,
-            self.declaration.value,
-            "publish_delegate_capacity_ok",
-        )?;
-        LLVMBuildCondBr(self.builder, storage_present, write, no_storage);
-        LLVMPositionBuilderAtEnd(self.builder, no_storage);
-        LLVMBuildBr(self.builder, done);
-        LLVMPositionBuilderAtEnd(self.builder, write);
-        LLVMBuildCondBr(self.builder, fits, capacity_ok, dropped);
-
-        LLVMPositionBuilderAtEnd(self.builder, dropped);
-        let overflow_ptr = LLVMBuildStructGEP2(
-            self.builder,
-            self.module.delegate_batch_ty,
-            batch,
-            4,
-            c_name("delegate_overflow_ptr")?.as_ptr(),
-        );
-        let overflow = LLVMBuildLoad2(
-            self.builder,
-            i32_ty,
-            overflow_ptr,
-            c_name("delegate_overflow")?.as_ptr(),
-        );
-        let saturated = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntEQ,
-            overflow,
-            LLVMConstInt(i32_ty, u64::from(u32::MAX), 0),
-            c_name("delegate_overflow_saturated")?.as_ptr(),
-        );
-        let incremented = LLVMBuildAdd(
-            self.builder,
-            overflow,
-            LLVMConstInt(i32_ty, 1, 0),
-            c_name("delegate_overflow_incremented")?.as_ptr(),
-        );
-        LLVMBuildStore(
-            self.builder,
-            LLVMBuildSelect(
-                self.builder,
-                saturated,
-                overflow,
-                incremented,
-                c_name("delegate_overflow_next")?.as_ptr(),
-            ),
-            overflow_ptr,
-        );
-        LLVMBuildBr(self.builder, done);
-
-        LLVMPositionBuilderAtEnd(self.builder, capacity_ok);
-        let record = LLVMBuildGEP2(
-            self.builder,
-            i8_ty,
-            storage,
-            [used_i64].as_mut_ptr(),
-            1,
-            c_name("delegate_record")?.as_ptr(),
-        );
-        let delegate_store = LLVMBuildStore(
-            self.builder,
-            LLVMConstInt(i32_ty, u64::from(delegate.raw()), 0),
-            record,
-        );
-        LLVMSetAlignment(delegate_store, 1);
-        let payload_size_ptr = LLVMBuildGEP2(
-            self.builder,
-            i8_ty,
-            record,
-            [LLVMConstInt(i64_ty, 4, 0)].as_mut_ptr(),
-            1,
-            c_name("delegate_payload_size_ptr")?.as_ptr(),
-        );
-        let payload_size_store = LLVMBuildStore(
-            self.builder,
-            LLVMBuildTrunc(
-                self.builder,
-                payload_bytes,
-                i32_ty,
-                c_name("delegate_payload_size")?.as_ptr(),
-            ),
-            payload_size_ptr,
-        );
-        LLVMSetAlignment(payload_size_store, 1);
-        let sequence_ptr = LLVMBuildGEP2(
-            self.builder,
-            i8_ty,
-            record,
-            [LLVMConstInt(i64_ty, 8, 0)].as_mut_ptr(),
-            1,
-            c_name("delegate_sequence_ptr")?.as_ptr(),
-        );
-        let sequence_store = LLVMBuildStore(self.builder, sequence, sequence_ptr);
-        LLVMSetAlignment(sequence_store, 1);
-        let mut cursor = LLVMConstInt(
-            i64_ty,
-            onda_processor_abi::DELEGATE_RECORD_HEADER_SIZE as u64,
-            0,
-        );
-        for (param, argument) in descriptor.params.iter().zip(args) {
-            let CallArgument::Value(value) = argument else {
-                unreachable!("validated above")
-            };
-            let destination = LLVMBuildGEP2(
-                self.builder,
-                i8_ty,
-                record,
-                [cursor].as_mut_ptr(),
-                1,
-                c_name("delegate_payload_param")?.as_ptr(),
-            );
-            match self.module.program.types[param.ty.index()] {
-                Type::Scalar(scalar) => {
-                    let store =
-                        LLVMBuildStore(self.builder, self.lower_value(*value)?, destination);
-                    LLVMSetAlignment(store, 1);
-                    cursor = LLVMBuildAdd(
-                        self.builder,
-                        cursor,
-                        LLVMConstInt(i64_ty, scalar_store_size(scalar), 0),
-                        c_name("delegate_payload_cursor")?.as_ptr(),
-                    );
-                }
-                Type::Array { element, len } => {
-                    let Type::Scalar(element) = self.module.program.types[element.index()] else {
-                        return Err(MirCodegenError::invalid(
-                            "delegate fixed array element is not scalar",
-                        ));
-                    };
-                    let parts = self.slice_parts(*value)?;
-                    self.copy_slice_to_packed_payload(
-                        parts,
-                        LLVMConstInt(i32_ty, u64::from(len), 0),
-                        destination,
-                    )?;
-                    cursor = LLVMBuildAdd(
-                        self.builder,
-                        cursor,
-                        LLVMConstInt(i64_ty, u64::from(len) * scalar_store_size(element), 0),
-                        c_name("delegate_payload_cursor")?.as_ptr(),
-                    );
-                }
-                Type::Slice { element, .. } => {
-                    let parts = self.slice_parts(*value)?;
-                    let len_store = LLVMBuildStore(self.builder, parts.len, destination);
-                    LLVMSetAlignment(len_store, 1);
-                    let data = LLVMBuildGEP2(
-                        self.builder,
-                        i8_ty,
-                        destination,
-                        [LLVMConstInt(i64_ty, 4, 0)].as_mut_ptr(),
-                        1,
-                        c_name("delegate_slice_data")?.as_ptr(),
-                    );
-                    self.copy_slice_to_packed_payload(parts, parts.len, data)?;
-                    let data_bytes = LLVMBuildMul(
-                        self.builder,
-                        LLVMBuildZExt(
-                            self.builder,
-                            parts.len,
-                            i64_ty,
-                            c_name("delegate_slice_len_i64")?.as_ptr(),
-                        ),
-                        LLVMConstInt(i64_ty, scalar_store_size(element), 0),
-                        c_name("delegate_slice_data_bytes")?.as_ptr(),
-                    );
-                    cursor = LLVMBuildAdd(
-                        self.builder,
-                        cursor,
-                        LLVMBuildAdd(
-                            self.builder,
-                            LLVMConstInt(i64_ty, 4, 0),
-                            data_bytes,
-                            c_name("delegate_slice_param_bytes")?.as_ptr(),
-                        ),
-                        c_name("delegate_payload_cursor")?.as_ptr(),
-                    );
-                }
-                _ => {
-                    return Err(MirCodegenError::invalid(
-                        "unsupported delegate payload type",
-                    ));
-                }
-            }
-        }
-        let next_used = LLVMBuildTrunc(
-            self.builder,
-            LLVMBuildAdd(
-                self.builder,
-                used_i64,
-                required,
-                c_name("delegate_next_used_i64")?.as_ptr(),
-            ),
-            i32_ty,
-            c_name("delegate_next_used")?.as_ptr(),
-        );
-        LLVMBuildStore(self.builder, next_used, used_ptr);
-        let count_ptr = LLVMBuildStructGEP2(
-            self.builder,
-            self.module.delegate_batch_ty,
-            batch,
-            3,
-            c_name("delegate_count_ptr")?.as_ptr(),
-        );
-        let count = LLVMBuildLoad2(
-            self.builder,
-            i32_ty,
-            count_ptr,
-            c_name("delegate_count")?.as_ptr(),
-        );
-        LLVMBuildStore(
-            self.builder,
-            LLVMBuildAdd(
-                self.builder,
-                count,
-                LLVMConstInt(i32_ty, 1, 0),
-                c_name("delegate_count_next")?.as_ptr(),
-            ),
-            count_ptr,
-        );
-        LLVMBuildBr(self.builder, done);
-        LLVMPositionBuilderAtEnd(self.builder, done);
-        Ok(())
     }
 
     unsafe fn lower_publish_log(
@@ -1060,109 +510,6 @@ impl FunctionEmitter<'_, '_> {
         Ok(())
     }
 
-    unsafe fn copy_slice_to_packed_payload(
-        &mut self,
-        source: SliceParts,
-        len: LLVMValueRef,
-        destination: LLVMValueRef,
-    ) -> Result<(), MirCodegenError> {
-        let i8_ty = LLVMInt8TypeInContext(self.module.context);
-        let i32_ty = LLVMInt32TypeInContext(self.module.context);
-        let i64_ty = LLVMInt64TypeInContext(self.module.context);
-        let preheader = LLVMGetInsertBlock(self.builder);
-        let body = append_block(
-            self.module.context,
-            self.declaration.value,
-            "delegate_payload_copy",
-        )?;
-        let done = append_block(
-            self.module.context,
-            self.declaration.value,
-            "delegate_payload_copy_done",
-        )?;
-        let nonempty = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntNE,
-            len,
-            LLVMConstInt(i32_ty, 0, 0),
-            c_name("delegate_payload_nonempty")?.as_ptr(),
-        );
-        LLVMBuildCondBr(self.builder, nonempty, body, done);
-        LLVMPositionBuilderAtEnd(self.builder, body);
-        let index = LLVMBuildPhi(
-            self.builder,
-            i32_ty,
-            c_name("delegate_payload_index")?.as_ptr(),
-        );
-        let zero = LLVMConstInt(i32_ty, 0, 0);
-        LLVMAddIncoming(index, [zero].as_mut_ptr(), [preheader].as_mut_ptr(), 1);
-        let index_i64 = LLVMBuildZExt(
-            self.builder,
-            index,
-            i64_ty,
-            c_name("delegate_payload_index_i64")?.as_ptr(),
-        );
-        let source_offset = LLVMBuildMul(
-            self.builder,
-            index_i64,
-            LLVMBuildZExt(
-                self.builder,
-                source.stride_bytes,
-                i64_ty,
-                c_name("delegate_payload_stride_i64")?.as_ptr(),
-            ),
-            c_name("delegate_payload_source_offset")?.as_ptr(),
-        );
-        let source_ptr = LLVMBuildGEP2(
-            self.builder,
-            i8_ty,
-            source.read_ptr,
-            [source_offset].as_mut_ptr(),
-            1,
-            c_name("delegate_payload_source")?.as_ptr(),
-        );
-        let destination_offset = LLVMBuildMul(
-            self.builder,
-            index_i64,
-            LLVMConstInt(i64_ty, scalar_store_size(source.element), 0),
-            c_name("delegate_payload_destination_offset")?.as_ptr(),
-        );
-        let destination_ptr = LLVMBuildGEP2(
-            self.builder,
-            i8_ty,
-            destination,
-            [destination_offset].as_mut_ptr(),
-            1,
-            c_name("delegate_payload_destination")?.as_ptr(),
-        );
-        let value = LLVMBuildLoad2(
-            self.builder,
-            llvm_scalar_type(self.module.context, source.element),
-            source_ptr,
-            c_name("delegate_payload_value")?.as_ptr(),
-        );
-        LLVMSetAlignment(value, 1);
-        let store = LLVMBuildStore(self.builder, value, destination_ptr);
-        LLVMSetAlignment(store, 1);
-        let next = LLVMBuildAdd(
-            self.builder,
-            index,
-            LLVMConstInt(i32_ty, 1, 0),
-            c_name("delegate_payload_next_index")?.as_ptr(),
-        );
-        let again = LLVMBuildICmp(
-            self.builder,
-            LLVMIntPredicate::LLVMIntULT,
-            next,
-            len,
-            c_name("delegate_payload_copy_more")?.as_ptr(),
-        );
-        LLVMBuildCondBr(self.builder, again, body, done);
-        LLVMAddIncoming(index, [next].as_mut_ptr(), [body].as_mut_ptr(), 1);
-        LLVMPositionBuilderAtEnd(self.builder, done);
-        Ok(())
-    }
-
     unsafe fn lower_if(
         &mut self,
         condition: onda_mir::Value,
@@ -1284,7 +631,8 @@ impl FunctionEmitter<'_, '_> {
                     None,
                 ),
                 onda_mir::PassingMode::ReadOnlyReference
-                | onda_mir::PassingMode::ReadWriteReference => {
+                | onda_mir::PassingMode::ReadWriteReference
+                | onda_mir::PassingMode::ResultReference => {
                     let place = match argument {
                         CallArgument::Place(place) => self.lower_place(place)?,
                         CallArgument::SliceElement {
@@ -1296,7 +644,7 @@ impl FunctionEmitter<'_, '_> {
                                 *slice,
                                 *index,
                                 *bounds,
-                                parameter.mode == onda_mir::PassingMode::ReadWriteReference,
+                                parameter.mode.is_writable_reference(),
                             )?;
                             PlaceRef {
                                 ptr,
@@ -1321,7 +669,7 @@ impl FunctionEmitter<'_, '_> {
                             *start,
                             *bounds,
                             parameter.ty,
-                            parameter.mode == onda_mir::PassingMode::ReadWriteReference,
+                            parameter.mode.is_writable_reference(),
                         )?,
                         CallArgument::Buffer(buffer) => {
                             let descriptor =
@@ -1707,6 +1055,15 @@ impl FunctionEmitter<'_, '_> {
             Rvalue::Cast { value, to } => self.lower_cast(*value, *to),
             Rvalue::Intrinsic { intrinsic, args } => self.lower_intrinsic(*intrinsic, args),
             Rvalue::ProcessFrame { offset } => self.lower_process_frame(*offset),
+            Rvalue::NormalizeIndex {
+                index,
+                length,
+                bounds,
+            } => {
+                let index = self.lower_value(*index)?;
+                let length = self.lower_value(*length)?;
+                self.apply_dynamic_bounds(index, length, *bounds)
+            }
             Rvalue::InputLoad {
                 input,
                 element,
@@ -2868,7 +2225,7 @@ impl FunctionEmitter<'_, '_> {
             return Ok(value);
         }
 
-        let entry = LLVMGetEntryBasicBlock(self.declaration.value);
+        let entry = self.context_prologue;
         let terminator = LLVMGetBasicBlockTerminator(entry);
         if terminator.is_null() {
             LLVMPositionBuilderAtEnd(self.prologue_builder, entry);
@@ -3532,6 +2889,12 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::SliceSource::Place(place) => {
                 let place = self.lower_place(place)?;
                 match self.module.program.types[place.ty.index()] {
+                    Type::Scalar(_) => (
+                        place.ptr,
+                        place.ptr,
+                        element_size,
+                        LLVMConstInt(i32_ty, 1, 0),
+                    ),
                     Type::Array { len, .. } => {
                         let zero = LLVMConstInt(i32_ty, 0, 0);
                         let base = LLVMBuildGEP2(
@@ -3985,6 +3348,7 @@ impl FunctionEmitter<'_, '_> {
         &mut self,
         destination: onda_mir::Value,
         source: onda_mir::Value,
+        check_only: bool,
     ) -> Result<(), MirCodegenError> {
         let destination = self.slice_parts(destination)?;
         let source = self.slice_parts(source)?;
@@ -4064,27 +3428,29 @@ impl FunctionEmitter<'_, '_> {
         LLVMBuildCondBr(self.builder, contiguous, contiguous_block, strided_block);
 
         LLVMPositionBuilderAtEnd(self.builder, contiguous_block);
-        let i64_ty = LLVMInt64TypeInContext(self.module.context);
-        let len_i64 = LLVMBuildZExt(
-            self.builder,
-            len,
-            i64_ty,
-            c_name("slice_copy_len_i64")?.as_ptr(),
-        );
-        let byte_count = LLVMBuildMul(
-            self.builder,
-            len_i64,
-            LLVMConstInt(i64_ty, element_size, 0),
-            c_name("slice_copy_bytes")?.as_ptr(),
-        );
-        LLVMBuildMemMove(
-            self.builder,
-            destination.write_ptr,
-            1,
-            source.read_ptr,
-            1,
-            byte_count,
-        );
+        if !check_only {
+            let i64_ty = LLVMInt64TypeInContext(self.module.context);
+            let len_i64 = LLVMBuildZExt(
+                self.builder,
+                len,
+                i64_ty,
+                c_name("slice_copy_len_i64")?.as_ptr(),
+            );
+            let byte_count = LLVMBuildMul(
+                self.builder,
+                len_i64,
+                LLVMConstInt(i64_ty, element_size, 0),
+                c_name("slice_copy_bytes")?.as_ptr(),
+            );
+            LLVMBuildMemMove(
+                self.builder,
+                destination.write_ptr,
+                1,
+                source.read_ptr,
+                1,
+                byte_count,
+            );
+        }
         LLVMBuildBr(self.builder, merge);
 
         LLVMPositionBuilderAtEnd(self.builder, strided_block);
@@ -4205,6 +3571,11 @@ impl FunctionEmitter<'_, '_> {
         // strides retain memmove directionality; disjoint unequal strides use
         // the normal forward loop.
         self.emit_failure_if(unsupported_overlap, "slice_copy_strided_safe")?;
+        if check_only {
+            LLVMBuildBr(self.builder, merge);
+            LLVMPositionBuilderAtEnd(self.builder, merge);
+            return Ok(());
+        }
         let copy_backward = LLVMBuildAnd(
             self.builder,
             LLVMBuildNot(

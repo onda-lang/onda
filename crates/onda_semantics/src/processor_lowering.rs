@@ -11,6 +11,7 @@ mod graph_lowering;
 mod nested_paths;
 mod nested_proc_lowering;
 mod proc_local_defs;
+mod retained_data;
 mod shape_helpers;
 use delegate_lowering::*;
 use generated_blocks::*;
@@ -104,7 +105,7 @@ pub(crate) fn prepare_processors_for_graph_inspection(
     inject_builtin_proc_init_events(program, errors);
 }
 
-fn coerce_scalar_event_default(
+pub(crate) fn coerce_scalar_event_default(
     default_expr: &Expr,
     ty: PrimitiveType,
     context: &str,
@@ -165,6 +166,36 @@ fn coerce_fixed_array_event_default(
     Some(coerced)
 }
 
+fn coerce_tuple_event_default(
+    expr: &Expr,
+    types: &[PrimitiveType],
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<TypedConstValue>> {
+    let Expr::Tuple { values, .. } = expr else {
+        push_semantic(
+            DiagCtx::new(expr.loc()),
+            errors,
+            format!("{context} default must be a constant tuple"),
+        );
+        return None;
+    };
+    if values.len() != types.len() {
+        push_semantic(
+            DiagCtx::new(expr.loc()),
+            errors,
+            format!("{context} tuple default has the wrong number of components"),
+        );
+        return None;
+    }
+    values
+        .iter()
+        .zip(types)
+        .map(|(value, ty)| coerce_scalar_event_default(value, *ty, context, options, errors))
+        .collect()
+}
+
 fn coerce_typed_event_default(
     param: &EventParamDecl,
     typed_ty: &TypedEventParamType,
@@ -174,6 +205,10 @@ fn coerce_typed_event_default(
 ) -> Option<TypedEventParamDefault> {
     let default_expr = param.default.as_ref()?;
     match typed_ty {
+        TypedEventParamType::Tuple(types) => {
+            coerce_tuple_event_default(default_expr, types, context, options, errors)
+                .map(TypedEventParamDefault::Array)
+        }
         TypedEventParamType::Scalar(ty) => {
             coerce_scalar_event_default(default_expr, *ty, context, options, errors)
                 .map(TypedEventParamDefault::Scalar)
@@ -182,7 +217,15 @@ fn coerce_typed_event_default(
             coerce_fixed_array_event_default(default_expr, *elem, *len, context, options, errors)
                 .map(TypedEventParamDefault::Array)
         }
-        TypedEventParamType::Slice { .. } => {
+        TypedEventParamType::Data(_) => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} is a borrowed data parameter and cannot have a default"),
+            );
+            None
+        }
+        TypedEventParamType::StructSlice { .. } | TypedEventParamType::Slice { .. } => {
             push_semantic(
                 DiagCtx::new(default_expr.loc()),
                 errors,
@@ -202,6 +245,10 @@ fn validate_proc_event_default_expr(
 ) -> Option<Expr> {
     let default_expr = param.default.as_ref()?;
     match &param.ty {
+        EventParamType::Tuple(types) => {
+            coerce_tuple_event_default(default_expr, types, context, options, errors)?;
+            Some(default_expr.clone())
+        }
         EventParamType::Scalar(ty) => {
             coerce_scalar_event_default(default_expr, *ty, context, options, errors)?;
             Some(default_expr.clone())
@@ -254,7 +301,6 @@ struct ProcBaseShape {
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
-    array_field_names: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,7 +319,6 @@ pub(crate) struct ProcLoweringShape {
     pub(crate) state: ProcStateFields,
     pub(crate) fields: Vec<StructField>,
     pub(crate) field_names: HashSet<String>,
-    pub(crate) array_field_names: HashSet<String>,
     pub(crate) nested_fields: HashMap<String, HashSet<String>>,
 }
 
@@ -447,7 +492,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
         param_types,
         type_params: Vec::new(),
         return_type: None,
-        readonly_array_params: HashSet::new(),
+        readonly_data_params: HashSet::new(),
     }
 }
 
@@ -455,6 +500,7 @@ pub(crate) fn coerce_typed_events(
     events: &[EventDef],
     allow_slices: bool,
     event_owner_desc: &str,
+    structs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedEvent> {
@@ -497,7 +543,11 @@ pub(crate) fn coerce_typed_events(
                 continue;
             }
             let typed = match &param.ty {
+                EventParamType::Tuple(types) => TypedEventParamType::Tuple(types.clone()),
                 EventParamType::Scalar(ty) => TypedEventParamType::Scalar(*ty),
+                EventParamType::GenericScalar { name } if structs.contains_key(name) => {
+                    TypedEventParamType::Data(DataType::Struct(name.clone()))
+                }
                 EventParamType::GenericScalar { name } => {
                     push_semantic(
                         param_diag,
@@ -523,6 +573,14 @@ pub(crate) fn coerce_typed_events(
                         );
                     }
                     TypedEventParamType::Array { elem: *elem, len }
+                }
+                EventParamType::GenericArray { elem, size } if structs.contains_key(elem) => {
+                    let context = format!("event '{}.{}' array size", event.name, param.name);
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    TypedEventParamType::Data(DataType::Array {
+                        element: ArrayElemType::Struct(elem.clone()),
+                        len,
+                    })
                 }
                 EventParamType::GenericArray { elem, size } => {
                     push_semantic(
@@ -552,6 +610,9 @@ pub(crate) fn coerce_typed_events(
                         );
                     }
                     TypedEventParamType::Slice { elem: *elem }
+                }
+                EventParamType::GenericSlice { elem } if structs.contains_key(elem) => {
+                    TypedEventParamType::StructSlice { name: elem.clone() }
                 }
                 EventParamType::GenericSlice { elem } => {
                     push_semantic(
@@ -591,6 +652,7 @@ pub(crate) fn coerce_typed_events(
 
 pub(crate) fn coerce_typed_delegates(
     delegates: &[DelegateDef],
+    structs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedDelegate> {
@@ -603,7 +665,7 @@ pub(crate) fn coerce_typed_delegates(
             body: Vec::new(),
         })
         .collect::<Vec<_>>();
-    coerce_typed_events(&adapters, true, "top-level", options, errors)
+    coerce_typed_events(&adapters, true, "top-level", structs, options, errors)
         .into_iter()
         .map(|event| TypedDelegate {
             name: event.name,
@@ -704,6 +766,12 @@ fn expand_proc_event_specs(
         for param in &event.params {
             let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
             match &param.ty {
+                EventParamType::Tuple(types) => params.push(ProcEventParamSpec {
+                    name: param.name.clone(),
+                    slots: Vec::new(),
+                    ty: ProcEventParamTypeSpec::Tuple(types.clone()),
+                    default: param.default.clone(),
+                }),
                 EventParamType::Scalar(ty) => params.push(ProcEventParamSpec {
                     name: param.name.clone(),
                     slots: vec![ProcEventParamSlotSpec {
@@ -723,24 +791,11 @@ fn expand_proc_event_specs(
                     ),
                 }),
                 EventParamType::GenericScalar { name } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic scalar type '{}'; generic event params must be specialized before processor lowering",
-                            proc.name, event.name, param.name, name
-                        ),
-                    );
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
-                        slots: vec![ProcEventParamSlotSpec {
-                            name: param.name.clone(),
-                            ty: PrimitiveType::F32,
-                        }],
-                        ty: ProcEventParamTypeSpec::Scalar {
-                            ty: PrimitiveType::F32,
-                        },
-                        default: None,
+                        slots: Vec::new(),
+                        ty: ProcEventParamTypeSpec::Struct { name: name.clone() },
+                        default: param.default.clone(),
                     });
                 }
                 EventParamType::Array { elem, size } => {
@@ -776,14 +831,6 @@ fn expand_proc_event_specs(
                     });
                 }
                 EventParamType::GenericArray { elem, size } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic array element type '{}'; generic event params must be specialized before processor lowering",
-                            proc.name, event.name, param.name, elem
-                        ),
-                    );
                     let context = format!(
                         "processor '{}.{}' event parameter '{}'",
                         proc.name, event.name, param.name
@@ -792,11 +839,11 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        ty: ProcEventParamTypeSpec::FixedArray {
-                            elem_ty: PrimitiveType::F32,
+                        ty: ProcEventParamTypeSpec::StructArray {
+                            name: elem.clone(),
                             len,
                         },
-                        default: None,
+                        default: param.default.clone(),
                     });
                 }
                 EventParamType::Slice { elem } => {
@@ -817,20 +864,10 @@ fn expand_proc_event_specs(
                     });
                 }
                 EventParamType::GenericSlice { elem } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before processor lowering",
-                            proc.name, event.name, param.name, elem
-                        ),
-                    );
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        ty: ProcEventParamTypeSpec::Slice {
-                            elem_ty: PrimitiveType::F32,
-                        },
+                        ty: ProcEventParamTypeSpec::StructSlice { name: elem.clone() },
                         default: validate_proc_event_default_expr(
                             param,
                             None,
@@ -1117,7 +1154,7 @@ fn build_proc_lowering_env(
             ));
         }
     }
-    let pre_desugar_fn_signatures = pre_desugar_defs
+    let mut pre_desugar_fn_signatures = pre_desugar_defs
         .iter()
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
         .collect::<HashMap<_, _>>();
@@ -1126,6 +1163,10 @@ fn build_proc_lowering_env(
         &pre_desugar_fn_signatures,
         &crate::def_semantics::CallTypeEnv::default(),
         &typed_struct_defs,
+    );
+    FnSignature::resolve_returns(
+        &mut pre_desugar_fn_signatures,
+        &pre_desugar_def_return_types,
     );
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);

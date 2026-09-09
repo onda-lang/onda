@@ -2270,3 +2270,113 @@ proc Main:
         assert_eq!(typed.param_default("gain"), Some(0.5));
         assert!(typed.state_vars.iter().any(|name| name == "state"));
     }
+
+    #[test]
+    fn struct_assignment_from_untyped_event_parameter_suggests_its_annotation() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+event configure(patch):
+  current = patch
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("an untyped event parameter must not replace a struct");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:#?}");
+        assert_eq!(
+            errors[0].message,
+            "cannot assign f32 event parameter 'patch' to struct instance 'current' of type 'Patch'; declare the parameter as 'patch: Patch'"
+        );
+        assert!(!errors[0].message.contains("sample"));
+    }
+
+    #[test]
+    fn struct_assignment_diagnostics_preserve_the_authored_task_context() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+task load():
+  current = f32(1.0)
+
+block:
+  await load()
+  sample:
+    out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("a scalar must not replace a struct");
+        assert!(errors.iter().any(|error| {
+            error.message
+                == "cannot assign f32 value to struct instance 'current' of type 'Patch' in task; whole-struct replacement requires another 'Patch' value"
+        }), "unexpected diagnostics: {errors:#?}");
+        assert!(errors.iter().all(|error| !error.message.contains("in block")));
+    }
+
+    #[test]
+    fn nominal_data_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  current: Patch
+
+event configure(envelope: Envelope):
+  current = envelope
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal struct types must not be interchangeable");
+        assert!(errors.iter().any(|error| {
+            error.message == "data replacement for 'current' expects 'Patch', got 'Envelope'"
+        }), "unexpected diagnostics: {errors:#?}");
+    }
+
+    #[test]
+    fn nominal_array_element_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  patches: Patch[2] = Patch()
+  envelopes: Envelope[2] = Envelope()
+
+event configure():
+  patches[0] = envelopes[0]
+
+sample:
+  out1 = patches[0].gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal element types must not be interchangeable");
+        assert!(
+            errors.iter().any(|error| {
+                error.message
+                    == "element replacement for 'patches[...]' expects 'Patch', got 'Envelope'"
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }

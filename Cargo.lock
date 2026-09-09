@@ -3645,6 +3645,7 @@ dependencies = [
  "onda_project",
  "onda_runtime",
  "onda_semantics",
+ "serde_json",
 ]
 
 [[package]]
@@ -3710,6 +3711,7 @@ dependencies = [
  "hound",
  "onda_codegen_llvm",
  "onda_frontend",
+ "onda_processor_abi",
  "onda_project",
  "onda_runtime",
  "onda_semantics",
@@ -3771,6 +3773,7 @@ dependencies = [
 name = "onda_mir"
 version = "0.8.3"
 dependencies = [
+ "onda_processor_abi",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -3839,6 +3842,7 @@ version = "0.8.3"
 dependencies = [
  "onda_frontend",
  "onda_mir",
+ "onda_processor_abi",
 ]
 
 [[package]]

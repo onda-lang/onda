@@ -1137,7 +1137,6 @@ pub(super) fn rewrite_owner_proc_stmt(
     mut stmt: Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_field_names: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -1162,7 +1161,6 @@ pub(super) fn rewrite_owner_proc_stmt(
         &stmt,
         owner_proc,
         field_names,
-        array_field_names,
         ins_names,
         field_array_slots,
         in_array_slots,
@@ -1175,7 +1173,6 @@ pub(super) fn rewrite_owner_proc_stmts(
     mut stmts: Vec<Stmt>,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_field_names: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -1206,7 +1203,6 @@ pub(super) fn rewrite_owner_proc_stmts(
                 stmt,
                 owner_proc,
                 field_names,
-                array_field_names,
                 ins_names,
                 field_array_slots,
                 in_array_slots,
@@ -1760,14 +1756,20 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             &stmt,
             owner_proc,
             &callee_shape.field_names,
-            &callee_shape.array_field_names,
             callee_ins_names,
             &mapped_field_array_slots,
             callee_in_array_slots,
             errors,
         )?;
         let mut lowered = lowered;
-        prefix_self_fields_in_stmt(&mut lowered, nested_path, &callee_shape.field_names);
+        // Explicit self paths still address the child even when a parameter
+        // shadows the corresponding implicit field name.
+        let explicit_fields = callee_shape
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect();
+        prefix_self_fields_in_stmt(&mut lowered, nested_path, &explicit_fields);
         Some(lowered)
     })
 }

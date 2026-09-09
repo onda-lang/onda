@@ -29,12 +29,13 @@ pub(super) fn parse_init_default_decl_type(
     let ty = parse_section_default_decl_type(pair, "init")?;
     match ty {
         DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
-            Err(vec![syntax_at_loc(
-                loc.as_ref(),
-                "init section default type must be a scalar primitive or generic type",
-            )])
-        }
+        DeclType::Slice(_)
+        | DeclType::Array { .. }
+        | DeclType::ArrayGeneric { .. }
+        | DeclType::Tuple(_) => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "init section default type must be a scalar primitive or generic type",
+        )]),
     }
 }
 
@@ -621,7 +622,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                     let prim = parse_primitive_type(inner_type.as_str()).map_err(|d| vec![d])?;
                     FnParamType::Array(Some(prim))
                 }
-                Rule::qualified_ident | Rule::namespace_ref => {
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
                     FnParamType::ArrayGeneric(inner_type.as_str().trim().to_owned())
                 }
                 _ => {
@@ -646,11 +647,13 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                         size: size_expr,
                     }
                 }
-                Rule::qualified_ident | Rule::namespace_ref => FnParamType::SizedArray {
-                    elem: None,
-                    generic_name: Some(elem_pair.as_str().trim().to_owned()),
-                    size: size_expr,
-                },
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    FnParamType::SizedArray {
+                        elem: None,
+                        generic_name: Some(elem_pair.as_str().trim().to_owned()),
+                        size: size_expr,
+                    }
+                }
                 _ => {
                     return Err(vec![syntax_at_loc(
                         loc.as_ref(),
@@ -673,7 +676,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
         }
-        Rule::qualified_ident | Rule::namespace_ref => {
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
             FnParamType::Struct(inner.as_str().trim().to_owned())
         }
         _ => {
@@ -706,7 +709,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
             Rule::type_name => Ok(FnReturnScalarType::Primitive(
                 parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
             )),
-            Rule::qualified_ident | Rule::namespace_ref => {
+            Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
                 Ok(FnReturnScalarType::Named(pair.as_str().trim().to_owned()))
             }
             _ => Err(vec![syntax_at_pair(
@@ -741,7 +744,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
                 )]);
             };
             Ok(FnReturnType::Array {
-                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                elem: parse_scalar(elem_pair)?,
                 size: parse_expr(size_pair)?,
             })
         }
@@ -785,6 +788,13 @@ pub(super) fn parse_event_param_type(
         )]);
     };
     match inner.as_rule() {
+        Rule::tuple_type => Ok(EventParamType::Tuple(
+            inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect::<Result<_, _>>()?,
+        )),
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
@@ -804,9 +814,11 @@ pub(super) fn parse_event_param_type(
                 Rule::type_name => Ok(EventParamType::Slice {
                     elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
                 }),
-                Rule::qualified_ident | Rule::namespace_ref => Ok(EventParamType::GenericSlice {
-                    elem: elem_pair.as_str().trim().to_owned(),
-                }),
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    Ok(EventParamType::GenericSlice {
+                        elem: elem_pair.as_str().trim().to_owned(),
+                    })
+                }
                 _ => Err(vec![syntax_at_loc(
                     loc.as_ref(),
                     "event slice parameters require primitive or generic primitive element type",

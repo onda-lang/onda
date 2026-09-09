@@ -1,5 +1,6 @@
 import { paramAddress } from "./param-metadata.js";
 import {
+  PayloadPlan,
   createParamControl,
   paramElementMetadata,
   decodeDelegateRecords,
@@ -306,6 +307,7 @@ export class OndaAudioProcessor {
     this.node = node;
     this.metadata = metadata;
     this.paramInfo = metadata?.metadata?.params ?? null;
+    this.eventPlans = new WeakMap();
     this.paramControls = new WeakMap();
     this.paramElements = new WeakMap();
     this.nextRequestId = 1;
@@ -629,7 +631,16 @@ export class OndaAudioProcessor {
   }
 
   trigger(event, values = {}) {
-    return this.request("event", { event, values });
+    try {
+      this.assertOpen();
+      const events = this.metadata?.metadata?.events;
+      const info = Number.isInteger(event) ? events?.[event] : events?.find((entry) => entry.name === event);
+      if (!info) throw new Error(`unknown Onda event '${String(event)}'`);
+      let plan = this.eventPlans.get(info);
+      if (!plan) { plan = new PayloadPlan(info.schema); this.eventPlans.set(info, plan); }
+      const payload = plan.encode(values);
+      return this.request("event", { event, payload }, [payload.buffer]);
+    } catch (error) { return Promise.reject(error); }
   }
 
   onDelegates(listener) {

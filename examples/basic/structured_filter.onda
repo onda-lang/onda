@@ -1,0 +1,44 @@
+import std/osc
+import std/pitch
+
+params:
+  root_note: i32 = 45 {24, 72}
+  brightness = 0.55 {0.0, 1.0}
+  movement = 0.35 {0.0, 1.0}
+
+struct Coefficients:
+  input_gain = 1.0
+  feedback = 0.0
+
+struct Memory:
+  previous = 0.0
+
+def prepare(cutoff) -> Coefficients:
+  pole = exp(-TWO_PI * cutoff / SR)
+  return Coefficients(input_gain = 1.0 - pole, feedback = pole)
+
+def filter(memory: Memory, coefficients: Coefficients, input):
+  memory.previous = coefficients.input_gain * input + coefficients.feedback * memory.previous
+  return memory.previous
+
+init:
+  root = std::osc::Saw()
+  minor_third = std::osc::Saw()
+  fifth = std::osc::Saw()
+  coefficients = prepare(1200.0)
+  memory = Memory()
+  motion_phase = 0.0
+
+block:
+  frequency = std::pitch::note_to_hz(f32(root_note))
+  root.freq = frequency
+  minor_third.freq = frequency * 1.189207
+  fifth.freq = frequency * 1.498307
+  sweep = 0.5 + 0.5 * sin(motion_phase * TWO_PI)
+  cutoff = clamp(frequency * (3.0 + brightness * 32.0) * (0.72 + sweep * movement), 40.0, 18000.0)
+  coefficients = prepare(cutoff)
+
+  sample:
+    motion_phase = wrap(motion_phase + (0.025 + movement * 0.055) / SR, 0.0, 1.0)
+    chord = root() * 0.5 + minor_third() * 0.28 + fifth() * 0.22
+    out1 = filter(memory, coefficients, chord) * 0.18

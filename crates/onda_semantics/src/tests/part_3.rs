@@ -262,31 +262,18 @@ sample:
     }
 
     #[test]
-    fn struct_return_annotation_is_rejected() {
-        let src = "struct Pair:\n  x\nouts:\n  out1\ndef borrow(pair: Pair) -> Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("struct return annotation should fail");
-        assert!(
-            errors.iter().any(|diag| {
-                diag.message
-                    .contains("function 'borrow' return type 'Pair' is not supported")
-            }),
-            "expected unsupported struct return diagnostic, got {errors:?}"
-        );
-    }
-
-    #[test]
-    fn namespaced_struct_return_annotation_is_rejected_after_rewrite() {
-        let src = "namespace dsp:\n  struct Pair:\n    x\nouts:\n  out1\ndef borrow(pair: dsp::Pair) -> dsp::Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("namespaced struct return annotation should fail");
-        assert!(
-            errors.iter().any(|diag| {
-                diag.message
-                    .contains("function 'borrow' return type 'dsp::Pair' is not supported")
-            }),
-            "expected unsupported namespaced return diagnostic, got {errors:?}"
-        );
+    fn nominal_struct_return_annotations_are_supported() {
+        for name in ["Pair", "dsp::Pair"] {
+            let declaration = if name.contains("::") {
+                "namespace dsp:\n  struct Pair:\n    x"
+            } else {
+                "struct Pair:\n  x"
+            };
+            let source = format!("{declaration}\ndef duplicate(pair: {name}) -> {name}:\n  return pair\ninit:\n  pair = {name}()\nsample:\n  saved = duplicate(pair)\n  out1 = saved.x\n");
+            let parsed = parse_program(&source).expect("source parses");
+            let typed = analyze(parsed).expect("nominal data returns analyze");
+            lower_program_to_optimized_mir(&typed).expect("nominal data returns lower");
+        }
     }
 
     #[test]
@@ -608,7 +595,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -628,7 +615,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -648,7 +635,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -669,7 +656,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Pair"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -705,7 +692,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Voice"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Voice"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -727,7 +714,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Pair"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -3355,7 +3342,7 @@ sample:
         assert_eq!(specializations.len(), 1, "{specializations:#?}");
         assert!(matches!(
             specializations[0].param_kinds.first(),
-            Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Item"
+            Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Item"
         ));
         lower_program_to_optimized_mir(&typed)
             .expect("the shared struct-array specialization should lower to MIR");

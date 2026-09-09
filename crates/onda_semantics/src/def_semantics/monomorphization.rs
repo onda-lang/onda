@@ -654,7 +654,14 @@ fn generate_mono_def(
                         },
                     }),
                     FnReturnType::Array { elem, size } => FnReturnType::Array {
-                        elem: *elem,
+                        elem: match elem {
+                            FnReturnScalarType::Named(name) => type_bindings
+                                .get(name)
+                                .copied()
+                                .map(FnReturnScalarType::Primitive)
+                                .unwrap_or_else(|| elem.clone()),
+                            _ => elem.clone(),
+                        },
                         size: size.clone(),
                     },
                     FnReturnType::Tuple(elems) => FnReturnType::Tuple(

@@ -2148,8 +2148,14 @@ events {
   set_amp(value: f32) {
     amp = value
   }
+  divide(divisor: i32) {
+    held = 1 / divisor
+  }
 }
-init { amp = 0.0 }
+init {
+  amp = 0.0
+  held: i32 = 0
+}
 sample { out1 = amp }
 "#,
         );
@@ -2189,7 +2195,7 @@ sample { out1 = amp }
 
         assert_eq!(
             onda_trigger_event_by_index(instance.0, 0, std::ptr::null(), 0, std::ptr::null_mut()),
-            -2
+            ONDA_EXECUTION_INPUT_REJECTED
         );
 
         let payload = 0.625_f32.to_ne_bytes();
@@ -2210,6 +2216,18 @@ sample { out1 = amp }
         for sample in &out {
             assert!((*sample - 0.625).abs() < 1e-6);
         }
+
+        let zero = 0_i32.to_ne_bytes();
+        assert_eq!(
+            onda_trigger_event_by_index(
+                instance.0,
+                1,
+                zero.as_ptr().cast::<c_void>(),
+                zero.len() as i32,
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
     }
 }
 
@@ -2432,7 +2450,7 @@ sample { out1 = gate }
                 bad_payload.len() as i32,
                 std::ptr::null_mut(),
             ),
-            -2
+            ONDA_EXECUTION_INPUT_REJECTED
         );
 
         let mut payload = Vec::new();
@@ -2456,6 +2474,89 @@ sample { out1 = gate }
         for sample in out {
             assert!((sample - 2.25).abs() < 1e-6);
         }
+    }
+}
+
+#[test]
+fn c_api_structured_message_schemas_and_dynamic_sizes_are_reflectable() {
+    unsafe {
+        let program = compile_program(
+            r#"
+struct Note:
+  gain: f64
+  mode: i32
+delegate reported(notes: Note[], tail: f64)
+event report(notes: Note[], tail: f64):
+  reported(notes, tail)
+sample:
+  out1 = 0.0
+"#,
+        );
+
+        assert_eq!(onda_event_payload_bytes(program.0, 0), -1);
+        assert_eq!(onda_event_payload_min_bytes(program.0, 0), 12);
+        assert_eq!(onda_delegate_payload_bytes(program.0, 0), -1);
+        assert_eq!(onda_delegate_payload_min_bytes(program.0, 0), 12);
+
+        let event_schema = CStr::from_ptr(onda_event_schema_json(program.0, 0))
+            .to_str()
+            .expect("event schema is UTF-8");
+        let event_schema: serde_json::Value =
+            serde_json::from_str(event_schema).expect("event schema is JSON");
+        assert_eq!(event_schema["params"][0]["name"], "notes");
+        assert_eq!(event_schema["params"][0]["ty"]["kind"], "slice");
+        assert_eq!(event_schema["params"][0]["ty"]["element"]["name"], "Note");
+        assert_eq!(
+            event_schema["params"][0]["ty"]["element"]["fields"][0]["name"],
+            "gain"
+        );
+        assert_eq!(event_schema["params"][1]["ty"]["encoding"], "f64");
+
+        let delegate_schema = CStr::from_ptr(onda_delegate_schema_json(program.0, 0))
+            .to_str()
+            .expect("delegate schema is UTF-8");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(delegate_schema)
+                .expect("delegate schema is JSON"),
+            event_schema
+        );
+
+        let lengths = [2_i32];
+        let mut payload_bytes = -1;
+        let mut workspace_bytes = -1;
+        assert!(onda_event_payload_sizes(
+            program.0,
+            0,
+            lengths.as_ptr(),
+            lengths.len() as i32,
+            &mut payload_bytes,
+            &mut workspace_bytes,
+        ));
+        assert_eq!((payload_bytes, workspace_bytes), (36, 40));
+        assert!(onda_delegate_payload_sizes(
+            program.0,
+            0,
+            lengths.as_ptr(),
+            lengths.len() as i32,
+            &mut payload_bytes,
+            &mut workspace_bytes,
+        ));
+        assert_eq!((payload_bytes, workspace_bytes), (36, 40));
+
+        let negative = [-1_i32];
+        payload_bytes = 71;
+        workspace_bytes = 73;
+        assert!(!onda_event_payload_sizes(
+            program.0,
+            0,
+            negative.as_ptr(),
+            1,
+            &mut payload_bytes,
+            &mut workspace_bytes,
+        ));
+        assert_eq!((payload_bytes, workspace_bytes), (71, 73));
+        assert!(onda_event_schema_json(program.0, 1).is_null());
+        assert!(onda_delegate_schema_json(program.0, -1).is_null());
     }
 }
 

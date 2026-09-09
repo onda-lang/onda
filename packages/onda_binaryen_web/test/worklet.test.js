@@ -321,9 +321,7 @@ test("AudioWorklet bounds dynamic event storage before rendering starts", () => 
   const heap = processor.heap;
 
   assert.throws(
-    () => processor.dispatchEvent("load", {
-      values: new Float32Array([1, 2]),
-    }),
+    () => processor.dispatchEvent("load", new Uint8Array(12)),
     /requires 12 payload bytes; configured capacity is 8/,
   );
   assert.equal(processor.memory.buffer, memory);

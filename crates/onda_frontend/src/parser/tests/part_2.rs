@@ -632,21 +632,18 @@ sample {
 }
 
 #[test]
-fn rejects_non_array_literal_typed_array_initializer_expression() {
+fn parses_typed_array_copy_expression() {
     let src = r#"
 outs { out1 }
 init {
-  a: f32[4] = 1.0
+  a: f32[4] = source
 }
 sample {
   out1 = 0.0
 }
 "#;
     let result = parse_program(src);
-    assert!(
-        result.is_err(),
-        "typed array declaration with non-array initializer should be rejected"
-    );
+    assert!(result.is_ok(), "fixed array declarations accept data expressions");
 }
 
 #[test]
@@ -1633,8 +1630,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name, type_args, ..
@@ -1675,8 +1672,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name,
@@ -1874,8 +1871,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl with explicit type args should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name,
@@ -2750,6 +2747,23 @@ sample:
 }
 
 #[test]
+fn parses_resolved_generic_struct_data_signatures() {
+    let src = r#"
+struct Box<T>:
+  value: T
+def transform(value: Box<f32>, values: Box<f32>[], fixed: Box<f32>[2]) -> Box<f32>[2]:
+  return fixed
+event update(values: Box<f32>[]):
+  transform(values[0], values, [values[0], values[0]])
+sample:
+  boxes: Box<f32>[2] = [Box<f32>(1.0), Box<f32>(2.0)]
+  view: Box<f32>[] = boxes[:]
+  out1 = 0.0
+"#;
+    parse_program(src).expect("resolved generic struct data signatures should parse");
+}
+
+#[test]
 fn parses_def_return_type_annotations() {
     let src = r#"
 def scalar(x: f32) -> f64:
@@ -3476,7 +3490,7 @@ const def table() -> f32[4]:
     assert!(matches!(
         def.return_ty,
         Some(FnReturnType::Array {
-            elem: PrimitiveType::F32,
+            elem: FnReturnScalarType::Primitive(PrimitiveType::F32),
             size: Expr::Int { value: 4, .. },
         })
     ));
@@ -3975,4 +3989,3 @@ graph {
         other => panic!("expected graph proc-array param source sentinel call, got {other:?}"),
     }
 }
-

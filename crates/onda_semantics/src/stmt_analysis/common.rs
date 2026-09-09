@@ -1,5 +1,46 @@
 use super::*;
 
+pub(crate) fn validate_data_element_replacement(
+    base: &str,
+    index: &Expr,
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let selection = Expr::Index {
+        loc: target_loc.into(),
+        base: base.to_owned(),
+        index: Box::new(index.clone()),
+    };
+    let Some(data @ DataType::Struct(_)) = infer_fixed_data_type(&selection, env) else {
+        return false;
+    };
+    if env
+        .local_array_aliases
+        .get(base)
+        .is_some_and(|alias| !alias.writable)
+    {
+        errors.push(Diagnostic::semantic_span(
+            format!("cannot assign to immutable array alias '{base}'"),
+            target_loc,
+        ));
+    }
+    let actual = infer_fixed_data_type(expr, env);
+    if actual.as_ref() != Some(&data) {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "element replacement for '{base}[...]' {}",
+                data_type_mismatch(&data, actual.as_ref())
+            ),
+            target_loc,
+        ));
+    }
+    validate_expr(index, env, errors);
+    validate_fixed_data_expr(expr, env, errors);
+    true
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScopePolicy {
     Init,
@@ -17,6 +58,14 @@ impl ScopePolicy {
             Self::Task => ScopeKind::Block,
             Self::Def => ScopeKind::Def,
             Self::Event => ScopeKind::Sample,
+        }
+    }
+
+    pub(crate) fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Event => "event handler",
+            Self::Init | Self::Runtime(_) | Self::Def => self.scope_kind().label(),
         }
     }
 }
@@ -92,6 +141,10 @@ impl<'a> ScopeAnalysisCtx<'a> {
     pub(crate) fn scope_kind(self) -> ScopeKind {
         self.policy.scope_kind()
     }
+
+    pub(crate) fn diagnostic_label(self) -> &'static str {
+        self.policy.diagnostic_label()
+    }
 }
 
 pub(crate) fn build_scope_analysis_expr_inputs<'a>(
@@ -136,5 +189,6 @@ pub(crate) fn build_scope_analysis_expr_inputs<'a>(
         struct_array_roots,
         proc_array_roots,
         proc_event_names: common.proc_event_names,
+        diagnostic_scope: common.diagnostic_label(),
     }
 }

@@ -826,6 +826,13 @@ pub(super) fn expand_port_decls(
     for port in ports {
         let port_loc = port.loc.as_ref();
         match port.ty.as_ref() {
+            Some(DeclType::Slice(_)) => {
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
+                    "ports and parameters require fixed value shapes",
+                );
+            }
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match port.ty.as_ref() {
                     Some(DeclType::Scalar(t)) => *t,

@@ -53,6 +53,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
         params: {
             let mut params = local_def.params.clone();
             params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -112,6 +113,7 @@ fn proc_local_hidden_def_params(
     let mut params =
         Vec::<FnParamDecl>::with_capacity(local_def.params.len() + captured_buffers.len() + 1);
     params.push(FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: "self".to_owned(),
         ty: Some(FnParamType::Struct(owner_proc.to_owned())),
@@ -120,6 +122,7 @@ fn proc_local_hidden_def_params(
     });
     params.extend(local_def.params.clone());
     params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: buffer.name.clone(),
         ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -1192,5 +1195,27 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+impl super::ProcLoweringShape {
+    /// Parameter bindings shadow implicit owner fields; explicit `self` paths
+    /// remain available to retained aliases and authored code.
+    pub(super) fn without_parameters(&self, params: &[FnParamDecl]) -> Self {
+        let shadows = params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+        let visible = |name: &String| !crate::path_or_ancestor_is_declared(name, &shadows);
+        let mut result = self.clone();
+        result.field_names.retain(&visible);
+        result.ins.retain(&visible);
+        result.field_array_slots.retain(|name, _| visible(name));
+        result.in_array_slots.retain(|name, _| visible(name));
+        result
+            .nested_proc_array_slots
+            .retain(|name, _| visible(name));
+        result.nested_fields.retain(|name, _| visible(name));
+        result
     }
 }

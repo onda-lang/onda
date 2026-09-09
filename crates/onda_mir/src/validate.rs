@@ -9,6 +9,7 @@ use crate::{
 };
 
 mod helpers;
+mod messages;
 use helpers::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -101,6 +102,8 @@ pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
 ///
 /// # Safety
 ///
+/// Every result-reference parameter must be completely initialized before any
+/// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
 /// bounds for every execution reaching it. Backends may lower those operations
 /// without runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
@@ -145,6 +148,8 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
 ///
 /// # Safety
 ///
+/// Every result-reference parameter must be completely initialized before any
+/// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
 /// bounds for every execution reaching it. Every
 /// [`crate::IntegerRangeInvariant`] attached to a state slot, function
@@ -327,7 +332,8 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         Rvalue::InputLoad { bounds, .. }
         | Rvalue::OutputLoad { bounds, .. }
         | Rvalue::ConstDataLoad { bounds, .. }
-        | Rvalue::SliceLoad { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
+        | Rvalue::SliceLoad { bounds, .. }
+        | Rvalue::NormalizeIndex { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
         Rvalue::MakeSlice { source, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || slice_source_uses_unchecked_bounds(source)
         }
@@ -492,6 +498,7 @@ impl Validator<'_> {
         }
         self.validate_fixed_aggregate_types();
         self.validate_interface_names();
+        self.validate_message_schemas();
         for input in &self.program.interface.inputs {
             self.require_type(input.ty, None, SourceSpan::UNKNOWN);
             self.reject_runtime_handle_storage(
@@ -1123,6 +1130,27 @@ impl Validator<'_> {
         }
         for param in &function.params {
             self.require_type(param.ty, Some(id), function.source);
+            if param.mode == crate::PassingMode::ResultReference
+                && !matches!(
+                    self.program.types.get(param.ty.index()),
+                    Some(Type::Scalar(_) | Type::Array { .. })
+                )
+            {
+                self.function_error(
+                    id,
+                    function.source,
+                    "result reference must refer to fixed scalar or array storage",
+                );
+            }
+            if param.mode == crate::PassingMode::ResultReference
+                && self.producer_proofs == ProducerProofStatus::Absent
+            {
+                self.function_error(
+                    id,
+                    function.source,
+                    "result reference requires trusted producer validation",
+                );
+            }
             if let Some(range) = param.integer_range {
                 if self.producer_proofs == ProducerProofStatus::Absent {
                     self.function_error(
@@ -1903,21 +1931,23 @@ impl Validator<'_> {
                         ),
                     }
                 }
-                StatementKind::SliceCopy {
-                    destination,
-                    source,
-                } => {
-                    self.validate_value(function_id, function, *destination, statement.source);
-                    self.validate_value(function_id, function, *source, statement.source);
-                    let destination_ty = self.value_slice_type(function, *destination);
-                    let source_ty = self.value_slice_type(function, *source);
-                    match (destination_ty, source_ty) {
-                        (
-                            Some((destination_element, crate::AccessMode::ReadWrite)),
-                            Some((source_element, _)),
-                        ) => {
-                            if source_element != destination_element {
-                                self.function_error(
+                StatementKind::SliceCopy { copies } => {
+                    for crate::SliceCopy {
+                        destination,
+                        source,
+                    } in copies
+                    {
+                        self.validate_value(function_id, function, *destination, statement.source);
+                        self.validate_value(function_id, function, *source, statement.source);
+                        let destination_ty = self.value_slice_type(function, *destination);
+                        let source_ty = self.value_slice_type(function, *source);
+                        match (destination_ty, source_ty) {
+                            (
+                                Some((destination_element, crate::AccessMode::ReadWrite)),
+                                Some((source_element, _)),
+                            ) => {
+                                if source_element != destination_element {
+                                    self.function_error(
                                     function_id,
                                     statement.source,
                                     format!(
@@ -1926,23 +1956,25 @@ impl Validator<'_> {
                                         destination_element.name()
                                     ),
                                 );
+                                }
                             }
+                            (Some((_, crate::AccessMode::ReadOnly)), Some(_)) => self
+                                .function_error(
+                                    function_id,
+                                    statement.source,
+                                    "slice copy destination is read-only",
+                                ),
+                            (None, _) => self.function_error(
+                                function_id,
+                                statement.source,
+                                "slice copy destination is not a slice",
+                            ),
+                            (_, None) => self.function_error(
+                                function_id,
+                                statement.source,
+                                "slice copy source is not a slice",
+                            ),
                         }
-                        (Some((_, crate::AccessMode::ReadOnly)), Some(_)) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy destination is read-only",
-                        ),
-                        (None, _) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy destination is not a slice",
-                        ),
-                        (_, None) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy source is not a slice",
-                        ),
                     }
                 }
                 StatementKind::If {
@@ -2123,7 +2155,25 @@ impl Validator<'_> {
                 function: callee,
                 args,
             } => {
-                for argument in args {
+                for (index, argument) in args.iter().enumerate() {
+                    if self
+                        .program
+                        .functions
+                        .get(callee.index())
+                        .and_then(|callee| callee.params.get(index))
+                        .is_some_and(|param| param.mode == crate::PassingMode::ResultReference)
+                    {
+                        if let CallArgument::Place(place) = argument {
+                            self.assignment_read_place_indices(
+                                function_id,
+                                function,
+                                place,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        continue;
+                    }
                     match argument {
                         CallArgument::Value(value) => self.assignment_read_value(
                             function_id,
@@ -2216,7 +2266,18 @@ impl Validator<'_> {
                     .map(|callee| callee.params.as_slice())
                 {
                     for (argument, parameter) in args.iter().zip(parameters) {
-                        if parameter.mode == crate::PassingMode::ReadWriteReference {
+                        if parameter.mode == crate::PassingMode::ResultReference {
+                            if let CallArgument::Place(place) = argument {
+                                self.assignment_write_place(
+                                    function_id,
+                                    function,
+                                    place,
+                                    false,
+                                    statement.source,
+                                    state,
+                                );
+                            }
+                        } else if parameter.mode == crate::PassingMode::ReadWriteReference {
                             self.assignment_invalidate_read_write_argument(argument, state);
                         }
                     }
@@ -2407,18 +2468,21 @@ impl Validator<'_> {
                     );
                 }
             }
-            StatementKind::SliceCopy {
-                destination,
-                source,
-            } => {
-                for value in [*destination, *source] {
-                    self.assignment_read_value(
-                        function_id,
-                        function,
-                        value,
-                        statement.source,
-                        state,
-                    );
+            StatementKind::SliceCopy { copies } => {
+                for crate::SliceCopy {
+                    destination,
+                    source,
+                } in copies
+                {
+                    for value in [*destination, *source] {
+                        self.assignment_read_value(
+                            function_id,
+                            function,
+                            value,
+                            statement.source,
+                            state,
+                        );
+                    }
                 }
             }
             StatementKind::If { .. }
@@ -2463,6 +2527,11 @@ impl Validator<'_> {
             }
             Rvalue::ProcessFrame { offset } => {
                 self.assignment_read_value(function_id, function, *offset, source, state)
+            }
+            Rvalue::NormalizeIndex { index, length, .. } => {
+                for value in [*index, *length] {
+                    self.assignment_read_value(function_id, function, value, source, state);
+                }
             }
             Rvalue::InputLoad { element, frame, .. }
             | Rvalue::OutputLoad { element, frame, .. } => {
@@ -2981,6 +3050,18 @@ impl Validator<'_> {
                     "process-frame offset",
                 );
             }
+            Rvalue::NormalizeIndex { index, length, .. } => {
+                self.validate_value(function_id, function, *index, source);
+                self.validate_value(function_id, function, *length, source);
+                self.require_i32_value(function_id, function, *index, source, "normalized index");
+                self.require_i32_value(
+                    function_id,
+                    function,
+                    *length,
+                    source,
+                    "normalized index length",
+                );
+            }
             Rvalue::InputLoad {
                 input,
                 element,
@@ -3470,7 +3551,7 @@ impl Validator<'_> {
             PlaceBase::Parameter(parameter) => function
                 .params
                 .get(parameter.index())
-                .is_some_and(|param| param.mode == crate::PassingMode::ReadWriteReference),
+                .is_some_and(|param| param.mode.is_writable_reference()),
             PlaceBase::Param(_) | PlaceBase::EventParam(_) => false,
         }
     }
@@ -3530,6 +3611,7 @@ impl Validator<'_> {
             }
             Rvalue::InitAll => self.type_is_scalar(expected, crate::ScalarType::Bool),
             Rvalue::ProcessFrame { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
+            Rvalue::NormalizeIndex { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
             Rvalue::InputLoad { input, element, .. } => self
                 .program
                 .interface
@@ -3642,6 +3724,14 @@ impl Validator<'_> {
             SliceSource::Place(place) => {
                 let ty = self.place_type(function, place)?;
                 match self.program.types.get(ty.index())? {
+                    Type::Scalar(element) => Some((
+                        *element,
+                        if self.place_is_writable(function, place) {
+                            crate::AccessMode::ReadWrite
+                        } else {
+                            crate::AccessMode::ReadOnly
+                        },
+                    )),
                     Type::Array { element, .. } => {
                         let Type::Scalar(element) = self.program.types.get(element.index())? else {
                             return None;
@@ -3681,6 +3771,7 @@ impl Validator<'_> {
             SliceSource::Place(place) => {
                 let ty = self.place_type(function, place)?;
                 match self.program.types.get(ty.index())? {
+                    Type::Scalar(_) => Some(1),
                     Type::Array { len, .. } => Some(*len),
                     Type::Slice { .. } => None,
                     _ => None,
@@ -3799,6 +3890,13 @@ impl Validator<'_> {
         argument: &CallArgument,
         parameter: &crate::FunctionParam,
     ) -> bool {
+        if parameter.mode == crate::PassingMode::ResultReference {
+            return matches!(argument, CallArgument::Place(place)
+                if place.projections.is_empty()
+                    && self.place_is_writable(function, place)
+                    && self.place_type(function, place).is_some_and(|actual|
+                        self.program.types_equivalent(actual, parameter.ty)));
+        }
         match (parameter.mode, argument) {
             (crate::PassingMode::Value, CallArgument::Value(value)) => {
                 self.value_matches_type(function, *value, parameter.ty)
@@ -3807,20 +3905,25 @@ impl Validator<'_> {
                 self.buffer_span_matches_type(function, *span, parameter.ty)
             }
             (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                crate::PassingMode::ReadOnlyReference
+                | crate::PassingMode::ReadWriteReference
+                | crate::PassingMode::ResultReference,
                 CallArgument::Place(place),
             ) => self.place_type(function, place).is_some_and(|actual| {
                 self.reference_type_matches(actual, parameter.ty)
-                    && (parameter.mode != crate::PassingMode::ReadWriteReference
+                    && (!parameter.mode.is_writable_reference()
                         || self.place_is_writable(function, place))
             }),
             (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                crate::PassingMode::ReadOnlyReference
+                | crate::PassingMode::ReadWriteReference
+                | crate::PassingMode::ResultReference,
                 CallArgument::SliceElement { slice, .. },
             ) => {
                 let requested_access = match parameter.mode {
                     crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
+                    crate::PassingMode::ReadWriteReference
+                    | crate::PassingMode::ResultReference => crate::AccessMode::ReadWrite,
                     crate::PassingMode::Value => unreachable!(),
                 };
                 self.value_slice_type(function, *slice).is_some_and(
@@ -3834,7 +3937,9 @@ impl Validator<'_> {
                 )
             }
             (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                crate::PassingMode::ReadOnlyReference
+                | crate::PassingMode::ReadWriteReference
+                | crate::PassingMode::ResultReference,
                 CallArgument::ArrayWindow {
                     array,
                     start,
@@ -3843,7 +3948,8 @@ impl Validator<'_> {
             ) => {
                 let requested_access = match parameter.mode {
                     crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
+                    crate::PassingMode::ReadWriteReference
+                    | crate::PassingMode::ResultReference => crate::AccessMode::ReadWrite,
                     crate::PassingMode::Value => unreachable!(),
                 };
                 let Some(Type::Array {
@@ -3882,12 +3988,15 @@ impl Validator<'_> {
                     )
             }
             (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                crate::PassingMode::ReadOnlyReference
+                | crate::PassingMode::ReadWriteReference
+                | crate::PassingMode::ResultReference,
                 CallArgument::SliceWindow { slice, .. },
             ) => {
                 let requested_access = match parameter.mode {
                     crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
+                    crate::PassingMode::ReadWriteReference
+                    | crate::PassingMode::ResultReference => crate::AccessMode::ReadWrite,
                     crate::PassingMode::Value => unreachable!(),
                 };
                 let Some(Type::Array { element, .. }) =
@@ -3908,7 +4017,9 @@ impl Validator<'_> {
             }
             (_, CallArgument::Buffer(buffer)) => self.buffer_matches_type(*buffer, parameter.ty),
             (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
+                crate::PassingMode::ReadOnlyReference
+                | crate::PassingMode::ReadWriteReference
+                | crate::PassingMode::ResultReference,
                 CallArgument::BufferParam(reference),
             ) => self.buffer_param_ref_matches_type(function, *reference, parameter.ty),
             _ => false,

@@ -1,11 +1,13 @@
+import { canonicalF32Number, PayloadPlan } from "./payload.js";
+export { canonicalF32Number, PayloadPlan, EVENT_INPUT_SIZE_BYTES, PROCESSOR_EXECUTION_INPUT_REJECTED, writeEventInput } from "./payload.js";
 import "./param-control.js";
 
 const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 5;
-export const PROCESSOR_ABI_VERSION = 5;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 6;
+export const PROCESSOR_ABI_VERSION = 6;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED = 0;
@@ -479,11 +481,26 @@ function validateEventMetadata(value, path) {
 }
 
 function validatePayloadMetadata(value, path, supportsDefaults) {
+  let plan;
+  try { plan = new PayloadPlan(value?.schema); }
+  catch (error) { throw new OndaArtifactError(`${path}.schema: ${error.message}`); }
+  const prefixes = new Set(plan.tensors.filter((tensor) => tensor.lengthPrefix).map((tensor) => tensor.parameter));
+  const lengths = new Set(plan.parameters.map((group) => group.lengthParameter).filter((index) => index !== null));
   requireNullableInteger(value?.payload_size_bytes, `${path}.payload_size_bytes`, 0);
   requireInteger(value?.payload_min_size_bytes, `${path}.payload_min_size_bytes`, 0);
   requireBoolean(value?.has_dynamic_payload, `${path}.has_dynamic_payload`);
   if (!Array.isArray(value?.params)) {
     throw new OndaArtifactError(`${path}.params must be an array`);
+  }
+  if (value.params.length !== plan.abiParameterCount) throw new OndaArtifactError(`${path}.params do not match schema`);
+  const expected = Array(plan.abiParameterCount);
+  for (const group of plan.parameters) {
+    if (group.lengthParameter !== null) expected[group.lengthParameter] = { name: group.name, scalar: "i32", length: 1, array: false, slice: false };
+    for (let index = group.start; index < group.end; index += 1) {
+      const tensor = plan.tensors[index];
+      expected[tensor.parameter] = { name: tensor.path, scalar: tensor.encoding,
+        length: group.dynamic ? 0 : tensor.elements, array: !group.dynamic && tensor.shape.length > 0, slice: group.dynamic };
+    }
   }
   let minimumSize = 0;
   let hasDynamicParam = false;
@@ -503,6 +520,11 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
       requireNullableStringArray(param?.default_reprs, `${paramPath}.default_reprs`);
     }
     requireScalarElementSize(param, paramPath);
+    const shape = expected[index];
+    if (param.name !== shape.name || param.scalar !== shape.scalar || param.array_len !== shape.length
+        || param.is_array !== shape.array || param.is_slice !== shape.slice) {
+      throw new OndaArtifactError(`${paramPath} does not match its schema tensor`);
+    }
     if (hasDynamicParam ? param.byte_offset !== null : param.byte_offset !== minimumSize) {
       throw new OndaArtifactError(`${paramPath}.byte_offset is inconsistent with event layout`);
     }
@@ -516,7 +538,7 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
       ) {
         throw new OndaArtifactError(`${paramPath} has an invalid slice descriptor`);
       }
-      minimumSize += 4;
+      if (prefixes.has(index)) minimumSize += 4;
       hasDynamicParam = true;
     } else {
       const expectedType = param.is_array
@@ -531,6 +553,7 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
         throw new OndaArtifactError(`${paramPath} has an invalid fixed-size descriptor`);
       }
       minimumSize += param.byte_size;
+      if (lengths.has(index)) hasDynamicParam = true;
     }
     if (supportsDefaults) {
       if (param.has_default !== (param.default_reprs !== null)) {
@@ -1077,14 +1100,6 @@ export function decodePrintRecords(
   return records;
 }
 
-function shortestF32(value) {
-  for (let precision = 1; precision <= 9; precision += 1) {
-    const candidate = value.toPrecision(precision);
-    if (Object.is(Math.fround(Number(candidate)), value)) return candidate;
-  }
-  return value.toPrecision(9);
-}
-
 function canonicalFloat(value, width) {
   if (Number.isNaN(value)) return "NaN";
   if (value === Infinity) return "inf";
@@ -1092,7 +1107,9 @@ function canonicalFloat(value, width) {
   if (Object.is(value, -0)) return "-0.0";
   if (value === 0) return "0.0";
   const negative = value < 0;
-  const shortest = width === 32 ? shortestF32(Math.fround(Math.abs(value))) : Math.abs(value).toString();
+  const shortest = width === 32
+    ? canonicalF32Number(Math.abs(value)).toString()
+    : Math.abs(value).toString();
   const [mantissa, exponentText] = shortest.toLowerCase().split("e");
   let digits = mantissa.replace(".", "");
   const leading = digits.match(/^0*/u)[0].length;
@@ -1213,6 +1230,7 @@ export function decodeDelegateRecords(
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, usedBytes);
   const records = [];
+  const plans = new Array(delegates.length);
   let cursor = 0;
   while (cursor < usedBytes) {
     if (usedBytes - cursor < DELEGATE_RECORD_HEADER_SIZE_BYTES) {
@@ -1240,8 +1258,7 @@ export function decodeDelegateRecords(
         view,
         payloadOffset,
         payloadByteLength,
-        delegate,
-        littleEndian,
+        plans[delegateIndex] ??= new PayloadPlan(delegate.schema),
       ),
     });
     cursor = end;
@@ -1249,49 +1266,10 @@ export function decodeDelegateRecords(
   return records;
 }
 
-function decodeDelegatePayload(view, start, size, delegate, littleEndian) {
-  let cursor = start;
-  const end = start + size;
-  const values = {};
-  for (const param of delegate.params) {
-    let count = param.array_len;
-    if (param.is_slice) {
-      if (cursor + 4 > end) {
-        throw new OndaArtifactError(`delegate '${delegate.name}' has a truncated slice length`);
-      }
-      count = view.getInt32(cursor, littleEndian);
-      cursor += 4;
-      if (count < 0) {
-        throw new OndaArtifactError(`delegate '${delegate.name}' has a negative slice length`);
-      }
-    }
-    const byteLength = count * param.element_size_bytes;
-    if (!Number.isSafeInteger(byteLength) || cursor + byteLength > end) {
-      throw new OndaArtifactError(`delegate '${delegate.name}' has a truncated '${param.name}' payload`);
-    }
-    const entries = [];
-    for (let index = 0; index < count; index += 1) {
-      entries.push(readPayloadScalar(view, cursor, param.scalar, littleEndian));
-      cursor += param.element_size_bytes;
-    }
-    values[param.name] = param.is_array || param.is_slice ? entries : entries[0];
-  }
-  if (cursor !== end) {
-    throw new OndaArtifactError(`delegate '${delegate.name}' payload has trailing bytes`);
-  }
-  return values;
+function decodeDelegatePayload(view, start, size, plan) {
+  return plan.decode(new Uint8Array(view.buffer, view.byteOffset + start, size));
 }
 
-function readPayloadScalar(view, address, scalar, littleEndian) {
-  switch (scalar) {
-    case "bool": return view.getUint8(address) !== 0;
-    case "i32": return view.getInt32(address, littleEndian);
-    case "i64": return view.getBigInt64(address, littleEndian);
-    case "f32": return view.getFloat32(address, littleEndian);
-    case "f64": return view.getFloat64(address, littleEndian);
-    default: throw new OndaArtifactError(`unsupported delegate scalar '${String(scalar)}'`);
-  }
-}
 
 function writableDataView(memory) {
   if (memory instanceof DataView) return memory;

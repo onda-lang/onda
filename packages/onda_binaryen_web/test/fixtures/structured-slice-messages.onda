@@ -1,0 +1,35 @@
+struct Note:
+  enabled: bool
+  gain: f64 = 4.0
+  bins: f32[2]
+  mode: i64 = 0 {range = -3..=3, mode = wrap}
+proc Bank:
+  delegate accepted(notes: Note[])
+  event configure(notes: Note[]):
+    accepted(notes)
+  sample:
+    out1 = 0.0
+init:
+  bank = Bank()
+  observed: f64 = 0.0
+  count: i32 = 0
+  tail_value: i32 = 0
+delegate configured(notes: Note[])
+when configured(notes):
+  count = notes.len()
+  if count > 0:
+    note = notes[0]
+    observed = note.gain + f64(note.mode) + f64(note.bins[1])
+    if note.enabled:
+      observed += 10.0
+  else:
+    observed = 0.0
+when bank.accepted(notes):
+  configured(notes)
+event configure(prefix: bool, notes: Note[], tail: i32):
+  bank.configure(notes)
+  tail_value = tail
+  if prefix:
+    tail_value += 2
+sample:
+  out1 = f32(observed) + f32(count + tail_value)

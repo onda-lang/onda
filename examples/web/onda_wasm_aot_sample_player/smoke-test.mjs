@@ -1,3 +1,4 @@
+import { PayloadPlan } from "./payload.js";
 import { readFile } from "node:fs/promises";
 
 import { loadProcessorArtifactFiles } from "./artifact.js";
@@ -79,7 +80,7 @@ const processor = new WorkletProcessor({
   },
 });
 processor.port.onmessage({
-  data: { type: "event", event: "play", values: { enabled: true }, requestId: 1 },
+  data: { type: "event", event: "play", payload: new PayloadPlan(artifact.metadata.metadata.events.find((event) => event.name === "play").schema).encode({ enabled: true }), requestId: 1 },
 });
 if (processor.port.messages.some((message) => message.type === "onda-error")) {
   throw new Error(`worklet rejected play event: ${JSON.stringify(processor.port.messages)}`);

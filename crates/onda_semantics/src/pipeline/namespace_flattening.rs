@@ -3914,7 +3914,8 @@ fn rewrite_event_def_with_scope(
                     param.ty_loc.as_ref().or(param.loc.as_ref()),
                 );
             }
-            EventParamType::Scalar(_) | EventParamType::Slice { .. } => {}
+            EventParamType::Tuple(_) | EventParamType::Scalar(_) | EventParamType::Slice { .. } => {
+            }
         }
         if let Some(default) = &mut param.default {
             rewrite_expr(
@@ -4026,7 +4027,7 @@ fn rewrite_decl_type(
 ) {
     let loc = loc.into();
     match ty {
-        DeclType::Generic(name) => {
+        DeclType::Generic(name) | DeclType::Slice(ArrayElemType::Struct(name)) => {
             rewrite_named_type_ref_name(
                 name,
                 current_ns,
@@ -4070,7 +4071,8 @@ fn rewrite_decl_type(
                 errors,
             );
         }
-        DeclType::Scalar(_) | DeclType::Tuple(_) => {}
+        DeclType::Slice(ArrayElemType::Primitive(_)) | DeclType::Scalar(_) | DeclType::Tuple(_) => {
+        }
     }
 }
 
@@ -4239,7 +4241,19 @@ fn rewrite_fn_return_type(
                 }
             }
         }
-        FnReturnType::Array { size, .. } => {
+        FnReturnType::Array { elem, size } => {
+            if let FnReturnScalarType::Named(name) = elem {
+                rewrite_named_type_ref_name(
+                    name,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    loc,
+                );
+            }
             rewrite_expr(
                 size,
                 current_ns,

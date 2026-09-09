@@ -178,8 +178,8 @@ init {
   buf: Pair[2]
   p = buf[0]
   p.x = 1.0
-  p = buf[1]
-  p.x = 3.0
+  second = buf[1]
+  second.x = 3.0
 }
 sample {
   out1 = buf[idx].x
@@ -196,9 +196,9 @@ init {
   p = buf[0]
   p.taps[0] = 1.0
   p.taps[1] = 2.0
-  p = buf[1]
-  p.taps[0] = 3.0
-  p.taps[1] = 4.0
+  second = buf[1]
+  second.taps[0] = 3.0
+  second.taps[1] = 4.0
 }
 sample {
   out1 = buf[idx].taps[1]
@@ -214,9 +214,9 @@ init {
   p = buf[0]
   p.x = 1.0
   p.taps[1] = 2.0
-  p = buf[1]
-  p.x = 3.0
-  p.taps[1] = 4.0
+  second = buf[1]
+  second.x = 3.0
+  second.taps[1] = 4.0
   total = buf[0].x + buf[1].taps[1]
 }
 sample {

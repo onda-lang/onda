@@ -460,6 +460,7 @@ pub(super) fn rewrite_graph_source_expr(
             spec,
             init,
             initialize,
+            init_is_value,
             ..
         } => Expr::ArrayCtor {
             loc: expr_loc.into(),
@@ -492,6 +493,7 @@ pub(super) fn rewrite_graph_source_expr(
                     .collect()
             }),
             initialize: *initialize,
+            init_is_value: *init_is_value,
         },
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => {
             expr.clone()

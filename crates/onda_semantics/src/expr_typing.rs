@@ -15,8 +15,9 @@ use crate::decl_symbols::{
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
 use crate::internal_names::PROC_INDEX_CALL_SENTINEL;
 use crate::{
-    is_builtin_array_like_receiver_with_resolver, resolve_struct_field_decl, split_field_path,
-    LocalAliasTypes, LocalArrayAliasInfo, ProcNestedArrayState, TypedFieldType, TypedStructField,
+    is_builtin_array_like_receiver_with_resolver, resolve_flattened_struct_array_leaf_type,
+    resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
+    ProcNestedArrayState, TypedFieldType, TypedStructField,
 };
 
 /// Returns the appropriate type for a literal in an untyped assignment context.
@@ -98,6 +99,11 @@ pub(crate) fn adapt_binary_operand_types(
     lhs_ty: PrimitiveType,
     rhs_ty: PrimitiveType,
 ) -> (PrimitiveType, PrimitiveType) {
+    // Context cannot change operands that already agree. Avoid rescanning
+    // their subtrees at every node of a long, uniformly typed expression.
+    if lhs_ty == rhs_ty {
+        return (lhs_ty, rhs_ty);
+    }
     let l_pure = is_pure_numeric_literal_expr(lhs);
     let r_pure = is_pure_numeric_literal_expr(rhs);
     match (l_pure, r_pure) {
@@ -442,6 +448,13 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                     }
                                     TypedFieldType::Scalar(_) | TypedFieldType::Struct => {}
                                 }
+                            }
+                            if let Some(ty) = resolve_flattened_struct_array_leaf_type(
+                                struct_name,
+                                field,
+                                struct_defs,
+                            ) {
+                                return Some(ty);
                             }
                         }
                         // Proc-lowered state fields are often addressed as `self.field[...]` while

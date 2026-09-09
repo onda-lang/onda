@@ -11,6 +11,7 @@ mod ir;
 mod json;
 mod messagepack;
 mod passes;
+pub mod payload;
 mod types;
 mod validate;
 
@@ -25,7 +26,9 @@ pub use messagepack::{
     from_messagepack, from_messagepack_with_producer_proofs, to_messagepack,
     to_messagepack_optimized, MirMessagePackError,
 };
-pub use passes::{canonicalize, optimize, OptimizedProgram, PassStats};
+pub use passes::{
+    canonicalize, optimize, referenced_locals, rewrite_block_locals, OptimizedProgram, PassStats,
+};
 
 /// Removes parameters that are not referenced by internal MIR functions and
 /// rewrites all call sites. This producer-side cleanup is safe to run before
@@ -46,7 +49,7 @@ pub use validate::{
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const MIR_SCHEMA_VERSION: u32 = 6;
+pub const MIR_SCHEMA_VERSION: u32 = 7;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;

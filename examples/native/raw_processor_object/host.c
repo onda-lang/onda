@@ -104,6 +104,7 @@ static void fill_buffer(
 
 int main(void) {
   int status = 1;
+  void* event_workspace = PROCESSOR_EVENT_WORKSPACE_SIZE == 0 ? NULL : malloc(PROCESSOR_EVENT_WORKSPACE_SIZE);
   void* state = PROCESSOR_STATE_SIZE == 0 ? NULL : malloc(PROCESSOR_STATE_SIZE);
   void* params = PROCESSOR_PARAM_SIZE == 0 ? NULL : malloc(PROCESSOR_PARAM_SIZE);
   const void** inputs = PROCESSOR_INPUT_COUNT == 0
@@ -126,6 +127,7 @@ int main(void) {
     : calloc(PROCESSOR_BUFFER_COUNT, sizeof(*buffer_sample_rates));
 
   if (
+    (PROCESSOR_EVENT_WORKSPACE_SIZE > 0 && event_workspace == NULL) ||
     (PROCESSOR_STATE_SIZE > 0 && state == NULL) ||
     (PROCESSOR_PARAM_SIZE > 0 && params == NULL) ||
     (PROCESSOR_INPUT_COUNT > 0 && inputs == NULL) ||
@@ -140,6 +142,7 @@ int main(void) {
   }
 
   if (
+    !pointer_meets_alignment(event_workspace, 8) ||
     !pointer_meets_alignment(state, PROCESSOR_STATE_ALIGN) ||
     !pointer_meets_alignment(params, PROCESSOR_PARAM_ALIGN)
   ) {
@@ -243,9 +246,13 @@ int main(void) {
       printf("skipped event[%d] '%s': dynamic payload required\n", index, PROCESSOR_EVENT_NAMES[index]);
       continue;
     }
+    const onda_processor_event_input_t input = {
+      PROCESSOR_EVENT_DEFAULT_PAYLOADS[index], PROCESSOR_EVENT_PAYLOAD_SIZES[index],
+      event_workspace, PROCESSOR_EVENT_WORKSPACE_SIZE
+    };
     if (!execution_succeeded(
       PROCESSOR_EVENT_FUNCTIONS[index](
-        PROCESSOR_EVENT_DEFAULT_PAYLOADS[index],
+        &input,
         params,
         state,
         buffers,
@@ -315,5 +322,6 @@ cleanup:
   free(inputs);
   free(params);
   free(state);
+  free(event_workspace);
   return status;
 }

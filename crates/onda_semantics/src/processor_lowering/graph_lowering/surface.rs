@@ -267,6 +267,14 @@ fn value_type_from_decl_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<GraphValueType> {
     match ty {
+        Some(DeclType::Slice(_)) => {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                "graph ports require fixed value shapes",
+            );
+            None
+        }
         None => Some(GraphValueType::Scalar(PrimitiveType::F32)),
         Some(DeclType::Scalar(ty)) => Some(GraphValueType::Scalar(*ty)),
         Some(DeclType::Generic(_)) => Some(GraphValueType::Scalar(PrimitiveType::F32)),

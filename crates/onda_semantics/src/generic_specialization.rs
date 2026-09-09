@@ -182,6 +182,11 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
             expr,
             ..
         } => {
+            if let Some(DeclType::Slice(ArrayElemType::Struct(name))) = decl_ty {
+                if let Some(ty) = bindings.get(name).copied() {
+                    *decl_ty = Some(DeclType::Slice(ArrayElemType::Primitive(ty)));
+                }
+            }
             if let Some(bound) = generic_decl_ty
                 .as_ref()
                 .and_then(|type_name| bindings.get(type_name))
@@ -443,7 +448,7 @@ pub(crate) fn specialize_generic_struct_template(
                     FnReturnType::Scalar(specialize_fn_return_scalar_type(scalar))
                 }
                 FnReturnType::Array { elem, size } => FnReturnType::Array {
-                    elem: *elem,
+                    elem: specialize_fn_return_scalar_type(elem),
                     size: size.clone(),
                 },
                 FnReturnType::Tuple(elems) => FnReturnType::Tuple(
@@ -503,13 +508,14 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
         Some(DeclType::Scalar(prim)) => {
             locals.scalar_types.entry(name.to_owned()).or_insert(*prim);
         }
-        Some(DeclType::Array { elem, .. }) => {
+        Some(DeclType::Array { elem, .. } | DeclType::Slice(ArrayElemType::Primitive(elem))) => {
             locals
                 .array_elem_types
                 .entry(name.to_owned())
                 .or_insert(*elem);
         }
-        Some(DeclType::Generic(_))
+        Some(DeclType::Slice(ArrayElemType::Struct(_)))
+        | Some(DeclType::Generic(_))
         | Some(DeclType::ArrayGeneric { .. })
         | Some(DeclType::Tuple(_)) => {}
         None => {
@@ -845,7 +851,7 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
     errors: &mut Vec<Diagnostic>,
     locals: &mut GenericInferenceLocals,
 ) {
-    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
+    with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
@@ -855,6 +861,16 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
             expr,
             ..
         } => {
+            match decl_ty {
+                Some(DeclType::Slice(ArrayElemType::Struct(name)))
+                | Some(DeclType::ArrayGeneric { elem: name, .. }) => {
+                    rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
+                }
+                _ => {}
+            }
+            if let Some(name) = generic_decl_ty {
+                rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
+            }
             let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
             let typed_named_ctor_decl_without_type_args =
                 *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
@@ -1217,7 +1233,10 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                         );
                     }
                 }
-                DeclType::Scalar(_) | DeclType::Array { .. } | DeclType::Tuple(_) => {}
+                DeclType::Slice(_)
+                | DeclType::Scalar(_)
+                | DeclType::Array { .. }
+                | DeclType::Tuple(_) => {}
             }
         }
     }
@@ -1282,6 +1301,9 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
                 }
             }
             for method in &mut spec.methods {
+                rewrite_explicit_generic_struct_function_types(
+                    method, templates, generated, errors,
+                );
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut method.body,
                     templates,
@@ -1412,6 +1434,128 @@ fn specialize_explicit_struct_type_name(
         }
     }
     Some(specialized)
+}
+
+fn specialize_resolved_struct_type_name(
+    name: &str,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let (_, args) = parse_array_struct_elem_with_type_args(name)?;
+    if args
+        .iter()
+        .any(|arg| matches!(arg, CallTypeArg::Generic(_)))
+    {
+        return None;
+    }
+    specialize_explicit_struct_type_name(name, templates, generated, diag, errors)
+}
+
+fn rewrite_resolved_struct_type_name(
+    name: &mut String,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(specialized) =
+        specialize_resolved_struct_type_name(name, templates, generated, diag, errors)
+    {
+        *name = specialized;
+    }
+}
+
+pub(crate) fn rewrite_explicit_generic_struct_function_types(
+    def: &mut FunctionDef,
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut def.params {
+        if let Some(ty) = &mut param.ty {
+            let name = match ty {
+                FnParamType::Struct(name) | FnParamType::ArrayGeneric(name) => Some(name),
+                FnParamType::SizedArray {
+                    generic_name: Some(name),
+                    ..
+                } => Some(name),
+                _ => None,
+            };
+            if let Some(name) = name {
+                rewrite_resolved_struct_type_name(
+                    name,
+                    templates,
+                    generated,
+                    DiagCtx::new(param.ty_loc.or(param.loc)),
+                    errors,
+                );
+            }
+        }
+        if let Some(default) = &mut param.default {
+            rewrite_generic_struct_ctor_expr(
+                default,
+                templates,
+                generated,
+                errors,
+                &mut GenericInferenceLocals::default(),
+            );
+        }
+    }
+    let Some(return_ty) = &mut def.return_ty else {
+        return;
+    };
+    let mut rewrite_scalar = |scalar: &mut FnReturnScalarType| {
+        if let FnReturnScalarType::Named(name) = scalar {
+            rewrite_resolved_struct_type_name(
+                name,
+                templates,
+                generated,
+                DiagCtx::new(def.return_ty_loc),
+                errors,
+            );
+        }
+    };
+    match return_ty {
+        FnReturnType::Scalar(scalar) => rewrite_scalar(scalar),
+        FnReturnType::Array { elem, .. } => rewrite_scalar(elem),
+        FnReturnType::Tuple(elements) => elements.iter_mut().for_each(rewrite_scalar),
+    }
+}
+
+pub(crate) fn rewrite_explicit_generic_struct_event_types(
+    params: &mut [EventParamDecl],
+    templates: &HashMap<String, StructDef>,
+    generated: &mut HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in params {
+        let name = match &mut param.ty {
+            EventParamType::GenericScalar { name }
+            | EventParamType::GenericArray { elem: name, .. }
+            | EventParamType::GenericSlice { elem: name } => Some(name),
+            _ => None,
+        };
+        if let Some(name) = name {
+            rewrite_resolved_struct_type_name(
+                name,
+                templates,
+                generated,
+                DiagCtx::new(param.ty_loc.or(param.loc)),
+                errors,
+            );
+        }
+        if let Some(default) = &mut param.default {
+            rewrite_generic_struct_ctor_expr(
+                default,
+                templates,
+                generated,
+                errors,
+                &mut GenericInferenceLocals::default(),
+            );
+        }
+    }
 }
 
 fn reinterpret_explicit_scalar_field_type(

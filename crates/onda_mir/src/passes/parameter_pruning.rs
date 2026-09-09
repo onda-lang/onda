@@ -157,6 +157,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::Cast { .. }
         | Rvalue::Intrinsic { .. }
         | Rvalue::ProcessFrame { .. }
+        | Rvalue::NormalizeIndex { .. }
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }
@@ -278,6 +279,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::Cast { .. }
         | Rvalue::Intrinsic { .. }
         | Rvalue::ProcessFrame { .. }
+        | Rvalue::NormalizeIndex { .. }
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }

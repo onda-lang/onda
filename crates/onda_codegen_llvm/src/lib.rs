@@ -42,9 +42,18 @@ pub use target_config::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 
+pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 =
+    onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED;
+
 pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
     if status == PROCESSOR_EXECUTION_OK {
         Ok(())
+    } else if status == PROCESSOR_EXECUTION_INPUT_REJECTED {
+        Err(Diagnostic::runtime(
+            "event input rejected: invalid payload or insufficient workspace",
+            0,
+            0,
+        ))
     } else {
         Err(Diagnostic::runtime(
             format!("generated Onda code failed a runtime safety check ({status})"),
@@ -208,12 +217,14 @@ impl fmt::Debug for RuntimeAllocator {
 pub struct RuntimeState {
     pub(crate) state_words: RuntimeBuffer<u64>,
     pub(crate) state_size_bytes: usize,
+    pub(crate) event_workspace: RuntimeBuffer<u64>,
 }
 
 /// Allocated physical state storage that has not completed full processor initialization.
 pub struct UninitializedRuntimeState {
     state_words: Option<UninitRuntimeBuffer<u64>>,
     state_size_bytes: usize,
+    event_workspace: RuntimeBuffer<u64>,
 }
 
 pub struct RuntimeBuffer<T: Copy> {
@@ -241,6 +252,13 @@ struct CustomRuntimeBuffer<T: Copy> {
 }
 
 impl<T: Copy> RuntimeBuffer<T> {
+    fn allocator(&self) -> Option<RuntimeAllocator> {
+        match &self.storage {
+            RuntimeBufferStorage::Global(_) => None,
+            RuntimeBufferStorage::Custom(buffer) => Some(buffer.allocator),
+        }
+    }
+
     pub fn from_vec(vec: Vec<T>) -> Self {
         Self {
             storage: RuntimeBufferStorage::Global(vec),
@@ -573,7 +591,9 @@ pub struct DeclaredBufferArray {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeclaredEvent {
+pub struct DeclaredMessage {
+    payload_plan: onda_processor_abi::payload::PayloadPlan,
+    schema: onda_processor_abi::payload::PayloadSchema,
     name: String,
     params: Vec<DeclaredEventParam>,
     payload_bytes: Option<usize>,
@@ -592,13 +612,10 @@ pub struct DeclaredEventParam {
     default_values: Option<Vec<ScalarValue>>,
 }
 
-#[derive(Debug, Clone)]
-pub struct DeclaredDelegate {
-    name: String,
-    params: Vec<DeclaredEventParam>,
-    payload_bytes: Option<usize>,
-    payload_min_bytes: usize,
-}
+/// Runtime event description, including its recursive transport schema.
+pub type DeclaredEvent = DeclaredMessage;
+/// Runtime delegate description using the same message transport contract.
+pub type DeclaredDelegate = DeclaredMessage;
 
 /// Compiles validated MIR into the full runtime-facing JIT program contract.
 #[cfg(feature = "llvm-orc")]

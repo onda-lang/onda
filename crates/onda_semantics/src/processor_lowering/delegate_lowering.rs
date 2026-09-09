@@ -1,4 +1,7 @@
 use super::*;
+use crate::executable_data::{
+    rewrite_binding_expr as replace_when_bindings_expr, rewrite_binding_path as replace_name,
+};
 use crate::internal_names::{
     METHOD_RECEIVER_ARG, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
@@ -71,13 +74,14 @@ fn when_handler_function(
     let mut params = Vec::new();
     let leading = if takes_index {
         params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: WHEN_INDEX_PARAM.to_owned(),
             ty: Some(FnParamType::Primitive(PrimitiveType::I32)),
             ty_loc: Default::default(),
             default: None,
         });
-        Some(Expr::var(WHEN_INDEX_PARAM))
+        Some(WHEN_INDEX_PARAM.to_owned())
     } else {
         None
     };
@@ -157,7 +161,7 @@ pub(super) fn delegate_owner_buffer_param_name(index: usize) -> String {
 fn validate_and_bind_when(
     when: &WhenDef,
     delegate: &DelegateDef,
-    leading_index: Option<Expr>,
+    leading_index: Option<String>,
     payload_params: &[onda_frontend::FnParamDecl],
     owner: &str,
     errors: &mut Vec<Diagnostic>,
@@ -187,7 +191,7 @@ fn validate_and_bind_when(
         }
     }
 
-    let mut replacements = HashMap::<String, Expr>::new();
+    let mut replacements = HashMap::<String, String>::new();
     let mut offset = 0;
     if let Some(index) = leading_index {
         let binding = &when.bindings[0];
@@ -198,7 +202,7 @@ fn validate_and_bind_when(
     }
     for (binding, param) in when.bindings[offset..].iter().zip(payload_params) {
         if binding.name != "_" {
-            replacements.insert(binding.name.clone(), Expr::var(param.name.clone()));
+            replacements.insert(binding.name.clone(), param.name.clone());
         }
     }
 
@@ -209,79 +213,9 @@ fn validate_and_bind_when(
     body
 }
 
-fn replace_name(name: &mut String, replacements: &HashMap<String, Expr>) {
-    let Some(Expr::Var {
-        name: replacement, ..
-    }) = replacements.get(name)
-    else {
-        return;
-    };
-    *name = replacement.clone();
-}
-
-fn replace_when_bindings_expr(expr: &mut Expr, replacements: &HashMap<String, Expr>) {
-    match expr {
-        Expr::Var { name, .. } => {
-            if let Some(replacement) = replacements.get(name) {
-                *expr = replacement.clone().with_loc(expr.loc());
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            replace_name(base, replacements);
-            replace_when_bindings_expr(index, replacements);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            replace_name(base, replacements);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                replace_when_bindings_expr(coordinate, replacements);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            replace_when_bindings_expr(&mut spec.size, replacements);
-            if let Some(values) = init {
-                for value in values {
-                    replace_when_bindings_expr(value, replacements);
-                }
-            }
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                replace_when_bindings_expr(arg, replacements);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                replace_when_bindings_expr(&mut arg.expr, replacements);
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            replace_when_bindings_expr(lhs, replacements);
-            replace_when_bindings_expr(rhs, replacements);
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            replace_when_bindings_expr(expr, replacements)
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                replace_when_bindings_expr(value, replacements);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
 fn replace_when_bindings_stmt(
     stmt: &mut Stmt,
-    replacements: &HashMap<String, Expr>,
+    replacements: &HashMap<String, String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {

@@ -3,8 +3,7 @@ use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
     check_execution_status, jit_program_from_optimized_mir_with_options, DeclaredBufferChannels,
-    DeclaredDelegate, DeclaredEvent, DeclaredEventParam, JitProgram, MirCompileOptions,
-    TargetOptLevel,
+    DeclaredDelegate, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
@@ -186,6 +185,18 @@ pub enum RunEventValue {
     Number(f64),
     I64(i64),
     Array(Vec<RunEventValue>),
+    Struct(std::collections::BTreeMap<String, RunEventValue>),
+}
+
+impl RunEventValue {
+    /// Preserve the logical f32 while avoiding its widened binary tail in host-facing values.
+    pub fn from_f32(value: f32) -> Self {
+        let value = value
+            .to_string()
+            .parse::<f64>()
+            .expect("an f32 display representation always parses as f64");
+        Self::Number(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +268,7 @@ pub struct RunSession {
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
+    event_encoders: Vec<onda_processor_abi::payload::PayloadEncoder>,
     delegate_storage: Vec<u8>,
     delegate_collection_enabled: bool,
     delegate_used: usize,
@@ -438,9 +450,43 @@ impl RunSession {
         let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
             (batch.used_bytes, batch.record_count, batch.overflow_count)
         });
-        let instance = instance_result.map_err(RunBuildError::Runtime)?;
-
+        let mut instance = instance_result.map_err(RunBuildError::Runtime)?;
+        let event_plans = (0..jit.event_count())
+            .map(|index| {
+                jit.event_descriptor(index)
+                    .expect("declared event")
+                    .payload_plan()
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        let required_workspace = event_plans
+            .iter()
+            .filter(|plan| plan.fixed_wire_size().is_none())
+            .try_fold(instance.event_workspace_capacity(), |required, plan| {
+                plan.workspace_capacity_for_wire_capacity(plan.wire_capacity(
+                    onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
+                ))
+                .map(|capacity| required.max(capacity))
+            })
+            .map_err(|error| {
+                RunBuildError::Runtime(Diagnostic::runtime(error.to_string(), 0, 0))
+            })?;
+        instance
+            .reserve_event_workspace(required_workspace)
+            .map_err(RunBuildError::Runtime)?;
+        let event_encoders = event_plans
+            .into_iter()
+            .map(|plan| {
+                let capacity = plan.wire_capacity(
+                    onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
+                );
+                onda_processor_abi::payload::PayloadEncoder::new(plan, capacity)
+                    .map_err(|error| Diagnostic::runtime(error.to_string(), 0, 0))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(RunBuildError::Runtime)?;
         Ok(Self {
+            event_encoders,
             path,
             version,
             options,
@@ -568,14 +614,15 @@ impl RunSession {
                     index,
                     name: desc.name().to_owned(),
                     params: desc
-                        .params()
+                        .schema()
+                        .params
                         .iter()
                         .enumerate()
                         .map(|(param_index, param)| RunEventParamInfo {
                             index: param_index,
-                            name: param.name().to_owned(),
-                            type_repr: param.type_repr(),
-                            value: default_run_event_value(param),
+                            name: param.name.clone(),
+                            type_repr: param.ty.to_string(),
+                            value: default_run_event_value(&param.ty, param.default.as_ref()),
                         })
                         .collect(),
                 })
@@ -591,13 +638,14 @@ impl RunSession {
                     index,
                     name: desc.name().to_owned(),
                     params: desc
-                        .params()
+                        .schema()
+                        .params
                         .iter()
                         .enumerate()
                         .map(|(param_index, param)| RunDelegateParamInfo {
                             index: param_index,
-                            name: param.name().to_owned(),
-                            type_repr: param.type_repr(),
+                            name: param.name.clone(),
+                            type_repr: param.ty.to_string(),
                         })
                         .collect(),
                 })
@@ -898,7 +946,9 @@ impl RunSession {
         let Some(desc) = self.jit.event_descriptor(index) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
-        let payload = event_payload_bytes(desc, values)?;
+        let payload = self.event_encoders[index].encode(values).map_err(|error| {
+            Diagnostic::runtime(format!("event '{}': {error}", desc.name()), 0, 0)
+        })?;
         let delegate_start = self.delegate_used;
         let print_start = self.print_used;
         let mut batch = Self::next_delegate_batch(
@@ -910,7 +960,7 @@ impl RunSession {
         let result = trigger_event_by_index(
             &mut self.instance,
             index,
-            &payload,
+            payload,
             ExecutionOutput {
                 delegate_batch: batch.as_mut(),
                 print_batch: prints.as_mut(),
@@ -1518,7 +1568,7 @@ fn run_print_value(value: PrintValue) -> RunPrintValue {
     match value {
         PrintValue::F32(value) => RunPrintValue {
             type_repr: "f32".to_owned(),
-            value: RunEventValue::Number(f64::from(value)),
+            value: RunEventValue::from_f32(value),
         },
         PrintValue::F64(value) => RunPrintValue {
             type_repr: "f64".to_owned(),
@@ -1539,69 +1589,50 @@ fn run_print_value(value: PrintValue) -> RunPrintValue {
     }
 }
 
-fn default_run_event_value(param: &DeclaredEventParam) -> RunEventValue {
-    if param.is_slice() {
-        return RunEventValue::Array(Vec::new());
-    }
-    if param.is_array() {
-        let scalar_size = event_scalar_bytes(param.elem_ty());
-        let defaults = param.default_bytes().unwrap_or_default();
-        return RunEventValue::Array(
-            (0..param.array_len())
-                .map(|index| {
-                    let start = index.saturating_mul(scalar_size);
-                    let end = start.saturating_add(scalar_size);
-                    defaults
-                        .get(start..end)
-                        .map(|bytes| scalar_run_event_value(param.elem_ty(), bytes))
-                        .unwrap_or_else(|| zero_run_event_value(param.elem_ty()))
+fn default_run_event_value(
+    ty: &onda_processor_abi::payload::PayloadType,
+    default: Option<&onda_processor_abi::payload::PayloadDefault>,
+) -> RunEventValue {
+    use onda_processor_abi::payload::{PayloadDefault, PayloadSink, PayloadSource, PayloadType};
+    let child = |index| match default {
+        Some(PayloadDefault::Aggregate(values)) => values.get(index),
+        _ => None,
+    };
+    match ty {
+        PayloadType::Scalar { encoding, .. } => {
+            let mut bytes = [0; 8];
+            if let Some(value) = default {
+                value
+                    .write_scalar(*encoding, &mut bytes[..encoding.byte_size()])
+                    .expect("validated default");
+            }
+            RunEventValue::scalar(*encoding, &bytes[..encoding.byte_size()])
+        }
+        PayloadType::Struct { fields, .. } => RunEventValue::Struct(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    (
+                        field.name.clone(),
+                        default_run_event_value(&field.ty, child(index).or(field.default.as_ref())),
+                    )
                 })
                 .collect(),
-        );
-    }
-    let Some(bytes) = param.default_bytes() else {
-        return zero_run_event_value(param.elem_ty());
-    };
-    scalar_run_event_value(param.elem_ty(), bytes)
-}
-
-fn zero_run_event_value(ty: PrimitiveType) -> RunEventValue {
-    match ty {
-        PrimitiveType::Bool => RunEventValue::Bool(false),
-        PrimitiveType::I64 => RunEventValue::I64(0),
-        _ => RunEventValue::Number(0.0),
-    }
-}
-
-fn event_scalar_bytes(ty: PrimitiveType) -> usize {
-    match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
-        PrimitiveType::F64 | PrimitiveType::I64 => 8,
-        PrimitiveType::Bool => 1,
-    }
-}
-
-fn scalar_run_event_value(ty: PrimitiveType, bytes: &[u8]) -> RunEventValue {
-    match ty {
-        PrimitiveType::F32 if bytes.len() == 4 => {
-            RunEventValue::Number(
-                f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
-            )
-        }
-        PrimitiveType::F64 if bytes.len() == 8 => RunEventValue::Number(f64::from_ne_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])),
-        PrimitiveType::I32 if bytes.len() == 4 => {
-            RunEventValue::Number(
-                i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
-            )
-        }
-        PrimitiveType::I64 if bytes.len() == 8 => RunEventValue::I64(i64::from_ne_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])),
-        PrimitiveType::Bool if !bytes.is_empty() => RunEventValue::Bool(bytes[0] != 0),
-        PrimitiveType::Bool => RunEventValue::Bool(false),
-        _ => RunEventValue::Number(0.0),
+        ),
+        PayloadType::Tuple { elements } => RunEventValue::Array(
+            elements
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| default_run_event_value(ty, child(index)))
+                .collect(),
+        ),
+        PayloadType::Array { element, len } => RunEventValue::Array(
+            (0..*len)
+                .map(|index| default_run_event_value(element, child(index)))
+                .collect(),
+        ),
+        PayloadType::Slice { .. } => RunEventValue::Array(Vec::new()),
     }
 }
 
@@ -1730,42 +1761,20 @@ fn decode_run_delegate_occurrence(
     delegate: &DeclaredDelegate,
     payload: &[u8],
 ) -> Result<RunDelegateOccurrence, Diagnostic> {
-    let mut cursor = 0usize;
-    let mut values = Vec::with_capacity(delegate.params().len());
-    for param in delegate.params() {
-        let count = if param.is_slice() {
-            let bytes = take_delegate_bytes(payload, &mut cursor, 4, "slice length")?;
-            native_u32(bytes) as usize
-        } else {
-            param.array_len()
-        };
-        let scalar_bytes = event_scalar_bytes(param.elem_ty());
-        let byte_count = count
-            .checked_mul(scalar_bytes)
-            .ok_or_else(|| invalid_delegate_record("payload element count overflows usize"))?;
-        let bytes = take_delegate_bytes(payload, &mut cursor, byte_count, "parameter")?;
-        let value = if param.is_array() || param.is_slice() {
-            RunEventValue::Array(
-                bytes
-                    .chunks_exact(scalar_bytes)
-                    .map(|bytes| scalar_run_event_value(param.elem_ty(), bytes))
-                    .collect(),
-            )
-        } else {
-            scalar_run_event_value(param.elem_ty(), bytes)
-        };
-        values.push(RunDelegateValue {
-            name: param.name().to_owned(),
+    let decoded = delegate
+        .payload_plan()
+        .decode_values::<RunEventValue>(payload)
+        .map_err(|error| invalid_delegate_record(error.to_string()))?;
+    let values = delegate
+        .schema()
+        .params
+        .iter()
+        .zip(decoded)
+        .map(|(field, value)| RunDelegateValue {
+            name: field.name.clone(),
             value,
-        });
-    }
-    if cursor != payload.len() {
-        return Err(invalid_delegate_record(format!(
-            "delegate '{}' payload has {} trailing bytes",
-            delegate.name(),
-            payload.len() - cursor
-        )));
-    }
+        })
+        .collect();
     Ok(RunDelegateOccurrence {
         sequence,
         index,
@@ -1797,177 +1806,97 @@ fn invalid_delegate_record(message: impl Into<String>) -> Diagnostic {
     Diagnostic::runtime(format!("invalid delegate batch: {}", message.into()), 0, 0)
 }
 
-fn event_payload_bytes(
-    desc: &DeclaredEvent,
-    values: &[RunEventValue],
-) -> Result<Vec<u8>, Diagnostic> {
-    if values.len() != desc.params().len() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "event '{}' expects {} values, got {}",
-                desc.name(),
-                desc.params().len(),
-                values.len()
-            ),
-            0,
-            0,
-        ));
+impl onda_processor_abi::payload::PayloadSource for RunEventValue {
+    fn sequence_len(&self) -> Option<usize> {
+        match self {
+            Self::Array(values) => Some(values.len()),
+            _ => None,
+        }
     }
-
-    let mut out = Vec::with_capacity(desc.payload_bytes().unwrap_or(0));
-    for (param, value) in desc.params().iter().zip(values.iter()) {
-        if param.is_slice() || param.is_array() {
-            let RunEventValue::Array(values) = value else {
-                return Err(event_value_error(
-                    desc.name(),
-                    param,
-                    format!("requires an array value, got {value:?}"),
-                ));
+    fn struct_len(&self) -> Option<usize> {
+        match self {
+            Self::Struct(fields) => Some(fields.len()),
+            _ => None,
+        }
+    }
+    fn member(&self, index: usize, name: Option<&str>) -> Option<&Self> {
+        match (self, name) {
+            (Self::Array(values), None) => values.get(index),
+            (Self::Struct(fields), Some(name)) => fields.get(name),
+            _ => None,
+        }
+    }
+    fn write_scalar(
+        &self,
+        encoding: onda_processor_abi::payload::ScalarEncoding,
+        output: &mut [u8],
+    ) -> Result<(), onda_processor_abi::payload::PayloadError> {
+        use onda_processor_abi::payload::{PayloadError, ScalarEncoding};
+        if encoding == ScalarEncoding::Bool {
+            let boolean = match self {
+                Self::Bool(value) => *value,
+                Self::Number(0.0) | Self::I64(0) => false,
+                Self::Number(1.0) | Self::I64(1) => true,
+                _ => return Err(PayloadError::InvalidValue),
             };
-            if param.is_array() && values.len() != param.array_len() {
-                return Err(event_value_error(
-                    desc.name(),
-                    param,
-                    format!(
-                        "requires exactly {} values, got {}",
-                        param.array_len(),
-                        values.len()
-                    ),
-                ));
+            output[0] = u8::from(boolean);
+            return Ok(());
+        }
+        let number = match self {
+            Self::Number(value) => *value,
+            Self::I64(value) => *value as f64,
+            _ => return Err(PayloadError::InvalidValue),
+        };
+        match encoding {
+            ScalarEncoding::F32 => output.copy_from_slice(&(number as f32).to_le_bytes()),
+            ScalarEncoding::F64 => output.copy_from_slice(&number.to_le_bytes()),
+            ScalarEncoding::I32 => {
+                if number.fract() != 0.0 || number < i32::MIN as f64 || number > i32::MAX as f64 {
+                    return Err(PayloadError::InvalidValue);
+                }
+                output.copy_from_slice(&(number as i32).to_le_bytes());
             }
-            if param.is_slice() {
-                let length = i32::try_from(values.len()).map_err(|_| {
-                    event_value_error(desc.name(), param, "contains too many values".to_owned())
-                })?;
-                out.extend_from_slice(&length.to_ne_bytes());
+            ScalarEncoding::I64 => {
+                let value = match self {
+                    Self::I64(value) => *value,
+                    _ if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 => {
+                        number as i64
+                    }
+                    _ => return Err(PayloadError::InvalidValue),
+                };
+                output.copy_from_slice(&value.to_le_bytes());
             }
-            for value in values {
-                append_scalar_event_value(&mut out, desc.name(), param, value)?;
+            ScalarEncoding::Bool => unreachable!(),
+        }
+        Ok(())
+    }
+}
+
+impl onda_processor_abi::payload::PayloadSink for RunEventValue {
+    fn scalar(encoding: onda_processor_abi::payload::ScalarEncoding, wire: &[u8]) -> Self {
+        use onda_processor_abi::payload::ScalarEncoding;
+        match encoding {
+            ScalarEncoding::Bool => Self::Bool(wire[0] != 0),
+            ScalarEncoding::I32 => {
+                Self::Number(i32::from_le_bytes(wire.try_into().unwrap()) as f64)
             }
+            ScalarEncoding::I64 => Self::I64(i64::from_le_bytes(wire.try_into().unwrap())),
+            ScalarEncoding::F32 => Self::from_f32(f32::from_le_bytes(wire.try_into().unwrap())),
+            ScalarEncoding::F64 => Self::Number(f64::from_le_bytes(wire.try_into().unwrap())),
+        }
+    }
+    fn aggregate(ty: &onda_processor_abi::payload::PayloadType, values: Vec<Self>) -> Self {
+        if let onda_processor_abi::payload::PayloadType::Struct { fields, .. } = ty {
+            Self::Struct(
+                fields
+                    .iter()
+                    .zip(values)
+                    .map(|(field, value)| (field.name.clone(), value))
+                    .collect(),
+            )
         } else {
-            append_scalar_event_value(&mut out, desc.name(), param, value)?;
+            Self::Array(values)
         }
-    }
-    Ok(out)
-}
-
-fn event_value_error(event_name: &str, param: &DeclaredEventParam, detail: String) -> Diagnostic {
-    Diagnostic::runtime(
-        format!(
-            "event '{}' parameter '{}' {}",
-            event_name,
-            param.name(),
-            detail
-        ),
-        0,
-        0,
-    )
-}
-
-fn append_scalar_event_value(
-    out: &mut Vec<u8>,
-    event_name: &str,
-    param: &DeclaredEventParam,
-    value: &RunEventValue,
-) -> Result<(), Diagnostic> {
-    match param.elem_ty() {
-        PrimitiveType::F32 => out.extend_from_slice(
-            &(event_number_value(event_name, param, value)? as f32).to_ne_bytes(),
-        ),
-        PrimitiveType::F64 => {
-            out.extend_from_slice(&event_number_value(event_name, param, value)?.to_ne_bytes())
-        }
-        PrimitiveType::I32 => out.extend_from_slice(
-            &(event_number_value(event_name, param, value)? as i32).to_ne_bytes(),
-        ),
-        PrimitiveType::I64 => {
-            let value = match value {
-                RunEventValue::I64(value) => *value,
-                _ => event_number_value(event_name, param, value)? as i64,
-            };
-            out.extend_from_slice(&value.to_ne_bytes());
-        }
-        PrimitiveType::Bool => {
-            let encoded = match value {
-                RunEventValue::Bool(value) => {
-                    if *value {
-                        1_i8
-                    } else {
-                        0_i8
-                    }
-                }
-                RunEventValue::Number(value) => {
-                    if *value == 0.0 {
-                        0_i8
-                    } else if *value == 1.0 {
-                        1_i8
-                    } else {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "event '{}' parameter '{}' requires a boolean value, got {value}",
-                                event_name,
-                                param.name()
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                }
-                RunEventValue::I64(value) => {
-                    if *value == 0 {
-                        0_i8
-                    } else if *value == 1 {
-                        1_i8
-                    } else {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "event '{}' parameter '{}' requires a boolean value, got {value}",
-                                event_name,
-                                param.name()
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                }
-                RunEventValue::Array(_) => {
-                    return Err(event_value_error(
-                        event_name,
-                        param,
-                        "requires a boolean scalar value".to_owned(),
-                    ));
-                }
-            };
-            out.extend_from_slice(&encoded.to_ne_bytes());
-        }
-    }
-    Ok(())
-}
-
-fn event_number_value(
-    event_name: &str,
-    param: &DeclaredEventParam,
-    value: &RunEventValue,
-) -> Result<f64, Diagnostic> {
-    match value {
-        RunEventValue::Number(value) => Ok(*value),
-        RunEventValue::I64(value) => Ok(*value as f64),
-        RunEventValue::Bool(value) => Err(Diagnostic::runtime(
-            format!(
-                "event '{}' parameter '{}' requires a numeric {} value, got {}",
-                event_name,
-                param.name(),
-                param.type_repr(),
-                value
-            ),
-            0,
-            0,
-        )),
-        RunEventValue::Array(_) => Err(event_value_error(
-            event_name,
-            param,
-            format!("requires numeric {} values", param.type_repr()),
-        )),
     }
 }
 
@@ -2078,7 +2007,7 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::display_path;
+    use super::*;
     use std::path::Path;
 
     #[test]
@@ -2087,6 +2016,101 @@ mod tests {
             display_path(Path::new(r"\\?\C:\Users\franc\audio\file.wav")),
             r"C:\Users\franc\audio\file.wav"
         );
+    }
+
+    #[test]
+    fn dynamic_event_wire_capacity_includes_workspace_alignment() {
+        let path = std::env::temp_dir().join("onda_dynamic_event_workspace_test.onda");
+        let mut analysis = AnalysisSession::default();
+        analysis.open_document(
+            &path,
+            DocumentVersion(1),
+            r#"
+init:
+  observed: f32 = 0.0
+event load(values: f64[], tail: bool):
+  observed = f32(values.len())
+  if tail:
+    observed += 1.0
+sample:
+  out1 = observed
+"#
+            .to_owned(),
+        );
+        let mut run = RunSession::build(&analysis, &path, RunOptions::default()).unwrap();
+        run.trigger_event(
+            "load",
+            &[
+                RunEventValue::Array(vec![RunEventValue::Number(0.0); 8_191]),
+                RunEventValue::Bool(true),
+            ],
+        )
+        .unwrap();
+        assert_eq!(run.render_block().unwrap()[0][0], 8_192.0);
+    }
+
+    #[test]
+    fn dynamic_event_wire_capacity_is_independent_of_large_fixed_events() {
+        let path = std::env::temp_dir().join("onda_dynamic_event_capacity_test.onda");
+        let mut analysis = AnalysisSession::default();
+        analysis.open_document(
+            &path,
+            DocumentVersion(1),
+            r#"
+init:
+  observed: f32 = 0.0
+event fixed(values: f64[16384]):
+  observed = f32(values[0])
+event load(values: f64[]):
+  observed = f32(values.len())
+event hybrid(prefix: f64[16384], values: f64[]):
+  observed = f32(prefix[0]) + f32(values.len())
+sample:
+  out1 = observed
+"#
+            .to_owned(),
+        );
+        let run = RunSession::build(&analysis, &path, RunOptions::default()).unwrap();
+        let fixed = run
+            .jit
+            .event_descriptor(run.jit.event_index("fixed").unwrap())
+            .unwrap()
+            .payload_plan();
+        let dynamic = run
+            .jit
+            .event_descriptor(run.jit.event_index("load").unwrap())
+            .unwrap()
+            .payload_plan();
+        let hybrid = run
+            .jit
+            .event_descriptor(run.jit.event_index("hybrid").unwrap())
+            .unwrap()
+            .payload_plan();
+
+        let default = onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES;
+        assert!(fixed.fixed_wire_size().unwrap() > default);
+        assert_eq!(
+            fixed.wire_capacity(default),
+            fixed.fixed_wire_size().unwrap()
+        );
+        assert_eq!(dynamic.wire_capacity(default), default);
+        assert_eq!(hybrid.wire_capacity(default), hybrid.minimum_sizes().0);
+        assert!(hybrid.wire_capacity(default) > default);
+        assert!(run.instance.event_workspace_capacity() > default);
+    }
+
+    #[test]
+    fn f32_host_values_use_the_shortest_round_trip_decimal() {
+        let RunEventValue::Number(value) = RunEventValue::from_f32(0.15) else {
+            unreachable!()
+        };
+        assert_eq!(value, 0.15_f64);
+        assert_eq!((value as f32).to_bits(), 0.15_f32.to_bits());
+
+        let RunEventValue::Number(negative_zero) = RunEventValue::from_f32(-0.0) else {
+            unreachable!()
+        };
+        assert!(negative_zero.is_sign_negative());
     }
 }
 

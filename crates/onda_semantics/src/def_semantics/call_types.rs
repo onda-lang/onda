@@ -491,6 +491,10 @@ pub(crate) fn infer_struct_expr_type(
             }
         }
         Expr::UserCall { name, .. } if context.struct_defs.contains_key(name) => Some(name.clone()),
+        Expr::UserCall { name, .. } => match context.return_types.get(name) {
+            Some(ReturnType::Data(crate::DataType::Struct(name))) => Some(name.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -509,137 +513,150 @@ pub(crate) fn infer_scalar_expr_type(
     env: &CallTypeEnv,
     context: CallTypeContext<'_>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { .. } => untyped_literal_type(expr),
-        Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => {
-            if let Some(ty) = builtin_constant_type(name) {
-                return Some(ty);
+    expr.try_fold(
+        |node, children| match node {
+            Expr::Binary { .. } | Expr::UnaryBitNot { .. } | Expr::Call { .. } => {
+                node.children(children)
             }
-            if let Some(ty) = env.scalar_types.get(name).copied() {
-                return Some(ty);
-            }
-            match lookup_struct_field(name, env, context)?.ty {
-                TypedFieldType::Scalar(ty) => Some(ty),
-                TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => {
-                    None
-                }
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
-                return Some(elem_ty);
-            }
-            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
-                return (!env.buffer_array_lens.contains_key(base)).then_some(*elem_ty);
-            }
-            let tuple_elems = infer_tuple_symbol_elem_types(base, env, context)?;
-            let Expr::Int { value, .. } = index.as_ref() else {
-                return None;
-            };
-            usize::try_from(*value)
-                .ok()
-                .and_then(|index| tuple_elems.get(index).copied())
-        }
-        Expr::UserCall { name, args, .. } => {
-            if let Some(base) = parse_array_len_instance_base(name) {
-                if infer_array_symbol_type(base, env, context).is_some()
-                    || env.buffer_types.contains_key(base)
-                {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_chans_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_bound_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::Bool);
-                }
-            }
-            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::F32);
-                }
-            }
-            if is_internal_buffer_2d_fn(name) {
-                if is_builtin_buffer_write_function_name(name) {
-                    return None;
-                }
-                if let Some(first) = args.first() {
-                    let base = match &first.expr {
-                        Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
-                        _ => return None,
-                    };
-                    if let Some((elem_ty, _)) = env.buffer_types.get(base) {
-                        return Some(*elem_ty);
+            _ => {}
+        },
+        |expr, children: &mut std::vec::Drain<'_, PrimitiveType>| {
+            (|| match expr {
+                Expr::Number { .. } => Some(PrimitiveType::F32),
+                Expr::Int { .. } => untyped_literal_type(expr),
+                Expr::Bool { .. } => Some(PrimitiveType::Bool),
+                Expr::Cast { to, .. } => Some(*to),
+                Expr::Var { name, .. } => {
+                    if let Some(ty) = builtin_constant_type(name) {
+                        return Some(ty);
                     }
+                    if let Some(ty) = env.scalar_types.get(name).copied() {
+                        return Some(ty);
+                    }
+                    match lookup_struct_field(name, env, context)?.ty {
+                        TypedFieldType::Scalar(ty) => Some(ty),
+                        TypedFieldType::Struct
+                        | TypedFieldType::Array(_)
+                        | TypedFieldType::Tuple(_) => None,
+                    }
+                }
+                Expr::Index { base, index, .. } => {
                     if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
                         return Some(elem_ty);
                     }
+                    if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                        return (!env.buffer_array_lens.contains_key(base)).then_some(*elem_ty);
+                    }
+                    let tuple_elems = infer_tuple_symbol_elem_types(base, env, context)?;
+                    let Expr::Int { value, .. } = index.as_ref() else {
+                        return None;
+                    };
+                    usize::try_from(*value)
+                        .ok()
+                        .and_then(|index| tuple_elems.get(index).copied())
                 }
-            }
-            if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
-                let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
-                let field_name = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
-                let array_ty = infer_array_symbol_type(base, env, context)?;
-                let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
-                    return None;
-                };
-                let field =
-                    resolve_struct_field_decl(&struct_name, field_name, context.struct_defs)?;
-                return match field.ty {
-                    TypedFieldType::Scalar(ty) => Some(ty),
-                    TypedFieldType::Struct
-                    | TypedFieldType::Array(_)
-                    | TypedFieldType::Tuple(_) => None,
-                };
-            }
-            context.return_types.get(name).and_then(ReturnType::scalar)
-        }
-        Expr::Binary { op, lhs, rhs, .. } => {
-            let lhs_ty = infer_scalar_expr_type(lhs, env, context)?;
-            let rhs_ty = infer_scalar_expr_type(rhs, env, context)?;
-            let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
-            match op {
-                BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::ShiftLeft
-                | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
-                    (PrimitiveType::I64, PrimitiveType::I32)
-                    | (PrimitiveType::I32, PrimitiveType::I64)
-                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
-                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
-                    _ => None,
-                },
-                _ => merge_numeric_types_without_diagnostics(lhs_ty, rhs_ty),
-            }
-        }
-        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::UnaryBitNot { expr, .. } => {
-            let ty = infer_scalar_expr_type(expr, env, context)?;
-            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
-        }
-        Expr::Call { func, args, .. } => {
-            let arg_types = args
-                .iter()
-                .map(|arg| infer_scalar_expr_type(arg, env, context))
-                .collect::<Option<Vec<_>>>()?;
-            let arg_types = adapt_numeric_argument_types(args, &arg_types);
-            intrinsic_result_type(*func, &arg_types)
-        }
-        Expr::ArrayLiteral { .. }
-        | Expr::Tuple { .. }
-        | Expr::Slice { .. }
-        | Expr::ArrayCtor { .. } => None,
-    }
+                Expr::UserCall { name, args, .. } => {
+                    if let Some(base) = parse_array_len_instance_base(name) {
+                        if infer_array_symbol_type(base, env, context).is_some()
+                            || env.buffer_types.contains_key(base)
+                        {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_chans_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_bound_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::Bool);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::F32);
+                        }
+                    }
+                    if is_internal_buffer_2d_fn(name) {
+                        if is_builtin_buffer_write_function_name(name) {
+                            return None;
+                        }
+                        if let Some(first) = args.first() {
+                            let base = match &first.expr {
+                                Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
+                                _ => return None,
+                            };
+                            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                                return Some(*elem_ty);
+                            }
+                            if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context)
+                            {
+                                return Some(elem_ty);
+                            }
+                        }
+                    }
+                    if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
+                        let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
+                        let field_name = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
+                        let array_ty = infer_array_symbol_type(base, env, context)?;
+                        let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
+                            return None;
+                        };
+                        let field = resolve_struct_field_decl(
+                            &struct_name,
+                            field_name,
+                            context.struct_defs,
+                        )?;
+                        return match field.ty {
+                            TypedFieldType::Scalar(ty) => Some(ty),
+                            TypedFieldType::Struct
+                            | TypedFieldType::Array(_)
+                            | TypedFieldType::Tuple(_) => None,
+                        };
+                    }
+                    context.return_types.get(name).and_then(ReturnType::scalar)
+                }
+                Expr::Binary { op, lhs, rhs, .. } => {
+                    let lhs_ty = children.next()?;
+                    let rhs_ty = children.next()?;
+                    let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
+                    match op {
+                        BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::ShiftLeft
+                        | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
+                            (PrimitiveType::I64, PrimitiveType::I32)
+                            | (PrimitiveType::I32, PrimitiveType::I64)
+                            | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                            (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                            _ => None,
+                        },
+                        _ => merge_numeric_types_without_diagnostics(lhs_ty, rhs_ty),
+                    }
+                }
+                Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
+                    Some(PrimitiveType::Bool)
+                }
+                Expr::UnaryBitNot { .. } => {
+                    let ty = children.next()?;
+                    matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
+                }
+                Expr::Call { func, args, .. } => {
+                    let arg_types = children.collect::<Vec<_>>();
+                    let arg_types = adapt_numeric_argument_types(args, &arg_types);
+                    intrinsic_result_type(*func, &arg_types)
+                }
+                Expr::ArrayLiteral { .. }
+                | Expr::Tuple { .. }
+                | Expr::Slice { .. }
+                | Expr::ArrayCtor { .. } => None,
+            })()
+            .ok_or(())
+        },
+    )
+    .ok()
 }
 
 fn named_call_var_arg<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a str> {
@@ -742,6 +759,18 @@ pub(crate) fn infer_array_arg_type(
     context: CallTypeContext<'_>,
 ) -> Option<CallArrayType> {
     match expr {
+        Expr::UserCall { name, .. } => match context.return_types.get(name) {
+            Some(ReturnType::Data(crate::DataType::Array { element, len })) => {
+                Some(CallArrayType {
+                    elem: match element {
+                        ArrayElemType::Primitive(ty) => CallArrayElemType::Primitive(*ty),
+                        ArrayElemType::Struct(name) => CallArrayElemType::Nominal(name.clone()),
+                    },
+                    len: Some(*len),
+                })
+            }
+            _ => None,
+        },
         Expr::Var { name, .. } => infer_array_symbol_type(name, env, context),
         Expr::Slice { base, .. } => infer_array_symbol_type(base, env, context)
             .map(|mut ty| {
@@ -847,6 +876,21 @@ pub(crate) fn update_call_type_env_after_assign(
 
     if let Some(declared) = decl_ty {
         match declared {
+            DeclType::Slice(element) => {
+                let element = match element {
+                    ArrayElemType::Primitive(ty) => CallArrayElemType::Primitive(*ty),
+                    ArrayElemType::Struct(name) => CallArrayElemType::Nominal(name.clone()),
+                };
+                env.shadow_binding(name);
+                env.array_types.insert(
+                    name.clone(),
+                    CallArrayType {
+                        elem: element,
+                        len: None,
+                    },
+                );
+                return;
+            }
             DeclType::Scalar(ty) => {
                 env.shadow_binding(name);
                 env.scalar_types.insert(name.clone(), *ty);

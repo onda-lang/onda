@@ -2,7 +2,7 @@ const STRUCT_DATA_EXAMPLE: &str = r#"
 outs { out1 }
 struct Voice { delay: f32[4], gain: f32 }
 init {
-  v = Voice(0.5)
+  v = Voice(gain = 0.5)
 }
 sample {
   v.delay[-1.2] = 1.0
@@ -16,8 +16,8 @@ const STRUCT_DATA_IS_PER_INSTANCE_EXAMPLE: &str = r#"
 outs { out1 }
 struct Voice { delay: f32[2], gain: f32 }
 init {
-  a = Voice(1.0)
-  b = Voice(1.0)
+  a = Voice(gain = 1.0)
+  b = Voice(gain = 1.0)
 }
 sample {
   a.delay[0.0] = 1.0
@@ -30,7 +30,7 @@ const STRUCT_DATA_FIELD_NON_INDEXED_WRITE_ERROR_EXAMPLE: &str = r#"
 outs { out1 }
 struct Voice { delay: f32[4], gain: f32 }
 init {
-  v = Voice(1.0)
+  v = Voice(gain = 1.0)
 }
 sample {
   v.delay = 1.0

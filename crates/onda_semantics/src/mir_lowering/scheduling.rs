@@ -339,8 +339,8 @@ impl<'a> FunctionLowerer<'a> {
         block_post: &[Stmt],
         _block_size: u32,
         sample_oversample_factor: usize,
-    ) -> Result<onda_mir::Function, MirLoweringError> {
-        let mut body = MirBlock::default();
+    ) -> Result<(onda_mir::Function, retained_storage::BlockRegion), MirLoweringError> {
+        let mut body = self.retained_entry();
         let process_location = block_pre
             .first()
             .or_else(|| sample.first())
@@ -390,6 +390,7 @@ impl<'a> FunctionLowerer<'a> {
             process_location,
         );
         let mut block_pre_body = MirBlock::default();
+        let block_local_start = self.locals.len();
         if crate::task_lowering::contains_task_abort(block_pre) {
             let mut activation = MirBlock::default();
             let flow = self.lower_statements(block_pre, &mut activation, ContinueMode::None)?;
@@ -404,6 +405,13 @@ impl<'a> FunctionLowerer<'a> {
         } else {
             self.lower_statements(block_pre, &mut block_pre_body, ContinueMode::None)?;
         }
+        let block_pre_index = body.statements.len();
+        let extents = retained_bindings::view_extents(&self.bindings, self.aggregate_layouts)?;
+        let block_region = retained_storage::BlockRegion {
+            statement: block_pre_index,
+            locals: block_local_start..self.locals.len(),
+            extents,
+        };
         self.push_statement(
             &mut body,
             StatementKind::If {
@@ -529,16 +537,19 @@ impl<'a> FunctionLowerer<'a> {
         );
         let source = self.source_span(process_location);
         let i32_type = intern_scalar_type(self.types, PrimitiveType::I32);
-        Ok(onda_mir::Function {
-            name: self.emitted_name,
-            kind: onda_mir::FunctionKind::Process,
-            attributes: compiler_generated_function_attributes(),
-            params: onda_mir::process_function_params(i32_type),
-            results: Vec::new(),
-            locals: self.locals,
-            body,
-            source,
-        })
+        Ok((
+            onda_mir::Function {
+                name: self.emitted_name,
+                kind: onda_mir::FunctionKind::Process,
+                attributes: compiler_generated_function_attributes(),
+                params: onda_mir::process_function_params(i32_type),
+                results: Vec::new(),
+                locals: self.locals,
+                body,
+                source,
+            },
+            block_region,
+        ))
     }
 
     pub(super) fn lower_top_level_oversampled_sample(

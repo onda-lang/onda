@@ -4,6 +4,7 @@
 //! source-language typing, rewriting, scheduling, and specialization stay
 //! above this boundary.
 
+mod event_input;
 mod function_emitter;
 mod host_abi;
 
@@ -208,7 +209,7 @@ type NativeInitFn = unsafe extern "C" fn(
     *mut onda_processor_abi::ExecutionOutput,
 ) -> u32;
 type NativeEventFn = unsafe extern "C" fn(
-    *const u8,
+    *const onda_processor_abi::EventInput,
     *const u8,
     *mut u8,
     *const *mut u8,
@@ -276,6 +277,7 @@ struct RegionLayout {
 #[derive(Debug, Clone)]
 struct EventPayloadLayout {
     fixed_size: Option<usize>,
+    plan: onda_processor_abi::payload::PayloadPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -444,18 +446,11 @@ unsafe fn compute_native_layouts(
             .events
             .iter()
             .map(|event| {
-                let mut size = 0usize;
-                for parameter in &event.params {
-                    let Some(parameter_size) = fixed_payload_type_size(program, parameter.ty)?
-                    else {
-                        return Ok(EventPayloadLayout { fixed_size: None });
-                    };
-                    size = size.checked_add(parameter_size).ok_or_else(|| {
-                        MirCodegenError::unsupported("event payload size overflow")
-                    })?;
-                }
+                let plan = onda_processor_abi::payload::PayloadPlan::new(&event.schema)
+                    .map_err(|error| MirCodegenError::unsupported(error.to_string()))?;
                 Ok(EventPayloadLayout {
-                    fixed_size: Some(size),
+                    fixed_size: plan.fixed_wire_size(),
+                    plan,
                 })
             })
             .collect::<Result<Vec<_>, MirCodegenError>>()?;
@@ -810,7 +805,8 @@ unsafe fn declare_functions(
                     args.push(match param.mode {
                         onda_mir::PassingMode::Value => types.get(param.ty),
                         onda_mir::PassingMode::ReadOnlyReference
-                        | onda_mir::PassingMode::ReadWriteReference => ptr_ty,
+                        | onda_mir::PassingMode::ReadWriteReference
+                        | onda_mir::PassingMode::ResultReference => ptr_ty,
                     });
                 }
                 (
@@ -926,9 +922,7 @@ unsafe fn declare_functions(
                 }
             }
             FunctionKind::Event(_) => {
-                for parameter in [1_u32, 2] {
-                    add_enum_param_attribute(context, value, parameter, "readonly")?;
-                }
+                add_enum_param_attribute(context, value, 2, "readonly")?;
                 add_enum_param_attribute(context, value, 3, "noalias")?;
             }
             FunctionKind::User => {
@@ -1290,7 +1284,7 @@ fn collect_local_writes(
                 for (parameter, argument) in
                     program.functions[function.index()].params.iter().zip(args)
                 {
-                    if parameter.mode != onda_mir::PassingMode::ReadWriteReference {
+                    if !parameter.mode.is_writable_reference() {
                         continue;
                     }
                     let place = match argument {
@@ -1350,6 +1344,17 @@ unsafe fn emit_function_body(
     let result = (|| {
         let entry = append_block(module.context, declaration.value, "entry")?;
         LLVMPositionBuilderAtEnd(builder, entry);
+        let prepared_input = if let FunctionKind::Event(event) = function.kind {
+            Some(event_input::prepare(
+                module,
+                declaration.value,
+                builder,
+                event,
+            )?)
+        } else {
+            None
+        };
+        let context_prologue = LLVMGetInsertBlock(builder);
         let (runtime_context, fallback_buffer_read, fallback_buffer_write) = match function.kind {
             FunctionKind::User => {
                 let runtime_context = LLVMGetParam(declaration.value, 0);
@@ -1371,7 +1376,13 @@ unsafe fn emit_function_body(
                     )?,
                 )
             }
-            _ => build_entry_runtime_context(module, declaration.value, function.kind, builder)?,
+            _ => build_entry_runtime_context(
+                module,
+                declaration.value,
+                function.kind,
+                builder,
+                prepared_input,
+            )?,
         };
         // Direct buffer metadata is materialized in the entry block so it is
         // invariant for the duration of an entry-point call. Keep its fallback
@@ -1388,6 +1399,7 @@ unsafe fn emit_function_body(
             declaration,
             builder,
             prologue_builder,
+            context_prologue,
             runtime_context,
             locals: Vec::with_capacity(function.locals.len()),
             parameters: Vec::with_capacity(function.params.len()),
@@ -1463,6 +1475,7 @@ struct FunctionEmitter<'a, 'm> {
     /// between entry-point calls, but remain fixed for the duration of one
     /// call, so these SSA snapshots cannot become stale.
     prologue_builder: LLVMBuilderRef,
+    context_prologue: LLVMBasicBlockRef,
     runtime_context: LLVMValueRef,
     locals: Vec<PlaceRef>,
     parameters: Vec<PlaceRef>,
@@ -1526,6 +1539,7 @@ unsafe fn build_entry_runtime_context(
     function: LLVMValueRef,
     kind: FunctionKind,
     builder: LLVMBuilderRef,
+    prepared_input: Option<LLVMValueRef>,
 ) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let context = LLVMBuildAlloca(
         builder,
@@ -1606,7 +1620,7 @@ unsafe fn build_entry_runtime_context(
             }
         }
         FunctionKind::Event(_) => {
-            fields[12] = LLVMGetParam(function, 0);
+            fields[12] = prepared_input.expect("event input was prepared");
             fields[5] = LLVMGetParam(function, 1);
             fields[6] = LLVMGetParam(function, 2);
             let buffers =
@@ -2330,6 +2344,7 @@ fn inspect_rvalue(function_index: usize, value: &Rvalue, errors: &mut Vec<MirCod
         | Rvalue::Cast { .. }
         | Rvalue::Intrinsic { .. }
         | Rvalue::ProcessFrame { .. }
+        | Rvalue::NormalizeIndex { .. }
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::ConstDataLoad { .. }
@@ -2593,6 +2608,27 @@ impl MirJitProgram {
         })
     }
 
+    fn event_workspace_minimum(&self) -> usize {
+        self.layouts
+            .event_payloads
+            .iter()
+            .map(|layout| {
+                let minimum = layout.plan.minimum_sizes().1;
+                if layout.plan.dynamic_parameters() == 0 {
+                    minimum
+                } else {
+                    layout
+                        .plan
+                        .workspace_capacity_for_wire_capacity(layout.plan.wire_capacity(
+                            onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
+                        ))
+                        .expect("validated payload schema")
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn allocate_state_with_allocator(
         &self,
         allocator: Option<RuntimeAllocator>,
@@ -2608,6 +2644,11 @@ impl MirJitProgram {
         Ok(UninitializedRuntimeState {
             state_words: Some(state_words),
             state_size_bytes: self.layouts.state.size,
+            event_workspace: crate::RuntimeBuffer::try_from_elem_in(
+                self.event_workspace_minimum().div_ceil(8),
+                0,
+                allocator,
+            )?,
         })
     }
 
@@ -2675,6 +2716,7 @@ impl MirJitProgram {
         };
         Ok(RuntimeState {
             state_words,
+            event_workspace: std::mem::take(&mut state.event_workspace),
             state_size_bytes: self.layouts.state.size,
         })
     }
@@ -2943,7 +2985,12 @@ impl MirJitProgram {
         )?;
         let status = unsafe {
             event(
-                abi_const_ptr(payload),
+                &onda_processor_abi::EventInput {
+                    payload: abi_const_ptr(payload),
+                    payload_bytes: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+                    workspace: abi_mut_ptr(state.event_workspace.as_mut_slice()).cast(),
+                    workspace_capacity_bytes: state.event_workspace_capacity() as u32,
+                },
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 abi_const_ptr(buffer_ptrs),
@@ -2979,7 +3026,12 @@ impl MirJitProgram {
         };
         unsafe {
             event(
-                abi_const_ptr(payload),
+                &onda_processor_abi::EventInput {
+                    payload: abi_const_ptr(payload),
+                    payload_bytes: u32::try_from(payload.len()).unwrap_or(u32::MAX),
+                    workspace: abi_mut_ptr(state.event_workspace.as_mut_slice()).cast(),
+                    workspace_capacity_bytes: state.event_workspace_capacity() as u32,
+                },
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
                 abi_const_ptr(buffer_ptrs),
@@ -3030,97 +3082,13 @@ impl MirJitProgram {
             ));
         }
 
-        let event = &self.mir.interface.events[event_index];
-        let mut offset = 0usize;
-        for parameter in &event.params {
-            match self.mir.types[parameter.ty.index()] {
-                Type::Slice { element, .. } => {
-                    if payload.len().saturating_sub(offset) < 4 {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "native MIR event {event_index} payload is truncated before slice parameter '{}'",
-                                parameter.name
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                    let len = i32::from_ne_bytes(
-                        payload[offset..offset + 4]
-                            .try_into()
-                            .expect("slice length prefix has four bytes"),
-                    );
-                    if len < 0 {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "native MIR event {event_index} slice parameter '{}' has negative length {len}",
-                                parameter.name
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                    offset = offset.saturating_add(4);
-                    let data_bytes = (len as usize)
-                        .checked_mul(scalar_store_size(element) as usize)
-                        .filter(|bytes| *bytes <= i32::MAX as usize)
-                        .ok_or_else(|| {
-                            Diagnostic::runtime(
-                                format!(
-                                    "native MIR event {event_index} slice parameter '{}' byte extent exceeds i32",
-                                    parameter.name
-                                ),
-                                0,
-                                0,
-                            )
-                        })?;
-                    if payload.len().saturating_sub(offset) < data_bytes {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "native MIR event {event_index} payload is truncated in slice parameter '{}'; expected {data_bytes} element bytes",
-                                parameter.name
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                    offset = offset.saturating_add(data_bytes);
-                }
-                _ => {
-                    let bytes = fixed_payload_type_size(&self.mir, parameter.ty)
-                        .map_err(|error| Diagnostic::runtime(error.message, 0, 0))?
-                        .ok_or_else(|| {
-                            Diagnostic::runtime(
-                                "native MIR event payload has an unexpected nested dynamic type",
-                                0,
-                                0,
-                            )
-                        })?;
-                    if payload.len().saturating_sub(offset) < bytes {
-                        return Err(Diagnostic::runtime(
-                            format!(
-                                "native MIR event {event_index} payload is truncated in parameter '{}'; expected {bytes} bytes",
-                                parameter.name
-                            ),
-                            0,
-                            0,
-                        ));
-                    }
-                    offset = offset.saturating_add(bytes);
-                }
-            }
-        }
-        if offset != payload.len() {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "native MIR event {event_index} expects {offset} payload bytes for its dynamic layout, got {}",
-                    payload.len()
-                ),
-                0,
-                0,
-            ));
-        }
-        Ok(())
+        self.layouts.event_payloads[event_index]
+            .plan
+            .required_workspace(payload)
+            .map(|_| ())
+            .map_err(|error| {
+                Diagnostic::runtime(format!("native MIR event {event_index}: {error}"), 0, 0)
+            })
     }
 }
 

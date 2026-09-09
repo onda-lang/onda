@@ -192,6 +192,7 @@ pub(super) fn lower_graph(
                     },
                     init: None,
                     initialize: true,
+                    init_is_value: false,
                 },
             });
             init_stmts.push(Stmt::Assign {

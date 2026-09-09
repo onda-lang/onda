@@ -1088,6 +1088,7 @@ pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> P
         Some(DeclType::Array { elem, .. }) => *elem,
         Some(DeclType::Tuple(_))
         | Some(DeclType::Generic(_))
+        | Some(DeclType::Slice(_))
         | Some(DeclType::ArrayGeneric { .. })
         | None => PrimitiveType::F32,
     }
@@ -2776,6 +2777,7 @@ pub(super) fn compute_proc_shape(
         &proc.events,
         true,
         &format!("processor '{}'", proc.name),
+        &typed_struct_defs,
         proc_options,
         errors,
     );
@@ -2917,6 +2919,13 @@ pub(super) fn compute_proc_shape(
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
     analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);
+    let init_flow = init_st.flow_state();
+    let init_bindings = persistent_init_bindings(
+        &proc.init,
+        &init_st,
+        &proc.init.pinned_roots.iter().cloned().collect(),
+        errors,
+    );
     let mut state = convert_init_state_to_proc_fields(&init_st);
 
     // Non-init scopes: unified runtime analysis via register_scope_state + runtime stmt analysis.
@@ -3070,7 +3079,7 @@ pub(super) fn compute_proc_shape(
                     param_types: Vec::new(),
                     type_params: Vec::new(),
                     return_type: None,
-                    readonly_array_params: HashSet::new(),
+                    readonly_data_params: HashSet::new(),
                 },
             );
 
@@ -3198,8 +3207,10 @@ pub(super) fn compute_proc_shape(
         const_arrays,
     );
     let empty_output_names = HashSet::<String>::new();
+    let block_bindings;
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {
+            init_bindings: Some(&init_bindings),
             state_scalars: &mut proc_state_scalars,
             declared_symbols: &proc_declared_symbols,
             state_arrays: &proc_state_arrays,
@@ -3209,7 +3220,7 @@ pub(super) fn compute_proc_shape(
             struct_instances: &proc_struct_instances_typed,
             state_tuples: &mut proc_state_tuples,
         };
-        analyze_owner_runtime_scopes(
+        block_bindings = analyze_owner_runtime_scopes(
             &mut runtime_state,
             analysis_plan_seeds.runtime_scope_plans(
                 RuntimeScopeBodies {
@@ -3282,6 +3293,18 @@ pub(super) fn compute_proc_shape(
             errors,
         );
     }
+
+    super::retained_data::retain_proc_data(
+        proc,
+        &init_flow,
+        &init_bindings,
+        &block_bindings,
+        &mut state,
+        &typed_struct_defs,
+        &proc_declared_symbols,
+        &reserved,
+        errors,
+    );
 
     // Merge new scalars from block/sample into state
     for (name, ty) in &proc_state_scalars {
@@ -3540,13 +3563,6 @@ pub(super) fn compute_proc_shape(
         .iter()
         .map(|f| f.name.clone())
         .collect::<HashSet<_>>();
-    let array_field_names = fields
-        .iter()
-        .filter_map(|f| match f.ty {
-            FieldType::Array(_) => Some(f.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
 
     ProcBaseShape {
         ins,
@@ -3563,7 +3579,6 @@ pub(super) fn compute_proc_shape(
         state,
         fields,
         field_names,
-        array_field_names,
     }
 }
 
@@ -3644,7 +3659,6 @@ pub(super) fn build_proc_lowering_shape(
 
     let mut fields = base.fields.clone();
     let mut field_names = base.field_names.clone();
-    let mut array_field_names = base.array_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
     let mut nested_proc_array_active_fields = base.nested_proc_array_active_fields.clone();
@@ -3708,9 +3722,6 @@ pub(super) fn build_proc_lowering_shape(
                 continue;
             }
             nested_field.name = flat_name.clone();
-            if matches!(nested_field.ty, FieldType::Array(_)) {
-                array_field_names.insert(flat_name.clone());
-            }
             field_names.insert(flat_name);
             fields.push(nested_field);
         }
@@ -3775,7 +3786,6 @@ pub(super) fn build_proc_lowering_shape(
         state: base.state,
         fields,
         field_names,
-        array_field_names,
         nested_fields,
     };
     cache.insert(proc_name.to_owned(), resolved.clone());

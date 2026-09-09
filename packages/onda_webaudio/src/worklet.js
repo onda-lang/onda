@@ -12,6 +12,7 @@ const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
 const ONDA_PROCESS_END_BLOCK = 1 << 1;
 const ONDA_INIT_PRESERVE_PINNED = 0;
 const ONDA_INIT_FULL = 1;
+const PROCESSOR_EXECUTION_INPUT_REJECTED = 2;
 const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
@@ -189,6 +190,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.eventPayloadPtr = this.eventPayloadCapacity
       ? this.alloc(this.eventPayloadCapacity, 8)
       : 0;
+    // Each tensor and dynamic prefix adds at most seven alignment bytes.
+    // Reserve before rendering; dispatch never grows memory for preparation.
+    this.eventWorkspaceCapacity = this.eventPayloadCapacity + 7 * Math.max(0,
+      ...this.eventInfo.map((event) => event.params.length * 2));
+    this.eventWorkspacePtr = this.eventWorkspaceCapacity ? this.alloc(this.eventWorkspaceCapacity, 8) : 0;
+    this.eventInputPtr = this.eventInfo.length ? this.alloc(16, 4) : 0;
     this.delegateCapacity = this.configuredDelegateCapacity(
       processorOptions.delegateCapacityBytes,
     );
@@ -341,6 +348,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.outputCapacityFrames,
       );
     });
+    this.eventPayloadView = new Uint8Array(buffer, this.eventPayloadPtr, this.eventPayloadCapacity);
     this.delegateRecordView = this.delegateStoragePtr
       ? new Uint8Array(buffer, this.delegateStoragePtr, this.delegateCapacity)
       : null;
@@ -710,7 +718,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       } else if (message.type === "event") {
         this.dispatchEvent(
           message.event ?? message.name ?? message.index,
-          message.values ?? message.args ?? {},
+          message.payload,
         );
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "read-control-outputs") {
@@ -752,7 +760,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
   }
 
-  dispatchEvent(selector, values) {
+  dispatchEvent(selector, payload) {
     this.requireInitialized("event dispatch");
     const eventId = Number.isInteger(selector)
       ? selector
@@ -761,61 +769,24 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (!event) {
       throw new Error(`unknown Onda event '${String(selector)}'`);
     }
-    let payloadSize = 0;
-    for (let paramId = 0; paramId < event.params.length; paramId += 1) {
-      const param = event.params[paramId];
-      const value = this.eventValue(event, param, paramId, values);
-      if (param.is_slice) {
-        const length = this.sequenceLength(
-          value,
-          `event '${event.name}' slice '${param.name}'`,
-        );
-        payloadSize = this.checkedEventPayloadSize(
-          payloadSize,
-          4 + length * this.scalarByteSize(param.scalar),
-          event.name,
-        );
-      } else {
-        this.validateStorageValue(param, value);
-        payloadSize = this.checkedEventPayloadSize(
-          payloadSize,
-          Number(param.byte_size ?? 0),
-          event.name,
-        );
-      }
-    }
+    if (!(payload instanceof Uint8Array)) throw new TypeError("event payload must be encoded bytes");
+    const payloadSize = payload.byteLength;
     if (payloadSize > this.eventPayloadCapacity) {
-      throw new Error(
-        `event '${event.name}' requires ${payloadSize} payload bytes; configured capacity is ${this.eventPayloadCapacity}`,
-      );
+      throw new Error(`event '${event.name}' requires ${payloadSize} payload bytes; configured capacity is ${this.eventPayloadCapacity}`);
     }
-
-    let offset = 0;
     const view = this.memoryView();
-    for (let paramId = 0; paramId < event.params.length; paramId += 1) {
-      const param = event.params[paramId];
-      const value = this.eventValue(event, param, paramId, values);
-      const address = this.eventPayloadPtr + offset;
-      if (param.is_slice) {
-        const length = this.sequenceLength(
-          value,
-          `event '${event.name}' slice '${param.name}'`,
-        );
-        view.setInt32(address, length, true);
-        this.writeScalarValues(address + 4, param.scalar, value, length, view);
-        offset += 4 + length * this.scalarByteSize(param.scalar);
-      } else {
-        this.writeStorage(address, param, value, view);
-        offset += Number(param.byte_size ?? 0);
-      }
-    }
+    this.eventPayloadView.set(payload);
     const handler = this.exports[event.export];
     if (typeof handler !== "function") {
       throw new Error(`missing WebAssembly export '${event.export}'`);
     }
+    view.setUint32(this.eventInputPtr, this.eventPayloadPtr, true);
+    view.setUint32(this.eventInputPtr + 4, payloadSize, true);
+    view.setUint32(this.eventInputPtr + 8, this.eventWorkspacePtr, true);
+    view.setUint32(this.eventInputPtr + 12, this.eventWorkspaceCapacity, true);
     this.prepareExecutionOutput();
     const status = handler(
-      this.eventPayloadPtr,
+      this.eventInputPtr,
       this.paramsPtr,
       this.statePtr,
       this.bufferPointersPtr,
@@ -824,39 +795,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
+    if (status === PROCESSOR_EXECUTION_INPUT_REJECTED) throw new Error(`event '${event.name}' input rejected: invalid payload or insufficient workspace`);
     this.publishExecutionOutput(
       EXECUTION_OPERATION_EVENT,
       eventId,
     );
     this.checkExecutionStatus(status, `event '${event.name}'`);
-  }
-
-  eventValue(event, param, paramId, values) {
-    const supplied = Array.isArray(values)
-      ? values[paramId]
-      : values?.[param.name];
-    const value = supplied === undefined
-      ? this.metadataDefaultValue(param)
-      : supplied;
-    if (value === undefined) {
-      throw new Error(
-        `event '${event.name}' requires parameter '${param.name}'`,
-      );
-    }
-    return value;
-  }
-
-  checkedEventPayloadSize(current, additional, eventName) {
-    const next = current + additional;
-    if (
-      !Number.isSafeInteger(additional)
-      || additional < 0
-      || !Number.isSafeInteger(next)
-      || next > 0x7fff_ffff
-    ) {
-      throw new Error(`event '${eventName}' payload exceeds the 32-bit ABI limit`);
-    }
-    return next;
   }
 
   readControlOutputs() {

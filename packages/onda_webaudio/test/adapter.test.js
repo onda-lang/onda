@@ -188,7 +188,7 @@ function writeTestOutput(ring, fields, delegateStorage = null, printStorage = nu
 test("closed processors reject new work and settle pending requests", async () => {
   const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
   const processor = new OndaAudioProcessor(node, artifact().metadata);
-  const pending = processor.trigger("note");
+  const pending = processor.request("event", { event: "note", payload: new Uint8Array() });
   const reason = new Error("closed by host");
 
   processor.close(reason);
@@ -443,6 +443,10 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
   const source = artifact();
   source.metadata.metadata.delegates = [{
     name: "report",
+    schema: { params: [
+      { name: "code", ty: { kind: "scalar", encoding: "i32" } },
+      { name: "values", ty: { kind: "slice", element: { kind: "scalar", encoding: "f32" } } },
+    ] },
     params: [
       {
         name: "code",
@@ -528,6 +532,7 @@ test("delivers print and delegate callbacks in call-local source order", () => {
   }];
   source.metadata.metadata.delegates = [{
     name: "tick",
+    schema: { params: [{ name: "value", ty: { kind: "scalar", encoding: "i32" } }] },
     params: [{
       name: "value",
       scalar: "i32",

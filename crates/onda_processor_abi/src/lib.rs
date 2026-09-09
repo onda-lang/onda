@@ -5,12 +5,28 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod payload;
+
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 5;
-pub const PROCESSOR_ABI_VERSION: u32 = 5;
+pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 6;
+pub const PROCESSOR_ABI_VERSION: u32 = 6;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
+/// Rejected before executing a handler or changing output records.
+pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 = 2;
+
+/// Call-scoped event input. All regions must be live and disjoint from state,
+/// parameters, external buffers, and output storage. Workspace is eight-byte
+/// aligned and may be reused after synchronous dispatch returns.
+#[repr(C)]
+#[derive(Debug)]
+pub struct EventInput {
+    pub payload: *const u8,
+    pub payload_bytes: u32,
+    pub workspace: *mut u8,
+    pub workspace_capacity_bytes: u32,
+}
 pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
 pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
@@ -345,6 +361,7 @@ pub struct BufferArrayMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventMetadata {
+    pub schema: payload::PayloadSchema,
     pub name: String,
     pub export: String,
     pub payload_size_bytes: Option<usize>,
@@ -371,6 +388,7 @@ pub struct EventParamMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegateMetadata {
+    pub schema: payload::PayloadSchema,
     pub index: usize,
     pub name: String,
     pub payload_size_bytes: Option<usize>,
@@ -412,14 +430,14 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegerRangeMetadata {
     pub min: IntegerRangeEndpoint,
     pub max: IntegerRangeEndpoint,
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegerRangeEndpoint {
     #[serde(rename = "type")]
     pub scalar: String,
@@ -433,7 +451,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v5.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v6.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");

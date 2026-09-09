@@ -41,6 +41,15 @@ impl<'a> FunctionLowerer<'a> {
             let Some(target) = target.binding() else {
                 continue;
             };
+            if self.assign_runtime_global(
+                target,
+                std::slice::from_ref(&value),
+                block,
+                value_location,
+                statement_location,
+            )? {
+                continue;
+            }
             let (local, target_ty) =
                 self.scalar_local_for_destructure(target, value.ty, statement_location)?;
             let value = self.coerce(value, target_ty, block, value_location)?;
@@ -80,6 +89,7 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 )),
                 Binding::InitAll
+                | Binding::PlaceAlias(_, _)
                 | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
@@ -88,10 +98,10 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
-                | Binding::Slice(_, _, _)
+                | Binding::Slice(_, _, _, _)
                 | Binding::Local(_, _)
                 | Binding::SliceElementAlias { .. }
-                | Binding::StructArrayElementAlias { .. } => Err(self.error(
+                | Binding::StructView { .. } => Err(self.error(
                     format!("cannot assign a tuple value to scalar local '{name}'"),
                     location,
                 )),
@@ -99,10 +109,12 @@ impl<'a> FunctionLowerer<'a> {
                     format!("cannot assign a tuple value to struct parameter '{name}'"),
                     location,
                 )),
-                Binding::StructArrayParameter { .. } => Err(self.error(
-                    format!("cannot assign a tuple value to struct-array parameter '{name}'"),
-                    location,
-                )),
+                Binding::StructArrayParameter { .. } | Binding::StructArrayStorage { .. } => {
+                    Err(self.error(
+                        format!("cannot assign a tuple value to struct-array parameter '{name}'"),
+                        location,
+                    ))
+                }
                 Binding::ProcArrayParameter { .. } => Err(self.error(
                     format!("cannot assign a tuple value to proc-array parameter '{name}'"),
                     location,
@@ -131,6 +143,7 @@ impl<'a> FunctionLowerer<'a> {
             return match binding {
                 Binding::Local(local, ty) => Ok((local, ty)),
                 Binding::InitAll
+                | Binding::PlaceAlias(_, _)
                 | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
@@ -139,9 +152,9 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
-                | Binding::Slice(_, _, _)
+                | Binding::Slice(_, _, _, _)
                 | Binding::SliceElementAlias { .. }
-                | Binding::StructArrayElementAlias { .. } => Err(self.error(
+                | Binding::StructView { .. } => Err(self.error(
                     format!("assignment to read-only parameter '{name}' reached MIR lowering"),
                     location,
                 )),
@@ -161,10 +174,12 @@ impl<'a> FunctionLowerer<'a> {
                     format!("cannot destructure into struct parameter '{name}'"),
                     location,
                 )),
-                Binding::StructArrayParameter { .. } => Err(self.error(
-                    format!("cannot destructure into struct-array parameter '{name}'"),
-                    location,
-                )),
+                Binding::StructArrayParameter { .. } | Binding::StructArrayStorage { .. } => {
+                    Err(self.error(
+                        format!("cannot destructure into struct-array parameter '{name}'"),
+                        location,
+                    ))
+                }
                 Binding::ProcArrayParameter { .. } => Err(self.error(
                     format!("cannot destructure into proc-array parameter '{name}'"),
                     location,
@@ -187,6 +202,7 @@ impl<'a> FunctionLowerer<'a> {
             return match binding {
                 Binding::Local(local, ty) => Ok((local, ty)),
                 Binding::InitAll
+                | Binding::PlaceAlias(_, _)
                 | Binding::ReferenceParameter(_, _)
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
@@ -195,9 +211,9 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
                 | Binding::ArrayParameter(_, _, _)
-                | Binding::Slice(_, _, _)
+                | Binding::Slice(_, _, _, _)
                 | Binding::SliceElementAlias { .. }
-                | Binding::StructArrayElementAlias { .. } => Err(self.error(
+                | Binding::StructView { .. } => Err(self.error(
                     format!("assignment to read-only parameter '{name}' reached MIR lowering"),
                     location,
                 )),
@@ -217,10 +233,12 @@ impl<'a> FunctionLowerer<'a> {
                     format!("cannot assign a scalar value to struct parameter '{name}'"),
                     location,
                 )),
-                Binding::StructArrayParameter { .. } => Err(self.error(
-                    format!("cannot assign a scalar value to struct-array parameter '{name}'"),
-                    location,
-                )),
+                Binding::StructArrayParameter { .. } | Binding::StructArrayStorage { .. } => {
+                    Err(self.error(
+                        format!("cannot assign a scalar value to struct-array parameter '{name}'"),
+                        location,
+                    ))
+                }
                 Binding::ProcArrayParameter { .. } => Err(self.error(
                     format!("cannot assign a scalar value to proc-array parameter '{name}'"),
                     location,
@@ -461,11 +479,20 @@ impl<'a> FunctionLowerer<'a> {
         value: Value,
         location: SourceLoc,
     ) {
+        let value = if let PlaceBase::Local(local) = place.base {
+            if place.projections.is_empty() {
+                self.local_assignment_rvalue(local, value)
+            } else {
+                Rvalue::Use(value)
+            }
+        } else {
+            Rvalue::Use(value)
+        };
         self.push_statement(
             block,
             StatementKind::Assign {
                 destination: place,
-                value: Rvalue::Use(value),
+                value,
             },
             location,
         );
@@ -998,7 +1025,7 @@ impl<'a> FunctionLowerer<'a> {
     }
 }
 
-fn value_is_within_integer_range(
+pub(super) fn value_is_within_integer_range(
     value: Value,
     destination: onda_mir::IntegerRangeInvariant,
     locals: &[onda_mir::Local],

@@ -666,7 +666,7 @@ sample:
     }
 
     #[test]
-    fn non_const_defs_reject_array_return_annotations() {
+    fn runtime_defs_accept_fixed_array_return_annotations() {
         let src = r#"
 def table() -> f32[2]:
   return [0.0, 1.0]
@@ -678,11 +678,7 @@ sample:
   out1 = 0.0
 "#;
         let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("ordinary def array return should fail");
-
-        assert!(errors.iter().any(|diag| diag
-            .message
-            .contains("function 'table' array return types are only supported for const defs")));
+        analyze(program).expect("ordinary def fixed-array return should analyze");
     }
 
     #[test]
@@ -3248,6 +3244,41 @@ sample:
     }
 
     #[test]
+    fn root_init_tuple_destructuring_registers_scalar_state() {
+        let source = r#"
+struct Holder:
+  pair: (i32, f64) = (7, 0.5)
+
+init:
+  holder = Holder()
+  first, second = holder.pair
+
+sample:
+  out1 = f32(first) + f32(second)
+"#;
+        let typed = analyze(parse_program(source).expect("tuple init source should parse"))
+            .expect("root init tuple destructuring should analyze");
+        assert_eq!(
+            typed
+                .state_vars
+                .iter()
+                .zip(&typed.state_types)
+                .find_map(|(name, ty)| (name == "first").then_some(*ty)),
+            Some(PrimitiveType::I32)
+        );
+        assert_eq!(
+            typed
+                .state_vars
+                .iter()
+                .zip(&typed.state_types)
+                .find_map(|(name, ty)| (name == "second").then_some(*ty)),
+            Some(PrimitiveType::F64)
+        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("root init tuple destructuring should lower to persistent state");
+    }
+
+    #[test]
     fn typed_tuple_assignments_work_in_processor_owners() {
         let source = r#"
 def pair() -> (f32, i32):
@@ -3979,4 +4010,3 @@ sample:
             .iter()
             .any(|function| function.name.contains("zero.__onda_mono__g_f32")));
     }
-

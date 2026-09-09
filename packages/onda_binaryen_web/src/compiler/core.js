@@ -1,3 +1,5 @@
+import { PayloadPlan } from "@onda-lang/processor-abi";
+import { prepareEventInput } from "./event-input.js";
 import binaryen from "binaryen";
 import {
   SUPPORTED_MIR_SCHEMA_VERSION,
@@ -150,6 +152,7 @@ export class MirCompilerCore {
     for (let index = 0; index < this.module.getNumFunctions(); index += 1) {
       const func = this.module.getFunctionByIndex(index);
       const body = binaryen.Function.getBody(func);
+      if (!body) continue;
       // The local-write scan below is part of the safety proof. If Binaryen
       // adds an expression kind that this backend does not know how to walk,
       // leave the whole function untouched rather than silently overlooking
@@ -165,7 +168,7 @@ export class MirCompilerCore {
     this.rewriteExpressionChildren(expression, (child) =>
       this.rewriteDescriptorLoops(child, func)
     );
-    if (binaryen.getExpressionInfo(expression).id !== binaryen.LoopId) {
+    if (expressionInfo(expression).id !== binaryen.LoopId) {
       return expression;
     }
 
@@ -174,7 +177,7 @@ export class MirCompilerCore {
     const definitions = new Map();
     const writtenLocals = new Set();
     this.visitExpression(body, (candidate) => {
-      const info = binaryen.getExpressionInfo(candidate);
+      const info = expressionInfo(candidate);
       if (info.id !== binaryen.LocalSetId) return;
       writtenLocals.add(info.index);
       const entries = definitions.get(info.index) ?? [];
@@ -189,7 +192,7 @@ export class MirCompilerCore {
 
     const rewriteLoad = (candidate) => {
       this.rewriteExpressionChildren(candidate, rewriteLoad);
-      const info = binaryen.getExpressionInfo(candidate);
+      const info = expressionInfo(candidate);
       if (info.id !== binaryen.LoadId || info.isAtomic) return candidate;
       const candidatePath = controlPaths.get(candidate) ?? [];
       const localCache = (local) => {
@@ -218,7 +221,7 @@ export class MirCompilerCore {
       const cache = binaryen._BinaryenFunctionAddVar(func, info.type);
       this.descriptorLoadsHoisted += 1;
       const hoistedLoad = this.module.copyExpression(candidate);
-      const hoistedInfo = binaryen.getExpressionInfo(hoistedLoad);
+      const hoistedInfo = expressionInfo(hoistedLoad);
       binaryen.Load.setPtr(
         hoistedLoad,
         this.descriptorPointerForPreheader(
@@ -245,7 +248,7 @@ export class MirCompilerCore {
     const paths = new Map();
     const visit = (candidate, path) => {
       paths.set(candidate, path);
-      const info = binaryen.getExpressionInfo(candidate);
+      const info = expressionInfo(candidate);
       if (info.id === binaryen.IfId) {
         visit(info.condition, path);
         visit(info.ifTrue, [...path, `if:${candidate}:true`]);
@@ -283,7 +286,7 @@ export class MirCompilerCore {
     controlPaths,
     candidatePath,
   ) {
-    const info = binaryen.getExpressionInfo(expression);
+    const info = expressionInfo(expression);
     if (info.id === binaryen.LocalSetId && info.isTee) {
       this.cacheDescriptorPointerSideEffects(
         info.value,
@@ -340,7 +343,7 @@ export class MirCompilerCore {
         candidatePath,
       )
     );
-    const info = binaryen.getExpressionInfo(expression);
+    const info = expressionInfo(expression);
     if (info.id === binaryen.LocalGetId) {
       const cache = loopLocalCaches.get(info.index);
       if (cache && this.descriptorPathDominates(cache.path, candidatePath)) {
@@ -362,7 +365,7 @@ export class MirCompilerCore {
       return false;
     }
     const visit = (candidate) => {
-      const info = binaryen.getExpressionInfo(candidate);
+      const info = expressionInfo(candidate);
       if (info.id === binaryen.ConstId) return true;
       if (info.id === binaryen.LocalGetId) return localIsInvariant(info.index);
       if (info.id === binaryen.GlobalGetId) {
@@ -399,7 +402,7 @@ export class MirCompilerCore {
   }
 
   expressionUsesDescriptorTable(expression, definitions, visitingLocals) {
-    const info = binaryen.getExpressionInfo(expression);
+    const info = expressionInfo(expression);
     if (info.id === binaryen.GlobalGetId) {
       return BUFFER_DESCRIPTOR_POINTER_GLOBALS.has(info.name);
     }
@@ -467,7 +470,7 @@ export class MirCompilerCore {
   descriptorPointerSideEffects(expression) {
     const result = [];
     const visit = (candidate) => {
-      const info = binaryen.getExpressionInfo(candidate);
+      const info = expressionInfo(candidate);
       if (info.id === binaryen.LocalSetId && info.isTee) {
         result.push(
           this.module.local.set(info.index, this.module.copyExpression(info.value)),
@@ -488,7 +491,7 @@ export class MirCompilerCore {
   }
 
   expressionContainsTee(expression) {
-    const info = binaryen.getExpressionInfo(expression);
+    const info = expressionInfo(expression);
     if (info.id === binaryen.LocalSetId) return info.isTee;
     if (info.id === binaryen.UnaryId) {
       return this.expressionContainsTee(info.value);
@@ -516,7 +519,7 @@ export class MirCompilerCore {
   }
 
   rewriteExpressionChildren(expression, rewrite) {
-    const info = binaryen.getExpressionInfo(expression);
+    const info = expressionInfo(expression);
     const replace = (child, setter) => {
       if (child) setter(rewrite(child));
     };
@@ -731,6 +734,14 @@ export class MirCompilerCore {
           && data.destination.projections.length === 0
         ) {
           candidates[functionId][data.destination.base.data] = false;
+        } else if (
+          kind === "assign"
+          && data.value?.kind === "make_slice"
+          && data.value.data.source?.kind === "place"
+          && data.value.data.source.data.base?.kind === "parameter"
+        ) {
+          // A view needs the original address even if it is only read through.
+          candidates[functionId][data.value.data.source.data.base.data] = false;
         } else if (kind === "call") {
           callSites[data.function].push({ caller: functionId, call: data });
         } else if (kind === "if") {
@@ -1270,8 +1281,10 @@ export class MirCompilerCore {
               );
             } else if (kind === "slice_store") {
               markValueWrite(data?.slice, "slice store");
-            } else if (kind === "slice_fill" || kind === "slice_copy") {
+            } else if (kind === "slice_fill") {
               markValueWrite(data?.destination, "slice write");
+            } else if (kind === "slice_copy") {
+              for (const copy of data?.copies ?? []) markValueWrite(copy.destination, "slice write");
             } else if (kind === "call") {
               const callee = summaries[data?.function];
               if (!callee) {
@@ -1396,6 +1409,7 @@ export class MirCompilerCore {
       "slice_load",
       "slice_store",
       "slice_window",
+      "normalize_index",
     ]);
     const scan = (functionId, value) => {
       if (value === null || value === undefined) return;
@@ -1407,15 +1421,16 @@ export class MirCompilerCore {
       if (value.kind === "call" && Number.isInteger(value.data?.function)) {
         callees[functionId].add(value.data.function);
       }
-      const fixedDelegatePayloadMayFail = value.kind === "publish_delegate"
-        && this.mir.interface.delegates[value.data?.delegate]?.params.some(
-          (param) => this.type(param.ty).kind === "array",
-        );
+      const delegate = value.kind === "publish_delegate" ? this.mir.interface.delegates[value.data?.delegate] : null;
+      const delegatePayloadMayFail = delegate && (
+        delegate.params.some((param) => this.type(param.ty).kind === "array")
+        || delegate.schema.params.some((param) => param.ty.kind === "slice" && param.ty.element.kind === "struct")
+      );
       const bounds = value.data?.bounds;
       if (
         value.kind === "process_frame"
         || value.kind === "slice_copy"
-        || fixedDelegatePayloadMayFail
+        || delegatePayloadMayFail
         || binaryMayFail(functionId, value)
         || (checkedBoundsKinds.has(value.kind) && bounds === "checked")
         || (dynamicBoundsKinds.has(value.kind) && bounds !== "unchecked")
@@ -1449,11 +1464,13 @@ export class MirCompilerCore {
     this.inputLayout = this.layoutPorts(this.mir.interface.inputs);
     this.outputLayout = this.layoutPorts(this.mir.interface.outputs);
     this.controlOutputLayout = this.layoutControlOutputs();
-    this.eventLayout = this.mir.interface.events.map((event) =>
-      this.layoutEventValues(event.params),
+    this.eventPlans = this.mir.interface.events.map((event) => new PayloadPlan(event.schema));
+    this.delegatePlans = this.mir.interface.delegates.map((event) => new PayloadPlan(event.schema));
+    this.eventLayout = this.mir.interface.events.map((event, index) =>
+      this.layoutEventValues(event.params, this.eventPlans[index]),
     );
-    this.delegateLayout = this.mir.interface.delegates.map((delegate) =>
-      this.layoutEventValues(delegate.params),
+    this.delegateLayout = this.mir.interface.delegates.map((delegate, index) =>
+      this.layoutEventValues(delegate.params, this.delegatePlans[index]),
     );
     this.requireWasm32Extent(
       this.stateLayout.byteLength,
@@ -1593,26 +1610,29 @@ export class MirCompilerCore {
     });
   }
 
-  layoutEventValues(values) {
+  layoutEventValues(values, plan) {
+    const prefixes = Array(values.length).fill(false);
+    for (const tensor of plan.tensors) prefixes[tensor.parameter] = tensor.lengthPrefix;
     let offset = 0;
     let dynamic = false;
-    const result = values.map((value) => {
+    const result = values.map((value, index) => {
       const type = this.type(value.ty);
       if (type.kind === "slice") {
         const entry = {
           offset: dynamic ? null : offset,
           size: null,
           dynamic: true,
-          headerSize: 4,
+          headerSize: prefixes[index] ? 4 : 0,
           scalar: type.data.element,
         };
-        offset += 4;
+        offset += entry.headerSize;
         dynamic = true;
         return entry;
       }
       const layout = this.typeLayout(value.ty);
       const entry = { ...layout, offset: dynamic ? null : offset, dynamic: false };
       offset += layout.size;
+      if (plan.parameters.some((group) => group.lengthParameter === index)) dynamic = true;
       return entry;
     });
     result.byteLength = dynamic ? null : offset;
@@ -2482,7 +2502,9 @@ export class MirCompilerCore {
         this.fail(`event '${event.name}' has an invalid MIR handler signature`);
       }
       const wrapperName = `$onda.abi.event.${eventId}`;
+      const prepared = prepareEventInput(this, this.eventPlans[eventId]);
       const body = this.module.block(null, [
+        ...prepared.statements,
         this.module.global.set(
           POINTER_GLOBALS.delegateBatch,
           this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
@@ -2498,7 +2520,7 @@ export class MirCompilerCore {
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,
-          this.module.local.get(0, binaryen.i32),
+          prepared.workspace(),
         ),
         this.module.global.set(
           POINTER_GLOBALS.params,
@@ -2535,10 +2557,17 @@ export class MirCompilerCore {
         wrapperName,
         binaryen.createType(Array.from({ length: 8 }, () => binaryen.i32)),
         binaryen.i32,
-        [],
+        prepared.locals,
         body,
       );
       this.module.addFunctionExport(wrapperName, `onda_event_${eventId}`);
     });
   }
+}
+
+// Operandless control nodes have no accessor table in Binaryen's JS API.
+function expressionInfo(expression) {
+  const id = binaryen.getExpressionId(expression);
+  if (id === binaryen.NopId || id === binaryen.UnreachableId) return { id };
+  return binaryen.getExpressionInfo(expression);
 }

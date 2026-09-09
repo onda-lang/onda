@@ -1,0 +1,36 @@
+struct Note:
+  value = 1.0
+  history: f32[2]
+
+def make() -> f32[2]:
+  return [2.0, 3.0]
+
+init:
+  left: Note[4] = Note(value = 10.0)
+  right: Note[4] = Note(value = 20.0)
+  choose: i32 = 0
+  offset: i32 = 1
+
+event alter():
+  left[1] = Note(value = 30.0)
+  choose = 1
+  offset = 0
+  scratch = make()
+  scratch[0] = 99.0
+
+block:
+  if choose == 0:
+    selected = left[offset]
+    selected_array = left[1:]
+  else:
+    selected = right[offset]
+    selected_array = right[2:]
+  kept = make()
+  window: f32[] = kept[:]
+  sample:
+    selected.value = selected.value + 1.0
+    window[0] = window[0] + 2.0
+    out1 = selected.value + window[0]
+    chosen = selected_array[0]
+    out2 = chosen.value + f32(selected_array.len())
+  selected.history[0] = selected.history[0] + 10.0

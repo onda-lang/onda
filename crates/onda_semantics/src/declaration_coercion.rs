@@ -336,6 +336,39 @@ pub(crate) fn resolve_struct_field_decl<'a>(
     None
 }
 
+pub(crate) fn resolve_flattened_struct_array_leaf_type(
+    struct_name: &str,
+    field_path: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    let mut struct_name = struct_name;
+    let mut crossed_struct_array = false;
+    let mut components = field_path.split('.').peekable();
+    while let Some(component) = components.next() {
+        let field = struct_defs
+            .get(struct_name)?
+            .iter()
+            .find(|field| field.name == component)?;
+        let is_last = components.peek().is_none();
+        match &field.ty {
+            TypedFieldType::Struct if !is_last => {
+                struct_name = field.struct_name.as_deref()?;
+            }
+            TypedFieldType::Array(_) if field.array_elem_struct.is_some() && !is_last => {
+                crossed_struct_array = true;
+                struct_name = field.array_elem_struct.as_deref()?;
+            }
+            TypedFieldType::Array(_) if is_last => return field.array_elem_ty,
+            TypedFieldType::Scalar(ty) if is_last && crossed_struct_array => return Some(*ty),
+            TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) | TypedFieldType::Struct => {
+                return None;
+            }
+            TypedFieldType::Array(_) => return None,
+        }
+    }
+    None
+}
+
 pub(crate) fn is_builtin_array_like_receiver_with_resolver<'a, F>(
     base: &str,
     declared_symbols: &DeclaredSymbolMap,
@@ -517,6 +550,13 @@ pub(crate) fn coerce_params(
             continue;
         }
         match param.ty.as_ref() {
+            Some(DeclType::Slice(_)) => {
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
+                    "ports and parameters require fixed value shapes",
+                );
+            }
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match param.ty.as_ref() {
                     Some(DeclType::Scalar(ty)) => *ty,

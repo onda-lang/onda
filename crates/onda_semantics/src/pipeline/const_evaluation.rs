@@ -958,6 +958,13 @@ pub(super) fn const_def_return_type(
             None
         }
         Some(FnReturnType::Array { elem, size }) => {
+            let FnReturnScalarType::Primitive(elem) = elem else {
+                errors.push(Diagnostic::semantic_span(
+                    "const def array return requires primitive elements",
+                    def.return_ty_loc,
+                ));
+                return None;
+            };
             let locals = HashMap::new();
             let local_arrays = HashMap::new();
             let len = eval_const_array_size_with_defs(

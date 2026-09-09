@@ -38,3 +38,11 @@ Start with only the first partial enabled, then add harmonics using the `levels`
 Each partial also has independent `ratios`, `detune_cents`, `pan`, and `enabled` controls.
 Mute the even harmonics for a hollow tone, or set two ratios equal and detune one slightly
 for beating. Non-integer ratios create inharmonic, metallic timbres.
+
+[Structured filter](basic/structured_filter.onda) turns a slowly swept minor-triad saw pad into a
+warm, evolving texture. Its low-pass design returns one coefficient struct per block, while a
+separate memory struct carries the filter history through the sample loop.
+
+[Structured messages](basic/structured_messages.onda) is a gently animated phase-modulation drone.
+Its `configure` event accepts a nested tone-and-motion patch, installs it atomically, and publishes
+the accepted patch through a structured delegate; edit the event JSON to reshape the timbre live.

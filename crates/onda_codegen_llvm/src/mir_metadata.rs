@@ -363,6 +363,7 @@ fn build_events(
             program,
             "event",
             &event.name,
+            &event.schema,
             event
                 .params
                 .iter()
@@ -376,6 +377,9 @@ fn build_events(
             )));
         }
         events.push(DeclaredEvent {
+            payload_plan: onda_processor_abi::payload::PayloadPlan::new(&event.schema)
+                .map_err(|error| MirMetadataError::new(error.to_string()))?,
+            schema: event.schema.clone(),
             name: event.name.clone(),
             params,
             payload_bytes: fixed_sizes[event_index],
@@ -395,12 +399,16 @@ fn build_delegates(program: &Program) -> Result<Vec<DeclaredDelegate>, MirMetada
                 program,
                 "delegate",
                 &delegate.name,
+                &delegate.schema,
                 delegate
                     .params
                     .iter()
                     .map(|param| (param.name.as_str(), param.ty, None)),
             )?;
             Ok(DeclaredDelegate {
+                payload_plan: onda_processor_abi::payload::PayloadPlan::new(&delegate.schema)
+                    .map_err(|error| MirMetadataError::new(error.to_string()))?,
+                schema: delegate.schema.clone(),
                 name: delegate.name.clone(),
                 params,
                 payload_bytes,
@@ -414,6 +422,7 @@ fn build_payload_descriptor<'a>(
     program: &Program,
     owner_kind: &str,
     owner_name: &str,
+    schema: &onda_processor_abi::payload::PayloadSchema,
     params: impl IntoIterator<
         Item = (
             &'a str,
@@ -422,10 +431,16 @@ fn build_payload_descriptor<'a>(
         ),
     >,
 ) -> Result<(Vec<DeclaredEventParam>, Option<usize>, usize), MirMetadataError> {
+    let plan = onda_processor_abi::payload::PayloadPlan::new(schema)
+        .map_err(|error| MirMetadataError::new(error.to_string()))?;
+    let mut prefixes = vec![false; plan.abi_parameter_count()];
+    for tensor in plan.tensors() {
+        prefixes[tensor.parameter] = tensor.length_prefix;
+    }
     let mut descriptors = Vec::new();
     let mut minimum_wire_offset = 0usize;
     let mut fixed_size = Some(0usize);
-    for (name, ty, default) in params {
+    for (index, (name, ty, default)) in params.into_iter().enumerate() {
         match &program.types[ty.index()] {
             Type::Scalar(scalar) => {
                 let elem_ty = primitive_type(*scalar);
@@ -501,7 +516,11 @@ fn build_payload_descriptor<'a>(
                 });
                 minimum_wire_offset = checked_add(
                     minimum_wire_offset,
-                    std::mem::size_of::<i32>(),
+                    if prefixes[index] {
+                        std::mem::size_of::<i32>()
+                    } else {
+                        0
+                    },
                     "payload slice length-prefix offset",
                 )?;
                 fixed_size = None;
@@ -511,6 +530,13 @@ fn build_payload_descriptor<'a>(
                     "MIR {owner_kind} '{owner_name}' parameter '{name}' has unsupported runtime type {other:?}"
                 )));
             }
+        }
+        if plan
+            .parameters()
+            .iter()
+            .any(|group| group.length_parameter == Some(index))
+        {
+            fixed_size = None;
         }
     }
     Ok((descriptors, fixed_size, minimum_wire_offset))
@@ -766,7 +792,7 @@ mod tests {
             FunctionKind::Event(onda_mir::EventId::new(1)),
             Vec::new(),
         );
-        Program {
+        let mut program = Program {
             schema_version: onda_mir::MIR_SCHEMA_VERSION,
             config: CompileConfig {
                 sample_rate: 48_000.0,
@@ -861,6 +887,7 @@ mod tests {
                 buffer_arrays: Vec::new(),
                 events: vec![
                     Event {
+                        schema: Default::default(),
                         name: "note".to_owned(),
                         params: vec![
                             EventParam {
@@ -880,6 +907,7 @@ mod tests {
                         handler: FunctionId::new(2),
                     },
                     Event {
+                        schema: Default::default(),
                         name: "curve".to_owned(),
                         params: vec![
                             EventParam {
@@ -943,7 +971,19 @@ mod tests {
                 init: FunctionId::new(0),
                 process: FunctionId::new(1),
             },
+        };
+        for index in 0..program.interface.events.len() {
+            let schema = program
+                .payload_schema(
+                    program.interface.events[index]
+                        .params
+                        .iter()
+                        .map(|p| (p.name.as_str(), p.ty, p.default.as_ref())),
+                )
+                .unwrap();
+            program.interface.events[index].schema = schema;
         }
+        program
     }
 
     #[test]

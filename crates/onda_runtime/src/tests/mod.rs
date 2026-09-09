@@ -3145,3 +3145,108 @@ fn checked_buffer_bindings_reject_wrapping_element_counts() {
         8192
     );
 }
+
+#[test]
+fn rejected_event_capacity_preserves_instance_and_can_be_reserved_off_thread() {
+    let mut instance = compile_test_instance(
+        r#"
+init:
+  held: i32 = 0
+event update(values: i32[]):
+  held = values.len()
+sample:
+  out1 = f32(held)
+"#,
+        1,
+        1,
+    );
+    let event = instance.event_index("update").unwrap();
+    let mut output_storage = [0_u8; 32];
+    let mut print_batch = PrintBatch::from_storage(&mut output_storage);
+    print_batch.used_bytes = 7;
+    print_batch.record_count = 3;
+    print_batch.overflow_count = 5;
+    let status = trigger_event_by_index_with_status(
+        &mut instance,
+        event,
+        &[0; 3],
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+    let error = trigger_event_by_index(
+        &mut instance,
+        event,
+        &[0; 3],
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap_err();
+    assert!(error.message.contains("payload"));
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+
+    let count = instance.event_workspace_capacity() / 4 + 1;
+    let mut payload = vec![0; 4 + count * 4];
+    payload[..4].copy_from_slice(&(count as i32).to_le_bytes());
+    assert!(
+        trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).is_err()
+    );
+    assert!(instance.is_initialized());
+    let status = trigger_event_by_index_with_status(
+        &mut instance,
+        event,
+        &payload,
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+    let status = unsafe {
+        trigger_event_by_index_unchecked(&mut instance, event, &payload, ExecutionOutput::none())
+    }
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert!(instance.is_initialized());
+    instance.reserve_event_workspace(payload.len()).unwrap();
+    trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).unwrap();
+    assert!(instance.is_initialized());
+}

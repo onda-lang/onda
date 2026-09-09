@@ -90,8 +90,12 @@ pub(crate) struct ProcEventParamSpec {
     pub(crate) default: Option<Expr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProcEventParamTypeSpec {
+    StructSlice { name: String },
+    Tuple(Vec<PrimitiveType>),
+    Struct { name: String },
+    StructArray { name: String, len: usize },
     Scalar { ty: PrimitiveType },
     FixedArray { elem_ty: PrimitiveType, len: usize },
     Slice { elem_ty: PrimitiveType },
@@ -185,6 +189,37 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
         }
     }
 
+    // Semantic struct leaves are addressable bindings, not separate owned
+    // fields. Proc layout expands each nominal owner exactly once.
+    for (name, root) in &st.state_array_struct_roots {
+        if !st.nested_proc_arrays.contains_key(name) {
+            psf.data
+                .entry(name.clone())
+                .or_insert_with(|| ArrayTypeSpec {
+                    elem: ArrayElemType::Struct(root.struct_name.clone()),
+                    size: Box::new(Expr::int(root.len as i64)),
+                });
+        }
+    }
+    let owners = st
+        .struct_instances
+        .keys()
+        .chain(st.state_array_struct_roots.keys())
+        .collect::<HashSet<_>>();
+    let is_leaf = |name: &String| {
+        let mut parent = name.as_str();
+        while let Some((prefix, _)) = parent.rsplit_once('.') {
+            if owners.contains(&prefix.to_owned()) {
+                return true;
+            }
+            parent = prefix;
+        }
+        false
+    };
+    psf.scalars.retain(|name, _| !is_leaf(name));
+    psf.tuples.retain(|name, _| !is_leaf(name));
+    psf.data.retain(|name, _| !is_leaf(name));
+
     // Nested procs and proc arrays
     psf.nested_procs = st.nested_procs.clone();
     psf.nested_proc_arrays = st.nested_proc_arrays.clone();
@@ -205,6 +240,7 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
         );
     }
 
+    psf.struct_instances.retain(|name, _| !is_leaf(name));
     psf
 }
 
@@ -754,7 +790,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
     stmt: &Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_fields: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -825,10 +860,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             });
                         }
                         if field_names.contains(name) && is_plain_symbol(name) {
-                            if matches!(expr, Expr::ArrayCtor { .. }) && array_fields.contains(name)
-                            {
-                                return None;
-                            }
                             return Some(Stmt::Assign {
                                 loc: source_loc.into(),
                                 target_loc: Default::default(),
@@ -1115,7 +1146,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1130,7 +1160,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1192,7 +1221,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1233,7 +1261,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,

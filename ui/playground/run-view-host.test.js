@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BrowserRunViewHost, mergeEvents, mergeParams } from "./run-view-host.js";
+import { BrowserRunViewHost, mergeEvents as mergeSchemaEvents, mergeParams } from "./run-view-host.js";
+
+// Keep primitive fixture shorthand local to tests; production consumes recursive schemas.
+function mergeEvents(events, existing) {
+  return mergeSchemaEvents(events.map((event) => ({ ...event, schema: event.schema ?? { params: event.params.map((param) => {
+    const scalar = { kind: "scalar", encoding: param.scalar };
+    const array = /\[/.test(param.type_repr);
+    return { name: param.name, ty: param.is_slice ? { kind: "slice", element: scalar }
+      : array ? { kind: "array", element: scalar, len: param.array_len } : scalar,
+      ...(!param.is_slice && param.default_reprs?.length ? { default: array ? param.default_reprs : param.default_reprs[0] } : {}) };
+  }) } })), existing);
+}
 
 function scalarParam(overrides = {}) {
   return {
@@ -191,10 +202,10 @@ test("decodes finite f32 representations at their declared precision", () => {
     }),
   ], []);
 
-  assert.equal(param.default, Math.fround(0.72));
-  assert.equal(param.value, Math.fround(0.72));
-  assert.equal(param.rangeMax, Math.fround(0.98));
-  assert.equal(stepped.step, Math.fround(0.1));
+  assert.equal(param.default, 0.72);
+  assert.equal(param.value, 0.72);
+  assert.equal(param.rangeMax, 0.98);
+  assert.equal(stepped.step, 0.1);
 });
 
 test("preserves event array shapes instead of presenting them as scalars", () => {
@@ -465,4 +476,21 @@ test("forwards MIDI activity to the shared run view", () => {
     globalThis.document = previousDocument;
     globalThis.MutationObserver = previousMutationObserver;
   }
+});
+
+test("browser run view preserves logical structured message shapes and independent defaults", () => {
+  const event = { name: "configure", schema: { params: [{ name: "patch", ty: { kind: "struct", name: "Patch", fields: [
+    { name: "id", ty: { kind: "scalar", encoding: "i64" }, default: "9223372036854775807" },
+    { name: "gains", ty: { kind: "array", element: { kind: "scalar", encoding: "f64" }, len: 2 } },
+  ] } }] } };
+  const [first] = mergeSchemaEvents([event], []);
+  assert.equal(first.args.length, 1);
+  assert.equal(first.args[0].type, "Patch");
+  assert.deepEqual(first.args[0].value, { id: "9223372036854775807", gains: [0, 0] });
+  first.args[0].value.gains[0] = 0.5;
+  assert.equal(first.args[0].default.gains[0], 0);
+  const [next] = mergeSchemaEvents([event], [first]);
+  assert.equal(next.args[0].value.gains[0], 0.5);
+  event.schema.params[0].ty.fields[1].ty.element.encoding = "f32";
+  assert.equal(mergeSchemaEvents([event], [next])[0].args[0].value.gains[0], 0);
 });

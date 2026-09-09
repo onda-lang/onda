@@ -1,0 +1,109 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { canonicalF32Number, PayloadPlan, writeEventInput } from "../src/index.js";
+
+const scalar = (encoding) => ({ kind: "scalar", encoding });
+const note = { kind: "struct", name: "Note", fields: [
+  { name: "enabled", ty: scalar("bool") },
+  { name: "gain", ty: scalar("f64") },
+  { name: "bins", ty: { kind: "array", len: 2, element: scalar("i32") } },
+  { name: "pair", ty: { kind: "tuple", elements: [scalar("i64"), scalar("f32")] } },
+] };
+const schema = { params: [
+  { name: "prefix", ty: scalar("bool") },
+  { name: "notes", ty: { kind: "slice", element: note } },
+  { name: "tail", ty: scalar("i64"), default: "-9223372036854775808" },
+] };
+
+test("f32 host values hide widening noise without changing their bits", () => {
+  const value = canonicalF32Number(0.15);
+  assert.equal(value, 0.15);
+  assert.equal(Math.fround(value), Math.fround(0.15));
+  assert.ok(Object.is(canonicalF32Number(-0), -0));
+
+  const plan = new PayloadPlan({ params: [{ name: "gain", ty: scalar("f32") }] });
+  assert.deepEqual(plan.decode(plan.encode({ gain: 0.15 })), { gain: 0.15 });
+  assert.equal(JSON.stringify(plan.decode(plan.encode({ gain: 0.15 }))), '{"gain":0.15}');
+});
+
+test("structured payloads use one length and canonical nested SoA tensors", () => {
+  const plan = new PayloadPlan(schema);
+  const values = { prefix: true, notes: [
+    { enabled: true, gain: -0, bins: [1, 2], pair: [9007199254740993n, 0.25] },
+    { enabled: false, gain: 4.5, bins: [3, 4], pair: [-9223372036854775808n, 0.5] },
+  ] };
+  const bytes = plan.encode(values);
+  assert.equal(bytes.length, 1 + 4 + 2 * (1 + 8 + 8 + 8 + 4) + 8);
+  assert.equal(new DataView(bytes.buffer).getInt32(1, true), 2);
+  assert.deepEqual([...bytes.slice(5, 7)], [1, 0]);
+  const decoded = plan.decode(bytes);
+  assert.deepEqual(decoded, { ...values, tail: -9223372036854775808n });
+  assert.ok(Object.is(decoded.notes[0].gain, -0));
+  assert.equal(plan.requiredWorkspace(bytes), plan.sizes([2]).workspace);
+  assert.equal(plan.tensors.length, 7);
+  assert.equal(plan.parameters[1].lengthParameter, 1);
+  assert.equal(plan.abiParameterCount, 8);
+  const empty = plan.encode({ prefix: false, notes: [] });
+  assert.deepEqual(plan.decode(empty), { prefix: false, notes: [], tail: -9223372036854775808n });
+});
+
+test("nested struct arrays retain independent outer and inner tensor axes", () => {
+  const plan = new PayloadPlan({ params: [{ name: "patches", ty: { kind: "array", len: 2, element: {
+    kind: "struct", name: "Patch", fields: [
+      { name: "notes", ty: { kind: "array", len: 2, element: note } },
+      { name: "tail", ty: scalar("i32") },
+    ],
+  } } }] });
+  const make = (gain) => ({ enabled: true, gain, bins: [gain + 1, gain + 2], pair: [BigInt(gain + 3), gain + 4] });
+  const patches = [{ notes: [make(1), make(10)], tail: 7 }, { notes: [make(100), make(1000)], tail: 9 }];
+  assert.deepEqual(plan.decode(plan.encode({ patches })), { patches });
+  assert.deepEqual(plan.tensors.map((leaf) => leaf.shape), [[2, 2], [2, 2], [2, 2, 2], [2, 2], [2, 2], [2]]);
+});
+
+test("payload preflight rejects every truncation, trailing bytes, negative and overflowing lengths", () => {
+  const plan = new PayloadPlan(schema);
+  const bytes = plan.encode({ prefix: false, notes: [] });
+  for (let size = 0; size < bytes.length; size += 1) assert.throws(() => plan.decode(bytes.subarray(0, size)), /truncated/);
+  assert.throws(() => plan.decode(new Uint8Array(bytes.length + 1)), /trailing/);
+  for (const length of [-1, 0x7fffffff]) {
+    const invalid = bytes.slice();
+    new DataView(invalid.buffer).setInt32(1, length, true);
+    assert.throws(() => plan.decode(invalid), /negative|exceeds/);
+  }
+  assert.throws(() => plan.encode({ prefix: true, notes: [], tail: Number.MAX_SAFE_INTEGER + 1 }), /exact/);
+});
+
+test("empty struct slices preserve their logical length without leaf storage", () => {
+  const plan = new PayloadPlan({ params: [{ name: "items", ty: { kind: "slice", element: { kind: "struct", name: "Empty", fields: [] } } }] });
+  const bytes = plan.encode({ items: [{}, {}, {}] });
+  assert.equal(bytes.length, 4);
+  assert.deepEqual(plan.decode(bytes), { items: [{}, {}, {}] });
+  assert.equal(plan.abiParameterCount, 1);
+  const memory = new ArrayBuffer(64);
+  writeEventInput(memory, 8, 24, 4, 32, 16);
+  assert.deepEqual([...new Uint32Array(memory, 8, 4)], [24, 4, 32, 16]);
+  assert.throws(() => writeEventInput(memory, 8, 24, 4, 33, 16), /misaligned/);
+});
+
+test("plans isolate their schema and reject invalid defaults and value fields", () => {
+  const schema = { params: [{ name: "gain", ty: { kind: "scalar", encoding: "f32" }, default: "0.5" }] };
+  const plan = new PayloadPlan(schema);
+  schema.params[0].ty.encoding = "i32";
+  assert.deepEqual(plan.decode(plan.encode({})), { gain: 0.5 });
+  assert.throws(() => { plan.tensors[0].elements = 100; }, TypeError);
+  schema.params[0].ty.encoding = "f32";
+  schema.params[0].default = "garbage";
+  assert.throws(() => new PayloadPlan(schema), /floating-point/);
+});
+
+test("struct values require exactly their declared own fields", () => {
+  const plan = new PayloadPlan({ params: [{
+    name: "item",
+    ty: { kind: "struct", name: "Item", fields: [{ name: "value", ty: scalar("i32") }] },
+  }] });
+  const inherited = Object.create({ value: 7 });
+  inherited.unrelated = 9;
+  assert.throws(() => plan.encode({ item: inherited }), /exactly its declared fields/);
+  assert.throws(() => plan.encode({ item: { value: 7, unrelated: 9 } }), /exactly its declared fields/);
+  assert.deepEqual(plan.decode(plan.encode({ item: { value: 7 } })), { item: { value: 7 } });
+});

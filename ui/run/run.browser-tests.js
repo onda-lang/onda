@@ -140,6 +140,24 @@ try {
   check(document.querySelector('#params input[type="checkbox"]') === boolInput,
     "array controls survive metadata refreshes");
 
+  const structuredEvents = [{ name: "configure", args: [{ name: "patch", type: "Patch",
+    default: { notes: [{ gain: 0.5, id: "9007199254740993" }], pair: [2, true] } }] }];
+  send({ events: structuredEvents });
+  const structured = document.querySelector("#events textarea");
+  check(JSON.parse(structured.value).notes[0].id === "9007199254740993",
+    "structured defaults preserve nested values and exact i64 strings");
+  edit(structured, '{"notes":');
+  send({ events: structuredEvents, logText: "update" });
+  check(document.querySelector("#events textarea") === structured && structured.value === '{"notes":'
+    && document.querySelector(".event-trigger").disabled,
+    "invalid JSON drafts survive refreshes and disable dispatch");
+  const patch = { notes: [{ gain: 0.75, id: "9223372036854775807" }], pair: [3, false] };
+  edit(structured, JSON.stringify(patch));
+  document.querySelector(".event-trigger").click();
+  check(JSON.stringify(window.__testMessages.at(-1).values[0]) === JSON.stringify(patch),
+    "structured event controls dispatch complete nested values");
+  send({ events });
+
   send({ connected: false });
   check(document.querySelector(".event-trigger").disabled
     && document.querySelector("#events input").disabled,

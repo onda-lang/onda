@@ -890,7 +890,7 @@ sample:
 }
 
 #[test]
-fn task_rejects_reference_locals_that_cross_yield() {
+fn task_rejects_external_memory_views_that_cross_yield() {
     let source = r#"
 buffers:
   data: f32
@@ -912,7 +912,7 @@ sample:
         .expect_err("a reference local cannot be stored in a task frame");
     assert!(
         errors.iter().any(|error| {
-            error.message.contains("window") && error.message.contains("live across a yield")
+            error.message.contains("window") && error.message.contains("external memory")
         }),
         "unexpected diagnostics: {errors:?}"
     );
@@ -972,15 +972,19 @@ sample:
         1,
         "task initialization should remain one operation rather than one CFG node per element"
     );
-    let scratch_local = dump
-        .lines()
-        .find(|line| line.contains("\"scratch\"") && line.trim_start().starts_with("local "))
-        .and_then(|line| line.split_whitespace().nth(1))
-        .expect("scratch array MIR local");
+    let scratch = mir
+        .as_program()
+        .state
+        .iter()
+        .find(|slot| slot.name.ends_with(".scratch"))
+        .expect("task array uses prepared scratch storage");
     assert_eq!(
-        dump.matches(&format!("{scratch_local}[")).count(),
-        1,
-        "declaration-only scratch storage must not emit an unrolled zero store per element"
+        scratch.persistence,
+        onda_mir::StatePersistence::InstanceScratch
+    );
+    assert!(
+        dump.lines().filter(|line| line.contains("i32(0)")).count() < 32,
+        "scratch initialization must not expand one store per element"
     );
 }
 
@@ -1039,7 +1043,7 @@ sample:
     let mir = lower_program_to_optimized_mir(&typed).expect("array task should produce valid MIR");
     let dump = onda_mir::format_program(mir.as_program());
     assert!(dump.contains("i32(3)"));
-    assert!(dump.contains("i32(5)"));
+    assert!(dump.contains("i32(5)"), "{dump}");
 }
 
 #[test]

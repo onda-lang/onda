@@ -1252,7 +1252,11 @@ pub(crate) fn expand_proc_event_call_args(
                 });
                 continue;
             }
-            ProcEventParamTypeSpec::Slice { .. } => {
+            ProcEventParamTypeSpec::Tuple(_)
+            | ProcEventParamTypeSpec::Struct { .. }
+            | ProcEventParamTypeSpec::StructArray { .. }
+            | ProcEventParamTypeSpec::StructSlice { .. }
+            | ProcEventParamTypeSpec::Slice { .. } => {
                 expanded.push(CallArg {
                     name: None,
                     expr: resolved_expr,
@@ -1347,6 +1351,13 @@ pub(crate) fn expand_proc_param_specs(
 
     for param in params {
         match param.ty.as_ref() {
+            Some(DeclType::Slice(_)) => {
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
+                    "ports and parameters require fixed value shapes",
+                );
+            }
             None | Some(DeclType::Scalar(_)) => {
                 let ty = match param.ty.as_ref() {
                     Some(DeclType::Scalar(ty)) => *ty,

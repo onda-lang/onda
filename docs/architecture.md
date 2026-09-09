@@ -129,6 +129,11 @@ Non-crate directories of note:
   canonical segmented process schedule.
   - `mir_lowering/{lowerer_core,scheduling,control_flow,expressions,calls,aggregates,slices,values}.rs`
     — focused construction domains kept behind one lowering transaction.
+  - `mir_lowering/{data,data_slices,references,reference_joins,storage,retained_storage}.rs` — canonical data
+    construction/copying, nominal slices, scalar/tensor reference arguments, branch-selected
+    references, prepared fixed scratch, and pointer-free block selection reconstruction.
+    Struct helper tensors use strided slice descriptors;
+    fixed-data returns use caller-owned result storage.
   - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process
     snapshots persist across segments, init/event snapshots are invocation-local, and helpers
     receive read-only references to the calling boundary’s snapshot. Logical host array
@@ -440,3 +445,10 @@ Non-crate directories of note:
 - CI-oriented prebuilt bootstrap: `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` (when `CI` is set) downloads release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
 - LLVM env-selection scripts: `scripts/use-llvm-env.ps1` / `scripts/use-llvm-env.sh` (source the bash one). Flavors: `auto`, `prebuilt`, `source-static`, `source-shared`, `source`.
 - `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API). The ORC path is implemented through `llvm-sys`.
+
+Structured host messages share `onda_processor_abi::payload`, a compiler-free recursive schema and
+SoA tensor planner. Semantic aggregate layouts, MIR validation, native input preparation, and host
+value codecs use its canonical leaf order. The browser ABI package mirrors that contract, and
+backend parity tests exercise the same structured messages. Generated event entry points preflight
+all input before writing aligned workspace; synchronous internal forwarding borrows existing data.
+Logical host encoding/decoding and workspace provisioning happen outside realtime execution.

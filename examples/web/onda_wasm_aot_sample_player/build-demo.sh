@@ -52,6 +52,7 @@ node "$demo_dir/build-artifact.mjs" "$mir_file" "$demo_dir"
 
 cp "$abi_dir/src/index.js" "$demo_dir/artifact.js"
 cp "$abi_dir/src/param-control.js" "$demo_dir/param-control.js"
+cp "$abi_dir/src/payload.js" "$demo_dir/payload.js"
 cp "$webaudio_dir/src/index.js" "$demo_dir/onda-webaudio.js"
 cp "$webaudio_dir/src/worklet.js" "$demo_dir/onda-wasm-processor.js"
 cp "$webaudio_dir/src/param-metadata.js" "$demo_dir/param-metadata.js"

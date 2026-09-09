@@ -2654,7 +2654,12 @@
         return Number.isFinite(number) ? number : 0;
       }
 
+      function isStructuredEventArg(arg) {
+        return !/^(?:f32|f64|i32|i64|bool)(?:\[[0-9]*\])?$/.test(arg.type);
+      }
+
       function initialEventArgValue(arg) {
+        if (isStructuredEventArg(arg)) return structuredClone(arg.default ?? arg.value ?? {});
         if (isArrayEventArg(arg)) {
           const scalar = eventArrayScalarType(arg);
           return Array.isArray(arg.default)
@@ -2692,7 +2697,7 @@
                 ? rawValue
                 : initialEventArgValue(arg);
               return Object.assign({}, arg, {
-                value: isArrayEventArg(arg)
+                value: isStructuredEventArg(arg) ? value : isArrayEventArg(arg)
                   ? (Array.isArray(value)
                     ? value.map((item) => eventScalarValue(eventArrayScalarType(arg), item))
                     : [])
@@ -2709,7 +2714,7 @@
       }
 
       function isArrayEventArg(arg) {
-        return Boolean(arg && (
+        return Boolean(arg && !isStructuredEventArg(arg) && (
           arg.isSlice
           || (typeof arg.arrayLength === "number" && arg.arrayLength !== 1)
           || (typeof arg.type === "string" && /\[[0-9]*\]$/.test(arg.type))
@@ -2908,7 +2913,7 @@
             trigger.className = "event-trigger compact-action";
             trigger.textContent = "Trigger";
             const refreshTrigger = () => {
-              trigger.disabled = !state.connected;
+              trigger.disabled = !state.connected || Boolean(controls.querySelector(":invalid"));
             };
             eventHead.append(head, trigger);
             card.appendChild(eventHead);
@@ -2933,7 +2938,23 @@
               label.title = arg.name + ": " + arg.type;
               setting.appendChild(label);
 
-              if (isArrayEventArg(arg)) {
+              if (isStructuredEventArg(arg)) {
+                const input = document.createElement("textarea");
+                input.className = "param-number";
+                input.value = JSON.stringify(arg.value, null, 2);
+                input.disabled = !state.connected;
+                input.setAttribute("aria-label", arg.name + " JSON value");
+                input.addEventListener("input", () => {
+                  try {
+                    arg.value = JSON.parse(input.value);
+                    input.setCustomValidity("");
+                  } catch {
+                    input.setCustomValidity("Enter a valid JSON value");
+                  }
+                  refreshTrigger();
+                });
+                setting.appendChild(input);
+              } else if (isArrayEventArg(arg)) {
                 setting.classList.add("event-array-arg");
                 const arrayHead = document.createElement("div");
                 arrayHead.className = "event-array-head";
@@ -3035,7 +3056,7 @@
                 type: "triggerEvent",
                 name: event.name,
                 values: (event.args || []).map((arg) =>
-                  isArrayEventArg(arg)
+                  (isStructuredEventArg(arg) || isArrayEventArg(arg))
                     ? arg.value
                     : eventScalarValue(arg.type, arg.value)
                 ),

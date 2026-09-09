@@ -11,6 +11,7 @@ pub(crate) struct ExecutableOwnerBodies<'a> {
 }
 
 pub(crate) struct ExecutableOwnerRuntimeState<'a> {
+    pub(crate) init_bindings: Option<&'a ScopeFlowState>,
     pub(crate) state_scalars: &'a mut HashMap<String, PrimitiveType>,
     pub(crate) declared_symbols: &'a DeclaredSymbolMap,
     pub(crate) state_arrays: &'a HashMap<String, usize>,
@@ -23,6 +24,7 @@ pub(crate) struct ExecutableOwnerRuntimeState<'a> {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeScopePlan<'a> {
+    pub(crate) params: &'a [FnParamDecl],
     pub(crate) stmts: &'a [Stmt],
     pub(crate) common: ScopeAnalysisCtx<'a>,
     pub(crate) registration_mode: RuntimeRegistrationMode,
@@ -177,6 +179,7 @@ impl ExecutableOwnerAnalysisPlanSeeds {
 
         [
             RuntimeScopePlan {
+                params: &[],
                 stmts: bodies.block_pre,
                 common: block_common,
                 registration_mode: RuntimeRegistrationMode::BlockRoot,
@@ -193,6 +196,7 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                     .block_forbidden_assign_array_names,
             },
             RuntimeScopePlan {
+                params: &[],
                 stmts: bodies.sample,
                 common: sample_common,
                 registration_mode: RuntimeRegistrationMode::None,
@@ -209,6 +213,7 @@ impl ExecutableOwnerAnalysisPlanSeeds {
                     .sample_forbidden_assign_array_names,
             },
             RuntimeScopePlan {
+                params: &[],
                 stmts: bodies.block_post,
                 common: block_common,
                 registration_mode: RuntimeRegistrationMode::BlockRoot,
@@ -503,20 +508,77 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
     runtime_state: &mut ExecutableOwnerRuntimeState<'a>,
     plans: impl IntoIterator<Item = RuntimeScopePlan<'a>>,
     errors: &mut Vec<Diagnostic>,
-) {
-    let mut block_buffer_aliases = LocalBufferAliases::new();
-    for (scope_index, plan) in plans.into_iter().enumerate() {
+) -> ScopeFlowState {
+    let mut block_bindings = runtime_state.init_bindings.cloned();
+    for (scope_index, mut plan) in plans.into_iter().enumerate() {
+        let empty_bindings = ScopeFlowState::default();
+        let base_bindings = if scope_index < 3 {
+            block_bindings.as_ref()
+        } else {
+            runtime_state.init_bindings
+        };
+        let mut bindings = std::borrow::Cow::Borrowed(base_bindings.unwrap_or(&empty_bindings));
+        let mut structs = std::borrow::Cow::Borrowed(runtime_state.struct_instances);
+        let mut roots = std::borrow::Cow::Borrowed(runtime_state.state_array_struct_roots);
+        let mut symbols = std::borrow::Cow::Borrowed(runtime_state.declared_symbols);
+        for param in plan.params {
+            bindings.to_mut().shadow_binding(&param.name);
+            match param.ty.as_ref() {
+                Some(FnParamType::Tuple(types)) => {
+                    let bindings = bindings.to_mut();
+                    set_tracked_tuple_types(
+                        &mut bindings.tuple_vars,
+                        &mut bindings.local_aliases,
+                        &param.name,
+                        types,
+                    );
+                }
+                Some(FnParamType::Struct(name)) => {
+                    structs.to_mut().insert(param.name.clone(), name.clone());
+                }
+                Some(
+                    FnParamType::ArrayGeneric(name)
+                    | FnParamType::SizedArray {
+                        generic_name: Some(name),
+                        ..
+                    },
+                ) => {
+                    let len = match param.ty.as_ref() {
+                        Some(FnParamType::SizedArray { size, .. }) => {
+                            crate::def_semantics::const_positive_usize_for_call_type(size)
+                        }
+                        _ => None,
+                    };
+                    register_struct_array_param_bindings(
+                        &param.name,
+                        name,
+                        len,
+                        plan.common.struct_defs,
+                        symbols.to_mut(),
+                        &mut plan.runtime_local_array_aliases,
+                        roots.to_mut(),
+                        errors,
+                    );
+                    for (name, alias) in &mut plan.runtime_local_array_aliases {
+                        if name == &param.name || name.starts_with(&format!("{}.", param.name)) {
+                            alias.writable = !param.readonly;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let aliases = register_and_analyze_runtime_scope(
             plan.stmts.iter(),
             plan.common,
             plan.registration_mode,
             runtime_state.state_scalars,
-            runtime_state.declared_symbols,
+            &symbols,
             runtime_state.state_arrays,
-            runtime_state.state_array_struct_roots,
+            &roots,
             runtime_state.nested_proc_instances,
             runtime_state.proc_array_roots,
-            runtime_state.struct_instances,
+            &structs,
             plan.registration_input_names,
             plan.registration_output_names,
             plan.registration_param_names,
@@ -524,16 +586,17 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
             plan.runtime_known_scalars,
             plan.runtime_local_aliases,
             plan.runtime_local_array_aliases,
-            block_buffer_aliases.clone(),
+            Some(&bindings),
             plan.runtime_forbidden_assign_names,
             plan.runtime_forbidden_assign_array_names,
             runtime_state.state_tuples,
             errors,
         );
         if scope_index == 0 {
-            block_buffer_aliases = aliases;
+            block_bindings = Some(aliases);
         }
     }
+    block_bindings.expect("runtime owner includes a block scope")
 }
 
 pub(crate) fn analyze_owner_events<'a>(
@@ -567,6 +630,8 @@ pub(crate) fn analyze_owner_events<'a>(
         runtime_state.proc_array_roots,
         runtime_state.struct_instances,
         plan.common,
+        runtime_state.init_bindings,
+        runtime_state.state_tuples,
         errors,
     );
 }
