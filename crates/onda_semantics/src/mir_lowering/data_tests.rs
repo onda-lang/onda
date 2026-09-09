@@ -561,6 +561,34 @@ fn structured_array_and_slice_contracts_reject_invalid_initializers() {
 }
 
 #[test]
+fn fixed_struct_array_initializers_explain_unproven_and_mismatched_slice_lengths() {
+    let cases = [
+        (
+            "def capture(values: Note[]):\n  copy: Note[2] = values\nsample:\n  out1 = 0.0",
+            "requires a statically proven exact length",
+        ),
+        (
+            "sample:\n  values: Note[3]\n  copy: Note[2] = values[:]\n  out1 = 0.0",
+            "expects 'Note[2]', got 'Note[3]'",
+        ),
+    ];
+    for (body, expected) in cases {
+        let source = format!("struct Note:\n  value = 1.0\n{body}\n");
+        let errors = crate::analyze(onda_frontend::parse_program(&source).unwrap()).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "missing '{expected}' diagnostic: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.message.contains("data array element")),
+            "slice source was misdiagnosed as an element: {errors:?}"
+        );
+    }
+}
+
+#[test]
 fn struct_slice_fill_is_valid_in_top_level_and_proc_init() {
     compile(
         r#"

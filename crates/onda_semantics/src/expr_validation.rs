@@ -2237,13 +2237,31 @@ pub(crate) fn validate_fixed_data_expr(
             };
             if let Some(values) = init {
                 let expected = DataType::Struct(name.clone());
-                let is_copy = *init_is_value
-                    && values.len() == 1
-                    && infer_fixed_initializer_type(&values[0], env)
-                        == Some(DataType::Array {
-                            element: spec.elem.clone(),
-                            len,
-                        });
+                let copy_source = (*init_is_value && values.len() == 1).then(|| &values[0]);
+                let actual_array =
+                    copy_source.and_then(|value| infer_fixed_initializer_type(value, env));
+                let array_source = copy_source.filter(|value| {
+                    call_array_arg_info(value, env).is_some_and(|info| {
+                        matches!(info.elem, CallArrayArgElem::Nominal(actual) if actual == *name)
+                    })
+                });
+                let expected_array = DataType::Array {
+                    element: spec.elem.clone(),
+                    len,
+                };
+                let is_copy = actual_array.as_ref() == Some(&expected_array);
+                if let Some(source) = array_source.filter(|_| !is_copy) {
+                    let message = match actual_array.as_ref() {
+                        Some(actual) => format!(
+                            "fixed data array initializer {}",
+                            data_type_mismatch(&expected_array, Some(actual))
+                        ),
+                        None => format!(
+                            "fixed data array initializer for '{name}[{len}]' requires a statically proven exact length"
+                        ),
+                    };
+                    push_expr_error(errors, source, message);
+                }
                 if !is_copy && !(*init_is_value && values.len() == 1) && values.len() != len {
                     push_expr_error(
                         errors,
@@ -2256,7 +2274,7 @@ pub(crate) fn validate_fixed_data_expr(
                 }
                 for value in values {
                     let actual = infer_fixed_data_type(value, env);
-                    if !is_copy && actual.as_ref() != Some(&expected) {
+                    if !is_copy && array_source.is_none() && actual.as_ref() != Some(&expected) {
                         push_expr_error(
                             errors,
                             value,
