@@ -930,14 +930,16 @@ impl RunApp {
                         ui.separator();
                         ui.add_space(6.0);
                         for (index, arg) in args.iter().enumerate() {
-                            render_event_arg_editor(
-                                ui,
-                                arg_name(arg).unwrap_or("arg"),
-                                arg_type(arg),
-                                &mut values[index],
-                                &mut drafts[index],
-                                connected,
-                            );
+                            ui.push_id((name, index, arg_type(arg)), |ui| {
+                                render_event_arg_editor(
+                                    ui,
+                                    arg_name(arg).unwrap_or("arg"),
+                                    arg_type(arg),
+                                    &mut values[index],
+                                    &mut drafts[index],
+                                    connected,
+                                );
+                            });
                             if index + 1 < args.len() {
                                 ui.add_space(1.0);
                             }
@@ -1818,24 +1820,32 @@ fn render_event_arg_editor(
     connected: bool,
 ) {
     if structured_event_type(ty) {
-        ui.label(egui::RichText::new(format!("{label}: {ty}")).monospace());
-        let changed = ui
-            .add_enabled_ui(connected, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(draft)
-                        .code_editor()
-                        .desired_width(f32::INFINITY),
-                )
-                .changed()
-            })
-            .inner;
-        match serde_json::from_str::<Value>(draft) {
-            Ok(parsed) if changed => *value = parsed,
-            Err(_) => {
-                ui.colored_label(ui.visuals().error_fg_color, "Enter a valid JSON value");
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!("{label}: {ty}"))
+                .strong()
+                .monospace(),
+        )
+        .id_salt("structured-event-argument")
+        .default_open(false)
+        .show(ui, |ui| {
+            let changed = ui
+                .add_enabled_ui(connected, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(draft)
+                            .code_editor()
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                })
+                .inner;
+            match serde_json::from_str::<Value>(draft) {
+                Ok(parsed) if changed => *value = parsed,
+                Err(_) => {
+                    ui.colored_label(ui.visuals().error_fg_color, "Enter a valid JSON value");
+                }
+                _ => {}
             }
-            _ => {}
-        }
+        });
         return;
     }
     if is_array_type(ty) {

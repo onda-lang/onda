@@ -70,6 +70,42 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     /invalid fixed-size descriptor|does not match its schema tensor/,
   );
 
+  const missingFlattenedDefault = structuredClone(fixture);
+  missingFlattenedDefault.metadata.events[0].schema.params[0].default = "1.0";
+  assert.throws(
+    () => validateProcessorMetadata(missingFlattenedDefault),
+    /defaults do not match schema/,
+  );
+
+  const unexpectedFlattenedDefault = structuredClone(fixture);
+  unexpectedFlattenedDefault.metadata.events[0].params[0].has_default = true;
+  unexpectedFlattenedDefault.metadata.events[0].params[0].default_reprs = ["1.0"];
+  assert.throws(
+    () => validateProcessorMetadata(unexpectedFlattenedDefault),
+    /defaults do not match schema/,
+  );
+
+  const matchingDefault = structuredClone(fixture);
+  matchingDefault.metadata.events[0].schema.params[0].default = "1.0";
+  matchingDefault.metadata.events[0].params[0].has_default = true;
+  matchingDefault.metadata.events[0].params[0].default_reprs = ["1.0"];
+  assert.equal(
+    validateProcessorMetadata(matchingDefault).metadata.events[0].params[0].has_default,
+    true,
+  );
+
+  matchingDefault.metadata.events[0].params[0].default_reprs = ["1"];
+  assert.equal(
+    validateProcessorMetadata(matchingDefault).metadata.events[0].params[0].has_default,
+    true,
+  );
+
+  matchingDefault.metadata.events[0].params[0].default_reprs = ["2"];
+  assert.throws(
+    () => validateProcessorMetadata(matchingDefault),
+    /defaults do not match schema/,
+  );
+
   const inconsistentLogPayload = structuredClone(fixture);
   inconsistentLogPayload.metadata.log_sites = [{
     index: 0,

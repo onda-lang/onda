@@ -96,6 +96,37 @@ test("plans isolate their schema and reject invalid defaults and value fields", 
   assert.throws(() => new PayloadPlan(schema), /floating-point/);
 });
 
+test("projects aggregate defaults into flattened ABI parameters", () => {
+  const plan = new PayloadPlan({ params: [
+    { name: "pair", ty: { kind: "tuple", elements: [scalar("i32"), scalar("f32")] }, default: ["+01", "0.8"] },
+    { name: "values", ty: { kind: "array", len: 2, element: scalar("i64") }, default: ["-2", "3"] },
+  ] });
+  assert.equal(plan.matchesAbiDefault(0, ["1"]), true);
+  assert.equal(plan.matchesAbiDefault(1, ["0.800000011920929"]), true);
+  assert.equal(plan.matchesAbiDefault(2, ["-2", "+03"]), true);
+  assert.equal(plan.matchesAbiDefault(2, ["3", "-2"]), false);
+  assert.deepEqual(plan.decode(plan.encode({})), { pair: [1, 0.8], values: [-2n, 3n] });
+});
+
+test("i32 defaults use the same signed-decimal grammar as Rust", () => {
+  for (const value of ["0x10", "1e2", "1.0", "", " 1", "1 "]) {
+    assert.throws(
+      () => new PayloadPlan({ params: [{ name: "value", ty: scalar("i32"), default: value }] }),
+      /i32 payload default/,
+    );
+  }
+  const valid = [
+    ["+01", 1],
+    ["-0", 0],
+    ["2147483647", 2147483647],
+    ["-2147483648", -2147483648],
+  ];
+  for (const [value, expected] of valid) {
+    const plan = new PayloadPlan({ params: [{ name: "value", ty: scalar("i32"), default: value }] });
+    assert.deepEqual(plan.decode(plan.encode({})), { value: expected });
+  }
+});
+
 test("parameter defaults ignore inherited object properties", () => {
   const names = ["constructor", "toString", "__proto__"];
   const plan = new PayloadPlan({ params: names.map((name, index) => ({

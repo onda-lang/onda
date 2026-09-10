@@ -176,6 +176,8 @@ export class PayloadPlan {
   readonly minimumWorkspace: number;
   readonly dynamicParameters: number;
   readonly abiParameterCount: number;
+  /** Whether scalar representations match this flattened ABI parameter's schema default. */
+  matchesAbiDefault(parameter: number, defaultReprs: readonly string[] | null): boolean;
   sizes(lengths: readonly number[]): OndaPayloadSizes;
   requiredWorkspace(input: Uint8Array | ArrayBuffer): number;
   encode(values: readonly unknown[] | Record<string, unknown>): Uint8Array;

@@ -39,10 +39,12 @@ Each partial also has independent `ratios`, `detune_cents`, `pan`, and `enabled`
 Mute the even harmonics for a hollow tone, or set two ratios equal and detune one slightly
 for beating. Non-integer ratios create inharmonic, metallic timbres.
 
-[Structured filter](basic/structured_filter.onda) turns a slowly swept minor-triad saw pad into a
-warm, evolving texture. Its low-pass design returns one coefficient struct per block, while a
-separate memory struct carries the filter history through the sample loop.
+[Aurora Pad](soundscapes/aurora_pad.onda) spreads a minor chord across a gently detuned stereo field
+and sends it through a slowly opening state-variable filter. Its six saw voices form one processor
+array, its filter designer returns one coefficient struct per block, and independent memory structs
+preserve the two channel histories.
 
-[Structured messages](basic/structured_messages.onda) is a gently animated phase-modulation drone.
-Its `configure` event accepts a nested tone-and-motion patch, installs it atomically, and publishes
-the accepted patch through a structured delegate; edit the event JSON to reshape the timbre live.
+[Orbital FM](soundscapes/orbital_fm.onda) is an evolving phase-modulation drone with detuned
+carriers, a sub-octave body, and an inharmonic shimmer orbiting through the stereo field. Its
+`configure` event installs a nested `Constellation` patch atomically and publishes the accepted
+patch through a structured delegate; expand the event argument to reshape the sound live.

@@ -556,11 +556,9 @@ function validatePayloadMetadata(value, path, supportsDefaults) {
       if (lengths.has(index)) hasDynamicParam = true;
     }
     if (supportsDefaults) {
-      if (param.has_default !== (param.default_reprs !== null)) {
-        throw new OndaArtifactError(`${paramPath}.has_default must reflect default_reprs`);
-      }
-      if (param.default_reprs !== null && param.default_reprs.length !== param.array_len) {
-        throw new OndaArtifactError(`${paramPath}.default_reprs must contain one value per element`);
+      if (param.has_default !== (param.default_reprs !== null)
+          || !plan.matchesAbiDefault(index, param.default_reprs)) {
+        throw new OndaArtifactError(`${paramPath} defaults do not match schema`);
       }
     }
   });

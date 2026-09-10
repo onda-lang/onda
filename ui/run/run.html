@@ -595,6 +595,26 @@
         padding: 0 3px;
       }
 
+      .event-structured-arg {
+        display: block;
+      }
+
+      .event-structured-heading {
+        cursor: pointer;
+        padding: 4px 0;
+      }
+
+      .event-structured-arg[open] > .event-structured-heading {
+        margin-bottom: 6px;
+      }
+
+      .event-structured-arg > textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 7rem;
+        resize: vertical;
+      }
+
       .event-array-arg {
         display: block;
         padding: 0;
@@ -2884,6 +2904,10 @@
             isArrayEventArg(arg) ? arg.value.length : null)),
         ]);
         if (renderedEvents === state.events && renderedEventShape === shape) return;
+        const structuredOpenStates = new Map(
+          [...eventsNode.querySelectorAll(".event-structured-arg")]
+            .map(group => [group.dataset.foldKey, group.open]),
+        );
         renderedEvents = state.events;
         renderedEventShape = shape;
         eventsNode.replaceChildren();
@@ -2923,11 +2947,16 @@
             if (argumentCount > 0) card.appendChild(controls);
 
             for (const arg of event.args || []) {
-              const setting = document.createElement("div");
-              setting.className = "event-arg";
+              const structured = isStructuredEventArg(arg);
+              const setting = document.createElement(structured ? "details" : "div");
+              setting.className = structured
+                ? "event-arg event-structured-arg"
+                : "event-arg";
 
-              const label = document.createElement("div");
-              label.className = "event-arg-heading";
+              const label = document.createElement(structured ? "summary" : "div");
+              label.className = structured
+                ? "event-arg-heading event-structured-heading"
+                : "event-arg-heading";
               const argName = document.createElement("span");
               argName.className = "event-arg-name";
               argName.textContent = arg.name;
@@ -2938,7 +2967,9 @@
               label.title = arg.name + ": " + arg.type;
               setting.appendChild(label);
 
-              if (isStructuredEventArg(arg)) {
+              if (structured) {
+                setting.dataset.foldKey = JSON.stringify([event.name, arg.name, arg.type]);
+                setting.open = structuredOpenStates.get(setting.dataset.foldKey) ?? false;
                 const input = document.createElement("textarea");
                 input.className = "param-number";
                 input.value = JSON.stringify(arg.value, null, 2);

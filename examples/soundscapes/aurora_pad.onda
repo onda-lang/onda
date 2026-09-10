@@ -1,0 +1,77 @@
+import std/osc
+import std/pitch
+
+const VoiceCount = 6
+const Ratios: f32[VoiceCount] = [1.0, 1.189207, 1.498307, 1.0, 1.189207, 1.498307]
+const Detune: f32[VoiceCount] = [-1.0, -0.56, -0.2, 0.2, 0.56, 1.0]
+const Gains: f32[VoiceCount] = [0.25, 0.17, 0.14, 0.25, 0.17, 0.14]
+const LeftPan: f32[VoiceCount] = [1.0, 0.9, 0.72, 0.5, 0.32, 0.18]
+const RightPan: f32[VoiceCount] = [0.18, 0.32, 0.5, 0.72, 0.9, 1.0]
+
+params:
+  root_note: i32 = 43 {24, 67}
+  color = 0.58 {0.0, 1.0}
+  resonance = 0.52 {0.0, 1.0}
+  movement = 0.42 {0.0, 1.0}
+  width = 0.62 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
+
+struct FilterCoefficients:
+  a1 = 1.0
+  a2 = 0.0
+  a3 = 0.0
+
+struct FilterMemory:
+  integrator1 = 0.0
+  integrator2 = 0.0
+
+def design_filter(cutoff, resonance_amount):
+  g = tan(PI * cutoff / SR)
+  damping = 2.0 - resonance_amount * 1.82
+  a1 = 1.0 / (1.0 + g * (g + damping))
+  return FilterCoefficients(a1 = a1, a2 = g * a1, a3 = g * g * a1)
+
+def lowpass(input, memory: FilterMemory, coefficients: FilterCoefficients):
+  high = input - memory.integrator2
+  band = coefficients.a1 * memory.integrator1 + coefficients.a2 * high
+  low = memory.integrator2 + coefficients.a2 * memory.integrator1 + coefficients.a3 * high
+  memory.integrator1 = 2.0 * band - memory.integrator1
+  memory.integrator2 = 2.0 * low - memory.integrator2
+  return low
+
+init:
+  saws: std::osc::Saw[VoiceCount] = std::osc::Saw()
+  sub = std::osc::Sine()
+  left_filter = FilterMemory()
+  right_filter = FilterMemory()
+  coefficients = design_filter(1200.0, resonance)
+  motion_phase = 0.0
+
+block:
+  root_frequency = std::pitch::note_to_hz(f32(root_note))
+  spread_cents = 2.0 + width * 9.0
+  for i in 0..VoiceCount:
+    saws[i].freq = root_frequency * Ratios[i] * pow(2.0, Detune[i] * spread_cents / 1200.0)
+  sub.freq = root_frequency * 0.5
+
+  sweep = 0.5 + 0.5 * sin(motion_phase * TWO_PI)
+  cutoff = clamp(
+    root_frequency * (2.5 + color * 38.0) * (0.72 + sweep * movement * 0.9),
+    70.0,
+    18000.0
+  )
+  coefficients = design_filter(cutoff, resonance)
+
+  sample:
+    motion_phase = wrap(motion_phase + (0.018 + movement * 0.055) / SR, 0.0, 1.0)
+    foundation = sub() * 0.16
+    left_chord = 0.0
+    right_chord = 0.0
+    for i in 0..VoiceCount:
+      voice = saws[i]() * Gains[i]
+      left_chord = left_chord + voice * LeftPan[i]
+      right_chord = right_chord + voice * RightPan[i]
+    left = lowpass(left_chord + foundation, left_filter, coefficients)
+    right = lowpass(right_chord + foundation, right_filter, coefficients)
+    out1 = tanh(left * 1.35) * level
+    out2 = tanh(right * 1.35) * level

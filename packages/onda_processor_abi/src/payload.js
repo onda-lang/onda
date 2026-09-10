@@ -2,6 +2,7 @@
 // array elements into metadata. This mirrors the compiler-free Rust planner.
 const LIMIT = 0x7fffffff;
 const SIZES = Object.freeze({ bool: 1, i32: 4, i64: 8, f32: 4, f64: 8 });
+const SIGNED_DECIMAL_INTEGER = /^[+-]?[0-9]+$/;
 export const EVENT_INPUT_SIZE_BYTES = 16;
 export const PROCESSOR_EXECUTION_INPUT_REJECTED = 2;
 
@@ -63,6 +64,7 @@ function domain(encoding, range) {
 
 export class PayloadPlan {
   #parameterNames;
+  #abiDefaults;
 
   constructor(schema) {
     schema = structuredClone(schema);
@@ -96,7 +98,7 @@ export class PayloadPlan {
           if (typeof ty.name !== "string" || !ty.name) throw new TypeError("invalid payload struct name");
           fields(ty.fields);
           for (const field of ty.fields) {
-            if (field.default !== undefined) defaultValue(field.ty, field.default);
+            if (field.default !== undefined) parsePayloadDefault(field.ty, field.default);
             visit(field.ty, `${path}.${field.name}`, shape, [...steps, { field: field.name }]);
           }
           break;
@@ -129,7 +131,8 @@ export class PayloadPlan {
     const minimum = this.sizes(Array(this.dynamicParameters).fill(0));
     this.fixedWireSize = this.dynamicParameters === 0 ? minimum.wire : null;
     this.minimumWorkspace = minimum.workspace;
-    this.defaults = schema.params.map((field) => field.default === undefined ? undefined : defaultValue(field.ty, field.default));
+    this.defaults = schema.params.map((field) =>
+      field.default === undefined ? undefined : parsePayloadDefault(field.ty, field.default));
     for (const tensor of this.tensors) {
       let stride = 1;
       for (let index = tensor.steps.length - 1; index >= 0; index -= 1) {
@@ -137,7 +140,41 @@ export class PayloadPlan {
         if (step.field === undefined) { step.stride = stride; if (step.axis !== null) stride *= step.axis; }
       }
     }
+    this.#abiDefaults = Array(this.abiParameterCount).fill(null);
+    for (let parameter = 0; parameter < this.parameters.length; parameter += 1) {
+      const source = this.defaults[parameter];
+      if (source === undefined) continue;
+      const group = this.parameters[parameter];
+      for (let index = group.start; index < group.end; index += 1) {
+        const tensor = this.tensors[index];
+        this.#abiDefaults[tensor.parameter] = {
+          encoding: tensor.encoding,
+          values: Array.from(
+            { length: tensor.elements },
+            (_, element) => leafValue(source, tensor.steps, element),
+          ),
+        };
+      }
+    }
     freeze(this);
+  }
+
+  matchesAbiDefault(parameter, defaultReprs) {
+    if (!Number.isInteger(parameter) || parameter < 0 || parameter >= this.abiParameterCount) return false;
+    const defaults = this.#abiDefaults[parameter];
+    if (defaults === null || defaultReprs === null) return defaults === defaultReprs;
+    if (!Array.isArray(defaultReprs) || defaultReprs.length !== defaults.values.length) return false;
+    try {
+      return defaultReprs.every((repr, index) => {
+        const actual = parseScalarDefault(defaults.encoding, repr);
+        const expected = defaults.values[index];
+        return defaults.encoding === "f32"
+          ? Object.is(Math.fround(actual), Math.fround(expected))
+          : Object.is(actual, expected);
+      });
+    } catch {
+      return false;
+    }
   }
 
   // Read-only preflight: no per-element metadata or temporary payload copies.
@@ -262,7 +299,7 @@ function scalarValue(encoding, value) {
   if (encoding === "i64") {
     if (typeof value === "number" && !Number.isSafeInteger(value)) throw new TypeError("i64 payload value must be an exact integer");
     if (typeof value !== "bigint" && typeof value !== "number"
-        && !(typeof value === "string" && /^-?[0-9]+$/.test(value))) throw new TypeError("invalid i64 payload value");
+        && !(typeof value === "string" && SIGNED_DECIMAL_INTEGER.test(value))) throw new TypeError("invalid i64 payload value");
     const integer = BigInt(value);
     if (BigInt.asIntN(64, integer) !== integer) throw new RangeError("i64 payload value is outside the signed 64-bit range");
     return integer;
@@ -273,28 +310,43 @@ function scalarValue(encoding, value) {
   }
   return value;
 }
-function defaultValue(ty, value) {
-  if (ty.kind === "scalar") {
-    if (typeof value !== "string") throw new TypeError("invalid scalar payload default");
-    if (["f32", "f64"].includes(ty.encoding)
-        && !/^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|inf(?:inity)?|nan)$/i.test(value)) {
-      throw new TypeError("invalid floating-point payload default");
-    }
-    const parsed = ty.encoding === "bool" ? value === "true" ? true : value === "false" ? false : null
-      : ty.encoding === "i64" ? value
-      : /^[+-]?inf(?:inity)?$/i.test(value) ? (value.startsWith("-") ? -Infinity : Infinity) : Number(value);
-    return scalarValue(ty.encoding, parsed);
+function parseScalarDefault(encoding, value) {
+  if (typeof value !== "string") throw new TypeError("invalid scalar payload default");
+  switch (encoding) {
+    case "bool":
+      if (value !== "true" && value !== "false") throw new TypeError("invalid bool payload default");
+      return value === "true";
+    case "i32":
+      if (!SIGNED_DECIMAL_INTEGER.test(value)) throw new TypeError("invalid i32 payload default");
+      return scalarValue(encoding, Number(value));
+    case "i64":
+      if (!SIGNED_DECIMAL_INTEGER.test(value)) throw new TypeError("invalid i64 payload default");
+      return scalarValue(encoding, value);
+    case "f32": case "f64":
+      if (!/^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|inf(?:inity)?|nan)$/i.test(value)) {
+        throw new TypeError("invalid floating-point payload default");
+      }
+      return /^[+-]?inf(?:inity)?$/i.test(value)
+        ? (value.startsWith("-") ? -Infinity : Infinity)
+        : Number(value);
+    default: throw new TypeError("invalid payload scalar encoding");
   }
+}
+function parsePayloadDefault(ty, value) {
+  if (ty.kind === "scalar") return parseScalarDefault(ty.encoding, value);
   if (!Array.isArray(value)) throw new TypeError("invalid aggregate payload default");
   if (ty.kind === "struct") {
     if (value.length !== ty.fields.length) throw new TypeError("payload default field count mismatch");
-    return Object.fromEntries(ty.fields.map((field, index) => [field.name, defaultValue(field.ty, value[index])]));
+    return Object.fromEntries(ty.fields.map((field, index) =>
+      [field.name, parsePayloadDefault(field.ty, value[index])]));
   }
   if (ty.kind === "tuple") {
     if (value.length !== ty.elements.length) throw new TypeError("payload default tuple length mismatch");
-    return value.map((entry, index) => defaultValue(ty.elements[index], entry));
+    return value.map((entry, index) => parsePayloadDefault(ty.elements[index], entry));
   }
-  if (ty.kind === "array" && value.length === ty.len) return value.map((entry) => defaultValue(ty.element, entry));
+  if (ty.kind === "array" && value.length === ty.len) {
+    return value.map((entry) => parsePayloadDefault(ty.element, entry));
+  }
   throw new TypeError("invalid payload default shape");
 }
 function validateValue(ty, value) {
