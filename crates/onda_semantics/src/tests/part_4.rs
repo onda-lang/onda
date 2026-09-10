@@ -2530,3 +2530,253 @@ sample:
             "unexpected diagnostics: {errors:#?}"
         );
     }
+
+    #[test]
+    fn instance_methods_resolve_for_runtime_struct_bindings_in_every_top_level_scope() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+def make():
+  return Cell(value = 0.25)
+
+def use_local() -> f32:
+  local = Cell()
+  local.set(0.5)
+  return local.read()
+
+init:
+  state = Cell()
+  observed = 0.0
+
+block:
+  local = make()
+  local.set(local.read() + 0.25)
+
+event inspect(value: Cell):
+  observed = value.read()
+
+sample:
+  alias = state
+  alias.set(use_local())
+  result = make()
+  result.set(result.read() + observed)
+  out1 = state.read() + result.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("runtime struct receivers should resolve uniformly");
+        lower_program_to_optimized_mir(&typed)
+            .expect("runtime struct receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_runtime_struct_elements_and_slices() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+  def position(self) -> i32:
+    return i32(self.value)
+
+init:
+  cells: Cell[3] = Cell()
+
+sample:
+  element = cells[1]
+  element.set(0.25)
+  slice = cells[1:3]
+  slice[1].set(0.5)
+  cursor = Cell(value = 1.0)
+  values = [0.0, 0.0]
+  values[cursor.position():] = 0.75
+  out1 = cells[1].value + cells[2].value + values[1]
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("element and slice aliases should retain their receiver type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("element and slice receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_method_resolution_joins_runtime_branch_types() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+sample:
+  if in1 > 0.0:
+    selected = Cell(value = 0.25)
+  else:
+    selected = Cell(value = 0.5)
+  out1 = selected.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("matching branch-local receiver types should join");
+        lower_program_to_optimized_mir(&typed)
+            .expect("joined branch receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_proc_runtime_locals_and_event_payloads() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+struct Factory:
+  seed: f32
+
+  def make(self, offset: i32) -> Cell:
+    return Cell(value = self.seed + f32(offset))
+
+  def make(self, offset: f32) -> Cell:
+    return Cell(value = self.seed + offset)
+
+def make():
+  return Cell(value = 0.25)
+
+def factory(value: i32) -> Factory:
+  return Factory(seed = f32(value))
+
+def factory(value: f32) -> Factory:
+  return Factory(seed = value)
+
+proc Voice:
+  init:
+    state = Cell()
+    observed = 0.0
+
+  def use_local() -> f32:
+    local = Cell()
+    local.set(0.5)
+    return local.read()
+
+  event inspect(value: Cell):
+    observed = value.read()
+
+  block:
+    local = make()
+    local.set(0.75)
+
+    sample:
+      alias = state
+      alias.set(use_local())
+      result = make()
+      result.set(result.read() + observed)
+      source = factory(1)
+      made = source.make(2)
+      out1 = alias.read() + result.read() + made.read()
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("proc executable scopes should share method receiver resolution");
+        lower_program_to_optimized_mir(&typed)
+            .expect("proc runtime receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_methods_preserve_read_only_event_payload_permissions() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+event update(cell: Cell):
+  cell.set(0.25)
+
+sample:
+  out1 = 0.0
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("event payload receiver methods must preserve read-only permissions");
+        assert!(
+            errors.iter().any(|error| error.message
+                == "cannot write through read-only payload parameter 'cell'"),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn instance_methods_follow_overloaded_aggregate_result_types() {
+        let source = r#"
+struct A:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct B:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Leaf:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Root:
+  value: f32
+
+  def descend(self, offset: i32) -> Leaf:
+    return Leaf(value = self.value + f32(offset))
+
+  def descend(self, offset: f32) -> Leaf:
+    return Leaf(value = self.value + offset)
+
+def make(value: i32) -> A:
+  return A(value = f32(value))
+
+def make(value: f32) -> B:
+  return B(value = value)
+
+def root(value: i32) -> Root:
+  return Root(value = f32(value))
+
+def root(value: f32) -> Root:
+  return Root(value = value)
+
+sample:
+  a = make(1)
+  b = make(2.0)
+  root_value = root(3)
+  leaf = root_value.descend(4)
+  out1 = a.read() + b.read() + leaf.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("receiver types should follow the selected result overload");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded aggregate result methods should lower to MIR");
+    }

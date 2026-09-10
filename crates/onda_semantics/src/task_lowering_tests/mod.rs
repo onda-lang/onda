@@ -150,6 +150,56 @@ block:
 }
 
 #[test]
+fn task_runtime_struct_locals_use_shared_method_resolution() {
+    let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+struct Factory:
+  seed: f32
+
+  def make(self, offset: i32) -> Cell:
+    return Cell(value = self.seed + f32(offset))
+
+  def make(self, offset: f32) -> Cell:
+    return Cell(value = self.seed + offset)
+
+def factory(value: i32) -> Factory:
+  return Factory(seed = f32(value))
+
+def factory(value: f32) -> Factory:
+  return Factory(seed = value)
+
+task prepare():
+  local = Cell()
+  local.set(0.5)
+  source = factory(1)
+  result = source.make(2)
+  result.set(local.read())
+  yield
+
+event restart():
+  prepare.reset()
+
+block:
+  await prepare()
+  sample:
+    out1 = 0.0
+"#;
+
+    let typed = crate::analyze(onda_frontend::parse_program(source).expect("source should parse"))
+        .expect("task runtime structs should use ordinary method receiver resolution");
+    crate::lower_program_to_optimized_mir(&typed)
+        .expect("task runtime receiver methods should lower to MIR");
+}
+
+#[test]
 fn executable_scopes_share_scalar_inference() {
     let source = r#"
 struct Counter:

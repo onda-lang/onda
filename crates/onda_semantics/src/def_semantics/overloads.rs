@@ -682,6 +682,13 @@ fn rewrite_overloaded_calls_in_expr_impl(
                 ..
             } = expr
             {
+                if args.first().is_some_and(|arg| {
+                    arg.name.as_deref() == Some(crate::internal_names::METHOD_RECEIVER_ARG)
+                }) {
+                    // Receiver syntax is intentionally unresolved here. Selecting a
+                    // same-named free overload would discard the receiver's type.
+                    return;
+                }
                 if let Some(resolved_name) = resolve_overloaded_call_name(
                     name, type_args, args, env, context, owner, overloads, diag, errors,
                 ) {

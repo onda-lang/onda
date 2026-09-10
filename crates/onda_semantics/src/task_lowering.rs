@@ -3298,6 +3298,7 @@ fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
 struct TaskCallSemantics {
     overloads: HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     callable_symbols: HashSet<String>,
+    struct_method_symbols: HashSet<String>,
     signatures: HashMap<String, FnSignature>,
     return_types: HashMap<String, ReturnType>,
 }
@@ -3306,33 +3307,20 @@ fn desugar_task_callable_methods(
     defs: &mut [FunctionDef],
     env: &crate::def_semantics::CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
+    let return_types =
+        crate::proc_call_rewrite::infer_instance_method_return_types(defs, env, struct_defs);
     for def in defs {
-        let mut struct_instances = env.struct_instances.clone();
-        let mut struct_array_roots = HashMap::new();
-        for param in &def.params {
-            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                register_struct_instance_and_array_roots(
-                    &param.name,
-                    struct_name,
-                    struct_defs,
-                    &mut struct_instances,
-                    &mut struct_array_roots,
-                );
-            }
-        }
-        let current_ns = namespace_of_symbol(&def.name);
-        for stmt in &mut def.body {
-            crate::proc_call_rewrite::desugar_init_instance_method_calls(
-                stmt,
-                &mut struct_instances,
-                &mut struct_array_roots,
-                struct_defs,
-                &current_ns,
-                callable_symbols,
-            );
-        }
+        crate::proc_call_rewrite::desugar_function_instance_method_calls(
+            def,
+            env,
+            &return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
     }
 }
 
@@ -3414,10 +3402,24 @@ fn task_call_semantics(
         .map(|def| def.name.clone())
         .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
+    let struct_method_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Struct(def) => Some(def),
+            _ => None,
+        })
+        .flat_map(|def| {
+            def.methods
+                .iter()
+                .map(move |method| format!("{}.{}", def.name, method.name))
+        })
+        .collect::<HashSet<_>>();
     desugar_task_callable_methods(
         &mut defs,
         &crate::def_semantics::CallTypeEnv::default(),
         struct_defs,
+        &struct_method_symbols,
         &callable_symbols,
     );
     let (overloads, _) = crate::def_semantics::prepare_function_overloads(&mut defs);
@@ -3442,6 +3444,7 @@ fn task_call_semantics(
     TaskCallSemantics {
         overloads,
         callable_symbols,
+        struct_method_symbols,
         signatures,
         return_types,
     }
@@ -3477,7 +3480,13 @@ fn proc_task_call_semantics(
         .chain(local_defs.iter().map(|def| def.name.clone()))
         .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
-    desugar_task_callable_methods(&mut defs, env, struct_defs, &callable_symbols);
+    desugar_task_callable_methods(
+        &mut defs,
+        env,
+        struct_defs,
+        &global.struct_method_symbols,
+        &callable_symbols,
+    );
     let return_types = resolve_task_callable_return_types(
         &mut defs,
         &overloads,
@@ -3503,6 +3512,7 @@ fn proc_task_call_semantics(
     TaskCallSemantics {
         overloads,
         callable_symbols,
+        struct_method_symbols: global.struct_method_symbols.clone(),
         signatures,
         return_types,
     }
@@ -3597,33 +3607,38 @@ fn rewrite_task_overloads(
     semantics: &TaskCallSemantics,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
-    let mut struct_instances = env.struct_instances.clone();
-    let mut struct_array_roots = HashMap::new();
-    for stmt in &mut task.body {
-        crate::proc_call_rewrite::desugar_init_instance_method_calls(
-            stmt,
-            &mut struct_instances,
-            &mut struct_array_roots,
+    let mut ignored_errors = Vec::new();
+    // Overload selection can expose an aggregate receiver type, while resolving
+    // that receiver can expose another overload. Both rewrites are monotonic, so
+    // continue until no public overload call was replaced.
+    loop {
+        let mut env = env.clone();
+        crate::proc_call_rewrite::desugar_executable_instance_method_calls(
+            &mut task.body,
+            &mut env,
+            &semantics.return_types,
             struct_defs,
             "",
+            &semantics.struct_method_symbols,
             &semantics.callable_symbols,
         );
+        let resolved = crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+            &mut task.body,
+            &mut env,
+            crate::def_semantics::CallTypeContext {
+                return_types: &semantics.return_types,
+                struct_defs,
+            },
+            crate::def_semantics::OverloadOwnerContext {
+                defer_dependent_calls: true,
+            },
+            &semantics.overloads,
+            &mut ignored_errors,
+        );
+        if resolved == 0 {
+            break;
+        }
     }
-    let mut env = env.clone();
-    let mut ignored_errors = Vec::new();
-    crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
-        &mut task.body,
-        &mut env,
-        crate::def_semantics::CallTypeContext {
-            return_types: &semantics.return_types,
-            struct_defs,
-        },
-        crate::def_semantics::OverloadOwnerContext {
-            defer_dependent_calls: true,
-        },
-        &semantics.overloads,
-        &mut ignored_errors,
-    );
 }
 
 pub(crate) fn lower_tasks(

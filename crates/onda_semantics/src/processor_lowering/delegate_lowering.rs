@@ -2057,7 +2057,7 @@ fn rewrite_source_overload_stmts(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
         stmts,
@@ -2071,7 +2071,7 @@ fn rewrite_source_overload_stmts(
         },
         overloads,
         &mut ignored_errors,
-    );
+    )
 }
 
 pub(super) fn rewrite_source_overload_function(
@@ -2080,7 +2080,7 @@ pub(super) fn rewrite_source_overload_function(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_function(
         def,
@@ -2094,7 +2094,7 @@ pub(super) fn rewrite_source_overload_function(
         },
         overloads,
         &mut ignored_errors,
-    );
+    )
 }
 
 pub(super) fn source_overload_return_types(
@@ -2121,7 +2121,7 @@ fn rewrite_source_overload_event(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut env = state_env.clone();
     for param in &event.params {
         env.bind_function_param(&crate::event_param_as_fn_param(param), &[]);
@@ -2132,7 +2132,7 @@ fn rewrite_source_overload_event(
         overloads,
         return_types,
         struct_defs,
-    );
+    )
 }
 
 fn rewrite_source_overload_task(
@@ -2141,7 +2141,7 @@ fn rewrite_source_overload_task(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut env = state_env.clone();
     rewrite_source_overload_stmts(
         &mut task.body,
@@ -2149,7 +2149,7 @@ fn rewrite_source_overload_task(
         overloads,
         return_types,
         struct_defs,
-    );
+    )
 }
 
 fn rewrite_source_overload_when(
@@ -2310,6 +2310,44 @@ fn bind_proc_validation_surfaces(
     bind_validation_arrays(env, const_arrays);
 }
 
+fn rewrite_processor_source_overload_scopes(
+    proc: &mut ProcessorDef,
+    state_env: &mut crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> usize {
+    let mut resolved = rewrite_source_overload_stmts(
+        &mut proc.init.body,
+        state_env,
+        overloads,
+        return_types,
+        struct_defs,
+    );
+    for def in &mut proc.local_defs {
+        resolved +=
+            rewrite_source_overload_function(def, state_env, overloads, return_types, struct_defs);
+    }
+    for event in &mut proc.events {
+        resolved +=
+            rewrite_source_overload_event(event, state_env, overloads, return_types, struct_defs);
+    }
+    for task in &mut proc.tasks {
+        resolved +=
+            rewrite_source_overload_task(task, state_env, overloads, return_types, struct_defs);
+    }
+    for body in [
+        proc.block_pre.as_mut_slice(),
+        proc.sample.as_mut_slice(),
+        proc.block_post.as_mut_slice(),
+    ] {
+        let mut env = state_env.clone();
+        resolved +=
+            rewrite_source_overload_stmts(body, &mut env, overloads, return_types, struct_defs);
+    }
+    resolved
+}
+
 pub(super) fn resolve_processor_source_overloads(
     proc: &mut ProcessorDef,
     options: AnalysisOptions,
@@ -2317,6 +2355,8 @@ pub(super) fn resolve_processor_source_overloads(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     top_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
+    callable_symbols: &HashSet<String>,
 ) {
     let mut state_env = crate::def_semantics::CallTypeEnv::default();
     bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
@@ -2348,26 +2388,29 @@ pub(super) fn resolve_processor_source_overloads(
         &state_env,
         struct_defs,
     ));
-    rewrite_source_overload_stmts(
-        &mut proc.init.body,
-        &mut state_env,
-        overloads,
-        &return_types,
-        struct_defs,
-    );
-    for event in &mut proc.events {
-        rewrite_source_overload_event(event, &state_env, overloads, &return_types, struct_defs);
-    }
-    for task in &mut proc.tasks {
-        rewrite_source_overload_task(task, &state_env, overloads, &return_types, struct_defs);
-    }
-    for body in [
-        proc.block_pre.as_mut_slice(),
-        proc.sample.as_mut_slice(),
-        proc.block_post.as_mut_slice(),
-    ] {
-        let mut env = state_env.clone();
-        rewrite_source_overload_stmts(body, &mut env, overloads, &return_types, struct_defs);
+    // Overload selection can expose aggregate receiver types, while resolving a
+    // receiver can expose another overload. Iterate until neither transformation
+    // reveals another call, using the same scope walkers on every pass.
+    loop {
+        crate::proc_call_rewrite::desugar_processor_instance_method_calls(
+            proc,
+            &return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
+        let mut state_env = crate::def_semantics::CallTypeEnv::default();
+        bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+        if rewrite_processor_source_overload_scopes(
+            proc,
+            &mut state_env,
+            overloads,
+            &return_types,
+            struct_defs,
+        ) == 0
+        {
+            break;
+        }
     }
 }
 

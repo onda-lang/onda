@@ -1976,29 +1976,6 @@ pub fn analyze_with_options_and_inputs(
             if method.params.first().map(|p| p.name.as_str()) == Some("self") {
                 method_self_struct.insert(fq_name.clone(), s.name.clone());
             }
-            let mut desugared_method_body = method.body.clone();
-            let mut method_struct_instances = HashMap::<String, String>::new();
-            let mut method_struct_array_roots = HashMap::<String, String>::new();
-            let method_ns = namespace_of_symbol(&s.name);
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_and_array_roots(
-                    "self",
-                    &s.name,
-                    &struct_defs,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                );
-            }
-            for stmt in &mut desugared_method_body {
-                desugar_init_instance_method_calls(
-                    stmt,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                    &struct_defs,
-                    &method_ns,
-                    &callable_symbols_for_method_sugar,
-                );
-            }
             let mut method_params = method.params.clone();
             if let Some(self_param) = method_params
                 .first_mut()
@@ -2014,7 +1991,7 @@ pub fn analyze_with_options_and_inputs(
                 params: method_params,
                 return_ty: method.return_ty.clone(),
                 return_ty_loc: method.return_ty_loc,
-                body: desugared_method_body,
+                body: method.body.clone(),
             });
         }
     }
@@ -2045,86 +2022,33 @@ pub fn analyze_with_options_and_inputs(
         normalize_struct_constructor_ranges_in_list(&mut def.body, &struct_defs);
     }
 
-    let mut desugar_struct_instances = HashMap::<String, String>::new();
-    let mut desugar_struct_array_roots = HashMap::<String, String>::new();
-    for stmt in &mut init {
-        desugar_init_instance_method_calls(
-            stmt,
-            &mut desugar_struct_instances,
-            &mut desugar_struct_array_roots,
-            &struct_defs,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut block_pre {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut block_post {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut sample {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for event in &mut events {
-        for stmt in &mut event.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &desugar_struct_instances,
-                &desugar_struct_array_roots,
-                "",
-                &callable_symbols_for_method_sugar,
-            );
-        }
-    }
-    for def in &mut defs {
-        if method_self_struct.contains_key(&def.name) {
-            continue;
-        }
-        let mut def_struct_instances = HashMap::<String, String>::new();
-        let mut def_struct_array_roots = HashMap::<String, String>::new();
-        for param in &def.params {
-            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                if struct_defs.contains_key(struct_name) {
-                    register_struct_instance_and_array_roots(
-                        &param.name,
-                        struct_name,
-                        &struct_defs,
-                        &mut def_struct_instances,
-                        &mut def_struct_array_roots,
-                    );
-                }
-            }
-        }
-        let def_ns = namespace_of_symbol(&def.name);
-        for stmt in &mut def.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &def_struct_instances,
-                &def_struct_array_roots,
-                &def_ns,
-                &callable_symbols_for_method_sugar,
-            );
-        }
-    }
+    let method_resolution_return_types = infer_instance_method_return_types(
+        &defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &struct_defs,
+    );
+    let struct_method_symbols = method_self_struct
+        .iter()
+        .filter_map(|(method, owner)| (!proc_api.contains_key(owner)).then_some(method.clone()))
+        .collect::<HashSet<_>>();
+
+    let state_method_env = desugar_executable_owner_instance_method_calls(
+        &mut init,
+        [
+            block_pre.as_mut_slice(),
+            block_post.as_mut_slice(),
+            sample.as_mut_slice(),
+        ],
+        &mut events,
+        &mut defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &crate::def_semantics::CallTypeEnv::default(),
+        &method_resolution_return_types,
+        &struct_defs,
+        "",
+        &struct_method_symbols,
+        &callable_symbols_for_method_sugar,
+    );
 
     normalize_runtime_call_shape_exprs(
         &mut defs,
@@ -2254,7 +2178,10 @@ pub fn analyze_with_options_and_inputs(
     );
     top_level_env
         .struct_instances
-        .extend(desugar_struct_instances.clone());
+        .extend(state_method_env.struct_instances.clone());
+    top_level_env
+        .array_types
+        .extend(state_method_env.array_types.clone());
     top_level_env.array_types.extend(
         top_level_proc_rewrite
             .global_proc_array_slots
@@ -2655,6 +2582,34 @@ pub fn analyze_with_options_and_inputs(
                     generated_sigs.extend(extra_sigs);
                 }
 
+                desugar_executable_owner_instance_method_calls(
+                    &mut init,
+                    [
+                        block_pre.as_mut_slice(),
+                        block_post.as_mut_slice(),
+                        sample.as_mut_slice(),
+                    ],
+                    &mut events,
+                    &mut defs,
+                    &top_level_env,
+                    &function_env_seed,
+                    &mono_return_types,
+                    &struct_defs,
+                    "",
+                    &struct_method_symbols,
+                    &callable_symbols_for_method_sugar,
+                );
+                for def in &mut generated_defs {
+                    desugar_function_instance_method_calls(
+                        def,
+                        &function_env_seed,
+                        &mono_return_types,
+                        &struct_defs,
+                        &struct_method_symbols,
+                        &callable_symbols_for_method_sugar,
+                    );
+                }
+
                 let overload_context = crate::def_semantics::CallTypeContext {
                     return_types: &mono_return_types,
                     struct_defs: &struct_defs,
@@ -2747,10 +2702,6 @@ pub fn analyze_with_options_and_inputs(
         }
     }
 
-    // Any calls left at their public overload name are genuinely
-    // underconstrained after specialization reached a fixed point. Run one
-    // strict pass to produce the normal ambiguity/no-match diagnostics while
-    // keeping every scope on the same semantic type engine.
     let mut final_overload_return_types = HashMap::new();
     crate::def_semantics::refresh_monomorphized_return_types(
         &mut final_overload_return_types,
@@ -2761,6 +2712,81 @@ pub fn analyze_with_options_and_inputs(
         &function_env_seed,
         &struct_defs,
     );
+    // Receiver and overload resolution expose information to each other. Both
+    // rewrites only replace unresolved source syntax, so this reaches a finite
+    // fixed point even for chains of overloaded aggregate-producing calls.
+    loop {
+        desugar_executable_owner_instance_method_calls(
+            &mut init,
+            [
+                block_pre.as_mut_slice(),
+                block_post.as_mut_slice(),
+                sample.as_mut_slice(),
+            ],
+            &mut events,
+            &mut defs,
+            &top_level_env,
+            &function_env_seed,
+            &final_overload_return_types,
+            &struct_defs,
+            "",
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
+        let mut ignored_errors = Vec::new();
+        let mut resolved = 0;
+        let runtime_function_env = rewrite_executable_call_scopes(
+            &mut init,
+            &mut block_pre,
+            &mut sample,
+            &mut block_post,
+            &mut events,
+            &top_level_env,
+            |stmts, env| {
+                resolved += crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+                    stmts,
+                    env,
+                    crate::def_semantics::CallTypeContext {
+                        return_types: &final_overload_return_types,
+                        struct_defs: &struct_defs,
+                    },
+                    crate::def_semantics::OverloadOwnerContext {
+                        defer_dependent_calls: true,
+                    },
+                    &overload_candidates,
+                    &mut ignored_errors,
+                );
+            },
+        );
+        for def in &mut defs {
+            let env = def_call_type_env(
+                def,
+                &runtime_def_names,
+                &function_env_seed,
+                &runtime_function_env,
+            );
+            resolved += rewrite_function_overloads(
+                def,
+                env,
+                crate::def_semantics::CallTypeContext {
+                    return_types: &final_overload_return_types,
+                    struct_defs: &struct_defs,
+                },
+                crate::def_semantics::OverloadOwnerContext {
+                    defer_dependent_calls: true,
+                },
+                &overload_candidates,
+                &mut ignored_errors,
+            );
+        }
+        if resolved == 0 {
+            break;
+        }
+    }
+
+    // Any calls left at their public overload name are genuinely
+    // underconstrained after the fixed point. Run one strict pass to produce
+    // the normal ambiguity/no-match diagnostics.
     let runtime_function_env = rewrite_executable_call_scopes(
         &mut init,
         &mut block_pre,

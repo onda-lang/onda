@@ -1023,58 +1023,60 @@ fn build_proc_lowering_env(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let mut callable_symbols_for_method_sugar = pre_desugar_defs
-        .iter()
-        .map(|d| d.name.clone())
-        .collect::<HashSet<_>>();
     for (struct_name, struct_def) in &struct_defs_by_name {
         for method in &struct_def.methods {
-            callable_symbols_for_method_sugar.insert(format!("{struct_name}.{}", method.name));
-        }
-    }
-    for proc in &mut proc_defs {
-        desugar_processor_instance_method_calls(
-            proc,
-            &typed_struct_defs,
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for (struct_name, struct_def) in &struct_defs_by_name {
-        for method in &struct_def.methods {
-            let mut desugared_method_body = method.body.clone();
-            let mut method_struct_instances = HashMap::<String, String>::new();
-            let mut method_struct_array_roots = HashMap::<String, String>::new();
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_and_array_roots(
-                    "self",
-                    struct_name,
-                    &typed_struct_defs,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                );
-            }
-            let method_ns = namespace_of_symbol(struct_name);
-            for stmt in &mut desugared_method_body {
-                desugar_init_instance_method_calls(
-                    stmt,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                    &typed_struct_defs,
-                    &method_ns,
-                    &callable_symbols_for_method_sugar,
-                );
+            let mut params = method.params.clone();
+            if let Some(self_param) = params.first_mut().filter(|param| param.name == "self") {
+                self_param.ty = Some(FnParamType::Struct(struct_name.clone()));
             }
             pre_desugar_defs.push(FunctionDef {
                 loc: method.loc,
                 is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
-                params: method.params.clone(),
+                params,
                 return_ty: method.return_ty.clone(),
                 return_ty_loc: method.return_ty_loc,
-                body: desugared_method_body,
+                body: method.body.clone(),
             });
         }
+    }
+    let callable_symbols_for_method_sugar = pre_desugar_defs
+        .iter()
+        .map(|def| def.name.clone())
+        .collect::<HashSet<_>>();
+    let struct_method_symbols = struct_defs_by_name
+        .iter()
+        .filter(|(name, _)| !proc_symbols.contains(*name))
+        .flat_map(|(name, def)| {
+            def.methods
+                .iter()
+                .map(move |method| format!("{name}.{}", method.name))
+        })
+        .collect::<HashSet<_>>();
+    let method_resolution_return_types = infer_instance_method_return_types(
+        &pre_desugar_defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &typed_struct_defs,
+    );
+    for def in &mut pre_desugar_defs {
+        desugar_function_instance_method_calls(
+            def,
+            &crate::def_semantics::CallTypeEnv::default(),
+            &method_resolution_return_types,
+            &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
+    }
+    for proc in &mut proc_defs {
+        desugar_processor_instance_method_calls(
+            proc,
+            &method_resolution_return_types,
+            &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
     }
     let (pre_desugar_overloads, _) =
         crate::def_semantics::prepare_function_overloads(&mut pre_desugar_defs);
@@ -1110,6 +1112,8 @@ fn build_proc_lowering_env(
             &pre_desugar_overloads,
             &top_return_types,
             &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
         );
     }
     for proc in &proc_defs {
