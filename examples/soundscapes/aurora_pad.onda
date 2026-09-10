@@ -9,7 +9,7 @@ const LeftPan: f32[VoiceCount] = [1.0, 0.9, 0.72, 0.5, 0.32, 0.18]
 const RightPan: f32[VoiceCount] = [0.18, 0.32, 0.5, 0.72, 0.9, 1.0]
 
 params:
-  root_note: i32 = 43 {24, 67}
+  root_note = 43 {24, 67}
   color = 0.58 {0.0, 1.0}
   resonance = 0.52 {0.0, 1.0}
   movement = 0.42 {0.0, 1.0}
@@ -25,7 +25,7 @@ struct FilterMemory:
   integrator1 = 0.0
   integrator2 = 0.0
 
-def design_filter(cutoff, resonance_amount):
+def design_filter(cutoff, resonance_amount) -> FilterCoefficients:
   g = tan(PI * cutoff / SR)
   damping = 2.0 - resonance_amount * 1.82
   a1 = 1.0 / (1.0 + g * (g + damping))
@@ -44,7 +44,6 @@ init:
   sub = std::osc::Sine()
   left_filter = FilterMemory()
   right_filter = FilterMemory()
-  coefficients = design_filter(1200.0, resonance)
   motion_phase = 0.0
 
 block:
