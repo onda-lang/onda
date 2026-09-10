@@ -2380,3 +2380,153 @@ sample:
             "unexpected diagnostics: {errors:#?}"
         );
     }
+
+    #[test]
+    fn nested_proc_events_accept_struct_values_and_constructors() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event accept(item: Item):
+    captured = item.value
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Item):
+    child.accept(item)
+  event construct():
+    child.accept(Item(value = 3.0))
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Item):
+  parent.forward(item)
+event construct():
+  parent.construct()
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should accept nominal values and constructors");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested nominal event calls should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_can_read_struct_arrays_and_slices() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event fixed(items: Item[2]):
+    captured = items[0].value + items[1].value
+  event dynamic(items: Item[]):
+    captured = items[0].value + f32(items.len())
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event fixed(items: Item[2]):
+    child.fixed(items)
+  event dynamic(items: Item[]):
+    child.dynamic(items)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event fixed(items: Item[2]):
+  parent.fixed(items)
+event dynamic(items: Item[]):
+  parent.dynamic(items)
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should read struct arrays and slices");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested structured-array event reads should lower to MIR");
+    }
+
+    #[test]
+    fn proc_event_tuple_elements_can_initialize_scalar_locals() {
+        let source = r#"
+proc Child:
+  init:
+    captured = 0.0
+  event accept(pair: (f32, i32)):
+    first: f32 = pair[0]
+    combined = first + f32(pair[1])
+    unused = pair[0]
+    captured = combined
+  sample:
+    out1 = captured
+
+init:
+  child = Child()
+event accept(pair: (f32, i32)):
+  child.accept(pair)
+sample:
+  out1 = child()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("tuple-derived proc-event locals should retain their bindings and types");
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple-derived proc-event locals should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_reject_mismatched_nominal_payloads() {
+        let source = r#"
+struct Expected:
+  value: f32
+struct Actual:
+  value: f32
+
+proc Child:
+  event accept(item: Expected):
+    value = item.value
+  sample:
+    out1 = 0.0
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Actual):
+    child.accept(item)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Actual):
+  parent.forward(item)
+sample:
+  out1 = parent()
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("nested event payloads preserve nominal struct identity");
+        assert!(
+            errors.iter().any(|error| {
+                error.message.contains("Expected") && error.message.contains("Actual")
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }

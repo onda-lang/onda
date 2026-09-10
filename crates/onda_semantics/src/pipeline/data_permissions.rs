@@ -1,7 +1,8 @@
 use super::*;
 use crate::def_semantics::call_types::{
     infer_array_arg_type, infer_struct_expr_type, join_branch_envs, statement_list_flow,
-    update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
+    update_call_type_env_after_assign, CallArrayElemType, CallTypeContext, CallTypeEnv,
+    StatementFlow,
 };
 
 type Origins = HashSet<String>;
@@ -15,6 +16,7 @@ struct ReferenceEnv {
 struct PermissionAnalysis<'a> {
     signatures: &'a HashMap<String, FnSignature>,
     readonly: &'a HashMap<String, Origins>,
+    proc_types: &'a HashSet<String>,
     types: CallTypeContext<'a>,
     writes: Origins,
 }
@@ -109,6 +111,24 @@ impl ReferenceEnv {
 }
 
 impl PermissionAnalysis<'_> {
+    fn indexed_call_targets_processor(&self, args: &[CallArg], env: &ReferenceEnv) -> bool {
+        let Some(base) = crate::proc_call_rewrite::proc_index_base_name(args) else {
+            return false;
+        };
+        if let Some(array) = infer_array_arg_type(&Expr::var(base), &env.types, self.types) {
+            return matches!(
+                array.elem,
+                CallArrayElemType::Nominal(ref name) if self.proc_types.contains(name)
+            );
+        }
+        let Some((root, field)) = split_root_field_path(base) else {
+            return false;
+        };
+        env.types.struct_instances.get(root).is_some_and(|owner| {
+            is_flattened_proc_array_field(owner, field, self.types.struct_defs)
+        })
+    }
+
     fn reference_origins(&self, expr: &Expr, env: &ReferenceEnv) -> Origins {
         match expr {
             Expr::Var { name, .. } => env.storage_origins(name),
@@ -128,6 +148,7 @@ impl PermissionAnalysis<'_> {
                 if name == PROC_INDEX_CALL_SENTINEL
                     || name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
                         == Some(PROC_INDEX_CALL_SENTINEL)
+                        && self.indexed_call_targets_processor(args, env)
                 {
                     // Indexed proc execution also updates hidden block-activity storage.
                     if let Some(base) = crate::proc_call_rewrite::proc_index_base_name(args) {
@@ -331,6 +352,13 @@ pub(super) fn update_readonly_data_param_signatures(
         return_types: &returns,
         struct_defs: structs,
     };
+    let proc_types = signatures
+        .keys()
+        .filter_map(|name| {
+            name.split_once(PROC_CALL_OUT_FN_PREFIX)
+                .map(|(owner, _)| owner.to_owned())
+        })
+        .collect::<HashSet<_>>();
     let mut readonly = candidates.clone();
     loop {
         let mut changed = false;
@@ -341,6 +369,7 @@ pub(super) fn update_readonly_data_param_signatures(
             let mut analysis = PermissionAnalysis {
                 signatures,
                 readonly: &readonly,
+                proc_types: &proc_types,
                 types: context,
                 writes: Origins::new(),
             };
@@ -382,6 +411,7 @@ pub(super) fn update_readonly_data_param_signatures(
         let mut analysis = PermissionAnalysis {
             signatures,
             readonly: &readonly,
+            proc_types: &proc_types,
             types: context,
             writes: Origins::new(),
         };

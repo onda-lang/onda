@@ -1,6 +1,7 @@
 use super::*;
 use crate::proc_call_rewrite::{
-    expand_proc_output_tuple_assignments, lower_named_proc_param_calls_in_stmts,
+    can_resolve_proc_index_base, expand_proc_output_tuple_assignments,
+    lower_named_proc_param_calls_in_stmts,
 };
 
 pub(super) fn rewrite_nested_proc_calls_in_expr(
@@ -117,6 +118,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
             if *name == PROC_INDEX_CALL_SENTINEL {
+                if !can_resolve_proc_index_base(args, proc_array_slots) {
+                    return;
+                }
                 let Some(index_target) = resolve_proc_index_target_mut(
                     args,
                     proc_array_slots,
@@ -244,6 +248,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some(var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let var = if var_raw == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -448,9 +455,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some((base_raw, event_name)) = split_dot_path(name) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
-                    if proc_index_base_name(args)
-                        .is_some_and(|base| !proc_array_slots.contains_key(base))
-                    {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
                     }
                     let Some(index_target) = resolve_proc_index_target_mut(
@@ -691,6 +696,9 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     );
                 }
                 if *name == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -853,6 +861,9 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
 
                     let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                     let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                        if !can_resolve_proc_index_base(args, proc_array_slots) {
+                            return;
+                        }
                         let Some(index_target) = resolve_proc_index_target_mut(
                             args,
                             proc_array_slots,

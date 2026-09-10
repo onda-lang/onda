@@ -1401,6 +1401,95 @@ sample:
 }
 
 #[test]
+fn nested_proc_events_route_all_structured_payload_shapes() {
+    let (_, mir) = source_program(
+        r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    total = 0.0
+  event configure(item: Item, fixed: Item[2], dynamic: Item[], pair: (f32, i32)):
+    first: f32 = pair[0]
+    combined = first + f32(pair[1])
+    total = item.value + fixed[1].value + dynamic[0].value + f32(dynamic.len()) + combined
+  sample:
+    out1 = total
+
+proc Parent:
+  init:
+    child = Child()
+  event configure(item: Item, fixed: Item[2], dynamic: Item[], pair: (f32, i32)):
+    child.configure(item, fixed, dynamic, pair)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event configure(item: Item, fixed: Item[2], dynamic: Item[], pair: (f32, i32)):
+  parent.configure(item, fixed, dynamic, pair)
+sample:
+  out1 = parent()
+"#,
+        1,
+    );
+    let mut payload = Vec::new();
+    for value in [1.0_f32, 2.0, 3.0] {
+        payload.extend(value.to_le_bytes());
+    }
+    payload.extend(2_i32.to_le_bytes());
+    for value in [4.0_f32, 5.0, 6.0] {
+        payload.extend(value.to_le_bytes());
+    }
+    payload.extend(7_i32.to_le_bytes());
+
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let native = lower_mir_and_jit_with_options(
+            mir.clone(),
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: level,
+            },
+        )
+        .unwrap();
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        unsafe {
+            native.trigger_event_by_index(
+                &mut state,
+                &params,
+                0,
+                &payload,
+                &[],
+                &[],
+                &[],
+                &[],
+                None,
+            )
+        }
+        .unwrap();
+        let mut output = [0.0_f32];
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                3,
+                &[],
+                &[output.as_mut_ptr().cast()],
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(output, [23.0]);
+    }
+}
+
+#[test]
 fn raw_events_reject_before_mutation_and_prepare_normalized_aligned_input() {
     let (_, mir) = source_program(
         r#"

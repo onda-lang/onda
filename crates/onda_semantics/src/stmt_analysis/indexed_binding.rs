@@ -39,12 +39,22 @@ fn classify_named_or_flattened_field(
         }
     }
 
-    let prefix = format!("{field_name}[");
-    if fields.iter().any(|f| f.name.starts_with(&prefix)) {
+    if is_flattened_proc_array_field(struct_name, field_name, struct_defs) {
         return Some(IndexedBindingKind::ProcArrayAlias);
     }
 
     None
+}
+
+pub(crate) fn is_flattened_proc_array_field(
+    struct_name: &str,
+    field_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> bool {
+    let prefix = format!("{field_name}[");
+    struct_defs
+        .get(struct_name)
+        .is_some_and(|fields| fields.iter().any(|field| field.name.starts_with(&prefix)))
 }
 
 pub(crate) fn classify_runtime_like_indexed_binding(

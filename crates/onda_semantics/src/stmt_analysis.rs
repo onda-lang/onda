@@ -1091,6 +1091,10 @@ pub(crate) fn analyze_proc_event_arg_expr(
             return;
         }
     }
+    if infer_fixed_data_type(expr, env.expr_env).is_some() {
+        validate_fixed_data_expr(expr, env.expr_env, errors);
+        return;
+    }
     if is_data_like_value_expr(expr, env) {
         validate_data_like_value_expr(expr, env, errors);
         return;

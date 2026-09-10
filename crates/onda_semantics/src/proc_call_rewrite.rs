@@ -648,7 +648,7 @@ fn canonicalize_indexed_proc_receiver_call(
     *name = format!("{PROC_INDEX_CALL_SENTINEL}.{name}");
 }
 
-fn can_resolve_proc_index_base(
+pub(super) fn can_resolve_proc_index_base(
     args: &[CallArg],
     proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> bool {

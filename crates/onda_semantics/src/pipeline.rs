@@ -3451,16 +3451,6 @@ pub fn analyze_with_options_and_inputs(
             } else {
                 def_state_scalars.remove(&param.name);
             }
-            if let Some(FnParamType::Tuple(elem_types)) = fn_sig
-                .and_then(|signature| signature.param_types.get(idx))
-                .and_then(Option::as_ref)
-            {
-                def_state_scalars.extend(elem_types.iter().enumerate().map(
-                    |(element_index, elem_ty)| {
-                        (format!("{}[{element_index}]", param.name), *elem_ty)
-                    },
-                ));
-            }
         }
         let fn_locals = HashSet::new();
         let fn_local_aliases = LocalAliasTypes::new();
