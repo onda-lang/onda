@@ -14,28 +14,49 @@ pub(crate) fn primitive_type_bytes(ty: PrimitiveType) -> usize {
 }
 
 #[cfg(any(feature = "llvm-orc", test))]
-pub(crate) fn append_scalar_value_bytes(out: &mut Vec<u8>, value: ScalarValue, ty: PrimitiveType) {
+#[cfg(any(feature = "llvm-orc", test))]
+#[derive(Clone, Copy)]
+pub(crate) enum ScalarByteOrder {
+    Native,
+    LittleEndian,
+}
+
+#[cfg(any(feature = "llvm-orc", test))]
+pub(crate) fn append_scalar_value_bytes(
+    out: &mut Vec<u8>,
+    value: ScalarValue,
+    ty: PrimitiveType,
+    byte_order: ScalarByteOrder,
+) {
+    macro_rules! append {
+        ($value:expr) => {
+            match byte_order {
+                ScalarByteOrder::Native => out.extend_from_slice(&$value.to_ne_bytes()),
+                ScalarByteOrder::LittleEndian => out.extend_from_slice(&$value.to_le_bytes()),
+            }
+        };
+    }
     match (ty, value) {
-        (PrimitiveType::F32, ScalarValue::F32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::F64, ScalarValue::F64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::I32, ScalarValue::I32(v)) => out.extend_from_slice(&v.to_ne_bytes()),
-        (PrimitiveType::I64, ScalarValue::I64(v)) => out.extend_from_slice(&v.to_ne_bytes()),
+        (PrimitiveType::F32, ScalarValue::F32(v)) => append!(v),
+        (PrimitiveType::F64, ScalarValue::F64(v)) => append!(v),
+        (PrimitiveType::I32, ScalarValue::I32(v)) => append!(v),
+        (PrimitiveType::I64, ScalarValue::I64(v)) => append!(v),
         (PrimitiveType::Bool, ScalarValue::Bool(v)) => out.push(if v { 1 } else { 0 }),
         (PrimitiveType::F32, other) => {
             let v = scalar_value_to_f64(other) as f32;
-            out.extend_from_slice(&v.to_ne_bytes());
+            append!(v);
         }
         (PrimitiveType::F64, other) => {
             let v = scalar_value_to_f64(other);
-            out.extend_from_slice(&v.to_ne_bytes());
+            append!(v);
         }
         (PrimitiveType::I32, other) => {
             let v = scalar_value_to_f64(other) as i32;
-            out.extend_from_slice(&v.to_ne_bytes());
+            append!(v);
         }
         (PrimitiveType::I64, other) => {
             let v = scalar_value_to_f64(other) as i64;
-            out.extend_from_slice(&v.to_ne_bytes());
+            append!(v);
         }
         (PrimitiveType::Bool, other) => {
             out.push(if scalar_value_to_f64(other) != 0.0 {

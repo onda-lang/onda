@@ -773,7 +773,8 @@ int onda_set_param_normalized(onda_instance_t* instance, int index, double norma
 /* Triggers one event by index with packed payload bytes and optionally collects host-facing
    execution output; returns 0 on success, ONDA_EXECUTION_INPUT_REJECTED for malformed input or
    insufficient workspace, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE for handler failure, or a negative
-   API error. Unknown event indices are ignored and return success. */
+   API error. Rejection preserves existing execution output; an admitted event resets supplied
+   batches before running its handler. Unknown event indices are ignored and return success. */
 int onda_trigger_event_by_index(
   onda_instance_t* instance,
   int index,
@@ -781,9 +782,10 @@ int onda_trigger_event_by_index(
   int payload_bytes,
   onda_execution_output_t* output
 );
-/* Triggers one event without payload/binding validation. The instance must have completed full
-   initialization, and payload/buffer metadata must satisfy the ABI contract. Returns 0 on success,
-   a positive generated-runtime failure code, or a negative API error. */
+/* Triggers one event without hosted payload/binding validation. The generated entry still performs
+   mandatory payload preflight and preserves existing execution output on rejection. The instance
+   must have completed full initialization, and buffer metadata must satisfy the ABI contract.
+   Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -1126,7 +1128,8 @@ int onda_event_param_offset_bytes(const onda_program_t* program, int event_index
 int onda_event_param_has_default(const onda_program_t* program, int event_index, int param_index);
 /*
  * Returns the byte count for the parameter default, 0 if no default exists, or -1 if invalid.
- * If out_bytes is non-NULL and out_capacity is large enough, the packed default bytes are copied.
+ * If out_bytes is non-NULL and out_capacity is large enough, the packed little-endian default
+ * bytes are copied.
  * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
  */
 int onda_event_param_default_bytes(

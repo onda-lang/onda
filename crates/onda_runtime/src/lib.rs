@@ -2367,19 +2367,13 @@ fn trigger_event_by_index_impl(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
     map_input_rejection: bool,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    let input_rejected = instance
+    let payload_validation = instance
         .program
-        .event_descriptor(event_index)
-        .is_some_and(
-            |event| match event.payload_plan().required_workspace(payload) {
-                Ok(required) => required > instance.event_workspace_capacity(),
-                Err(_) => true,
-            },
-        );
+        .validate_event_payload(event_index, payload);
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -2388,18 +2382,18 @@ fn trigger_event_by_index_impl(
         InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
-    if input_rejected && map_input_rejection {
-        return Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED);
-    }
-    if !input_rejected {
-        output.reset();
+    if let Err(error) = payload_validation {
+        if map_input_rejection {
+            return Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED);
+        }
+        return Err(error);
     }
     // Payload and host-region validation happens before generated code is
     // entered and must not invalidate otherwise usable processor state. Keep
     // the execution status separate so only a generated failure closes the
     // instance, matching the process entry-point lifecycle.
     let status = with_processor_execution_output(output, |output| unsafe {
-        instance.program.trigger_event_by_index_with_status(
+        instance.program.trigger_event_by_index_unchecked(
             &mut state.storage,
             &instance.params,
             event_index,
@@ -2417,8 +2411,8 @@ fn trigger_event_by_index_impl(
     Ok(status)
 }
 
-/// Dispatches an event without validating its payload or current buffer bindings, optionally
-/// collecting delegate and print occurrences.
+/// Dispatches an event without hosted payload or current-buffer validation, optionally collecting
+/// delegate and print occurrences. The generated entry still performs mandatory payload preflight.
 ///
 /// Runtime safety failure invalidates the instance. Rejected input (status 2), including insufficient
 /// workspace capacity, preserves it. Full initialization is required after execution failure.
@@ -2426,18 +2420,16 @@ fn trigger_event_by_index_impl(
 /// # Safety
 ///
 /// Buffer bindings must have been validated after their most recent mutation and must remain valid
-/// for the call. `payload` must exactly match the declared fixed or dynamic layout for
-/// `event_index`, including all slice length prefixes and element data. The instance must have
-/// completed full initialization; violating that lifecycle contract is undefined behavior in
-/// release builds.
+/// for the call. The instance must have completed full initialization; violating that lifecycle
+/// contract is undefined behavior in release builds. Malformed payload bytes are safely rejected by
+/// the generated entry.
 pub unsafe fn trigger_event_by_index_unchecked(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    output.reset();
     debug_assert!(
         instance.is_initialized(),
         "trigger_event_by_index_unchecked called before full initialization; this is UB in release builds"

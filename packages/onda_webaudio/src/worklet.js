@@ -784,7 +784,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     view.setUint32(this.eventInputPtr + 4, payloadSize, true);
     view.setUint32(this.eventInputPtr + 8, this.eventWorkspacePtr, true);
     view.setUint32(this.eventInputPtr + 12, this.eventWorkspaceCapacity, true);
-    this.prepareExecutionOutput();
     const status = handler(
       this.eventInputPtr,
       this.paramsPtr,

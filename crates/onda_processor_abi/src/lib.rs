@@ -37,9 +37,10 @@ pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
 
 /// Caller-owned, call-scoped storage for top-level delegate occurrences.
 ///
-/// The host resets the three result counters before every init, process, or
-/// event entry. `storage` may be null; in that neutral configuration
-/// publication is discarded without counting overflow.
+/// The host resets the three result counters before init and process entries;
+/// generated event entries reset them after successful input preflight.
+/// `storage` may be null; in that neutral configuration publication is
+/// discarded without counting overflow.
 #[repr(C)]
 #[derive(Debug)]
 pub struct DelegateBatch {
@@ -80,13 +81,10 @@ impl DelegateBatch {
 
 /// Caller-owned, call-scoped storage for authored print occurrences.
 ///
-/// The host resets the three result counters before every init, process, or
-/// event entry. `storage` may be null; in that neutral configuration
-/// publication is discarded without counting overflow.
-/// Caller-owned output streams shared by every processor entry ABI.
-///
-/// The host must call [`Self::reset`] immediately before passing this
-/// descriptor to generated init, process, or event code.
+/// The host resets the three result counters before init and process entries;
+/// generated event entries reset them after successful input preflight.
+/// `storage` may be null; in that neutral configuration publication is
+/// discarded without counting overflow.
 #[repr(C)]
 #[derive(Debug)]
 pub struct PrintBatch {
@@ -125,6 +123,11 @@ impl PrintBatch {
     }
 }
 
+/// Caller-owned output streams shared by every processor entry ABI.
+///
+/// The host resets this descriptor before init and process entries. Generated
+/// event entries perform the same reset only after successful input preflight,
+/// preserving existing records and sequence state when input is rejected.
 #[repr(C)]
 #[derive(Debug)]
 pub struct ExecutionOutput {

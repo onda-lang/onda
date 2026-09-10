@@ -55,8 +55,9 @@ const fixedRecordBytes = delegates.map((delegate) =>
 
 writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
 writeExecutionOutput(memory, outputAddress, batchAddress, 0);
+// Before onda_process (or initialization):
 resetExecutionOutput(memory, outputAddress);
-// Pass outputAddress as the final onda_process or onda_event_N argument.
+// Pass outputAddress as the final entry argument. onda_event_N resets it itself after preflight.
 const batch = readDelegateBatch(memory, batchAddress);
 const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
 const occurrences = decodeDelegateRecords(

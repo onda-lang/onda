@@ -1878,7 +1878,7 @@ sample { out1 = amp }
             ),
             4
         );
-        assert_eq!(i32::from_ne_bytes(note_default), 60);
+        assert_eq!(note_default, 60_i32.to_le_bytes());
 
         assert_eq!(onda_event_param_has_default(program.0, 0, 1), 0);
         assert_eq!(
@@ -1922,14 +1922,8 @@ sample { out1 = amp }
             ),
             8
         );
-        assert_eq!(
-            f32::from_ne_bytes(curve_default[0..4].try_into().unwrap()),
-            0.25
-        );
-        assert_eq!(
-            f32::from_ne_bytes(curve_default[4..8].try_into().unwrap()),
-            0.75
-        );
+        assert_eq!(&curve_default[0..4], &0.25_f32.to_le_bytes());
+        assert_eq!(&curve_default[4..8], &0.75_f32.to_le_bytes());
     }
 }
 
@@ -2722,6 +2716,41 @@ sample { out1 = f32(value) }
             delegate_batch: &mut delegates,
             print_batch: &mut prints,
         };
+
+        prints.used_bytes = 7;
+        prints.record_count = 3;
+        prints.overflow_count = 5;
+        delegates.used_bytes = 7;
+        delegates.record_count = 3;
+        delegates.overflow_count = 5;
+        let truncated_payload = [0_u8; 3];
+        assert_eq!(
+            onda_trigger_event_by_index_unchecked(
+                instance.0,
+                0,
+                truncated_payload.as_ptr().cast(),
+                truncated_payload.len() as i32,
+                &mut output,
+            ),
+            ONDA_EXECUTION_INPUT_REJECTED
+        );
+        assert_eq!(
+            (
+                prints.used_bytes,
+                prints.record_count,
+                prints.overflow_count
+            ),
+            (7, 3, 5)
+        );
+        assert_eq!(
+            (
+                delegates.used_bytes,
+                delegates.record_count,
+                delegates.overflow_count,
+            ),
+            (7, 3, 5)
+        );
+
         let set_divisor = |value: i32, output: *mut onda_execution_output_t| {
             assert_eq!(
                 onda_trigger_event_by_index_unchecked(

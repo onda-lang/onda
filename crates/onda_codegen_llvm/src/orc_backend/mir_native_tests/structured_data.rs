@@ -1540,6 +1540,7 @@ sample:
             delegate_batch: &mut batch,
             ..onda_processor_abi::ExecutionOutput::none()
         };
+        execution.next_sequence = 9;
         let mut malformed = (0..payload.len())
             .map(|len| payload[..len].to_vec())
             .collect::<Vec<_>>();
@@ -1574,6 +1575,7 @@ sample:
                 (batch.used_bytes, batch.record_count, batch.overflow_count),
                 (7, 3, 5)
             );
+            assert_eq!(execution.next_sequence, 9);
             assert_eq!(storage, [0xa5; 40]);
         }
         // Capacity rejection follows the same path and does not poison the instance.
@@ -1596,9 +1598,8 @@ sample:
             onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
         );
         assert_eq!(state.bytes(), initial);
+        assert_eq!(execution.next_sequence, 9);
         state.reserve_event_workspace(64).unwrap();
-        batch.used_bytes = 0;
-        batch.record_count = 0;
         let status = unsafe {
             native.trigger_event_by_index_unchecked(
                 &mut state,
@@ -1616,6 +1617,8 @@ sample:
         assert_eq!(payload[0], 255);
         assert_eq!(payload[13], 2);
         assert_eq!(batch.record_count, 1);
+        assert_eq!(batch.overflow_count, 0);
+        assert_eq!(execution.next_sequence, 1);
         let normalized = -3 + (i128::from(i64::MIN) + 3).rem_euclid(7);
         assert_eq!(
             f64::from_le_bytes(storage[12..20].try_into().unwrap()),

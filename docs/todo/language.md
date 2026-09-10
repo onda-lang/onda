@@ -11,8 +11,6 @@
     Implement this through shared owner-aware name resolution and receiver capture for struct
     methods and proc-local defs. Avoid a separate textual qualification pass or synthetic shadow
     bindings that leak into typed events, MIR, or tooling.
-  - Consolidate hosted event payload validation so one diagnostic host pass precedes the mandatory
-    raw-entry preflight without changing rejection or instance-lifecycle behavior.
   - Measure and document default per-instance event, delegate, and print capacity costs before tuning
     them; keep all rendering-thread storage bounded and provisioned before execution.
 

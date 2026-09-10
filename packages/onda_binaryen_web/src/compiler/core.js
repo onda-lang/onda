@@ -19,6 +19,9 @@ import {
   DELEGATE_BATCH_USED_OFFSET,
   DELEGATE_BATCH_RECORD_COUNT_OFFSET,
   DELEGATE_BATCH_OVERFLOW_OFFSET,
+  PRINT_BATCH_USED_OFFSET,
+  PRINT_BATCH_RECORD_COUNT_OFFSET,
+  PRINT_BATCH_OVERFLOW_OFFSET,
   EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET,
   EXECUTION_OUTPUT_PRINT_BATCH_OFFSET,
   EXECUTION_OUTPUT_SEQUENCE_OFFSET,
@@ -2194,13 +2197,16 @@ export class MirCompilerCore {
   }
 
   resetDelegateBatch() {
-    const batch = () =>
-      this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
-    const stores = [
+    return this.resetOutputBatch(POINTER_GLOBALS.delegateBatch, [
       DELEGATE_BATCH_USED_OFFSET,
       DELEGATE_BATCH_RECORD_COUNT_OFFSET,
       DELEGATE_BATCH_OVERFLOW_OFFSET,
-    ].map((offset) =>
+    ]);
+  }
+
+  resetOutputBatch(global, offsets) {
+    const batch = () => this.module.global.get(global, binaryen.i32);
+    const stores = offsets.map((offset) =>
       this.module.i32.store(
         offset,
         4,
@@ -2212,6 +2218,23 @@ export class MirCompilerCore {
       this.module.if(
         this.module.i32.ne(batch(), this.module.i32.const(0)),
         this.module.block(null, stores),
+      ),
+    ];
+  }
+
+  resetExecutionOutput() {
+    const sequence = () =>
+      this.module.global.get(POINTER_GLOBALS.outputSequence, binaryen.i32);
+    return [
+      ...this.resetDelegateBatch(),
+      ...this.resetOutputBatch(POINTER_GLOBALS.printBatch, [
+        PRINT_BATCH_USED_OFFSET,
+        PRINT_BATCH_RECORD_COUNT_OFFSET,
+        PRINT_BATCH_OVERFLOW_OFFSET,
+      ]),
+      this.module.if(
+        this.module.i32.ne(sequence(), this.module.i32.const(0)),
+        this.module.i32.store(0, 4, sequence(), this.module.i32.const(0)),
       ),
     ];
   }
@@ -2517,6 +2540,7 @@ export class MirCompilerCore {
           POINTER_GLOBALS.outputSequence,
           this.executionOutputSequence(7),
         ),
+        ...this.resetExecutionOutput(),
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,

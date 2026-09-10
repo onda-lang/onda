@@ -174,10 +174,11 @@ There is no exact whole-batch size because occurrence counts, delegate selection
 may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
 was insufficient.
 
-Before every init, process, or input-event entry, the host resets the counters of each supplied
-batch and resets `next_sequence` to zero. Publications into either present batch consume that shared
-counter. A complete record is appended only when it fits. Otherwise it is discarded whole and that
-batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
+Before every init or process entry, the host resets the counters of each supplied batch and resets
+`next_sequence` to zero. An input-event entry performs that reset itself after successful preflight,
+so rejected input preserves existing records. Publications into either present batch consume the
+shared counter. A complete record is appended only when it fits. Otherwise it is discarded whole
+and that batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
 batch, or storage is neutral and does not count overflow. Generated execution failure clears
 delegate results but retains print records and overflow already produced, because they may diagnose
 the failure. Storage

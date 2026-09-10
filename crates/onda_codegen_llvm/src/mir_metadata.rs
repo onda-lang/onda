@@ -7,7 +7,7 @@ use onda_mir::{
     ValueRange,
 };
 
-use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes};
+use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes, ScalarByteOrder};
 use crate::runtime_metadata::ProgramMetadata;
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredDelegate, DeclaredEvent, DeclaredEventParam,
@@ -294,7 +294,7 @@ fn build_io_descriptor(
     let shape = scalar_array_shape(program, ty, "runtime I/O")?;
     let control = range.is_some().then_some(control).flatten();
     let default_bytes = default
-        .map(|value| constant_bytes(program, value, ty))
+        .map(|value| constant_bytes(program, value, ty, ScalarByteOrder::Native))
         .transpose()?;
     let default_values = default
         .map(|value| constant_values(program, value, ty))
@@ -453,7 +453,9 @@ fn build_payload_descriptor<'a>(
                     is_slice: false,
                     byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
-                        .map(|value| constant_bytes(program, value, ty))
+                        .map(|value| {
+                            constant_bytes(program, value, ty, ScalarByteOrder::LittleEndian)
+                        })
                         .transpose()?,
                     default_values: default
                         .map(|value| constant_values(program, value, ty))
@@ -486,7 +488,9 @@ fn build_payload_descriptor<'a>(
                     is_slice: false,
                     byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
-                        .map(|value| constant_bytes(program, value, ty))
+                        .map(|value| {
+                            constant_bytes(program, value, ty, ScalarByteOrder::LittleEndian)
+                        })
                         .transpose()?,
                     default_values: default
                         .map(|value| constant_values(program, value, ty))
@@ -638,9 +642,10 @@ fn constant_bytes(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
+    byte_order: ScalarByteOrder,
 ) -> Result<Vec<u8>, MirMetadataError> {
     let mut bytes = Vec::new();
-    append_constant_bytes(program, value, ty, &mut bytes)?;
+    append_constant_bytes(program, value, ty, byte_order, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -687,18 +692,19 @@ fn append_constant_bytes(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
+    byte_order: ScalarByteOrder,
     output: &mut Vec<u8>,
 ) -> Result<(), MirMetadataError> {
     match (program.types.get(ty.index()), value) {
         (Some(Type::Scalar(expected)), ConstantValue::Scalar(value)) if *expected == value.ty() => {
-            append_scalar_value_bytes(output, *value, primitive_type(*expected));
+            append_scalar_value_bytes(output, *value, primitive_type(*expected), byte_order);
             Ok(())
         }
         (Some(Type::Array { element, len }), ConstantValue::Aggregate(values))
             if values.len() == *len as usize =>
         {
             for value in values {
-                append_constant_bytes(program, value, *element, output)?;
+                append_constant_bytes(program, value, *element, byte_order, output)?;
             }
             Ok(())
         }

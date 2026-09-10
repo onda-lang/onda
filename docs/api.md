@@ -375,9 +375,9 @@ persistent snapshot size.
 ### Defaults, ranges, and parameter controls
 
 Input, output, and parameter defaults use `onda_*_has_default` and `onda_*_default_f64`.
-`onda_param_default_bytes` preserves the exact scalar or fixed-array representation and supports a
-size query. Event defaults use `onda_event_param_has_default` and
-`onda_event_param_default_bytes`.
+`onda_param_default_bytes` preserves the exact native scalar or fixed-array representation and
+supports a size query. Event defaults use `onda_event_param_has_default` and
+`onda_event_param_default_bytes`; their packed representation is little-endian event-wire data.
 
 Input, output, and parameter ranges use `onda_*_has_range`, `onda_*_range_min_f64`, and
 `onda_*_range_max_f64`. The parameter-only host-control surface adds:

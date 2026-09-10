@@ -1499,22 +1499,30 @@ unsafe fn reset_delegate_batch(
         DELEGATE_BATCH_CONTEXT_INDEX,
         "delegate_batch",
     )?;
+    reset_output_batch(module, builder, batch)
+}
+
+unsafe fn reset_output_batch(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    batch: LLVMValueRef,
+) -> Result<(), MirCodegenError> {
     let present = LLVMBuildICmp(
         builder,
         LLVMIntPredicate::LLVMIntNE,
         batch,
         LLVMConstPointerNull(module.ptr_ty),
-        c_name("delegate_batch_present")?.as_ptr(),
+        c_name("execution_batch_present")?.as_ptr(),
     );
     let reset = append_block(
         module.context,
         LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
-        "delegate_batch_reset",
+        "execution_batch_reset",
     )?;
     let done = append_block(
         module.context,
         LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
-        "delegate_batch_reset_done",
+        "execution_batch_reset_done",
     )?;
     LLVMBuildCondBr(builder, present, reset, done);
     LLVMPositionBuilderAtEnd(builder, reset);
@@ -1525,7 +1533,7 @@ unsafe fn reset_delegate_batch(
             module.delegate_batch_ty,
             batch,
             field,
-            c_name("delegate_batch_counter")?.as_ptr(),
+            c_name("execution_batch_counter")?.as_ptr(),
         );
         LLVMBuildStore(builder, zero, pointer);
     }
@@ -1654,8 +1662,9 @@ unsafe fn build_entry_runtime_context(
 
     let needs_delegate_batch = !module.program.interface.delegates.is_empty();
     let needs_print_batch = !module.program.log_sites.is_empty();
+    let reset_output = matches!(kind, FunctionKind::Event(_));
     let (delegate_batch, print_batch, output_sequence) =
-        if needs_delegate_batch || needs_print_batch {
+        if needs_delegate_batch || needs_print_batch || reset_output {
             let output = match kind {
                 FunctionKind::Init => LLVMGetParam(function, 7),
                 FunctionKind::Process => LLVMGetParam(function, 11),
@@ -1668,6 +1677,7 @@ unsafe fn build_entry_runtime_context(
                 output,
                 needs_delegate_batch,
                 needs_print_batch,
+                reset_output,
             )?
         } else {
             (null, null, null)
@@ -1758,6 +1768,7 @@ unsafe fn load_execution_output_batches(
     output: LLVMValueRef,
     load_delegate: bool,
     load_print: bool,
+    reset: bool,
 ) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let null = LLVMConstPointerNull(module.ptr_ty);
     let delegate_slot = LLVMBuildAlloca(
@@ -1801,7 +1812,7 @@ unsafe fn load_execution_output_batches(
         (0_u32, delegate_slot, load_delegate),
         (1_u32, print_slot, load_print),
     ] {
-        if !enabled {
+        if !enabled && !reset {
             continue;
         }
         let pointer = LLVMBuildStructGEP2(
@@ -1817,7 +1828,12 @@ unsafe fn load_execution_output_batches(
             pointer,
             c_name("execution_output_batch")?.as_ptr(),
         );
-        LLVMBuildStore(builder, batch, slot);
+        if enabled {
+            LLVMBuildStore(builder, batch, slot);
+        }
+        if reset {
+            reset_output_batch(module, builder, batch)?;
+        }
     }
     let sequence = LLVMBuildStructGEP2(
         builder,
@@ -1827,6 +1843,13 @@ unsafe fn load_execution_output_batches(
         c_name("execution_output_sequence_ptr")?.as_ptr(),
     );
     LLVMBuildStore(builder, sequence, sequence_slot);
+    if reset {
+        LLVMBuildStore(
+            builder,
+            LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
+            sequence,
+        );
+    }
     LLVMBuildBr(builder, done);
     LLVMPositionBuilderAtEnd(builder, done);
     Ok((
@@ -2969,10 +2992,42 @@ impl MirJitProgram {
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
+        if self.compiled.events.get(event_index).is_none() {
+            return Ok(0);
+        }
+        self.validate_event_payload(event_index, payload)?;
+        unsafe {
+            self.trigger_event_by_index_with_validated_payload(
+                state,
+                params,
+                event_index,
+                payload,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )
+        }
+    }
+
+    /// Executes a payload-validated event after checking the remaining host regions.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) unsafe fn trigger_event_by_index_with_validated_payload(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        payload: &[u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
             return Ok(0);
         };
-        self.validate_event_payload(event_index, payload)?;
         self.validate_runtime_regions(state, params)?;
         validate_buffer_abi(
             &self.mir,
@@ -3003,11 +3058,13 @@ impl MirJitProgram {
         Ok(status)
     }
 
-    /// Executes an event entry without validating payload or runtime regions.
+    /// Executes an event entry without hosted payload or runtime-region validation.
+    /// The generated entry still performs mandatory payload preflight.
     ///
     /// # Safety
     ///
-    /// The payload and every host region must match the event and buffer ABI.
+    /// Every host region must match the event and buffer ABI. Malformed payload
+    /// bytes are safely rejected by the generated entry.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index_unchecked(
         &self,

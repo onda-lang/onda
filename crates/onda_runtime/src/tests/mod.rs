@@ -3238,12 +3238,28 @@ sample:
         (7, 3, 5)
     );
     let status = unsafe {
-        trigger_event_by_index_unchecked(&mut instance, event, &payload, ExecutionOutput::none())
+        trigger_event_by_index_unchecked(
+            &mut instance,
+            event,
+            &payload,
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut print_batch),
+            },
+        )
     }
     .unwrap();
     assert_eq!(
         status,
         onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
     );
     assert!(instance.is_initialized());
     instance.reserve_event_workspace(payload.len()).unwrap();

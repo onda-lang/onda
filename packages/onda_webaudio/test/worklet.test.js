@@ -255,7 +255,7 @@ test("event encoding preserves exact i64 values before worklet dispatch", () => 
   );
 });
 
-test("worklet prepares execution output before every Wasm entry", () => {
+test("worklet prepares execution output before init and process entries", () => {
   const descriptor = metadata();
   descriptor.metadata.buffers = [];
   descriptor.metadata.events = [{ name: "noop", export: "onda_process", params: [] }];
@@ -303,10 +303,6 @@ test("worklet prepares execution output before every Wasm entry", () => {
 
   dirtyOutput();
   processor.init(1);
-  assertPrepared();
-
-  dirtyOutput();
-  processor.dispatchEvent("noop", new Uint8Array());
   assertPrepared();
 
   dirtyOutput();
