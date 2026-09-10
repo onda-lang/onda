@@ -1,5 +1,7 @@
 artifact.js
 param-control.js
+param-metadata.js
+payload.js
 impulse.wav
 onda-webaudio.js
 onda-wasm-processor.js

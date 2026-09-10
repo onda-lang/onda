@@ -21,7 +21,7 @@ struct Output:
   body = 0.78
   air = 0.24
   drive = 1.35
-  gain = 0.2
+  gain = 0.5
 
 struct Patch:
   pitch: Pitch

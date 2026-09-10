@@ -127,6 +127,48 @@ test("i32 defaults use the same signed-decimal grammar as Rust", () => {
   }
 });
 
+test("integer ranges use the same signed-decimal grammar as Rust", () => {
+  const ranged = (encoding, min, max) => ({
+    params: [{
+      name: "value",
+      ty: {
+        kind: "scalar",
+        encoding,
+        integer_range: {
+          min: { type: encoding, value: min },
+          max: { type: encoding, value: max },
+          mode: "clamp",
+        },
+      },
+    }],
+  });
+
+  for (const value of [16, " 16", "16 ", "0x10", "1e2", "1.0", ""]) {
+    assert.throws(() => new PayloadPlan(ranged("i64", value, "16")), /integer range/);
+    assert.throws(() => new PayloadPlan(ranged("i64", "-16", value)), /integer range/);
+  }
+  assert.throws(() => new PayloadPlan(ranged("i32", "-2147483649", "0")), /integer range/);
+  assert.throws(() => new PayloadPlan(ranged("i64", "1", "0")), /integer range/);
+  for (const [encoding, min, max] of [
+    ["i32", "+01", "2147483647"],
+    ["i64", "-0", "9223372036854775807"],
+  ]) {
+    const plan = new PayloadPlan(ranged(encoding, min, max));
+    assert.deepEqual(plan.tensors[0].domain, {
+      min: BigInt(min),
+      max: BigInt(max),
+      wrap: false,
+    });
+  }
+});
+
+test("i64 values reject non-integer JavaScript coercions", () => {
+  const plan = new PayloadPlan({ params: [{ name: "value", ty: scalar("i64") }] });
+  for (const value of [null, false, [], {}]) {
+    assert.throws(() => plan.encode({ value }), /i64 payload value/);
+  }
+});
+
 test("parameter defaults ignore inherited object properties", () => {
   const names = ["constructor", "toString", "__proto__"];
   const plan = new PayloadPlan({ params: names.map((name, index) => ({

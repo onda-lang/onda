@@ -79,12 +79,22 @@ const processor = new WorkletProcessor({
     initialize: true,
   },
 });
-processor.port.onmessage({
-  data: { type: "event", event: "play", payload: new PayloadPlan(artifact.metadata.metadata.events.find((event) => event.name === "play").schema).encode({ enabled: true }), requestId: 1 },
-});
-if (processor.port.messages.some((message) => message.type === "onda-error")) {
-  throw new Error(`worklet rejected play event: ${JSON.stringify(processor.port.messages)}`);
+function trigger(event, values, requestId) {
+  const definition = artifact.metadata.metadata.events.find((candidate) => candidate.name === event);
+  if (!definition) throw new Error(`sample-player artifact has no '${event}' event`);
+  processor.port.onmessage({
+    data: {
+      type: "event",
+      event,
+      payload: new PayloadPlan(definition.schema).encode(values),
+      requestId,
+    },
+  });
+  if (processor.port.messages.some((message) => message.type === "onda-error")) {
+    throw new Error(`worklet rejected ${event} event: ${JSON.stringify(processor.port.messages)}`);
+  }
 }
+trigger("play", { start_frame: 0 }, 1);
 
 let renderedPeak = 0;
 for (let offset = 0; offset < clip.frames && renderedPeak === 0; offset += 128) {
@@ -98,6 +108,7 @@ for (let offset = 0; offset < clip.frames && renderedPeak === 0; offset += 128) 
 if (!(renderedPeak > 0)) {
   throw new Error("sample-player worklet rendered silence from impulse.wav");
 }
+trigger("stop", {}, 2);
 
 process.stdout.write(
   `Verified AOT sample player: ${clip.frames} frames, ${clip.channels} channels, peak ${renderedPeak.toFixed(6)}\n`,

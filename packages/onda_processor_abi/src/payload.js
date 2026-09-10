@@ -47,6 +47,12 @@ function fields(entries) {
 function arrayElement(ty) {
   return ty?.kind === "scalar" || ty?.kind === "struct";
 }
+function parseSignedDecimalInteger(value, message) {
+  if (typeof value !== "string" || !SIGNED_DECIMAL_INTEGER.test(value)) {
+    throw new TypeError(message);
+  }
+  return BigInt(value);
+}
 function domain(encoding, range) {
   if (range == null) return null;
   if (!["i32", "i64"].includes(encoding) || !["clamp", "wrap"].includes(range.mode)
@@ -54,8 +60,8 @@ function domain(encoding, range) {
     throw new TypeError("invalid payload integer range");
   }
   const bits = encoding === "i32" ? 32 : 64;
-  const min = BigInt(range.min.value);
-  const max = BigInt(range.max.value);
+  const min = parseSignedDecimalInteger(range.min.value, "invalid payload integer range");
+  const max = parseSignedDecimalInteger(range.max.value, "invalid payload integer range");
   if (min > max || BigInt.asIntN(bits, min) !== min || BigInt.asIntN(bits, max) !== max) {
     throw new RangeError("invalid payload integer range");
   }
@@ -298,9 +304,15 @@ function scalarValue(encoding, value) {
   }
   if (encoding === "i64") {
     if (typeof value === "number" && !Number.isSafeInteger(value)) throw new TypeError("i64 payload value must be an exact integer");
-    if (typeof value !== "bigint" && typeof value !== "number"
-        && !(typeof value === "string" && SIGNED_DECIMAL_INTEGER.test(value))) throw new TypeError("invalid i64 payload value");
-    const integer = BigInt(value);
+    let integer;
+    if (typeof value === "string") {
+      integer = parseSignedDecimalInteger(value, "invalid i64 payload value");
+    } else {
+      if (typeof value !== "bigint" && typeof value !== "number") {
+        throw new TypeError("invalid i64 payload value");
+      }
+      integer = BigInt(value);
+    }
     if (BigInt.asIntN(64, integer) !== integer) throw new RangeError("i64 payload value is outside the signed 64-bit range");
     return integer;
   }
@@ -317,11 +329,9 @@ function parseScalarDefault(encoding, value) {
       if (value !== "true" && value !== "false") throw new TypeError("invalid bool payload default");
       return value === "true";
     case "i32":
-      if (!SIGNED_DECIMAL_INTEGER.test(value)) throw new TypeError("invalid i32 payload default");
-      return scalarValue(encoding, Number(value));
+      return scalarValue(encoding, Number(parseSignedDecimalInteger(value, "invalid i32 payload default")));
     case "i64":
-      if (!SIGNED_DECIMAL_INTEGER.test(value)) throw new TypeError("invalid i64 payload default");
-      return scalarValue(encoding, value);
+      return scalarValue(encoding, parseSignedDecimalInteger(value, "invalid i64 payload default"));
     case "f32": case "f64":
       if (!/^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|inf(?:inity)?|nan)$/i.test(value)) {
         throw new TypeError("invalid floating-point payload default");
