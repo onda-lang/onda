@@ -2650,13 +2650,13 @@ fn analyze_struct_data_init_assign(
         return;
     }
 
-    let Some(fields) = struct_defs.get(struct_name) else {
+    if !struct_defs.contains_key(struct_name) {
         push_semantic(diag, errors, format!("unknown struct '{struct_name}'"));
         return;
-    };
+    }
 
-    for field in fields {
-        let flat = format!("{target}.{}", field.name);
+    visit_struct_field_paths(struct_name, struct_defs, |path, field| {
+        let flat = format!("{target}.{path}");
         match field.ty {
             TypedFieldType::Scalar(prim) => {
                 state_scalars.insert(flat.clone(), prim);
@@ -2672,7 +2672,7 @@ fn analyze_struct_data_init_assign(
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let context =
                         format!("struct constructor field '{flat}' array element '{elem_struct}'");
-                    if !register_data_struct_root(
+                    register_data_struct_root(
                         &flat,
                         elem_struct,
                         len,
@@ -2683,9 +2683,7 @@ fn analyze_struct_data_init_assign(
                         state_arrays,
                         state_array_struct_roots,
                         errors,
-                    ) {
-                        continue;
-                    }
+                    );
                 } else {
                     insert_declared_symbol(
                         state_scalars,
@@ -2699,7 +2697,7 @@ fn analyze_struct_data_init_assign(
                 }
             }
         }
-    }
+    });
 
     register_struct_instance_roots(target, struct_name, struct_defs, struct_instances);
 }
@@ -2763,15 +2761,7 @@ fn analyze_struct_field_init_assign(
         push_semantic(diag, errors, format!("unknown struct instance '{base}'"));
         return;
     };
-    let Some(fields) = struct_defs.get(struct_name) else {
-        push_semantic(
-            diag,
-            errors,
-            format!("unknown struct type '{}'", struct_name),
-        );
-        return;
-    };
-    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) else {
         push_semantic(
             diag,
             errors,

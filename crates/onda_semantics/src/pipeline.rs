@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
+use crate::aggregate_layout::validate_aggregate_nesting;
 use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
     coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
@@ -457,50 +458,68 @@ fn collect_struct_field_dependencies(def: &StructDef) -> Vec<String> {
 }
 
 fn order_struct_defs_for_field_dependencies(structs: &mut Vec<StructDef>) {
-    let index_by_name = structs
-        .iter()
-        .enumerate()
-        .map(|(idx, def)| (def.name.clone(), idx))
-        .collect::<HashMap<_, _>>();
-    if index_by_name.is_empty() {
+    if structs.is_empty() {
         return;
     }
 
-    let deps_by_index = structs
-        .iter()
-        .map(collect_struct_field_dependencies)
-        .collect::<Vec<_>>();
-    let mut remaining = (0..structs.len()).collect::<Vec<_>>();
-    let mut ordered = Vec::<StructDef>::with_capacity(structs.len());
-
-    while !remaining.is_empty() {
-        let remaining_names = remaining
+    let (dependents, mut incoming) = {
+        let index_by_name = structs
             .iter()
-            .map(|idx| structs[*idx].name.as_str())
-            .collect::<HashSet<_>>();
-        let mut ready_pos = None;
-        for (pos, idx) in remaining.iter().enumerate() {
-            let self_name = structs[*idx].name.as_str();
-            let ready = deps_by_index[*idx].iter().all(|dep| {
-                dep == self_name
-                    || !index_by_name.contains_key(dep)
-                    || !remaining_names.contains(dep.as_str())
-            });
-            if ready {
-                ready_pos = Some(pos);
-                break;
+            .enumerate()
+            .map(|(index, definition)| (definition.name.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut dependents = vec![Vec::new(); structs.len()];
+        let mut incoming = vec![0usize; structs.len()];
+        for (dependent, definition) in structs.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for dependency in collect_struct_field_dependencies(definition) {
+                let Some(&dependency) = index_by_name.get(dependency.as_str()) else {
+                    continue;
+                };
+                if dependency == dependent || !seen.insert(dependency) {
+                    continue;
+                }
+                dependents[dependency].push(dependent);
+                incoming[dependent] += 1;
             }
         }
+        (dependents, incoming)
+    };
 
-        let Some(pos) = ready_pos else {
-            ordered.extend(remaining.drain(..).map(|idx| structs[idx].clone()));
-            break;
-        };
-        let idx = remaining.remove(pos);
-        ordered.push(structs[idx].clone());
+    let mut ready = std::collections::BinaryHeap::new();
+    for (index, count) in incoming.iter().enumerate() {
+        if *count == 0 {
+            ready.push(std::cmp::Reverse(index));
+        }
+    }
+    let mut order = Vec::with_capacity(structs.len());
+    while let Some(std::cmp::Reverse(index)) = ready.pop() {
+        order.push(index);
+        for &dependent in &dependents[index] {
+            incoming[dependent] -= 1;
+            if incoming[dependent] == 0 {
+                ready.push(std::cmp::Reverse(dependent));
+            }
+        }
+    }
+    if order.len() != structs.len() {
+        order.extend(
+            incoming
+                .iter()
+                .enumerate()
+                .filter_map(|(index, count)| (*count != 0).then_some(index)),
+        );
     }
 
-    *structs = ordered;
+    let mut original = std::mem::take(structs)
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<_>>();
+    structs.extend(
+        order
+            .into_iter()
+            .map(|index| original[index].take().expect("struct ordered once")),
+    );
 }
 
 fn rewrite_function_overloads(
@@ -1898,14 +1917,8 @@ pub fn analyze_with_options_and_inputs(
             ));
             continue;
         }
-        let typed_fields = coerce_struct_fields(
-            &s.name,
-            &s.type_params,
-            &s.fields,
-            &struct_defs,
-            options,
-            &mut errors,
-        );
+        let typed_fields =
+            coerce_struct_fields(&s.name, &s.type_params, &s.fields, options, &mut errors);
         struct_defs.insert(s.name.clone(), typed_fields.clone());
         typed_structs.push(TypedStruct {
             name: s.name.clone(),
@@ -2004,6 +2017,11 @@ pub fn analyze_with_options_and_inputs(
                 body: desugared_method_body,
             });
         }
+    }
+
+    if let Err(error) = validate_aggregate_nesting(&typed_structs) {
+        errors.push(Diagnostic::semantic(error.to_string(), 0, 0));
+        return Err(errors);
     }
 
     for (struct_name, fields) in &struct_defs {
@@ -4158,18 +4176,15 @@ pub fn analyze_with_options_and_inputs(
             })
             .collect::<HashMap<_, _>>();
         for (root, struct_name) in &struct_instances {
-            let Some(fields) = struct_defs.get(struct_name) else {
-                continue;
-            };
-            for field in fields {
-                let flat_name = format!("{root}.{}", field.name);
+            visit_struct_field_paths(struct_name, &struct_defs, |path, field| {
+                let flat_name = format!("{root}.{path}");
                 if !state_scalars.contains_key(&flat_name) {
-                    continue;
+                    return;
                 }
                 if let Some(range) = &field.integer_range {
                     state_integer_ranges.insert(flat_name, *range);
                 }
-            }
+            });
         }
         for (source, alias) in &param_range_state_aliases {
             let Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)) =

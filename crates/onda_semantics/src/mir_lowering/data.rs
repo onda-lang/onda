@@ -734,14 +734,11 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
-        let all_fields = self
+        let fields = self
             .structs
             .get(constructor)
             .ok_or_else(|| self.error("unknown data constructor", loc))?;
-        let fields = crate::data_construction::authored_struct_fields(all_fields)
-            .cloned()
-            .collect::<Vec<_>>();
-        let indices = crate::data_construction::constructor_fields(&fields, args)
+        let indices = crate::data_construction::constructor_fields(fields, args)
             .map_err(|(message, loc)| self.error(message, loc))?;
         let mut supplied = HashSet::new();
         // Capture authored operands in source order, including named operands.

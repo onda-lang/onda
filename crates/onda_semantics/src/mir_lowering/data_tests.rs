@@ -596,7 +596,7 @@ sample:
 }
 
 #[test]
-fn deeply_nested_struct_constructor_validation_is_linear() {
+fn deeply_nested_struct_metadata_is_linear_and_constructors_compile() {
     let depth = 64;
     let mut source = String::new();
     for index in 0..depth {
@@ -608,7 +608,18 @@ fn deeply_nested_struct_constructor_validation_is_linear() {
         }
     }
     source.push_str("sample:\n  value = S0()\n  out1 = 0.0\n");
-    compile(&source);
+    let parsed = onda_frontend::parse_program(&source).expect("nested structs parse");
+    let typed = crate::analyze(parsed).expect("nested structs analyze");
+    assert_eq!(
+        typed
+            .structs
+            .iter()
+            .map(|def| def.fields.len())
+            .sum::<usize>(),
+        depth,
+        "typed structs must retain only directly declared fields"
+    );
+    lower_program_to_optimized_mir(&typed).expect("nested structs lower");
 }
 
 #[test]

@@ -1265,11 +1265,11 @@ fn register_task_owner_aggregate_storage(
         .map(|(base, struct_name)| (base.clone(), struct_name.clone()))
         .collect::<Vec<_>>();
     for (base, struct_name) in instances {
-        let Some(fields) = struct_defs.get(&struct_name) else {
+        if !struct_defs.contains_key(&struct_name) {
             continue;
-        };
-        for field in fields {
-            let flat = format!("{base}.{}", field.name);
+        }
+        visit_struct_field_paths(&struct_name, struct_defs, |path, field| {
+            let flat = format!("{base}.{path}");
             match &field.ty {
                 TypedFieldType::Scalar(ty) => {
                     types.scalars.entry(flat).or_insert(*ty);
@@ -1303,7 +1303,7 @@ fn register_task_owner_aggregate_storage(
                 }
                 TypedFieldType::Struct => {}
             }
-        }
+        });
     }
 }
 

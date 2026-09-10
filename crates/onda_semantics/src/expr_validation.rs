@@ -1113,11 +1113,11 @@ fn validate_expr_node<'a>(
                     push_expr_error(errors, expr, format!("'{base}' is not an array of structs"));
                     return;
                 };
-                let Some(field_decl) = env
-                    .struct_defs
-                    .get(struct_name)
-                    .and_then(|fields| fields.iter().find(|candidate| candidate.name == field))
-                else {
+                let Some(field_decl) = crate::declaration_coercion::resolve_struct_field_decl(
+                    struct_name,
+                    &field,
+                    env.struct_defs,
+                ) else {
                     push_expr_error(
                         errors,
                         expr,
@@ -2337,8 +2337,7 @@ pub(crate) fn validate_fixed_data_expr(
                     format!("constructor '{name}' does not accept type arguments"),
                 );
             }
-            let fields = crate::data_construction::authored_struct_fields(&env.struct_defs[name])
-                .collect::<Vec<_>>();
+            let fields = &env.struct_defs[name];
             let names = fields
                 .iter()
                 .map(|field| field.name.clone())
@@ -2357,7 +2356,7 @@ pub(crate) fn validate_fixed_data_expr(
                 expr.loc(),
                 errors,
             );
-            for (field, arg) in fields.into_iter().zip(resolved) {
+            for (field, arg) in fields.iter().zip(resolved) {
                 let Some(arg) = arg else {
                     continue;
                 };

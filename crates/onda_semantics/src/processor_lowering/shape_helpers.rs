@@ -2983,7 +2983,6 @@ pub(super) fn compute_proc_shape(
                             &resolved_struct_name,
                             &resolved_def.type_params,
                             &resolved_def.fields,
-                            &typed_struct_defs,
                             proc_options,
                             errors,
                         ),

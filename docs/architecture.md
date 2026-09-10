@@ -452,3 +452,5 @@ value codecs use its canonical leaf order. The browser ABI package mirrors that 
 backend parity tests exercise the same structured messages. Generated event entry points preflight
 all input before writing aligned workspace; synchronous internal forwarding borrows existing data.
 Logical host encoding/decoding and workspace provisioning happen outside realtime execution.
+Typed nominal structs retain only their directly declared fields; semantic passes recursively walk
+those references when they need leaf paths rather than storing duplicated dotted descendants.

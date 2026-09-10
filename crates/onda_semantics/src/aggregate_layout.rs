@@ -6,6 +6,8 @@ use onda_processor_abi::payload::{PayloadField, PayloadType, ScalarEncoding};
 
 use crate::{TypedFieldType, TypedStruct, TypedStructField};
 
+pub(crate) const MAX_AGGREGATE_NESTING: usize = 256;
+
 /// Deterministic program-local identity for a resolved aggregate layout.
 ///
 /// IDs are assigned by lexicographically sorted struct name, so source/module
@@ -172,6 +174,7 @@ pub struct AggregateLayoutTable {
 
 impl AggregateLayoutTable {
     pub fn build(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+        validate_aggregate_nesting(structs).map_err(|error| vec![error])?;
         LayoutBuilder::new(structs)?.build()
     }
 
@@ -256,6 +259,11 @@ pub enum AggregateLayoutError {
     RecursiveAggregate {
         cycle: Vec<String>,
     },
+    NestingTooDeep {
+        struct_name: String,
+        depth: usize,
+        maximum: usize,
+    },
     MalformedField {
         struct_name: String,
         field_name: String,
@@ -299,6 +307,14 @@ impl fmt::Display for AggregateLayoutError {
             Self::RecursiveAggregate { cycle } => {
                 write!(f, "recursive aggregate layout cycle: {}", cycle.join(" -> "))
             }
+            Self::NestingTooDeep {
+                struct_name,
+                depth,
+                maximum,
+            } => write!(
+                f,
+                "aggregate nesting ending at '{struct_name}' reaches depth {depth}, exceeding the limit of {maximum}"
+            ),
             Self::MalformedField {
                 struct_name,
                 field_name,
@@ -320,6 +336,97 @@ impl fmt::Display for AggregateLayoutError {
 }
 
 impl std::error::Error for AggregateLayoutError {}
+
+/// Validates recursive structure before passes that walk aggregate paths. The
+/// iterative traversal keeps malformed or impractically deep source from
+/// overflowing the compiler stack.
+pub(crate) fn validate_aggregate_nesting(
+    structs: &[TypedStruct],
+) -> Result<(), AggregateLayoutError> {
+    let indices = structs
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| (definition.name.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut edges = vec![Vec::new(); structs.len()];
+    let mut incoming = vec![0usize; structs.len()];
+    for (index, definition) in structs.iter().enumerate() {
+        for field in &definition.fields {
+            let nested = match field.ty {
+                TypedFieldType::Struct => field.struct_name.as_deref(),
+                TypedFieldType::Array(_) => field.array_elem_struct.as_deref(),
+                TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => None,
+            };
+            let Some(&nested) = nested.and_then(|name| indices.get(name)) else {
+                continue;
+            };
+            edges[index].push(nested);
+            incoming[nested] += 1;
+        }
+    }
+
+    let mut states = vec![0u8; structs.len()];
+    for root in 0..structs.len() {
+        if states[root] != 0 {
+            continue;
+        }
+        states[root] = 1;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((current, next_edge)) = stack.last_mut() {
+            if let Some(&nested) = edges[*current].get(*next_edge) {
+                *next_edge += 1;
+                match states[nested] {
+                    0 => {
+                        states[nested] = 1;
+                        stack.push((nested, 0));
+                    }
+                    1 => {
+                        let start = stack
+                            .iter()
+                            .position(|(candidate, _)| *candidate == nested)
+                            .unwrap_or(0);
+                        let mut cycle = stack[start..]
+                            .iter()
+                            .map(|(index, _)| structs[*index].name.clone())
+                            .collect::<Vec<_>>();
+                        cycle.push(structs[nested].name.clone());
+                        return Err(AggregateLayoutError::RecursiveAggregate { cycle });
+                    }
+                    _ => {}
+                }
+            } else {
+                states[*current] = 2;
+                stack.pop();
+            }
+        }
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    let mut depths = vec![1usize; structs.len()];
+    for (index, count) in incoming.iter().enumerate() {
+        if *count == 0 {
+            queue.push_back(index);
+        }
+    }
+    while let Some(current) = queue.pop_front() {
+        for &nested in &edges[current] {
+            let depth = depths[current] + 1;
+            if depth > MAX_AGGREGATE_NESTING {
+                return Err(AggregateLayoutError::NestingTooDeep {
+                    struct_name: structs[nested].name.clone(),
+                    depth,
+                    maximum: MAX_AGGREGATE_NESTING,
+                });
+            }
+            depths[nested] = depths[nested].max(depth);
+            incoming[nested] -= 1;
+            if incoming[nested] == 0 {
+                queue.push_back(nested);
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum VisitState {
@@ -473,14 +580,15 @@ impl LayoutBuilder {
         &mut self,
         definition: &TypedStruct,
     ) -> Result<(Vec<AggregateLeafLayout>, usize, PayloadType), AggregateLayoutError> {
-        // Dotted entries describe already resolved descendants. Only source
-        // fields participate in the recursive shape.
         let mut fields = Vec::new();
         let mut seen = HashSet::new();
+        // Processor lowering also uses TypedStruct for structural parameter
+        // maps whose dotted names are already-flattened access paths, not
+        // nominal aggregate fields.
         for field in definition
             .fields
             .iter()
-            .filter(|field| crate::data_construction::is_authored_struct_field(field))
+            .filter(|field| !field.name.contains('.'))
         {
             if !seen.insert(field.name.clone()) {
                 return Err(AggregateLayoutError::DuplicateField {
@@ -821,6 +929,30 @@ mod tests {
             AggregateLayoutError::RecursiveAggregate { cycle }
                 if cycle == &["A", "B", "A"] || cycle == &["B", "A", "B"]
         )));
+    }
+
+    #[test]
+    fn rejects_excessive_nesting_without_recursive_traversal() {
+        let mut structs = (0..=MAX_AGGREGATE_NESTING)
+            .map(|index| TypedStruct {
+                name: format!("S{index}"),
+                fields: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        for (index, definition) in structs.iter_mut().take(MAX_AGGREGATE_NESTING).enumerate() {
+            definition.fields = vec![struct_field("next", &format!("S{}", index + 1))];
+        }
+        structs[MAX_AGGREGATE_NESTING].fields = vec![scalar_field("value", PrimitiveType::F32)];
+
+        assert!(matches!(
+            validate_aggregate_nesting(&structs),
+            Err(AggregateLayoutError::NestingTooDeep {
+                depth,
+                maximum: MAX_AGGREGATE_NESTING,
+                ..
+            }) if depth == MAX_AGGREGATE_NESTING + 1
+        ));
+        assert!(validate_aggregate_nesting(&structs[1..]).is_ok());
     }
 
     #[test]

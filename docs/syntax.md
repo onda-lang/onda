@@ -1172,6 +1172,8 @@ Supported features:
 - Tuple fields.
 - Nested structs and fixed arrays of primitives or structs.
 - Generic structs.
+- Aggregate nesting is limited to 256 levels so malformed or impractically deep
+  definitions are rejected without exhausting compiler resources.
 
 Field declarations have three forms:
 

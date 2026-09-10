@@ -427,18 +427,15 @@ pub(crate) fn extend_struct_field_integer_ranges(
     struct_name: &str,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
-    let Some(fields) = struct_defs.get(struct_name) else {
-        return;
-    };
-    for field in fields {
+    visit_struct_field_paths(struct_name, struct_defs, |path, field| {
         let Some(range) = &field.integer_range else {
-            continue;
+            return;
         };
         ranges.insert(
-            format!("{root}.{}", field.name),
+            format!("{root}.{path}"),
             integer_binding_range_from_typed(range),
         );
-    }
+    });
 }
 
 pub(crate) fn struct_param_integer_ranges(
@@ -482,17 +479,15 @@ pub(crate) fn normalize_struct_constructor_ranges_in_expr(
         let Some(fields) = struct_defs.get(name) else {
             return;
         };
-        let constructor_fields =
-            crate::data_construction::authored_struct_fields(fields).collect::<Vec<_>>();
+        let constructor_fields = fields;
         let mut positional_index = 0usize;
         for arg in args {
             let field = if let Some(arg_name) = &arg.name {
                 constructor_fields
                     .iter()
-                    .copied()
                     .find(|field| field.name == *arg_name)
             } else {
-                let field = constructor_fields.get(positional_index).copied();
+                let field = constructor_fields.get(positional_index);
                 positional_index += 1;
                 field
             };

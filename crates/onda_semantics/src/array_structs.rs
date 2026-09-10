@@ -55,7 +55,7 @@ fn validate_data_struct_layout_inner(
     };
 
     stack.push(struct_name.to_owned());
-    for field in crate::data_construction::authored_struct_fields(&fields) {
+    for field in &fields {
         let nested = match field.ty {
             TypedFieldType::Struct => field.struct_name.as_ref(),
             TypedFieldType::Array(_) => field.array_elem_struct.as_ref(),
@@ -176,7 +176,29 @@ fn register_data_struct_root_inner(
                 );
                 state_arrays.entry(flat).or_insert(len);
             }
-            TypedFieldType::Struct => {}
+            TypedFieldType::Struct => {
+                let Some(nested) = field.struct_name.as_deref() else {
+                    continue;
+                };
+                let nested_context =
+                    format!("{context} nested field '{}.{}'", struct_name, field.name);
+                if !register_data_struct_root_inner(
+                    &flat,
+                    nested,
+                    len,
+                    struct_defs,
+                    &nested_context,
+                    state_scalars,
+                    declared_symbols,
+                    state_arrays,
+                    state_array_struct_roots,
+                    errors,
+                    stack,
+                ) {
+                    stack.pop();
+                    return false;
+                }
+            }
             TypedFieldType::Tuple(ref elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
@@ -286,7 +308,7 @@ fn add_struct_element_alias_bindings_inner(
         );
         return false;
     };
-    for field in crate::data_construction::authored_struct_fields(fields) {
+    for field in fields {
         let flat = format!("{base}.{}", field.name);
         match &field.ty {
             TypedFieldType::Scalar(ty) => {
@@ -491,7 +513,7 @@ fn register_struct_array_param_bindings_inner(
     );
 
     stack.push(struct_name.to_owned());
-    for field in crate::data_construction::authored_struct_fields(&fields) {
+    for field in &fields {
         let flat = format!("{base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => {
@@ -512,7 +534,27 @@ fn register_struct_array_param_bindings_inner(
                     DeclaredSymbolInfo::DataArray { elem_ty: prim },
                 );
             }
-            TypedFieldType::Struct => {}
+            TypedFieldType::Struct => {
+                let Some(nested) = field.struct_name.as_deref() else {
+                    continue;
+                };
+                if !register_struct_array_param_bindings_inner(
+                    &flat,
+                    nested,
+                    len_factor,
+                    static_len_factor,
+                    struct_defs,
+                    declared_symbols,
+                    local_array_aliases,
+                    struct_array_roots,
+                    unused_scalars,
+                    errors,
+                    stack,
+                ) {
+                    stack.pop();
+                    return false;
+                }
+            }
             TypedFieldType::Tuple(ref elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
@@ -686,13 +728,19 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
             let Some(root_info) = roots.get(&base) else {
                 return true;
             };
-            let Some(fields) = defs.get(&root_info.struct_name) else {
+            if !defs.contains_key(&root_info.struct_name) {
                 // Proc arrays also share the state_array_struct_roots map but are handled later by
                 // proc dispatch rewriting, not by struct-array flattening.
                 return true;
-            };
+            }
 
-            let Some(target_field) = fields.iter().find(|f| f.name == field) else {
+            let Some(target_field) =
+                crate::declaration_coercion::resolve_struct_field_decl(
+                    &root_info.struct_name,
+                    &field,
+                    defs,
+                )
+            else {
                 errors.push(Diagnostic::semantic_span(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
@@ -758,7 +806,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 return true;
             };
 
-            let Some(fields) = defs.get(&root_info.struct_name) else {
+            if !defs.contains_key(&root_info.struct_name) {
                 errors.push(Diagnostic::semantic_span(
                     format!(
                         "struct definition '{}' not found for struct array '{base}'",
@@ -767,9 +815,15 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     loc,
                 ));
                 return false;
-            };
+            }
 
-            let Some(target_field) = fields.iter().find(|f| f.name == field) else {
+            let Some(target_field) =
+                crate::declaration_coercion::resolve_struct_field_decl(
+                    &root_info.struct_name,
+                    &field,
+                    defs,
+                )
+            else {
                 errors.push(Diagnostic::semantic_span(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,

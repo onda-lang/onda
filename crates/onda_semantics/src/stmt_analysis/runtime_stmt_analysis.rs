@@ -2243,10 +2243,9 @@ fn analyze_flow_assignment(
 
             if let Some((base, field)) = split_field_path(name, errors) {
                 if let Some(struct_name) = struct_instances.get(base) {
-                    let Some(fields) = struct_defs.get(struct_name) else {
-                        return;
-                    };
-                    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                    let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, struct_defs)
+                    else {
                         target_error!(format!("struct '{}' has no field '{}'", struct_name, field));
                         return;
                     };

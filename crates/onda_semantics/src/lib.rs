@@ -412,6 +412,9 @@ pub struct TypedBufferDecl {
 #[derive(Debug, Clone)]
 pub struct TypedStruct {
     pub name: String,
+    /// Fields declared directly on this type, in source order. Nested fields
+    /// remain structural references and are traversed through the aggregate
+    /// layout helpers instead of being duplicated as dotted paths.
     pub fields: Vec<TypedStructField>,
 }
 
