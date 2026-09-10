@@ -482,19 +482,17 @@ pub(crate) fn normalize_struct_constructor_ranges_in_expr(
         let Some(fields) = struct_defs.get(name) else {
             return;
         };
-        let scalar_fields = fields
-            .iter()
-            .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
-            .collect::<Vec<_>>();
+        let constructor_fields =
+            crate::data_construction::authored_struct_fields(fields).collect::<Vec<_>>();
         let mut positional_index = 0usize;
         for arg in args {
             let field = if let Some(arg_name) = &arg.name {
-                scalar_fields
+                constructor_fields
                     .iter()
                     .copied()
                     .find(|field| field.name == *arg_name)
             } else {
-                let field = scalar_fields.get(positional_index).copied();
+                let field = constructor_fields.get(positional_index).copied();
                 positional_index += 1;
                 field
             };

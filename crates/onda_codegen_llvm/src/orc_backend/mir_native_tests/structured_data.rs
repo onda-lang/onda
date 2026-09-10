@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn sequential_fixed_results_reuse_scratch_without_aliasing() {
+    let source = r#"
+def make(value: f32) -> f32[4096]:
+  result: f32[4096]
+  result[:] = value
+  return result
+sample:
+  first = make(1.0)
+  total = first[0]
+  second = make(2.0)
+  total += second[0]
+  third = make(3.0)
+  total += third[0]
+  fourth = make(4.0)
+  out1 = total + fourth[0]
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        assert_eq!(
+            run_native_outputs_with_opt_level(source, 4, level)[0],
+            [10.0; 4]
+        );
+    }
+}
+
+#[test]
 fn empty_struct_slice_element_access_fails_without_touching_storage() {
     let sources = [
         r#"

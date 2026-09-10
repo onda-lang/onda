@@ -1,5 +1,55 @@
 use super::*;
 
+pub(crate) fn infer_data_initializer_type(
+    expr: &Expr,
+    declared: Option<&DeclType>,
+    env: ExprEnv<'_>,
+) -> Option<DataType> {
+    if matches!(declared, Some(DeclType::Array { .. })) {
+        infer_fixed_initializer_type(expr, env)
+    } else {
+        infer_fixed_data_type(expr, env)
+    }
+}
+
+pub(crate) fn validate_primitive_array_literal_replacement(
+    name: &str,
+    expr: &Expr,
+    is_declaration: bool,
+    env: ExprEnv<'_>,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let (
+        Expr::ArrayLiteral { values, .. },
+        Some(DataType::Array {
+            element: ArrayElemType::Primitive(element),
+            len,
+        }),
+    ) = (expr, infer_fixed_data_type(&Expr::var(name), env))
+    else {
+        return false;
+    };
+    if is_declaration {
+        errors.push(Diagnostic::semantic_span(
+            format!("data declaration '{name}' must introduce a new name"),
+            target_loc,
+        ));
+    }
+    if env
+        .local_array_aliases
+        .get(name)
+        .is_some_and(|alias| !alias.writable)
+    {
+        errors.push(Diagnostic::semantic_span(
+            format!("cannot assign to immutable array alias '{name}'"),
+            target_loc,
+        ));
+    }
+    validate_primitive_array_values(values, element, len, expr, env, errors);
+    true
+}
+
 pub(crate) fn validate_data_element_replacement(
     base: &str,
     index: &Expr,

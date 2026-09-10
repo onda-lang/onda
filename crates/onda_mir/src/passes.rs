@@ -2156,7 +2156,7 @@ pub fn referenced_locals(block: &Block) -> HashSet<LocalId> {
     locals
 }
 
-fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
+fn collect_statement_read_references(statement: &Statement, referenced: &mut HashSet<LocalId>) {
     fn value(value: Value, referenced: &mut HashSet<LocalId>) {
         if let Value::Local(local) = value {
             referenced.insert(local);
@@ -2275,151 +2275,168 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             }
         }
     }
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign {
-                destination,
-                value: v,
-            } => {
-                place(destination, false, referenced);
-                rvalue(v, referenced);
-            }
-            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
-                for argument in args {
-                    match argument {
-                        CallArgument::Value(v) => value(*v, referenced),
-                        CallArgument::Place(p) => place(p, true, referenced),
-                        CallArgument::ArrayWindow { array, start, .. } => {
-                            place(array, true, referenced);
-                            value(*start, referenced);
-                        }
-                        CallArgument::SliceElement { slice, index, .. } => {
-                            value(*slice, referenced);
-                            value(*index, referenced);
-                        }
-                        CallArgument::SliceWindow { slice, start, .. } => {
-                            value(*slice, referenced);
-                            value(*start, referenced);
-                        }
-                        CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
-                        CallArgument::BufferParam(parameter) => {
-                            buffer_param_ref(*parameter, referenced);
-                        }
-                        CallArgument::BufferSpan(_) => {}
+    match &statement.kind {
+        StatementKind::Assign {
+            destination,
+            value: v,
+        } => {
+            place(destination, false, referenced);
+            rvalue(v, referenced);
+        }
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                match argument {
+                    CallArgument::Value(v) => value(*v, referenced),
+                    CallArgument::Place(p) => place(p, true, referenced),
+                    CallArgument::ArrayWindow { array, start, .. } => {
+                        place(array, true, referenced);
+                        value(*start, referenced);
                     }
+                    CallArgument::SliceElement { slice, index, .. } => {
+                        value(*slice, referenced);
+                        value(*index, referenced);
+                    }
+                    CallArgument::SliceWindow { slice, start, .. } => {
+                        value(*slice, referenced);
+                        value(*start, referenced);
+                    }
+                    CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
+                    CallArgument::BufferParam(parameter) => {
+                        buffer_param_ref(*parameter, referenced);
+                    }
+                    CallArgument::BufferSpan(_) => {}
                 }
             }
-            StatementKind::PublishLog { arguments, .. } => {
-                for item in arguments {
-                    value(*item, referenced);
-                }
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for item in arguments {
+                value(*item, referenced);
             }
-            StatementKind::OutputStore {
-                element,
-                frame,
-                value: v,
-                ..
-            } => {
-                if let Some(v) = element {
-                    value(*v, referenced);
-                }
-                value(*frame, referenced);
+        }
+        StatementKind::OutputStore {
+            element,
+            frame,
+            value: v,
+            ..
+        } => {
+            if let Some(v) = element {
                 value(*v, referenced);
             }
-            StatementKind::ControlOutputStore {
-                element, value: v, ..
-            } => {
-                if let Some(v) = element {
-                    value(*v, referenced);
-                }
+            value(*frame, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::ControlOutputStore {
+            element, value: v, ..
+        } => {
+            if let Some(v) = element {
                 value(*v, referenced);
             }
-            StatementKind::BufferStore {
-                buffer,
-                channel,
-                index,
-                value: v,
-                ..
-            } => {
-                buffer_ref(*buffer, referenced);
-                if let Some(v) = channel {
-                    value(*v, referenced);
-                }
-                value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::BufferStore {
+            buffer,
+            channel,
+            index,
+            value: v,
+            ..
+        } => {
+            buffer_ref(*buffer, referenced);
+            if let Some(v) = channel {
                 value(*v, referenced);
             }
-            StatementKind::BufferParamStore {
-                parameter,
-                channel,
-                index,
-                value: v,
-                ..
-            } => {
-                buffer_param_ref(*parameter, referenced);
-                if let Some(v) = channel {
-                    value(*v, referenced);
-                }
-                value(*index, referenced);
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::BufferParamStore {
+            parameter,
+            channel,
+            index,
+            value: v,
+            ..
+        } => {
+            buffer_param_ref(*parameter, referenced);
+            if let Some(v) = channel {
                 value(*v, referenced);
             }
-            StatementKind::SliceStore {
-                slice,
-                index,
-                value: v,
-                ..
-            } => {
-                value(*slice, referenced);
-                value(*index, referenced);
-                value(*v, referenced);
-            }
-            StatementKind::SliceFill {
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceStore {
+            slice,
+            index,
+            value: v,
+            ..
+        } => {
+            value(*slice, referenced);
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceFill {
+            destination,
+            value: v,
+        } => {
+            value(*destination, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceCopy { copies } => {
+            for crate::SliceCopy {
                 destination,
-                value: v,
-            } => {
+                source,
+            } in copies
+            {
                 value(*destination, referenced);
+                value(*source, referenced);
+            }
+        }
+        StatementKind::If { condition, .. } => {
+            value(*condition, referenced);
+        }
+        StatementKind::Loop { .. } => {}
+        StatementKind::Return { values } => {
+            for v in values {
                 value(*v, referenced);
             }
-            StatementKind::SliceCopy { copies } => {
-                for crate::SliceCopy {
-                    destination,
-                    source,
-                } in copies
-                {
-                    value(*destination, referenced);
-                    value(*source, referenced);
-                }
-            }
+        }
+        StatementKind::Break | StatementKind::Continue => {}
+    }
+}
+
+fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
+    for statement in &block.statements {
+        collect_statement_read_references(statement, referenced);
+        match &statement.kind {
             StatementKind::If {
-                condition,
                 then_block,
                 else_block,
+                ..
             } => {
-                value(*condition, referenced);
                 collect_read_references(then_block, referenced);
                 collect_read_references(else_block, referenced);
             }
             StatementKind::Loop { body } => collect_read_references(body, referenced),
-            StatementKind::Return { values } => {
-                for v in values {
-                    value(*v, referenced);
-                }
-            }
-            StatementKind::Break | StatementKind::Continue => {}
+            _ => {}
         }
+    }
+}
+
+fn collect_statement_writes(statement: &Statement, referenced: &mut HashSet<LocalId>) {
+    match &statement.kind {
+        StatementKind::Assign { destination, .. } => {
+            if let PlaceBase::Local(local) = destination.base {
+                referenced.insert(local);
+            }
+        }
+        StatementKind::Call { results, .. } => {
+            referenced.extend(results.iter().copied());
+        }
+        _ => {}
     }
 }
 
 fn collect_block_writes(block: &Block, referenced: &mut HashSet<LocalId>) {
     for statement in &block.statements {
+        collect_statement_writes(statement, referenced);
         match &statement.kind {
-            StatementKind::Assign { destination, .. } => {
-                if let PlaceBase::Local(local) = destination.base {
-                    referenced.insert(local);
-                }
-            }
-            StatementKind::Call { results, .. } => {
-                referenced.extend(results.iter().copied());
-            }
             StatementKind::If {
                 then_block,
                 else_block,
@@ -2432,6 +2449,12 @@ fn collect_block_writes(block: &Block, referenced: &mut HashSet<LocalId>) {
             _ => {}
         }
     }
+}
+
+/// Adds local storage read or written directly by one statement, excluding nested blocks.
+pub fn collect_direct_local_references(statement: &Statement, referenced: &mut HashSet<LocalId>) {
+    collect_statement_writes(statement, referenced);
+    collect_statement_read_references(statement, referenced);
 }
 
 /// Reindex local references using a caller-provided mapping. Every referenced

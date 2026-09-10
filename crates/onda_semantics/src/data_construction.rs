@@ -6,6 +6,14 @@ pub(crate) fn is_authored_struct_field(field: &TypedStructField) -> bool {
     !field.name.contains('.')
 }
 
+pub(crate) fn authored_struct_fields(
+    fields: &[TypedStructField],
+) -> impl Iterator<Item = &TypedStructField> {
+    fields
+        .iter()
+        .filter(|field| is_authored_struct_field(field))
+}
+
 pub(crate) fn constructor_fields(
     fields: &[TypedStructField],
     args: &[onda_frontend::CallArg],

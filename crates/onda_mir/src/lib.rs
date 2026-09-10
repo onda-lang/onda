@@ -27,7 +27,8 @@ pub use messagepack::{
     to_messagepack_optimized, MirMessagePackError,
 };
 pub use passes::{
-    canonicalize, optimize, referenced_locals, rewrite_block_locals, OptimizedProgram, PassStats,
+    canonicalize, collect_direct_local_references, optimize, referenced_locals,
+    rewrite_block_locals, OptimizedProgram, PassStats,
 };
 
 /// Removes parameters that are not referenced by internal MIR functions and

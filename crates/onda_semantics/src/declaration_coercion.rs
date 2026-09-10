@@ -411,7 +411,7 @@ pub(crate) fn register_struct_instance_roots(
     let Some(fields) = struct_defs.get(struct_name) else {
         return;
     };
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(fields) {
         if field.ty == TypedFieldType::Struct {
             let Some(nested_struct_name) = &field.struct_name else {
                 continue;
@@ -436,7 +436,7 @@ pub(crate) fn register_struct_array_roots(
     let Some(fields) = struct_defs.get(struct_name) else {
         return;
     };
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(fields) {
         match field.ty {
             TypedFieldType::Struct => {
                 if let Some(nested_struct_name) = &field.struct_name {
@@ -474,7 +474,7 @@ pub(crate) fn register_struct_instance_and_array_roots(
     let Some(fields) = struct_defs.get(struct_name) else {
         return;
     };
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(fields) {
         match field.ty {
             TypedFieldType::Struct => {
                 let Some(nested_struct_name) = &field.struct_name else {

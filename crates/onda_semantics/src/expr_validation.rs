@@ -2337,7 +2337,8 @@ pub(crate) fn validate_fixed_data_expr(
                     format!("constructor '{name}' does not accept type arguments"),
                 );
             }
-            let fields = &env.struct_defs[name];
+            let fields = crate::data_construction::authored_struct_fields(&env.struct_defs[name])
+                .collect::<Vec<_>>();
             let names = fields
                 .iter()
                 .map(|field| field.name.clone())
@@ -2356,7 +2357,7 @@ pub(crate) fn validate_fixed_data_expr(
                 expr.loc(),
                 errors,
             );
-            for (field, arg) in fields.iter().zip(resolved) {
+            for (field, arg) in fields.into_iter().zip(resolved) {
                 let Some(arg) = arg else {
                     continue;
                 };

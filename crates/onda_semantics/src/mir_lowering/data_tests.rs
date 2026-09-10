@@ -513,6 +513,148 @@ sample:
 }
 
 #[test]
+fn disjoint_fixed_results_reuse_prepared_instance_scratch() {
+    let program = compile(
+        r#"
+def make(value: f32) -> f32[4096]:
+  result: f32[4096]
+  result[:] = value
+  return result
+
+sample:
+  first = make(1.0)
+  total = first[0]
+  second = make(2.0)
+  total += second[0]
+  third = make(3.0)
+  total += third[0]
+  fourth = make(4.0)
+  out1 = total + fourth[0]
+"#,
+    );
+    let scratch = program
+        .state
+        .iter()
+        .filter(|slot| {
+            slot.persistence == onda_mir::StatePersistence::InstanceScratch
+                && matches!(
+                    program.types[slot.ty.index()],
+                    MirType::Array { len: 4096, .. }
+                )
+        })
+        .count();
+    assert_eq!(scratch, 2, "one callee slot and one reused caller slot");
+}
+
+#[test]
+fn simultaneously_live_fixed_results_keep_distinct_scratch() {
+    let program = compile(
+        r#"
+def make(value: f32) -> f32[4096]:
+  result: f32[4096]
+  result[:] = value
+  return result
+
+sample:
+  first = make(1.0)
+  second = make(2.0)
+  out1 = first[0] + second[0]
+"#,
+    );
+    let scratch = program
+        .state
+        .iter()
+        .filter(|slot| {
+            slot.persistence == onda_mir::StatePersistence::InstanceScratch
+                && matches!(
+                    program.types[slot.ty.index()],
+                    MirType::Array { len: 4096, .. }
+                )
+        })
+        .count();
+    assert_eq!(scratch, 3, "one callee slot and two live caller slots");
+}
+
+#[test]
+fn struct_constructors_only_accept_authored_fields() {
+    let source = r#"
+struct Inner:
+  value = 1.0
+struct Outer:
+  inner: Inner
+sample:
+  value = Outer(Inner(), 5.0)
+  out1 = value.inner.value
+"#;
+    let errors = crate::analyze(onda_frontend::parse_program(source).unwrap()).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("too many positional arguments")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn deeply_nested_struct_constructor_validation_is_linear() {
+    let depth = 64;
+    let mut source = String::new();
+    for index in 0..depth {
+        source.push_str(&format!("struct S{index}:\n"));
+        if index + 1 == depth {
+            source.push_str("  value = 1.0\n");
+        } else {
+            source.push_str(&format!("  next: S{}\n", index + 1));
+        }
+    }
+    source.push_str("sample:\n  value = S0()\n  out1 = 0.0\n");
+    compile(&source);
+}
+
+#[test]
+fn fixed_primitive_array_initialization_is_uniform_across_init_scopes() {
+    compile(
+        r#"
+proc Bank:
+  init:
+    source: f32[4] = [1.0, 2.0, 3.0, 4.0]
+    selected: f32[] = source[1:3]
+    saved: f32[2] = selected
+    saved = [5.0, 7.0]
+  sample:
+    out1 = saved[0]
+
+init:
+  source: f32[4] = [1.0, 2.0, 3.0, 4.0]
+  selected: f32[] = source[1:3]
+  saved: f32[2] = selected
+  saved = [5.0, 7.0]
+  bank = Bank()
+
+sample:
+  out1 = saved[0] + bank()
+"#,
+    );
+}
+
+#[test]
+fn fixed_primitive_array_init_rejects_mismatched_slices_and_literals() {
+    for statement in [
+        "saved: f32[3] = source[1:3]",
+        "saved: f32[2]\n  saved = [1.0]",
+        "saved: f32[2]\n  saved = [1.0, true]",
+    ] {
+        let source = format!(
+            "init:\n  source: f32[4] = [1.0, 2.0, 3.0, 4.0]\n  {statement}\nsample:\n  out1 = 0.0\n"
+        );
+        assert!(
+            crate::analyze(onda_frontend::parse_program(&source).unwrap()).is_err(),
+            "invalid init operation analyzed: {source}"
+        );
+    }
+}
+
+#[test]
 fn fixed_copy_diagnostics_reject_wrong_shapes_and_slice_rebinding() {
     for statement in [
         "saved: f32[3] = values",

@@ -1260,7 +1260,18 @@ fn analyze_assign_init(
             }
 
             if allow_owner_state_intro {
-                let fixed_data = infer_fixed_data_type(expr, scope_expr_env!(scope));
+                if validate_primitive_array_literal_replacement(
+                    name,
+                    expr,
+                    is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                    scope_expr_env!(scope),
+                    target_loc,
+                    errors,
+                ) {
+                    return;
+                }
+                let fixed_data =
+                    infer_data_initializer_type(expr, decl_ty.as_ref(), scope_expr_env!(scope));
                 if let Some(DeclType::Array { elem, size }) = decl_ty {
                     let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(size)
                     else {

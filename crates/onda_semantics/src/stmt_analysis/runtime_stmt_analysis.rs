@@ -1763,42 +1763,17 @@ fn analyze_flow_assignment(
                     }
                 }
             }
-            let fixed_data = if matches!(decl_ty, Some(DeclType::Array { .. })) {
-                crate::expr_validation::infer_fixed_initializer_type(expr, scope_expr_env!())
-            } else {
-                infer_fixed_data_type(expr, scope_expr_env!())
-            };
+            let fixed_data = infer_data_initializer_type(expr, decl_ty.as_ref(), scope_expr_env!());
             // A literal captures new contents in the destination's element context.
             // Preserve the existing reference, including its write permission.
-            if let (
-                Expr::ArrayLiteral { values, .. },
-                Some(DataType::Array {
-                    element: ArrayElemType::Primitive(element),
-                    len,
-                }),
-            ) = (
+            if validate_primitive_array_literal_replacement(
+                name,
                 expr,
-                infer_fixed_data_type(&Expr::var(name), scope_expr_env!()),
+                is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                scope_expr_env!(),
+                target_loc,
+                errors,
             ) {
-                if is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some() {
-                    target_error!(format!(
-                        "data declaration '{name}' must introduce a new name"
-                    ));
-                }
-                if local_array_aliases
-                    .get(name)
-                    .is_some_and(|alias| !alias.writable)
-                {
-                    target_error!(format!("cannot assign to immutable array alias '{name}'"));
-                }
-                crate::expr_validation::validate_primitive_array_values(
-                    values,
-                    element,
-                    len,
-                    expr,
-                    scope_expr_env!(),
-                    errors,
-                );
                 return;
             }
             if let Some(DeclType::Array { elem, size }) = decl_ty {

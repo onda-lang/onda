@@ -11,8 +11,6 @@
     Implement this through shared owner-aware name resolution and receiver capture for struct
     methods and proc-local defs. Avoid a separate textual qualification pass or synthetic shadow
     bindings that leak into typed events, MIR, or tooling.
-  - Reuse fixed `InstanceScratch` storage across call sites whose aggregate-result lifetimes do not
-    overlap, while preserving fully prepared per-instance storage and allocation-free execution.
   - Consolidate hosted event payload validation so one diagnostic host pass precedes the mandatory
     raw-entry preflight without changing rejection or instance-lifecycle behavior.
   - Cache JavaScript delegate payload plans across batches while keeping delivered records independent

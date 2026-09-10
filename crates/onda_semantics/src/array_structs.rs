@@ -55,7 +55,7 @@ fn validate_data_struct_layout_inner(
     };
 
     stack.push(struct_name.to_owned());
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(&fields) {
         let nested = match field.ty {
             TypedFieldType::Struct => field.struct_name.as_ref(),
             TypedFieldType::Array(_) => field.array_elem_struct.as_ref(),
@@ -286,7 +286,7 @@ fn add_struct_element_alias_bindings_inner(
         );
         return false;
     };
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(fields) {
         let flat = format!("{base}.{}", field.name);
         match &field.ty {
             TypedFieldType::Scalar(ty) => {
@@ -491,7 +491,7 @@ fn register_struct_array_param_bindings_inner(
     );
 
     stack.push(struct_name.to_owned());
-    for field in fields {
+    for field in crate::data_construction::authored_struct_fields(&fields) {
         let flat = format!("{base}.{}", field.name);
         match field.ty {
             TypedFieldType::Scalar(prim) => {
