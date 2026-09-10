@@ -1210,6 +1210,8 @@ export function formatPrintRecords(storage, usedBytes, metadata, overflowCount =
   return { text, entries: records, overflowCount };
 }
 
+const delegatePayloadPlans = new WeakMap();
+
 export function decodeDelegateRecords(
   storage,
   usedBytes,
@@ -1258,12 +1260,21 @@ export function decodeDelegateRecords(
         view,
         payloadOffset,
         payloadByteLength,
-        plans[delegateIndex] ??= new PayloadPlan(delegate.schema),
+        plans[delegateIndex] ??= delegatePayloadPlan(delegate.schema),
       ),
     });
     cursor = end;
   }
   return records;
+}
+
+function delegatePayloadPlan(schema) {
+  let plan = delegatePayloadPlans.get(schema);
+  if (plan === undefined) {
+    plan = new PayloadPlan(schema);
+    delegatePayloadPlans.set(schema, plan);
+  }
+  return plan;
 }
 
 function decodeDelegatePayload(view, start, size, plan) {

@@ -13,8 +13,6 @@
     bindings that leak into typed events, MIR, or tooling.
   - Consolidate hosted event payload validation so one diagnostic host pass precedes the mandatory
     raw-entry preflight without changing rejection or instance-lifecycle behavior.
-  - Cache JavaScript delegate payload plans across batches while keeping delivered records independent
-    of reusable transport storage.
   - Measure and document default per-instance event, delegate, and print capacity costs before tuning
     them; keep all rendering-thread storage bounded and provisioned before execution.
 
@@ -216,9 +214,6 @@
   - Preserve the statically provable length of constant-bound slices so an exact-length slice can
     satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.
-  - Allow fixed-array declarations to copy-initialize from an exact-length fixed array or slice,
-    such as `stereo: f32[2] = gains[0:2]`. Define this as value-copy semantics, not aliasing, and
-    reuse the same compile-time shape proof as fixed-array arguments.
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.

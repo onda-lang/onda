@@ -186,8 +186,12 @@ export class PayloadPlan {
   /** Encode logical values outside realtime dispatch, preserving exact i64 values.
    * Accept ordered parameter arrays or objects keyed by the declared names. */
   encode(values) {
+    const positional = Array.isArray(values);
+    const named = !positional && values !== null && typeof values === "object";
     const roots = this.schema.params.map((field, index) => {
-      const value = Array.isArray(values) ? values[index] : values?.[field.name];
+      let value;
+      if (positional) value = values[index];
+      else if (named && Object.hasOwn(values, field.name)) value = values[field.name];
       const result = value === undefined ? this.defaults[index] : value;
       if (result === undefined) throw new TypeError(`missing payload parameter '${field.name}'`);
       validateValue(field.ty, result);

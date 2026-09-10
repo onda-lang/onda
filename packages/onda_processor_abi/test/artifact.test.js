@@ -804,15 +804,18 @@ test("prepares and decodes call-scoped delegate batches", () => {
   new Uint8Array(memory, 64, 20).set(new Uint8Array(memory, 32, 20));
   view.setUint32(8, 64, true);
   view.setUint32(12, 2, true);
-  let schemaReads = 0;
-  const schema = { params: [
+  let planBuilds = 0;
+  const params = [
     { name: "code", ty: { kind: "scalar", encoding: "i32" } },
     { name: "values", ty: { kind: "slice", element: { kind: "scalar", encoding: "f32" } } },
     { name: "singleton", ty: { kind: "array", len: 1, element: { kind: "scalar", encoding: "i32" } } },
-  ] };
+  ];
+  const schema = {
+    get params() { planBuilds += 1; return params; },
+  };
   const delegates = [{
     name: "report",
-    get schema() { schemaReads += 1; return schema; },
+    schema,
     params: [
       {
         name: "code",
@@ -846,7 +849,7 @@ test("prepares and decodes call-scoped delegate batches", () => {
     batch.usedBytes,
     delegates,
   );
-  assert.equal(schemaReads, 1);
+  assert.equal(planBuilds, 1);
   assert.equal(records.length, 2);
   assert.equal(records[0].sequence, 9);
   assert.equal(records[1].sequence, 10);
@@ -855,6 +858,14 @@ test("prepares and decodes call-scoped delegate batches", () => {
     values: { code: 7, values: [1.25, -2.5], singleton: [99] },
   };
   assert.deepEqual(records.map(({ name, values }) => ({ name, values })), [expected, expected]);
+  const nextRecords = decodeDelegateRecords(
+    new Uint8Array(memory, batch.storageAddress, batch.capacityBytes),
+    batch.usedBytes,
+    delegates,
+  );
+  assert.equal(planBuilds, 1);
+  assert.notEqual(nextRecords[0].values, records[0].values);
+  assert.notEqual(nextRecords[0].payload, records[0].payload);
 });
 
 test("rejects execution-output addresses outside wasm32", () => {

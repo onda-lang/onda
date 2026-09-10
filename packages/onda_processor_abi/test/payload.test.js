@@ -96,6 +96,20 @@ test("plans isolate their schema and reject invalid defaults and value fields", 
   assert.throws(() => new PayloadPlan(schema), /floating-point/);
 });
 
+test("parameter defaults ignore inherited object properties", () => {
+  const names = ["constructor", "toString", "__proto__"];
+  const plan = new PayloadPlan({ params: names.map((name, index) => ({
+    name,
+    ty: scalar("i32"),
+    default: String(index + 1),
+  })) });
+  const defaults = Object.fromEntries(names.map((name, index) => [name, index + 1]));
+  assert.deepEqual(plan.decode(plan.encode({})), defaults);
+
+  const explicit = Object.fromEntries(names.map((name, index) => [name, index + 4]));
+  assert.deepEqual(plan.decode(plan.encode(explicit)), explicit);
+});
+
 test("struct values require exactly their declared own fields", () => {
   const plan = new PayloadPlan({ params: [{
     name: "item",
