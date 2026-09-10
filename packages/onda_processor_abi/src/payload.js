@@ -41,6 +41,7 @@ function fields(entries) {
     }
     names.add(entry.name);
   }
+  return names;
 }
 function arrayElement(ty) {
   return ty?.kind === "scalar" || ty?.kind === "struct";
@@ -61,9 +62,11 @@ function domain(encoding, range) {
 }
 
 export class PayloadPlan {
+  #parameterNames;
+
   constructor(schema) {
     schema = structuredClone(schema);
-    fields(schema?.params);
+    this.#parameterNames = fields(schema?.params);
     this.parameters = [];
     this.tensors = [];
     this.schema = schema;
@@ -188,6 +191,14 @@ export class PayloadPlan {
   encode(values) {
     const positional = Array.isArray(values);
     const named = !positional && values !== null && typeof values === "object";
+    if (!positional && !named) throw new TypeError("payload values must be an ordered array or named object");
+    if (positional && values.length > this.parameters.length) {
+      throw new RangeError("payload parameter count exceeds schema");
+    }
+    if (named) {
+      const unexpected = Object.keys(values).find((name) => !this.#parameterNames.has(name));
+      if (unexpected !== undefined) throw new TypeError(`unexpected payload parameter '${unexpected}'`);
+    }
     const roots = this.schema.params.map((field, index) => {
       let value;
       if (positional) value = values[index];

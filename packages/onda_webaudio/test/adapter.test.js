@@ -200,6 +200,26 @@ test("closed processors reject new work and settle pending requests", async () =
   assert.equal(node.port.messages.length, 1);
 });
 
+test("event triggers reject unknown payload parameters before posting work", async () => {
+  const source = artifact();
+  source.metadata.metadata.events = [{
+    name: "note",
+    schema: { params: [{ name: "gain", ty: { kind: "scalar", encoding: "f32" } }] },
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+
+  await assert.rejects(processor.trigger("note", { gain: 1, typo: 2 }), /unexpected payload parameter 'typo'/);
+  assert.equal(node.port.messages.length, 0);
+
+  const pending = processor.trigger("note", { gain: 1 });
+  const request = node.port.messages.at(-1);
+  assert.equal(request.type, "event");
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
+  processor.close();
+});
+
 test("derives explicit Web Audio channel options from processor metadata", () => {
   const options = ondaAudioWorkletNodeOptions(artifact(), {
     nodeOptions: {

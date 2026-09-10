@@ -110,6 +110,18 @@ test("parameter defaults ignore inherited object properties", () => {
   assert.deepEqual(plan.decode(plan.encode(explicit)), explicit);
 });
 
+test("top-level payload values reject unknown or excess parameters", () => {
+  const plan = new PayloadPlan({ params: [
+    { name: "gain", ty: scalar("f32") },
+    { name: "enabled", ty: scalar("bool"), default: "true" },
+  ] });
+  assert.throws(() => plan.encode({ gain: 1, typo: 2 }), /unexpected payload parameter 'typo'/);
+  assert.throws(() => plan.encode([1, true, 2]), /parameter count exceeds schema/);
+  assert.throws(() => plan.encode(1), /ordered array or named object/);
+  assert.deepEqual(plan.decode(plan.encode({ gain: 1 })), { gain: 1, enabled: true });
+  assert.deepEqual(plan.decode(plan.encode([1])), { gain: 1, enabled: true });
+});
+
 test("struct values require exactly their declared own fields", () => {
   const plan = new PayloadPlan({ params: [{
     name: "item",

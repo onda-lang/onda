@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
-use crate::aggregate_layout::validate_aggregate_nesting;
+use crate::aggregate_layout::validate_aggregate_structure;
 use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
     coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
@@ -2019,7 +2019,7 @@ pub fn analyze_with_options_and_inputs(
         }
     }
 
-    if let Err(error) = validate_aggregate_nesting(&typed_structs) {
+    if let Err(error) = validate_aggregate_structure(&typed_structs) {
         errors.push(Diagnostic::semantic(error.to_string(), 0, 0));
         return Err(errors);
     }

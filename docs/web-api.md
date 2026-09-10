@@ -432,7 +432,8 @@ registerOndaAudioWorklet
 
 `PayloadPlan` prepares a recursive message schema once. `encode(values)` accepts ordered parameter
 arrays or objects keyed by parameter name; structs are objects containing exactly their declared
-own fields, and arrays/tuples are sequences. Missing event arguments use declared constant defaults.
+own fields, and arrays/tuples are sequences. Unknown named parameters and excess positional values
+are rejected. Missing event arguments use declared constant defaults.
 Supply `i64` as `bigint`, an exact safe integer, or a decimal string. `decode(bytes)` returns named
 nested values with `bigint` for `i64`. Plans own immutable schema snapshots.
 

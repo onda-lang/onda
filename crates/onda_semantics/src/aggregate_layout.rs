@@ -7,6 +7,9 @@ use onda_processor_abi::payload::{PayloadField, PayloadType, ScalarEncoding};
 use crate::{TypedFieldType, TypedStruct, TypedStructField};
 
 pub(crate) const MAX_AGGREGATE_NESTING: usize = 256;
+/// Bounds the recursive shapes materialized across the program. Fixed array
+/// extents remain tensor axes and therefore do not increase this count.
+pub(crate) const MAX_AGGREGATE_LAYOUT_NODES: usize = 1 << 16;
 
 /// Deterministic program-local identity for a resolved aggregate layout.
 ///
@@ -174,7 +177,7 @@ pub struct AggregateLayoutTable {
 
 impl AggregateLayoutTable {
     pub fn build(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
-        validate_aggregate_nesting(structs).map_err(|error| vec![error])?;
+        validate_aggregate_structure(structs).map_err(|error| vec![error])?;
         LayoutBuilder::new(structs)?.build()
     }
 
@@ -243,9 +246,10 @@ pub enum AggregateLayoutError {
     TooManyLayouts {
         count: usize,
     },
-    TooManyLeaves {
+    LayoutsTooLarge {
         struct_name: String,
         count: usize,
+        maximum: usize,
     },
     DuplicateField {
         struct_name: String,
@@ -285,9 +289,13 @@ impl fmt::Display for AggregateLayoutError {
             Self::TooManyLayouts { count } => {
                 write!(f, "aggregate layout count {count} exceeds the u32 ID space")
             }
-            Self::TooManyLeaves { struct_name, count } => write!(
+            Self::LayoutsTooLarge {
+                struct_name,
+                count,
+                maximum,
+            } => write!(
                 f,
-                "aggregate '{struct_name}' has {count} leaves, exceeding the u32 ID space"
+                "aggregate layouts exceed the limit of {maximum} expanded shape nodes while planning '{struct_name}' ({count} required)"
             ),
             Self::DuplicateField {
                 struct_name,
@@ -337,10 +345,17 @@ impl fmt::Display for AggregateLayoutError {
 
 impl std::error::Error for AggregateLayoutError {}
 
-/// Validates recursive structure before passes that walk aggregate paths. The
-/// iterative traversal keeps malformed or impractically deep source from
-/// overflowing the compiler stack.
-pub(crate) fn validate_aggregate_nesting(
+fn aggregate_fields(definition: &TypedStruct) -> impl Iterator<Item = &TypedStructField> {
+    definition
+        .fields
+        .iter()
+        .filter(|field| !field.name.contains('.'))
+}
+
+/// Validates recursive structure and expanded shape size before passes that
+/// materialize aggregate paths. The iterative traversal keeps malformed,
+/// impractically deep, or exponentially branching source bounded.
+pub(crate) fn validate_aggregate_structure(
     structs: &[TypedStruct],
 ) -> Result<(), AggregateLayoutError> {
     let indices = structs
@@ -351,7 +366,7 @@ pub(crate) fn validate_aggregate_nesting(
     let mut edges = vec![Vec::new(); structs.len()];
     let mut incoming = vec![0usize; structs.len()];
     for (index, definition) in structs.iter().enumerate() {
-        for field in &definition.fields {
+        for field in aggregate_fields(definition) {
             let nested = match field.ty {
                 TypedFieldType::Struct => field.struct_name.as_deref(),
                 TypedFieldType::Array(_) => field.array_elem_struct.as_deref(),
@@ -403,12 +418,14 @@ pub(crate) fn validate_aggregate_nesting(
 
     let mut queue = std::collections::VecDeque::new();
     let mut depths = vec![1usize; structs.len()];
+    let mut topological = Vec::with_capacity(structs.len());
     for (index, count) in incoming.iter().enumerate() {
         if *count == 0 {
             queue.push_back(index);
         }
     }
     while let Some(current) = queue.pop_front() {
+        topological.push(current);
         for &nested in &edges[current] {
             let depth = depths[current] + 1;
             if depth > MAX_AGGREGATE_NESTING {
@@ -423,6 +440,40 @@ pub(crate) fn validate_aggregate_nesting(
             if incoming[nested] == 0 {
                 queue.push_back(nested);
             }
+        }
+    }
+
+    let mut shape_nodes = vec![0usize; structs.len()];
+    let mut total_nodes = 0usize;
+    for &current in topological.iter().rev() {
+        let mut count = 1usize;
+        for field in aggregate_fields(&structs[current]) {
+            let field_count = match &field.ty {
+                TypedFieldType::Scalar(_) => 1,
+                TypedFieldType::Tuple(elements) => 1usize.saturating_add(elements.len()),
+                TypedFieldType::Struct => field
+                    .struct_name
+                    .as_deref()
+                    .and_then(|name| indices.get(name))
+                    .map_or(1, |index| shape_nodes[*index]),
+                TypedFieldType::Array(_) => 1usize.saturating_add(
+                    field
+                        .array_elem_struct
+                        .as_deref()
+                        .and_then(|name| indices.get(name))
+                        .map_or(1, |index| shape_nodes[*index]),
+                ),
+            };
+            count = count.saturating_add(field_count);
+        }
+        shape_nodes[current] = count;
+        total_nodes = total_nodes.saturating_add(count);
+        if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
+            return Err(AggregateLayoutError::LayoutsTooLarge {
+                struct_name: structs[current].name.clone(),
+                count: total_nodes,
+                maximum: MAX_AGGREGATE_LAYOUT_NODES,
+            });
         }
     }
     Ok(())
@@ -545,16 +596,9 @@ impl LayoutBuilder {
 
         match result {
             Ok((mut leaves, scalar_width, shape)) => {
-                if u32::try_from(leaves.len()).is_err() {
-                    self.states.remove(struct_name);
-                    return Err(AggregateLayoutError::TooManyLeaves {
-                        struct_name: struct_name.to_owned(),
-                        count: leaves.len(),
-                    });
-                }
                 for (index, leaf) in leaves.iter_mut().enumerate() {
                     leaf.id = AggregateLeafId(
-                        u32::try_from(index).expect("aggregate leaf count checked above"),
+                        u32::try_from(index).expect("aggregate shape size checked above"),
                     );
                 }
                 let layout = AggregateLayout {
@@ -585,11 +629,7 @@ impl LayoutBuilder {
         // Processor lowering also uses TypedStruct for structural parameter
         // maps whose dotted names are already-flattened access paths, not
         // nominal aggregate fields.
-        for field in definition
-            .fields
-            .iter()
-            .filter(|field| !field.name.contains('.'))
-        {
+        for field in aggregate_fields(definition) {
             if !seen.insert(field.name.clone()) {
                 return Err(AggregateLayoutError::DuplicateField {
                     struct_name: definition.name.clone(),
@@ -945,14 +985,48 @@ mod tests {
         structs[MAX_AGGREGATE_NESTING].fields = vec![scalar_field("value", PrimitiveType::F32)];
 
         assert!(matches!(
-            validate_aggregate_nesting(&structs),
+            validate_aggregate_structure(&structs),
             Err(AggregateLayoutError::NestingTooDeep {
                 depth,
                 maximum: MAX_AGGREGATE_NESTING,
                 ..
             }) if depth == MAX_AGGREGATE_NESTING + 1
         ));
-        assert!(validate_aggregate_nesting(&structs[1..]).is_ok());
+        assert!(validate_aggregate_structure(&structs[1..]).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_struct_branching_before_materializing_shapes() {
+        let mut structs = vec![TypedStruct {
+            name: "S0".to_owned(),
+            fields: Vec::new(),
+        }];
+        let mut shape_nodes = 1usize;
+        let mut total_nodes = shape_nodes;
+        for level in 1.. {
+            let nested = format!("S{}", level - 1);
+            structs.push(TypedStruct {
+                name: format!("S{level}"),
+                fields: vec![
+                    struct_field("left", &nested),
+                    struct_field("right", &nested),
+                ],
+            });
+            shape_nodes = 1 + 2 * shape_nodes;
+            total_nodes += shape_nodes;
+            if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
+                break;
+            }
+        }
+
+        assert!(matches!(
+            validate_aggregate_structure(&structs),
+            Err(AggregateLayoutError::LayoutsTooLarge {
+                count,
+                maximum: MAX_AGGREGATE_LAYOUT_NODES,
+                ..
+            }) if count == total_nodes
+        ));
     }
 
     #[test]

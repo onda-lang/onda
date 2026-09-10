@@ -1174,6 +1174,8 @@ Supported features:
 - Generic structs.
 - Aggregate nesting is limited to 256 levels so malformed or impractically deep
   definitions are rejected without exhausting compiler resources.
+- Resolved aggregate layouts may contain at most 65,536 expanded shape nodes across a program.
+  Fixed array lengths remain tensor dimensions and do not increase this count.
 
 Field declarations have three forms:
 
