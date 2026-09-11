@@ -178,6 +178,64 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
     }
 }
 
+pub(crate) fn expr_references_names(
+    expr: &Expr,
+    variable: &impl Fn(&str) -> bool,
+    ty: &impl Fn(&str) -> bool,
+) -> bool {
+    match expr {
+        Expr::Var { name, .. } => variable(name),
+        Expr::Index { index, .. } => expr_references_names(index, variable, ty),
+        Expr::Slice {
+            selector,
+            channel,
+            start,
+            end,
+            ..
+        } => [selector, channel, start, end]
+            .into_iter()
+            .flatten()
+            .any(|coordinate| expr_references_names(coordinate, variable, ty)),
+        Expr::ArrayCtor { spec, init, .. } => {
+            matches!(&spec.elem, ArrayElemType::Struct(name) if ty(name))
+                || expr_references_names(&spec.size, variable, ty)
+                || init
+                    .iter()
+                    .flatten()
+                    .any(|value| expr_references_names(value, variable, ty))
+        }
+        Expr::Compare { lhs, rhs, .. }
+        | Expr::Logical { lhs, rhs, .. }
+        | Expr::Binary { lhs, rhs, .. } => {
+            expr_references_names(lhs, variable, ty) || expr_references_names(rhs, variable, ty)
+        }
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|arg| expr_references_names(arg, variable, ty)),
+        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            expr_references_names(expr, variable, ty)
+        }
+        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
+            .iter()
+            .any(|value| expr_references_names(value, variable, ty)),
+        Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } => {
+            ty(name)
+                || type_args
+                    .iter()
+                    .any(|arg| matches!(arg, CallTypeArg::Generic(name) if ty(name)))
+                || args
+                    .iter()
+                    .any(|arg| expr_references_names(&arg.expr, variable, ty))
+        }
+        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => false,
+    }
+}
+
 pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     stmt: &mut Stmt,
     bindings: &HashMap<String, PrimitiveType>,
@@ -185,7 +243,9 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
+        Stmt::Const { decl, .. } => {
+            substitute_call_type_args_with_bindings_expr(&mut decl.expr, bindings, context, errors);
+        }
         Stmt::Assign {
             target,
             decl_ty,

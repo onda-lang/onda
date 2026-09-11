@@ -152,6 +152,30 @@ impl FunctionLowerer<'_> {
         }))
     }
 
+    pub(super) fn bind_joined_struct_array_leaves(
+        &mut self,
+        root: &str,
+        binding: &Binding,
+    ) -> Vec<String> {
+        let Binding::StructArrayParameter { fields, .. } = binding else {
+            return Vec::new();
+        };
+        fields
+            .iter()
+            .map(|(path, local, element)| {
+                let onda_mir::Type::Slice { access, .. } =
+                    self.types[self.locals[local.index()].ty.index()]
+                else {
+                    unreachable!()
+                };
+                let name = Self::data_leaf_name(root, path);
+                self.bindings
+                    .insert(name.clone(), Binding::Slice(*local, *element, access, None));
+                name
+            })
+            .collect()
+    }
+
     /// A scalar aggregate field is still storage. Join a singleton descriptor,
     /// leaving both candidate objects and their existing aliases untouched.
     pub(super) fn join_scalar_references(

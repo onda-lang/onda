@@ -1,7 +1,7 @@
 use super::*;
 use onda_frontend::{DeclRange, Span};
 
-pub(super) fn rewrite_and_materialize_generic_processors(
+pub(crate) fn rewrite_and_materialize_generic_processors(
     program: &mut Program,
     errors: &mut Vec<Diagnostic>,
 ) {

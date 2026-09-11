@@ -2650,14 +2650,10 @@ pub(super) fn fold_local_scalar_const_param_decl(
     }
 }
 
-pub(super) fn eval_local_scalar_const_decl(
+fn validate_local_scalar_const_decl(
     decl: &onda_frontend::ConstDecl,
-    local_consts: &HashMap<String, TypedConstValue>,
-    artifacts: &SemanticConstArtifacts,
-    options: AnalysisOptions,
-    context_prefix: &str,
     errors: &mut Vec<Diagnostic>,
-) -> Option<TypedConstValue> {
+) -> bool {
     if is_builtin_constant_name(&decl.name) {
         errors.push(Diagnostic::semantic_span(
             format!(
@@ -2666,7 +2662,7 @@ pub(super) fn eval_local_scalar_const_decl(
             ),
             decl.loc.as_ref(),
         ));
-        return None;
+        return false;
     }
 
     if is_const_array_decl(decl) {
@@ -2674,6 +2670,20 @@ pub(super) fn eval_local_scalar_const_decl(
             "const arrays are only supported at top-level and namespace scope",
             decl.loc.as_ref(),
         ));
+        return false;
+    }
+    true
+}
+
+pub(super) fn eval_local_scalar_const_decl(
+    decl: &onda_frontend::ConstDecl,
+    local_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    context_prefix: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<TypedConstValue> {
+    if !validate_local_scalar_const_decl(decl, errors) {
         return None;
     }
 
@@ -2754,6 +2764,8 @@ pub(super) fn proc_sample_oversample_factor_for_proc_context(
 pub(super) fn preprocess_local_const_stmt(
     stmt: &mut Stmt,
     local_consts: &HashMap<String, TypedConstValue>,
+    deferred_type_params: &HashSet<String>,
+    deferred_consts: &HashSet<String>,
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
@@ -2817,17 +2829,21 @@ pub(super) fn preprocess_local_const_stmt(
             ..
         } => {
             fold_local_scalar_const_expr(cond, local_consts);
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 then_branch,
                 local_consts,
+                deferred_type_params,
+                deferred_consts,
                 artifacts,
                 options,
                 "if branch",
                 errors,
             );
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 else_branch,
                 local_consts,
+                deferred_type_params,
+                deferred_consts,
                 artifacts,
                 options,
                 "else branch",
@@ -2854,9 +2870,11 @@ pub(super) fn preprocess_local_const_stmt(
             }
             fold_local_scalar_const_expr(start, local_consts);
             fold_local_scalar_const_expr(end, local_consts);
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 body,
                 local_consts,
+                deferred_type_params,
+                deferred_consts,
                 artifacts,
                 options,
                 "for loop",
@@ -2865,9 +2883,11 @@ pub(super) fn preprocess_local_const_stmt(
         }
         Stmt::While { cond, body, .. } => {
             fold_local_scalar_const_expr(cond, local_consts);
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 body,
                 local_consts,
+                deferred_type_params,
+                deferred_consts,
                 artifacts,
                 options,
                 "while loop",
@@ -2878,24 +2898,52 @@ pub(super) fn preprocess_local_const_stmt(
     }
 }
 
-pub(super) fn preprocess_local_const_stmts(
+fn expr_depends_on_deferred_local_const(
+    expr: &Expr,
+    deferred_type_params: &HashSet<String>,
+    deferred_consts: &HashSet<String>,
+) -> bool {
+    crate::generic_specialization::expr_references_names(
+        expr,
+        &|name| deferred_consts.contains(name),
+        &|name| deferred_type_params.contains(name),
+    )
+}
+
+fn preprocess_local_const_stmts_with_deferred(
     stmts: &mut Vec<Stmt>,
     inherited_consts: &HashMap<String, TypedConstValue>,
+    deferred_type_params: &HashSet<String>,
+    inherited_deferred_consts: &HashSet<String>,
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
     context_prefix: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut scope_consts = inherited_consts.clone();
+    let mut deferred_consts = inherited_deferred_consts.clone();
     let mut local_names = HashSet::<String>::new();
     let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
     for mut stmt in std::mem::take(stmts) {
-        if let Stmt::Const { decl, .. } = &stmt {
+        if let Stmt::Const { decl, .. } = &mut stmt {
             if !local_names.insert(decl.name.clone()) {
                 errors.push(Diagnostic::semantic_span(
                     format!("duplicate constant '{}' in scope", decl.name),
                     decl.loc.as_ref(),
                 ));
+                continue;
+            }
+            fold_local_scalar_const_expr(&mut decl.expr, &scope_consts);
+            if expr_depends_on_deferred_local_const(
+                &decl.expr,
+                deferred_type_params,
+                &deferred_consts,
+            ) {
+                if !validate_local_scalar_const_decl(decl, errors) {
+                    continue;
+                }
+                deferred_consts.insert(decl.name.clone());
+                rewritten.push(stmt);
                 continue;
             }
             if let Some(value) = eval_local_scalar_const_decl(
@@ -2910,15 +2958,62 @@ pub(super) fn preprocess_local_const_stmts(
             }
             continue;
         }
-        preprocess_local_const_stmt(&mut stmt, &scope_consts, artifacts, options, errors);
+        preprocess_local_const_stmt(
+            &mut stmt,
+            &scope_consts,
+            deferred_type_params,
+            &deferred_consts,
+            artifacts,
+            options,
+            errors,
+        );
         rewritten.push(stmt);
     }
     *stmts = rewritten;
 }
 
+pub(super) fn preprocess_local_const_stmts(
+    stmts: &mut Vec<Stmt>,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    context_prefix: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    preprocess_local_const_stmts_with_deferred(
+        stmts,
+        inherited_consts,
+        &HashSet::new(),
+        &HashSet::new(),
+        artifacts,
+        options,
+        context_prefix,
+        errors,
+    );
+}
+
 pub(super) fn preprocess_local_const_function(
     def: &mut FunctionDef,
     inherited_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let deferred_type_params = def.type_params.iter().cloned().collect::<HashSet<_>>();
+    preprocess_local_const_function_with_deferred_types(
+        def,
+        inherited_consts,
+        &deferred_type_params,
+        artifacts,
+        options,
+        errors,
+    );
+}
+
+fn preprocess_local_const_function_with_deferred_types(
+    def: &mut FunctionDef,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    deferred_type_params: &HashSet<String>,
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
@@ -2939,9 +3034,11 @@ pub(super) fn preprocess_local_const_function(
         }
     }
     fold_local_scalar_const_return_type(&mut def.return_ty, inherited_consts);
-    preprocess_local_const_stmts(
+    preprocess_local_const_stmts_with_deferred(
         &mut def.body,
         inherited_consts,
+        deferred_type_params,
+        &HashSet::new(),
         artifacts,
         options,
         &format!("function '{}'", def.name),
@@ -2952,6 +3049,24 @@ pub(super) fn preprocess_local_const_function(
 pub(super) fn preprocess_local_const_event(
     event: &mut EventDef,
     inherited_consts: &HashMap<String, TypedConstValue>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    preprocess_local_const_event_with_deferred_types(
+        event,
+        inherited_consts,
+        &HashSet::new(),
+        artifacts,
+        options,
+        errors,
+    );
+}
+
+fn preprocess_local_const_event_with_deferred_types(
+    event: &mut EventDef,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    deferred_type_params: &HashSet<String>,
     artifacts: &SemanticConstArtifacts,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
@@ -2971,9 +3086,11 @@ pub(super) fn preprocess_local_const_event(
             fold_local_scalar_const_expr(default, inherited_consts);
         }
     }
-    preprocess_local_const_stmts(
+    preprocess_local_const_stmts_with_deferred(
         &mut event.body,
         inherited_consts,
+        deferred_type_params,
+        &HashSet::new(),
         artifacts,
         options,
         &format!("event '{}'", event.name),
@@ -3010,12 +3127,32 @@ pub(super) fn preprocess_local_const_when(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
+    preprocess_local_const_when_with_deferred_types(
+        when,
+        inherited_consts,
+        &HashSet::new(),
+        artifacts,
+        options,
+        errors,
+    );
+}
+
+fn preprocess_local_const_when_with_deferred_types(
+    when: &mut WhenDef,
+    inherited_consts: &HashMap<String, TypedConstValue>,
+    deferred_type_params: &HashSet<String>,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
     if let Some(index) = &mut when.target.index {
         fold_local_scalar_const_expr(index, inherited_consts);
     }
-    preprocess_local_const_stmts(
+    preprocess_local_const_stmts_with_deferred(
         &mut when.body,
         inherited_consts,
+        deferred_type_params,
+        &HashSet::new(),
         artifacts,
         options,
         "when handler",
@@ -3304,10 +3441,24 @@ pub(super) fn preprocess_local_consts_in_block(
                 }
             }
             for method in &mut struct_def.methods {
-                preprocess_local_const_function(method, &empty_consts, artifacts, options, errors);
+                let deferred_type_params = struct_def
+                    .type_params
+                    .iter()
+                    .chain(&method.type_params)
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                preprocess_local_const_function_with_deferred_types(
+                    method,
+                    &empty_consts,
+                    &deferred_type_params,
+                    artifacts,
+                    options,
+                    errors,
+                );
             }
         }
         Block::Proc(proc) => {
+            let deferred_type_params = proc.type_params.iter().cloned().collect::<HashSet<_>>();
             let factor_proc_consts = {
                 let mut scratch_errors = Vec::new();
                 preprocess_proc_local_const_decls(
@@ -3390,9 +3541,10 @@ pub(super) fn preprocess_local_consts_in_block(
                 fold_local_scalar_const_expr(factor, &factor_proc_consts.values);
             }
             for event in &mut proc.events {
-                preprocess_local_const_event(
+                preprocess_local_const_event_with_deferred_types(
                     event,
                     &proc_consts.values,
+                    &deferred_type_params,
                     artifacts,
                     proc_options,
                     errors,
@@ -3402,50 +3554,61 @@ pub(super) fn preprocess_local_consts_in_block(
                 preprocess_local_const_delegate(delegate, &proc_consts.values, errors);
             }
             for when in &mut proc.whens {
-                preprocess_local_const_when(
+                preprocess_local_const_when_with_deferred_types(
                     when,
                     &proc_consts.values,
+                    &deferred_type_params,
                     artifacts,
                     proc_options,
                     errors,
                 );
             }
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 &mut proc.init.body,
                 &proc_consts.values,
+                &deferred_type_params,
+                &HashSet::new(),
                 artifacts,
                 proc_options,
                 &format!("processor '{}' init", proc.name),
                 errors,
             );
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 &mut proc.block_pre,
                 &proc_consts.values,
+                &deferred_type_params,
+                &HashSet::new(),
                 artifacts,
                 proc_options,
                 &format!("processor '{}' block pre", proc.name),
                 errors,
             );
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 &mut proc.sample,
                 &proc_consts.values,
+                &deferred_type_params,
+                &HashSet::new(),
                 artifacts,
                 proc_options,
                 &format!("processor '{}' sample", proc.name),
                 errors,
             );
-            preprocess_local_const_stmts(
+            preprocess_local_const_stmts_with_deferred(
                 &mut proc.block_post,
                 &proc_consts.values,
+                &deferred_type_params,
+                &HashSet::new(),
                 artifacts,
                 proc_options,
                 &format!("processor '{}' block post", proc.name),
                 errors,
             );
             for task in &mut proc.tasks {
-                preprocess_local_const_stmts(
+                preprocess_local_const_stmts_with_deferred(
                     &mut task.body,
                     &proc_consts.values,
+                    &deferred_type_params,
+                    &HashSet::new(),
                     artifacts,
                     proc_options,
                     &format!("task '{}' in processor '{}'", task.name, proc.name),
@@ -3456,9 +3619,15 @@ pub(super) fn preprocess_local_consts_in_block(
                 preprocess_local_const_graph(graph, &proc_consts.values);
             }
             for def in &mut proc.local_defs {
-                preprocess_local_const_function(
+                let local_def_type_params = deferred_type_params
+                    .iter()
+                    .chain(&def.type_params)
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                preprocess_local_const_function_with_deferred_types(
                     def,
                     &proc_consts.values,
+                    &local_def_type_params,
                     artifacts,
                     proc_options,
                     errors,

@@ -2969,7 +2969,7 @@
 
               if (structured) {
                 setting.dataset.foldKey = JSON.stringify([event.name, arg.name, arg.type]);
-                setting.open = structuredOpenStates.get(setting.dataset.foldKey) ?? false;
+                setting.open = structuredOpenStates.get(setting.dataset.foldKey) ?? true;
                 const input = document.createElement("textarea");
                 input.className = "param-number";
                 input.value = JSON.stringify(arg.value, null, 2);

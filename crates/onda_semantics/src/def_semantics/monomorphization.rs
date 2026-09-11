@@ -906,58 +906,9 @@ fn resolve_generic_def_type_bindings(
 /// parameter: `T(1)` and `identity<T>(1)` acquire their type from `T`, rather
 /// than supplying a constraint for it.
 fn expr_references_type_param(expr: &Expr, type_param: &str) -> bool {
-    match expr {
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
-            .iter()
-            .any(|value| expr_references_type_param(value, type_param)),
-        Expr::Index { index, .. } => expr_references_type_param(index, type_param),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => [selector, channel, start, end]
-            .into_iter()
-            .flatten()
-            .any(|value| expr_references_type_param(value, type_param)),
-        Expr::ArrayCtor { spec, init, .. } => {
-            matches!(&spec.elem, ArrayElemType::Struct(name) if name == type_param)
-                || expr_references_type_param(&spec.size, type_param)
-                || init.as_ref().is_some_and(|values| {
-                    values
-                        .iter()
-                        .any(|value| expr_references_type_param(value, type_param))
-                })
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            expr_references_type_param(lhs, type_param)
-                || expr_references_type_param(rhs, type_param)
-        }
-        Expr::Call { args, .. } => args
-            .iter()
-            .any(|arg| expr_references_type_param(arg, type_param)),
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            name == type_param
-                || type_args
-                    .iter()
-                    .any(|arg| matches!(arg, CallTypeArg::Generic(name) if name == type_param))
-                || args
-                    .iter()
-                    .any(|arg| expr_references_type_param(&arg.expr, type_param))
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            expr_references_type_param(expr, type_param)
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
-    }
+    crate::generic_specialization::expr_references_names(expr, &|_| false, &|name| {
+        name == type_param
+    })
 }
 
 /// Infer the primitive type of an expression for generic type inference.

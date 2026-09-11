@@ -1826,7 +1826,7 @@ fn render_event_arg_editor(
                 .monospace(),
         )
         .id_salt("structured-event-argument")
-        .default_open(false)
+        .default_open(true)
         .show(ui, |ui| {
             let changed = ui
                 .add_enabled_ui(connected, |ui| {

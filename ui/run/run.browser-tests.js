@@ -144,17 +144,17 @@ try {
     default: { notes: [{ gain: 0.5, id: "9007199254740993" }], pair: [2, true] } }] }];
   send({ events: structuredEvents });
   const structuredGroup = document.querySelector(".event-structured-arg");
-  check(structuredGroup && !structuredGroup.open,
-    "structured event arguments are collapsed by default");
+  check(structuredGroup && structuredGroup.open,
+    "structured event arguments are expanded by default");
   structuredGroup.querySelector("summary").click();
-  check(structuredGroup.open, "structured event arguments can be expanded");
+  check(!structuredGroup.open, "structured event arguments can be collapsed");
   const structured = document.querySelector("#events textarea");
   check(JSON.parse(structured.value).notes[0].id === "9007199254740993",
     "structured defaults preserve nested values and exact i64 strings");
   edit(structured, '{"notes":');
   send({ events: structuredEvents, logText: "update" });
   check(document.querySelector("#events textarea") === structured && structured.value === '{"notes":'
-    && document.querySelector(".event-structured-arg").open
+    && !document.querySelector(".event-structured-arg").open
     && document.querySelector(".event-trigger").disabled,
     "structured fold state and invalid JSON drafts survive refreshes");
   const patch = { notes: [{ gain: 0.75, id: "9223372036854775807" }], pair: [3, false] };

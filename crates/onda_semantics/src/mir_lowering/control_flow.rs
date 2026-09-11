@@ -140,14 +140,26 @@ impl<'a> FunctionLowerer<'a> {
                         });
                         if let Some(data) = data {
                             let existing = self.data_type_of(&Expr::var(name));
+                            if existing.is_some()
+                                && (*is_typed_decl || generic_decl_ty.is_some())
+                                && matches!(
+                                    data,
+                                    DataType::Struct(_)
+                                        | DataType::Array {
+                                            element: ArrayElemType::Struct(_),
+                                            ..
+                                        }
+                                )
+                                && !Self::data_expr_selects_storage(expr)
+                            {
+                                self.initialize_data_expr(name, expr, &data, block)?;
+                                continue;
+                            }
                             let source = self.lower_data_expr(expr, &data, block)?;
                             if existing.is_some() {
                                 self.copy_data(name, &source, &data, block, (*loc).into())?;
                             } else if (*is_typed_decl || generic_decl_ty.is_some())
-                                && (matches!(
-                                    expr,
-                                    Expr::Var { .. } | Expr::Index { .. } | Expr::Slice { .. }
-                                ) || indexed_read_source(expr).is_some())
+                                && Self::data_expr_selects_storage(expr)
                             {
                                 self.allocate_data(name, &data, (*loc).into())?;
                                 self.copy_data(name, &source, &data, block, (*loc).into())?;
@@ -664,7 +676,11 @@ impl<'a> FunctionLowerer<'a> {
         merged_binding_names.sort();
 
         self.bindings = outer_bindings;
+        let mut covered_binding_names = HashSet::new();
         for name in merged_binding_names {
+            if covered_binding_names.contains(&name) {
+                continue;
+            }
             let Some(then_binding) = then_bindings.get(&name).cloned() else {
                 continue;
             };
@@ -679,6 +695,7 @@ impl<'a> FunctionLowerer<'a> {
                 else_block,
                 location,
             )? {
+                covered_binding_names.extend(self.bind_joined_struct_array_leaves(&name, &binding));
                 self.bindings.insert(name, binding);
             }
         }

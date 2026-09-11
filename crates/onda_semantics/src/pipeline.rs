@@ -6,11 +6,12 @@ use onda_frontend::Span;
 use crate::aggregate_layout::validate_aggregate_structure;
 use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
-    coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
-    nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
-    proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
-    ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
+    coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots,
+    desugar_materialized_processors, guard_pinned_initializers, internal_proc_index_call_signature,
+    lower_graph_blocks, materialize_generic_processors, nested_call_out_fn_name,
+    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
+    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
+    TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
 };
 use crate::*;
 
@@ -815,6 +816,19 @@ pub(crate) fn preprocess_const_semantics_for_lowering(
     Ok(program)
 }
 
+fn preprocess_materialized_processor_local_consts(
+    program: &mut Program,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for block in &mut program.blocks {
+        if matches!(block, Block::Proc(_)) {
+            preprocess_local_consts_in_block(block, artifacts, options, errors);
+        }
+    }
+}
+
 pub fn lower_graphs_for_inspection_with_options(
     program: Program,
     options: AnalysisOptions,
@@ -841,6 +855,12 @@ pub fn lower_graphs_for_inspection_with_options_and_inputs(
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     prepare_processors_for_graph_inspection(&mut program, &mut errors);
+    preprocess_materialized_processor_local_consts(
+        &mut program,
+        &const_artifacts,
+        options,
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -907,7 +927,16 @@ pub fn analyze_with_options_and_inputs(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let const_arrays = const_artifacts.const_arrays;
+    materialize_generic_processors(&mut program, &mut errors);
+    preprocess_materialized_processor_local_consts(
+        &mut program,
+        &const_artifacts,
+        options,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let mut declared_proc_integer_ranges = HashMap::new();
     for proc_def in program.blocks.iter_mut().filter_map(|block| match block {
         Block::Proc(proc_def) => Some(proc_def),
@@ -939,7 +968,7 @@ pub fn analyze_with_options_and_inputs(
         pinned_proc_fields,
         compiler_owned_proc_fields,
         mut top_level_delegates,
-    } = desugar_processors(program, options, &const_array_infos, &mut errors);
+    } = desugar_materialized_processors(program, options, &const_array_infos, &mut errors);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
@@ -1535,6 +1564,17 @@ pub fn analyze_with_options_and_inputs(
             &mut errors,
             &top_level_inference,
         );
+        for strukt in generated_specializations.values_mut() {
+            for method in &mut strukt.methods {
+                preprocess_local_const_function(
+                    method,
+                    &HashMap::new(),
+                    &const_artifacts,
+                    options,
+                    &mut errors,
+                );
+            }
+        }
 
         struct_defs_raw = concrete_structs;
         let mut generated = generated_specializations.into_values().collect::<Vec<_>>();
@@ -1917,7 +1957,8 @@ pub fn analyze_with_options_and_inputs(
     );
     check_unique_set(&const_scalar_names, "const", &mut all_declared, &mut errors);
     check_unique_set(
-        &const_arrays
+        &const_artifacts
+            .const_arrays
             .iter()
             .map(|array| array.name.clone())
             .collect::<Vec<_>>(),
@@ -2586,6 +2627,16 @@ pub fn analyze_with_options_and_inputs(
                     }
                 }
 
+                for def in &mut generated_defs {
+                    preprocess_local_const_function(
+                        def,
+                        &HashMap::new(),
+                        &const_artifacts,
+                        options,
+                        &mut errors,
+                    );
+                }
+
                 // Mono-rewrite generated defs' bodies (def-to-def mono calls).
                 // E.g. quad.__onda_mono__g_f32 may call double(...) which also needs mono.
                 // Loop until no new defs are generated.
@@ -2635,6 +2686,15 @@ pub fn analyze_with_options_and_inputs(
                         if let Some(signature) = generated_sigs.get_mut(&def.name) {
                             signature.sync_defaults_from_def(def);
                         }
+                    }
+                    for def in &mut extra_defs {
+                        preprocess_local_const_function(
+                            def,
+                            &HashMap::new(),
+                            &const_artifacts,
+                            options,
+                            &mut errors,
+                        );
                     }
                     generated_defs.extend(extra_defs);
                     generated_sigs.extend(extra_sigs);
@@ -4315,7 +4375,7 @@ pub fn analyze_with_options_and_inputs(
             control_out_arrays,
             param_arrays,
             interface_views,
-            const_arrays,
+            const_arrays: const_artifacts.const_arrays,
             params: typed_params,
             buffers: typed_buffers,
             structs: typed_structs,

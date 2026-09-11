@@ -106,7 +106,7 @@ impl FunctionLowerer<'_> {
             .ok_or_else(|| self.error("data extent must be between 1 and i32::MAX", loc))
     }
 
-    fn data_leaf_name(root: &str, path: &str) -> String {
+    pub(super) fn data_leaf_name(root: &str, path: &str) -> String {
         if path.is_empty() {
             root.to_owned()
         } else {
@@ -118,6 +118,13 @@ impl FunctionLowerer<'_> {
         let id = self.next_data_id;
         self.next_data_id += 1;
         format!("__onda_data_{id}")
+    }
+
+    pub(super) fn data_expr_selects_storage(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Var { .. } | Expr::Index { .. } | Expr::Slice { .. }
+        ) || indexed_read_source(expr).is_some()
     }
 
     pub(super) fn bind_data_result_parameters(
@@ -617,13 +624,24 @@ impl FunctionLowerer<'_> {
             }
         }
         self.allocate_data(&name, data, expr.loc())?;
+        self.initialize_data_expr(&name, expr, data, block)?;
+        Ok(name)
+    }
+
+    pub(super) fn initialize_data_expr(
+        &mut self,
+        destination: &str,
+        expr: &Expr,
+        data: &DataType,
+        block: &mut MirBlock,
+    ) -> Result<(), MirLoweringError> {
         match expr {
             Expr::UserCall {
                 name: constructor,
                 args,
                 ..
             } if self.structs.contains_key(constructor) => {
-                self.initialize_data_struct(&name, constructor, args, block, expr.loc())?;
+                self.initialize_data_struct(destination, constructor, args, block, expr.loc())?;
             }
             Expr::UserCall {
                 name: callee,
@@ -631,15 +649,22 @@ impl FunctionLowerer<'_> {
                 args,
                 ..
             } => {
-                self.lower_user_call_into(callee, type_args, args, Some(&name), expr.loc(), block)?;
+                self.lower_user_call_into(
+                    callee,
+                    type_args,
+                    args,
+                    Some(destination),
+                    expr.loc(),
+                    block,
+                )?;
             }
             Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. } => {
                 let DataType::Array { element, len } = data else {
                     unreachable!()
                 };
                 if let ArrayElemType::Struct(struct_name) = element {
-                    self.initialize_data_array(&name, struct_name, *len, expr, block)?;
-                    return Ok(name);
+                    self.initialize_data_array(destination, struct_name, *len, expr, block)?;
+                    return Ok(());
                 }
                 unreachable!("primitive literals were materialized above");
             }
@@ -650,7 +675,7 @@ impl FunctionLowerer<'_> {
                 ))
             }
         }
-        Ok(name)
+        Ok(())
     }
 
     /// Canonical data leaves have independent storage: an alias can overlap

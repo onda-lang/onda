@@ -116,9 +116,10 @@ The metadata and binding APIs use these primitive identifiers:
 | `ONDA_PRIMITIVE_I64` | `int64_t` |
 | `ONDA_PRIMITIVE_BOOL` | `uint8_t`, exactly `0` or `1` |
 
-Packed hosted payloads use native byte order and contain no implicit alignment padding. Fixed arrays
-are contiguous. A slice is encoded as a native `int32_t` element count followed by contiguous
-elements.
+Native parameter storage and `onda_param_default_bytes` use native byte order. Event and delegate
+wire payloads contain no implicit alignment padding and use little-endian byte order. Fixed arrays
+are contiguous; a top-level slice is encoded as a little-endian signed `int32_t` element count
+followed by its packed field tensors.
 
 ## Minimal host
 

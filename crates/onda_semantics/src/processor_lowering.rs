@@ -19,8 +19,9 @@ use generated_blocks::*;
 pub(crate) use generated_blocks::{
     guard_pinned_initializers, is_pinned_initializer_marker, mark_pinned_initializers,
 };
-pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
-use generic_proc_rewrite::*;
+pub(crate) use generic_proc_rewrite::{
+    rewrite_and_materialize_generic_processors, validate_generic_proc_template_forwarded_type_args,
+};
 use generic_struct_source_rewrite::*;
 use global_proc_rewrite::*;
 pub(crate) use graph_lowering::*;
@@ -1474,14 +1475,9 @@ fn build_proc_lowering_env(
     })
 }
 
-pub(crate) fn desugar_processors(
-    mut program: Program,
-    options: AnalysisOptions,
-    const_arrays: &HashMap<String, TypedArrayInfo>,
-    errors: &mut Vec<Diagnostic>,
-) -> ProcessorDesugarResult {
-    // Validate proc-local def type params BEFORE generic proc specialization
-    // (which clears proc.type_params on specialized copies).
+pub(crate) fn materialize_generic_processors(program: &mut Program, errors: &mut Vec<Diagnostic>) {
+    // Validate proc-local def type params before generic proc specialization,
+    // which clears proc.type_params on specialized copies.
     for block in &program.blocks {
         if let Block::Proc(proc) = block {
             for local_def in &proc.local_defs {
@@ -1497,7 +1493,7 @@ pub(crate) fn desugar_processors(
                     }
                 }
                 if !local_def.type_params.is_empty() {
-                    let mut seen = std::collections::HashSet::new();
+                    let mut seen = HashSet::new();
                     for tp in &local_def.type_params {
                         if !seen.insert(tp.clone()) {
                             errors.push(Diagnostic::semantic_span(
@@ -1513,8 +1509,19 @@ pub(crate) fn desugar_processors(
             }
         }
     }
+    rewrite_and_materialize_generic_processors(program, errors);
+}
 
-    rewrite_and_materialize_generic_processors(&mut program, errors);
+fn desugar_processors_impl(
+    mut program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    materialize_generics: bool,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    if materialize_generics {
+        materialize_generic_processors(&mut program, errors);
+    }
     rewrite_source_task_and_when_generic_structs(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
@@ -1649,6 +1656,25 @@ pub(crate) fn desugar_processors(
         compiler_owned_proc_fields,
         top_level_delegates: prepared_delegates.top_level,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn desugar_processors(
+    program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    desugar_processors_impl(program, options, const_arrays, true, errors)
+}
+
+pub(crate) fn desugar_materialized_processors(
+    program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    desugar_processors_impl(program, options, const_arrays, false, errors)
 }
 
 #[cfg(test)]

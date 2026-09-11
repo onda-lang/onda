@@ -3053,6 +3053,55 @@ sample:
     }
 
     #[test]
+    fn generic_casts_in_local_consts_resolve_in_every_generic_executable_owner() {
+        let src = r#"
+struct Box<T>:
+  value: T
+  def shifted(self) -> T:
+    const One = T(1)
+    return self.value + One
+
+def shifted<T>(value: T) -> T:
+  const One = T(1)
+  const Two = One + One
+  return value + Two
+
+def generic_one<T>():
+  const One = T(1)
+  return One
+
+proc Holder<T>:
+  outs:
+    out1
+  init:
+    const Two = T(2)
+    stored: T = Two
+  events:
+    set(value: T):
+      const One = T(1)
+      stored = value + One
+  def shifted(value: T) -> T:
+    const One = T(1)
+    return value + One
+  sample:
+    out1 = f32(shifted(stored))
+
+init:
+  holder = Holder<f32>()
+  holder.set(f32(3))
+
+sample:
+  box = Box<f64>(4.0)
+  out1 = f32(box.shifted()) + f32(shifted<f64>(5.0)) + f32(generic_one<f64>()) + holder()
+"#;
+        let program = parse_program(src).expect("generic local const source should parse");
+        let typed = analyze(program)
+            .expect("generic local consts should resolve after owner specialization");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved generic local consts should lower to MIR");
+    }
+
+    #[test]
     fn individual_proc_event_syntax_merges_with_proc_events_block_during_analysis() {
         let src = "proc Voice:\n  outs:\n    out1\n  event ping(x: i32):\n    phase = f32(x)\n  events:\n    reset():\n      phase = 0.0\n  init:\n    phase = 0.0\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");

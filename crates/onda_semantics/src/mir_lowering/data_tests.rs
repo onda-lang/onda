@@ -300,6 +300,61 @@ block:
 }
 
 #[test]
+fn fresh_typed_init_data_is_initialized_in_its_persistent_storage() {
+    let program = compile(
+        r#"
+struct Note:
+  value = 1.0
+  bins: f32[3]
+init:
+  large: Note[4096]
+sample:
+  out1 = large[0].value
+"#,
+    );
+    let scratch_arrays = program
+        .state
+        .iter()
+        .filter(|slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch)
+        .filter_map(|slot| match program.types[slot.ty.index()] {
+            MirType::Array { len, .. } => Some(len),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !scratch_arrays.contains(&4096) && !scratch_arrays.contains(&12288),
+        "fresh persistent initialization should not retain a full-size temporary: {scratch_arrays:?}"
+    );
+}
+
+#[test]
+fn branch_joined_struct_views_reuse_the_root_field_descriptors() {
+    let program = compile(
+        r#"
+struct Cell:
+  value = 1.0
+  pair: f32[2]
+params:
+  choose: bool = false
+init:
+  cells: Cell[4]
+sample:
+  if choose:
+    view: Cell[] = cells[0:3]
+  else:
+    view: Cell[] = cells[1:4]
+  out1 = view[0].value
+"#,
+    );
+    let dump = onda_mir::format_program(&program);
+    let slice_lengths = dump.matches("slice_len").count();
+    assert!(
+        slice_lengths <= 4,
+        "each branch should join each canonical field descriptor at most once, found {slice_lengths} length reads"
+    );
+}
+
+#[test]
 fn named_returned_storage_supports_nested_selections() {
     compile(
         r#"
