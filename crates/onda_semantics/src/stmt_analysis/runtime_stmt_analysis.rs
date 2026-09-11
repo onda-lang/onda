@@ -149,7 +149,7 @@ pub(crate) struct EventStmtPolicy<'a> {
     pub input_names: &'a HashSet<String>,
     pub output_names: &'a HashSet<String>,
     pub scalar_param_names: &'a HashSet<String>,
-    pub array_param_names: &'a HashSet<String>,
+    pub data_param_names: &'a HashSet<String>,
 }
 
 fn is_proc_event_stmt_call(
@@ -210,48 +210,37 @@ fn validate_event_assign_target_restrictions(
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
     event_policy: EventStmtPolicy<'_>,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> bool {
     let (base, indexed) = match target {
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
         AssignTarget::Slice { base, .. } => (base.as_str(), true),
-        AssignTarget::Tuple(_) => return,
+        AssignTarget::Tuple(_) => return false,
     };
     let root = runtime_symbol_root(base);
 
     if event_policy.scalar_param_names.contains(root) {
-        errors.push(Diagnostic::semantic_span(
-            format!("cannot assign to immutable event parameter '{}'", root),
-            target_loc,
-        ));
-        return;
+        return true;
     }
-    if event_policy.array_param_names.contains(root) {
-        errors.push(Diagnostic::semantic_span(
-            format!(
-                "cannot assign to immutable event array parameter '{}'",
-                root
-            ),
-            target_loc,
-        ));
-        return;
+    if event_policy.data_param_names.contains(root) {
+        return true;
     }
     if event_policy.input_names.contains(root) {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign to input symbol '{}' in event handler", root),
             target_loc,
         ));
-        return;
+        return false;
     }
     if event_policy.output_names.contains(root) {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign to output symbol '{}' in event handler", root),
             target_loc,
         ));
-        return;
+        return false;
     }
     if indexed && has_declared_buffer_symbol_info(declared_symbols, base) {
-        return;
+        return false;
     }
     if event_policy.immutable_roots.contains(root) {
         errors.push(Diagnostic::semantic_span(
@@ -261,7 +250,7 @@ fn validate_event_assign_target_restrictions(
             ),
             target_loc,
         ));
-        return;
+        return false;
     }
 
     if indexed || base.contains('.') {
@@ -280,8 +269,10 @@ fn validate_event_assign_target_restrictions(
                 ),
                 target_loc,
             ));
+            return false;
         }
     }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -680,7 +671,7 @@ pub(crate) fn analyze_runtime_events(
             input_names: validation_input_names,
             output_names: validation_output_names,
             scalar_param_names: &scalar_event_params,
-            array_param_names: &array_event_params,
+            data_param_names: &array_event_params,
         };
         analyze_runtime_scope_stmts(
             event.body.iter(),
@@ -836,7 +827,7 @@ fn analyze_flow_stmt(
                 ..
             } => {
                 if let Some(event_policy) = ctx.event_policy {
-                    validate_event_assign_target_restrictions(
+                    if validate_event_assign_target_restrictions(
                         target_loc.as_ref().into(),
                         target,
                         declared_symbols,
@@ -846,7 +837,9 @@ fn analyze_flow_stmt(
                         &state.local_proc_aliases,
                         event_policy,
                         errors,
-                    );
+                    ) {
+                        return;
+                    }
                 }
                 analyze_flow_assignment(
                     target_loc.as_ref().into(),

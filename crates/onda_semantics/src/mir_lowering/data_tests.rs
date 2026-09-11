@@ -447,6 +447,30 @@ sample:
 }
 
 #[test]
+fn init_typed_data_declaration_rejects_alias_redeclaration() {
+    let parsed = onda_frontend::parse_program(
+        r#"
+struct Note:
+  frequency = 440.0
+init:
+  note = Note()
+  alias = note
+  alias: Note = note
+sample:
+  out1 = alias.frequency
+"#,
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must introduce a new name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn generic_typed_data_declaration_rejects_redeclaration() {
     let parsed = onda_frontend::parse_program(
         r#"
@@ -466,6 +490,179 @@ sample:
         errors
             .iter()
             .any(|error| error.message.contains("must introduce a new name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn generic_struct_constructor_inference_uses_shared_executable_scope_types() {
+    compile(
+        r#"
+params:
+  amount: f64 = 1.0
+  choose: bool = false
+struct Box<T>:
+  value: T
+struct Source:
+  value: f64
+  values: f64[2]
+def wide() -> f64:
+  return 2.0
+def wrap(value: f64) -> Box<f64>:
+  return Box(value)
+sample:
+  source: Source
+  from_field = Box(source.value)
+  from_array_field = Box(source.values[0])
+  from_param = Box(amount)
+  returned = wide()
+  from_return = Box(returned)
+  if choose:
+    branch_value: f64 = 3.0
+  else:
+    branch_value: f64 = 4.0
+  from_branch = Box(branch_value)
+  total: i64 = 0
+  for i: i64 in i64(0)..i64(2):
+    from_loop = Box(i)
+    total += from_loop.value
+  wrapped = wrap(amount)
+  out1 = f32(from_field.value + from_array_field.value + from_param.value + from_return.value + from_branch.value + wrapped.value) + f32(total)
+"#,
+    );
+}
+
+#[test]
+fn generic_struct_constructor_inference_is_uniform_in_runtime_handlers() {
+    compile(
+        r#"
+struct Box<T>:
+  value: T
+proc Worker:
+  init:
+    result: f64 = 0.0
+  delegate changed(value: f64)
+  when changed(value):
+    boxed = Box(value)
+    state_box = Box(result)
+    result = boxed.value + state_box.value
+  event update(value: f64):
+    boxed = Box(value)
+    result = boxed.value
+    changed(value)
+  tasks:
+    refresh():
+      value: f64 = 2.0
+      boxed = Box(value)
+      result = boxed.value
+      return
+  sample:
+    boxed = Box(result)
+    out1 = f32(boxed.value)
+init:
+  worker = Worker()
+  result: f64 = 0.0
+delegate changed(value: f64)
+when changed(value):
+  boxed = Box(value)
+  state_box = Box(result)
+  result = boxed.value + state_box.value
+event update(value: f64):
+  boxed = Box(value)
+  result = boxed.value
+  changed(value)
+tasks:
+  refresh():
+    value: f64 = 3.0
+    boxed = Box(value)
+    result = boxed.value
+    return
+sample:
+  boxed = Box(result)
+  out1 = f32(boxed.value) + worker()
+"#,
+    );
+}
+
+#[test]
+fn generic_proc_constructor_inference_uses_the_same_executable_scope_types() {
+    compile(
+        r#"
+proc Constant<T>:
+  params:
+    value: T = T(0.0)
+  outs<T> 1
+  sample:
+    out1 = value
+params:
+  amount: f64 = 1.0
+def wide() -> f64:
+  return 2.0
+init:
+  returned = wide()
+  source = returned + amount
+  constant = Constant(value = source)
+sample:
+  out1 = f32(constant())
+"#,
+    );
+}
+
+#[test]
+fn generic_struct_constructors_bind_nested_and_array_field_types() {
+    compile(
+        r#"
+struct Inner<T>:
+  value: T
+struct Outer<T>:
+  inner: Inner<T>
+  values: T[2]
+sample:
+  values: f64[2] = [1.0, 2.0]
+  inner = Inner<f64>(3.0)
+  outer = Outer(inner = inner, values = values)
+  out1 = f32(outer.inner.value + outer.values[0])
+"#,
+    );
+}
+
+#[test]
+fn read_only_struct_event_write_reports_only_the_permission_error() {
+    let parsed = onda_frontend::parse_program(
+        r#"
+struct Note:
+  pitch: f32
+event mutate(note: Note):
+  note.pitch = 440.0
+sample:
+  out1 = 0.0
+"#,
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0]
+        .message
+        .contains("cannot write through read-only payload parameter 'note'"));
+}
+
+#[test]
+fn scalar_event_parameter_write_keeps_its_single_immutable_diagnostic() {
+    let parsed = onda_frontend::parse_program(
+        r#"
+event mutate(value: f32):
+  value = 1.0
+sample:
+  out1 = 0.0
+"#,
+    )
+    .unwrap();
+    let errors = crate::analyze(parsed).unwrap_err();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0]
+            .message
+            .contains("cannot write through read-only payload parameter 'value'"),
         "{errors:?}"
     );
 }

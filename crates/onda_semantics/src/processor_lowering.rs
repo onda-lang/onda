@@ -6,6 +6,7 @@ use onda_frontend::{EventParamDecl, LogicalOp};
 mod delegate_lowering;
 mod generated_blocks;
 mod generic_proc_rewrite;
+mod generic_struct_source_rewrite;
 mod global_proc_rewrite;
 mod graph_lowering;
 mod nested_paths;
@@ -20,6 +21,7 @@ pub(crate) use generated_blocks::{
 };
 pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
 use generic_proc_rewrite::*;
+use generic_struct_source_rewrite::*;
 use global_proc_rewrite::*;
 pub(crate) use graph_lowering::*;
 pub(crate) use nested_paths::*;
@@ -952,45 +954,75 @@ fn build_proc_lowering_env(
     }
     let mut generated_struct_specializations = HashMap::<String, StructDef>::new();
     if !generic_struct_templates.is_empty() {
+        let inference_facts = generic_inference_facts(
+            program
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Def(def) => Some(def),
+                    _ => None,
+                })
+                .chain(proc_defs.iter().flat_map(|proc| proc.local_defs.iter())),
+            raw_struct_defs_by_name.values(),
+        );
+        let finalizer_seed = GenericInferenceLocals::with_facts(inference_facts.clone());
         for proc in &mut proc_defs {
-            rewrite_generic_struct_ctor_stmt_list(
+            let proc_seed = generic_inference_seed_for_processor(proc, inference_facts.clone());
+            let runtime_seed = rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.init,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &proc_seed,
             );
-            rewrite_generic_struct_ctor_stmt_list(
+            let block_seed = rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.block_pre,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &runtime_seed,
             );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.block_post,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &block_seed,
             );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.sample,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &block_seed,
             );
             for event in &mut proc.events {
+                let event_seed = generic_inference_seed_for_event(event, &runtime_seed);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut event.body,
                     &generic_struct_templates,
                     &mut generated_struct_specializations,
                     errors,
+                    &event_seed,
+                );
+            }
+            for task in &mut proc.tasks {
+                rewrite_generic_struct_ctor_stmt_list(
+                    &mut task.body,
+                    &generic_struct_templates,
+                    &mut generated_struct_specializations,
+                    errors,
+                    &runtime_seed,
                 );
             }
             for def in &mut proc.local_defs {
+                let def_seed = generic_inference_seed_for_function(def, &runtime_seed);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut def.body,
                     &generic_struct_templates,
                     &mut generated_struct_specializations,
                     errors,
+                    &def_seed,
                 );
             }
         }
@@ -998,6 +1030,7 @@ fn build_proc_lowering_env(
             &generic_struct_templates,
             &mut generated_struct_specializations,
             errors,
+            &finalizer_seed,
         );
     }
     let mut struct_defs_by_name = raw_struct_defs_by_name;
@@ -1482,6 +1515,7 @@ pub(crate) fn desugar_processors(
     }
 
     rewrite_and_materialize_generic_processors(&mut program, errors);
+    rewrite_source_task_and_when_generic_structs(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
     validate_delegate_source_model(&program, options, const_arrays, errors);

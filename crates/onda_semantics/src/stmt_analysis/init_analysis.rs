@@ -1394,7 +1394,8 @@ fn analyze_assign_init(
                             return;
                         }
                         if (is_typed_decl || generic_decl_ty.is_some())
-                            && st.struct_instances.contains_key(name)
+                            && (st.struct_instances.contains_key(name)
+                                || st.local_struct_aliases.contains_key(name))
                         {
                             target_error!("data declaration must introduce a new name");
                             return;
@@ -1841,12 +1842,14 @@ fn analyze_assign_init(
                             Some(struct_template) => {
                                 if type_args.is_empty() {
                                     if !struct_template.type_params.is_empty() {
+                                        let locals = GenericInferenceLocals::from_scalar_types(
+                                            &st.state_scalars,
+                                            !typed_named_ctor_decl_without_type_args,
+                                        );
                                         infer_generic_struct_ctor_type_args(
                                             struct_template,
                                             args,
-                                            &st.state_scalars,
-                                            &HashMap::new(),
-                                            !typed_named_ctor_decl_without_type_args,
+                                            &locals,
                                             DiagCtx::new(expr.loc()),
                                             errors,
                                         )

@@ -1,5 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
+use crate::def_semantics::call_types::{
+    declared_call_return_type, infer_array_arg_type, infer_struct_expr_type, join_branch_envs,
+    update_call_type_env_after_assign,
+};
 use crate::*;
 use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
@@ -388,18 +395,121 @@ pub(crate) fn specialize_generic_struct_template(
 
 #[derive(Debug, Clone)]
 pub(crate) struct GenericInferenceLocals {
-    scalar_types: HashMap<String, PrimitiveType>,
-    array_elem_types: HashMap<String, PrimitiveType>,
+    types: CallTypeEnv,
+    facts: Arc<GenericInferenceFacts>,
     default_ctor_missing_type_params_to_f32: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct GenericInferenceFacts {
+    return_types: HashMap<String, ReturnType>,
+    struct_defs: HashMap<String, Vec<TypedStructField>>,
+}
+
+pub(crate) fn generic_inference_facts<'a>(
+    defs: impl IntoIterator<Item = &'a FunctionDef>,
+    structs: impl IntoIterator<Item = &'a StructDef>,
+) -> Arc<GenericInferenceFacts> {
+    let mut candidates = HashMap::<String, Option<ReturnType>>::new();
+    for def in defs {
+        let return_type = declared_call_return_type(def);
+        candidates
+            .entry(def.name.clone())
+            .and_modify(|existing| {
+                if *existing != return_type {
+                    *existing = None;
+                }
+            })
+            .or_insert(return_type);
+    }
+    let struct_defs = structs
+        .into_iter()
+        .filter(|strukt| strukt.type_params.is_empty())
+        .map(|strukt| {
+            let fields = strukt
+                .fields
+                .iter()
+                .filter_map(generic_inference_struct_field)
+                .collect();
+            (strukt.name.clone(), fields)
+        })
+        .collect();
+    Arc::new(GenericInferenceFacts {
+        return_types: candidates
+            .into_iter()
+            .filter_map(|(name, ty)| ty.map(|ty| (name, ty)))
+            .collect(),
+        struct_defs,
+    })
+}
+
+fn generic_inference_struct_field(field: &StructField) -> Option<TypedStructField> {
+    let (ty, struct_name, array_elem_ty, array_elem_struct) = match &field.ty {
+        FieldType::Scalar(ty) => (TypedFieldType::Scalar(*ty), None, None, None),
+        FieldType::Generic(name) => (TypedFieldType::Struct, Some(name.clone()), None, None),
+        FieldType::Array(spec) => {
+            let len = const_positive_usize_for_call_type(&spec.size)?;
+            match &spec.elem {
+                ArrayElemType::Primitive(elem) => {
+                    (TypedFieldType::Array(len), None, Some(*elem), None)
+                }
+                ArrayElemType::Struct(elem) => {
+                    (TypedFieldType::Array(len), None, None, Some(elem.clone()))
+                }
+            }
+        }
+        FieldType::Tuple(elements) => (TypedFieldType::Tuple(elements.clone()), None, None, None),
+    };
+    Some(TypedStructField {
+        name: field.name.clone(),
+        ty,
+        default: None,
+        integer_range: None,
+        struct_name,
+        array_elem_ty,
+        array_elem_struct,
+    })
+}
+
+impl GenericInferenceFacts {
+    fn call_context(&self) -> CallTypeContext<'_> {
+        CallTypeContext {
+            return_types: &self.return_types,
+            struct_defs: &self.struct_defs,
+        }
+    }
 }
 
 impl Default for GenericInferenceLocals {
     fn default() -> Self {
         Self {
-            scalar_types: HashMap::new(),
-            array_elem_types: HashMap::new(),
+            types: CallTypeEnv::default(),
+            facts: Arc::default(),
             default_ctor_missing_type_params_to_f32: true,
         }
+    }
+}
+
+impl GenericInferenceLocals {
+    pub(crate) fn with_facts(facts: Arc<GenericInferenceFacts>) -> Self {
+        Self {
+            facts,
+            ..Self::default()
+        }
+    }
+
+    fn call_context(&self) -> CallTypeContext<'_> {
+        self.facts.call_context()
+    }
+
+    pub(crate) fn from_scalar_types(
+        scalar_types: &HashMap<String, PrimitiveType>,
+        default_ctor_missing_type_params_to_f32: bool,
+    ) -> Self {
+        let mut locals = Self::default();
+        locals.types.scalar_types.extend(scalar_types.clone());
+        locals.default_ctor_missing_type_params_to_f32 = default_ctor_missing_type_params_to_f32;
+        locals
     }
 }
 
@@ -410,20 +520,61 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
 ) {
     match ty {
         Some(DeclType::Scalar(prim)) => {
-            locals.scalar_types.entry(name.to_owned()).or_insert(*prim);
-        }
-        Some(DeclType::Array { elem, .. } | DeclType::Slice(ArrayElemType::Primitive(elem))) => {
             locals
-                .array_elem_types
+                .types
+                .scalar_types
                 .entry(name.to_owned())
-                .or_insert(*elem);
+                .or_insert(*prim);
         }
-        Some(DeclType::Slice(ArrayElemType::Struct(_)))
-        | Some(DeclType::Generic(_))
-        | Some(DeclType::ArrayGeneric { .. })
-        | Some(DeclType::Tuple(_)) => {}
+        Some(DeclType::Array { elem, size }) => {
+            locals
+                .types
+                .array_types
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    CallArrayType::primitive(*elem, const_positive_usize_for_call_type(size))
+                });
+        }
+        Some(DeclType::Slice(ArrayElemType::Primitive(elem))) => {
+            locals
+                .types
+                .array_types
+                .entry(name.to_owned())
+                .or_insert_with(|| CallArrayType::primitive(*elem, None));
+        }
+        Some(DeclType::ArrayGeneric { elem, size }) => {
+            locals
+                .types
+                .array_types
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    CallArrayType::nominal(elem.clone(), const_positive_usize_for_call_type(size))
+                });
+        }
+        Some(DeclType::Slice(ArrayElemType::Struct(elem))) => {
+            locals
+                .types
+                .array_types
+                .entry(name.to_owned())
+                .or_insert_with(|| CallArrayType::nominal(elem.clone(), None));
+        }
+        Some(DeclType::Generic(struct_name)) => {
+            locals
+                .types
+                .struct_instances
+                .entry(name.to_owned())
+                .or_insert_with(|| struct_name.clone());
+        }
+        Some(DeclType::Tuple(elements)) => {
+            locals
+                .types
+                .tuple_elem_types
+                .entry(name.to_owned())
+                .or_insert_with(|| elements.clone());
+        }
         None => {
             locals
+                .types
                 .scalar_types
                 .entry(name.to_owned())
                 .or_insert(PrimitiveType::F32);
@@ -431,8 +582,11 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
     }
 }
 
-pub(crate) fn generic_inference_seed_for_processor(proc: &ProcessorDef) -> GenericInferenceLocals {
-    let mut locals = GenericInferenceLocals::default();
+pub(crate) fn generic_inference_seed_for_processor(
+    proc: &ProcessorDef,
+    facts: Arc<GenericInferenceFacts>,
+) -> GenericInferenceLocals {
+    let mut locals = GenericInferenceLocals::with_facts(facts);
     for input in &proc.ins {
         add_decl_type_to_generic_inference_locals(&input.name, input.ty.as_ref(), &mut locals);
     }
@@ -445,8 +599,11 @@ pub(crate) fn generic_inference_seed_for_processor(proc: &ProcessorDef) -> Gener
     locals
 }
 
-pub(crate) fn generic_inference_seed_for_top_level(blocks: &[Block]) -> GenericInferenceLocals {
-    let mut locals = GenericInferenceLocals::default();
+pub(crate) fn generic_inference_seed_for_top_level(
+    blocks: &[Block],
+    facts: Arc<GenericInferenceFacts>,
+) -> GenericInferenceLocals {
+    let mut locals = GenericInferenceLocals::with_facts(facts);
     for block in blocks {
         match block {
             Block::Const(_) => {}
@@ -474,63 +631,197 @@ pub(crate) fn generic_inference_seed_for_top_level(blocks: &[Block]) -> GenericI
     locals
 }
 
-pub(crate) fn update_generic_inference_locals_from_assign(
-    target: &AssignTarget,
-    decl_ty: Option<PrimitiveType>,
-    expr: &Expr,
-    locals: &mut GenericInferenceLocals,
-) {
-    match target {
-        AssignTarget::Var(name) => {
-            if locals.scalar_types.contains_key(name) || locals.array_elem_types.contains_key(name)
-            {
-                return;
-            }
-            if let Some(declared) = decl_ty {
-                locals.scalar_types.insert(name.clone(), declared);
-                return;
-            }
-            if let Some(elem_ty) = infer_array_elem_type_for_generic_binding(
-                expr,
-                &locals.scalar_types,
-                &locals.array_elem_types,
-            ) {
-                locals.array_elem_types.insert(name.clone(), elem_ty);
-                return;
-            }
-            if let Some(scalar_ty) = infer_scalar_type_for_generic_binding(
-                expr,
-                &locals.scalar_types,
-                &locals.array_elem_types,
-            ) {
-                locals.scalar_types.insert(name.clone(), scalar_ty);
+pub(crate) fn generic_inference_seed_for_top_level_decls(
+    inputs: &[PortDecl],
+    outputs: &[PortDecl],
+    control_outputs: &[PortDecl],
+    params: &[ParamDecl],
+    facts: Arc<GenericInferenceFacts>,
+) -> GenericInferenceLocals {
+    let mut locals = GenericInferenceLocals::with_facts(facts);
+    for port in inputs.iter().chain(outputs).chain(control_outputs) {
+        add_decl_type_to_generic_inference_locals(&port.name, port.ty.as_ref(), &mut locals);
+    }
+    for param in params {
+        add_decl_type_to_generic_inference_locals(&param.name, param.ty.as_ref(), &mut locals);
+    }
+    locals
+}
+
+pub(crate) fn generic_inference_seed_for_function(
+    def: &FunctionDef,
+    base: &GenericInferenceLocals,
+) -> GenericInferenceLocals {
+    let mut locals = base.clone();
+    locals.types.set_owner_type_params(&def.type_params);
+    for param in &def.params {
+        locals.types.bind_function_param(param, &def.type_params);
+    }
+    locals
+}
+
+pub(crate) fn generic_inference_seed_for_event(
+    event: &EventDef,
+    base: &GenericInferenceLocals,
+) -> GenericInferenceLocals {
+    let mut locals = base.clone();
+    for param in &event.params {
+        bind_event_param_type(&mut locals.types, &param.name, &param.ty);
+    }
+    locals
+}
+
+pub(crate) fn generic_inference_seed_for_when(
+    when: &WhenDef,
+    delegate: Option<&DelegateDef>,
+    takes_index: bool,
+    base: &GenericInferenceLocals,
+) -> GenericInferenceLocals {
+    let mut locals = base.clone();
+    let mut bindings = when.bindings.iter();
+    if takes_index {
+        if let Some(binding) = bindings.next() {
+            bind_when_scalar(&mut locals.types, &binding.name, PrimitiveType::I32);
+        }
+    }
+    if let Some(delegate) = delegate {
+        for (binding, param) in bindings.zip(&delegate.params) {
+            if binding.name != "_" {
+                bind_event_param_type(&mut locals.types, &binding.name, &param.ty);
             }
         }
-        AssignTarget::Index { base, .. } => {
-            if locals.array_elem_types.contains_key(base) {
-                return;
-            }
-            if let Some(elem_ty) = infer_scalar_type_for_generic_binding(
-                expr,
-                &locals.scalar_types,
-                &locals.array_elem_types,
-            ) {
-                locals.array_elem_types.insert(base.clone(), elem_ty);
-            }
+    }
+    locals
+}
+
+pub(crate) fn resolve_generic_when_delegate(
+    when: &WhenDef,
+    owner_delegates: &[DelegateDef],
+    child: Option<(&str, bool)>,
+    current_proc: Option<(&str, &[DelegateDef])>,
+    proc_delegates: &HashMap<String, Vec<DelegateDef>>,
+    generated: &HashMap<String, ProcessorDef>,
+) -> (Option<DelegateDef>, bool) {
+    if when.target.receiver.is_empty() {
+        return (
+            owner_delegates
+                .iter()
+                .find(|delegate| delegate.name == when.target.delegate)
+                .cloned(),
+            false,
+        );
+    }
+    let Some((proc_name, is_array)) = child else {
+        return (None, false);
+    };
+    let delegate = current_proc
+        .filter(|(name, _)| *name == proc_name)
+        .map(|(_, delegates)| delegates)
+        .or_else(|| {
+            generated
+                .get(proc_name)
+                .map(|proc| proc.delegates.as_slice())
+        })
+        .or_else(|| proc_delegates.get(proc_name).map(Vec::as_slice))
+        .and_then(|delegates| {
+            delegates
+                .iter()
+                .find(|delegate| delegate.name == when.target.delegate)
+        })
+        .cloned();
+    (delegate, is_array && when.target.index.is_none())
+}
+
+#[derive(Clone)]
+pub(crate) struct ChildProcInstance {
+    pub(crate) proc_name: String,
+    pub(crate) is_array: bool,
+}
+
+pub(crate) fn child_proc_instances(
+    init: &[Stmt],
+    proc_names: &HashSet<String>,
+) -> HashMap<String, ChildProcInstance> {
+    let mut instances = HashMap::new();
+    for stmt in init {
+        let Stmt::Assign {
+            target: AssignTarget::Var(instance),
+            expr,
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        let resolved = match expr {
+            Expr::UserCall {
+                name: proc_name, ..
+            } if proc_names.contains(proc_name) => Some((proc_name.clone(), false)),
+            Expr::ArrayCtor { spec, .. } => match &spec.elem {
+                ArrayElemType::Struct(proc_name) if proc_names.contains(proc_name) => {
+                    Some((proc_name.clone(), true))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((proc_name, is_array)) = resolved {
+            instances.insert(
+                instance.clone(),
+                ChildProcInstance {
+                    proc_name,
+                    is_array,
+                },
+            );
         }
-        AssignTarget::Slice { base, .. } => {
-            if locals.array_elem_types.contains_key(base) {
-                return;
-            }
-            if let Some(elem_ty) = infer_scalar_type_for_generic_binding(
-                expr,
-                &locals.scalar_types,
-                &locals.array_elem_types,
-            ) {
-                locals.array_elem_types.insert(base.clone(), elem_ty);
-            }
+    }
+    instances
+}
+
+fn bind_when_scalar(types: &mut CallTypeEnv, name: &str, ty: PrimitiveType) {
+    if name != "_" {
+        types.shadow_binding(name);
+        types.scalar_types.insert(name.to_owned(), ty);
+    }
+}
+
+fn bind_event_param_type(types: &mut CallTypeEnv, name: &str, ty: &EventParamType) {
+    types.shadow_binding(name);
+    match ty {
+        EventParamType::Scalar(ty) => {
+            types.scalar_types.insert(name.to_owned(), *ty);
         }
-        AssignTarget::Tuple(_) => {}
+        EventParamType::Tuple(elem_types) => {
+            types
+                .tuple_elem_types
+                .insert(name.to_owned(), elem_types.clone());
+        }
+        EventParamType::Array { elem, size } => {
+            types.array_types.insert(
+                name.to_owned(),
+                CallArrayType::primitive(*elem, const_positive_usize_for_call_type(size)),
+            );
+        }
+        EventParamType::Slice { elem } => {
+            types
+                .array_types
+                .insert(name.to_owned(), CallArrayType::primitive(*elem, None));
+        }
+        EventParamType::GenericScalar { name: struct_name } => {
+            types
+                .struct_instances
+                .insert(name.to_owned(), struct_name.clone());
+        }
+        EventParamType::GenericArray { elem, size } => {
+            types.array_types.insert(
+                name.to_owned(),
+                CallArrayType::nominal(elem.clone(), const_positive_usize_for_call_type(size)),
+            );
+        }
+        EventParamType::GenericSlice { elem } => {
+            types
+                .array_types
+                .insert(name.to_owned(), CallArrayType::nominal(elem.clone(), None));
+        }
     }
 }
 
@@ -913,15 +1204,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
             } => {
                 if let Some(template) = templates.get(name) {
                     let type_args_to_use = if type_args.is_empty() {
-                        infer_generic_struct_ctor_type_args(
-                            template,
-                            args,
-                            &locals.scalar_types,
-                            &locals.array_elem_types,
-                            locals.default_ctor_missing_type_params_to_f32,
-                            diag,
-                            errors,
-                        )
+                        infer_generic_struct_ctor_type_args(template, args, locals, diag, errors)
                     } else {
                         resolve_explicit_call_type_args(
                             type_args,
@@ -951,12 +1234,33 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
     });
 }
 
-pub(crate) fn rewrite_generic_struct_ctor_stmt(
+pub(crate) trait GenericCtorRewriter {
+    fn rewrite_expr(
+        &mut self,
+        expr: &mut Expr,
+        locals: &mut GenericInferenceLocals,
+        errors: &mut Vec<Diagnostic>,
+    );
+
+    fn rewrite_assignment_types(
+        &mut self,
+        _decl_ty: &mut Option<DeclType>,
+        _generic_decl_ty: &mut Option<String>,
+        _diag: DiagCtx,
+        _errors: &mut Vec<Diagnostic>,
+    ) {
+    }
+
+    fn nominal_expr_type(&self, _expr: &Expr) -> Option<String> {
+        None
+    }
+}
+
+fn rewrite_generic_ctor_stmt(
     stmt: &mut Stmt,
-    templates: &HashMap<String, StructDef>,
-    generated: &mut HashMap<String, StructDef>,
     errors: &mut Vec<Diagnostic>,
     locals: &mut GenericInferenceLocals,
+    rewriter: &mut impl GenericCtorRewriter,
 ) {
     with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
         Stmt::Const { .. } => {}
@@ -968,40 +1272,62 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
             expr,
             ..
         } => {
-            match decl_ty {
-                Some(DeclType::Slice(ArrayElemType::Struct(name)))
-                | Some(DeclType::ArrayGeneric { elem: name, .. }) => {
-                    rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
-                }
-                _ => {}
-            }
-            if let Some(name) = generic_decl_ty {
-                rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
-            }
+            rewriter.rewrite_assignment_types(decl_ty, generic_decl_ty, diag, errors);
+            let introduces_binding = match target {
+                AssignTarget::Var(name) => !locals.types.has_binding(name),
+                AssignTarget::Index { .. }
+                | AssignTarget::Slice { .. }
+                | AssignTarget::Tuple(_) => false,
+            };
             let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
             let typed_named_ctor_decl_without_type_args =
                 *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
             if typed_named_ctor_decl_without_type_args {
                 locals.default_ctor_missing_type_params_to_f32 = false;
             }
-            if let AssignTarget::Index { index, .. } = target {
-                rewrite_generic_struct_ctor_expr(index, templates, generated, errors, locals);
+            match target {
+                AssignTarget::Index { index, .. } => {
+                    rewriter.rewrite_expr(index, locals, errors);
+                }
+                AssignTarget::Slice {
+                    selector,
+                    channel,
+                    start,
+                    end,
+                    ..
+                } => {
+                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                        rewriter.rewrite_expr(coordinate, locals, errors);
+                    }
+                }
+                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
             }
-            rewrite_generic_struct_ctor_expr(expr, templates, generated, errors, locals);
-            update_generic_inference_locals_from_assign(
+            rewriter.rewrite_expr(expr, locals, errors);
+            let context = locals.facts.call_context();
+            update_call_type_env_after_assign(
                 target,
-                decl_ty.as_ref().and_then(DeclType::scalar),
+                decl_ty.as_ref(),
+                generic_decl_ty.as_deref(),
                 expr,
-                locals,
+                &mut locals.types,
+                context,
             );
+            if introduces_binding {
+                if let (AssignTarget::Var(name), Some(nominal)) =
+                    (target, rewriter.nominal_expr_type(expr))
+                {
+                    locals.types.shadow_binding(name);
+                    locals.types.struct_instances.insert(name.clone(), nominal);
+                }
+            }
             locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_struct_ctor_expr(expr, templates, generated, errors, locals);
+            rewriter.rewrite_expr(expr, locals, errors);
         }
         Stmt::Print { values, .. } => {
             for value in values {
-                rewrite_generic_struct_ctor_expr(value, templates, generated, errors, locals);
+                rewriter.rewrite_expr(value, locals, errors);
             }
         }
         Stmt::If {
@@ -1010,66 +1336,114 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt(
             else_branch,
             ..
         } => {
-            rewrite_generic_struct_ctor_expr(cond, templates, generated, errors, locals);
+            rewriter.rewrite_expr(cond, locals, errors);
             let mut then_locals = locals.clone();
-            for nested in then_branch {
-                rewrite_generic_struct_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut then_locals,
-                );
+            for nested in &mut *then_branch {
+                rewrite_generic_ctor_stmt(nested, errors, &mut then_locals, rewriter);
             }
             let mut else_locals = locals.clone();
-            for nested in else_branch {
-                rewrite_generic_struct_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut else_locals,
-                );
+            for nested in &mut *else_branch {
+                rewrite_generic_ctor_stmt(nested, errors, &mut else_locals, rewriter);
             }
+            let (types, _) = join_branch_envs(
+                then_locals.types,
+                statement_list_flow(then_branch),
+                else_locals.types,
+                statement_list_flow(else_branch),
+            );
+            locals.types = types;
         }
         Stmt::For {
+            var,
+            var_ty,
             start,
             end,
             step,
             body,
             ..
         } => {
-            rewrite_generic_struct_ctor_expr(start, templates, generated, errors, locals);
-            rewrite_generic_struct_ctor_expr(end, templates, generated, errors, locals);
+            rewriter.rewrite_expr(start, locals, errors);
+            rewriter.rewrite_expr(end, locals, errors);
             if let Some(step_expr) = step {
-                rewrite_generic_struct_ctor_expr(step_expr, templates, generated, errors, locals);
+                rewriter.rewrite_expr(step_expr, locals, errors);
             }
             let mut body_locals = locals.clone();
+            body_locals.types.shadow_binding(var);
+            body_locals.types.scalar_types.insert(var.clone(), *var_ty);
             for nested in body {
-                rewrite_generic_struct_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                );
+                rewrite_generic_ctor_stmt(nested, errors, &mut body_locals, rewriter);
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_generic_struct_ctor_expr(cond, templates, generated, errors, locals);
+            rewriter.rewrite_expr(cond, locals, errors);
             let mut body_locals = locals.clone();
             for nested in body {
-                rewrite_generic_struct_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                );
+                rewrite_generic_ctor_stmt(nested, errors, &mut body_locals, rewriter);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     });
+}
+
+pub(crate) fn rewrite_generic_ctor_stmt_list(
+    stmts: &mut [Stmt],
+    errors: &mut Vec<Diagnostic>,
+    seed_locals: &GenericInferenceLocals,
+    rewriter: &mut impl GenericCtorRewriter,
+) -> GenericInferenceLocals {
+    let mut locals = seed_locals.clone();
+    for stmt in stmts {
+        rewrite_generic_ctor_stmt(stmt, errors, &mut locals, rewriter);
+    }
+    locals
+}
+
+struct GenericStructCtorRewriter<'a> {
+    templates: &'a HashMap<String, StructDef>,
+    generated: &'a mut HashMap<String, StructDef>,
+}
+
+impl GenericCtorRewriter for GenericStructCtorRewriter<'_> {
+    fn rewrite_expr(
+        &mut self,
+        expr: &mut Expr,
+        locals: &mut GenericInferenceLocals,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        rewrite_generic_struct_ctor_expr(expr, self.templates, self.generated, errors, locals);
+    }
+
+    fn rewrite_assignment_types(
+        &mut self,
+        decl_ty: &mut Option<DeclType>,
+        generic_decl_ty: &mut Option<String>,
+        diag: DiagCtx,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        match decl_ty {
+            Some(DeclType::Slice(ArrayElemType::Struct(name)))
+            | Some(DeclType::ArrayGeneric { elem: name, .. }) => {
+                rewrite_resolved_struct_type_name(
+                    name,
+                    self.templates,
+                    self.generated,
+                    diag,
+                    errors,
+                );
+            }
+            _ => {}
+        }
+        if let Some(name) = generic_decl_ty {
+            rewrite_resolved_struct_type_name(name, self.templates, self.generated, diag, errors);
+        }
+    }
+
+    fn nominal_expr_type(&self, expr: &Expr) -> Option<String> {
+        let Expr::UserCall { name, .. } = expr else {
+            return None;
+        };
+        self.generated.contains_key(name).then(|| name.clone())
+    }
 }
 
 pub(crate) fn rewrite_generic_struct_ctor_stmt_list(
@@ -1077,65 +1451,28 @@ pub(crate) fn rewrite_generic_struct_ctor_stmt_list(
     templates: &HashMap<String, StructDef>,
     generated: &mut HashMap<String, StructDef>,
     errors: &mut Vec<Diagnostic>,
-) {
-    let mut locals = GenericInferenceLocals::default();
-    for stmt in stmts {
-        rewrite_generic_struct_ctor_stmt(stmt, templates, generated, errors, &mut locals);
-    }
+    seed_locals: &GenericInferenceLocals,
+) -> GenericInferenceLocals {
+    let mut rewriter = GenericStructCtorRewriter {
+        templates,
+        generated,
+    };
+    rewrite_generic_ctor_stmt_list(stmts, errors, seed_locals, &mut rewriter)
 }
 
 pub(crate) fn infer_scalar_type_for_generic_binding(
     expr: &Expr,
-    scalar_locals: &HashMap<String, PrimitiveType>,
-    array_elem_locals: &HashMap<String, PrimitiveType>,
+    locals: &GenericInferenceLocals,
 ) -> Option<PrimitiveType> {
-    let mut env = CallTypeEnv::default();
-    env.scalar_types.extend(scalar_locals.clone());
-    env.array_types
-        .extend(array_elem_locals.iter().map(|(name, elem)| {
-            (
-                name.clone(),
-                crate::def_semantics::CallArrayType::primitive(*elem, None),
-            )
-        }));
-    let inferred = infer_call_scalar_expr_type(
-        expr,
-        &env,
-        CallTypeContext {
-            return_types: &HashMap::new(),
-            struct_defs: &HashMap::new(),
-        },
-    );
+    let inferred = infer_call_scalar_expr_type(expr, &locals.types, locals.call_context());
     effective_untyped_assignment_type(expr, inferred).or(inferred)
 }
 
 pub(crate) fn infer_array_elem_type_for_generic_binding(
     expr: &Expr,
-    scalar_locals: &HashMap<String, PrimitiveType>,
-    array_elem_locals: &HashMap<String, PrimitiveType>,
+    locals: &GenericInferenceLocals,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::ArrayLiteral { values, .. } => {
-            let mut acc = None::<PrimitiveType>;
-            for value in values {
-                let inferred =
-                    infer_scalar_type_for_generic_binding(value, scalar_locals, array_elem_locals)?;
-                let ty =
-                    effective_untyped_assignment_type(value, Some(inferred)).unwrap_or(inferred);
-                acc = Some(match acc {
-                    Some(existing) => merge_inferred_return_types(existing, ty)?,
-                    None => ty,
-                });
-            }
-            acc
-        }
-        Expr::Var { name, .. } => array_elem_locals.get(name).copied(),
-        Expr::ArrayCtor { spec, .. } => match &spec.elem {
-            ArrayElemType::Primitive(ty) => Some(*ty),
-            ArrayElemType::Struct(_) => None,
-        },
-        _ => None,
-    }
+    infer_array_arg_type(expr, &locals.types, locals.call_context())?.primitive_elem()
 }
 
 pub(crate) fn bind_inferred_generic_type(
@@ -1198,25 +1535,82 @@ pub(crate) fn finalize_inferred_generic_type_args(
     Some(out)
 }
 
+fn named_specialization_type_args(
+    expected_base: &str,
+    actual_name: &str,
+) -> Option<Vec<PrimitiveType>> {
+    if let Some((actual_base, args)) = parse_array_struct_elem_with_type_args(actual_name) {
+        if actual_base != expected_base {
+            return None;
+        }
+        return args
+            .iter()
+            .map(|arg| match arg {
+                CallTypeArg::Primitive(ty) => Some(*ty),
+                CallTypeArg::Generic(_) => None,
+            })
+            .collect();
+    }
+    let signature = actual_name.strip_prefix(&format!("{expected_base}.__gen__"))?;
+    signature
+        .split('_')
+        .map(parse_primitive_type_arg_token)
+        .collect()
+}
+
+fn bind_nested_generic_type_args(
+    expected_name: &str,
+    actual_name: &str,
+    owner_type_params: &[String],
+    bindings: &mut HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some((expected_base, expected_args)) =
+        parse_array_struct_elem_with_type_args(expected_name)
+    else {
+        return;
+    };
+    let Some(actual_args) = named_specialization_type_args(&expected_base, actual_name) else {
+        return;
+    };
+    if expected_args.len() != actual_args.len() {
+        return;
+    }
+    for (expected, actual) in expected_args.iter().zip(actual_args) {
+        if let CallTypeArg::Generic(type_param) = expected {
+            if owner_type_params.contains(type_param) {
+                bind_inferred_generic_type(bindings, type_param, actual, context, diag, errors);
+            }
+        }
+    }
+}
+
+fn infer_nominal_type_for_generic_binding(
+    expr: &Expr,
+    locals: &GenericInferenceLocals,
+) -> Option<String> {
+    match expr {
+        Expr::UserCall { name, .. } => Some(name.clone()),
+        _ => infer_struct_expr_type(expr, &locals.types, locals.call_context()),
+    }
+}
+
 pub(crate) fn infer_generic_struct_ctor_type_args(
     template: &StructDef,
     args: &[CallArg],
-    scalar_locals: &HashMap<String, PrimitiveType>,
-    array_elem_locals: &HashMap<String, PrimitiveType>,
-    default_missing_to_f32: bool,
+    locals: &GenericInferenceLocals,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
-    let scalar_fields = template
+    let param_names = template
         .fields
-        .iter()
-        .filter(|f| !matches!(f.ty, FieldType::Array(_)))
-        .collect::<Vec<_>>();
-    let param_names = scalar_fields
         .iter()
         .map(|f| f.name.clone())
         .collect::<Vec<_>>();
-    let defaults = scalar_fields
+    let defaults = template
+        .fields
         .iter()
         .map(|f| f.default.clone().or(Some(Expr::number(0.0))))
         .collect::<Vec<_>>();
@@ -1231,7 +1625,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
     );
 
     let mut bindings = HashMap::<String, PrimitiveType>::new();
-    for (idx, field) in scalar_fields.iter().enumerate() {
+    for (idx, field) in template.fields.iter().enumerate() {
         let Some(expr) = resolved.get(idx).and_then(|arg| *arg).or_else(|| {
             defaults
                 .get(idx)
@@ -1240,17 +1634,60 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
             continue;
         };
         if let FieldType::Generic(type_param) = &field.ty {
-            if let Some(inferred) =
-                infer_scalar_type_for_generic_binding(expr, scalar_locals, array_elem_locals)
-            {
-                bind_inferred_generic_type(
-                    &mut bindings,
+            if template.type_params.contains(type_param) {
+                if let Some(inferred) = infer_scalar_type_for_generic_binding(expr, locals) {
+                    bind_inferred_generic_type(
+                        &mut bindings,
+                        type_param,
+                        inferred,
+                        &format!("struct constructor '{}'", template.name),
+                        diag,
+                        errors,
+                    );
+                }
+            } else if let Some(actual_name) = infer_nominal_type_for_generic_binding(expr, locals) {
+                bind_nested_generic_type_args(
                     type_param,
-                    inferred,
+                    &actual_name,
+                    &template.type_params,
+                    &mut bindings,
                     &format!("struct constructor '{}'", template.name),
                     diag,
                     errors,
                 );
+            }
+        } else if let FieldType::Array(spec) = &field.ty {
+            if let ArrayElemType::Struct(type_param) = &spec.elem {
+                if template.type_params.contains(type_param) {
+                    if let Some(inferred) = infer_array_elem_type_for_generic_binding(expr, locals)
+                    {
+                        bind_inferred_generic_type(
+                            &mut bindings,
+                            type_param,
+                            inferred,
+                            &format!("struct constructor '{}'", template.name),
+                            diag,
+                            errors,
+                        );
+                    }
+                } else if let Some(array) =
+                    infer_array_arg_type(expr, &locals.types, locals.call_context())
+                {
+                    if let crate::def_semantics::call_types::CallArrayElemType::Nominal(
+                        actual_name,
+                    ) = array.elem
+                    {
+                        bind_nested_generic_type_args(
+                            type_param,
+                            &actual_name,
+                            &template.type_params,
+                            &mut bindings,
+                            &format!("struct constructor '{}'", template.name),
+                            diag,
+                            errors,
+                        );
+                    }
+                }
             }
         }
     }
@@ -1259,7 +1696,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
         "struct",
         &template.type_params,
         &bindings,
-        default_missing_to_f32,
+        locals.default_ctor_missing_type_params_to_f32,
         diag,
         errors,
     )
@@ -1268,9 +1705,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
 pub(crate) fn infer_generic_proc_ctor_type_args(
     template: &ProcessorDef,
     args: &[CallArg],
-    scalar_locals: &HashMap<String, PrimitiveType>,
-    array_elem_locals: &HashMap<String, PrimitiveType>,
-    default_missing_to_f32: bool,
+    locals: &GenericInferenceLocals,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Vec<PrimitiveType>> {
@@ -1309,11 +1744,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
         if let Some(param_ty) = &param.ty {
             match param_ty {
                 DeclType::Generic(type_param) => {
-                    if let Some(inferred) = infer_scalar_type_for_generic_binding(
-                        expr,
-                        scalar_locals,
-                        array_elem_locals,
-                    ) {
+                    if let Some(inferred) = infer_scalar_type_for_generic_binding(expr, locals) {
                         bind_inferred_generic_type(
                             &mut bindings,
                             type_param,
@@ -1325,11 +1756,8 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                     }
                 }
                 DeclType::ArrayGeneric { elem, .. } => {
-                    if let Some(inferred) = infer_array_elem_type_for_generic_binding(
-                        expr,
-                        scalar_locals,
-                        array_elem_locals,
-                    ) {
+                    if let Some(inferred) = infer_array_elem_type_for_generic_binding(expr, locals)
+                    {
                         bind_inferred_generic_type(
                             &mut bindings,
                             elem,
@@ -1352,7 +1780,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
         "processor",
         &template.type_params,
         &bindings,
-        default_missing_to_f32,
+        locals.default_ctor_missing_type_params_to_f32,
         diag,
         errors,
     )
@@ -1362,6 +1790,7 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
     templates: &HashMap<String, StructDef>,
     generated: &mut HashMap<String, StructDef>,
     errors: &mut Vec<Diagnostic>,
+    base_seed: &GenericInferenceLocals,
 ) {
     let mut processed = HashSet::<String>::new();
     loop {
@@ -1397,7 +1826,7 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
             }
             for field in &mut spec.fields {
                 if let Some(default) = &mut field.default {
-                    let mut locals = GenericInferenceLocals::default();
+                    let mut locals = base_seed.clone();
                     rewrite_generic_struct_ctor_expr(
                         default,
                         templates,
@@ -1411,11 +1840,13 @@ pub(crate) fn finalize_generated_generic_struct_specializations(
                 rewrite_explicit_generic_struct_function_types(
                     method, templates, generated, errors,
                 );
+                let method_seed = generic_inference_seed_for_function(method, base_seed);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut method.body,
                     templates,
                     generated,
                     errors,
+                    &method_seed,
                 );
             }
             generated.insert(name.clone(), spec);

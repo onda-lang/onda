@@ -1,5 +1,5 @@
 use super::super::call_types::{
-    const_positive_usize_for_call_type, infer_array_arg_type, infer_scalar_expr_type,
+    declared_call_return_type, infer_array_arg_type, infer_scalar_expr_type,
     infer_struct_expr_type, infer_tuple_arg_types, join_branch_envs,
     update_call_type_env_after_assign, CallArrayElemType, CallTypeContext, CallTypeEnv,
     StatementFlow,
@@ -9,10 +9,7 @@ use crate::{
     effective_untyped_assignment_type, is_bare_return_expr, require_expr_assignable_type, DataType,
     ReturnType,
 };
-use onda_frontend::{
-    ast::{FnReturnScalarType, FnReturnType},
-    ArrayElemType,
-};
+use onda_frontend::ArrayElemType;
 
 #[derive(Clone)]
 struct ObservedReturn<'a> {
@@ -24,29 +21,17 @@ fn resolve_declared_return_type(
     def: &FunctionDef,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<ReturnType> {
-    match def.return_ty.as_ref()? {
-        FnReturnType::Scalar(FnReturnScalarType::Primitive(ty)) => Some(ReturnType::Scalar(*ty)),
-        FnReturnType::Scalar(FnReturnScalarType::Named(name)) => struct_defs
-            .contains_key(name)
-            .then(|| ReturnType::Data(DataType::Struct(name.clone()))),
-        FnReturnType::Array { elem, size } => Some(ReturnType::Data(DataType::Array {
-            element: match elem {
-                FnReturnScalarType::Primitive(ty) => ArrayElemType::Primitive(*ty),
-                FnReturnScalarType::Named(name) if struct_defs.contains_key(name) => {
-                    ArrayElemType::Struct(name.clone())
-                }
-                FnReturnScalarType::Named(_) => return None,
-            },
-            len: const_positive_usize_for_call_type(size)?,
-        })),
-        FnReturnType::Tuple(elems) => elems
-            .iter()
-            .map(|elem| match elem {
-                FnReturnScalarType::Primitive(ty) => Some(*ty),
-                FnReturnScalarType::Named(_) => None,
-            })
-            .collect::<Option<Vec<_>>>()
-            .map(ReturnType::Tuple),
+    let resolved = declared_call_return_type(def)?;
+    match &resolved {
+        ReturnType::Data(DataType::Struct(name)) if !struct_defs.contains_key(name) => None,
+        ReturnType::Data(DataType::Array {
+            element: ArrayElemType::Struct(name),
+            ..
+        }) if !struct_defs.contains_key(name) => None,
+        ReturnType::Scalar(_)
+        | ReturnType::Tuple(_)
+        | ReturnType::Data(DataType::Struct(_))
+        | ReturnType::Data(DataType::Array { .. }) => Some(resolved),
     }
 }
 

@@ -1724,51 +1724,6 @@ fn insert_member(
     }
 }
 
-#[derive(Clone)]
-struct ChildProcInstance {
-    proc_name: String,
-    is_array: bool,
-}
-
-fn child_proc_instances(
-    init: &[Stmt],
-    proc_names: &HashSet<String>,
-) -> HashMap<String, ChildProcInstance> {
-    let mut instances = HashMap::new();
-    for stmt in init {
-        let Stmt::Assign {
-            target: AssignTarget::Var(instance),
-            expr,
-            ..
-        } = stmt
-        else {
-            continue;
-        };
-        let resolved = match expr {
-            Expr::UserCall {
-                name: proc_name, ..
-            } if proc_names.contains(proc_name) => Some((proc_name.clone(), false)),
-            Expr::ArrayCtor { spec, .. } => match &spec.elem {
-                ArrayElemType::Struct(proc_name) if proc_names.contains(proc_name) => {
-                    Some((proc_name.clone(), true))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((proc_name, is_array)) = resolved {
-            instances.insert(
-                instance.clone(),
-                ChildProcInstance {
-                    proc_name,
-                    is_array,
-                },
-            );
-        }
-    }
-    instances
-}
-
 fn validate_qualified_delegate_calls(
     owner: &str,
     body: &[Stmt],

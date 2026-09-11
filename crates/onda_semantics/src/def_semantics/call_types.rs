@@ -405,6 +405,39 @@ pub(crate) struct CallTypeContext<'a> {
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
 }
 
+/// Resolves the concrete portion of an authored return annotation for early
+/// call-type inference. Nominal names are retained here; callers that require
+/// a fully declared data layout must validate them against their struct table.
+pub(crate) fn declared_call_return_type(def: &FunctionDef) -> Option<ReturnType> {
+    match def.return_ty.as_ref()? {
+        FnReturnType::Scalar(FnReturnScalarType::Primitive(ty)) => Some(ReturnType::Scalar(*ty)),
+        FnReturnType::Scalar(FnReturnScalarType::Named(name))
+            if !def.type_params.contains(name) =>
+        {
+            Some(ReturnType::Data(DataType::Struct(name.clone())))
+        }
+        FnReturnType::Array { elem, size } => Some(ReturnType::Data(DataType::Array {
+            element: match elem {
+                FnReturnScalarType::Primitive(ty) => ArrayElemType::Primitive(*ty),
+                FnReturnScalarType::Named(name) if !def.type_params.contains(name) => {
+                    ArrayElemType::Struct(name.clone())
+                }
+                FnReturnScalarType::Named(_) => return None,
+            },
+            len: const_positive_usize_for_call_type(size)?,
+        })),
+        FnReturnType::Tuple(elements) => elements
+            .iter()
+            .map(|element| match element {
+                FnReturnScalarType::Primitive(ty) => Some(*ty),
+                FnReturnScalarType::Named(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(ReturnType::Tuple),
+        FnReturnType::Scalar(FnReturnScalarType::Named(_)) => None,
+    }
+}
+
 /// Whether a source signature still contains a call-site-dependent type or
 /// shape and therefore cannot publish a concrete return type yet.
 pub(crate) fn signature_has_dependent_call_types(

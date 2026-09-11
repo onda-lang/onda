@@ -714,15 +714,8 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                         *elem_name = resolved_name.clone();
                     }
                     if let Some(template) = templates.get(elem_name) {
-                        let type_args_to_use = infer_generic_proc_ctor_type_args(
-                            template,
-                            &[],
-                            &locals.scalar_types,
-                            &locals.array_elem_types,
-                            locals.default_ctor_missing_type_params_to_f32,
-                            diag,
-                            errors,
-                        );
+                        let type_args_to_use =
+                            infer_generic_proc_ctor_type_args(template, &[], locals, diag, errors);
                         if let Some(type_args_to_use) = type_args_to_use {
                             if let Some(specialized) = specialize_generic_proc_template(
                                 template,
@@ -795,15 +788,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
             }
             if let Some(template) = templates.get(name) {
                 let type_args_to_use = if type_args.is_empty() {
-                    infer_generic_proc_ctor_type_args(
-                        template,
-                        args,
-                        &locals.scalar_types,
-                        &locals.array_elem_types,
-                        locals.default_ctor_missing_type_params_to_f32,
-                        diag,
-                        errors,
-                    )
+                    infer_generic_proc_ctor_type_args(template, args, locals, diag, errors)
                 } else {
                     resolve_explicit_call_type_args(
                         type_args,
@@ -832,126 +817,28 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
     }
 }
 
-pub(crate) fn rewrite_generic_proc_ctor_stmt(
-    stmt: &mut Stmt,
-    templates: &HashMap<String, ProcessorDef>,
-    generated: &mut HashMap<String, ProcessorDef>,
-    errors: &mut Vec<Diagnostic>,
-    locals: &mut GenericInferenceLocals,
-    current_ns: &str,
-) {
-    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign {
-            target,
-            decl_ty,
-            generic_decl_ty,
-            is_typed_decl,
+struct GenericProcCtorRewriter<'a> {
+    templates: &'a HashMap<String, ProcessorDef>,
+    generated: &'a mut HashMap<String, ProcessorDef>,
+    current_ns: &'a str,
+}
+
+impl GenericCtorRewriter for GenericProcCtorRewriter<'_> {
+    fn rewrite_expr(
+        &mut self,
+        expr: &mut Expr,
+        locals: &mut GenericInferenceLocals,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        rewrite_generic_proc_ctor_expr(
             expr,
-            ..
-        } => {
-            let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
-            let typed_named_ctor_decl_without_type_args =
-                *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
-            if typed_named_ctor_decl_without_type_args {
-                locals.default_ctor_missing_type_params_to_f32 = false;
-            }
-            if let AssignTarget::Index { index, .. } = target {
-                rewrite_generic_proc_ctor_expr(
-                    index, templates, generated, errors, locals, current_ns,
-                );
-            }
-            rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-            update_generic_inference_locals_from_assign(
-                target,
-                decl_ty.as_ref().and_then(DeclType::scalar),
-                expr,
-                locals,
-            );
-            locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_generic_proc_ctor_expr(
-                    value, templates, generated, errors, locals, current_ns,
-                );
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_generic_proc_ctor_expr(cond, templates, generated, errors, locals, current_ns);
-            let mut then_locals = locals.clone();
-            for nested in then_branch {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut then_locals,
-                    current_ns,
-                );
-            }
-            let mut else_locals = locals.clone();
-            for nested in else_branch {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut else_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_generic_proc_ctor_expr(start, templates, generated, errors, locals, current_ns);
-            rewrite_generic_proc_ctor_expr(end, templates, generated, errors, locals, current_ns);
-            if let Some(step_expr) = step {
-                rewrite_generic_proc_ctor_expr(
-                    step_expr, templates, generated, errors, locals, current_ns,
-                );
-            }
-            let mut body_locals = locals.clone();
-            for nested in body {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            rewrite_generic_proc_ctor_expr(cond, templates, generated, errors, locals, current_ns);
-            let mut body_locals = locals.clone();
-            for nested in body {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    });
+            self.templates,
+            self.generated,
+            errors,
+            locals,
+            self.current_ns,
+        );
+    }
 }
 
 pub(crate) fn rewrite_generic_proc_ctor_stmt_list(
@@ -961,17 +848,21 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt_list(
     errors: &mut Vec<Diagnostic>,
     seed_locals: &GenericInferenceLocals,
     current_ns: &str,
-) {
-    let mut locals = seed_locals.clone();
-    for stmt in stmts {
-        rewrite_generic_proc_ctor_stmt(stmt, templates, generated, errors, &mut locals, current_ns);
-    }
+) -> GenericInferenceLocals {
+    let mut rewriter = GenericProcCtorRewriter {
+        templates,
+        generated,
+        current_ns,
+    };
+    rewrite_generic_ctor_stmt_list(stmts, errors, seed_locals, &mut rewriter)
 }
 
 pub(crate) fn finalize_generated_generic_proc_specializations(
     templates: &HashMap<String, ProcessorDef>,
     generated: &mut HashMap<String, ProcessorDef>,
     errors: &mut Vec<Diagnostic>,
+    base_seed: &GenericInferenceLocals,
+    proc_delegates: &HashMap<String, Vec<DelegateDef>>,
 ) {
     let mut processed = HashSet::<String>::new();
     loop {
@@ -985,7 +876,7 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 continue;
             };
             let spec_ns = namespace_of_symbol(&spec.name);
-            let spec_seed = generic_inference_seed_for_processor(&spec);
+            let spec_seed = generic_inference_seed_for_processor(&spec, base_seed.facts.clone());
             rewrite_generic_proc_ctor_stmt_list(
                 &mut spec.init,
                 templates,
@@ -1019,8 +910,59 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 &spec_ns,
             );
             for event in &mut spec.events {
+                let event_seed = generic_inference_seed_for_event(event, &spec_seed);
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut event.body,
+                    templates,
+                    generated,
+                    errors,
+                    &event_seed,
+                    &spec_ns,
+                );
+            }
+            let proc_names = proc_delegates
+                .keys()
+                .chain(generated.keys())
+                .chain(std::iter::once(&spec.name))
+                .cloned()
+                .collect::<HashSet<_>>();
+            let children = child_proc_instances(&spec.init.body, &proc_names);
+            let current_proc_name = spec.name.clone();
+            let current_proc_delegates = spec.delegates.clone();
+            for when in &mut spec.whens {
+                let child = when
+                    .target
+                    .receiver
+                    .first()
+                    .filter(|_| when.target.receiver.len() == 1)
+                    .and_then(|receiver| children.get(receiver))
+                    .map(|child| (child.proc_name.as_str(), child.is_array));
+                let (delegate, takes_index) = resolve_generic_when_delegate(
+                    when,
+                    &current_proc_delegates,
+                    child,
+                    Some((&current_proc_name, &current_proc_delegates)),
+                    proc_delegates,
+                    generated,
+                );
+                let when_seed = generic_inference_seed_for_when(
+                    when,
+                    delegate.as_ref(),
+                    takes_index,
+                    &spec_seed,
+                );
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut when.body,
+                    templates,
+                    generated,
+                    errors,
+                    &when_seed,
+                    &spec_ns,
+                );
+            }
+            for task in &mut spec.tasks {
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut task.body,
                     templates,
                     generated,
                     errors,
@@ -1029,12 +971,13 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 );
             }
             for def in &mut spec.local_defs {
+                let def_seed = generic_inference_seed_for_function(def, &spec_seed);
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut def.body,
                     templates,
                     generated,
                     errors,
-                    &spec_seed,
+                    &def_seed,
                     &spec_ns,
                 );
             }

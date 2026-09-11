@@ -1376,7 +1376,47 @@ pub fn analyze_with_options_and_inputs(
         }
         generic_struct_template_names = generic_templates.keys().cloned().collect();
 
+        let generated_prefixes = generic_templates
+            .keys()
+            .map(|name| format!("{name}.__gen__"))
+            .collect::<Vec<_>>();
         let mut generated_specializations = HashMap::<String, StructDef>::new();
+        let mut authored_concrete_structs = Vec::with_capacity(concrete_structs.len());
+        for strukt in concrete_structs.drain(..) {
+            if generated_prefixes
+                .iter()
+                .any(|prefix| strukt.name.starts_with(prefix))
+            {
+                generated_specializations.insert(strukt.name.clone(), strukt);
+            } else {
+                authored_concrete_structs.push(strukt);
+            }
+        }
+        concrete_structs = authored_concrete_structs;
+
+        let inference_facts = generic_inference_facts(
+            defs.iter()
+                .chain(
+                    concrete_structs
+                        .iter()
+                        .flat_map(|strukt| strukt.methods.iter()),
+                )
+                .chain(
+                    generated_specializations
+                        .values()
+                        .flat_map(|strukt| strukt.methods.iter()),
+                ),
+            concrete_structs
+                .iter()
+                .chain(generated_specializations.values()),
+        );
+        let top_level_inference = generic_inference_seed_for_top_level_decls(
+            &raw_ins,
+            &raw_outs,
+            &raw_kouts,
+            &raw_params,
+            inference_facts,
+        );
         for s in &mut concrete_structs {
             rewrite_generic_struct_field_types(
                 s,
@@ -1386,7 +1426,7 @@ pub fn analyze_with_options_and_inputs(
             );
             for field in &mut s.fields {
                 if let Some(default) = &mut field.default {
-                    let mut locals = GenericInferenceLocals::default();
+                    let mut locals = top_level_inference.clone();
                     rewrite_generic_struct_ctor_expr(
                         default,
                         &generic_templates,
@@ -1403,11 +1443,13 @@ pub fn analyze_with_options_and_inputs(
                     &mut generated_specializations,
                     &mut errors,
                 );
+                let method_seed = generic_inference_seed_for_function(method, &top_level_inference);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut method.body,
                     &generic_templates,
                     &mut generated_specializations,
                     &mut errors,
+                    &method_seed,
                 );
             }
         }
@@ -1418,36 +1460,49 @@ pub fn analyze_with_options_and_inputs(
                 &mut generated_specializations,
                 &mut errors,
             );
+        }
+        let runtime_inference = rewrite_generic_struct_ctor_stmt_list(
+            &mut init,
+            &generic_templates,
+            &mut generated_specializations,
+            &mut errors,
+            &top_level_inference,
+        );
+        for def in &mut defs {
+            let visible = if runtime_def_names.contains(&def.name) {
+                &runtime_inference
+            } else {
+                &top_level_inference
+            };
+            let def_seed = generic_inference_seed_for_function(def, visible);
             rewrite_generic_struct_ctor_stmt_list(
                 &mut def.body,
                 &generic_templates,
                 &mut generated_specializations,
                 &mut errors,
+                &def_seed,
             );
         }
-        rewrite_generic_struct_ctor_stmt_list(
-            &mut init,
-            &generic_templates,
-            &mut generated_specializations,
-            &mut errors,
-        );
-        rewrite_generic_struct_ctor_stmt_list(
+        let block_inference = rewrite_generic_struct_ctor_stmt_list(
             &mut block_pre,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &runtime_inference,
         );
         rewrite_generic_struct_ctor_stmt_list(
             &mut block_post,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &block_inference,
         );
         rewrite_generic_struct_ctor_stmt_list(
             &mut sample,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &block_inference,
         );
         for event in &mut events {
             rewrite_explicit_generic_struct_event_types(
@@ -1456,11 +1511,13 @@ pub fn analyze_with_options_and_inputs(
                 &mut generated_specializations,
                 &mut errors,
             );
+            let event_seed = generic_inference_seed_for_event(event, &runtime_inference);
             rewrite_generic_struct_ctor_stmt_list(
                 &mut event.body,
                 &generic_templates,
                 &mut generated_specializations,
                 &mut errors,
+                &event_seed,
             );
         }
         for delegate in &mut top_level_delegates {
@@ -1476,6 +1533,7 @@ pub fn analyze_with_options_and_inputs(
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &top_level_inference,
         );
 
         struct_defs_raw = concrete_structs;

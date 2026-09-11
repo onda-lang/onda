@@ -762,7 +762,7 @@ fn events_reject_forbidden_writes_and_immutability() {
 
     assert!(
         errs.iter()
-            .any(|d| d.message.contains("immutable event array parameter")),
+            .any(|d| d.message.contains("read-only payload parameter 'values'")),
         "expected immutable event param error, got {:?}",
         errs
     );
@@ -3991,4 +3991,3 @@ sample {
 
     fs::remove_dir_all(&dir).ok();
 }
-
