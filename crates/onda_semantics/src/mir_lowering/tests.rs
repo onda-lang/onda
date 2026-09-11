@@ -2617,8 +2617,6 @@ sample 2:
     let dump = format_program(&mir);
     assert_eq!(dump.matches("load_input ").count(), 2);
     assert_eq!(dump.matches("store_output ").count(), 2);
-    assert!(dump.contains("$oversample.input.pair.current"));
-    assert!(dump.contains("$oversample.output.pair_out.current"));
     assert!(dump.contains("$oversample.input.pair[0].stage0.a0"));
     assert!(dump.contains("$oversample.output.pair_out[1].stage0.a0"));
 }

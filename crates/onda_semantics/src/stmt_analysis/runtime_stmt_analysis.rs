@@ -77,51 +77,6 @@ fn indexed_aggregate_target_type(
     }
 }
 
-fn infer_flow_slice_alias_info(
-    base: &str,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_slice_alias_info(
-        base,
-        start,
-        end,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-        false,
-    )
-}
-
-fn infer_flow_data_like_info(
-    expr: &Expr,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_data_like_info(
-        expr,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-    )
-}
-
 pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub common: ScopeAnalysisCtx<'a>,
     pub registration_mode: RuntimeRegistrationMode,
@@ -1557,7 +1512,7 @@ fn analyze_flow_assignment(
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
             }
-            let Some(target_info) = infer_flow_slice_alias_info(
+            let Some(target_info) = resolve_executable_slice_alias_info(
                 base,
                 start.as_deref(),
                 end.as_deref(),
@@ -1621,7 +1576,7 @@ fn analyze_flow_assignment(
                     target_loc,
                     stmt_expr_env(scope),
                     |errors| {
-                        infer_flow_data_like_info(
+                        resolve_executable_data_like_info(
                             expr,
                             declared_symbols,
                             state_arrays,
@@ -1637,7 +1592,7 @@ fn analyze_flow_assignment(
             }
             if is_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope)) {
                 validate_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope), errors);
-                if let Some(src_info) = infer_flow_data_like_info(
+                if let Some(src_info) = resolve_executable_data_like_info(
                     &expr_for_validation,
                     declared_symbols,
                     state_arrays,
@@ -1864,7 +1819,7 @@ fn analyze_flow_assignment(
                     DataType::Array { element, len } => {
                         let writable = is_typed_decl
                             || matches!(expr, Expr::UserCall { .. } | Expr::ArrayLiteral { .. })
-                            || infer_flow_data_like_info(
+                            || resolve_executable_data_like_info(
                                 expr,
                                 declared_symbols,
                                 state_arrays,
@@ -2173,7 +2128,7 @@ fn analyze_flow_assignment(
                     return;
                 }
                 validate_expr(expr, scope_expr_env!(), errors);
-                if let Some(alias) = infer_flow_slice_alias_info(
+                if let Some(alias) = resolve_executable_slice_alias_info(
                     base,
                     start.as_deref(),
                     end.as_deref(),

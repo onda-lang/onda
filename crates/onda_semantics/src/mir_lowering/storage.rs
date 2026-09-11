@@ -4,16 +4,12 @@ use super::*;
 struct StorageLifetime {
     first: Option<usize>,
     last: usize,
-    starts_with_result_write: bool,
 }
 
 impl StorageLifetime {
-    fn record(&mut self, position: usize, result_write: bool) {
+    fn record(&mut self, position: usize) {
         if self.first.is_none() {
             self.first = Some(position);
-            self.starts_with_result_write = result_write;
-        } else if self.first == Some(position) {
-            self.starts_with_result_write |= result_write;
         }
         self.last = position;
     }
@@ -27,26 +23,12 @@ struct ReusableSlot {
 }
 
 /// Fixed invocation arrays live in prepared instance scratch. Acyclic calls
-/// permit one frame per function. Compatible result slots are reused after all
-/// dependent views are dead; simultaneously live results remain disjoint.
+/// permit one frame per function. Compatible array slots are reused after all
+/// dependent values and views are dead; simultaneously live data remains disjoint.
 /// Block/task-carried storage is already explicit state before this pass.
 pub(super) fn plan_fixed_scratch(
     program: &mut onda_mir::Program,
 ) -> Result<(), Vec<MirLoweringError>> {
-    let result_reference_params = program
-        .functions
-        .iter()
-        .map(|function| {
-            function
-                .params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, param)| {
-                    (param.mode == onda_mir::PassingMode::ResultReference).then_some(index)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
     for (function_id, function) in program.functions.iter_mut().enumerate() {
         let mut slots = HashMap::new();
         let referenced = onda_mir::referenced_locals(&function.body);
@@ -56,7 +38,6 @@ pub(super) fn plan_fixed_scratch(
         let mut dependencies = Vec::new();
         collect_storage_lifetimes(
             &function.body,
-            &result_reference_params,
             &mut 0,
             &mut lifetimes,
             &mut dependencies,
@@ -87,8 +68,7 @@ pub(super) fn plan_fixed_scratch(
 
         let mut reusable = Vec::<ReusableSlot>::new();
         for (local_id, local, is_array, lifetime) in candidates {
-            let may_reuse = is_array && lifetime.starts_with_result_write;
-            let state = if may_reuse {
+            let state = if is_array {
                 reusable
                     .iter_mut()
                     .find(|slot| {
@@ -125,7 +105,7 @@ pub(super) fn plan_fixed_scratch(
                         pinned: false,
                         integer_range: local.integer_range,
                     });
-                    if may_reuse {
+                    if is_array {
                         reusable.push(ReusableSlot {
                             state,
                             ty: local.ty,
@@ -147,7 +127,6 @@ pub(super) fn plan_fixed_scratch(
 
 fn collect_storage_lifetimes(
     block: &MirBlock,
-    result_reference_params: &[Vec<usize>],
     position: &mut usize,
     lifetimes: &mut [StorageLifetime],
     dependencies: &mut Vec<(LocalId, LocalId)>,
@@ -160,27 +139,7 @@ fn collect_storage_lifetimes(
         onda_mir::collect_direct_local_references(statement, direct_references);
         for &local in direct_references.iter() {
             if let Some(lifetime) = lifetimes.get_mut(local.index()) {
-                lifetime.record(current, false);
-            }
-        }
-        if let StatementKind::Call { function, args, .. } = &statement.kind {
-            for &index in result_reference_params
-                .get(function.index())
-                .into_iter()
-                .flatten()
-            {
-                let Some(CallArgument::Place(Place {
-                    base: PlaceBase::Local(local),
-                    projections,
-                })) = args.get(index)
-                else {
-                    continue;
-                };
-                if projections.is_empty() {
-                    if let Some(lifetime) = lifetimes.get_mut(local.index()) {
-                        lifetime.record(current, true);
-                    }
-                }
+                lifetime.record(current);
             }
         }
         match &statement.kind {
@@ -215,7 +174,6 @@ fn collect_storage_lifetimes(
             } => {
                 collect_storage_lifetimes(
                     then_block,
-                    result_reference_params,
                     position,
                     lifetimes,
                     dependencies,
@@ -223,7 +181,6 @@ fn collect_storage_lifetimes(
                 );
                 collect_storage_lifetimes(
                     else_block,
-                    result_reference_params,
                     position,
                     lifetimes,
                     dependencies,
@@ -233,7 +190,6 @@ fn collect_storage_lifetimes(
             StatementKind::Loop { body } => {
                 collect_storage_lifetimes(
                     body,
-                    result_reference_params,
                     position,
                     lifetimes,
                     dependencies,

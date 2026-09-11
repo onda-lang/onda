@@ -118,51 +118,6 @@ pub(crate) fn persistent_init_bindings(
     flow
 }
 
-fn infer_init_slice_alias_info(
-    base: &str,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_slice_alias_info(
-        base,
-        start,
-        end,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-        false,
-    )
-}
-
-fn infer_init_data_like_info(
-    expr: &Expr,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_data_like_info(
-        expr,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-    )
-}
-
 impl InitAnalysisState {
     pub(crate) fn new(
         known_scalars: HashSet<String>,
@@ -979,7 +934,7 @@ fn analyze_assign_init(
                     return;
                 }
             }
-            let Some(target_info) = infer_init_slice_alias_info(
+            let Some(target_info) = resolve_executable_slice_alias_info(
                 base,
                 start.as_deref(),
                 end.as_deref(),
@@ -1053,7 +1008,7 @@ fn analyze_assign_init(
                     target_loc,
                     stmt_env,
                     |errors| {
-                        infer_init_data_like_info(
+                        resolve_executable_data_like_info(
                             expr,
                             &st.declared_symbols,
                             &st.state_arrays,
@@ -1069,7 +1024,7 @@ fn analyze_assign_init(
             }
             if is_data_like_value_expr(expr, stmt_env) {
                 validate_data_like_value_expr(expr, stmt_env, errors);
-                if let Some(src_info) = infer_init_data_like_info(
+                if let Some(src_info) = resolve_executable_data_like_info(
                     expr,
                     &st.declared_symbols,
                     &st.state_arrays,
@@ -1223,7 +1178,7 @@ fn analyze_assign_init(
                     && !st.known_scalars.contains(name)
                     && !st.state_arrays.contains_key(name)
                 {
-                    if let Some(alias) = infer_init_data_like_info(
+                    if let Some(alias) = resolve_executable_data_like_info(
                         expr,
                         &st.declared_symbols,
                         &st.state_arrays,
@@ -1710,7 +1665,7 @@ fn analyze_assign_init(
                     return;
                 }
                 validate_expr(expr, scope_expr_env!(ScopeKind::Init), errors);
-                if let Some(alias) = infer_init_slice_alias_info(
+                if let Some(alias) = resolve_executable_slice_alias_info(
                     base,
                     start.as_deref(),
                     end.as_deref(),

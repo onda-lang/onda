@@ -26,6 +26,53 @@ sample:
 }
 
 #[test]
+fn init_field_bindings_follow_executable_scope_rules() {
+    let source = r#"
+struct Cell:
+  value = 3.0
+struct Holder:
+  cell: Cell
+  scale = 2.0
+init:
+  holder = Holder()
+  scale = holder.scale
+  selected = holder.cell
+sample:
+  selected.value += 1.0
+  runtime_scale = holder.scale
+  out1 = selected.value + scale + runtime_scale
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        assert_eq!(
+            run_native_outputs_with_opt_level(source, 4, level)[0],
+            [8.0, 9.0, 10.0, 11.0]
+        );
+    }
+}
+
+#[test]
+fn sequential_owned_locals_reuse_scratch_without_aliasing() {
+    let source = r#"
+sample:
+  first: f32[4096]
+  first[:] = 1.0
+  total = first[0]
+  second: f32[4096]
+  second[:] = 2.0
+  total += second[0]
+  third: f32[4096]
+  third[:] = 3.0
+  out1 = total + third[0]
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        assert_eq!(
+            run_native_outputs_with_opt_level(source, 4, level)[0],
+            [6.0; 4]
+        );
+    }
+}
+
+#[test]
 fn empty_struct_slice_element_access_fails_without_touching_storage() {
     let sources = [
         r#"
@@ -115,9 +162,10 @@ proc Worker:
   init:
     notes = make()
     selected = notes[1]
+    initial = selected.value
     saved: Note = selected
   def read(notes: f32):
-    return selected.value + notes
+    return selected.value + notes + initial
   sample:
     selected.value += 1.0
     out1 = read(10.0) + saved.value
@@ -132,7 +180,7 @@ sample:
             let output = run_native_outputs_with_opt_level(source, 4, level);
             assert_eq!(
                 output[0],
-                [21.0, 22.0, 23.0, 24.0].map(|value| value * scale)
+                [26.0, 27.0, 28.0, 29.0].map(|value| value * scale)
             );
         }
     }

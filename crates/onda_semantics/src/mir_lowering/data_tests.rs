@@ -8,6 +8,17 @@ fn compile(source: &str) -> onda_mir::Program {
         .into_program()
 }
 
+fn scratch_array_count(program: &onda_mir::Program, len: u32) -> usize {
+    program
+        .state
+        .iter()
+        .filter(|slot| {
+            slot.persistence == onda_mir::StatePersistence::InstanceScratch
+                && matches!(program.types[slot.ty.index()], MirType::Array { len: actual, .. } if actual == len)
+        })
+        .count()
+}
+
 #[test]
 fn init_views_share_captured_selections_with_process_and_events() {
     let program = compile(
@@ -784,18 +795,11 @@ sample:
   out1 = total + fourth[0]
 "#,
     );
-    let scratch = program
-        .state
-        .iter()
-        .filter(|slot| {
-            slot.persistence == onda_mir::StatePersistence::InstanceScratch
-                && matches!(
-                    program.types[slot.ty.index()],
-                    MirType::Array { len: 4096, .. }
-                )
-        })
-        .count();
-    assert_eq!(scratch, 2, "one callee slot and one reused caller slot");
+    assert_eq!(
+        scratch_array_count(&program, 4096),
+        2,
+        "one callee slot and one reused caller slot"
+    );
 }
 
 #[test]
@@ -813,18 +817,88 @@ sample:
   out1 = first[0] + second[0]
 "#,
     );
-    let scratch = program
-        .state
-        .iter()
-        .filter(|slot| {
-            slot.persistence == onda_mir::StatePersistence::InstanceScratch
-                && matches!(
-                    program.types[slot.ty.index()],
-                    MirType::Array { len: 4096, .. }
-                )
-        })
-        .count();
-    assert_eq!(scratch, 3, "one callee slot and two live caller slots");
+    assert_eq!(
+        scratch_array_count(&program, 4096),
+        3,
+        "one callee slot and two live caller slots"
+    );
+}
+
+#[test]
+fn owned_local_scratch_reuse_follows_value_lifetimes() {
+    let disjoint = compile(
+        r#"
+sample:
+  first: f32[4096]
+  first[:] = 1.0
+  total = first[0]
+  second: f32[4096]
+  second[:] = 2.0
+  total += second[0]
+  third: f32[4096]
+  third[:] = 3.0
+  out1 = total + third[0]
+"#,
+    );
+    assert_eq!(scratch_array_count(&disjoint, 4096), 1);
+
+    let overlapping = compile(
+        r#"
+sample:
+  first: f32[4096]
+  first[:] = 1.0
+  second: f32[4096]
+  second[:] = 2.0
+  out1 = first[0] + second[0]
+"#,
+    );
+    assert_eq!(scratch_array_count(&overlapping, 4096), 2);
+
+    let view_keeps_backing_live = compile(
+        r#"
+sample:
+  first: f32[4096]
+  first[:] = 1.0
+  view: f32[] = first[:]
+  second: f32[4096]
+  second[:] = 2.0
+  out1 = view[0] + second[0]
+"#,
+    );
+    assert_eq!(scratch_array_count(&view_keeps_backing_live, 4096), 2);
+}
+
+#[test]
+fn explicit_non_array_field_slices_remain_rejected_by_init_and_runtime_analysis() {
+    for source in [
+        r#"
+struct Holder:
+  value = 2.0
+init:
+  holder = Holder()
+  holder.value[:] = 1.0
+sample:
+  out1 = holder.value
+"#,
+        r#"
+struct Holder:
+  value = 2.0
+init:
+  holder = Holder()
+sample:
+  holder.value[:] = 1.0
+  out1 = holder.value
+"#,
+    ] {
+        let parsed = onda_frontend::parse_program(source).expect("data source parses");
+        let errors = crate::analyze(parsed).expect_err("scalar field slices must be rejected");
+        assert!(
+            errors.iter().any(|error| error
+                .message
+                .contains("field 'holder.value' is not array and cannot be sliced")),
+            "{errors:?}"
+        );
+    }
 }
 
 #[test]
