@@ -3,7 +3,6 @@
 use crate::{executable_data::assign_var, *};
 
 const INDEXED_PLACE_PREFIX: &str = "__onda_indexed_place_";
-const INDEXED_SELECTOR_PREFIX: &str = "__onda_indexed_selector_";
 
 /// Lowers `array[index].field` targets through an element view. Every
 /// executable scope then uses the same ordinary field, tuple, and array
@@ -116,20 +115,14 @@ fn normalize_statements(statements: &mut Vec<Stmt>, next: &mut usize) {
             index: Box::new(std::mem::replace(index, Expr::int(0))),
         };
         let field = std::mem::take(field);
-        let field_selector = field_index
-            .take()
-            .map(|index| (format!("{INDEXED_SELECTOR_PREFIX}{place_id}"), *index));
-        *target = match &field_selector {
-            Some((selector, _)) => AssignTarget::Index {
+        *target = match field_index.take() {
+            Some(index) => AssignTarget::Index {
                 base: format!("{alias}.{field}"),
-                index: Expr::var(selector),
+                index: *index,
             },
             None => AssignTarget::Var(format!("{alias}.{field}")),
         };
         normalized.push(assign_var(alias, selection));
-        if let Some((selector, index)) = field_selector {
-            normalized.push(assign_var(selector, index));
-        }
         normalized.push(statement);
     }
     *statements = normalized;

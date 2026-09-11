@@ -820,6 +820,96 @@ fn aggregate_layout_error_diagnostic(
     Diagnostic::semantic_span(error.to_string(), span)
 }
 
+fn materialize_deferred_generic_structs(
+    specializer: &mut DeferredGenericStructs,
+    functions: &mut [FunctionDef],
+    options: AnalysisOptions,
+    raw_structs: &mut Vec<StructDef>,
+    typed_structs: &mut Vec<TypedStruct>,
+    struct_defs: &mut HashMap<String, Vec<TypedStructField>>,
+    methods: &mut Vec<(String, FunctionDef)>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut new_names = Vec::new();
+    for (raw, typed) in specializer.materialize(functions, options, errors) {
+        methods.extend(
+            lift_struct_methods(&raw, errors)
+                .into_iter()
+                .map(|method| (raw.name.clone(), method)),
+        );
+        new_names.push(typed.name.clone());
+        struct_defs.insert(typed.name.clone(), typed.fields.clone());
+        raw_structs.push(raw);
+        typed_structs.push(typed);
+    }
+    for name in new_names {
+        let context = format!("deferred generic struct '{name}'");
+        let _ = validate_data_struct_layout(&name, struct_defs, &context, errors);
+    }
+    for function in functions {
+        normalize_struct_constructor_ranges_in_list(&mut function.body, struct_defs);
+    }
+}
+
+fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<FunctionDef> {
+    let mut defs = Vec::with_capacity(strukt.methods.len());
+    for method in &strukt.methods {
+        if is_unsafe_index_method_name(&method.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "cannot redefine builtin method '{}.{}'",
+                    strukt.name, method.name
+                ),
+                method.loc,
+            ));
+            continue;
+        }
+        for type_param in &method.type_params {
+            if strukt.type_params.contains(type_param) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
+                        type_param, strukt.name, method.name, type_param, strukt.name
+                    ),
+                    method.loc,
+                ));
+            }
+        }
+        let mut seen_type_params = HashSet::new();
+        for type_param in &method.type_params {
+            if !seen_type_params.insert(type_param) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "duplicate type parameter '{}' in method '{}.{}'",
+                        type_param, strukt.name, method.name
+                    ),
+                    method.loc,
+                ));
+            }
+        }
+        if method.params.first().map(|param| param.name.as_str()) != Some("self") {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "method '{}.{}' must declare 'self' as first parameter",
+                    strukt.name, method.name
+                ),
+                method.loc,
+            ));
+        }
+        let mut method = method.clone();
+        method.name = format!("{}.{}", strukt.name, method.name);
+        if let Some(self_param) = method
+            .params
+            .first_mut()
+            .filter(|param| param.name == "self")
+        {
+            self_param.ty = Some(FnParamType::Struct(strukt.name.clone()));
+        }
+        defs.push(method);
+    }
+    defs
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -1410,6 +1500,8 @@ pub fn analyze_with_options_and_inputs(
     }
 
     let generic_struct_template_names: HashSet<String>;
+    let generic_struct_templates: HashMap<String, StructDef>;
+    let generic_struct_inference: GenericInferenceLocals;
     {
         let mut concrete_structs = Vec::<StructDef>::new();
         let mut generic_templates = HashMap::<String, StructDef>::new();
@@ -1546,7 +1638,13 @@ pub fn analyze_with_options_and_inputs(
             &mut errors,
             &top_level_inference,
         );
+        generic_struct_templates = generic_templates.clone();
+        generic_struct_inference = runtime_inference.clone();
         for def in &mut defs {
+            if !def.type_params.is_empty() {
+                validate_deferred_generic_structs(def, &generic_templates, &mut errors);
+                continue;
+            }
             let visible = if runtime_def_names.contains(&def.name) {
                 &runtime_inference
             } else {
@@ -2075,72 +2173,11 @@ pub fn analyze_with_options_and_inputs(
         all_declared.insert(s.name.clone());
         seen_struct_defs.insert(s.name.clone(), s.clone());
 
-        for method in &s.methods {
-            if is_unsafe_index_method_name(&method.name) {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "cannot redefine builtin method '{}.{}'",
-                        s.name, method.name
-                    ),
-                    method.loc,
-                ));
-                continue;
+        for method in lift_struct_methods(s, &mut errors) {
+            if method.params.first().map(|param| param.name.as_str()) == Some("self") {
+                method_self_struct.insert(method.name.clone(), s.name.clone());
             }
-            for tp in &method.type_params {
-                if s.type_params.contains(tp) {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
-                            tp, s.name, method.name, tp, s.name
-                        ),
-                        method.loc,
-                    ));
-                }
-            }
-            if !method.type_params.is_empty() {
-                let mut seen = HashSet::new();
-                for tp in &method.type_params {
-                    if !seen.insert(tp.clone()) {
-                        errors.push(Diagnostic::semantic_span(
-                            format!(
-                                "duplicate type parameter '{}' in method '{}.{}'",
-                                tp, s.name, method.name
-                            ),
-                            method.loc,
-                        ));
-                    }
-                }
-            }
-            if method.params.first().map(|p| p.name.as_str()) != Some("self") {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "method '{}.{}' must declare 'self' as first parameter",
-                        s.name, method.name
-                    ),
-                    method.loc,
-                ));
-            }
-            let fq_name = format!("{}.{}", s.name, method.name);
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                method_self_struct.insert(fq_name.clone(), s.name.clone());
-            }
-            let mut method_params = method.params.clone();
-            if let Some(self_param) = method_params
-                .first_mut()
-                .filter(|param| param.name == "self")
-            {
-                self_param.ty = Some(FnParamType::Struct(s.name.clone()));
-            }
-            defs.push(FunctionDef {
-                loc: method.loc,
-                is_const: false,
-                type_params: method.type_params.clone(),
-                name: fq_name,
-                params: method_params,
-                return_ty: method.return_ty.clone(),
-                return_ty_loc: method.return_ty_loc,
-                body: method.body.clone(),
-            });
+            defs.push(method);
         }
     }
 
@@ -2175,7 +2212,7 @@ pub fn analyze_with_options_and_inputs(
         &crate::def_semantics::CallTypeEnv::default(),
         &struct_defs,
     );
-    let struct_method_symbols = method_self_struct
+    let mut struct_method_symbols = method_self_struct
         .iter()
         .filter_map(|(method, owner)| (!proc_api.contains_key(owner)).then_some(method.clone()))
         .collect::<HashSet<_>>();
@@ -2208,7 +2245,7 @@ pub fn analyze_with_options_and_inputs(
         options,
     );
 
-    let (overload_candidates, def_public_name_by_internal) =
+    let (mut overload_candidates, mut def_public_name_by_internal) =
         crate::def_semantics::prepare_function_overloads(&mut defs);
     let proc_type_names = proc_api.keys().cloned().collect::<HashSet<_>>();
     let mut method_self_struct_internal = defs
@@ -2543,11 +2580,18 @@ pub fn analyze_with_options_and_inputs(
     // removed below, but their source-level result contract must still hold.
     validate_def_return_control_flow(&defs, &fn_signatures, &mut errors);
 
+    let mut deferred_generic_structs = DeferredGenericStructs::new(
+        generic_struct_templates,
+        struct_defs.keys().cloned(),
+        generic_struct_inference,
+    );
+    let mut deferred_struct_methods = Vec::new();
+
     // --- Def monomorphization pass ---
     // Identify defs whose parameters require monomorphization (generic struct,
     // untyped array `[]`, bare `buffer`, or generic def type params `<T>`).
     {
-        let mandatory_mono: HashSet<String> = fn_signatures
+        let mut mandatory_mono: HashSet<String> = fn_signatures
             .iter()
             .filter_map(|(name, sig)| {
                 crate::def_semantics::signature_requires_monomorphization(
@@ -2581,7 +2625,7 @@ pub fn analyze_with_options_and_inputs(
                     .then_some(name.clone())
             })
             .collect::<HashSet<_>>();
-        let mono_eligible = mandatory_mono
+        let mut mono_eligible = mandatory_mono
             .union(&scalar_mono_candidates)
             .cloned()
             .collect::<HashSet<_>>();
@@ -2607,7 +2651,7 @@ pub fn analyze_with_options_and_inputs(
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache =
                 HashMap::<(String, Vec<crate::def_semantics::MonoParamKey>), String>::new();
-            let original_defs_snapshot = defs.clone();
+            let mut original_defs_snapshot = defs.clone();
 
             // Overload selection, specialization, and return inference form one
             // semantic fixed point. Rewriting a generated body can make its
@@ -2676,6 +2720,76 @@ pub fn analyze_with_options_and_inputs(
                     }
                 }
 
+                materialize_deferred_generic_structs(
+                    &mut deferred_generic_structs,
+                    &mut generated_defs,
+                    options,
+                    &mut struct_defs_raw,
+                    &mut typed_structs,
+                    &mut struct_defs,
+                    &mut deferred_struct_methods,
+                    &mut errors,
+                );
+                if !deferred_struct_methods.is_empty() {
+                    let mut owner_by_public_name = HashMap::new();
+                    let mut methods = deferred_struct_methods
+                        .drain(..)
+                        .map(|(owner, method)| {
+                            owner_by_public_name.insert(method.name.clone(), owner);
+                            method
+                        })
+                        .collect::<Vec<_>>();
+                    let (method_overloads, method_public_names) =
+                        crate::def_semantics::prepare_function_overloads(&mut methods);
+                    for (name, candidates) in method_overloads {
+                        overload_candidates
+                            .entry(name)
+                            .or_default()
+                            .extend(candidates);
+                    }
+                    def_public_name_by_internal.extend(method_public_names);
+
+                    for mut method in methods {
+                        let public_name = def_public_name_by_internal
+                            .get(&method.name)
+                            .cloned()
+                            .unwrap_or_else(|| method.name.clone());
+                        let owner = owner_by_public_name[&public_name].clone();
+                        struct_method_symbols.insert(public_name.clone());
+                        callable_symbols_for_method_sugar.insert(public_name);
+                        method_self_struct_internal.insert(method.name.clone(), owner);
+                        normalize_struct_constructor_ranges_in_list(&mut method.body, &struct_defs);
+                        preprocess_local_const_function(
+                            &mut method,
+                            &HashMap::new(),
+                            &const_artifacts,
+                            options,
+                            &mut errors,
+                        );
+
+                        let mut signature = FnSignature::from_def(&method);
+                        signature.display_name =
+                            def_public_name_by_internal.get(&method.name).cloned();
+                        let requires_mono =
+                            crate::def_semantics::signature_requires_monomorphization(
+                                &signature,
+                                &generic_struct_template_names,
+                                &proc_type_names,
+                            );
+                        let has_untyped_params = signature.param_types.iter().any(Option::is_none);
+                        if requires_mono {
+                            signature.requires_call_specialization = true;
+                            mandatory_mono.insert(method.name.clone());
+                        }
+                        if requires_mono || has_untyped_params {
+                            mono_eligible.insert(method.name.clone());
+                        }
+                        fn_signatures.insert(method.name.clone(), signature);
+                        original_defs_snapshot.push(method.clone());
+                        defs.push(method);
+                    }
+                }
+
                 for def in &mut generated_defs {
                     preprocess_local_const_function(
                         def,
@@ -2736,6 +2850,16 @@ pub fn analyze_with_options_and_inputs(
                             signature.sync_defaults_from_def(def);
                         }
                     }
+                    materialize_deferred_generic_structs(
+                        &mut deferred_generic_structs,
+                        &mut extra_defs,
+                        options,
+                        &mut struct_defs_raw,
+                        &mut typed_structs,
+                        &mut struct_defs,
+                        &mut deferred_struct_methods,
+                        &mut errors,
+                    );
                     for def in &mut extra_defs {
                         preprocess_local_const_function(
                             def,

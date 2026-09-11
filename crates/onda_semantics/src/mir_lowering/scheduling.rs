@@ -391,7 +391,8 @@ impl<'a> FunctionLowerer<'a> {
         );
         let mut block_pre_body = MirBlock::default();
         let block_local_start = self.locals.len();
-        if crate::task_lowering::contains_task_abort(block_pre) {
+        let abortable = crate::task_lowering::contains_task_abort(block_pre);
+        if abortable {
             let mut activation = MirBlock::default();
             let flow = self.lower_statements(block_pre, &mut activation, ContinueMode::None)?;
             if flow == StatementFlow::Continues {
@@ -411,6 +412,7 @@ impl<'a> FunctionLowerer<'a> {
             statement: block_pre_index,
             locals: block_local_start..self.locals.len(),
             extents,
+            abortable,
         };
         self.push_statement(
             &mut body,

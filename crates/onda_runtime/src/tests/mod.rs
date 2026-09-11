@@ -464,6 +464,54 @@ sample:
 }
 
 #[test]
+fn indexed_member_assignments_evaluate_the_place_before_the_value() {
+    let mut instance = compile_test_instance(
+        r#"
+struct Cell:
+  taps: f32[2]
+
+struct Trace:
+  value: i32
+
+def outer(trace: Trace) -> i32:
+  trace.value = trace.value * 10 + 1
+  return 0
+
+def inner(trace: Trace) -> i32:
+  trace.value = trace.value * 10 + 2
+  return 1
+
+def replacement(trace: Trace) -> f32:
+  trace.value = trace.value * 10 + 3
+  return 0.5
+
+init:
+  cells: Cell[1]
+  trace = Trace()
+
+sample:
+  cells[outer(trace)].taps[inner(trace)] = replacement(trace)
+  out1 = f32(trace.value)
+"#,
+        1,
+        1,
+    );
+    let mut output = [0.0_f32; 1];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, 1, ExecutionOutput::none()).expect("program should process");
+    assert_eq!(output, [123.0]);
+}
+
+#[test]
 fn top_level_task_declarations_do_not_close_a_standalone_sample_gate() {
     let source = "task unused():\n  yield\nsample:\n  out1 = 1.0\n";
     let mut instance = compile_test_instance(source, 4, 1);
@@ -2624,6 +2672,47 @@ block:
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("task should complete");
     assert_eq!(output, [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+}
+
+#[test]
+fn block_owned_arrays_and_views_resume_after_task_barriers() {
+    const BLOCK_SIZE: usize = 4;
+    let mut instance = compile_test_instance(
+        r#"
+struct Cell:
+  value: f32
+
+task prepare():
+  yield
+
+block:
+  values: f32[2] = [0.6, 0.8]
+  cells: Cell[2] = [Cell(value = 0.6), Cell(value = 0.8)]
+  selected = cells[1]
+  await prepare()
+
+  sample:
+    out1 = values[1] + selected.value
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    assert_eq!(output, [0.0; BLOCK_SIZE]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("task should complete");
+    assert_eq!(output, [1.6; BLOCK_SIZE]);
 }
 
 #[test]

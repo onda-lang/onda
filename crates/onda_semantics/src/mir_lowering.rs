@@ -2513,6 +2513,12 @@ struct LoweredValue {
     ty: PrimitiveType,
 }
 
+#[derive(Clone, Copy)]
+struct AssignmentIndex<'a> {
+    expr: &'a Expr,
+    value: Value,
+}
+
 #[derive(Debug, Clone)]
 struct OversampledInputRuntime {
     ty: PrimitiveType,

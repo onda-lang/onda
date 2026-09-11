@@ -900,8 +900,25 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<Value, MirLoweringError> {
         let index_value = self.lower_expr(index, block)?;
         let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
+        self.apply_dynamic_interface_index_bounds(
+            index_value.value,
+            slot_count,
+            bounds,
+            index.loc(),
+            block,
+        )
+    }
+
+    pub(super) fn apply_dynamic_interface_index_bounds(
+        &mut self,
+        index: Value,
+        slot_count: usize,
+        bounds: BoundsMode,
+        location: SourceLoc,
+        block: &mut MirBlock,
+    ) -> Result<Value, MirLoweringError> {
         if bounds == BoundsMode::Unchecked {
-            return Ok(index_value.value);
+            return Ok(index);
         }
         let upper = slot_count
             .checked_sub(1)
@@ -909,14 +926,14 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     "dynamic interface slot count is outside the i32 indexing boundary",
-                    index.loc(),
+                    location,
                 )
             })?;
         Ok(Value::Local(self.clamp_index_to_inclusive_upper(
-            index_value.value,
+            index,
             Value::Constant(ScalarValue::I32(upper)),
             block,
-            index.loc(),
+            location,
         )))
     }
 

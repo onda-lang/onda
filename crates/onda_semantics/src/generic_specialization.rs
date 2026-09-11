@@ -1962,6 +1962,146 @@ fn ensure_generated_nested_struct_specialization(
     }
 }
 
+pub(crate) fn validate_deferred_generic_structs(
+    def: &FunctionDef,
+    templates: &HashMap<String, StructDef>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let owner_params = def.type_params.iter().cloned().collect::<HashSet<_>>();
+    let mut validate = |name: &str, type_args: &[CallTypeArg], loc: SourceLoc| {
+        let Some(template) = templates.get(name) else {
+            return;
+        };
+        if !type_args.is_empty() && type_args.len() != template.type_params.len() {
+            push_semantic(
+                DiagCtx::new(loc),
+                errors,
+                format!(
+                    "struct constructor '{}' expects {} type arguments, got {}",
+                    name,
+                    template.type_params.len(),
+                    type_args.len()
+                ),
+            );
+            return;
+        }
+        for type_arg in type_args {
+            match type_arg {
+                CallTypeArg::Primitive(PrimitiveType::Bool) => push_semantic(
+                    DiagCtx::new(loc),
+                    errors,
+                    format!(
+                        "struct constructor '{}': 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported",
+                        name
+                    ),
+                ),
+                CallTypeArg::Generic(param) if !owner_params.contains(param) => push_semantic(
+                    DiagCtx::new(loc),
+                    errors,
+                    format!(
+                        "struct constructor '{}': generic type argument '{}' is not declared by generic def '{}'",
+                        name, param, def.name
+                    ),
+                ),
+                CallTypeArg::Primitive(_) | CallTypeArg::Generic(_) => {}
+            }
+        }
+    };
+
+    for statement in &def.body {
+        statement.visit_exprs(|root| {
+            for expr in root.walk() {
+                match expr {
+                    Expr::UserCall {
+                        name,
+                        type_args,
+                        loc,
+                        ..
+                    } => validate(name, type_args, (*loc).into()),
+                    Expr::ArrayCtor { spec, loc, .. } => {
+                        let ArrayElemType::Struct(name) = &spec.elem else {
+                            continue;
+                        };
+                        if let Some((base, type_args)) =
+                            parse_array_struct_elem_with_type_args(name)
+                        {
+                            validate(&base, &type_args, (*loc).into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+
+pub(crate) struct DeferredGenericStructs {
+    templates: HashMap<String, StructDef>,
+    materialized: HashSet<String>,
+    inference: GenericInferenceLocals,
+}
+
+impl DeferredGenericStructs {
+    pub(crate) fn new(
+        templates: HashMap<String, StructDef>,
+        materialized: impl IntoIterator<Item = String>,
+        inference: GenericInferenceLocals,
+    ) -> Self {
+        Self {
+            templates,
+            materialized: materialized.into_iter().collect(),
+            inference,
+        }
+    }
+
+    pub(crate) fn materialize(
+        &mut self,
+        functions: &mut [FunctionDef],
+        options: AnalysisOptions,
+        errors: &mut Vec<Diagnostic>,
+    ) -> Vec<(StructDef, TypedStruct)> {
+        let mut generated = HashMap::new();
+        for function in functions {
+            let seed = generic_inference_seed_for_function(function, &self.inference);
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut function.body,
+                &self.templates,
+                &mut generated,
+                errors,
+                &seed,
+            );
+        }
+        finalize_generated_generic_struct_specializations(
+            &self.templates,
+            &mut generated,
+            errors,
+            &self.inference,
+        );
+
+        let mut names = generated.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
+            .into_iter()
+            .filter(|name| self.materialized.insert(name.clone()))
+            .filter_map(|name| {
+                let raw = generated.remove(&name)?;
+                let fields = crate::declaration_coercion::coerce_struct_fields(
+                    &raw.name,
+                    &raw.type_params,
+                    &raw.fields,
+                    options,
+                    errors,
+                );
+                let typed = TypedStruct {
+                    name: raw.name.clone(),
+                    fields,
+                };
+                Some((raw, typed))
+            })
+            .collect()
+    }
+}
+
 fn parse_specialized_struct_name_ref(name: &str) -> Option<(String, Vec<PrimitiveType>)> {
     let (base, sig) = name.split_once(".__gen__")?;
     let mut type_args = Vec::<PrimitiveType>::new();

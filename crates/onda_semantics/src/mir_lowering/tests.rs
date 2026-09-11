@@ -3229,6 +3229,7 @@ events:
     let dump = format_program(&mir);
     assert!(dump.contains("store_slice"));
     assert!(!dump.contains("IndexedMember"));
+    assert!(!dump.contains("__onda_indexed_selector"));
 }
 
 #[test]

@@ -141,6 +141,39 @@ block:
 }
 
 #[test]
+fn block_owned_arrays_and_views_survive_await_control_flow() {
+    for owner in [false, true] {
+        let body = r#"
+task prepare():
+  yield
+block:
+  values: f32[2] = [2.0, 3.0]
+  notes: Note[2] = Note(value = 4.0)
+  selected = notes[1]
+  await prepare()
+  sample:
+    out1 = values[1] + selected.value
+"#;
+        let body = if owner {
+            format!(
+                "proc Worker:\n{}\ninit:\n  worker = Worker()\nsample:\n  out1 = worker()\n",
+                body.lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| format!("  {line}\n"))
+                    .collect::<String>()
+            )
+        } else {
+            body.to_owned()
+        };
+        let program = compile(&format!("struct Note:\n  value = 1.0\n{body}"));
+        assert!(program
+            .state
+            .iter()
+            .all(|slot| !matches!(program.types[slot.ty.index()], MirType::Slice { .. })));
+    }
+}
+
+#[test]
 fn task_views_capture_selections_and_keep_owned_backing_in_the_frame() {
     compile(
         r#"

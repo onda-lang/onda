@@ -252,6 +252,20 @@ impl<'a> FunctionLowerer<'a> {
                         )?;
                         continue;
                     }
+                    // Assignment places are evaluated before their value. Keep
+                    // the selected index as an SSA value so compiler-generated
+                    // normalization never turns it into persistent state.
+                    let index_value = if let AssignTarget::Index { index, .. } = target {
+                        let value = self.lower_expr(index, block)?;
+                        Some(AssignmentIndex {
+                            expr: index,
+                            value: self
+                                .coerce(value, PrimitiveType::I32, block, index.loc())?
+                                .value,
+                        })
+                    } else {
+                        None
+                    };
                     let values = self.lower_value_expr(expr, block)?;
                     match target {
                         AssignTarget::Var(name) => {
@@ -286,9 +300,9 @@ impl<'a> FunctionLowerer<'a> {
                             expr.loc(),
                             (*loc).into(),
                         )?,
-                        AssignTarget::Index { base, index } => self.assign_index_target(
+                        AssignTarget::Index { base, .. } => self.assign_index_target(
                             base,
-                            index,
+                            index_value.expect("indexed assignment prepared its selector"),
                             &values,
                             block,
                             expr.loc(),

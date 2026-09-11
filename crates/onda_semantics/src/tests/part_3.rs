@@ -291,6 +291,67 @@ sample:
     }
 
     #[test]
+    fn generic_def_constructors_specialize_with_their_owner() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+  def get(self) -> T:
+    return self.value
+
+  def duplicate(self) -> Box<T>:
+    return Box<T>(self.value)
+
+def explicit<T>(value: T) -> Box<T>:
+  return Box<T>(value)
+
+def inferred<T>(value: T) -> T:
+  box = Box(value)
+  duplicate = box.duplicate()
+  return duplicate.get()
+
+def pair<T>(value: T) -> Box<T>[2]:
+  boxes: Box<T>[2] = [Box<T>(value), Box<T>(value)]
+  return boxes
+
+sample:
+  box = explicit<f64>(f64(.25))
+  boxes = pair<f64>(f64(.75))
+  out1 = f32(box.value + inferred<f64>(f64(.5)) + boxes[1].value)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("constructors in generic defs should specialize with the def");
+        assert!(typed
+            .structs
+            .iter()
+            .any(|strukt| strukt.name == "Box.__gen__f64"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("generic def constructors should lower after specialization");
+    }
+
+    #[test]
+    fn generic_def_constructors_reject_unknown_forwarded_types_while_unused() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def invalid<T>(value: T) -> T:
+  box = Box<U>(value)
+  return box.value
+
+sample:
+  out1 = 0.0
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("unknown forwarded constructor type should fail");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("generic type argument 'U' is not declared by generic def 'invalid'")
+        }));
+    }
+
+    #[test]
     fn generic_processor_uses_the_same_nominal_type_specialization_in_local_defs() {
         let src = r#"
 struct Box<T>:

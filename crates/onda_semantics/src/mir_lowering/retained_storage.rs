@@ -4,6 +4,7 @@ pub(super) struct BlockRegion {
     pub statement: usize,
     pub locals: std::ops::Range<usize>,
     pub extents: Vec<ViewExtent>,
+    pub abortable: bool,
 }
 
 pub(super) struct ViewExtent {
@@ -41,7 +42,18 @@ pub(super) fn retain_block_storage(
     else {
         unreachable!("block-pre region is guarded by BEGIN_BLOCK")
     };
-    let mut declarations = then_block.clone();
+    let mut declarations = if region.abortable {
+        let [Statement {
+            kind: StatementKind::Loop { body },
+            ..
+        }] = then_block.statements.as_slice()
+        else {
+            unreachable!("abortable block-pre region is wrapped in one activation loop")
+        };
+        body.clone()
+    } else {
+        then_block.clone()
+    };
     let (restoration, owned) = retain_storage(
         &mut declarations,
         &mut function.locals,
@@ -61,7 +73,18 @@ pub(super) fn retain_block_storage(
     else {
         unreachable!()
     };
-    *then_block = declarations;
+    if region.abortable {
+        let [Statement {
+            kind: StatementKind::Loop { body },
+            ..
+        }] = then_block.statements.as_mut_slice()
+        else {
+            unreachable!()
+        };
+        *body = declarations;
+    } else {
+        *then_block = declarations;
+    }
     *else_block = restoration;
     // Scalar leaves can also occur as ordinary MIR values. Load such values
     // at their use, while all address-taking and stores target the state slot.

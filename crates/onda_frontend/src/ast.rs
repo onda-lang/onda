@@ -1526,6 +1526,53 @@ pub struct PrintSourceOrigin {
 }
 
 impl Stmt {
+    /// Visits every expression owned by this statement tree in source
+    /// evaluation order. Nested expressions remain owned by their root and can
+    /// be traversed with [`Expr::walk`].
+    pub fn visit_exprs(&self, mut visitor: impl FnMut(&Expr)) {
+        let mut pending = vec![self];
+        while let Some(statement) = pending.pop() {
+            match statement {
+                Self::Const { decl, .. } => visitor(&decl.expr),
+                Self::Assign { target, expr, .. } => {
+                    target.visit_selectors(&mut visitor);
+                    visitor(expr);
+                }
+                Self::Expr { expr, .. } | Self::Return { expr, .. } => visitor(expr),
+                Self::Print { values, .. } => values.iter().for_each(&mut visitor),
+                Self::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    visitor(cond);
+                    pending.extend(else_branch.iter().rev());
+                    pending.extend(then_branch.iter().rev());
+                }
+                Self::For {
+                    step,
+                    start,
+                    end,
+                    body,
+                    ..
+                } => {
+                    visitor(start);
+                    visitor(end);
+                    if let Some(step) = step {
+                        visitor(step);
+                    }
+                    pending.extend(body.iter().rev());
+                }
+                Self::While { cond, body, .. } => {
+                    visitor(cond);
+                    pending.extend(body.iter().rev());
+                }
+                Self::Break { .. } | Self::Continue { .. } => {}
+            }
+        }
+    }
+
     pub fn loc(&self) -> SourceLoc {
         match self {
             Self::Const { loc, .. } => (*loc).into(),
