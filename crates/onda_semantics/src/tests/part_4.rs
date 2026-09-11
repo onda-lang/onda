@@ -2780,3 +2780,29 @@ sample:
         lower_program_to_optimized_mir(&typed)
             .expect("overloaded aggregate result methods should lower to MIR");
     }
+
+    #[test]
+    fn recursive_aggregate_diagnostics_point_to_the_source_declaration() {
+        let source = "struct Recursive:\n  children: Recursive[2]\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("recursive aggregate layouts must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("recursive aggregate layout cycle"))
+            .expect("recursive aggregate diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (1, 1));
+    }
+
+    #[test]
+    fn aggregate_field_layout_diagnostics_point_to_the_field_type() {
+        let source = "struct Container:\n  value: Missing\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unknown aggregate field types must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("references unknown struct 'Missing'"))
+            .expect("unknown aggregate field diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 10));
+    }

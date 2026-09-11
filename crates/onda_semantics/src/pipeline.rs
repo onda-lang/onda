@@ -772,6 +772,68 @@ fn def_call_type_env<'a>(
     }
 }
 
+fn aggregate_layout_error_diagnostic(
+    error: AggregateLayoutError,
+    source_structs: &[StructDef],
+) -> Diagnostic {
+    let (struct_name, field_path): (Option<&str>, Option<&str>) = match &error {
+        AggregateLayoutError::DuplicateStruct { struct_name }
+        | AggregateLayoutError::LayoutsTooLarge { struct_name, .. }
+        | AggregateLayoutError::NestingTooDeep { struct_name, .. } => (Some(struct_name), None),
+        AggregateLayoutError::DuplicateField {
+            struct_name,
+            field_name,
+        }
+        | AggregateLayoutError::MalformedField {
+            struct_name,
+            field_name,
+            ..
+        } => (Some(struct_name), Some(field_name)),
+        AggregateLayoutError::UnknownStruct {
+            struct_name,
+            field_path,
+            ..
+        }
+        | AggregateLayoutError::SizeOverflow {
+            struct_name,
+            field_path,
+            ..
+        } => (Some(struct_name), Some(field_path)),
+        AggregateLayoutError::RecursiveAggregate { cycle } => {
+            (cycle.first().map(String::as_str), None)
+        }
+        AggregateLayoutError::TooManyLayouts { .. } => (
+            source_structs
+                .last()
+                .map(|definition| definition.name.as_str()),
+            None,
+        ),
+    };
+
+    let span = struct_name
+        .and_then(|name| {
+            source_structs
+                .iter()
+                .find(|definition| definition.name == name)
+        })
+        .map(|definition| {
+            field_path
+                .and_then(|path| path.split('.').next())
+                .and_then(|field_name| {
+                    definition
+                        .fields
+                        .iter()
+                        .rev()
+                        .find(|field| field.name == field_name)
+                        .map(|field| field.ty_loc)
+                })
+                .unwrap_or(definition.loc)
+        })
+        .unwrap_or(Span::ZERO);
+
+    Diagnostic::semantic_span(error.to_string(), span)
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -2096,7 +2158,7 @@ pub fn analyze_with_options_and_inputs(
     }
 
     if let Err(error) = validate_aggregate_structure(&typed_structs) {
-        errors.push(Diagnostic::semantic(error.to_string(), 0, 0));
+        errors.push(aggregate_layout_error_diagnostic(error, &struct_defs_raw));
         return Err(errors);
     }
 
@@ -4096,7 +4158,7 @@ pub fn analyze_with_options_and_inputs(
                 errors.extend(
                     layout_errors
                         .into_iter()
-                        .map(|error| Diagnostic::semantic(error.to_string(), 0, 0)),
+                        .map(|error| aggregate_layout_error_diagnostic(error, &struct_defs_raw)),
                 );
                 AggregateLayoutTable::default()
             }
