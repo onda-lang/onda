@@ -7,7 +7,7 @@ use super::call_types::{
     CallTypeContext, CallTypeEnv, StatementFlow,
 };
 use crate::*;
-use onda_frontend::ast::{FnReturnScalarType, FnReturnType, Span};
+use onda_frontend::ast::{FnReturnType, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
@@ -644,44 +644,17 @@ fn generate_mono_def(
                     );
                 }
             }
-            if let Some(return_ty) = &mut new_def.return_ty {
-                *return_ty = match return_ty {
-                    FnReturnType::Scalar(scalar) => FnReturnType::Scalar(match scalar {
-                        FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
-                        FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
-                            Some(bound) => FnReturnScalarType::Primitive(bound),
-                            None => FnReturnScalarType::Named(name.clone()),
-                        },
-                    }),
-                    FnReturnType::Array { elem, size } => FnReturnType::Array {
-                        elem: match elem {
-                            FnReturnScalarType::Named(name) => type_bindings
-                                .get(name)
-                                .copied()
-                                .map(FnReturnScalarType::Primitive)
-                                .unwrap_or_else(|| elem.clone()),
-                            _ => elem.clone(),
-                        },
-                        size: size.clone(),
-                    },
-                    FnReturnType::Tuple(elems) => FnReturnType::Tuple(
-                        elems
-                            .iter()
-                            .map(|elem| match elem {
-                                FnReturnScalarType::Primitive(prim) => {
-                                    FnReturnScalarType::Primitive(*prim)
-                                }
-                                FnReturnScalarType::Named(name) => {
-                                    match type_bindings.get(name).copied() {
-                                        Some(bound) => FnReturnScalarType::Primitive(bound),
-                                        None => FnReturnScalarType::Named(name.clone()),
-                                    }
-                                }
-                            })
-                            .collect(),
-                    ),
-                };
-            }
+            crate::generic_specialization::specialize_function_type_annotations(
+                &mut new_def,
+                &type_bindings,
+                &context,
+                errors,
+            );
+            new_sig.param_types = new_def
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect();
         }
 
         // Clear type_params — the generated def is no longer generic.

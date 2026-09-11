@@ -90,9 +90,13 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
         }
         Expr::ArrayCtor { spec, init, .. } => {
             substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
-            if let ArrayElemType::Struct(type_name) = &spec.elem {
-                if let Some(bound) = bindings.get(type_name).copied() {
-                    spec.elem = ArrayElemType::Primitive(bound);
+            if let ArrayElemType::Struct(type_name) = &mut spec.elem {
+                match specialize_generic_type_name(type_name, bindings, context, diag, errors) {
+                    Some(SpecializedTypeName::Primitive(bound)) => {
+                        spec.elem = ArrayElemType::Primitive(bound);
+                    }
+                    Some(SpecializedTypeName::Named(name)) => *type_name = name,
+                    None => {}
                 }
             }
             if let Some(values) = init {
@@ -182,18 +186,20 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
             expr,
             ..
         } => {
-            if let Some(DeclType::Slice(ArrayElemType::Struct(name))) = decl_ty {
-                if let Some(ty) = bindings.get(name).copied() {
-                    *decl_ty = Some(DeclType::Slice(ArrayElemType::Primitive(ty)));
-                }
+            if let Some(ty) = decl_ty {
+                *ty = specialize_decl_type(ty, bindings, context, _diag, errors);
             }
-            if let Some(bound) = generic_decl_ty
-                .as_ref()
-                .and_then(|type_name| bindings.get(type_name))
-                .copied()
-            {
-                *decl_ty = Some(DeclType::Scalar(bound));
-                *generic_decl_ty = None;
+            if let Some(type_name) = generic_decl_ty.clone() {
+                match specialize_generic_type_name(&type_name, bindings, context, _diag, errors) {
+                    Some(SpecializedTypeName::Primitive(bound)) => {
+                        *decl_ty = Some(DeclType::Scalar(bound));
+                        *generic_decl_ty = None;
+                    }
+                    Some(SpecializedTypeName::Named(name)) => {
+                        *generic_decl_ty = Some(name);
+                    }
+                    None => {}
+                }
             }
             match target {
                 AssignTarget::Index { index, .. } => {
@@ -289,86 +295,10 @@ pub(crate) fn specialize_generic_struct_template(
         type_bindings.insert(param.clone(), *ty);
     }
 
-    let specialize_fn_param_type = |ty: &FnParamType| -> FnParamType {
-        match ty {
-            FnParamType::Primitive(prim) => FnParamType::Primitive(*prim),
-            FnParamType::Struct(name) => match type_bindings.get(name).copied() {
-                Some(bound) => FnParamType::Primitive(bound),
-                None => FnParamType::Struct(name.clone()),
-            },
-            FnParamType::Buffer(buffer_ty) => {
-                let elem = match &buffer_ty.elem {
-                    BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
-                    BufferElemType::Generic(param) => match type_bindings.get(param).copied() {
-                        Some(bound) => BufferElemType::Primitive(bound),
-                        None => BufferElemType::Generic(param.clone()),
-                    },
-                };
-                FnParamType::Buffer(BufferType {
-                    elem,
-                    channels: buffer_ty.channels.clone(),
-                })
-            }
-            FnParamType::BufferArray { buffer, len } => {
-                let elem = match &buffer.elem {
-                    BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
-                    BufferElemType::Generic(param) => type_bindings
-                        .get(param)
-                        .copied()
-                        .map(BufferElemType::Primitive)
-                        .unwrap_or_else(|| BufferElemType::Generic(param.clone())),
-                };
-                FnParamType::BufferArray {
-                    buffer: BufferType {
-                        elem,
-                        channels: buffer.channels.clone(),
-                    },
-                    len: *len,
-                }
-            }
-            FnParamType::Array(elem) => FnParamType::Array(*elem),
-            FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
-                Some(bound) => FnParamType::Array(Some(bound)),
-                None => FnParamType::ArrayGeneric(name.clone()),
-            },
-            FnParamType::SizedArray {
-                elem,
-                generic_name,
-                size,
-            } => {
-                let resolved_elem = generic_name
-                    .as_ref()
-                    .and_then(|n| type_bindings.get(n).copied())
-                    .or(*elem);
-                FnParamType::SizedArray {
-                    elem: resolved_elem,
-                    generic_name: if resolved_elem.is_some() {
-                        None
-                    } else {
-                        generic_name.clone()
-                    },
-                    size: size.clone(),
-                }
-            }
-            FnParamType::BareBuffer => FnParamType::BareBuffer,
-            FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
-        }
-    };
-    let specialize_fn_return_scalar_type = |ty: &FnReturnScalarType| -> FnReturnScalarType {
-        match ty {
-            FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
-            FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
-                Some(bound) => FnReturnScalarType::Primitive(bound),
-                None => FnReturnScalarType::Named(name.clone()),
-            },
-        }
-    };
-
     let mut fields = Vec::<StructField>::new();
     for field in &template.fields {
         let mut default = field.default.clone();
         if let Some(expr) = &mut default {
-            rewrite_generic_array_ctor_expr_types(expr, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 expr,
                 &type_bindings,
@@ -425,49 +355,23 @@ pub(crate) fn specialize_generic_struct_template(
     }
     let mut methods = template.methods.clone();
     for method in &mut methods {
+        let method_context = format!("struct '{}.{}'", template.name, method.name);
+        specialize_function_type_annotations(method, &type_bindings, &method_context, errors);
         for param in &mut method.params {
-            if let Some(ty) = &param.ty {
-                param.ty = Some(specialize_fn_param_type(ty));
-            }
             if let Some(default) = &mut param.default {
-                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
-                    &format!(
-                        "struct '{}.{}' parameter default",
-                        template.name, method.name
-                    ),
+                    &format!("{method_context} parameter default"),
                     errors,
                 );
             }
         }
-        if let Some(return_ty) = &mut method.return_ty {
-            *return_ty = match return_ty {
-                FnReturnType::Scalar(scalar) => {
-                    FnReturnType::Scalar(specialize_fn_return_scalar_type(scalar))
-                }
-                FnReturnType::Array { elem, size } => FnReturnType::Array {
-                    elem: specialize_fn_return_scalar_type(elem),
-                    size: size.clone(),
-                },
-                FnReturnType::Tuple(elems) => FnReturnType::Tuple(
-                    elems
-                        .iter()
-                        .map(&specialize_fn_return_scalar_type)
-                        .collect(),
-                ),
-            };
-        }
         for stmt in &mut method.body {
-            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-        }
-        for stmt in &mut method.body {
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
-                &format!("struct '{}.{}' method body", template.name, method.name),
+                &format!("{method_context} body"),
                 errors,
             );
         }
@@ -699,15 +603,21 @@ fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<Cal
     Some((base, args))
 }
 
-fn specialize_named_type_ref(
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum SpecializedTypeName {
+    Primitive(PrimitiveType),
+    Named(String),
+}
+
+fn specialize_generic_type_name(
     name: &str,
     type_bindings: &HashMap<String, PrimitiveType>,
     context: &str,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
-) -> Option<FieldType> {
+) -> Option<SpecializedTypeName> {
     if let Some(bound) = type_bindings.get(name).copied() {
-        return Some(FieldType::Scalar(bound));
+        return Some(SpecializedTypeName::Primitive(bound));
     }
     if let Some((base, explicit_type_args)) = parse_array_struct_elem_with_type_args(name) {
         let mut resolved = Vec::<PrimitiveType>::with_capacity(explicit_type_args.len());
@@ -730,11 +640,208 @@ fn specialize_named_type_ref(
                 }
             }
         }
-        return Some(FieldType::Generic(specialized_struct_name(
+        return Some(SpecializedTypeName::Named(specialized_struct_name(
             &base, &resolved,
         )));
     }
-    Some(FieldType::Generic(name.to_owned()))
+    Some(SpecializedTypeName::Named(name.to_owned()))
+}
+
+fn specialize_named_type_ref(
+    name: &str,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<FieldType> {
+    specialize_generic_type_name(name, type_bindings, context, diag, errors).map(|ty| match ty {
+        SpecializedTypeName::Primitive(ty) => FieldType::Scalar(ty),
+        SpecializedTypeName::Named(name) => FieldType::Generic(name),
+    })
+}
+
+pub(crate) fn specialize_buffer_type(
+    buffer: &BufferType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+) -> BufferType {
+    BufferType {
+        elem: match &buffer.elem {
+            BufferElemType::Primitive(ty) => BufferElemType::Primitive(*ty),
+            BufferElemType::Generic(name) => type_bindings
+                .get(name)
+                .copied()
+                .map(BufferElemType::Primitive)
+                .unwrap_or_else(|| BufferElemType::Generic(name.clone())),
+        },
+        channels: buffer.channels.clone(),
+    }
+}
+
+fn specialize_fn_param_type(
+    ty: &FnParamType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> FnParamType {
+    let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
+        specialize_generic_type_name(name, type_bindings, context, diag, errors)
+            .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
+    };
+    match ty {
+        FnParamType::Primitive(ty) => FnParamType::Primitive(*ty),
+        FnParamType::Struct(name) => match specialize_name(name, errors) {
+            SpecializedTypeName::Primitive(ty) => FnParamType::Primitive(ty),
+            SpecializedTypeName::Named(name) => FnParamType::Struct(name),
+        },
+        FnParamType::Buffer(buffer) => {
+            FnParamType::Buffer(specialize_buffer_type(buffer, type_bindings))
+        }
+        FnParamType::BufferArray { buffer, len } => FnParamType::BufferArray {
+            buffer: specialize_buffer_type(buffer, type_bindings),
+            len: *len,
+        },
+        FnParamType::Array(elem) => FnParamType::Array(*elem),
+        FnParamType::ArrayGeneric(name) => match specialize_name(name, errors) {
+            SpecializedTypeName::Primitive(ty) => FnParamType::Array(Some(ty)),
+            SpecializedTypeName::Named(name) => FnParamType::ArrayGeneric(name),
+        },
+        FnParamType::SizedArray {
+            elem,
+            generic_name,
+            size,
+        } => match generic_name {
+            Some(name) => match specialize_name(name, errors) {
+                SpecializedTypeName::Primitive(ty) => FnParamType::SizedArray {
+                    elem: Some(ty),
+                    generic_name: None,
+                    size: size.clone(),
+                },
+                SpecializedTypeName::Named(name) => FnParamType::SizedArray {
+                    elem: *elem,
+                    generic_name: Some(name),
+                    size: size.clone(),
+                },
+            },
+            None => FnParamType::SizedArray {
+                elem: *elem,
+                generic_name: None,
+                size: size.clone(),
+            },
+        },
+        FnParamType::BareBuffer => FnParamType::BareBuffer,
+        FnParamType::Tuple(elements) => FnParamType::Tuple(elements.clone()),
+    }
+}
+
+fn specialize_fn_return_scalar_type(
+    ty: &FnReturnScalarType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> FnReturnScalarType {
+    match ty {
+        FnReturnScalarType::Primitive(ty) => FnReturnScalarType::Primitive(*ty),
+        FnReturnScalarType::Named(name) => {
+            match specialize_generic_type_name(name, type_bindings, context, diag, errors) {
+                Some(SpecializedTypeName::Primitive(ty)) => FnReturnScalarType::Primitive(ty),
+                Some(SpecializedTypeName::Named(name)) => FnReturnScalarType::Named(name),
+                None => ty.clone(),
+            }
+        }
+    }
+}
+
+fn specialize_fn_return_type(
+    ty: &FnReturnType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> FnReturnType {
+    let mut specialize_scalar =
+        |ty| specialize_fn_return_scalar_type(ty, type_bindings, context, diag, errors);
+    match ty {
+        FnReturnType::Scalar(ty) => FnReturnType::Scalar(specialize_scalar(ty)),
+        FnReturnType::Array { elem, size } => FnReturnType::Array {
+            elem: specialize_scalar(elem),
+            size: size.clone(),
+        },
+        FnReturnType::Tuple(elements) => {
+            FnReturnType::Tuple(elements.iter().map(specialize_scalar).collect())
+        }
+    }
+}
+
+pub(crate) fn specialize_function_type_annotations(
+    def: &mut FunctionDef,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in &mut def.params {
+        if let Some(ty) = &mut param.ty {
+            *ty = specialize_fn_param_type(
+                ty,
+                type_bindings,
+                &format!("{context} parameter '{}'", param.name),
+                DiagCtx::new(param.ty_loc.or(param.loc)),
+                errors,
+            );
+        }
+    }
+    if let Some(ty) = &mut def.return_ty {
+        *ty = specialize_fn_return_type(
+            ty,
+            type_bindings,
+            &format!("{context} return type"),
+            DiagCtx::new(def.return_ty_loc),
+            errors,
+        );
+    }
+}
+
+pub(crate) fn specialize_decl_type(
+    ty: &DeclType,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> DeclType {
+    let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
+        specialize_generic_type_name(name, type_bindings, context, diag, errors)
+            .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
+    };
+    match ty {
+        DeclType::Scalar(ty) => DeclType::Scalar(*ty),
+        DeclType::Slice(ArrayElemType::Primitive(ty)) => {
+            DeclType::Slice(ArrayElemType::Primitive(*ty))
+        }
+        DeclType::Slice(ArrayElemType::Struct(name)) => match specialize_name(name, errors) {
+            SpecializedTypeName::Primitive(ty) => DeclType::Slice(ArrayElemType::Primitive(ty)),
+            SpecializedTypeName::Named(name) => DeclType::Slice(ArrayElemType::Struct(name)),
+        },
+        DeclType::Generic(name) => match specialize_name(name, errors) {
+            SpecializedTypeName::Primitive(ty) => DeclType::Scalar(ty),
+            SpecializedTypeName::Named(name) => DeclType::Generic(name),
+        },
+        DeclType::ArrayGeneric { elem, size } => match specialize_name(elem, errors) {
+            SpecializedTypeName::Primitive(ty) => DeclType::Array {
+                elem: ty,
+                size: size.clone(),
+            },
+            SpecializedTypeName::Named(elem) => DeclType::ArrayGeneric {
+                elem,
+                size: size.clone(),
+            },
+        },
+        DeclType::Array { elem, size } => DeclType::Array {
+            elem: *elem,
+            size: size.clone(),
+        },
+        DeclType::Tuple(elements) => DeclType::Tuple(elements.clone()),
+    }
 }
 
 pub(crate) fn rewrite_generic_struct_ctor_expr(
@@ -1460,6 +1567,10 @@ fn rewrite_resolved_struct_type_name(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if parse_specialized_struct_name_ref(name).is_some() {
+        ensure_generated_nested_struct_specialization(name, templates, generated, errors);
+        return;
+    }
     if let Some(specialized) =
         specialize_resolved_struct_type_name(name, templates, generated, diag, errors)
     {

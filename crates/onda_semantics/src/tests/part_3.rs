@@ -228,6 +228,116 @@ sample:
     }
 
     #[test]
+    fn generic_struct_method_specializes_nominal_returns_and_typed_locals() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+  def copied(self, other: Box<T>) -> Box<T>:
+    copy: Box<T> = other
+    return copy
+
+sample:
+  original = Box<f32>(value = .25)
+  result = original.copied(original)
+  out1 = result.value
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal method types should specialize with their owner");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.ends_with(".copied")
+                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized nominal method types should lower");
+    }
+
+    #[test]
+    fn generic_def_specializes_nominal_parameters_arrays_and_returns() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def first<T>(values: Box<T>[2]) -> Box<T>:
+  copy: Box<T> = values[0]
+  return copy
+
+def identity<T>(value: Box<T>) -> Box<T>:
+  return value
+
+def identity_array<T>(values: Box<T>[2]) -> Box<T>[2]:
+  return values
+
+def first_view<T>(values: Box<T>[]) -> Box<T>:
+  return values[0]
+
+sample:
+  boxes: Box<f32>[2] = [Box<f32>(value = .25), Box<f32>(value = .5)]
+  copies = identity_array<f32>(boxes)
+  view: Box<f32>[] = copies[:]
+  from_view = first_view<f32>(view)
+  selected = first<f32>(copies)
+  result = identity<f32>(selected)
+  out1 = result.value + from_view.value
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal generic def types should specialize at the call site");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("first.__onda_mono")
+                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized nominal generic def types should lower");
+    }
+
+    #[test]
+    fn generic_processor_uses_the_same_nominal_type_specialization_in_local_defs() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+proc Reader<T>:
+  outs<T>:
+    out1
+
+  init:
+    box = Box<T>(value = T(.25))
+
+  events:
+    set(value: Box<T>):
+      box = value
+
+  def copied(value: Box<T>) -> Box<T>:
+    copy: Box<T> = value
+    return copy
+
+  sample:
+    result = copied(box)
+    out1 = result.value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("processor executable scopes should share nominal specialization rules");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name.contains("Reader.__gen__f32")
+                    && def.name.ends_with("copied")
+                    && def.return_ty
+                        == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+            }),
+            "expected specialized processor-local def, got {:#?}",
+            typed.defs
+        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized processor-local nominal types should lower");
+    }
+
+    #[test]
     fn duplicate_generated_generic_struct_specialization_is_deduped() {
         let src = "namespace sc:\n  struct CyclePhase<T>:\n    phase: T\n\n    def tick(self):\n      self.phase = self.phase + T(1.0)\n      return self.phase\n\n  namespace Sine:\n    proc ar<T>:\n      outs:\n        out1: T\n      init<T>:\n        core = sc::CyclePhase<T>()\n      sample:\n        out1 = core.tick()\n\nouts:\n  out1\ninit:\n  a = sc::Sine::ar()\n  z = sc::CyclePhase<f32>()\n\nsample:\n  out1 = a()\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -3956,4 +4066,3 @@ sample:
             "cannot assign I64 to I32",
         );
     }
-

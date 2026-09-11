@@ -82,10 +82,10 @@ The CLI surface is:
 ```text
 onda
 onda compile <input>
-onda run [input] [--theme <auto|dark|light>]
+onda run <input>
 onda run play <input>
 onda run render <input>
-onda project <directory> [--from <input.onda>] [--buffer <name=path>]
+onda project <directory> [--from <input.onda>]
 onda daemon diagnose <input>
 onda daemon stdio
 onda lsp
@@ -102,9 +102,9 @@ Compiles an Onda file and optionally emits IR or an object file.
 Typical uses:
 - syntax and semantic checking
 - inspect graph lowering with `--dump-graph`
+- emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
 - select explicitly declared compile-time variants with repeatable `--const Name=value`, or inspect
   their resolved types and defaults with `--list-consts`
-- emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
 - emit LLVM IR with `--emit llvm-ir` or `--ir`
 - emit a native object file with `--emit obj`
 
