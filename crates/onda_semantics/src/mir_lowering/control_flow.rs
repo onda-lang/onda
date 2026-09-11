@@ -1,6 +1,6 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
-use crate::is_bare_return_expr;
+use crate::{flatten_indexed_member_target, is_bare_return_expr};
 use onda_frontend::DeclType;
 
 #[derive(Clone, Copy)]
@@ -88,6 +88,8 @@ impl<'a> FunctionLowerer<'a> {
                     loc,
                     ..
                 } => {
+                    let target = flatten_indexed_member_target(target);
+                    let target = target.as_ref();
                     if let (AssignTarget::Var(name), Some(DeclType::Slice(element))) =
                         (target, decl_ty)
                     {
@@ -140,6 +142,25 @@ impl<'a> FunctionLowerer<'a> {
                         });
                         if let Some(data) = data {
                             let existing = self.data_type_of(&Expr::var(name));
+                            if existing.is_none()
+                                && (*is_typed_decl || generic_decl_ty.is_some())
+                                && matches!(
+                                    (&data, expr),
+                                    (
+                                        DataType::Array {
+                                            element: ArrayElemType::Struct(_),
+                                            ..
+                                        },
+                                        Expr::ArrayCtor {
+                                            initialize: false,
+                                            ..
+                                        }
+                                    )
+                                )
+                            {
+                                self.allocate_data(name, &data, (*loc).into())?;
+                                continue;
+                            }
                             if existing.is_some()
                                 && (*is_typed_decl || generic_decl_ty.is_some())
                                 && matches!(
@@ -273,6 +294,9 @@ impl<'a> FunctionLowerer<'a> {
                             expr.loc(),
                             (*loc).into(),
                         )?,
+                        AssignTarget::IndexedMember { .. } => {
+                            unreachable!("indexed member target was flattened")
+                        }
                         AssignTarget::Slice { .. } => {
                             unreachable!("slice assignments are lowered before scalar/tuple values")
                         }

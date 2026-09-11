@@ -351,7 +351,9 @@ fn collect_local_def_calls_in_target(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            collect_local_def_calls_in_expr(index, def_map, calls)
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -580,13 +582,15 @@ fn rewrite_target_local_calls(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => rewrite_expr_local_calls(
-            index,
-            local_names,
-            buffer_capturing_names,
-            captured_buffers,
-            owner_proc,
-        ),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            rewrite_expr_local_calls(
+                index,
+                local_names,
+                buffer_capturing_names,
+                captured_buffers,
+                owner_proc,
+            )
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -802,7 +806,7 @@ fn inject_owner_self_into_hidden_local_calls_in_target(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
             inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
         }
         AssignTarget::Slice {
@@ -1036,7 +1040,7 @@ fn rewrite_nested_wrapper_local_calls_in_target(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
             rewrite_nested_wrapper_local_calls_in_expr(
                 index,
                 callee_proc,

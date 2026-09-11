@@ -320,7 +320,9 @@ fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
 
 fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
     match target {
-        AssignTarget::Index { index, .. } => rebase_generated_expr(index, origin),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            rebase_generated_expr(index, origin)
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -1383,7 +1385,9 @@ fn monomorphize_calls_in_assign_target(
     owner: MonoOwnerContext<'_>,
 ) {
     let coordinates = match target {
-        AssignTarget::Index { index, .. } => std::slice::from_mut(index),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            std::slice::from_mut(index)
+        }
         AssignTarget::Slice {
             selector,
             channel,

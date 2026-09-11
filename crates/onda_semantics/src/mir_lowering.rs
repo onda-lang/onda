@@ -2455,7 +2455,10 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
             Stmt::Assign { target, expr, .. } => {
                 match target {
                     AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    AssignTarget::Index { index, .. } => collect_calls_in_expr(index, calls),
+                    AssignTarget::Index { index, .. }
+                    | AssignTarget::IndexedMember { index, .. } => {
+                        collect_calls_in_expr(index, calls)
+                    }
                     AssignTarget::Slice {
                         selector,
                         channel,

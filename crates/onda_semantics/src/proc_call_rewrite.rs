@@ -1550,6 +1550,10 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
+        AssignTarget::IndexedMember { base, index, .. } => {
+            normalize_proc_output_alias_path(base, proc_vars, proc_api);
+            normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
+        }
         AssignTarget::Slice {
             base,
             selector,
@@ -1586,6 +1590,24 @@ fn normalize_proc_array_slot_assign_target(
     *target = AssignTarget::Index {
         base: format!("{array_base}.{field}"),
         index: Expr::int(slot_idx as i64),
+    };
+}
+
+fn lower_proc_indexed_member_target(
+    target: &mut AssignTarget,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+) {
+    let AssignTarget::IndexedMember { base, index, field } = target else {
+        return;
+    };
+    if proc_api_for_receiver(base, proc_vars, proc_array_slots, proc_api).is_none() {
+        return;
+    }
+    *target = AssignTarget::Index {
+        base: format!("{base}.{field}"),
+        index: index.clone(),
     };
 }
 
@@ -1921,9 +1943,14 @@ fn maybe_clamp_flattened_nested_proc_param_assignment_expr(
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
 ) {
+    let indexed_member_path;
     let Some((nested_path, field)) = (match target {
         AssignTarget::Var(name) => flattened_nested_proc_field(name, proc_vars),
         AssignTarget::Index { base, .. } => flattened_nested_proc_field(base, proc_vars),
+        AssignTarget::IndexedMember { base, field, .. } => {
+            indexed_member_path = format!("{base}.{field}");
+            flattened_nested_proc_field(&indexed_member_path, proc_vars)
+        }
         AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => None,
     }) else {
         return;
@@ -1950,6 +1977,7 @@ fn dynamic_params_assignment_target<'a>(
 ) -> Option<(&'a str, &'a ProcApi, String)> {
     let base = match target {
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => base,
+        AssignTarget::IndexedMember { .. } => return None,
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => return None,
     };
 
@@ -2004,6 +2032,7 @@ fn private_proc_param_assignment_target<'a>(
             }
             split_receiver_field(base)?
         }
+        AssignTarget::IndexedMember { base, field, .. } => (base.as_str(), field.as_str()),
         AssignTarget::Tuple(_) => return None,
     };
     if base == "self" {
@@ -2201,6 +2230,20 @@ fn bound_proc_param_hook_stmts_for_target(
                 );
             }
         }
+        AssignTarget::IndexedMember { base, index, field } => {
+            let flat = format!("{base}.{field}");
+            if let Some((nested_path, field)) = flattened_nested_proc_field(&flat, proc_vars) {
+                return bound_proc_param_hook_stmts_for_flattened_nested_target(
+                    owner_proc,
+                    &nested_path,
+                    field,
+                    Some(index),
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                );
+            }
+        }
         AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => {}
     }
 
@@ -2227,6 +2270,12 @@ fn bound_proc_param_hook_stmts_for_target(
                 bound_proc_indexed_receiver_expr(receiver, index, proc_array_slots),
             )
         }
+        AssignTarget::IndexedMember { base, index, field } => (
+            base.as_str(),
+            field.as_str(),
+            Some(index),
+            bound_proc_indexed_receiver_expr(base, index, proc_array_slots),
+        ),
         AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => return Vec::new(),
     };
     let Some((proc_name, param_slot)) =
@@ -2273,6 +2322,11 @@ fn rewrite_proc_alias_assign_target(
                 return;
             };
             *base = format!("{}.{}", alias.array_base, field);
+        }
+        AssignTarget::IndexedMember { base, .. } => {
+            if let Some(alias) = aliases.get(base) {
+                *base = alias.array_base.clone();
+            }
         }
         AssignTarget::Tuple(_) => {}
     }
@@ -2585,6 +2639,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     let Some((base, field)) = (match target {
         AssignTarget::Var(name) => split_receiver_field(name),
         AssignTarget::Index { base, .. } => split_receiver_field(base),
+        AssignTarget::IndexedMember { base, field, .. } => Some((base.as_str(), field.as_str())),
         AssignTarget::Slice { base, .. } => split_dot_path(base),
         AssignTarget::Tuple(_) => None,
     }) else {
@@ -2626,6 +2681,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             normalize_proc_array_slot_assign_target(target, proc_array_slots);
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
+            lower_proc_indexed_member_target(target, proc_vars, proc_array_slots, proc_api);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
             maybe_clamp_proc_param_assignment_expr(
                 target,
@@ -3098,7 +3154,10 @@ pub(super) fn rewrite_proc_array_param_field_reads(
         match stmt {
             Stmt::Assign { target, expr, .. } => {
                 match target {
-                    AssignTarget::Index { index, .. } => rewrite_expr(index, proc_arrays, proc_api),
+                    AssignTarget::Index { index, .. }
+                    | AssignTarget::IndexedMember { index, .. } => {
+                        rewrite_expr(index, proc_arrays, proc_api)
+                    }
                     AssignTarget::Slice {
                         selector,
                         channel,
@@ -3661,14 +3720,17 @@ fn desugar_instance_method_calls_in_stmts(
                 ..
             } => {
                 match target {
-                    AssignTarget::Index { index, .. } => desugar_expr_instance_method_calls(
-                        index,
-                        env,
-                        context,
-                        current_ns,
-                        struct_method_symbols,
-                        callable_symbols,
-                    ),
+                    AssignTarget::Index { index, .. }
+                    | AssignTarget::IndexedMember { index, .. } => {
+                        desugar_expr_instance_method_calls(
+                            index,
+                            env,
+                            context,
+                            current_ns,
+                            struct_method_symbols,
+                            callable_symbols,
+                        )
+                    }
                     AssignTarget::Slice {
                         selector,
                         channel,

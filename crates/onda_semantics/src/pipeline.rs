@@ -591,7 +591,9 @@ fn normalize_runtime_call_shape_exprs(
 
     fn normalize_target(target: &mut AssignTarget, options: AnalysisOptions) {
         match target {
-            AssignTarget::Index { index, .. } => normalize_expr(index, options),
+            AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+                normalize_expr(index, options)
+            }
             AssignTarget::Slice {
                 selector,
                 channel,

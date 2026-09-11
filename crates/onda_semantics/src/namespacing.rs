@@ -226,7 +226,7 @@ pub(super) fn qualify_stmt_namespaced_symbols(
             ..
         } => {
             match target {
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     qualify_expr_namespaced_symbols(
                         index,
                         current_ns,

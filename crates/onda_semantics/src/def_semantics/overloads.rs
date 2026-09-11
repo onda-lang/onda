@@ -712,9 +712,11 @@ fn rewrite_overloaded_calls_in_assign_target(
     resolved: &mut usize,
 ) {
     match target {
-        AssignTarget::Index { index, .. } => rewrite_overloaded_calls_in_expr_impl(
-            index, env, context, owner, overloads, errors, resolved,
-        ),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            rewrite_overloaded_calls_in_expr_impl(
+                index, env, context, owner, overloads, errors, resolved,
+            )
+        }
         AssignTarget::Slice {
             selector,
             channel,

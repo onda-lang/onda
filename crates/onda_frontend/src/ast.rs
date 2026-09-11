@@ -953,6 +953,11 @@ pub enum AssignTarget {
         base: String,
         index: Expr,
     },
+    IndexedMember {
+        base: String,
+        index: Expr,
+        field: String,
+    },
     Slice {
         base: String,
         selector: Option<Box<Expr>>,

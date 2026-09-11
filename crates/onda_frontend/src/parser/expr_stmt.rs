@@ -49,7 +49,9 @@ fn parse_init_stmt_list_pair(
                             .map(str::to_owned),
                     );
                 }
-                AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                AssignTarget::Index { .. }
+                | AssignTarget::IndexedMember { .. }
+                | AssignTarget::Slice { .. } => {}
             }
         }
         stmts.push(stmt);

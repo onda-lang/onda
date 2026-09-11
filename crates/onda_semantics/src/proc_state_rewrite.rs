@@ -840,6 +840,8 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     in_array_slots,
                     errors,
                 );
+                let target = flatten_indexed_member_target(target);
+                let target = target.as_ref();
                 match target {
                     AssignTarget::Var(name) => {
                         if ins_names.contains(name) {
@@ -1092,6 +1094,9 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         typed_decl_ty_loc: Default::default(),
                         expr: expr_rewritten,
                     }),
+                    AssignTarget::IndexedMember { .. } => {
+                        unreachable!("indexed member target was flattened")
+                    }
                 }
             }
             Stmt::Expr { expr, .. } => {

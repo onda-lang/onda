@@ -86,6 +86,10 @@ pub(crate) fn rewrite_binding_target(target: &mut AssignTarget, names: &HashMap<
             rewrite_binding_path(base, names);
             rewrite_binding_expr(index, names);
         }
+        AssignTarget::IndexedMember { base, index, .. } => {
+            rewrite_binding_path(base, names);
+            rewrite_binding_expr(index, names);
+        }
         AssignTarget::Slice {
             base,
             selector,
@@ -261,6 +265,10 @@ pub(crate) fn collect_stmt_uses(stmts: &[Stmt], uses: &mut HashSet<String>) {
                         uses.insert(name.clone());
                     }
                     AssignTarget::Index { base, index } => {
+                        uses.insert(base.clone());
+                        collect_expr_uses(index, uses);
+                    }
+                    AssignTarget::IndexedMember { base, index, .. } => {
                         uses.insert(base.clone());
                         collect_expr_uses(index, uses);
                     }

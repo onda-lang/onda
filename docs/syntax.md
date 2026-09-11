@@ -1314,15 +1314,21 @@ matching length and never adds a runtime shape assertion.
 
 ### Indexed Struct-Array Field Access
 
-For arrays of data structs, an element can be selected from any stable named path and then read
-through one inline field-access dot:
+For arrays of data structs, an element can be selected from any stable named path and then read or
+written through one inline field-access dot:
 
 ```onda
 sample:
   gain = voices[i].level
+  voices[i].level = gain * 0.5
   tap = voices[i].taps[j]
   velocity = current.notes[i].velocity
+  current.notes[i].velocity = velocity + 1.0
 ```
+
+The same target resolution applies in every executable scope, including `init`, block, `sample`,
+event, task, proc, and def bodies. The usual storage permissions and rate-specific output rules
+still apply.
 
 Accepted forms:
 

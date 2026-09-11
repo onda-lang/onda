@@ -163,6 +163,10 @@ impl CapturedViews {
                             uses.insert(base.clone());
                             collect_expr_uses(index, &mut uses);
                         }
+                        AssignTarget::IndexedMember { base, index, .. } => {
+                            uses.insert(base.clone());
+                            collect_expr_uses(index, &mut uses);
+                        }
                         AssignTarget::Slice {
                             base,
                             selector,

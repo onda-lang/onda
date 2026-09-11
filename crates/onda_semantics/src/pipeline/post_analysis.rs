@@ -524,7 +524,7 @@ pub(super) fn validate_generic_def_type_args_in_assign_target(
     errors: &mut Vec<Diagnostic>,
 ) {
     match target {
-        AssignTarget::Index { index, .. } => {
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
             validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
         }
         AssignTarget::Slice {
@@ -2129,7 +2129,7 @@ pub(super) fn collect_called_typed_defs_in_assign_target(
     seen_pending: &mut HashSet<String>,
 ) {
     match target {
-        AssignTarget::Index { index, .. } => {
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
             collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
         }
         AssignTarget::Slice {

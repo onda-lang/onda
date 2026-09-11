@@ -269,7 +269,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                 }
             }
             match target {
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
                 }
                 AssignTarget::Slice {
@@ -1336,6 +1336,7 @@ fn rewrite_generic_ctor_stmt(
             let introduces_binding = match target {
                 AssignTarget::Var(name) => !locals.types.has_binding(name),
                 AssignTarget::Index { .. }
+                | AssignTarget::IndexedMember { .. }
                 | AssignTarget::Slice { .. }
                 | AssignTarget::Tuple(_) => false,
             };
@@ -1346,7 +1347,7 @@ fn rewrite_generic_ctor_stmt(
                 locals.default_ctor_missing_type_params_to_f32 = false;
             }
             match target {
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     rewriter.rewrite_expr(index, locals, errors);
                 }
                 AssignTarget::Slice {

@@ -30,53 +30,6 @@ fn wrong_rate_output_array_assignment_message(name: &str, policy: ScopePolicy) -
     }
 }
 
-fn indexed_aggregate_target_type(
-    base: &str,
-    index: &Expr,
-    struct_instances: &HashMap<String, String>,
-    struct_array_roots: &HashMap<String, ArrayStructRootInfo>,
-    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> Option<PrimitiveType> {
-    let (root, field) = split_root_field_path(base)?;
-    let (struct_name, indexes_struct_element) = struct_instances
-        .get(root)
-        .map(|struct_name| (struct_name.as_str(), false))
-        .or_else(|| {
-            struct_array_roots
-                .get(root)
-                .map(|info| (info.struct_name.as_str(), true))
-        })
-        .or_else(|| {
-            proc_array_roots
-                .get(root)
-                .map(|info| (info.proc_name.as_str(), true))
-        })?;
-    let field_path = field;
-    let field = if let Some(field) = resolve_struct_field_decl(struct_name, field_path, struct_defs)
-    {
-        field
-    } else {
-        return resolve_flattened_struct_array_leaf_type(struct_name, field_path, struct_defs);
-    };
-    if indexes_struct_element {
-        return match field.ty {
-            TypedFieldType::Scalar(ty) => Some(ty),
-            TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
-        };
-    }
-    match &field.ty {
-        TypedFieldType::Array(_) => field.array_elem_ty,
-        TypedFieldType::Tuple(types) => match index {
-            Expr::Int { value, .. } => usize::try_from(*value)
-                .ok()
-                .and_then(|index| types.get(index).copied()),
-            _ => None,
-        },
-        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
-    }
-}
-
 pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub common: ScopeAnalysisCtx<'a>,
     pub registration_mode: RuntimeRegistrationMode,
@@ -169,6 +122,7 @@ fn validate_event_assign_target_restrictions(
     let (base, indexed) = match target {
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
+        AssignTarget::IndexedMember { base, .. } => (base.as_str(), true),
         AssignTarget::Slice { base, .. } => (base.as_str(), true),
         AssignTarget::Tuple(_) => return false,
     };
@@ -1225,15 +1179,17 @@ fn analyze_flow_assignment(
             errors.push(Diagnostic::semantic_span($message, target_loc))
         };
     }
+    let target = flatten_indexed_member_target(target);
+    let target = target.as_ref();
     match target {
         AssignTarget::Index { base, index } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            let aggregate_target_ty = indexed_aggregate_target_type(
-                base,
-                index,
+            let aggregate_target_ty = indexed_assignment_element_type(
+                target,
                 struct_instances,
                 state_array_struct_roots,
+                local_array_aliases,
                 proc_array_roots,
                 struct_defs,
             );
@@ -2667,5 +2623,6 @@ fn analyze_flow_assignment(
                     .or_insert(target_ty);
             }
         }
+        AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }
 }

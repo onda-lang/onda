@@ -1060,7 +1060,7 @@ fn rejects_incomplete_and_duplicate_named_binding_ranges() {
 }
 
 #[test]
-fn parses_indexed_member_assignment_target_as_flat_index_target() {
+fn preserves_indexed_member_assignment_target_structure() {
     let src = r#"
 outs { out1 }
 sample {
@@ -1080,8 +1080,9 @@ sample {
         panic!("expected assignment");
     };
     match target {
-        AssignTarget::Index { base, index } => {
-            assert_eq!(base, "voices.freq");
+        AssignTarget::IndexedMember { base, index, field } => {
+            assert_eq!(base, "voices");
+            assert_eq!(field, "freq");
             assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
         }
         _ => panic!("expected indexed assignment target"),

@@ -882,6 +882,9 @@ fn format_assign_target(target: &AssignTarget) -> String {
     match target {
         AssignTarget::Var(name) => name.clone(),
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
+        AssignTarget::IndexedMember { base, index, field } => {
+            format!("{base}[{}].{field}", format_expr(index))
+        }
         AssignTarget::Slice {
             base,
             selector,

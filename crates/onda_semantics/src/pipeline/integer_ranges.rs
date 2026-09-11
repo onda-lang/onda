@@ -552,12 +552,10 @@ pub(crate) fn rewrite_indexed_integer_ranges_in_list(
 ) {
     for statement in statements {
         match statement {
-            Stmt::Assign {
-                target: AssignTarget::Index { base, .. },
-                expr,
-                ..
-            } => {
-                if let Some(range) = ranges.get(base) {
+            Stmt::Assign { target, expr, .. } => {
+                if let Some(range) = indexed_assignment_target(target)
+                    .and_then(|target| ranges.get(target.base.as_ref()))
+                {
                     wrap_ranged_assignment(expr, range);
                 }
             }
@@ -573,7 +571,6 @@ pub(crate) fn rewrite_indexed_integer_ranges_in_list(
                 rewrite_indexed_integer_ranges_in_list(body, ranges);
             }
             Stmt::Const { .. }
-            | Stmt::Assign { .. }
             | Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }

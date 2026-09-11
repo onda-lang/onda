@@ -271,7 +271,7 @@ pub(super) fn fold_stmt_const_arrays(
         }
         Stmt::Assign { target, expr, .. } => {
             match target {
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     fold_const_array_expr(index, const_values, options, errors, false);
                 }
                 AssignTarget::Slice {
@@ -647,6 +647,10 @@ pub(super) fn reject_forward_const_refs_assign_target(
 ) {
     match target {
         AssignTarget::Index { base, index } => {
+            reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
+            reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+        }
+        AssignTarget::IndexedMember { base, index, .. } => {
             reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
             reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
         }
@@ -1973,7 +1977,7 @@ pub(super) fn fold_direct_const_def_stmt(
         }
         Stmt::Assign { target, expr, .. } => {
             match target {
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     fold_direct_const_def_call_expr(
                         index,
                         artifacts,
@@ -2787,7 +2791,7 @@ pub(super) fn preprocess_local_const_stmt(
                         ));
                     }
                 }
-                AssignTarget::Index { index, .. } => {
+                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
                     fold_local_scalar_const_expr(index, local_consts);
                 }
                 AssignTarget::Slice {

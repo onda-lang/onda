@@ -157,6 +157,7 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                         }
                         AssignTarget::Var(_)
                         | AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
                         | AssignTarget::Slice { .. } => {}
                     }
                 }

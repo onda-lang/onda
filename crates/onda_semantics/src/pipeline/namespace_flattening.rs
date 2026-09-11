@@ -93,7 +93,9 @@ fn assignment_target_plain_names(target: &AssignTarget) -> Vec<String> {
             .filter_map(|target| target.binding())
             .map(str::to_owned)
             .collect(),
-        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
+        AssignTarget::Index { .. }
+        | AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
 
@@ -916,6 +918,18 @@ fn validate_template_assign_target_refs(
             );
         }
         AssignTarget::Index { base, index } => {
+            validate_template_named_ref(
+                base,
+                current_ns,
+                state,
+                scope,
+                context,
+                index.loc().span(),
+                errors,
+            );
+            validate_template_expr_refs(index, current_ns, state, scope, context, errors);
+        }
+        AssignTarget::IndexedMember { base, index, .. } => {
             validate_template_named_ref(
                 base,
                 current_ns,
@@ -4404,7 +4418,8 @@ fn rewrite_stmt_scoped(
                         }
                     }
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, index }
+                | AssignTarget::IndexedMember { base, index, .. } => {
                     if let Some(qualified) = resolve_visible_unqualified_const_name(
                         base,
                         current_ns,

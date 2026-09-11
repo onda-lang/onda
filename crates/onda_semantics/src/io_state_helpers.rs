@@ -126,6 +126,10 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     infer_numbered_base_name(base, acc);
                     infer_io_from_expr(index, acc);
                 }
+                AssignTarget::IndexedMember { base, index, .. } => {
+                    infer_numbered_base_name(base, acc);
+                    infer_io_from_expr(index, acc);
+                }
                 AssignTarget::Slice {
                     base,
                     selector,

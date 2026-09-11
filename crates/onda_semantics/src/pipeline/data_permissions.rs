@@ -230,6 +230,11 @@ impl PermissionAnalysis<'_> {
                             self.expression(index, env);
                             self.expression(expr, env);
                         }
+                        AssignTarget::IndexedMember { base, index, .. } => {
+                            self.writes.extend(env.storage_origins(base));
+                            self.expression(index, env);
+                            self.expression(expr, env);
+                        }
                         AssignTarget::Slice {
                             base,
                             selector,

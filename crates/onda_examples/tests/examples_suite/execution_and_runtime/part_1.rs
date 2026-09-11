@@ -104,6 +104,30 @@ sample:
 }
 
 #[test]
+fn local_struct_array_field_writes_are_observable_in_sample() {
+    let source = r#"
+struct Something:
+  value: f32
+
+const Count = 1000
+
+sample:
+  values: Something[Count * 10]
+  values[0].value = 0.5
+  out1 = values[0].value
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process local struct-array field write");
+    assert_eq!(output, [0.5; 4]);
+}
+
+#[test]
 fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
     let frames = 4;
     let src = r#"

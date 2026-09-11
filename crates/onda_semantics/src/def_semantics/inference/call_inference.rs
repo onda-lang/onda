@@ -16,7 +16,9 @@ pub(super) fn infer_stmt_calls(
     with_stmt_diag_context(stmt, |_diag| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
+            if let AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } =
+                target
+            {
                 infer_expr_calls(
                     index,
                     struct_instances,

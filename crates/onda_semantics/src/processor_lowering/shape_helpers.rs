@@ -387,15 +387,17 @@ fn collect_non_sample_proc_operator_diags_from_target(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => collect_non_sample_proc_operator_diags_from_expr(
-            index,
-            owner_proc,
-            nested_instances,
-            proc_array_slots,
-            proc_api,
-            aliases,
-            out,
-        ),
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
+            collect_non_sample_proc_operator_diags_from_expr(
+                index,
+                owner_proc,
+                nested_instances,
+                proc_array_slots,
+                proc_api,
+                aliases,
+                out,
+            )
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -736,7 +738,7 @@ fn seed_called_proc_local_defs_from_target(
 ) {
     match target {
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
+        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
             seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
         }
         AssignTarget::Slice {
@@ -1812,6 +1814,7 @@ fn reject_hook_target_write(
     match target {
         AssignTarget::Var(name) => check_symbol(name),
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => check_symbol(base),
+        AssignTarget::IndexedMember { base, field, .. } => check_symbol(&format!("{base}.{field}")),
         AssignTarget::Tuple(names) => {
             for name in names.iter().filter_map(|target| target.binding()) {
                 check_symbol(name);
@@ -2067,7 +2070,8 @@ fn validate_hook_safe_stmts(
                 }
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
                 match target {
-                    AssignTarget::Index { index, .. } => {
+                    AssignTarget::Index { index, .. }
+                    | AssignTarget::IndexedMember { index, .. } => {
                         validate_hook_safe_expr(index, ctx, frame, visiting, validated, errors);
                     }
                     AssignTarget::Slice {
@@ -2093,7 +2097,9 @@ fn validate_hook_safe_stmts(
                                 frame.add_local(name);
                             }
                         }
-                        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                        AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
+                        | AssignTarget::Slice { .. } => {}
                     }
                 }
             }
@@ -2391,7 +2397,9 @@ fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name],
         AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
-        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
+        AssignTarget::Index { .. }
+        | AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
 

@@ -295,7 +295,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
         AssignTarget::Var(name) => {
             ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
         }
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, index } | AssignTarget::IndexedMember { base, index, .. } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);

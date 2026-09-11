@@ -152,7 +152,8 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
                         }
                     }
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, index }
+                | AssignTarget::IndexedMember { base, index, .. } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(fields) = nested_fields.get(root) {
                             if fields.contains(field) {
@@ -333,7 +334,8 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                         *name = mapped.clone();
                     }
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, index }
+                | AssignTarget::IndexedMember { base, index, .. } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(mapped) = remap.get(root) {
                             *base = format!("{mapped}.{field}");
@@ -506,7 +508,8 @@ pub(super) fn prefix_self_fields_in_stmt(
                         *name = prefixed;
                     }
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, index }
+                | AssignTarget::IndexedMember { base, index, .. } => {
                     if let Some(prefixed) =
                         prefixed_self_field_path(base, prefix, nested_field_names)
                     {

@@ -247,6 +247,17 @@ fn replace_when_bindings_stmt(
                     replace_name(base, replacements);
                     replace_when_bindings_expr(index, replacements);
                 }
+                AssignTarget::IndexedMember { base, index, .. } => {
+                    if replacements.contains_key(base) {
+                        push_semantic(
+                            DiagCtx::new(*target_loc),
+                            errors,
+                            format!("cannot write through read-only when payload binding '{base}'"),
+                        );
+                    }
+                    replace_name(base, replacements);
+                    replace_when_bindings_expr(index, replacements);
+                }
                 AssignTarget::Slice {
                     base,
                     selector,
@@ -496,7 +507,8 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
-                        AssignTarget::Index { index, .. } => {
+                        AssignTarget::Index { index, .. }
+                        | AssignTarget::IndexedMember { index, .. } => {
                             collect_source_calls_expr(index, calls);
                         }
                         AssignTarget::Slice {
@@ -610,7 +622,8 @@ fn collect_source_calls_with_aliases(
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
-                        AssignTarget::Index { index, .. } => {
+                        AssignTarget::Index { index, .. }
+                        | AssignTarget::IndexedMember { index, .. } => {
                             collect_expr(index, aliases, calls);
                         }
                         AssignTarget::Slice {
@@ -642,7 +655,9 @@ fn collect_source_calls_with_aliases(
                                 aliases.remove(name);
                             }
                         }
-                        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                        AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
+                        | AssignTarget::Slice { .. } => {}
                     }
                     StatementFlow::Continues
                 }
@@ -814,7 +829,8 @@ fn validate_delegate_uses(
                 }
                 Stmt::Assign { target, expr, .. } => {
                     match target {
-                        AssignTarget::Index { index, .. } => {
+                        AssignTarget::Index { index, .. }
+                        | AssignTarget::IndexedMember { index, .. } => {
                             collect_delegate_value_uses_expr(index, names, false, errors);
                         }
                         AssignTarget::Slice {

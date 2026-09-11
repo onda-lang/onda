@@ -79,7 +79,9 @@ pub(crate) fn persistent_init_bindings(
             AssignTarget::Tuple(targets) => {
                 names.extend(targets.iter().filter_map(|target| target.binding()));
             }
-            AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+            AssignTarget::Index { .. }
+            | AssignTarget::IndexedMember { .. }
+            | AssignTarget::Slice { .. } => {}
         }
     }
     let visible = |name: &str| {
@@ -706,8 +708,18 @@ fn analyze_assign_init(
             }
         }};
     }
+    let target = flatten_indexed_member_target(target);
+    let target = target.as_ref();
     match target {
         AssignTarget::Index { base, index } => {
+            let aggregate_target_ty = indexed_assignment_element_type(
+                target,
+                &visible_structs,
+                &st.state_array_struct_roots,
+                &st.local_array_aliases,
+                &st.nested_proc_arrays,
+                struct_defs,
+            );
             let lexical_root = base.split('.').next().unwrap_or(base);
             if locals.contains(lexical_root) {
                 target_error!(format!(
@@ -804,6 +816,7 @@ fn analyze_assign_init(
                 && !st.local_array_aliases.contains_key(base)
                 && !is_declared_data_array_symbol(&st.declared_symbols, base)
                 && !has_declared_buffer_symbol_info(&st.declared_symbols, base)
+                && aggregate_target_ty.is_none()
             {
                 target_error!(format!(
                     "indexed assignment target '{base}[...]' is not a array/buffer symbol"
@@ -855,6 +868,7 @@ fn analyze_assign_init(
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| declared_symbol_scalar_type(&st.declared_symbols, base))
+                .or(aggregate_target_ty)
                 .unwrap_or(PrimitiveType::F32);
             require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
         }
@@ -2523,6 +2537,7 @@ fn analyze_assign_init(
                 st.known_scalars.insert(name.to_owned());
             }
         }
+        AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }
 }
 fn analyze_struct_data_init_assign(

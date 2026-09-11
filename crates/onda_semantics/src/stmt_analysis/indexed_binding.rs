@@ -1,4 +1,93 @@
 use super::*;
+use std::borrow::Cow;
+
+pub(crate) struct IndexedAssignmentTarget<'a> {
+    pub(crate) base: Cow<'a, str>,
+    pub(crate) index: &'a Expr,
+}
+
+/// Preserves indexed-member syntax in the frontend and exposes the canonical
+/// structure-of-arrays leaf only to semantic and lowering code.
+pub(crate) fn indexed_assignment_target(
+    target: &AssignTarget,
+) -> Option<IndexedAssignmentTarget<'_>> {
+    match target {
+        AssignTarget::Index { base, index } => Some(IndexedAssignmentTarget {
+            base: Cow::Borrowed(base),
+            index,
+        }),
+        AssignTarget::IndexedMember { base, index, field } => Some(IndexedAssignmentTarget {
+            base: Cow::Owned(format!("{base}.{field}")),
+            index,
+        }),
+        AssignTarget::Var(_) | AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => None,
+    }
+}
+
+pub(crate) fn flatten_indexed_member_target(target: &AssignTarget) -> Cow<'_, AssignTarget> {
+    match target {
+        AssignTarget::IndexedMember { base, index, field } => Cow::Owned(AssignTarget::Index {
+            base: format!("{base}.{field}"),
+            index: index.clone(),
+        }),
+        _ => Cow::Borrowed(target),
+    }
+}
+
+pub(crate) fn indexed_assignment_element_type(
+    target: &AssignTarget,
+    struct_instances: &HashMap<String, String>,
+    struct_array_roots: &HashMap<String, ArrayStructRootInfo>,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    let target = indexed_assignment_target(target)?;
+    let base = target.base.as_ref();
+    let index = target.index;
+    let (root, field_path) = split_root_field_path(base)?;
+    let (struct_name, indexes_struct_element) = struct_instances
+        .get(root)
+        .map(|struct_name| (struct_name.as_str(), false))
+        .or_else(|| {
+            struct_array_roots
+                .get(root)
+                .map(|info| (info.struct_name.as_str(), true))
+        })
+        .or_else(|| {
+            local_array_aliases
+                .get(root)
+                .and_then(|info| info.elem_struct.as_deref())
+                .map(|struct_name| (struct_name, true))
+        })
+        .or_else(|| {
+            proc_array_roots
+                .get(root)
+                .map(|info| (info.proc_name.as_str(), true))
+        })?;
+    let field = if let Some(field) = resolve_struct_field_decl(struct_name, field_path, struct_defs)
+    {
+        field
+    } else {
+        return resolve_flattened_struct_array_leaf_type(struct_name, field_path, struct_defs);
+    };
+    if indexes_struct_element {
+        return match field.ty {
+            TypedFieldType::Scalar(ty) => Some(ty),
+            TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
+        };
+    }
+    match &field.ty {
+        TypedFieldType::Array(_) => field.array_elem_ty,
+        TypedFieldType::Tuple(types) => match index {
+            Expr::Int { value, .. } => usize::try_from(*value)
+                .ok()
+                .and_then(|index| types.get(index).copied()),
+            _ => None,
+        },
+        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum IndexedBindingKind {

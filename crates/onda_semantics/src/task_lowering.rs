@@ -1670,7 +1670,9 @@ fn uniquify_task_bindings(
                                     *name = self.assignment_name(&source_name, false);
                                 }
                             }
-                            AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {
+                            AssignTarget::Index { .. }
+                            | AssignTarget::IndexedMember { .. }
+                            | AssignTarget::Slice { .. } => {
                                 rewrite_binding_target(target, &self.visible);
                             }
                         }
@@ -2020,6 +2022,10 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                         }
                     }
                     AssignTarget::Index { base, index } => {
+                        uses.insert(base.clone());
+                        collect_expr_uses(index, &mut uses);
+                    }
+                    AssignTarget::IndexedMember { base, index, .. } => {
                         uses.insert(base.clone());
                         collect_expr_uses(index, &mut uses);
                     }

@@ -346,13 +346,13 @@ impl FunctionLowerer<'_> {
         }
         match expr {
             Expr::ArrayCtor {
-                spec,
-                initialize: true,
-                ..
-            } => Some(DataType::Array {
-                element: spec.elem.clone(),
-                len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size)?,
-            }),
+                spec, initialize, ..
+            } if *initialize || matches!(spec.elem, ArrayElemType::Struct(_)) => {
+                Some(DataType::Array {
+                    element: spec.elem.clone(),
+                    len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size)?,
+                })
+            }
             Expr::ArrayLiteral { values, .. } => {
                 let DataType::Struct(name) = self.data_type_of(values.first()?)? else {
                     return None;

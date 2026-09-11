@@ -3182,6 +3182,117 @@ sample:
 }
 
 #[test]
+fn lowers_indexed_struct_array_field_writes_in_every_runtime_region() {
+    let source = r#"
+outs:
+  out1
+
+struct Cell:
+  value: f32
+
+init:
+  state: Cell[2]
+  state[0].value = 1.0
+
+block:
+  block_cells: Cell[2]
+  block_cells[0].value = 2.0
+
+  sample:
+    sample_cells: Cell[2]
+    sample_cells[0].value = 3.0
+    state[1].value = sample_cells[0].value
+    out1 = state[0].value + state[1].value + block_cells[0].value
+
+  block_cells[1].value = 4.0
+
+events:
+  reset():
+    event_cells: Cell[2]
+    event_cells[0].value = 5.0
+    state[0].value = event_cells[0].value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every region");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("store_slice"));
+    assert!(!dump.contains("IndexedMember"));
+}
+
+#[test]
+fn lowers_deeply_nested_local_struct_array_field_writes() {
+    let source = r#"
+outs:
+  out1
+
+struct Leaf:
+  value: f64
+
+struct Branch:
+  leaves: Leaf[4]
+
+struct Trunk:
+  branch: Branch
+
+struct Tree:
+  trunk: Trunk
+
+sample:
+  tree: Tree
+  tree.trunk.branch.leaves[3].value = 0.75
+  out1 = f32(tree.trunk.branch.leaves[3].value)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("deep indexed field write should analyze");
+    let mir = lower_test_program(&typed).expect("deep indexed field write should lower");
+    validate(&mir).expect("deep indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("trunk.branch.leaves.value"));
+    assert!(dump.contains("f64(0.75)"));
+}
+
+#[test]
+fn lowers_local_struct_array_field_writes_in_defs_tasks_and_procs() {
+    let source = r#"
+struct Cell:
+  value: f32
+
+def seed():
+  def_cells: Cell[2]
+  def_cells[0].value = 1.0
+  return def_cells[0].value
+
+task worker():
+  task_cells: Cell[2]
+  task_cells[0].value = 2.0
+  yield
+
+proc Writer:
+  sample:
+    proc_cells: Cell[2]
+    proc_cells[0].value = 3.0
+    out1 = proc_cells[0].value
+
+init:
+  writer = Writer()
+
+block:
+  await worker()
+
+  sample:
+    out1 = seed() + writer()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every owner");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+}
+
+#[test]
 fn lowers_canonical_nested_struct_array_views_across_state_calls_and_aliases() {
     let source = r#"
 outs:
