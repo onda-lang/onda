@@ -291,7 +291,7 @@ fn guard_preinitialized_zero_stores(
                     mark_all_state_dirty(&mut dirty, state_count);
                 }
             }
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, .. } => {
                 for copy in copies {
                     mark_value_alias_dirty(copy.destination, &aliases, &mut dirty, state_count);
                 }
@@ -419,7 +419,7 @@ fn collect_block_state_writes(
             StatementKind::SliceFill { destination, .. } => {
                 mark_value_alias_dirty(*destination, &aliases, dirty, state_count);
             }
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, .. } => {
                 for copy in copies {
                     mark_value_alias_dirty(copy.destination, &aliases, dirty, state_count);
                 }
@@ -1055,7 +1055,7 @@ fn propagate_statement_values(
             propagate_value(value, facts, stats);
             true
         }
-        StatementKind::SliceCopy { copies } => {
+        StatementKind::SliceCopy { copies, .. } => {
             for crate::SliceCopy {
                 destination,
                 source,
@@ -2115,7 +2115,7 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
             mark_value_read(*destination, reads);
             mark_value_read(*value, reads);
         }
-        StatementKind::SliceCopy { copies } => {
+        StatementKind::SliceCopy { copies, .. } => {
             for crate::SliceCopy {
                 destination,
                 source,
@@ -2378,7 +2378,7 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
             value(*destination, referenced);
             value(*v, referenced);
         }
-        StatementKind::SliceCopy { copies } => {
+        StatementKind::SliceCopy { copies, .. } => {
             for crate::SliceCopy {
                 destination,
                 source,
@@ -2709,7 +2709,7 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
             rewrite_value(destination, mapping);
             rewrite_value(value, mapping);
         }
-        StatementKind::SliceCopy { copies } => {
+        StatementKind::SliceCopy { copies, .. } => {
             for crate::SliceCopy {
                 destination,
                 source,

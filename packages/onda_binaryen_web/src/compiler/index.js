@@ -545,16 +545,26 @@ export class MirCompiler extends MirCompilerLowering {
 
   compileSliceCopy(statement, data, context) {
     if (!Array.isArray(data.copies)) this.fail("slice copy requires a leaf list");
-    const checks = data.copies.length > 1
-      ? data.copies.map((copy) => this.compileSliceCopyLeaf(statement, copy, context, true))
+    if (data.preflight !== "required" && data.preflight !== "proven_unnecessary") {
+      this.fail("slice copy requires a valid overlap-preflight mode");
+    }
+    const groupedPreflight = data.copies.length > 1 && data.preflight === "required";
+    const checks = groupedPreflight
+      ? data.copies.map((copy) => this.compileSliceCopyLeaf(statement, copy, context, true, false))
       : [];
     return this.module.block(null, [
       ...checks,
-      ...data.copies.map((copy) => this.compileSliceCopyLeaf(statement, copy, context, false)),
+      ...data.copies.map((copy) => this.compileSliceCopyLeaf(
+        statement,
+        copy,
+        context,
+        false,
+        groupedPreflight || data.preflight === "proven_unnecessary",
+      )),
     ]);
   }
 
-  compileSliceCopyLeaf(statement, data, context, checkOnly) {
+  compileSliceCopyLeaf(statement, data, context, checkOnly, overlapSafe) {
     if (this.sliceAccess(data.destination, context) !== "read_write") {
       this.fail("slice copy destination is read-only");
     }
@@ -687,7 +697,9 @@ export class MirCompiler extends MirCompilerLowering {
           source()[2],
         ),
       ),
-      this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
+      ...(overlapSafe ? [] : [
+        this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
+      ]),
       ...(checkOnly ? [] : [this.module.local.set(counter, this.module.i32.const(0)), copy]),
     ]);
   }

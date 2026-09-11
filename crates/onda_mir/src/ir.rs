@@ -663,6 +663,7 @@ pub enum StatementKind {
     /// realtime scratch allocation.
     SliceCopy {
         copies: Vec<SliceCopy>,
+        preflight: SliceCopyPreflight,
     },
     If {
         condition: Value,
@@ -813,6 +814,16 @@ pub enum SliceSource {
 pub struct SliceCopy {
     pub destination: Value,
     pub source: Value,
+}
+
+/// Whether a slice-copy group needs runtime overlap preflight before writes.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceCopyPreflight {
+    Required,
+    /// The trusted producer proved that every leaf is either disjoint or uses
+    /// equal source and destination strides, so overlap cannot reject.
+    ProvenUnnecessary,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

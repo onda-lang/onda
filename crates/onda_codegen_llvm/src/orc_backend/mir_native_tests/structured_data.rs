@@ -761,7 +761,7 @@ sample:
     let mut copies = Vec::new();
     let mut location = None;
     function.body.statements.retain(|statement| {
-        if let StatementKind::SliceCopy { copies: leaves } = &statement.kind {
+        if let StatementKind::SliceCopy { copies: leaves, .. } = &statement.kind {
             copies.extend(leaves.iter().cloned());
             location = Some(statement.source);
             false
@@ -771,7 +771,10 @@ sample:
     });
     assert_eq!(copies.len(), 2);
     function.body.statements.push(onda_mir::Statement {
-        kind: StatementKind::SliceCopy { copies },
+        kind: StatementKind::SliceCopy {
+            copies,
+            preflight: onda_mir::SliceCopyPreflight::Required,
+        },
         source: location.unwrap(),
     });
     for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
@@ -1186,6 +1189,31 @@ sample:
         let output = run_native_outputs_with_opt_level(source, 8, level);
         assert_eq!(output[0], vec![1198.0; 8]);
     }
+}
+
+#[test]
+fn canonical_struct_slice_copy_omits_overlap_preflight() {
+    let source = r#"
+struct Note:
+  value = 0.0
+  gain = 1.0
+sample:
+  notes: Note[4]
+  notes[1:] = notes[:3]
+  out1 = 0.0
+"#;
+    let (_, mir) = source_program(source, 1);
+    assert!(onda_mir::format_program(&mir).contains("slice_copy overlap_safe"));
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O0,
+        },
+    )
+    .expect("canonical struct copy IR");
+    assert!(ir.contains("llvm.memmove"));
+    assert!(!ir.contains("slice_copy_unequal_stride_overlap"));
 }
 
 #[test]

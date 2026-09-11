@@ -578,7 +578,7 @@ fn collect_block_resource_writes(
                     output,
                 )?;
             }
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, .. } => {
                 for copy in copies {
                     mark_value_resource_write(
                         copy.destination,
@@ -1660,7 +1660,9 @@ fn scan_block(
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_value(*destination, effects);
             }
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, preflight } => {
+                effects.may_fail |=
+                    !copies.is_empty() && *preflight == crate::SliceCopyPreflight::Required;
                 for crate::SliceCopy {
                     destination,
                     source,
@@ -1670,7 +1672,6 @@ fn scan_block(
                     effects.writes.insert(MemoryRegionSet::INDIRECT);
                     scan_value(*destination, effects);
                     scan_value(*source, effects);
-                    effects.may_fail = true;
                 }
             }
             StatementKind::If {
@@ -2781,6 +2782,32 @@ mod tests {
                 },
             )
         };
+        let slice_copy = |name: &str, preflight| {
+            let mut function = function(name, Vec::new(), Block::default());
+            function.locals.extend([
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+            ]);
+            function
+                .body
+                .statements
+                .push(statement(StatementKind::SliceCopy {
+                    copies: vec![crate::SliceCopy {
+                        destination: Value::Local(LocalId::new(0)),
+                        source: Value::Local(LocalId::new(1)),
+                    }],
+                    preflight,
+                }));
+            function
+        };
 
         let mut program = Program::new(
             CompileConfig {
@@ -2810,6 +2837,11 @@ mod tests {
             clamped_slice,
             call("calls_float_divide", 0),
             call("calls_integer_divide", 1),
+            slice_copy("checked_slice_copy", crate::SliceCopyPreflight::Required),
+            slice_copy(
+                "proven_slice_copy",
+                crate::SliceCopyPreflight::ProvenUnnecessary,
+            ),
         ];
 
         let analysis = analyze_effects(&program);
@@ -2820,6 +2852,8 @@ mod tests {
         assert!(analysis.function(FunctionId::new(4)).may_fail);
         assert!(!analysis.function(FunctionId::new(5)).may_fail);
         assert!(analysis.function(FunctionId::new(6)).may_fail);
+        assert!(analysis.function(FunctionId::new(7)).may_fail);
+        assert!(!analysis.function(FunctionId::new(8)).may_fail);
     }
 
     #[test]

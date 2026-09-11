@@ -196,10 +196,12 @@ contents as invariant. Owned fixed-data result references still use caller-provi
 Slice copy is memmove-safe for contiguous or equal-stride overlap. Overlapping unequal-stride views
 fail deterministically; MIR does not imply an unrepresented realtime scratch allocation.
 `SliceCopy` contains an ordered `copies` list of destination/source descriptor pairs. All overlap
-checks in the group complete before its first write. Each pair then copies the fitting prefix in
-list order and preserves the destination tail. This gives structured copies one failure boundary
-across their canonical leaves. Cross-pair snapshot semantics require the producer to prove that
-different leaves cannot alias or to capture their contents before the group.
+checks required by the group's `preflight` mode complete before its first write. A trusted producer
+may use `proven_unnecessary` only when every pair is disjoint or has equal source and destination
+strides; backends then omit those checks. Each pair copies the fitting prefix in list order and
+preserves the destination tail. This gives structured copies one failure boundary across their
+canonical leaves. Cross-pair snapshot semantics require the producer to prove that different leaves
+cannot alias or to capture their contents before the group.
 
 Math intrinsics express Onda semantics, not a target implementation. LLVM may map an intrinsic to
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.

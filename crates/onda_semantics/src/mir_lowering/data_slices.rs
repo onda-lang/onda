@@ -114,7 +114,17 @@ impl FunctionLowerer<'_> {
                 },
             )
             .collect();
-        self.push_statement(block, StatementKind::SliceCopy { copies }, target.loc());
+        // Nominal struct arrays expose canonical contiguous scalar leaves.
+        // Slicing scales fixed-width fields in scalar units, preserving equal
+        // source/destination strides even when the selected regions overlap.
+        self.push_statement(
+            block,
+            StatementKind::SliceCopy {
+                copies,
+                preflight: onda_mir::SliceCopyPreflight::ProvenUnnecessary,
+            },
+            target.loc(),
+        );
         Ok(true)
     }
 

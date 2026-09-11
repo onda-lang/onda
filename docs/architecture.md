@@ -151,7 +151,8 @@ Non-crate directories of note:
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
-- `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked bounds.
+- `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
+  bounds and proven-safe slice-copy overlap.
 - `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
   canonicalization, integer-range-based bounds proofs, pure-expression value numbering, bounded
   alias-safe scalar-state promotion, and cleanup.

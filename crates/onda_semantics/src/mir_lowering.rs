@@ -392,7 +392,9 @@ pub fn lower_program_to_optimized_mir(
     // SAFETY: MIR lowering owns the proof for every unchecked access and
     // storage invariant it emits. Array extents come from semantic types,
     // process frames are validator-tracked, and slice/buffer loops establish
-    // their bounds before emission. Pinned roots are introduced only by
+    // their bounds before emission. Canonical aggregate leaves use contiguous
+    // scalar storage, proving their grouped copies cannot have unequal-stride
+    // overlap. Pinned roots are introduced only by
     // declarations whose generated init_all branch overwrites the complete
     // flattened slot before the init entry can return successfully.
     let validated = unsafe { onda_mir::validate_owned_with_producer_proofs(raw) }

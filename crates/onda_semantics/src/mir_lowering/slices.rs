@@ -867,6 +867,7 @@ impl<'a> FunctionLowerer<'a> {
                         destination: destination.value,
                         source: source.value,
                     }],
+                    preflight: onda_mir::SliceCopyPreflight::Required,
                 },
                 location,
             );

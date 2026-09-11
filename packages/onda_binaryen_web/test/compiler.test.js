@@ -3931,6 +3931,7 @@ test(`rejects unequal-stride overlap before writing ${grouped ? "any copy-group 
       },
     }),
     statement("slice_copy", {
+      preflight: "required",
       copies: [
         ...(grouped ? [{ destination: local(8), source: local(7) }] : []),
         { destination: local(6), source: local(7) },
@@ -3986,6 +3987,18 @@ test(`rejects unequal-stride overlap before writing ${grouped ? "any copy-group 
   assert.deepEqual([...new Float32Array(memory.buffer, bufferData, 4)], [1, 2, 3, 4]);
 });
 }
+
+test("rejects an invalid slice-copy overlap-preflight mode", () => {
+  const mir = executableMir();
+  mir.functions[1].body.statements.push(statement("slice_copy", {
+    preflight: "invalid",
+    copies: [],
+  }));
+  assert.throws(
+    () => compileMir(mir),
+    /valid overlap-preflight mode/,
+  );
+});
 
 test("parameter array descriptors retain per-element control metadata", () => {
   const mir = executableMir();

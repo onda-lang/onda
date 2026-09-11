@@ -2098,6 +2098,7 @@ fn rejects_slice_copy_with_different_element_types() {
                 destination: Value::Local(LocalId::new(0)),
                 source: Value::Local(LocalId::new(1)),
             }],
+            preflight: crate::SliceCopyPreflight::Required,
         },
         source: SourceSpan::UNKNOWN,
     });
@@ -2106,6 +2107,42 @@ fn rejects_slice_copy_with_different_element_types() {
     assert!(errors
         .iter()
         .any(|error| error.message.contains("identical element types")));
+}
+
+#[test]
+fn rejects_untrusted_slice_copy_overlap_proofs() {
+    let mut program = empty_program();
+    program.types.push(Type::Slice {
+        element: ScalarType::F32,
+        access: AccessMode::ReadWrite,
+    });
+    program.functions[1].locals.extend([
+        Local {
+            integer_range: None,
+            name: Some("destination".to_owned()),
+            ty: test_type(0),
+        },
+        Local {
+            integer_range: None,
+            name: Some("source".to_owned()),
+            ty: test_type(0),
+        },
+    ]);
+    program.functions[1].body.statements.push(Statement {
+        kind: StatementKind::SliceCopy {
+            copies: vec![crate::SliceCopy {
+                destination: Value::Local(LocalId::new(0)),
+                source: Value::Local(LocalId::new(1)),
+            }],
+            preflight: crate::SliceCopyPreflight::ProvenUnnecessary,
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+
+    let errors = super::validate(&program).expect_err("untrusted overlap proof should fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("trusted MIR producer proof")));
 }
 
 #[test]

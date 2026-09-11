@@ -106,8 +106,10 @@ pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
 /// Every result-reference parameter must be completely initialized before any
 /// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
-/// bounds for every execution reaching it. Backends may lower those operations
-/// without runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
+/// bounds for every execution reaching it. Every slice copy marked
+/// [`crate::SliceCopyPreflight::ProvenUnnecessary`] must have only disjoint or
+/// equal-stride leaf pairs. Backends may lower those operations without their
+/// respective runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
 /// state slot, function parameter, or local must also contain every value
 /// observable from that storage. This includes values supplied by callers or
 /// restored from external state. Backends may use those invariants as hard
@@ -152,7 +154,9 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
 /// Every result-reference parameter must be completely initialized before any
 /// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
-/// bounds for every execution reaching it. Every
+/// bounds for every execution reaching it. Every slice copy marked
+/// [`crate::SliceCopyPreflight::ProvenUnnecessary`] must have only disjoint or
+/// equal-stride leaf pairs. Every
 /// [`crate::IntegerRangeInvariant`] attached to a state slot, function
 /// parameter, or local must contain every value observable from that storage,
 /// including values supplied by callers or restored from external state. Every
@@ -1932,7 +1936,16 @@ impl Validator<'_> {
                         ),
                     }
                 }
-                StatementKind::SliceCopy { copies } => {
+                StatementKind::SliceCopy { copies, preflight } => {
+                    if *preflight == crate::SliceCopyPreflight::ProvenUnnecessary
+                        && self.producer_proofs == ProducerProofStatus::Absent
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "omitting slice-copy overlap preflight requires a trusted MIR producer proof",
+                        );
+                    }
                     for crate::SliceCopy {
                         destination,
                         source,
@@ -2469,7 +2482,7 @@ impl Validator<'_> {
                     );
                 }
             }
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, .. } => {
                 for crate::SliceCopy {
                     destination,
                     source,

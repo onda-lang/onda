@@ -680,8 +680,9 @@ impl FunctionLowerer<'_> {
 
     /// Canonical data leaves have independent storage: an alias can overlap
     /// the corresponding leaf of another view, never an unrelated field.
-    /// Capture scalar values, preflight every array copy, then commit. Each
-    /// array uses memmove semantics without a second fixed scratch allocation.
+    /// Capture scalar values before committing any writes. Array leaves use
+    /// canonical contiguous storage and memmove semantics, so the grouped copy
+    /// needs neither overlap preflight nor a second fixed scratch allocation.
     pub(super) fn copy_data(
         &mut self,
         destination: &str,
@@ -723,7 +724,14 @@ impl FunctionLowerer<'_> {
             }
         }
         if !copies.is_empty() {
-            self.push_statement(block, StatementKind::SliceCopy { copies }, loc);
+            self.push_statement(
+                block,
+                StatementKind::SliceCopy {
+                    copies,
+                    preflight: onda_mir::SliceCopyPreflight::ProvenUnnecessary,
+                },
+                loc,
+            );
         }
         for (name, value) in scalars {
             self.store_data_scalar(&name, value, block, loc)?;

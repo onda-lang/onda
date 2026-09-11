@@ -371,7 +371,7 @@ impl<'a> Formatter<'a> {
                 format_value(*destination),
                 format_value(*value)
             )),
-            StatementKind::SliceCopy { copies } => {
+            StatementKind::SliceCopy { copies, preflight } => {
                 let pairs = copies
                     .iter()
                     .map(|copy| {
@@ -383,7 +383,11 @@ impl<'a> Formatter<'a> {
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
-                self.line(format_args!("{pad}slice_copy {pairs}{source}"));
+                let proof = match preflight {
+                    crate::SliceCopyPreflight::Required => "",
+                    crate::SliceCopyPreflight::ProvenUnnecessary => " overlap_safe",
+                };
+                self.line(format_args!("{pad}slice_copy{proof} {pairs}{source}"));
             }
             StatementKind::If {
                 condition,

@@ -156,14 +156,22 @@ impl FunctionEmitter<'_, '_> {
             StatementKind::SliceFill { destination, value } => {
                 self.lower_slice_fill(*destination, *value)?;
             }
-            StatementKind::SliceCopy { copies } => {
-                if copies.len() > 1 {
+            StatementKind::SliceCopy { copies, preflight } => {
+                let grouped_preflight =
+                    copies.len() > 1 && *preflight == onda_mir::SliceCopyPreflight::Required;
+                if grouped_preflight {
                     for copy in copies {
-                        self.lower_slice_copy(copy.destination, copy.source, true)?;
+                        self.lower_slice_copy(copy.destination, copy.source, true, false)?;
                     }
                 }
                 for copy in copies {
-                    self.lower_slice_copy(copy.destination, copy.source, false)?;
+                    self.lower_slice_copy(
+                        copy.destination,
+                        copy.source,
+                        false,
+                        grouped_preflight
+                            || *preflight == onda_mir::SliceCopyPreflight::ProvenUnnecessary,
+                    )?;
                 }
             }
             StatementKind::If {
@@ -3349,6 +3357,7 @@ impl FunctionEmitter<'_, '_> {
         destination: onda_mir::Value,
         source: onda_mir::Value,
         check_only: bool,
+        overlap_safe: bool,
     ) -> Result<(), MirCodegenError> {
         let destination = self.slice_parts(destination)?;
         let source = self.slice_parts(source)?;
@@ -3554,23 +3563,25 @@ impl FunctionEmitter<'_, '_> {
             source_before_destination,
             c_name("slice_copy_disjoint")?.as_ptr(),
         );
-        let directional_safe = LLVMBuildOr(
-            self.builder,
-            same_stride,
-            disjoint,
-            c_name("slice_copy_directional_safe")?.as_ptr(),
-        );
-        let unsupported_overlap = LLVMBuildNot(
-            self.builder,
-            directional_safe,
-            c_name("slice_copy_unequal_stride_overlap")?.as_ptr(),
-        );
         // A general unequal-stride overlap needs temporary storage. Dynamic
         // stack allocation is not acceptable in realtime code, so the
         // deterministic backend contract rejects that rare shape. Equal
         // strides retain memmove directionality; disjoint unequal strides use
         // the normal forward loop.
-        self.emit_failure_if(unsupported_overlap, "slice_copy_strided_safe")?;
+        if !overlap_safe {
+            let directional_safe = LLVMBuildOr(
+                self.builder,
+                same_stride,
+                disjoint,
+                c_name("slice_copy_directional_safe")?.as_ptr(),
+            );
+            let unsupported_overlap = LLVMBuildNot(
+                self.builder,
+                directional_safe,
+                c_name("slice_copy_unequal_stride_overlap")?.as_ptr(),
+            );
+            self.emit_failure_if(unsupported_overlap, "slice_copy_strided_safe")?;
+        }
         if check_only {
             LLVMBuildBr(self.builder, merge);
             LLVMPositionBuilderAtEnd(self.builder, merge);

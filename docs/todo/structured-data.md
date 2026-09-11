@@ -14,7 +14,8 @@ with proven exact lengths. Helper permission inference follows reference origins
 branch joins, and transitive calls. Fixed parameter shapes survive into MIR.
 
 Both backends consume explicit result references and prepared invocation scratch. Grouped leaf
-copies validate all overlaps before writing; canonical field separation avoids redundant copy
+copies validate all potentially failing overlaps before writing; an explicit MIR producer proof
+removes impossible checks for canonical leaves. Canonical field separation avoids redundant copy
 scratch. Local and persistent struct initialization share one implementation.
 Struct helper tensor fields use the common slice descriptor ABI, retaining stride through mutable
 and read-only forwarding. Fixed shape contracts remain explicit at helper entry, and shared MIR
@@ -281,7 +282,8 @@ binding such as `view: Note[] = notes[:]` captures a view with the source's perm
 
 Supported overlapping slice copies preserve source contents as if through temporary storage.
 Retain the existing failure for overlapping unequal-stride views rather than introducing
-runtime-sized scratch. Check every struct leaf's overlap constraints before the first write.
+runtime-sized scratch. Check every potentially failing struct leaf overlap before the first write;
+canonical leaf copies carry a trusted MIR proof when equal strides make that check unnecessary.
 This is a slice-operation rule, not a restriction on overlapping function arguments.
 
 ## Events and delegates are core
