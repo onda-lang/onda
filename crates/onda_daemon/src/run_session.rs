@@ -268,7 +268,8 @@ pub struct RunSession {
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
-    event_encoders: Vec<onda_processor_abi::payload::PayloadEncoder>,
+    event_plans: Vec<onda_processor_abi::payload::PayloadPlan>,
+    event_encoder: onda_processor_abi::payload::PayloadEncoderWorkspace,
     delegate_storage: Vec<u8>,
     delegate_collection_enabled: bool,
     delegate_used: usize,
@@ -474,19 +475,20 @@ impl RunSession {
         instance
             .reserve_event_workspace(required_workspace)
             .map_err(RunBuildError::Runtime)?;
-        let event_encoders = event_plans
-            .into_iter()
+        let wire_capacity = event_plans
+            .iter()
             .map(|plan| {
-                let capacity = plan.wire_capacity(
-                    onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
-                );
-                onda_processor_abi::payload::PayloadEncoder::new(plan, capacity)
-                    .map_err(|error| Diagnostic::runtime(error.to_string(), 0, 0))
+                plan.wire_capacity(onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES)
             })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(RunBuildError::Runtime)?;
+            .max()
+            .unwrap_or(0);
+        let event_encoder =
+            onda_processor_abi::payload::PayloadEncoderWorkspace::new(&event_plans, wire_capacity)
+                .map_err(|error| Diagnostic::runtime(error.to_string(), 0, 0))
+                .map_err(RunBuildError::Runtime)?;
         Ok(Self {
-            event_encoders,
+            event_plans,
+            event_encoder,
             path,
             version,
             options,
@@ -946,9 +948,12 @@ impl RunSession {
         let Some(desc) = self.jit.event_descriptor(index) else {
             return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
         };
-        let payload = self.event_encoders[index].encode(values).map_err(|error| {
-            Diagnostic::runtime(format!("event '{}': {error}", desc.name()), 0, 0)
-        })?;
+        let payload = self
+            .event_encoder
+            .encode(&self.event_plans[index], values)
+            .map_err(|error| {
+                Diagnostic::runtime(format!("event '{}': {error}", desc.name()), 0, 0)
+            })?;
         let delegate_start = self.delegate_used;
         let print_start = self.print_used;
         let mut batch = Self::next_delegate_batch(
@@ -2096,6 +2101,14 @@ sample:
         assert_eq!(dynamic.wire_capacity(default), default);
         assert_eq!(hybrid.wire_capacity(default), hybrid.minimum_sizes().0);
         assert!(hybrid.wire_capacity(default) > default);
+        assert_eq!(
+            run.event_encoder.wire_capacity(),
+            run.event_plans
+                .iter()
+                .map(|plan| plan.wire_capacity(default))
+                .max()
+                .unwrap()
+        );
         assert!(run.instance.event_workspace_capacity() > default);
     }
 

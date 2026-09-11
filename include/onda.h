@@ -314,13 +314,13 @@ typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align
 /* Host allocator used by custom instance creation.
    This allocator is instance-scoped; programs, diagnostics, owned strings, and other library
    objects continue to use Onda's allocator and their matching destroy/dispose functions.
-   Onda calls alloc synchronously during creation and explicit event workspace reservation; no realtime operation on
-   a successfully created instance calls alloc. free may be called during failed creation or later
-   instance destruction. The context and callbacks must remain valid until every instance created
-   with this allocator has been destroyed. alloc must be callable on each thread where the host
-   creates an instance. free must be callable on every thread where creation can fail or an instance
-   can be destroyed. When multiple instances share an allocator and are created or destroyed
-   concurrently, the corresponding callbacks must support those concurrent calls. */
+   Onda calls alloc synchronously during creation and when explicitly growing an event workspace.
+   free may be called during failed creation, after successful workspace growth, or during instance
+   destruction. Realtime execution calls neither callback. The context and callbacks must remain
+   valid until every associated instance has been destroyed and must be callable on every thread
+   where the host creates an instance, grows its event workspace, or destroys it. When multiple
+   instances share an allocator and those operations run concurrently, the callbacks must support
+   the concurrent calls. */
 typedef struct {
   void* context;
   onda_alloc_fn alloc;
@@ -744,8 +744,10 @@ onda_instance_t* onda_instance_create_initialized_with_allocator(
   onda_diag_t* out_diag
 );
 /* Reserve aligned event input workspace outside realtime execution, using the instance allocator.
-   Fixed payloads fit the initial capacity; dynamic payloads start with at least 64 KiB. Increasing
-   capacity preserves processor state and is allowed before or after full initialization. */
+   Fixed payloads fit the initial capacity; dynamic payloads start with at least 64 KiB. A request
+   above the current capacity allocates replacement storage and frees the old storage; other requests
+   retain it. Failure preserves the existing workspace and processor state. Reservation is allowed
+   before or after full initialization. */
 bool onda_instance_reserve_event_workspace(
   onda_instance_t* instance,
   size_t capacity_bytes,

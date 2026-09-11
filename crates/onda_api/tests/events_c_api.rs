@@ -3064,6 +3064,24 @@ sample {
         );
         assert!(stats.allocs > 0);
 
+        let creation_allocs = stats.allocs;
+        let creation_frees = stats.frees;
+        assert!(onda_instance_reserve_event_workspace(
+            instance, 128, &mut *diag
+        ));
+        assert_eq!(stats.allocs, creation_allocs + 1);
+        assert_eq!(stats.frees, creation_frees);
+        assert!(onda_instance_reserve_event_workspace(
+            instance, 128, &mut *diag
+        ));
+        assert_eq!(stats.allocs, creation_allocs + 1);
+        assert_eq!(stats.frees, creation_frees);
+        assert!(onda_instance_reserve_event_workspace(
+            instance, 256, &mut *diag
+        ));
+        assert_eq!(stats.allocs, creation_allocs + 2);
+        assert_eq!(stats.frees, creation_frees + 1);
+
         let mut out = vec![0.0_f32; frames as usize];
         assert_eq!(
             onda_bind_output(

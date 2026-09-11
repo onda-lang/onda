@@ -259,4 +259,33 @@ mod allocation_check {
         }
         assert_eq!(ALLOCATIONS.with(Cell::get), before);
     }
+
+    #[test]
+    fn one_host_encoding_workspace_reuses_storage_across_plans() {
+        let structured = PayloadPlan::new(&schema()).unwrap();
+        let structured_wire = input();
+        let structured_values = structured
+            .decode_values::<PayloadDefault>(&structured_wire)
+            .unwrap();
+        let scalar = PayloadPlan::new(&PayloadSchema {
+            params: vec![field("value", PayloadType::scalar(ScalarEncoding::I32))],
+        })
+        .unwrap();
+        let scalar_values = [PayloadDefault::Scalar("42".into())];
+        let plans = [structured.clone(), scalar.clone()];
+        let mut encoder = PayloadEncoderWorkspace::new(&plans, 128).unwrap();
+
+        let before = ALLOCATIONS.with(Cell::get);
+        for _ in 0..100 {
+            assert_eq!(
+                encoder.encode(&structured, &structured_values).unwrap(),
+                structured_wire
+            );
+            assert_eq!(
+                encoder.encode(&scalar, &scalar_values).unwrap(),
+                42_i32.to_le_bytes()
+            );
+        }
+        assert_eq!(ALLOCATIONS.with(Cell::get), before);
+    }
 }

@@ -471,9 +471,10 @@ instance is destroyed and must support the threads/concurrency used by the host.
 
 `onda_instance_reserve_event_workspace(instance, capacity_bytes, out_diag)` provisions aligned
 input preparation storage outside realtime execution. Fixed messages fit the initial capacity;
-dynamic messages start with at least 64 KiB. Reservation can run before or after initialization,
-retains sufficient existing storage, and preserves state. Capacity rejection during event dispatch
-does not invalidate the instance.
+dynamic messages start with at least 64 KiB. A request above the current capacity allocates
+replacement storage and frees the old storage; other requests retain it. Reservation can run before
+or after initialization, and allocation failure preserves the existing workspace and processor
+state. Capacity rejection during event dispatch does not invalidate the instance.
 
 ### Initialization
 

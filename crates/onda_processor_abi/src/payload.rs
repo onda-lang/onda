@@ -8,7 +8,7 @@ mod layout;
 mod shape;
 pub use shape::PayloadLeaf;
 mod value;
-pub use value::{PayloadEncoder, PayloadSink, PayloadSource};
+pub use value::{PayloadEncoder, PayloadEncoderWorkspace, PayloadSink, PayloadSource};
 mod transfer;
 pub use layout::{IntegerDomain, ParameterPlan, PayloadPlan, PayloadTensor, TensorRegion};
 pub use transfer::PreparedPayload;

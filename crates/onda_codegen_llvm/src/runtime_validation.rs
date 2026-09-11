@@ -1052,8 +1052,10 @@ impl RuntimeState {
         Ok(())
     }
 
-    /// Provision event input storage outside realtime execution. Existing capacity
-    /// is retained when sufficient. Payload sizing is available on the message plan.
+    /// Provision event input storage outside realtime execution. A larger request
+    /// reallocates with the instance allocator; otherwise existing storage is retained.
+    /// Allocation failure preserves the existing workspace. Payload sizing is available
+    /// on the message plan.
     pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
         reserve_event_workspace(&mut self.event_workspace, bytes)
     }
@@ -1080,6 +1082,8 @@ impl RuntimeState {
 
 impl crate::UninitializedRuntimeState {
     /// Provision event input storage before initialization, outside realtime execution.
+    /// A larger request reallocates with the instance allocator; allocation failure
+    /// preserves the existing workspace.
     pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
         reserve_event_workspace(&mut self.event_workspace, bytes)
     }

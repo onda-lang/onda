@@ -108,6 +108,13 @@ impl PayloadType {
 #[derive(Debug)]
 pub struct PayloadEncoder {
     plan: PayloadPlan,
+    workspace: PayloadEncoderWorkspace,
+}
+
+/// Reusable storage for encoding payloads from multiple prepared plans.
+/// Construction provisions all storage; successful encoding performs no allocations.
+#[derive(Debug)]
+pub struct PayloadEncoderWorkspace {
     lengths: Vec<i32>,
     offsets: Vec<usize>,
     output: Vec<u8>,
@@ -141,30 +148,67 @@ impl PayloadPlan {
         let (size, _) = self.sizes(&lengths)?;
         let mut encoder = PayloadEncoder::new(self.clone(), size)?;
         encoder.encode(values)?;
-        Ok(encoder.output)
+        Ok(encoder.workspace.output)
     }
 }
 
 impl PayloadEncoder {
     pub fn new(plan: PayloadPlan, wire_capacity: usize) -> Result<Self, PayloadError> {
+        let workspace = PayloadEncoderWorkspace::new(std::slice::from_ref(&plan), wire_capacity)?;
+        Ok(Self { plan, workspace })
+    }
+
+    pub fn encode<V: PayloadSource>(&mut self, values: &[V]) -> Result<&[u8], PayloadError> {
+        self.workspace.encode(&self.plan, values)
+    }
+}
+
+impl PayloadEncoderWorkspace {
+    pub fn new(plans: &[PayloadPlan], wire_capacity: usize) -> Result<Self, PayloadError> {
         if wire_capacity > i32::MAX as usize {
             return Err(PayloadError::Overflow);
         }
         Ok(Self {
-            lengths: vec![0; plan.dynamic_parameters()],
-            offsets: vec![0; plan.tensors.len()],
+            lengths: vec![
+                0;
+                plans
+                    .iter()
+                    .map(PayloadPlan::dynamic_parameters)
+                    .max()
+                    .unwrap_or(0)
+            ],
+            offsets: vec![
+                0;
+                plans
+                    .iter()
+                    .map(|plan| plan.tensors.len())
+                    .max()
+                    .unwrap_or(0)
+            ],
             output: vec![0; wire_capacity],
-            plan,
         })
     }
 
-    pub fn encode<V: PayloadSource>(&mut self, values: &[V]) -> Result<&[u8], PayloadError> {
+    pub fn wire_capacity(&self) -> usize {
+        self.output.len()
+    }
+
+    pub fn encode<V: PayloadSource>(
+        &mut self,
+        plan: &PayloadPlan,
+        values: &[V],
+    ) -> Result<&[u8], PayloadError> {
         let Self {
-            plan,
             lengths,
             offsets,
             output,
         } = self;
+        let lengths = lengths
+            .get_mut(..plan.dynamic_parameters())
+            .ok_or(PayloadError::InsufficientCapacity)?;
+        let offsets = offsets
+            .get_mut(..plan.tensors.len())
+            .ok_or(PayloadError::InsufficientCapacity)?;
         plan.value_lengths(values, lengths)?;
         let (size, _) = plan.sizes(lengths)?;
         if size > output.len() {

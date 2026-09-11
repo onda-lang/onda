@@ -957,8 +957,9 @@ fn invalid_instance_error() -> Diagnostic {
 // SAFETY: Instance is an exclusive mutable runtime owner. Its raw pointers are non-owning host
 // bindings and are never dereferenced without `&mut Instance`; their validity remains governed by
 // the bind/prepare/process contract. Moving an instance does not move the bound host allocations.
-// Custom allocator construction guarantees that its free callback remains valid on whichever
-// thread eventually destroys the instance. Realtime dispatch performs no instance allocation. Explicit workspace reservation is off-thread.
+// Custom allocator construction guarantees that its callbacks remain valid on whichever thread
+// creates, grows the event workspace of, or destroys the instance. Realtime dispatch performs no
+// instance allocation; explicit workspace reservation happens outside realtime execution.
 unsafe impl Send for Instance {}
 
 #[derive(Debug, Clone, Copy)]
@@ -1159,6 +1160,8 @@ impl Instance {
 
     /// Increase prepared event capacity outside realtime execution, using the instance allocator.
     /// The default is sufficient for fixed payloads and at least 64 KiB for dynamic payloads.
+    /// A larger request reallocates; smaller requests reuse the existing workspace, and allocation
+    /// failure preserves it.
     pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
         match &mut self.state {
             InstanceState::Pending(state) => state.reserve_event_workspace(bytes),

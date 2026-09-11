@@ -153,10 +153,11 @@ pub struct RuntimeAllocator {
 impl RuntimeAllocator {
     /// Creates a host allocator for instance-owned runtime storage.
     ///
-    /// Onda invokes `alloc` only synchronously while creating an instance. Once
-    /// instance creation returns, no operation on that instance invokes
-    /// `alloc`. Onda may invoke `free` while unwinding failed creation and when
-    /// the completed instance is later destroyed.
+    /// Onda invokes `alloc` synchronously while creating an instance and when
+    /// explicitly growing its event workspace. Onda may invoke `free` while
+    /// unwinding failed creation, after successfully growing the workspace, and
+    /// when the completed instance is later destroyed. Realtime execution does
+    /// not invoke either callback.
     ///
     /// # Safety
     ///
@@ -166,10 +167,10 @@ impl RuntimeAllocator {
     /// failure. `free` must accept every non-null allocation returned by
     /// `alloc`, with its original size and alignment.
     ///
-    /// `alloc` must be callable on each thread where the host creates an
-    /// instance. `free` must be callable on every thread where creation can
-    /// fail or an instance can be destroyed, including concurrently when the
-    /// host creates or destroys multiple instances at once.
+    /// Both callbacks must be callable on every thread where the host creates
+    /// an instance, grows its event workspace, or destroys it. They must support
+    /// concurrent calls when the host performs those operations on multiple
+    /// instances at once.
     pub unsafe fn new(
         context: *mut c_void,
         alloc: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
