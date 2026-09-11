@@ -1328,12 +1328,16 @@ sample:
 
 The same target resolution applies in every executable scope, including `init`, block, `sample`,
 event, task, proc, and def bodies. The usual storage permissions and rate-specific output rules
-still apply.
+still apply. Target selectors are evaluated exactly once, from left to right, before the assigned
+value. Assigning the field itself uses the ordinary scalar, tuple, fixed-array, or struct
+replacement rules. If the field is an array or tuple, an index after the field selects one of its
+elements. For example, `voices[i].taps[j] = 0.5` selects voice `i`, then element `j` of that voice's
+`taps` field.
 
 Accepted forms:
 
 - `named.path[idx].field`
-- `named.path[idx].field[fidx]`
+- `named.path[idx].field[element_idx]`
 
 The path before `[idx]` can cross ordinary named struct fields, as in
 `current.notes[0].velocity`. The index is what crosses the struct-array boundary; spelling

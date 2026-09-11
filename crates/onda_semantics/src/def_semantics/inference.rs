@@ -929,9 +929,7 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } =
-                target
-            {
+            target.visit_selectors(|index| {
                 propagate_expr_callee_buffer_requirements_to_params(
                     index,
                     caller_name,
@@ -941,7 +939,7 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
                     snapshot,
                     kinds,
                 );
-            }
+            });
             propagate_expr_callee_buffer_requirements_to_params(
                 expr,
                 caller_name,
@@ -1368,7 +1366,12 @@ fn collect_stmt_field_usage(
                         errors,
                     );
                 }
-                AssignTarget::IndexedMember { base, index, field } => {
+                AssignTarget::IndexedMember {
+                    base,
+                    index,
+                    field,
+                    field_index,
+                } => {
                     let path = format!("{base}.{field}");
                     if let Some((root, field)) = split_simple_field_path(&path) {
                         if let Some(param_idx) = param_index.get(root).copied() {
@@ -1392,6 +1395,17 @@ fn collect_stmt_field_usage(
                         usage,
                         errors,
                     );
+                    if let Some(field_index) = field_index {
+                        collect_expr_field_usage(
+                            field_index,
+                            fn_name,
+                            param_index,
+                            param_structs,
+                            struct_defs,
+                            usage,
+                            errors,
+                        );
+                    }
                 }
                 AssignTarget::Slice {
                     base,

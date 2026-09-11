@@ -82,25 +82,11 @@ pub(crate) fn rewrite_binding_target(target: &mut AssignTarget, names: &HashMap<
         AssignTarget::Var(name) => {
             rewrite_binding_path(name, names);
         }
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
             rewrite_binding_path(base, names);
-            rewrite_binding_expr(index, names);
         }
-        AssignTarget::IndexedMember { base, index, .. } => {
+        AssignTarget::Slice { base, .. } => {
             rewrite_binding_path(base, names);
-            rewrite_binding_expr(index, names);
-        }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
-            rewrite_binding_path(base, names);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_binding_expr(coordinate, names);
-            }
         }
         AssignTarget::Tuple(values) => {
             for name in values.iter_mut().filter_map(|target| target.binding_mut()) {
@@ -110,6 +96,7 @@ pub(crate) fn rewrite_binding_target(target: &mut AssignTarget, names: &HashMap<
             }
         }
     }
+    target.visit_selectors_mut(|selector| rewrite_binding_expr(selector, names));
 }
 
 pub(crate) fn rewrite_binding_stmts(
@@ -264,25 +251,11 @@ pub(crate) fn collect_stmt_uses(stmts: &[Stmt], uses: &mut HashSet<String>) {
                     AssignTarget::Var(name) => {
                         uses.insert(name.clone());
                     }
-                    AssignTarget::Index { base, index } => {
+                    AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                         uses.insert(base.clone());
-                        collect_expr_uses(index, uses);
                     }
-                    AssignTarget::IndexedMember { base, index, .. } => {
+                    AssignTarget::Slice { base, .. } => {
                         uses.insert(base.clone());
-                        collect_expr_uses(index, uses);
-                    }
-                    AssignTarget::Slice {
-                        base,
-                        selector,
-                        channel,
-                        start,
-                        end,
-                    } => {
-                        uses.insert(base.clone());
-                        for expr in [selector, channel, start, end].into_iter().flatten() {
-                            collect_expr_uses(expr, uses);
-                        }
                     }
                     AssignTarget::Tuple(names) => uses.extend(
                         names
@@ -291,6 +264,7 @@ pub(crate) fn collect_stmt_uses(stmts: &[Stmt], uses: &mut HashSet<String>) {
                             .map(str::to_owned),
                     ),
                 }
+                target.visit_selectors(|selector| collect_expr_uses(selector, uses));
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => collect_expr_uses(expr, uses),
             Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, uses),

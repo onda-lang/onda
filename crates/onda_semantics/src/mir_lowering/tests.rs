@@ -3189,18 +3189,25 @@ outs:
 
 struct Cell:
   value: f32
+  taps: f32[2]
+  pair: (f32, i32)
 
 init:
   state: Cell[2]
   state[0].value = 1.0
+  state[0].taps[1] = 1.5
+  state[0].pair = (2.0, 3)
 
 block:
   block_cells: Cell[2]
   block_cells[0].value = 2.0
+  block_cells[0].taps[1] = 2.5
 
   sample:
     sample_cells: Cell[2]
     sample_cells[0].value = 3.0
+    sample_cells[0].taps = [3.5, 4.5]
+    sample_cells[0].pair = (4.0, 5)
     state[1].value = sample_cells[0].value
     out1 = state[0].value + state[1].value + block_cells[0].value
 
@@ -3210,6 +3217,8 @@ events:
   reset():
     event_cells: Cell[2]
     event_cells[0].value = 5.0
+    event_cells[0].taps[1] = 5.5
+    event_cells[0].pair = (6.0, 7)
     state[0].value = event_cells[0].value
 "#;
     let parsed = parse_program(source).expect("source should parse");
@@ -3260,22 +3269,31 @@ fn lowers_local_struct_array_field_writes_in_defs_tasks_and_procs() {
     let source = r#"
 struct Cell:
   value: f32
+  taps: f32[2]
+  pair: (f32, i32)
 
 def seed():
   def_cells: Cell[2]
   def_cells[0].value = 1.0
-  return def_cells[0].value
+  def_cells[0].taps[1] = 1.5
+  def_cells[0].pair = (2.0, 3)
+  return def_cells[0].value + def_cells[0].taps[1]
 
 task worker():
   task_cells: Cell[2]
   task_cells[0].value = 2.0
+  task_cells[0].taps[1] = 2.5
+  task_cells[0].pair = (3.0, 4)
   yield
 
 proc Writer:
   sample:
     proc_cells: Cell[2]
+    proc_taps: f32[2] = [3.5, 4.5]
     proc_cells[0].value = 3.0
-    out1 = proc_cells[0].value
+    proc_cells[0].taps = proc_taps
+    proc_cells[0].pair = (5.0, 6)
+    out1 = proc_cells[0].value + proc_cells[0].taps[1]
 
 init:
   writer = Writer()

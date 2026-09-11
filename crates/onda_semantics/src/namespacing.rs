@@ -225,43 +225,19 @@ pub(super) fn qualify_stmt_namespaced_symbols(
             typed_decl_ty_loc,
             ..
         } => {
-            match target {
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    qualify_expr_namespaced_symbols(
-                        index,
-                        current_ns,
-                        callable_symbols,
-                        callable_namespaces,
-                        nominal_symbols,
-                        nominal_namespaces,
-                        errors,
-                        context,
-                        None,
-                    );
-                }
-                AssignTarget::Slice {
+            target.visit_selectors_mut(|selector| {
+                qualify_expr_namespaced_symbols(
                     selector,
-                    channel,
-                    start,
-                    end,
-                    ..
-                } => {
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        qualify_expr_namespaced_symbols(
-                            coordinate,
-                            current_ns,
-                            callable_symbols,
-                            callable_namespaces,
-                            nominal_symbols,
-                            nominal_namespaces,
-                            errors,
-                            context,
-                            None,
-                        );
-                    }
-                }
-                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-            }
+                    current_ns,
+                    callable_symbols,
+                    callable_namespaces,
+                    nominal_symbols,
+                    nominal_namespaces,
+                    errors,
+                    context,
+                    None,
+                );
+            });
             let array_elem_diag = if *typed_decl_ty_loc != Span::ZERO {
                 Some(DiagCtx::new(*typed_decl_ty_loc))
             } else {

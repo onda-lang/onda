@@ -200,6 +200,7 @@ impl PermissionAnalysis<'_> {
                     expr,
                     ..
                 } => {
+                    target.visit_selectors(|selector| self.expression(selector, env));
                     match target {
                         AssignTarget::Var(name) => {
                             // Existing aggregate names preserve their storage identity.
@@ -225,28 +226,13 @@ impl PermissionAnalysis<'_> {
                                 env.origins.insert(name.clone(), origins);
                             }
                         }
-                        AssignTarget::Index { base, index } => {
+                        AssignTarget::Index { base, .. }
+                        | AssignTarget::IndexedMember { base, .. } => {
                             self.writes.extend(env.storage_origins(base));
-                            self.expression(index, env);
                             self.expression(expr, env);
                         }
-                        AssignTarget::IndexedMember { base, index, .. } => {
+                        AssignTarget::Slice { base, .. } => {
                             self.writes.extend(env.storage_origins(base));
-                            self.expression(index, env);
-                            self.expression(expr, env);
-                        }
-                        AssignTarget::Slice {
-                            base,
-                            selector,
-                            channel,
-                            start,
-                            end,
-                        } => {
-                            self.writes.extend(env.storage_origins(base));
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                self.expression(coordinate, env);
-                            }
                             self.expression(expr, env);
                         }
                         AssignTarget::Tuple(names) => {

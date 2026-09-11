@@ -152,37 +152,22 @@ pub(super) fn rewrite_nested_field_paths_in_stmt(
                         }
                     }
                 }
-                AssignTarget::Index { base, index }
-                | AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Index { base, .. }
+                | AssignTarget::IndexedMember { base, .. }
+                | AssignTarget::Slice { base, .. } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(fields) = nested_fields.get(root) {
                             if fields.contains(field) {
                                 *base = format!("self.{}", nested_field_name(root, field));
                             }
                         }
-                    }
-                    rewrite_nested_field_paths_in_expr(index, nested_fields);
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if let Some(fields) = nested_fields.get(root) {
-                            if fields.contains(field) {
-                                *base = format!("self.{}", nested_field_name(root, field));
-                            }
-                        }
-                    }
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        rewrite_nested_field_paths_in_expr(coordinate, nested_fields);
                     }
                 }
                 AssignTarget::Tuple(_) => {}
             }
+            target.visit_selectors_mut(|selector| {
+                rewrite_nested_field_paths_in_expr(selector, nested_fields)
+            });
             rewrite_nested_field_paths_in_expr(expr, nested_fields);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -334,37 +319,20 @@ pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<Stri
                         *name = mapped.clone();
                     }
                 }
-                AssignTarget::Index { base, index }
-                | AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Index { base, .. }
+                | AssignTarget::IndexedMember { base, .. }
+                | AssignTarget::Slice { base, .. } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(mapped) = remap.get(root) {
                             *base = format!("{mapped}.{field}");
                         }
                     } else if let Some(mapped) = remap.get(base) {
                         *base = mapped.clone();
-                    }
-                    remap_nested_symbols_in_expr(index, remap);
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if let Some(mapped) = remap.get(root) {
-                            *base = format!("{mapped}.{field}");
-                        }
-                    } else if let Some(mapped) = remap.get(base) {
-                        *base = mapped.clone();
-                    }
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        remap_nested_symbols_in_expr(coordinate, remap);
                     }
                 }
                 AssignTarget::Tuple(_) => {}
             }
+            target.visit_selectors_mut(|selector| remap_nested_symbols_in_expr(selector, remap));
             remap_nested_symbols_in_expr(expr, remap);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -508,33 +476,20 @@ pub(super) fn prefix_self_fields_in_stmt(
                         *name = prefixed;
                     }
                 }
-                AssignTarget::Index { base, index }
-                | AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Index { base, .. }
+                | AssignTarget::IndexedMember { base, .. }
+                | AssignTarget::Slice { base, .. } => {
                     if let Some(prefixed) =
                         prefixed_self_field_path(base, prefix, nested_field_names)
                     {
                         *base = prefixed;
-                    }
-                    prefix_self_fields_in_expr(index, prefix, nested_field_names);
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    if let Some(prefixed) =
-                        prefixed_self_field_path(base, prefix, nested_field_names)
-                    {
-                        *base = prefixed;
-                    }
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        prefix_self_fields_in_expr(coordinate, prefix, nested_field_names);
                     }
                 }
                 AssignTarget::Tuple(_) => {}
             }
+            target.visit_selectors_mut(|selector| {
+                prefix_self_fields_in_expr(selector, prefix, nested_field_names)
+            });
             prefix_self_fields_in_expr(expr, prefix, nested_field_names);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

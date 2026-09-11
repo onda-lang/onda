@@ -41,7 +41,10 @@ fn push_block_audio_input_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, na
     );
 }
 
-fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
+pub(crate) fn infer_call_argument_scalar_type(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<PrimitiveType> {
     let mut discarded = Vec::new();
     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
@@ -295,7 +298,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
         AssignTarget::Var(name) => {
             ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
         }
-        AssignTarget::Index { base, index } | AssignTarget::IndexedMember { base, index, .. } => {
+        AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);
@@ -313,15 +316,8 @@ pub(crate) fn validate_block_bound_surface_assign_target(
                     ok = false;
                 }
             }
-            ok &= validate_block_bound_surface_expr(index, env, errors);
         }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
+        AssignTarget::Slice { base, .. } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);
@@ -334,17 +330,6 @@ pub(crate) fn validate_block_bound_surface_assign_target(
                 push_dynamic_param_surface_value_error(errors, loc, surface);
                 ok = false;
             }
-            for coordinate in [
-                selector.as_ref(),
-                channel.as_ref(),
-                start.as_ref(),
-                end.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                ok &= validate_block_bound_surface_expr(coordinate, env, errors);
-            }
         }
         AssignTarget::Tuple(names) => {
             for name in names.iter().filter_map(|target| target.binding()) {
@@ -352,6 +337,8 @@ pub(crate) fn validate_block_bound_surface_assign_target(
             }
         }
     }
+    target
+        .visit_selectors(|selector| ok &= validate_block_bound_surface_expr(selector, env, errors));
     ok
 }
 
@@ -1769,7 +1756,10 @@ fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
     )
 }
 
-fn infer_call_argument_tuple_types(expr: &Expr, env: ExprEnv<'_>) -> Option<Vec<PrimitiveType>> {
+pub(crate) fn infer_call_argument_tuple_types(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<Vec<PrimitiveType>> {
     match expr {
         Expr::Tuple { values, .. } => values
             .iter()
@@ -1981,6 +1971,30 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
         elem,
         len: env.array_vars.get(name).copied(),
     })
+}
+
+pub(crate) fn array_data_struct_element_type(name: &str, env: ExprEnv<'_>) -> Option<String> {
+    if let Some(struct_name) = env
+        .struct_array_roots
+        .get(name)
+        .map(|root| root.struct_name.clone())
+        .or_else(|| {
+            env.local_array_aliases
+                .get(name)
+                .and_then(|alias| alias.elem_struct.clone())
+        })
+    {
+        return env
+            .struct_defs
+            .contains_key(&struct_name)
+            .then_some(struct_name);
+    }
+    let CallArrayArgElem::Nominal(struct_name) = call_array_symbol_info(name, env)?.elem else {
+        return None;
+    };
+    env.struct_defs
+        .contains_key(&struct_name)
+        .then_some(struct_name)
 }
 
 fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {

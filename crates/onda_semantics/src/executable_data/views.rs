@@ -159,28 +159,16 @@ impl CapturedViews {
                         AssignTarget::Var(name) => {
                             uses.insert(name.clone());
                         }
-                        AssignTarget::Index { base, index } => {
+                        AssignTarget::Index { base, .. }
+                        | AssignTarget::IndexedMember { base, .. } => {
                             uses.insert(base.clone());
-                            collect_expr_uses(index, &mut uses);
                         }
-                        AssignTarget::IndexedMember { base, index, .. } => {
+                        AssignTarget::Slice { base, .. } => {
                             uses.insert(base.clone());
-                            collect_expr_uses(index, &mut uses);
-                        }
-                        AssignTarget::Slice {
-                            base,
-                            selector,
-                            channel,
-                            start,
-                            end,
-                        } => {
-                            uses.insert(base.clone());
-                            for expr in [selector, channel, start, end].into_iter().flatten() {
-                                collect_expr_uses(expr, &mut uses);
-                            }
                         }
                         AssignTarget::Tuple(_) => {}
                     }
+                    target.visit_selectors(|selector| collect_expr_uses(selector, &mut uses));
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                     collect_expr_uses(expr, &mut uses)

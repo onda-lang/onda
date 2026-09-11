@@ -917,7 +917,7 @@ fn validate_template_assign_target_refs(
                 errors,
             );
         }
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, index } | AssignTarget::IndexedMember { base, index, .. } => {
             validate_template_named_ref(
                 base,
                 current_ns,
@@ -927,19 +927,6 @@ fn validate_template_assign_target_refs(
                 index.loc().span(),
                 errors,
             );
-            validate_template_expr_refs(index, current_ns, state, scope, context, errors);
-        }
-        AssignTarget::IndexedMember { base, index, .. } => {
-            validate_template_named_ref(
-                base,
-                current_ns,
-                state,
-                scope,
-                context,
-                index.loc().span(),
-                errors,
-            );
-            validate_template_expr_refs(index, current_ns, state, scope, context, errors);
         }
         AssignTarget::Slice {
             base,
@@ -962,19 +949,12 @@ fn validate_template_assign_target_refs(
                     .unwrap_or_default(),
                 errors,
             );
-            for coordinate in [selector, channel, start, end] {
-                validate_template_optional_expr_refs(
-                    coordinate.as_deref(),
-                    current_ns,
-                    state,
-                    scope,
-                    context,
-                    errors,
-                );
-            }
         }
         AssignTarget::Tuple(_) => {}
     }
+    target.visit_selectors(|selector| {
+        validate_template_expr_refs(selector, current_ns, state, scope, context, errors)
+    });
 }
 
 fn validate_template_expr_refs(
@@ -4418,8 +4398,9 @@ fn rewrite_stmt_scoped(
                         }
                     }
                 }
-                AssignTarget::Index { base, index }
-                | AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Index { base, .. }
+                | AssignTarget::IndexedMember { base, .. }
+                | AssignTarget::Slice { base, .. } => {
                     if let Some(qualified) = resolve_visible_unqualified_const_name(
                         base,
                         current_ns,
@@ -4445,66 +4426,22 @@ fn rewrite_stmt_scoped(
                         ) {
                             *base = resolved;
                         }
-                    }
-                    rewrite_expr_scoped(
-                        index,
-                        current_ns,
-                        template_consts,
-                        options,
-                        state,
-                        generated,
-                        errors,
-                        local_scope,
-                    );
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    if let Some(qualified) = resolve_visible_unqualified_const_name(
-                        base,
-                        current_ns,
-                        state,
-                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
-                        errors,
-                    ) {
-                        *base = qualified;
-                    } else if looks_like_namespace_ref(base) {
-                        if let Some(resolved) = resolve_namespace_symbol_name(
-                            base,
-                            current_ns,
-                            template_consts,
-                            options,
-                            state,
-                            generated,
-                            errors,
-                            target_loc
-                                .as_ref()
-                                .map(SourceLoc::from)
-                                .unwrap_or_default()
-                                .span(),
-                        ) {
-                            *base = resolved;
-                        }
-                    }
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        rewrite_expr_scoped(
-                            coordinate,
-                            current_ns,
-                            template_consts,
-                            options,
-                            state,
-                            generated,
-                            errors,
-                            local_scope,
-                        );
                     }
                 }
                 AssignTarget::Tuple(_) => {}
             }
+            target.visit_selectors_mut(|selector| {
+                rewrite_expr_scoped(
+                    selector,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    local_scope,
+                )
+            });
             if let Some(name) = generic_decl_ty {
                 rewrite_named_type_ref_name(
                     name,

@@ -538,6 +538,62 @@ sample:
     }
 
     #[test]
+    fn indexed_struct_array_member_writes_reject_invalid_field_shapes() {
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+task invalid():
+  cells: Cell[1]
+  index: i32 = 0
+  cells[0].pair[index] = 1.0
+  yield
+
+block:
+  await invalid()
+  sample:
+    out1 = 0.0
+"#,
+            "tuple field index must be a compile-time integer constant",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+sample:
+  cells: Cell[1]
+  cells[0].value[0] = 1.0
+  out1 = 0.0
+"#,
+            "is not a array/buffer symbol",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  taps: f32[2]
+
+proc Invalid:
+  sample:
+    cells: Cell[1]
+    replacement: f32[3] = [1.0, 2.0, 3.0]
+    cells[0].taps = replacement
+    out1 = 0.0
+
+init:
+  invalid = Invalid()
+
+sample:
+  out1 = invalid()
+"#,
+            "expects 'f32[2]', got 'f32[3]'",
+        );
+    }
+
+    #[test]
     fn write_unsafe_rejects_aggregate_arrays_during_analysis() {
         let source = r#"
 struct Cell:

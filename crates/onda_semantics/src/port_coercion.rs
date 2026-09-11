@@ -595,9 +595,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } =
-                target
-            {
+            target.visit_selectors_mut(|index| {
                 rewrite_top_level_range_clamps_in_expr(
                     index,
                     input_aliases,
@@ -607,7 +605,7 @@ pub(super) fn rewrite_top_level_range_clamps_in_stmt(
                     clamp_params,
                     usage,
                 );
-            }
+            });
             rewrite_top_level_range_clamps_in_expr(
                 expr,
                 input_aliases,

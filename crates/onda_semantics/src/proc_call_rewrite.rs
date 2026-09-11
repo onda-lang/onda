@@ -1546,25 +1546,11 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
 ) {
     match target {
         AssignTarget::Var(name) => normalize_proc_output_alias_path(name, proc_vars, proc_api),
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
-        AssignTarget::IndexedMember { base, index, .. } => {
+        AssignTarget::Slice { base, .. } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
-        }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
-            normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                normalize_proc_output_aliases_in_expr(coordinate, proc_vars, proc_api);
-            }
         }
         AssignTarget::Tuple(names) => {
             for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
@@ -1572,6 +1558,9 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             }
         }
     }
+    target.visit_selectors_mut(|selector| {
+        normalize_proc_output_aliases_in_expr(selector, proc_vars, proc_api)
+    });
 }
 
 fn normalize_proc_array_slot_assign_target(
@@ -1599,7 +1588,13 @@ fn lower_proc_indexed_member_target(
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
 ) {
-    let AssignTarget::IndexedMember { base, index, field } = target else {
+    let AssignTarget::IndexedMember {
+        base,
+        index,
+        field,
+        field_index: None,
+    } = target
+    else {
         return;
     };
     if proc_api_for_receiver(base, proc_vars, proc_array_slots, proc_api).is_none() {
@@ -2230,7 +2225,12 @@ fn bound_proc_param_hook_stmts_for_target(
                 );
             }
         }
-        AssignTarget::IndexedMember { base, index, field } => {
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => {
             let flat = format!("{base}.{field}");
             if let Some((nested_path, field)) = flattened_nested_proc_field(&flat, proc_vars) {
                 return bound_proc_param_hook_stmts_for_flattened_nested_target(
@@ -2244,7 +2244,9 @@ fn bound_proc_param_hook_stmts_for_target(
                 );
             }
         }
-        AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => {}
+        AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. }
+        | AssignTarget::Tuple(_) => {}
     }
 
     let (receiver, field, index, receiver_expr) = match target {
@@ -2270,13 +2272,20 @@ fn bound_proc_param_hook_stmts_for_target(
                 bound_proc_indexed_receiver_expr(receiver, index, proc_array_slots),
             )
         }
-        AssignTarget::IndexedMember { base, index, field } => (
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => (
             base.as_str(),
             field.as_str(),
             Some(index),
             bound_proc_indexed_receiver_expr(base, index, proc_array_slots),
         ),
-        AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => return Vec::new(),
+        AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. }
+        | AssignTarget::Tuple(_) => return Vec::new(),
     };
     let Some((proc_name, param_slot)) =
         proc_param_slot_for_receiver(receiver, field, proc_vars, proc_array_slots, proc_api)
@@ -3153,24 +3162,8 @@ pub(super) fn rewrite_proc_array_param_field_reads(
     ) {
         match stmt {
             Stmt::Assign { target, expr, .. } => {
-                match target {
-                    AssignTarget::Index { index, .. }
-                    | AssignTarget::IndexedMember { index, .. } => {
-                        rewrite_expr(index, proc_arrays, proc_api)
-                    }
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for nested in [selector, channel, start, end].into_iter().flatten() {
-                            rewrite_expr(nested, proc_arrays, proc_api);
-                        }
-                    }
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                }
+                target
+                    .visit_selectors_mut(|selector| rewrite_expr(selector, proc_arrays, proc_api));
                 rewrite_expr(expr, proc_arrays, proc_api);
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -3719,38 +3712,16 @@ fn desugar_instance_method_calls_in_stmts(
                 expr,
                 ..
             } => {
-                match target {
-                    AssignTarget::Index { index, .. }
-                    | AssignTarget::IndexedMember { index, .. } => {
-                        desugar_expr_instance_method_calls(
-                            index,
-                            env,
-                            context,
-                            current_ns,
-                            struct_method_symbols,
-                            callable_symbols,
-                        )
-                    }
-                    AssignTarget::Slice {
+                target.visit_selectors_mut(|selector| {
+                    desugar_expr_instance_method_calls(
                         selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            desugar_expr_instance_method_calls(
-                                coordinate,
-                                env,
-                                context,
-                                current_ns,
-                                struct_method_symbols,
-                                callable_symbols,
-                            );
-                        }
-                    }
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                }
+                        env,
+                        context,
+                        current_ns,
+                        struct_method_symbols,
+                        callable_symbols,
+                    )
+                });
                 desugar_expr_instance_method_calls(
                     expr,
                     env,

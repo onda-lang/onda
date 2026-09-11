@@ -1279,10 +1279,12 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                     "missing indexed member assignment field",
                 )]);
             };
+            let field_index = inner.next().map(parse_expr).transpose()?.map(Box::new);
             Ok(AssignTarget::IndexedMember {
                 base: base_pair.as_str().to_owned(),
                 index: parse_expr(index_pair)?,
                 field: field_pair.as_str().to_owned(),
+                field_index,
             })
         }
         Rule::tuple_target => {

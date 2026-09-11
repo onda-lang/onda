@@ -64,6 +64,7 @@ fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
 pub mod aggregate_layout;
 mod analysis_session;
 mod array_structs;
+mod assignment_places;
 pub mod builtins;
 mod callable_validation;
 mod data_construction;
@@ -100,6 +101,7 @@ pub use analysis_session::{
     normalize_session_path, AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument,
 };
 use array_structs::*;
+use assignment_places::*;
 use builtins::*;
 use decl_symbols::*;
 use declaration_coercion::*;

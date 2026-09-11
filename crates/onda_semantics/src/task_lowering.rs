@@ -2021,25 +2021,11 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                             defs.insert(name.clone());
                         }
                     }
-                    AssignTarget::Index { base, index } => {
+                    AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                         uses.insert(base.clone());
-                        collect_expr_uses(index, &mut uses);
                     }
-                    AssignTarget::IndexedMember { base, index, .. } => {
+                    AssignTarget::Slice { base, .. } => {
                         uses.insert(base.clone());
-                        collect_expr_uses(index, &mut uses);
-                    }
-                    AssignTarget::Slice {
-                        base,
-                        selector,
-                        channel,
-                        start,
-                        end,
-                    } => {
-                        uses.insert(base.clone());
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            collect_expr_uses(coordinate, &mut uses);
-                        }
                     }
                     AssignTarget::Tuple(names) => defs.extend(
                         names
@@ -2048,6 +2034,7 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                             .map(str::to_owned),
                     ),
                 }
+                target.visit_selectors(|selector| collect_expr_uses(selector, &mut uses));
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_expr_uses(expr, &mut uses)

@@ -957,6 +957,7 @@ pub enum AssignTarget {
         base: String,
         index: Expr,
         field: String,
+        field_index: Option<Box<Expr>>,
     },
     Slice {
         base: String,
@@ -966,6 +967,62 @@ pub enum AssignTarget {
         end: Option<Box<Expr>>,
     },
     Tuple(Vec<TupleAssignTarget>),
+}
+
+impl AssignTarget {
+    /// Visits selector expressions in source evaluation order.
+    pub fn visit_selectors(&self, mut visitor: impl FnMut(&Expr)) {
+        match self {
+            Self::Index { index, .. } => visitor(index),
+            Self::IndexedMember {
+                index, field_index, ..
+            } => {
+                visitor(index);
+                if let Some(field_index) = field_index {
+                    visitor(field_index);
+                }
+            }
+            Self::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for expression in [selector, channel, start, end].into_iter().flatten() {
+                    visitor(expression);
+                }
+            }
+            Self::Var(_) | Self::Tuple(_) => {}
+        }
+    }
+
+    /// Mutably visits selector expressions in source evaluation order.
+    pub fn visit_selectors_mut(&mut self, mut visitor: impl FnMut(&mut Expr)) {
+        match self {
+            Self::Index { index, .. } => visitor(index),
+            Self::IndexedMember {
+                index, field_index, ..
+            } => {
+                visitor(index);
+                if let Some(field_index) = field_index {
+                    visitor(field_index);
+                }
+            }
+            Self::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for expression in [selector, channel, start, end].into_iter().flatten() {
+                    visitor(expression);
+                }
+            }
+            Self::Var(_) | Self::Tuple(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]

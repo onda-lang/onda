@@ -268,25 +268,9 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                     None => {}
                 }
             }
-            match target {
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
-                }
-                AssignTarget::Slice {
-                    selector,
-                    channel,
-                    start,
-                    end,
-                    ..
-                } => {
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        substitute_call_type_args_with_bindings_expr(
-                            coordinate, bindings, context, errors,
-                        );
-                    }
-                }
-                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-            }
+            target.visit_selectors_mut(|selector| {
+                substitute_call_type_args_with_bindings_expr(selector, bindings, context, errors)
+            });
             substitute_call_type_args_with_bindings_expr(expr, bindings, context, errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -1346,23 +1330,7 @@ fn rewrite_generic_ctor_stmt(
             if typed_named_ctor_decl_without_type_args {
                 locals.default_ctor_missing_type_params_to_f32 = false;
             }
-            match target {
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    rewriter.rewrite_expr(index, locals, errors);
-                }
-                AssignTarget::Slice {
-                    selector,
-                    channel,
-                    start,
-                    end,
-                    ..
-                } => {
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        rewriter.rewrite_expr(coordinate, locals, errors);
-                    }
-                }
-                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-            }
+            target.visit_selectors_mut(|selector| rewriter.rewrite_expr(selector, locals, errors));
             rewriter.rewrite_expr(expr, locals, errors);
             let context = locals.facts.call_context();
             update_call_type_env_after_assign(

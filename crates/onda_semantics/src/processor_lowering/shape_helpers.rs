@@ -385,39 +385,17 @@ fn collect_non_sample_proc_operator_diags_from_target(
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            collect_non_sample_proc_operator_diags_from_expr(
-                index,
-                owner_proc,
-                nested_instances,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                out,
-            )
-        }
-        AssignTarget::Slice {
+    target.visit_selectors(|selector| {
+        collect_non_sample_proc_operator_diags_from_expr(
             selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_non_sample_proc_operator_diags_from_expr(
-                    coordinate,
-                    owner_proc,
-                    nested_instances,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    out,
-                );
-            }
-        }
-    }
+            owner_proc,
+            nested_instances,
+            proc_array_slots,
+            proc_api,
+            aliases,
+            out,
+        );
+    });
 }
 
 fn proc_alias_from_expr(
@@ -736,23 +714,9 @@ fn seed_called_proc_local_defs_from_target(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                seed_called_proc_local_defs_from_expr(coordinate, def_names, pending, seen_pending);
-            }
-        }
-    }
+    target.visit_selectors(|selector| {
+        seed_called_proc_local_defs_from_expr(selector, def_names, pending, seen_pending)
+    });
 }
 
 fn seed_called_proc_local_defs_from_stmts(
@@ -2069,26 +2033,9 @@ fn validate_hook_safe_stmts(
                     reject_hook_target_write(target, ctx, frame, diag, errors);
                 }
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
-                match target {
-                    AssignTarget::Index { index, .. }
-                    | AssignTarget::IndexedMember { index, .. } => {
-                        validate_hook_safe_expr(index, ctx, frame, visiting, validated, errors);
-                    }
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            validate_hook_safe_expr(
-                                coordinate, ctx, frame, visiting, validated, errors,
-                            );
-                        }
-                    }
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                }
+                target.visit_selectors(|selector| {
+                    validate_hook_safe_expr(selector, ctx, frame, visiting, validated, errors)
+                });
                 if *is_typed_decl {
                     match target {
                         AssignTarget::Var(name) => frame.add_local(name.clone()),

@@ -1065,6 +1065,7 @@ fn preserves_indexed_member_assignment_target_structure() {
 outs { out1 }
 sample {
   voices[i].freq = hz
+  voices[i].taps[j] = value
 }
 "#;
     let program = parse_program(src).expect("indexed member assignment should parse");
@@ -1080,12 +1081,34 @@ sample {
         panic!("expected assignment");
     };
     match target {
-        AssignTarget::IndexedMember { base, index, field } => {
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => {
             assert_eq!(base, "voices");
             assert_eq!(field, "freq");
             assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
         }
         _ => panic!("expected indexed assignment target"),
+    }
+    let Stmt::Assign { target, .. } = &sample[1] else {
+        panic!("expected assignment");
+    };
+    match target {
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: Some(field_index),
+        } => {
+            assert_eq!(base, "voices");
+            assert_eq!(field, "taps");
+            assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
+            assert!(matches!(field_index.as_ref(), Expr::Var { name, .. } if name == "j"));
+        }
+        _ => panic!("expected indexed field-element assignment target"),
     }
 }
 

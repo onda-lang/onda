@@ -319,23 +319,7 @@ fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
 }
 
 fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
-    match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            rebase_generated_expr(index, origin)
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for value in [selector, channel, start, end].into_iter().flatten() {
-                rebase_generated_expr(value, origin);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors_mut(|selector| rebase_generated_expr(selector, origin));
 }
 
 fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
@@ -1384,39 +1368,7 @@ fn monomorphize_calls_in_assign_target(
     errors: &mut Vec<Diagnostic>,
     owner: MonoOwnerContext<'_>,
 ) {
-    let coordinates = match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            std::slice::from_mut(index)
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                monomorphize_calls_in_expr(
-                    coordinate,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-            return;
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => return,
-    };
-    for coordinate in coordinates {
+    target.visit_selectors_mut(|coordinate| {
         monomorphize_calls_in_expr(
             coordinate,
             env,
@@ -1432,7 +1384,7 @@ fn monomorphize_calls_in_assign_target(
             errors,
             owner,
         );
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

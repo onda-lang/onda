@@ -270,23 +270,9 @@ pub(super) fn fold_stmt_const_arrays(
             }
         }
         Stmt::Assign { target, expr, .. } => {
-            match target {
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    fold_const_array_expr(index, const_values, options, errors, false);
-                }
-                AssignTarget::Slice {
-                    selector,
-                    channel,
-                    start,
-                    end,
-                    ..
-                } => {
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        fold_const_array_expr(coordinate, const_values, options, errors, false);
-                    }
-                }
-                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-            }
+            target.visit_selectors_mut(|selector| {
+                fold_const_array_expr(selector, const_values, options, errors, false)
+            });
             fold_const_array_expr(expr, const_values, options, errors, false);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -650,9 +636,11 @@ pub(super) fn reject_forward_const_refs_assign_target(
             reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
             reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
         }
-        AssignTarget::IndexedMember { base, index, .. } => {
+        AssignTarget::IndexedMember { base, .. } => {
             reject_forward_const_ref_name(base, target_loc, visible_consts, future_consts, errors);
-            reject_forward_const_refs_expr(index, visible_consts, future_consts, errors);
+            target.visit_selectors(|selector| {
+                reject_forward_const_refs_expr(selector, visible_consts, future_consts, errors)
+            });
         }
         AssignTarget::Slice {
             base,
@@ -1976,35 +1964,15 @@ pub(super) fn fold_direct_const_def_stmt(
             );
         }
         Stmt::Assign { target, expr, .. } => {
-            match target {
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    fold_direct_const_def_call_expr(
-                        index,
-                        artifacts,
-                        options,
-                        "assignment target index",
-                        errors,
-                    );
-                }
-                AssignTarget::Slice {
+            target.visit_selectors_mut(|selector| {
+                fold_direct_const_def_call_expr(
                     selector,
-                    channel,
-                    start,
-                    end,
-                    ..
-                } => {
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        fold_direct_const_def_call_expr(
-                            coordinate,
-                            artifacts,
-                            options,
-                            "assignment target slice coordinate",
-                            errors,
-                        );
-                    }
-                }
-                AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-            }
+                    artifacts,
+                    options,
+                    "assignment target selector",
+                    errors,
+                )
+            });
             fold_direct_const_def_call_expr(expr, artifacts, options, "assignment", errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -2791,9 +2759,10 @@ pub(super) fn preprocess_local_const_stmt(
                         ));
                     }
                 }
-                AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                    fold_local_scalar_const_expr(index, local_consts);
-                }
+                AssignTarget::Index { .. } | AssignTarget::IndexedMember { .. } => target
+                    .visit_selectors_mut(|selector| {
+                        fold_local_scalar_const_expr(selector, local_consts)
+                    }),
                 AssignTarget::Slice {
                     selector,
                     channel,

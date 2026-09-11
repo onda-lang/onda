@@ -122,25 +122,11 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                 AssignTarget::Var(name) => {
                     infer_numbered_base_name(name, acc);
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                     infer_numbered_base_name(base, acc);
-                    infer_io_from_expr(index, acc);
                 }
-                AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Slice { base, .. } => {
                     infer_numbered_base_name(base, acc);
-                    infer_io_from_expr(index, acc);
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    infer_numbered_base_name(base, acc);
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        infer_io_from_expr(coordinate, acc);
-                    }
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names.iter().filter_map(|target| target.binding()) {
@@ -148,6 +134,7 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     }
                 }
             }
+            target.visit_selectors(|selector| infer_io_from_expr(selector, acc));
             infer_io_from_expr(expr, acc);
         }
         Stmt::Expr { expr, .. } => infer_io_from_expr(expr, acc),

@@ -512,11 +512,9 @@ fn validate_stmt_type_args(
             validate_expr_type_args(&decl.expr, allowed, proc, context, errors);
         }
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } =
-                target
-            {
+            target.visit_selectors(|index| {
                 validate_expr_type_args(index, allowed, proc, context, errors);
-            }
+            });
             validate_expr_type_args(expr, allowed, proc, context, errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

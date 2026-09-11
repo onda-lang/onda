@@ -882,9 +882,19 @@ fn format_assign_target(target: &AssignTarget) -> String {
     match target {
         AssignTarget::Var(name) => name.clone(),
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
-        AssignTarget::IndexedMember { base, index, field } => {
-            format!("{base}[{}].{field}", format_expr(index))
-        }
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index,
+        } => format!(
+            "{base}[{}].{field}{}",
+            format_expr(index),
+            field_index
+                .as_deref()
+                .map(|index| format!("[{}]", format_expr(index)))
+                .unwrap_or_default()
+        ),
         AssignTarget::Slice {
             base,
             selector,
@@ -1510,6 +1520,7 @@ mod tests {
         let source = r#"
 struct Note:
   value = 1.0
+  taps: f32[2]
 def pair(value: Note) -> Note[2]:
   return [value, value]
 sample:
@@ -1517,6 +1528,7 @@ sample:
   broadcast: Note[2] = Note()
   selected: Note[] = broadcast[:]
   primitive: f32[] = [1.0, 2.0]
+  listed[0].taps[1] = primitive[0]
   selected[:] = pair(listed[0])
 "#;
         let program = parse_program(source).unwrap();
@@ -1538,6 +1550,7 @@ sample:
             "broadcast: Note[2] = Note()",
             "selected: Note[] = broadcast[:]",
             "primitive: f32[] = [1.0, 2.0]",
+            "listed[0].taps[1] = primitive[0]",
         ] {
             assert!(formatted.contains(syntax), "{formatted}");
         }

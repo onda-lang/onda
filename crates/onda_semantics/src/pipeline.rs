@@ -590,23 +590,7 @@ fn normalize_runtime_call_shape_exprs(
     }
 
     fn normalize_target(target: &mut AssignTarget, options: AnalysisOptions) {
-        match target {
-            AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-                normalize_expr(index, options)
-            }
-            AssignTarget::Slice {
-                selector,
-                channel,
-                start,
-                end,
-                ..
-            } => {
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    normalize_expr(coordinate, options);
-                }
-            }
-            AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        }
+        target.visit_selectors_mut(|selector| normalize_expr(selector, options));
     }
 
     fn normalize_stmts(stmts: &mut [Stmt], options: AnalysisOptions) {
@@ -1021,7 +1005,7 @@ pub fn analyze_with_options_and_inputs(
         }
     }
     let ProcessorDesugarResult {
-        program,
+        mut program,
         runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
@@ -1033,6 +1017,7 @@ pub fn analyze_with_options_and_inputs(
         compiler_owned_proc_fields,
         mut top_level_delegates,
     } = desugar_materialized_processors(program, options, &const_array_infos, &mut errors);
+    normalize_indexed_member_assignments(&mut program);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {

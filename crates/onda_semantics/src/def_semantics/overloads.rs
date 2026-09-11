@@ -711,27 +711,11 @@ fn rewrite_overloaded_calls_in_assign_target(
     errors: &mut Vec<Diagnostic>,
     resolved: &mut usize,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            rewrite_overloaded_calls_in_expr_impl(
-                index, env, context, owner, overloads, errors, resolved,
-            )
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_overloaded_calls_in_expr_impl(
-                    coordinate, env, context, owner, overloads, errors, resolved,
-                );
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors_mut(|selector| {
+        rewrite_overloaded_calls_in_expr_impl(
+            selector, env, context, owner, overloads, errors, resolved,
+        )
+    });
 }
 
 pub(crate) fn rewrite_overloaded_calls_in_stmt_list(

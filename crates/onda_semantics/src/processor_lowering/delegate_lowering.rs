@@ -236,7 +236,7 @@ fn replace_when_bindings_stmt(
                     }
                     replace_name(name, replacements);
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
                             DiagCtx::new(*target_loc),
@@ -245,9 +245,8 @@ fn replace_when_bindings_stmt(
                         );
                     }
                     replace_name(base, replacements);
-                    replace_when_bindings_expr(index, replacements);
                 }
-                AssignTarget::IndexedMember { base, index, .. } => {
+                AssignTarget::Slice { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
                             DiagCtx::new(*target_loc),
@@ -256,26 +255,6 @@ fn replace_when_bindings_stmt(
                         );
                     }
                     replace_name(base, replacements);
-                    replace_when_bindings_expr(index, replacements);
-                }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
-                    if replacements.contains_key(base) {
-                        push_semantic(
-                            DiagCtx::new(*target_loc),
-                            errors,
-                            format!("cannot write through read-only when payload binding '{base}'"),
-                        );
-                    }
-                    replace_name(base, replacements);
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        replace_when_bindings_expr(coordinate, replacements);
-                    }
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
@@ -290,6 +269,8 @@ fn replace_when_bindings_stmt(
                     }
                 }
             }
+            target
+                .visit_selectors_mut(|selector| replace_when_bindings_expr(selector, replacements));
             replace_when_bindings_expr(expr, replacements);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -506,25 +487,7 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                     collect_source_calls_expr(&decl.expr, calls);
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. }
-                        | AssignTarget::IndexedMember { index, .. } => {
-                            collect_source_calls_expr(index, calls);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_source_calls_expr(coordinate, calls);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| collect_source_calls_expr(selector, calls));
                     collect_source_calls_expr(expr, calls);
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -621,25 +584,7 @@ fn collect_source_calls_with_aliases(
                     StatementFlow::Continues
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. }
-                        | AssignTarget::IndexedMember { index, .. } => {
-                            collect_expr(index, aliases, calls);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_expr(coordinate, aliases, calls);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| collect_expr(selector, aliases, calls));
                     collect_expr(expr, aliases, calls);
                     match target {
                         AssignTarget::Var(name) => {
@@ -828,25 +773,9 @@ fn validate_delegate_uses(
                     collect_delegate_value_uses_expr(&decl.expr, names, false, errors);
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. }
-                        | AssignTarget::IndexedMember { index, .. } => {
-                            collect_delegate_value_uses_expr(index, names, false, errors);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_delegate_value_uses_expr(coordinate, names, false, errors);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| {
+                        collect_delegate_value_uses_expr(selector, names, false, errors)
+                    });
                     collect_delegate_value_uses_expr(expr, names, false, errors);
                 }
                 Stmt::Expr { expr, .. } => {

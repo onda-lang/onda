@@ -91,6 +91,42 @@ pub(crate) fn validate_data_element_replacement(
     true
 }
 
+pub(crate) fn validate_fixed_data_binding_replacement(
+    name: &str,
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Some(expected @ (DataType::Struct(_) | DataType::Array { .. })) =
+        infer_fixed_data_type(&Expr::var(name), env)
+    else {
+        return false;
+    };
+    if env
+        .local_array_aliases
+        .get(name)
+        .is_some_and(|alias| !alias.writable)
+    {
+        errors.push(Diagnostic::semantic_span(
+            format!("cannot assign to immutable data alias '{name}'"),
+            target_loc,
+        ));
+    }
+    let actual = infer_fixed_data_type(expr, env);
+    if actual.as_ref() != Some(&expected) {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "data replacement for '{name}' {}",
+                data_type_mismatch(&expected, actual.as_ref())
+            ),
+            target_loc,
+        ));
+    }
+    validate_fixed_data_expr(expr, env, errors);
+    true
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScopePolicy {
     Init,

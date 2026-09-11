@@ -2453,24 +2453,7 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
         match statement {
             Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign { target, expr, .. } => {
-                match target {
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    AssignTarget::Index { index, .. }
-                    | AssignTarget::IndexedMember { index, .. } => {
-                        collect_calls_in_expr(index, calls)
-                    }
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            collect_calls_in_expr(coordinate, calls);
-                        }
-                    }
-                }
+                target.visit_selectors(|selector| collect_calls_in_expr(selector, calls));
                 collect_calls_in_expr(expr, calls);
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

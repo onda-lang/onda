@@ -523,23 +523,9 @@ pub(super) fn validate_generic_def_type_args_in_assign_target(
     fn_signatures: &HashMap<String, FnSignature>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors(|selector| {
+        validate_generic_def_type_args_in_expr(selector, fn_signatures, errors)
+    });
 }
 
 pub(super) fn validate_generic_def_type_args_in_expr(
@@ -2128,23 +2114,9 @@ pub(super) fn collect_called_typed_defs_in_assign_target(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_called_typed_defs_in_expr(coordinate, def_names, pending, seen_pending);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors(|selector| {
+        collect_called_typed_defs_in_expr(selector, def_names, pending, seen_pending)
+    });
 }
 
 pub(super) fn collect_called_typed_defs_in_expr(

@@ -708,6 +708,15 @@ fn analyze_assign_init(
             }
         }};
     }
+    if validate_struct_array_member_assignment(
+        target,
+        expr,
+        scope_expr_env!(scope),
+        target_loc,
+        errors,
+    ) {
+        return;
+    }
     let target = flatten_indexed_member_target(target);
     let target = target.as_ref();
     match target {
@@ -1409,6 +1418,17 @@ fn analyze_assign_init(
                     errors,
                 );
                 st.known_scalars.insert(name.clone());
+                return;
+            }
+            if name.contains('.')
+                && validate_fixed_data_binding_replacement(
+                    name,
+                    expr,
+                    scope_expr_env!(scope),
+                    target_loc,
+                    errors,
+                )
+            {
                 return;
             }
             if st.local_array_aliases.contains_key(name) {
@@ -2565,10 +2585,13 @@ fn analyze_struct_data_init_assign(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        local_struct_aliases,
         state_tuples,
         nested_proc_arrays,
         ..
     } = st;
+    let mut visible_structs = struct_instances.clone();
+    visible_structs.extend(local_struct_aliases.clone());
     let empty_param_structs = HashMap::<String, String>::new();
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     macro_rules! init_expr_env {
@@ -2699,10 +2722,13 @@ fn analyze_struct_field_init_assign(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        local_struct_aliases,
         state_tuples,
         nested_proc_arrays,
         ..
     } = st;
+    let mut visible_structs = struct_instances.clone();
+    visible_structs.extend(local_struct_aliases.clone());
     let empty_param_structs = HashMap::<String, String>::new();
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     let expr_inputs = build_scope_analysis_expr_inputs(
@@ -2711,7 +2737,7 @@ fn analyze_struct_field_init_assign(
         state_scalars,
         declared_symbols,
         &empty_param_structs,
-        struct_instances,
+        &visible_structs,
         outputs,
         state_array_struct_roots,
         nested_proc_arrays,
@@ -2730,7 +2756,7 @@ fn analyze_struct_field_init_assign(
             env
         }};
     }
-    let Some(struct_name) = struct_instances.get(base) else {
+    let Some(struct_name) = visible_structs.get(base) else {
         push_semantic(diag, errors, format!("unknown struct instance '{base}'"));
         return;
     };
@@ -2764,7 +2790,7 @@ fn analyze_struct_field_init_assign(
                 &HashSet::new(),
                 outputs,
                 &HashSet::new(),
-                struct_instances,
+                &visible_structs,
                 struct_defs,
                 errors,
             );
@@ -2785,7 +2811,7 @@ fn analyze_struct_field_init_assign(
                 tuple_vars,
                 local_aliases,
                 Some(state_tuples),
-                struct_instances,
+                &visible_structs,
                 struct_defs,
                 common.fn_return_types,
                 |value| {
@@ -2800,7 +2826,7 @@ fn analyze_struct_field_init_assign(
                         common.input_names,
                         outputs,
                         common.param_names,
-                        struct_instances,
+                        &visible_structs,
                         struct_defs,
                         nested_proc_arrays,
                         errors,

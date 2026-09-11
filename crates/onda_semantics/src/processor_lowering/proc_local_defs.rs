@@ -349,23 +349,7 @@ fn collect_local_def_calls_in_target(
     def_map: &HashMap<String, FunctionDef>,
     calls: &mut Vec<String>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            collect_local_def_calls_in_expr(index, def_map, calls)
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_local_def_calls_in_expr(coordinate, def_map, calls);
-            }
-        }
-    }
+    target.visit_selectors(|selector| collect_local_def_calls_in_expr(selector, def_map, calls));
 }
 
 fn collect_local_def_calls_in_expr(
@@ -580,35 +564,15 @@ fn rewrite_target_local_calls(
     captured_buffers: &[String],
     owner_proc: &str,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            rewrite_expr_local_calls(
-                index,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            )
-        }
-        AssignTarget::Slice {
+    target.visit_selectors_mut(|selector| {
+        rewrite_expr_local_calls(
             selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_local_calls(
-                    coordinate,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-    }
+            local_names,
+            buffer_capturing_names,
+            captured_buffers,
+            owner_proc,
+        )
+    });
 }
 
 fn rewrite_expr_local_calls(
@@ -804,23 +768,9 @@ fn inject_owner_self_into_hidden_local_calls_in_target(
     owner_proc: &str,
     receiver: &Expr,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                inject_owner_self_into_hidden_local_calls_in_expr(coordinate, owner_proc, receiver);
-            }
-        }
-    }
+    target.visit_selectors_mut(|selector| {
+        inject_owner_self_into_hidden_local_calls_in_expr(selector, owner_proc, receiver)
+    });
 }
 
 fn inject_owner_self_into_hidden_local_calls_in_expr(
@@ -1038,35 +988,15 @@ fn rewrite_nested_wrapper_local_calls_in_target(
     nested_path: &str,
     delegate_context_args: &[String],
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(
-                index,
-                callee_proc,
-                owner_proc,
-                nested_path,
-                delegate_context_args,
-            );
-        }
-        AssignTarget::Slice {
+    target.visit_selectors_mut(|selector| {
+        rewrite_nested_wrapper_local_calls_in_expr(
             selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_nested_wrapper_local_calls_in_expr(
-                    coordinate,
-                    callee_proc,
-                    owner_proc,
-                    nested_path,
-                    delegate_context_args,
-                );
-            }
-        }
-    }
+            callee_proc,
+            owner_proc,
+            nested_path,
+            delegate_context_args,
+        );
+    });
 }
 
 fn rewrite_nested_wrapper_local_calls_in_expr(

@@ -1179,6 +1179,10 @@ fn analyze_flow_assignment(
             errors.push(Diagnostic::semantic_span($message, target_loc))
         };
     }
+    if validate_struct_array_member_assignment(target, expr, scope_expr_env!(), target_loc, errors)
+    {
+        return;
+    }
     let target = flatten_indexed_member_target(target);
     let target = target.as_ref();
     match target {

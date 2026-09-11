@@ -290,8 +290,8 @@ pub(super) fn fold_host_sr_assign_target(
     consts: &HashMap<String, TypedConstValue>,
 ) {
     match target {
-        AssignTarget::Index { index, .. } | AssignTarget::IndexedMember { index, .. } => {
-            fold_local_scalar_const_expr(index, consts)
+        AssignTarget::Index { .. } | AssignTarget::IndexedMember { .. } => {
+            target.visit_selectors_mut(|selector| fold_local_scalar_const_expr(selector, consts))
         }
         AssignTarget::Slice {
             selector,
