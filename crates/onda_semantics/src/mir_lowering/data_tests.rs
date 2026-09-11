@@ -1040,6 +1040,55 @@ fn structured_array_and_slice_contracts_reject_invalid_initializers() {
 }
 
 #[test]
+fn empty_array_literals_cannot_supply_runtime_slice_backing() {
+    let cases = [
+        (
+            r#"
+outs 1
+sample:
+  values: f32[] = []
+  out1 = f32(values.len())
+"#,
+            (4, 19),
+        ),
+        (
+            r#"
+def length(values: f32[]) -> i32:
+  return values.len()
+outs 1
+sample:
+  out1 = f32(length([]))
+"#,
+            (6, 21),
+        ),
+    ];
+    for (source, location) in cases {
+        let parsed = onda_frontend::parse_program(source).expect("empty literal source parses");
+        let errors = crate::analyze(parsed).expect_err("empty literal backing must be rejected");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!((errors[0].line, errors[0].column), location);
+        assert!(
+            errors.iter().any(|error| error.message
+                == "empty array literal cannot provide backing storage for a slice; slice an existing array to create an empty view"),
+            "{errors:?}"
+        );
+    }
+
+    compile(
+        r#"
+def length(values: f32[]) -> i32:
+  return values.len()
+outs 1
+init:
+  source: f32[1]
+sample:
+  empty: f32[] = source[:0]
+  out1 = f32(length(empty))
+"#,
+    );
+}
+
+#[test]
 fn fixed_struct_array_initializers_explain_unproven_and_mismatched_slice_lengths() {
     let cases = [
         (

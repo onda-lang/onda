@@ -2175,6 +2175,21 @@ pub(crate) fn validate_primitive_array_values(
     }
 }
 
+pub(crate) fn reject_empty_slice_backing_literal(
+    expression: &Expr,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if !matches!(expression, Expr::ArrayLiteral { values, .. } if values.is_empty()) {
+        return false;
+    }
+    push_expr_error(
+        errors,
+        expression,
+        "empty array literal cannot provide backing storage for a slice; slice an existing array to create an empty view",
+    );
+    true
+}
+
 /// Validate data in a storage/reference context without treating its root as a
 /// scalar read. Selector and argument effects still receive ordinary checking.
 pub(crate) fn validate_fixed_data_expr(
@@ -2431,6 +2446,13 @@ fn validate_array_param_call_arg(
     env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if matches!(
+        param_ty,
+        FnParamType::Array(_) | FnParamType::ArrayGeneric(_)
+    ) && reject_empty_slice_backing_literal(arg, errors)
+    {
+        return;
+    }
     let Some(actual) = call_array_arg_info(arg, env) else {
         if is_definitely_scalar_call_arg(arg, env)
             || infer_call_argument_tuple_types(arg, env).is_some()

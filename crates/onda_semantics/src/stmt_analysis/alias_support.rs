@@ -199,6 +199,9 @@ pub(crate) fn typed_slice_alias_info(
     env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
+    // Retain the invalid binding's expected slice shape so later uses do not
+    // cascade into unrelated unknown-symbol diagnostics.
+    let _ = reject_empty_slice_backing_literal(expr, errors);
     let literal = match (expr, element) {
         (Expr::ArrayLiteral { values, .. }, ArrayElemType::Primitive(ty)) => Some((values, *ty)),
         _ => None,

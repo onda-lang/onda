@@ -925,6 +925,9 @@ An untyped array assignment takes its element type from the first element
 using the ordinary first-assignment defaults, then checks every remaining
 element against that type. An array literal used directly as a call argument
 can instead acquire its element type from the parameter context.
+Array literals must contain at least one element and cannot provide backing
+storage for an empty slice. Slice an existing array, such as `values[:0]`, to
+create an empty view.
 
 Ordinary indexing is 0-based. Runtime selectors are normalized to the valid element range, while a
 compile-time out-of-range const-array index is an error. `.len()` returns the fixed length for arrays
@@ -2372,8 +2375,8 @@ const Ramp: f32[4] = ramp()
 
 - Every `const def` must declare an explicit return type.
 - Params support primitive scalars, fixed-size primitive arrays, typed primitive slices such as `f32[]`, and untyped slices `[]`.
-- Typed slice params accept compile-time arrays of any length with the matching element type.
-- Untyped slice params accept compile-time arrays of any length and primitive element type.
+- Typed slice params accept compile-time arrays of any positive length with the matching element type.
+- Untyped slice params accept compile-time arrays of any positive length and primitive element type.
 - Slice params support indexed reads and `.len()`, but not indexed writes.
 - Array-returning bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs.
 - Compile-time loop evaluation is capped at 1,000,000 iterations per loop.
