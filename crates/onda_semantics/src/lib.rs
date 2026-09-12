@@ -14,8 +14,8 @@ use onda_frontend::{
     FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
     GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl,
     NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock, ParamDecl, ParamScale, PortBlock,
-    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Stmt, StructDef,
-    StructField, UseDecl, WhenDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, ScalarTypeRef, SourceLoc, Stmt,
+    StructDef, StructField, UseDecl, WhenDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
     INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
     INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };

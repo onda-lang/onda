@@ -1217,6 +1217,8 @@ Rules:
 - Struct constructors and typed struct declarations also work in runtime locals.
 - Declaration-only form such as `d: Voice` desugars to default-constructor initialization.
 - For generic structs, typed declarations require explicit type args when the type is still generic.
+- Generic struct type parameters may be used in tuple fields; every tuple element must resolve to a
+  primitive type before specialization completes.
 
 Struct arguments and new untyped aliases refer to existing storage. A typed declaration creates
 independent storage; assigning an established struct copies its contents without redirecting it.

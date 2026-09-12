@@ -79,10 +79,61 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    substitute_call_type_args_with_bindings_expr_in_scope(
+        expr,
+        TypeSpecializationScope::new(bindings, context),
+        errors,
+    );
+}
+
+fn substitute_call_type_args_with_bindings_expr_preserving(
+    expr: &mut Expr,
+    bindings: &HashMap<String, PrimitiveType>,
+    preserved_type_params: &[String],
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    substitute_call_type_args_with_bindings_expr_in_scope(
+        expr,
+        TypeSpecializationScope::preserving(bindings, preserved_type_params, context),
+        errors,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct TypeSpecializationScope<'a> {
+    bindings: &'a HashMap<String, PrimitiveType>,
+    preserved_type_params: &'a [String],
+    context: &'a str,
+}
+
+impl<'a> TypeSpecializationScope<'a> {
+    fn new(bindings: &'a HashMap<String, PrimitiveType>, context: &'a str) -> Self {
+        Self::preserving(bindings, &[], context)
+    }
+
+    fn preserving(
+        bindings: &'a HashMap<String, PrimitiveType>,
+        preserved_type_params: &'a [String],
+        context: &'a str,
+    ) -> Self {
+        Self {
+            bindings,
+            preserved_type_params,
+            context,
+        }
+    }
+}
+
+fn substitute_call_type_args_with_bindings_expr_in_scope(
+    expr: &mut Expr,
+    scope: TypeSpecializationScope<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
     let diag = DiagCtx::new(expr.loc());
     match expr {
         Expr::Index { index, .. } => {
-            substitute_call_type_args_with_bindings_expr(index, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(index, scope, errors);
         }
         Expr::Slice {
             selector,
@@ -92,13 +143,13 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             ..
         } => {
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                substitute_call_type_args_with_bindings_expr(coordinate, bindings, context, errors);
+                substitute_call_type_args_with_bindings_expr_in_scope(coordinate, scope, errors);
             }
         }
         Expr::ArrayCtor { spec, init, .. } => {
-            substitute_call_type_args_with_bindings_expr(&mut spec.size, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(&mut spec.size, scope, errors);
             if let ArrayElemType::Struct(type_name) = &mut spec.elem {
-                match specialize_generic_type_name(type_name, bindings, context, diag, errors) {
+                match specialize_generic_type_name(type_name, scope, diag, errors) {
                     Some(SpecializedTypeName::Primitive(bound)) => {
                         spec.elem = ArrayElemType::Primitive(bound);
                     }
@@ -108,29 +159,29 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             }
             if let Some(values) = init {
                 for value in values {
-                    substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
+                    substitute_call_type_args_with_bindings_expr_in_scope(value, scope, errors);
                 }
             }
         }
         Expr::Compare { lhs, rhs, .. }
         | Expr::Logical { lhs, rhs, .. }
         | Expr::Binary { lhs, rhs, .. } => {
-            substitute_call_type_args_with_bindings_expr(lhs, bindings, context, errors);
-            substitute_call_type_args_with_bindings_expr(rhs, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(lhs, scope, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(rhs, scope, errors);
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                substitute_call_type_args_with_bindings_expr(arg, bindings, context, errors);
+                substitute_call_type_args_with_bindings_expr_in_scope(arg, scope, errors);
             }
         }
         Expr::Cast { expr: inner, .. }
         | Expr::UnaryNot { expr: inner, .. }
         | Expr::UnaryBitNot { expr: inner, .. } => {
-            substitute_call_type_args_with_bindings_expr(inner, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(inner, scope, errors);
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
             for value in values {
-                substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
+                substitute_call_type_args_with_bindings_expr_in_scope(value, scope, errors);
             }
         }
         Expr::UserCall {
@@ -140,21 +191,20 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
             ..
         } => {
             for arg in args.iter_mut() {
-                substitute_call_type_args_with_bindings_expr(
-                    &mut arg.expr,
-                    bindings,
-                    context,
-                    errors,
-                );
+                substitute_call_type_args_with_bindings_expr_in_scope(&mut arg.expr, scope, errors);
             }
             for type_arg in type_args.iter_mut() {
                 if let CallTypeArg::Generic(param) = type_arg {
-                    let Some(bound) = bindings.get(param).copied() else {
+                    let Some(bound) = scope.bindings.get(param).copied() else {
+                        if scope.preserved_type_params.contains(param) {
+                            continue;
+                        }
                         push_semantic(
                             diag,
                             errors,
                             format!(
-                                "{context}: unknown generic type argument '{}'; not declared in current generic owner",
+                                "{}: unknown generic type argument '{}'; not declared in current generic owner",
+                                scope.context,
                                 param
                             ),
                         );
@@ -164,7 +214,7 @@ pub(crate) fn substitute_call_type_args_with_bindings_expr(
                 }
             }
             if type_args.is_empty() && args.len() == 1 && args[0].name.is_none() {
-                if let Some(bound) = bindings.get(name).copied() {
+                if let Some(bound) = scope.bindings.get(name).copied() {
                     let arg_expr = args.remove(0).expr;
                     *expr = Expr::Cast {
                         loc: Default::default(),
@@ -242,9 +292,35 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    substitute_call_type_args_with_bindings_stmt_in_scope(
+        stmt,
+        TypeSpecializationScope::new(bindings, context),
+        errors,
+    );
+}
+
+fn substitute_call_type_args_with_bindings_stmt_preserving(
+    stmt: &mut Stmt,
+    bindings: &HashMap<String, PrimitiveType>,
+    preserved_type_params: &[String],
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    substitute_call_type_args_with_bindings_stmt_in_scope(
+        stmt,
+        TypeSpecializationScope::preserving(bindings, preserved_type_params, context),
+        errors,
+    );
+}
+
+fn substitute_call_type_args_with_bindings_stmt_in_scope(
+    stmt: &mut Stmt,
+    scope: TypeSpecializationScope<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
         Stmt::Const { decl, .. } => {
-            substitute_call_type_args_with_bindings_expr(&mut decl.expr, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(&mut decl.expr, scope, errors);
         }
         Stmt::Assign {
             target,
@@ -254,10 +330,10 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
             ..
         } => {
             if let Some(ty) = decl_ty {
-                *ty = specialize_decl_type(ty, bindings, context, _diag, errors);
+                *ty = specialize_decl_type_in_scope(ty, scope, _diag, errors);
             }
             if let Some(type_name) = generic_decl_ty.clone() {
-                match specialize_generic_type_name(&type_name, bindings, context, _diag, errors) {
+                match specialize_generic_type_name(&type_name, scope, _diag, errors) {
                     Some(SpecializedTypeName::Primitive(bound)) => {
                         *decl_ty = Some(DeclType::Scalar(bound));
                         *generic_decl_ty = None;
@@ -269,16 +345,16 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
                 }
             }
             target.visit_selectors_mut(|selector| {
-                substitute_call_type_args_with_bindings_expr(selector, bindings, context, errors)
+                substitute_call_type_args_with_bindings_expr_in_scope(selector, scope, errors)
             });
-            substitute_call_type_args_with_bindings_expr(expr, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(expr, scope, errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            substitute_call_type_args_with_bindings_expr(expr, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(expr, scope, errors);
         }
         Stmt::Print { values, .. } => {
             for value in values {
-                substitute_call_type_args_with_bindings_expr(value, bindings, context, errors);
+                substitute_call_type_args_with_bindings_expr_in_scope(value, scope, errors);
             }
         }
         Stmt::If {
@@ -287,12 +363,12 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
             else_branch,
             ..
         } => {
-            substitute_call_type_args_with_bindings_expr(cond, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(cond, scope, errors);
             for nested in then_branch {
-                substitute_call_type_args_with_bindings_stmt(nested, bindings, context, errors);
+                substitute_call_type_args_with_bindings_stmt_in_scope(nested, scope, errors);
             }
             for nested in else_branch {
-                substitute_call_type_args_with_bindings_stmt(nested, bindings, context, errors);
+                substitute_call_type_args_with_bindings_stmt_in_scope(nested, scope, errors);
             }
         }
         Stmt::For {
@@ -302,19 +378,19 @@ pub(crate) fn substitute_call_type_args_with_bindings_stmt(
             body,
             ..
         } => {
-            substitute_call_type_args_with_bindings_expr(start, bindings, context, errors);
-            substitute_call_type_args_with_bindings_expr(end, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(start, scope, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(end, scope, errors);
             if let Some(step_expr) = step {
-                substitute_call_type_args_with_bindings_expr(step_expr, bindings, context, errors);
+                substitute_call_type_args_with_bindings_expr_in_scope(step_expr, scope, errors);
             }
             for nested in body {
-                substitute_call_type_args_with_bindings_stmt(nested, bindings, context, errors);
+                substitute_call_type_args_with_bindings_stmt_in_scope(nested, scope, errors);
             }
         }
         Stmt::While { cond, body, .. } => {
-            substitute_call_type_args_with_bindings_expr(cond, bindings, context, errors);
+            substitute_call_type_args_with_bindings_expr_in_scope(cond, scope, errors);
             for nested in body {
-                substitute_call_type_args_with_bindings_stmt(nested, bindings, context, errors);
+                substitute_call_type_args_with_bindings_stmt_in_scope(nested, scope, errors);
             }
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
@@ -394,7 +470,29 @@ pub(crate) fn specialize_generic_struct_template(
                     })
                 }
             }
-            FieldType::Tuple(elem_tys) => FieldType::Tuple(elem_tys.clone()),
+            FieldType::Tuple(elem_tys) => {
+                let mut specialized = Vec::with_capacity(elem_tys.len());
+                for elem in elem_tys {
+                    match elem {
+                        ScalarTypeRef::Primitive(ty) => specialized.push((*ty).into()),
+                        ScalarTypeRef::Named(param) => {
+                            let Some(bound) = type_bindings.get(param).copied() else {
+                                push_semantic(
+                                    DiagCtx::new(field.ty_loc.or(field.loc)),
+                                    errors,
+                                    format!(
+                                        "struct '{}.{}' references unknown generic type parameter '{}'",
+                                        template.name, field.name, param
+                                    ),
+                                );
+                                return None;
+                            };
+                            specialized.push(bound.into());
+                        }
+                    }
+                }
+                FieldType::Tuple(specialized)
+            }
         };
         fields.push(StructField {
             loc: field.loc,
@@ -407,25 +505,7 @@ pub(crate) fn specialize_generic_struct_template(
     let mut methods = template.methods.clone();
     for method in &mut methods {
         let method_context = format!("struct '{}.{}'", template.name, method.name);
-        specialize_function_type_annotations(method, &type_bindings, &method_context, errors);
-        for param in &mut method.params {
-            if let Some(default) = &mut param.default {
-                substitute_call_type_args_with_bindings_expr(
-                    default,
-                    &type_bindings,
-                    &format!("{method_context} parameter default"),
-                    errors,
-                );
-            }
-        }
-        for stmt in &mut method.body {
-            substitute_call_type_args_with_bindings_stmt(
-                stmt,
-                &type_bindings,
-                &format!("{method_context} body"),
-                errors,
-            );
-        }
+        specialize_function_with_type_bindings(method, &type_bindings, &method_context, errors);
     }
 
     Some(StructDef {
@@ -502,7 +582,17 @@ fn generic_inference_struct_field(field: &StructField) -> Option<TypedStructFiel
                 }
             }
         }
-        FieldType::Tuple(elements) => (TypedFieldType::Tuple(elements.clone()), None, None, None),
+        FieldType::Tuple(elements) => (
+            TypedFieldType::Tuple(
+                elements
+                    .iter()
+                    .map(ScalarTypeRef::primitive)
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            None,
+            None,
+            None,
+        ),
     };
     Some(TypedStructField {
         name: field.name.clone(),
@@ -946,35 +1036,58 @@ enum SpecializedTypeName {
 
 fn specialize_generic_type_name(
     name: &str,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    context: &str,
+    scope: TypeSpecializationScope<'_>,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<SpecializedTypeName> {
-    if let Some(bound) = type_bindings.get(name).copied() {
+    if let Some(bound) = scope.bindings.get(name).copied() {
         return Some(SpecializedTypeName::Primitive(bound));
     }
     if let Some((base, explicit_type_args)) = parse_array_struct_elem_with_type_args(name) {
-        let mut resolved = Vec::<PrimitiveType>::with_capacity(explicit_type_args.len());
+        let mut resolved = Vec::<CallTypeArg>::with_capacity(explicit_type_args.len());
         for arg in explicit_type_args {
             match arg {
-                CallTypeArg::Primitive(ty) => resolved.push(ty),
+                CallTypeArg::Primitive(ty) => resolved.push(CallTypeArg::Primitive(ty)),
                 CallTypeArg::Generic(param) => {
-                    let Some(bound) = type_bindings.get(&param).copied() else {
+                    if let Some(bound) = scope.bindings.get(&param).copied() {
+                        resolved.push(CallTypeArg::Primitive(bound));
+                    } else if scope.preserved_type_params.contains(&param) {
+                        resolved.push(CallTypeArg::Generic(param));
+                    } else {
                         push_semantic(
                             diag,
                             errors,
                             format!(
-                                "{context} references unknown generic type parameter '{}'",
-                                param
+                                "{} references unknown generic type parameter '{}'",
+                                scope.context, param
                             ),
                         );
                         return None;
-                    };
-                    resolved.push(bound);
+                    }
                 }
             }
         }
+        if resolved
+            .iter()
+            .any(|arg| matches!(arg, CallTypeArg::Generic(_)))
+        {
+            let args = resolved
+                .iter()
+                .map(|arg| match arg {
+                    CallTypeArg::Primitive(ty) => ty.name(),
+                    CallTypeArg::Generic(name) => name.as_str(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Some(SpecializedTypeName::Named(format!("{base}<{args}>")));
+        }
+        let resolved = resolved
+            .into_iter()
+            .map(|arg| match arg {
+                CallTypeArg::Primitive(ty) => ty,
+                CallTypeArg::Generic(_) => unreachable!(),
+            })
+            .collect::<Vec<_>>();
         return Some(SpecializedTypeName::Named(specialized_struct_name(
             &base, &resolved,
         )));
@@ -989,7 +1102,13 @@ fn specialize_named_type_ref(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<FieldType> {
-    specialize_generic_type_name(name, type_bindings, context, diag, errors).map(|ty| match ty {
+    specialize_generic_type_name(
+        name,
+        TypeSpecializationScope::new(type_bindings, context),
+        diag,
+        errors,
+    )
+    .map(|ty| match ty {
         SpecializedTypeName::Primitive(ty) => FieldType::Scalar(ty),
         SpecializedTypeName::Named(name) => FieldType::Generic(name),
     })
@@ -1014,13 +1133,12 @@ pub(crate) fn specialize_buffer_type(
 
 fn specialize_fn_param_type(
     ty: &FnParamType,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    context: &str,
+    scope: TypeSpecializationScope<'_>,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> FnParamType {
     let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
-        specialize_generic_type_name(name, type_bindings, context, diag, errors)
+        specialize_generic_type_name(name, scope, diag, errors)
             .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
     };
     match ty {
@@ -1030,10 +1148,10 @@ fn specialize_fn_param_type(
             SpecializedTypeName::Named(name) => FnParamType::Struct(name),
         },
         FnParamType::Buffer(buffer) => {
-            FnParamType::Buffer(specialize_buffer_type(buffer, type_bindings))
+            FnParamType::Buffer(specialize_buffer_type(buffer, scope.bindings))
         }
         FnParamType::BufferArray { buffer, len } => FnParamType::BufferArray {
-            buffer: specialize_buffer_type(buffer, type_bindings),
+            buffer: specialize_buffer_type(buffer, scope.bindings),
             len: *len,
         },
         FnParamType::Array(elem) => FnParamType::Array(*elem),
@@ -1071,15 +1189,14 @@ fn specialize_fn_param_type(
 
 fn specialize_fn_return_scalar_type(
     ty: &FnReturnScalarType,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    context: &str,
+    scope: TypeSpecializationScope<'_>,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> FnReturnScalarType {
     match ty {
         FnReturnScalarType::Primitive(ty) => FnReturnScalarType::Primitive(*ty),
         FnReturnScalarType::Named(name) => {
-            match specialize_generic_type_name(name, type_bindings, context, diag, errors) {
+            match specialize_generic_type_name(name, scope, diag, errors) {
                 Some(SpecializedTypeName::Primitive(ty)) => FnReturnScalarType::Primitive(ty),
                 Some(SpecializedTypeName::Named(name)) => FnReturnScalarType::Named(name),
                 None => ty.clone(),
@@ -1090,13 +1207,11 @@ fn specialize_fn_return_scalar_type(
 
 fn specialize_fn_return_type(
     ty: &FnReturnType,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    context: &str,
+    scope: TypeSpecializationScope<'_>,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> FnReturnType {
-    let mut specialize_scalar =
-        |ty| specialize_fn_return_scalar_type(ty, type_bindings, context, diag, errors);
+    let mut specialize_scalar = |ty| specialize_fn_return_scalar_type(ty, scope, diag, errors);
     match ty {
         FnReturnType::Scalar(ty) => FnReturnType::Scalar(specialize_scalar(ty)),
         FnReturnType::Array { elem, size } => FnReturnType::Array {
@@ -1115,12 +1230,15 @@ pub(crate) fn specialize_function_type_annotations(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let scope = TypeSpecializationScope::preserving(type_bindings, &def.type_params, context);
     for param in &mut def.params {
         if let Some(ty) = &mut param.ty {
             *ty = specialize_fn_param_type(
                 ty,
-                type_bindings,
-                &format!("{context} parameter '{}'", param.name),
+                TypeSpecializationScope {
+                    context: &format!("{context} parameter '{}'", param.name),
+                    ..scope
+                },
                 DiagCtx::new(param.ty_loc.or(param.loc)),
                 errors,
             );
@@ -1129,9 +1247,41 @@ pub(crate) fn specialize_function_type_annotations(
     if let Some(ty) = &mut def.return_ty {
         *ty = specialize_fn_return_type(
             ty,
-            type_bindings,
-            &format!("{context} return type"),
+            TypeSpecializationScope {
+                context: &format!("{context} return type"),
+                ..scope
+            },
             DiagCtx::new(def.return_ty_loc),
+            errors,
+        );
+    }
+}
+
+pub(crate) fn specialize_function_with_type_bindings(
+    def: &mut FunctionDef,
+    type_bindings: &HashMap<String, PrimitiveType>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    specialize_function_type_annotations(def, type_bindings, context, errors);
+    let own_type_params = &def.type_params;
+    for param in &mut def.params {
+        if let Some(default) = &mut param.default {
+            substitute_call_type_args_with_bindings_expr_preserving(
+                default,
+                type_bindings,
+                own_type_params,
+                &format!("{context} parameter default"),
+                errors,
+            );
+        }
+    }
+    for stmt in &mut def.body {
+        substitute_call_type_args_with_bindings_stmt_preserving(
+            stmt,
+            type_bindings,
+            own_type_params,
+            context,
             errors,
         );
     }
@@ -1144,8 +1294,22 @@ pub(crate) fn specialize_decl_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> DeclType {
+    specialize_decl_type_in_scope(
+        ty,
+        TypeSpecializationScope::new(type_bindings, context),
+        diag,
+        errors,
+    )
+}
+
+fn specialize_decl_type_in_scope(
+    ty: &DeclType,
+    scope: TypeSpecializationScope<'_>,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> DeclType {
     let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
-        specialize_generic_type_name(name, type_bindings, context, diag, errors)
+        specialize_generic_type_name(name, scope, diag, errors)
             .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
     };
     match ty {
@@ -1200,6 +1364,12 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                     if let Some(template) = templates.get(template_lookup_name.as_str()) {
                         if !template.type_params.is_empty() {
                             let type_args_to_use = if let Some(type_args) = explicit_type_args {
+                                if type_args
+                                    .iter()
+                                    .any(|arg| matches!(arg, CallTypeArg::Generic(_)))
+                                {
+                                    return;
+                                }
                                 let Some(resolved) = resolve_explicit_call_type_args(
                                     &type_args,
                                     &format!("array element type '{}'", elem_text),
@@ -1249,6 +1419,11 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 if let Some(template) = templates.get(name) {
                     let type_args_to_use = if type_args.is_empty() {
                         infer_generic_struct_ctor_type_args(template, args, locals, diag, errors)
+                    } else if type_args
+                        .iter()
+                        .any(|arg| matches!(arg, CallTypeArg::Generic(_)))
+                    {
+                        return;
                     } else {
                         resolve_explicit_call_type_args(
                             type_args,
@@ -1610,34 +1785,69 @@ pub(crate) fn named_type_has_unresolved_arguments(name: &str) -> bool {
     })
 }
 
+pub(crate) enum NamedTypePatternMatch {
+    Matched {
+        bindings: Vec<(String, PrimitiveType)>,
+        type_parameter_count: usize,
+    },
+    Mismatch,
+    NotApplicable,
+}
+
 /// Match a source-level nominal type pattern such as `Pair<T, f64>` against a
 /// concrete specialization and return the owner type parameters it constrains.
 /// Nominal type arguments are exact: concrete arguments in the pattern must
 /// match, and repeated generic arguments are returned separately so callers can
 /// diagnose conflicting constraints consistently with their own inference rules.
-pub(crate) fn infer_named_type_parameter_bindings(
+pub(crate) fn match_named_type_pattern(
     expected_name: &str,
     actual_name: &str,
     owner_type_params: &[String],
-) -> Option<Vec<(String, PrimitiveType)>> {
-    let (expected_base, expected_args) = parse_array_struct_elem_with_type_args(expected_name)?;
-    let actual_args = named_specialization_type_args(&expected_base, actual_name)?;
+) -> NamedTypePatternMatch {
+    let Some((expected_base, expected_args)) =
+        parse_array_struct_elem_with_type_args(expected_name)
+    else {
+        return NamedTypePatternMatch::NotApplicable;
+    };
+    let Some(actual_args) = named_specialization_type_args(&expected_base, actual_name) else {
+        return NamedTypePatternMatch::Mismatch;
+    };
     if expected_args.len() != actual_args.len() {
-        return None;
+        return NamedTypePatternMatch::Mismatch;
     }
 
     let mut bindings = Vec::new();
+    let mut type_parameter_count = 0;
     for (expected, actual) in expected_args.into_iter().zip(actual_args) {
         match expected {
-            CallTypeArg::Primitive(expected) if expected != actual => return None,
+            CallTypeArg::Primitive(expected) if expected != actual => {
+                return NamedTypePatternMatch::Mismatch;
+            }
             CallTypeArg::Primitive(_) => {}
             CallTypeArg::Generic(param) if owner_type_params.contains(&param) => {
+                type_parameter_count +=
+                    usize::from(!bindings.iter().any(|(existing, _)| existing == &param));
                 bindings.push((param, actual));
             }
-            CallTypeArg::Generic(_) => return None,
+            CallTypeArg::Generic(_) => return NamedTypePatternMatch::NotApplicable,
         }
     }
-    Some(bindings)
+    NamedTypePatternMatch::Matched {
+        bindings,
+        type_parameter_count,
+    }
+}
+
+pub(crate) fn source_named_type_name(name: &str) -> String {
+    let Some((base, type_args)) = parse_specialized_struct_name_ref(name) else {
+        return name.to_owned();
+    };
+    let args = type_args
+        .iter()
+        .map(|ty| ty.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{base}<{args}>")
 }
 
 fn bind_nested_generic_type_args(
@@ -1649,8 +1859,9 @@ fn bind_nested_generic_type_args(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let Some(inferred) =
-        infer_named_type_parameter_bindings(expected_name, actual_name, owner_type_params)
+    let NamedTypePatternMatch::Matched {
+        bindings: inferred, ..
+    } = match_named_type_pattern(expected_name, actual_name, owner_type_params)
     else {
         return;
     };

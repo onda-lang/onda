@@ -2969,11 +2969,22 @@ pub(super) fn compute_proc_shape(
                         }
                     }
                     FieldType::Tuple(elem_tys) => {
+                        let Some(elem_tys) = elem_tys
+                            .iter()
+                            .map(ScalarTypeRef::primitive)
+                            .collect::<Option<Vec<_>>>()
+                        else {
+                            errors.push(Diagnostic::semantic_span(
+                                format!("processor state tuple '{flat}' has an unresolved type"),
+                                field.ty_loc.or(field.loc),
+                            ));
+                            continue;
+                        };
                         register_tuple_state(
                             &mut proc_state_scalars,
                             &mut proc_state_tuples,
                             &flat,
-                            elem_tys,
+                            &elem_tys,
                         );
                     }
                     FieldType::Generic(_) => {}
@@ -3454,7 +3465,13 @@ pub(super) fn compute_proc_shape(
         fields.push(StructField {
             loc: Default::default(),
             name: name.clone(),
-            ty: FieldType::Tuple(state.tuples[name].clone()),
+            ty: FieldType::Tuple(
+                state.tuples[name]
+                    .iter()
+                    .copied()
+                    .map(ScalarTypeRef::from)
+                    .collect(),
+            ),
             ty_loc: Default::default(),
             default: None,
         });

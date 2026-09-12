@@ -7,7 +7,7 @@ use crate::ast::{
     ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
     OutputTiming, ParamScale, PrimitiveType, Stmt, TupleAssignTarget, INTERNAL_BARE_RETURN_FN,
-    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
+    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN, ScalarTypeRef,
 };
 
 use super::{
@@ -3989,4 +3989,3 @@ sample:
     assert_eq!(call_name, "Data::Data");
     assert!(call_name.ends_with("::Data"));
 }
-

@@ -49,16 +49,17 @@ pub(crate) fn specialize_generic_proc_event_param_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> EventParamType {
+    let scope = TypeSpecializationScope::new(type_bindings, context);
     match ty {
         EventParamType::GenericScalar { name } => {
-            match specialize_generic_type_name(name, type_bindings, context, diag, errors) {
+            match specialize_generic_type_name(name, scope, diag, errors) {
                 Some(SpecializedTypeName::Primitive(ty)) => EventParamType::Scalar(ty),
                 Some(SpecializedTypeName::Named(name)) => EventParamType::GenericScalar { name },
                 None => ty.clone(),
             }
         }
         EventParamType::GenericArray { elem, size } => {
-            match specialize_generic_type_name(elem, type_bindings, context, diag, errors) {
+            match specialize_generic_type_name(elem, scope, diag, errors) {
                 Some(SpecializedTypeName::Primitive(elem)) => EventParamType::Array {
                     elem,
                     size: size.clone(),
@@ -71,7 +72,7 @@ pub(crate) fn specialize_generic_proc_event_param_type(
             }
         }
         EventParamType::GenericSlice { elem } => {
-            match specialize_generic_type_name(elem, type_bindings, context, diag, errors) {
+            match specialize_generic_type_name(elem, scope, diag, errors) {
                 Some(SpecializedTypeName::Primitive(elem)) => EventParamType::Slice { elem },
                 Some(SpecializedTypeName::Named(elem)) => EventParamType::GenericSlice { elem },
                 None => ty.clone(),
@@ -550,25 +551,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for def in &mut local_defs {
         let def_context = format!("processor '{}' local def '{}'", template.name, def.name);
-        specialize_function_type_annotations(def, &type_bindings, &def_context, errors);
-        for param in &mut def.params {
-            if let Some(default) = &mut param.default {
-                substitute_call_type_args_with_bindings_expr(
-                    default,
-                    &type_bindings,
-                    &format!("{def_context} parameter default"),
-                    errors,
-                );
-            }
-        }
-        for stmt in &mut def.body {
-            substitute_call_type_args_with_bindings_stmt(
-                stmt,
-                &type_bindings,
-                &def_context,
-                errors,
-            );
-        }
+        specialize_function_with_type_bindings(def, &type_bindings, &def_context, errors);
         expand_inline_array_ctor_initializers(&mut def.body);
     }
 

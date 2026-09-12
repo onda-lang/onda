@@ -114,6 +114,22 @@ pub(crate) fn coerce_struct_fields(
                 continue;
             }
             FieldType::Tuple(elem_tys) => {
+                let resolved_elem_tys = elem_tys
+                    .iter()
+                    .map(|ty| match ty {
+                        ScalarTypeRef::Primitive(ty) => *ty,
+                        ScalarTypeRef::Named(name) => {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "tuple field '{}.{}' uses unresolved generic type '{}'",
+                                    struct_name, field.name, name
+                                ),
+                                field_loc,
+                            ));
+                            PrimitiveType::F32
+                        }
+                    })
+                    .collect::<Vec<_>>();
                 if let Some(expr) = &field.default {
                     with_loc_diag_context(field_loc, |_diag| {
                         validate_default_expr(
@@ -124,7 +140,7 @@ pub(crate) fn coerce_struct_fields(
                     });
                 }
                 (
-                    TypedFieldType::Tuple(elem_tys.clone()),
+                    TypedFieldType::Tuple(resolved_elem_tys),
                     field.default.clone(),
                     None,
                     None,

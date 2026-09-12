@@ -3163,6 +3163,34 @@ sample:
 }
 
 #[test]
+fn parses_generic_tuple_struct_field_elements() {
+    let src = r#"
+struct Tagged<T>:
+  pair: (T, i32)
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("generic tuple field should parse");
+    let tagged = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Struct(strukt) if strukt.name == "Tagged" => Some(strukt),
+            _ => None,
+        })
+        .expect("Tagged struct");
+    assert!(matches!(
+        &tagged.fields[0].ty,
+        FieldType::Tuple(elements)
+            if elements == &[
+                ScalarTypeRef::Named("T".to_owned()),
+                ScalarTypeRef::Primitive(PrimitiveType::I32),
+            ]
+    ));
+}
+
+#[test]
 fn parses_namespace_qualified_generic_type_in_call_type_args() {
     let src = r#"
 namespace NS:

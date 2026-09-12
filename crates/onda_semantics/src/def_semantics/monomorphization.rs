@@ -648,26 +648,7 @@ fn generate_mono_def(
         // Rewrite the body: T(expr) → cast, T declarations, etc.
         if !type_bindings.is_empty() {
             let context = format!("generic def '{}'", original.name);
-            for stmt in &mut new_def.body {
-                crate::generic_specialization::substitute_call_type_args_with_bindings_stmt(
-                    stmt,
-                    &type_bindings,
-                    &context,
-                    errors,
-                );
-            }
-            // Also rewrite param default expressions
-            for param in &mut new_def.params {
-                if let Some(default) = &mut param.default {
-                    crate::generic_specialization::substitute_call_type_args_with_bindings_expr(
-                        default,
-                        &type_bindings,
-                        &context,
-                        errors,
-                    );
-                }
-            }
-            crate::generic_specialization::specialize_function_type_annotations(
+            crate::generic_specialization::specialize_function_with_type_bindings(
                 &mut new_def,
                 &type_bindings,
                 &context,
@@ -853,23 +834,47 @@ fn resolve_generic_def_type_bindings(
                 }
                 continue;
             };
-            if let Some(inferred) =
-                crate::generic_specialization::infer_named_type_parameter_bindings(
-                    expected_name,
-                    &actual_name,
-                    &sig.type_params,
-                )
-            {
-                for (name, prim) in inferred {
-                    constraints
-                        .entry(name)
-                        .or_default()
-                        .push((prim, true, arg_expr));
-                }
-            } else if crate::generic_specialization::named_type_has_unresolved_arguments(
-                &actual_name,
-            ) {
+            if crate::generic_specialization::named_type_has_unresolved_arguments(&actual_name) {
                 has_dependent_argument = true;
+                continue;
+            }
+            match crate::generic_specialization::match_named_type_pattern(
+                expected_name,
+                &actual_name,
+                &sig.type_params,
+            ) {
+                crate::generic_specialization::NamedTypePatternMatch::Matched {
+                    bindings, ..
+                } => {
+                    for (name, prim) in bindings {
+                        constraints
+                            .entry(name)
+                            .or_default()
+                            .push((prim, true, arg_expr));
+                    }
+                }
+                crate::generic_specialization::NamedTypePatternMatch::Mismatch => {
+                    let parameter = sig
+                        .params
+                        .get(idx)
+                        .map(String::as_str)
+                        .unwrap_or("<unknown>");
+                    let actual =
+                        crate::generic_specialization::source_named_type_name(&actual_name);
+                    let diagnostic = Diagnostic::semantic_span(
+                        format!(
+                            "generic function '{call_name}' parameter '{parameter}' requires '{expected_name}', got '{actual}'"
+                        ),
+                        arg_expr.loc(),
+                    );
+                    if !errors.contains(&diagnostic) {
+                        errors.push(diagnostic);
+                    }
+                    return None;
+                }
+                crate::generic_specialization::NamedTypePatternMatch::NotApplicable => {
+                    continue;
+                }
             }
         }
 

@@ -253,6 +253,65 @@ sample:
     }
 
     #[test]
+    fn generic_struct_method_preserves_its_own_nested_type_parameters() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+struct Box<T>:
+  value: T
+
+  def copy<U>(self, pair: Pair<T, U>) -> Pair<T, U>:
+    local: Pair<T, U> = pair
+    forwarded = Pair<T, U>(local.first, local.second)
+    copies: Pair<T, U>[1] = [forwarded]
+    selected = copies[0]
+    return selected
+
+sample:
+  box = Box<i64>(i64(4))
+  pair = Pair<i64, f32>(i64(7), 1.5)
+  copied = box.copy(pair)
+  out1 = copied.second
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("owner and method type parameters should specialize independently");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.contains("Box.__gen__i64.copy.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("mixed owner and method generic types should lower");
+    }
+
+    #[test]
+    fn generic_tuple_struct_fields_specialize_to_primitive_elements() {
+        let src = r#"
+struct Tagged<T>:
+  pair: (T, i32) = (T(1.5), 2)
+
+sample:
+  value = Tagged<f64>()
+  out1 = f32(value.pair[0]) + f32(value.pair[1])
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("generic tuple fields should specialize");
+        let tagged = typed
+            .structs
+            .iter()
+            .find(|strukt| strukt.name == "Tagged.__gen__f64")
+            .expect("specialized Tagged struct");
+        assert!(matches!(
+            &tagged.fields[0].ty,
+            TypedFieldType::Tuple(elements)
+                if elements == &[PrimitiveType::F64, PrimitiveType::I32]
+        ));
+        lower_program_to_optimized_mir(&typed).expect("generic tuple fields should lower");
+    }
+
+    #[test]
     fn generic_def_specializes_nominal_parameters_arrays_and_returns() {
         let src = r#"
 struct Box<T>:
@@ -347,6 +406,89 @@ sample:
                     .message
                     .contains("incompatible exact argument types f32 and f64")
         }));
+    }
+
+    #[test]
+    fn generic_nominal_patterns_participate_in_overload_resolution() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def pick<T>(value: Pair<T, f32>) -> T:
+  return value.first
+
+def pick<T>(value: Pair<T, f64>) -> T:
+  return value.first
+
+sample:
+  narrow = Pair<i32, f32>(7, 1.0)
+  wide = Pair<i64, f64>(i64(9), f64(2.0))
+  out1 = f32(pick(narrow)) + f32(pick(wide))
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal generic patterns should select overloads");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded nominal generic patterns should lower");
+    }
+
+    #[test]
+    fn generic_nominal_overloads_support_fixed_arrays_and_slices() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def fixed_kind<T>(values: Pair<T, f32>[1]) -> f32:
+  return 0.1
+
+def fixed_kind<T>(values: Pair<T, f64>[1]) -> f32:
+  return 0.2
+
+def slice_kind<T>(values: Pair<T, f32>[]) -> f32:
+  return 0.1
+
+def slice_kind<T>(values: Pair<T, f64>[]) -> f32:
+  return 0.2
+
+init:
+  fixed32: Pair<i32, f32>[1] = [Pair<i32, f32>(1, 1.0)]
+  fixed64: Pair<i32, f64>[1] = [Pair<i32, f64>(1, f64(2.0))]
+  slice32: Pair<i32, f32>[] = fixed32[:]
+  slice64: Pair<i32, f64>[] = fixed64[:]
+
+sample:
+  out1 = fixed_kind(fixed32) + fixed_kind(fixed64) + slice_kind(slice32) + slice_kind(slice64)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal array patterns should select overloads");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded nominal array patterns should lower");
+    }
+
+    #[test]
+    fn generic_nominal_pattern_mismatches_use_source_type_names() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def take<T>(value: Pair<T, f64>) -> T:
+  return value.first
+
+sample:
+  wrong = Pair<i64, f32>(i64(1), 2.0)
+  out1 = f32(take(wrong))
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("the concrete nominal argument should not match");
+        assert!(errors.iter().any(|error| {
+            error.message
+                == "generic function 'take' parameter 'value' requires 'Pair<T, f64>', got 'Pair<i64, f32>'"
+        }));
+        assert!(errors
+            .iter()
+            .all(|error| !error.message.contains(".__gen__")));
     }
 
     #[test]
@@ -455,6 +597,45 @@ sample:
         );
         lower_program_to_optimized_mir(&typed)
             .expect("specialized processor-local nominal types should lower");
+    }
+
+    #[test]
+    fn generic_processor_preserves_local_def_type_parameters() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+proc Reader<T>:
+  outs<T>:
+    out1
+
+  def copied<U>(value: Pair<T, U>) -> Pair<T, U>:
+    local: Pair<T, U> = value
+    copy = Pair<T, U>(local.first, local.second)
+    return copy
+
+  sample:
+    pair = Pair<T, f32>(T(.25), .5)
+    result = copied(pair)
+    out1 = T(result.second)
+
+init:
+  reader = Reader<f64>()
+
+sample:
+  out1 = f32(reader())
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("processor and local-def type parameters should specialize independently");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.contains("Reader.__gen__f64")
+                && def.name.contains("copied.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__f64_f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("mixed processor and local-def generic types should lower");
     }
 
     #[test]

@@ -4,10 +4,10 @@ use onda_frontend::{
     ConstType, DeclType, DelegateDef, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, INTERNAL_TASK_AWAIT_FN,
-    INTERNAL_TASK_YIELD_FN,
+    SampleBlock, ScalarTypeRef, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -1226,7 +1226,10 @@ fn format_field_type(ty: &FieldType) -> String {
         FieldType::Tuple(elem_tys) => {
             let elems: Vec<String> = elem_tys
                 .iter()
-                .map(|ty| primitive_type_name(*ty).to_owned())
+                .map(|ty| match ty {
+                    ScalarTypeRef::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+                    ScalarTypeRef::Named(name) => name.clone(),
+                })
                 .collect();
             format!("({})", elems.join(", "))
         }

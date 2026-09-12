@@ -767,10 +767,27 @@ pub enum FnParamType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum FnReturnScalarType {
+pub enum ScalarTypeRef {
     Primitive(PrimitiveType),
     Named(String),
 }
+
+impl ScalarTypeRef {
+    pub fn primitive(&self) -> Option<PrimitiveType> {
+        match self {
+            Self::Primitive(ty) => Some(*ty),
+            Self::Named(_) => None,
+        }
+    }
+}
+
+impl From<PrimitiveType> for ScalarTypeRef {
+    fn from(value: PrimitiveType) -> Self {
+        Self::Primitive(value)
+    }
+}
+
+pub type FnReturnScalarType = ScalarTypeRef;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnReturnType {
@@ -779,7 +796,7 @@ pub enum FnReturnType {
         elem: FnReturnScalarType,
         size: Expr,
     },
-    Tuple(Vec<FnReturnScalarType>),
+    Tuple(Vec<ScalarTypeRef>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -909,7 +926,7 @@ pub enum FieldType {
     Scalar(PrimitiveType),
     Generic(String),
     Array(ArrayTypeSpec),
-    Tuple(Vec<PrimitiveType>),
+    Tuple(Vec<FnReturnScalarType>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

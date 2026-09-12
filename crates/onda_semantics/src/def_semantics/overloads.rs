@@ -150,6 +150,57 @@ fn score_tuple_match(
         })
 }
 
+#[derive(Debug)]
+struct OverloadParamMatch {
+    score: i32,
+    generic_constraints: Vec<(String, PrimitiveType, bool)>,
+}
+
+fn plain_match(score: i32) -> OverloadParamMatch {
+    OverloadParamMatch {
+        score,
+        generic_constraints: Vec::new(),
+    }
+}
+
+fn generic_match(name: &str, actual: PrimitiveType, exact: bool, score: i32) -> OverloadParamMatch {
+    OverloadParamMatch {
+        score,
+        generic_constraints: vec![(name.to_owned(), actual, exact)],
+    }
+}
+
+fn nominal_match(
+    actual: &str,
+    expected: &str,
+    type_params: &[String],
+) -> Option<OverloadParamMatch> {
+    if actual == expected {
+        return Some(plain_match(0));
+    }
+    let crate::generic_specialization::NamedTypePatternMatch::Matched {
+        bindings,
+        type_parameter_count,
+    } = crate::generic_specialization::match_named_type_pattern(expected, actual, type_params)
+    else {
+        return None;
+    };
+    Some(OverloadParamMatch {
+        // Concrete nominal types remain exact matches. Generic nominal patterns
+        // rank with direct generic parameters, with less-constrained patterns
+        // ranked behind more-constrained ones.
+        score: if type_parameter_count == 0 {
+            0
+        } else {
+            1 + i32::try_from(type_parameter_count).unwrap_or(i32::MAX - 1)
+        },
+        generic_constraints: bindings
+            .into_iter()
+            .map(|(name, actual)| (name, actual, true))
+            .collect(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Def monomorphization — generic struct, untyped array [], bare buffer params
 // ---------------------------------------------------------------------------
@@ -161,34 +212,39 @@ fn score_overload_param_match(
     def_type_params: &[String],
     env: &CallTypeEnv,
     context: CallTypeContext<'_>,
-) -> Option<i32> {
+) -> Option<OverloadParamMatch> {
     match param_ty {
         Some(FnParamType::Primitive(expected)) => match arg_shape {
             OverloadArgShape::Scalar(src) => {
                 if *src == *expected {
-                    Some(0)
+                    Some(plain_match(0))
                 } else if can_assign_expr_to_type(arg_expr, *src, *expected) {
-                    Some(1)
+                    Some(plain_match(1))
                 } else {
                     None
                 }
             }
-            OverloadArgShape::Unknown => Some(2),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::Struct(expected_struct))
             if !def_type_params.is_empty() && def_type_params.contains(expected_struct) =>
         {
             // Generic type parameter — matches any scalar arg.
-            // Score 2: between concrete (0) and untyped (3).
+            // Score 2: between concrete (0) and untyped (4).
             match arg_shape {
-                OverloadArgShape::Scalar(_) | OverloadArgShape::Unknown => Some(2),
+                OverloadArgShape::Scalar(actual) => {
+                    Some(generic_match(expected_struct, *actual, false, 2))
+                }
+                OverloadArgShape::Unknown => Some(plain_match(2)),
                 _ => None,
             }
         }
         Some(FnParamType::Struct(expected_struct)) => match arg_shape {
-            OverloadArgShape::Struct(actual_struct) if actual_struct == expected_struct => Some(0),
-            OverloadArgShape::Unknown => Some(2),
+            OverloadArgShape::Struct(actual_struct) => {
+                nominal_match(actual_struct, expected_struct, def_type_params)
+            }
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::Buffer(expected_buffer)) => match arg_shape {
@@ -196,8 +252,15 @@ fn score_overload_param_match(
                 elem_ty,
                 channels,
                 collection_len: None,
-            } => score_buffer_match(expected_buffer, *elem_ty, channels),
-            OverloadArgShape::Unknown => Some(2),
+            } => score_buffer_match(expected_buffer, *elem_ty, channels).map(|score| {
+                if let BufferElemType::Generic(name) = &expected_buffer.elem {
+                    if def_type_params.contains(name) {
+                        return generic_match(name, *elem_ty, true, score);
+                    }
+                }
+                plain_match(score)
+            }),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::BufferArray { buffer, len }) => match arg_shape {
@@ -205,8 +268,15 @@ fn score_overload_param_match(
                 elem_ty,
                 channels,
                 collection_len: Some(actual_len),
-            } if actual_len == len => score_buffer_match(buffer, *elem_ty, channels),
-            OverloadArgShape::Unknown => Some(2),
+            } if actual_len == len => score_buffer_match(buffer, *elem_ty, channels).map(|score| {
+                if let BufferElemType::Generic(name) = &buffer.elem {
+                    if def_type_params.contains(name) {
+                        return generic_match(name, *elem_ty, true, score);
+                    }
+                }
+                plain_match(score)
+            }),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::Array(Some(expected_elem))) => match arg_shape {
@@ -216,22 +286,27 @@ fn score_overload_param_match(
             }) => {
                 let shape_score = i32::from(len.is_some());
                 if actual_elem == expected_elem {
-                    Some(shape_score)
+                    Some(plain_match(shape_score))
                 } else {
                     score_contextual_array_literal(arg_expr, *expected_elem, env, context)
-                        .map(|conversion_score| shape_score + conversion_score)
+                        .map(|conversion_score| plain_match(shape_score + conversion_score))
                 }
             }
-            OverloadArgShape::Unknown => Some(2),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::ArrayGeneric(expected)) if def_type_params.contains(expected) => {
             match arg_shape {
                 OverloadArgShape::Array(CallArrayType {
-                    elem: CallArrayElemType::Primitive(_),
+                    elem: CallArrayElemType::Primitive(actual),
                     len,
-                }) => Some(if len.is_some() { 3 } else { 2 }),
-                OverloadArgShape::Unknown => Some(2),
+                }) => Some(generic_match(
+                    expected,
+                    *actual,
+                    true,
+                    if len.is_some() { 3 } else { 2 },
+                )),
+                OverloadArgShape::Unknown => Some(plain_match(2)),
                 _ => None,
             }
         }
@@ -239,8 +314,11 @@ fn score_overload_param_match(
             OverloadArgShape::Array(CallArrayType {
                 elem: CallArrayElemType::Nominal(actual),
                 len,
-            }) if actual == expected => Some(i32::from(len.is_some())),
-            OverloadArgShape::Unknown => Some(2),
+            }) => nominal_match(actual, expected, def_type_params).map(|mut matched| {
+                matched.score += i32::from(len.is_some());
+                matched
+            }),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::SizedArray {
@@ -254,90 +332,50 @@ fn score_overload_param_match(
                     match (&actual.elem, elem, generic_name) {
                         (CallArrayElemType::Primitive(actual), Some(expected), _) => {
                             if actual == expected {
-                                Some(0)
+                                Some(plain_match(0))
                             } else {
                                 score_contextual_array_literal(arg_expr, *expected, env, context)
+                                    .map(plain_match)
                             }
                         }
-                        (CallArrayElemType::Primitive(_), None, Some(name))
+                        (CallArrayElemType::Primitive(actual), None, Some(name))
                             if def_type_params.contains(name) =>
                         {
-                            Some(2)
+                            Some(generic_match(name, *actual, true, 2))
                         }
                         (CallArrayElemType::Nominal(actual), None, Some(expected))
-                            if actual == expected && !def_type_params.contains(expected) =>
+                            if !def_type_params.contains(expected) =>
                         {
-                            Some(0)
+                            nominal_match(actual, expected, def_type_params)
                         }
                         _ => None,
                     }
                 }
-                OverloadArgShape::Unknown => Some(2),
+                OverloadArgShape::Unknown => Some(plain_match(2)),
                 _ => None,
             }
         }
         Some(FnParamType::Array(None)) => match arg_shape {
-            OverloadArgShape::Array(_) => Some(4),
-            OverloadArgShape::Unknown => Some(2),
+            OverloadArgShape::Array(_) => Some(plain_match(4)),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::BareBuffer) => match arg_shape {
             OverloadArgShape::Buffer {
                 collection_len: None,
                 ..
-            } => Some(4),
-            OverloadArgShape::Unknown => Some(2),
+            } => Some(plain_match(4)),
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
         Some(FnParamType::Tuple(expected)) => match arg_shape {
-            OverloadArgShape::Tuple(actual) => score_tuple_match(arg_expr, actual, expected),
-            OverloadArgShape::Unknown => Some(2),
+            OverloadArgShape::Tuple(actual) => {
+                score_tuple_match(arg_expr, actual, expected).map(plain_match)
+            }
+            OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
         },
-        None => Some(4),
-    }
-}
-
-fn generic_primitive_binding(
-    arg_shape: &OverloadArgShape,
-    param_ty: Option<&FnParamType>,
-    def_type_params: &[String],
-) -> Option<(String, PrimitiveType, bool)> {
-    match (arg_shape, param_ty) {
-        (OverloadArgShape::Scalar(actual), Some(FnParamType::Struct(name)))
-            if def_type_params.contains(name) =>
-        {
-            Some((name.clone(), *actual, false))
-        }
-        (
-            OverloadArgShape::Array(CallArrayType {
-                elem: CallArrayElemType::Primitive(actual),
-                ..
-            }),
-            Some(FnParamType::ArrayGeneric(name))
-            | Some(FnParamType::SizedArray {
-                generic_name: Some(name),
-                ..
-            }),
-        ) if def_type_params.contains(name) => Some((name.clone(), *actual, true)),
-        (
-            OverloadArgShape::Buffer {
-                elem_ty: actual, ..
-            },
-            Some(FnParamType::Buffer(BufferType {
-                elem: BufferElemType::Generic(name),
-                ..
-            }))
-            | Some(FnParamType::BufferArray {
-                buffer:
-                    BufferType {
-                        elem: BufferElemType::Generic(name),
-                        ..
-                    },
-                ..
-            }),
-        ) if def_type_params.contains(name) => Some((name.clone(), *actual, true)),
-        _ => None,
+        None => Some(plain_match(4)),
     }
 }
 
@@ -557,7 +595,7 @@ fn resolve_overloaded_call_name(
                     .param_types
                     .get(param_idx)
                     .and_then(|t| t.as_ref());
-                let Some(score) = score_overload_param_match(
+                let Some(param_match) = score_overload_param_match(
                     arg_expr,
                     &arg_shape,
                     param_ty,
@@ -568,15 +606,13 @@ fn resolve_overloaded_call_name(
                     viable = false;
                     break;
                 };
-                if let Some((name, actual, exact)) =
-                    generic_primitive_binding(&arg_shape, param_ty, &cand.signature.type_params)
-                {
+                for (name, actual, exact) in param_match.generic_constraints {
                     generic_constraints
                         .entry(name)
                         .or_default()
                         .push((actual, exact, arg_expr));
                 }
-                total_score += score;
+                total_score += param_match.score;
             } else {
                 // Slight preference for overloads requiring fewer defaulted params.
                 total_score += 1;

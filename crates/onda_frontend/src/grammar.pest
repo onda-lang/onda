@@ -162,7 +162,8 @@ field_decl = {
   | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ (NEWLINE* ~ binding_range)?)
   | (ident ~ &field_sep)
 }
-field_type = { array_type | tuple_type | type_name | named_type }
+field_type = { array_type | field_tuple_type | type_name | named_type }
+field_tuple_type = { "(" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)+ ~ NEWLINE* ~ ")" }
 array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "<" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)* ~ NEWLINE* ~ ">" }
