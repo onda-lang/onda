@@ -1587,6 +1587,59 @@ fn named_specialization_type_args(
         .collect()
 }
 
+pub(crate) fn named_type_parameter_names(
+    expected_name: &str,
+    owner_type_params: &[String],
+) -> Vec<String> {
+    let Some((_, expected_args)) = parse_array_struct_elem_with_type_args(expected_name) else {
+        return Vec::new();
+    };
+    expected_args
+        .into_iter()
+        .filter_map(|arg| match arg {
+            CallTypeArg::Generic(param) if owner_type_params.contains(&param) => Some(param),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn named_type_has_unresolved_arguments(name: &str) -> bool {
+    parse_array_struct_elem_with_type_args(name).is_some_and(|(_, args)| {
+        args.iter()
+            .any(|arg| matches!(arg, CallTypeArg::Generic(_)))
+    })
+}
+
+/// Match a source-level nominal type pattern such as `Pair<T, f64>` against a
+/// concrete specialization and return the owner type parameters it constrains.
+/// Nominal type arguments are exact: concrete arguments in the pattern must
+/// match, and repeated generic arguments are returned separately so callers can
+/// diagnose conflicting constraints consistently with their own inference rules.
+pub(crate) fn infer_named_type_parameter_bindings(
+    expected_name: &str,
+    actual_name: &str,
+    owner_type_params: &[String],
+) -> Option<Vec<(String, PrimitiveType)>> {
+    let (expected_base, expected_args) = parse_array_struct_elem_with_type_args(expected_name)?;
+    let actual_args = named_specialization_type_args(&expected_base, actual_name)?;
+    if expected_args.len() != actual_args.len() {
+        return None;
+    }
+
+    let mut bindings = Vec::new();
+    for (expected, actual) in expected_args.into_iter().zip(actual_args) {
+        match expected {
+            CallTypeArg::Primitive(expected) if expected != actual => return None,
+            CallTypeArg::Primitive(_) => {}
+            CallTypeArg::Generic(param) if owner_type_params.contains(&param) => {
+                bindings.push((param, actual));
+            }
+            CallTypeArg::Generic(_) => return None,
+        }
+    }
+    Some(bindings)
+}
+
 fn bind_nested_generic_type_args(
     expected_name: &str,
     actual_name: &str,
@@ -1596,23 +1649,13 @@ fn bind_nested_generic_type_args(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let Some((expected_base, expected_args)) =
-        parse_array_struct_elem_with_type_args(expected_name)
+    let Some(inferred) =
+        infer_named_type_parameter_bindings(expected_name, actual_name, owner_type_params)
     else {
         return;
     };
-    let Some(actual_args) = named_specialization_type_args(&expected_base, actual_name) else {
-        return;
-    };
-    if expected_args.len() != actual_args.len() {
-        return;
-    }
-    for (expected, actual) in expected_args.iter().zip(actual_args) {
-        if let CallTypeArg::Generic(type_param) = expected {
-            if owner_type_params.contains(type_param) {
-                bind_inferred_generic_type(bindings, type_param, actual, context, diag, errors);
-            }
-        }
+    for (type_param, actual) in inferred {
+        bind_inferred_generic_type(bindings, &type_param, actual, context, diag, errors);
     }
 }
 

@@ -267,6 +267,43 @@ fn infer_array_arg_key(
     }
 }
 
+fn nominal_generic_param_pattern(param_ty: &FnParamType) -> Option<&str> {
+    match param_ty {
+        FnParamType::Struct(name) | FnParamType::ArrayGeneric(name) => Some(name),
+        FnParamType::SizedArray {
+            generic_name: Some(name),
+            ..
+        } => Some(name),
+        _ => None,
+    }
+}
+
+fn infer_nominal_argument_type(
+    param_ty: &FnParamType,
+    expr: &Expr,
+    env: &CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<String> {
+    match param_ty {
+        FnParamType::Struct(_) => infer_struct_expr_type(
+            expr,
+            env,
+            CallTypeContext {
+                return_types,
+                struct_defs,
+            },
+        ),
+        FnParamType::ArrayGeneric(_) | FnParamType::SizedArray { .. } => {
+            match infer_array_arg_type(expr, env, return_types, struct_defs)?.elem {
+                CallArrayElemType::Nominal(name) => Some(name),
+                CallArrayElemType::Primitive(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn source_buffer_channels(channels: &TypedBufferChannels) -> BufferChannels {
     match channels {
         TypedBufferChannels::Mono => BufferChannels::Mono,
@@ -711,7 +748,7 @@ fn resolve_generic_def_type_bindings(
         let mut constraints = HashMap::<String, Vec<(PrimitiveType, bool, &Expr)>>::new();
         let mut has_dependent_argument = false;
         for (idx, param_ty) in sig.param_types.iter().enumerate() {
-            let type_param_name = match param_ty {
+            let direct_type_param = match param_ty {
                 Some(FnParamType::Struct(ref name)) if sig.type_params.contains(name) => {
                     Some(name.clone())
                 }
@@ -736,12 +773,13 @@ fn resolve_generic_def_type_bindings(
                 }) if sig.type_params.contains(name) => Some(name.clone()),
                 _ => None,
             };
-            let Some(name) = type_param_name else {
-                continue;
-            };
             let supplied_arg = resolved_args.get(idx).copied().flatten();
             let arg_expr = supplied_arg.or_else(|| sig.defaults.get(idx).and_then(Option::as_ref));
-            if let Some(arg_expr) = arg_expr {
+            let Some(arg_expr) = arg_expr else {
+                continue;
+            };
+
+            if let Some(name) = direct_type_param {
                 // For array/buffer params, infer from the arg's element type.
                 let (inferred, exact) = match param_ty {
                     Some(FnParamType::ArrayGeneric(_)) | Some(FnParamType::SizedArray { .. }) => (
@@ -787,6 +825,51 @@ fn resolve_generic_def_type_bindings(
                     // parameter's ordinary f32 default to break the cycle.
                     has_dependent_argument = true;
                 }
+                continue;
+            }
+
+            let Some(param_ty) = param_ty.as_ref() else {
+                continue;
+            };
+            let Some(expected_name) = nominal_generic_param_pattern(param_ty) else {
+                continue;
+            };
+            let nested_type_params = crate::generic_specialization::named_type_parameter_names(
+                expected_name,
+                &sig.type_params,
+            );
+            if nested_type_params.is_empty() {
+                continue;
+            }
+            let Some(actual_name) =
+                infer_nominal_argument_type(param_ty, arg_expr, env, return_types, struct_defs)
+            else {
+                if supplied_arg.is_some()
+                    || nested_type_params
+                        .iter()
+                        .any(|name| !expr_references_type_param(arg_expr, name))
+                {
+                    has_dependent_argument = true;
+                }
+                continue;
+            };
+            if let Some(inferred) =
+                crate::generic_specialization::infer_named_type_parameter_bindings(
+                    expected_name,
+                    &actual_name,
+                    &sig.type_params,
+                )
+            {
+                for (name, prim) in inferred {
+                    constraints
+                        .entry(name)
+                        .or_default()
+                        .push((prim, true, arg_expr));
+                }
+            } else if crate::generic_specialization::named_type_has_unresolved_arguments(
+                &actual_name,
+            ) {
+                has_dependent_argument = true;
             }
         }
 

@@ -272,22 +272,81 @@ def first_view<T>(values: Box<T>[]) -> Box<T>:
   return values[0]
 
 sample:
-  boxes: Box<f32>[2] = [Box<f32>(value = .25), Box<f32>(value = .5)]
-  copies = identity_array<f32>(boxes)
-  view: Box<f32>[] = copies[:]
-  from_view = first_view<f32>(view)
-  selected = first<f32>(copies)
-  result = identity<f32>(selected)
-  out1 = result.value + from_view.value
+  boxes: Box<f64>[2] = [Box<f64>(value = .25), Box<f64>(value = .5)]
+  copies = identity_array(boxes)
+  view: Box<f64>[] = copies[:]
+  from_view = first_view(view)
+  selected = first(copies)
+  result = identity(selected)
+  out1 = f32(result.value + from_view.value)
 "#;
         let typed = analyze(parse_program(src).expect("source should parse"))
             .expect("nominal generic def types should specialize at the call site");
         assert!(typed.defs.iter().any(|def| {
             def.name.starts_with("first.__onda_mono")
-                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f64".into()))
         }));
         lower_program_to_optimized_mir(&typed)
             .expect("specialized nominal generic def types should lower");
+    }
+
+    #[test]
+    fn generic_def_infers_every_type_argument_from_a_nominal_parameter() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def identity<A, B>(value: Pair<A, B>) -> Pair<A, B>:
+  return value
+
+def forwarded<A, B>(value: Pair<A, B>) -> Pair<A, B>:
+  return identity(value)
+
+sample:
+  source = Pair<i64, f64>(first = i64(7), second = f64(.25))
+  result = forwarded(source)
+  out1 = f32(result.first) + f32(result.second)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("all nested nominal type arguments should be inferred");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("identity.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f64".into()))
+        }));
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("forwarded.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f64".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("multi-parameter nominal generic inference should lower");
+    }
+
+    #[test]
+    fn generic_def_rejects_conflicting_nominal_type_arguments() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def choose<T>(left: Box<T>, right: Box<T>) -> Box<T>:
+  return left
+
+sample:
+  narrow = Box<f32>(value = .25)
+  wide = Box<f64>(value = f64(.5))
+  result = choose(narrow, wide)
+  out1 = result.value
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("nominal type arguments must match exactly");
+        assert!(errors.iter().any(|error| {
+            error.message.contains("type parameter 'T'")
+                && error
+                    .message
+                    .contains("incompatible exact argument types f32 and f64")
+        }));
     }
 
     #[test]
