@@ -275,8 +275,9 @@ struct RegionLayout {
 }
 
 #[derive(Debug, Clone)]
-struct EventPayloadLayout {
+struct MessagePayloadLayout {
     fixed_size: Option<usize>,
+    length_prefix_bytes: Vec<u64>,
     plan: onda_processor_abi::payload::PayloadPlan,
 }
 
@@ -287,7 +288,8 @@ struct NativeLayouts {
     type_alignments: Vec<usize>,
     type_sizes: Vec<usize>,
     control_offsets: Vec<usize>,
-    event_payloads: Vec<EventPayloadLayout>,
+    event_payloads: Vec<MessagePayloadLayout>,
+    delegate_payloads: Vec<MessagePayloadLayout>,
     input_bases: Vec<usize>,
     input_count: usize,
     output_bases: Vec<usize>,
@@ -441,19 +443,15 @@ unsafe fn compute_native_layouts(
             .map(|param| param.ty)
             .collect::<Vec<_>>();
         let params = packed_region_layout(&param_types, types, target_data)?;
-        let event_payloads = program
-            .interface
-            .events
-            .iter()
-            .map(|event| {
-                let plan = onda_processor_abi::payload::PayloadPlan::new(&event.schema)
-                    .map_err(|error| MirCodegenError::unsupported(error.to_string()))?;
-                Ok(EventPayloadLayout {
-                    fixed_size: plan.fixed_wire_size(),
-                    plan,
-                })
-            })
-            .collect::<Result<Vec<_>, MirCodegenError>>()?;
+        let event_payloads =
+            message_payload_layouts(program.interface.events.iter().map(|event| &event.schema))?;
+        let delegate_payloads = message_payload_layouts(
+            program
+                .interface
+                .delegates
+                .iter()
+                .map(|delegate| &delegate.schema),
+        )?;
 
         let (input_bases, input_count) = interface_port_layout(
             program,
@@ -471,6 +469,7 @@ unsafe fn compute_native_layouts(
             type_sizes,
             control_offsets,
             event_payloads,
+            delegate_payloads,
             input_bases,
             input_count,
             output_bases,
@@ -479,6 +478,27 @@ unsafe fn compute_native_layouts(
     })();
     LLVMDisposeTargetData(target_data);
     result
+}
+
+fn message_payload_layouts<'a>(
+    schemas: impl IntoIterator<Item = &'a onda_processor_abi::payload::PayloadSchema>,
+) -> Result<Vec<MessagePayloadLayout>, MirCodegenError> {
+    schemas
+        .into_iter()
+        .map(|schema| {
+            let plan = onda_processor_abi::payload::PayloadPlan::new(schema)
+                .map_err(|error| MirCodegenError::unsupported(error.to_string()))?;
+            let mut length_prefix_bytes = vec![0; plan.abi_parameter_count()];
+            for tensor in plan.tensors() {
+                length_prefix_bytes[tensor.parameter] = u64::from(tensor.length_prefix) * 4;
+            }
+            Ok(MessagePayloadLayout {
+                fixed_size: plan.fixed_wire_size(),
+                length_prefix_bytes,
+                plan,
+            })
+        })
+        .collect()
 }
 
 unsafe fn aligned_region_layout(

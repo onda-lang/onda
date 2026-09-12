@@ -121,12 +121,9 @@ impl FunctionEmitter<'_, '_> {
         args: &[CallArgument],
     ) -> Result<(), MirCodegenError> {
         let descriptor = &self.module.program.interface.delegates[delegate.index()];
-        let plan = onda_processor_abi::payload::PayloadPlan::new(&descriptor.schema)
-            .map_err(|error| MirCodegenError::invalid(error.to_string()))?;
-        let mut prefix_bytes = vec![0_u64; descriptor.params.len()];
-        for tensor in plan.tensors() {
-            prefix_bytes[tensor.parameter] = if tensor.length_prefix { 4 } else { 0 };
-        }
+        let payload_layout = &self.module.layouts.delegate_payloads[delegate.index()];
+        let plan = &payload_layout.plan;
+        let length_prefix_bytes = &payload_layout.length_prefix_bytes;
         let i8_ty = LLVMInt8TypeInContext(self.module.context);
         let i32_ty = LLVMInt32TypeInContext(self.module.context);
         let i64_ty = LLVMInt64TypeInContext(self.module.context);
@@ -247,7 +244,7 @@ impl FunctionEmitter<'_, '_> {
                     );
                     LLVMBuildAdd(
                         self.builder,
-                        LLVMConstInt(i64_ty, prefix_bytes[index], 0),
+                        LLVMConstInt(i64_ty, length_prefix_bytes[index], 0),
                         LLVMBuildMul(
                             self.builder,
                             len,
@@ -540,7 +537,7 @@ impl FunctionEmitter<'_, '_> {
                 }
                 Type::Slice { element, .. } => {
                     let parts = self.slice_parts(*value)?;
-                    if prefix_bytes[index] != 0 {
+                    if length_prefix_bytes[index] != 0 {
                         let len_store = LLVMBuildStore(
                             self.builder,
                             super::super::event_input::wire_bits(
@@ -557,7 +554,7 @@ impl FunctionEmitter<'_, '_> {
                         self.builder,
                         i8_ty,
                         destination,
-                        [LLVMConstInt(i64_ty, prefix_bytes[index], 0)].as_mut_ptr(),
+                        [LLVMConstInt(i64_ty, length_prefix_bytes[index], 0)].as_mut_ptr(),
                         1,
                         c_name("delegate_slice_data")?.as_ptr(),
                     );
@@ -578,7 +575,7 @@ impl FunctionEmitter<'_, '_> {
                         cursor,
                         LLVMBuildAdd(
                             self.builder,
-                            LLVMConstInt(i64_ty, prefix_bytes[index], 0),
+                            LLVMConstInt(i64_ty, length_prefix_bytes[index], 0),
                             data_bytes,
                             c_name("delegate_slice_param_bytes")?.as_ptr(),
                         ),
