@@ -67,16 +67,17 @@ fn persistent_views_reject_expired_init_locals_and_pinning() {
         } else {
             ("temporary = Note()", "out1 = saved.value")
         };
-        let source = format!("struct Note:\n  value = 1.0\ninit:\n  if true:\n    {declaration}\n  else:\n    {declaration}\n  {binding}\nsample:\n  {read}\n");
+        let source = format!("struct Note:\n  value = 1.0\ninit:\n  stable = Note()\n  kept = stable\n  if true:\n    {declaration}\n  else:\n    {declaration}\n  {binding}\nsample:\n  {read}\n");
         let parsed = onda_frontend::parse_program(&source).unwrap();
         let typed = crate::analyze(parsed).expect("alias types are valid");
         let errors = lower_program_to_optimized_mir(&typed).unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("init-local")),
-            "{errors:?}"
-        );
+        let error = errors
+            .iter()
+            .find(|error| error.message.contains("init-local"))
+            .unwrap_or_else(|| panic!("{errors:?}"));
+        assert!(error.message.contains("'saved'"), "{error:?}");
+        assert_eq!(error.location.line, 10, "{error:?}");
+        assert!(error.location.column > 0, "{error:?}");
     }
     for declaration in ["pin selected = notes[0]", "pin selected: Note[] = notes[:]"] {
         let source = format!("struct Note:\n  value = 1.0\ninit:\n  notes: Note[2]\n  {declaration}\nsample:\n  out1 = 0.0\n");
@@ -1260,12 +1261,13 @@ sample:
   out1 = worker()
 "#;
     let errors = crate::analyze(onda_frontend::parse_program(source).unwrap()).unwrap_err();
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.message.contains("init-local")),
-        "{errors:?}"
-    );
+    let error = errors
+        .iter()
+        .find(|error| error.message.contains("init-local"))
+        .unwrap_or_else(|| panic!("{errors:?}"));
+    assert!(error.message.contains("'saved'"), "{error:?}");
+    assert_eq!(error.line, 10, "{error:?}");
+    assert!(error.column > 0, "{error:?}");
     compile(
         r#"
 proc Worker:

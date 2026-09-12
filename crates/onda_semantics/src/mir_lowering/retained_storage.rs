@@ -63,7 +63,6 @@ pub(super) fn retain_block_storage(
         types,
         "block",
         function.source,
-        &HashSet::new(),
     )?;
     let StatementKind::If {
         then_block,
@@ -104,7 +103,6 @@ pub(super) fn retain_storage(
     types: &[MirType],
     scope: &str,
     source: SourceSpan,
-    forbidden: &HashSet<LocalId>,
 ) -> Result<(MirBlock, HashMap<LocalId, onda_mir::StateId>), MirLoweringError> {
     let derived_lengths = extents
         .iter()
@@ -112,12 +110,6 @@ pub(super) fn retain_storage(
         .map(|extent| extent.length)
         .collect::<HashSet<_>>();
     extend_storage_dependencies(declarations, locals, types, &mut retained, true)?;
-    if !retained.is_disjoint(forbidden) {
-        return Err(MirLoweringError::new(
-            "persistent data view borrows init-local storage; declare independent fixed data to retain its contents",
-            SourceLoc::ZERO,
-        ));
-    }
     let mut planner = Planner {
         locals,
         state,

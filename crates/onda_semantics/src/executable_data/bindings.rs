@@ -1,5 +1,32 @@
 use super::*;
 
+pub(crate) fn declared_binding_locations(stmts: &[Stmt]) -> HashMap<String, SourceLoc> {
+    let mut locations = HashMap::new();
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                ..
+            } if !name.contains('.') => {
+                locations.insert(name.clone(), stmt.assign_target_loc());
+            }
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                locations.extend(declared_binding_locations(then_branch));
+                locations.extend(declared_binding_locations(else_branch));
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                locations.extend(declared_binding_locations(body));
+            }
+            _ => {}
+        }
+    }
+    locations
+}
+
 pub(crate) fn rewrite_binding_expr(expr: &mut Expr, names: &HashMap<String, String>) {
     match expr {
         Expr::Var { name, .. } => {

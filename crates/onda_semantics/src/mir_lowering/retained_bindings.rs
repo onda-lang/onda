@@ -13,21 +13,15 @@ pub(super) struct RetainedBindings {
 pub(super) fn retain_init_bindings(
     init: &mut onda_mir::Function,
     mut bindings: HashMap<String, Binding>,
-    names: &HashSet<String>,
+    views: &HashMap<String, SourceLoc>,
     local_names: &HashSet<String>,
     state: &mut Vec<onda_mir::StateSlot>,
     types: &[MirType],
     layouts: &AggregateLayoutTable,
 ) -> Result<RetainedBindings, MirLoweringError> {
-    let matches_root = |name: &str, roots: &HashSet<String>| {
-        roots.contains(name)
-            || name
-                .match_indices('.')
-                .any(|(index, _)| roots.contains(&name[..index]))
-    };
     let mut forbidden = HashSet::new();
     for (name, binding) in &mut bindings {
-        if matches_root(name, local_names) {
+        if has_matching_root(name, |root| local_names.contains(root)) {
             visit_binding_locals(binding, &mut |local| {
                 forbidden.insert(*local);
             });
@@ -46,12 +40,59 @@ pub(super) fn retain_init_bindings(
             MirType::Slice { .. }
         )
     });
-    bindings.retain(|name, _| matches_root(name, names));
+    bindings.retain(|name, _| has_matching_root(name, |root| views.contains_key(root)));
     let mut retained = HashSet::new();
     for binding in bindings.values_mut() {
         visit_binding_locals(binding, &mut |local| {
             retained.insert(*local);
         });
+    }
+    retained_storage::extend_storage_dependencies(
+        &init.body,
+        &init.locals,
+        types,
+        &mut retained,
+        true,
+    )?;
+    if !retained.is_disjoint(&forbidden) {
+        let mut roots = views.iter().collect::<Vec<_>>();
+        roots.sort_by_key(|(name, location)| (location.line, location.column, name.as_str()));
+        for (root, location) in &roots {
+            let mut candidate = HashSet::new();
+            for (name, binding) in &mut bindings {
+                if name == *root
+                    || name
+                        .strip_prefix(root.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+                {
+                    visit_binding_locals(binding, &mut |local| {
+                        candidate.insert(*local);
+                    });
+                }
+            }
+            retained_storage::extend_storage_dependencies(
+                &init.body,
+                &init.locals,
+                types,
+                &mut candidate,
+                true,
+            )?;
+            if !candidate.is_disjoint(&forbidden) {
+                return Err(MirLoweringError::new(
+                    format!(
+                        "persistent data view '{root}' borrows init-local storage; declare independent fixed data to retain its contents"
+                    ),
+                    **location,
+                ));
+            }
+        }
+        return Err(MirLoweringError::new(
+            "persistent data view borrows init-local storage; declare independent fixed data to retain its contents",
+            roots
+                .first()
+                .map(|(_, location)| **location)
+                .unwrap_or(SourceLoc::ZERO),
+        ));
     }
     let extents = view_extents(&bindings, layouts)?;
     let (mut restore, owned) = retain_storage(
@@ -63,7 +104,6 @@ pub(super) fn retain_init_bindings(
         types,
         "init",
         init.source,
-        &forbidden,
     )?;
     load_scalar_uses(&mut init.body, &owned, &init.locals, types);
     load_scalar_uses(&mut restore, &owned, &init.locals, types);
@@ -115,6 +155,13 @@ pub(super) fn retain_init_bindings(
         bindings,
         restore,
     })
+}
+
+fn has_matching_root(name: &str, contains: impl Fn(&str) -> bool) -> bool {
+    contains(name)
+        || name
+            .match_indices('.')
+            .any(|(index, _)| contains(&name[..index]))
 }
 
 pub(super) fn view_extents(

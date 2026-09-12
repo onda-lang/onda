@@ -41,6 +41,7 @@ use onda_mir::{
     SourceSpan, Statement, StatementKind, Type as MirType, TypeId, UnaryOp, Value,
 };
 
+use crate::executable_data::declared_binding_locations;
 use crate::indexed_read_source;
 use crate::internal_names::{
     runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
@@ -102,6 +103,12 @@ impl fmt::Display for MirLoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.location.is_zero() {
             write!(f, "MIR lowering: {}", self.message)
+        } else if let Some(file) = self.location.file() {
+            write!(
+                f,
+                "MIR lowering at {file}:{}:{}: {}",
+                self.location.line, self.location.column, self.message
+            )
         } else {
             write!(
                 f,
@@ -440,6 +447,17 @@ fn lower_program_to_raw_mir(
 
     let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
 
+    let init_locations = declared_binding_locations(&program.init);
+    let init_views = program
+        .init_view_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                init_locations.get(name).copied().unwrap_or(SourceLoc::ZERO),
+            )
+        })
+        .collect();
     let init_function = synthetic_runtime_function("onda_init", program.init.clone());
     let mut init_lowerer = FunctionLowerer::new_runtime(
         &init_function,
@@ -464,7 +482,7 @@ fn lower_program_to_raw_mir(
         retained_bindings::retain_init_bindings(
             &mut init,
             bindings,
-            &program.init_view_names,
+            &init_views,
             &program.init_local_data_names,
             &mut mir.state,
             &mir.types,

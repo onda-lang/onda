@@ -33,6 +33,7 @@ pub(super) fn retain_proc_data(
     init_types.retain_data_structs(struct_defs);
     let mut init_views = HashSet::new();
     collect_view_names(&proc.init, &init_types, &mut init_views);
+    let init_locations = declared_binding_locations(&proc.init);
     let mut init_names = declared_names(&proc.init);
     let original_init_names = init_names.keys().cloned().collect::<HashSet<_>>();
     let retained_init = init_views
@@ -66,13 +67,24 @@ pub(super) fn retain_proc_data(
         })
         .cloned()
         .collect::<HashSet<_>>();
-    for name in &retained_init {
+    let mut retained_names = retained_init.iter().collect::<Vec<_>>();
+    retained_names.sort_by_key(|name| {
+        let location = init_locations
+            .get(*name)
+            .copied()
+            .unwrap_or(SourceLoc::ZERO);
+        (location.line, location.column, name.as_str())
+    });
+    for name in retained_names {
         let mut uses = HashSet::new();
         init_recipes.storage_uses(name, &mut uses, &mut HashSet::new());
         if !uses.is_disjoint(&local_data) {
-            errors.push(Diagnostic::semantic(format!(
-                "persistent data view '{name}' borrows init-local storage; declare independent fixed data to retain its contents"
-            ), 0, 0));
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "persistent data view '{name}' borrows init-local storage; declare independent fixed data to retain its contents"
+                ),
+                init_locations.get(name).copied().unwrap_or(SourceLoc::ZERO),
+            ));
         }
     }
     for name in init_names
@@ -206,26 +218,8 @@ fn register_storage(name: &str, storage: &BindingStorage, state: &mut ProcStateF
 }
 
 fn declared_names(stmts: &[Stmt]) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-    for stmt in stmts {
-        match stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(name),
-                ..
-            } if !name.contains('.') => {
-                names.insert(name.clone(), name.clone());
-            }
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                names.extend(declared_names(then_branch));
-                names.extend(declared_names(else_branch));
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => names.extend(declared_names(body)),
-            _ => {}
-        }
-    }
-    names
+    declared_binding_locations(stmts)
+        .into_keys()
+        .map(|name| (name.clone(), name))
+        .collect()
 }
