@@ -1,0 +1,45 @@
+struct Note:
+  gain: f64 = 4.0
+  mode: i64 = 0 {range = -3..=3, mode = wrap}
+  bins: f32[2]
+
+struct Patch:
+  notes: Note[2]
+  pair: (i32, f64)
+
+proc Bank:
+  delegate ready(patch: Patch)
+
+  event configure(patch: Patch):
+    ready(patch)
+
+  sample:
+    out1 = 0.0
+
+init:
+  bank = Bank()
+  saved: Patch
+
+delegate configured(patch: Patch)
+
+when bank.ready(patch):
+  saved = patch
+
+when configured(patch):
+  saved = patch
+
+event configure(patch: Patch):
+  bank.configure(patch)
+
+event exercise():
+  first = Patch(
+    notes = [Note(gain = 6.0, mode = 9), Note(gain = 6.0, mode = 9)],
+    pair = (7, 0.5)
+  )
+  second = Patch(pair = (3, 0.25))
+  bank.configure(first)
+  configured(second)
+
+sample:
+  note = saved.notes[0]
+  out1 = f32(note.gain)

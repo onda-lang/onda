@@ -139,8 +139,10 @@ fn function_reads(program: &Program, function: &Function) -> Reads {
                     reads.contents.extend(argument_origins(arg, &aliases));
                 }
             }
-            StatementKind::SliceCopy { source, .. } => {
-                reads.contents.extend(value_origins(*source, &aliases))
+            StatementKind::SliceCopy { copies, .. } => {
+                for copy in copies {
+                    reads.contents.extend(value_origins(copy.source, &aliases));
+                }
             }
             // Returning an aggregate exposes its contents to the caller.
             StatementKind::Return { values } => {

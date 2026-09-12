@@ -90,6 +90,8 @@ pub fn from_json_validated(json: &str) -> Result<ValidatedProgram, MirJsonError>
 ///
 /// # Safety
 ///
+/// Result-reference parameters must be initialized before any read through
+/// them and on every successful return from their function.
 /// The serialized program must come from a producer that proved every
 /// `BoundsMode::Unchecked` operation is in bounds for all executions reaching
 /// it. Every declared `IntegerRangeInvariant` must contain every value

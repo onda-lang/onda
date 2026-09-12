@@ -16,7 +16,7 @@ pub(super) fn infer_stmt_calls(
     with_stmt_diag_context(stmt, |_diag| match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
+            target.visit_selectors(|index| {
                 infer_expr_calls(
                     index,
                     struct_instances,
@@ -28,7 +28,7 @@ pub(super) fn infer_stmt_calls(
                     kinds,
                     errors,
                 );
-            }
+            });
             infer_expr_calls(
                 expr,
                 struct_instances,

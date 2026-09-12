@@ -1,5 +1,7 @@
 use super::*;
 
+mod structured_data;
+
 use onda_frontend::parse_program;
 use onda_semantics::{
     analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
@@ -462,6 +464,25 @@ sample:
 "#;
     let outputs = run_native_outputs_with_opt_level(source, 4, TargetOptLevel::O3);
     assert_eq!(outputs, [vec![80.0; 4]]);
+}
+
+#[test]
+fn root_init_tuple_destructuring_persists_components() {
+    let source = r#"
+struct Holder:
+  pair: (i32, f64) = (7, 0.5)
+
+init:
+  holder = Holder()
+  first, second = holder.pair
+
+sample:
+  out1 = f32(first) + f32(second)
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let outputs = run_native_outputs_with_opt_level(source, 4, level);
+        assert_eq!(outputs, [vec![7.5; 4]]);
+    }
 }
 
 #[test]

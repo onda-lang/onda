@@ -24,6 +24,14 @@ export class MirCompiler extends MirCompilerLowering {
       if (type.kind === "slice") {
         return this.loadSlicePlace(source.data, context);
       }
+      if (type.kind === "scalar") {
+        return [
+          this.placeAddress(source.data, context),
+          this.placeAddress(source.data, context),
+          this.module.i32.const(1),
+          this.module.i32.const(this.scalarSize(type.data)),
+        ];
+      }
       if (type.kind !== "array") {
         this.fail(`slice place source has unsupported type '${type.kind}'`);
       }
@@ -536,6 +544,27 @@ export class MirCompiler extends MirCompilerLowering {
   }
 
   compileSliceCopy(statement, data, context) {
+    if (!Array.isArray(data.copies)) this.fail("slice copy requires a leaf list");
+    if (data.preflight !== "required" && data.preflight !== "proven_unnecessary") {
+      this.fail("slice copy requires a valid overlap-preflight mode");
+    }
+    const groupedPreflight = data.copies.length > 1 && data.preflight === "required";
+    const checks = groupedPreflight
+      ? data.copies.map((copy) => this.compileSliceCopyLeaf(statement, copy, context, true, false))
+      : [];
+    return this.module.block(null, [
+      ...checks,
+      ...data.copies.map((copy) => this.compileSliceCopyLeaf(
+        statement,
+        copy,
+        context,
+        false,
+        groupedPreflight || data.preflight === "proven_unnecessary",
+      )),
+    ]);
+  }
+
+  compileSliceCopyLeaf(statement, data, context, checkOnly, overlapSafe) {
     if (this.sliceAccess(data.destination, context) !== "read_write") {
       this.fail("slice copy destination is read-only");
     }
@@ -668,9 +697,10 @@ export class MirCompiler extends MirCompilerLowering {
           source()[2],
         ),
       ),
-      this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
-      this.module.local.set(counter, this.module.i32.const(0)),
-      copy,
+      ...(overlapSafe ? [] : [
+        this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
+      ]),
+      ...(checkOnly ? [] : [this.module.local.set(counter, this.module.i32.const(0)), copy]),
     ]);
   }
 
@@ -1718,6 +1748,7 @@ export class MirCompiler extends MirCompilerLowering {
           len: array.len,
         })),
         events: this.mir.interface.events.map((event, eventId) => ({
+          schema: event.schema,
           name: event.name,
           export: `onda_event_${eventId}`,
           payload_size_bytes: this.eventLayout[eventId].byteLength,
@@ -1741,6 +1772,7 @@ export class MirCompiler extends MirCompilerLowering {
           }),
         })),
         delegates: this.mir.interface.delegates.map((delegate, delegateId) => ({
+          schema: delegate.schema,
           index: delegateId,
           name: delegate.name,
           payload_size_bytes: this.delegateLayout[delegateId].byteLength,

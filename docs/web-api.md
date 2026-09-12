@@ -145,7 +145,8 @@ real-time execution.
 
 `writeDelegateBatch` and `writePrintBatch` initialize reusable batch descriptors.
 `writeExecutionOutput` connects their addresses. Call `resetExecutionOutput` immediately before
-every generated init, process, or event entry. After a successful generated call,
+every generated init or process entry. Generated event entries reset after successful input
+preflight instead, so rejected input preserves existing records. After a successful generated call,
 `readDelegateBatch` or `readPrintBatch` validates the result counters.
 `decodeDelegateRecords` converts delegate payloads using `metadata.delegates`.
 `decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and
@@ -302,6 +303,17 @@ validateProcessorModule
 writeDelegateBatch
 writeExecutionOutput
 writePrintBatch
+OndaPayloadType
+OndaPayloadField
+OndaPayloadSchema
+OndaPayloadDefault
+OndaPayloadValue
+OndaPayloadSizes
+PayloadPlan
+canonicalF32Number
+EVENT_INPUT_SIZE_BYTES
+PROCESSOR_EXECUTION_INPUT_REJECTED
+writeEventInput
 <!-- END WEB API onda_processor_abi -->
 
 ### `@onda-lang/binaryen-web`
@@ -416,3 +428,21 @@ paramNormalizedToPlain
 paramPlainToNormalized
 registerOndaAudioWorklet
 <!-- END WEB API onda_webaudio -->
+
+### Structured event and delegate values
+
+`PayloadPlan` prepares a recursive message schema once. `encode(values)` accepts ordered parameter
+arrays or objects keyed by parameter name; structs are objects containing exactly their declared
+own fields, and arrays/tuples are sequences. Unknown named parameters and excess positional values
+are rejected. Missing event arguments use declared constant defaults.
+Supply `i64` as `bigint`, an exact safe integer, or a decimal string. `decode(bytes)` returns named
+nested values with `bigint` for `i64`. Plans own immutable schema snapshots.
+
+`requiredWorkspace(bytes)` preflights packed little-endian input. `sizes(lengths)` reports wire
+and aligned workspace sizes without allocating payload storage. Low-level wasm hosts provision
+both regions and a 16-byte descriptor, then call `writeEventInput` before invoking the event.
+Rejected input returns `PROCESSOR_EXECUTION_INPUT_REJECTED` (2) and leaves processor state usable.
+`OndaAudioProcessor.trigger` performs logical encoding before transferring bytes to the worklet.
+Decoded `f32` leaves use `canonicalF32Number(value)`: the returned JavaScript number has the
+shortest decimal representation that round-trips to the same `f32`, so JSON and controls do not
+expose an irrelevant widened binary tail.

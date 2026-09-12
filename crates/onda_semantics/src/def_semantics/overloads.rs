@@ -682,6 +682,13 @@ fn rewrite_overloaded_calls_in_expr_impl(
                 ..
             } = expr
             {
+                if args.first().is_some_and(|arg| {
+                    arg.name.as_deref() == Some(crate::internal_names::METHOD_RECEIVER_ARG)
+                }) {
+                    // Receiver syntax is intentionally unresolved here. Selecting a
+                    // same-named free overload would discard the receiver's type.
+                    return;
+                }
                 if let Some(resolved_name) = resolve_overloaded_call_name(
                     name, type_args, args, env, context, owner, overloads, diag, errors,
                 ) {
@@ -704,25 +711,11 @@ fn rewrite_overloaded_calls_in_assign_target(
     errors: &mut Vec<Diagnostic>,
     resolved: &mut usize,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } => rewrite_overloaded_calls_in_expr_impl(
-            index, env, context, owner, overloads, errors, resolved,
-        ),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_overloaded_calls_in_expr_impl(
-                    coordinate, env, context, owner, overloads, errors, resolved,
-                );
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors_mut(|selector| {
+        rewrite_overloaded_calls_in_expr_impl(
+            selector, env, context, owner, overloads, errors, resolved,
+        )
+    });
 }
 
 pub(crate) fn rewrite_overloaded_calls_in_stmt_list(

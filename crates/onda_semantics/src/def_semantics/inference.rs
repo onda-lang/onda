@@ -419,14 +419,22 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::Array(Some(prim))) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
-                typed.push(TypedFnParam::Array { elem_ty: *prim });
+                typed.push(TypedFnParam::Array {
+                    elem_ty: *prim,
+                    len: None,
+                });
                 continue;
             }
             if let Some(FnParamType::SizedArray {
-                elem: Some(prim), ..
+                elem: Some(prim),
+                size,
+                ..
             }) = def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
-                typed.push(TypedFnParam::Array { elem_ty: *prim });
+                typed.push(TypedFnParam::Array {
+                    elem_ty: *prim,
+                    len: const_positive_usize_for_call_type(size),
+                });
                 continue;
             }
             if let Some(FnParamType::SizedArray {
@@ -477,6 +485,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
                     typed.push(TypedFnParam::StructArray {
+                        len: const_positive_usize_for_call_type(size),
                         struct_name: param_ty.clone(),
                     });
                     continue;
@@ -490,6 +499,7 @@ pub(crate) fn infer_def_param_kinds(
                     ),
                 );
                 typed.push(TypedFnParam::Array {
+                    len: None,
                     elem_ty: PrimitiveType::F32,
                 });
                 continue;
@@ -509,6 +519,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if !def.type_params.contains(param_ty) && struct_defs.contains_key(param_ty) {
                     typed.push(TypedFnParam::StructArray {
+                        len: None,
                         struct_name: param_ty.clone(),
                     });
                     continue;
@@ -522,6 +533,7 @@ pub(crate) fn infer_def_param_kinds(
                     ),
                 );
                 typed.push(TypedFnParam::Array {
+                    len: None,
                     elem_ty: PrimitiveType::F32,
                 });
                 continue;
@@ -563,6 +575,7 @@ pub(crate) fn infer_def_param_kinds(
                     len: 1,
                 });
                 typed.push(TypedFnParam::Array {
+                    len: None,
                     elem_ty: inferred_array.elem_ty,
                 });
                 continue;
@@ -722,6 +735,7 @@ pub(crate) fn infer_def_param_kinds(
                     );
                 }
                 typed.push(TypedFnParam::StructArray {
+                    len: None,
                     struct_name: inferred_struct_array.struct_name,
                 });
                 continue;
@@ -915,7 +929,7 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
     match stmt {
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
+            target.visit_selectors(|index| {
                 propagate_expr_callee_buffer_requirements_to_params(
                     index,
                     caller_name,
@@ -925,7 +939,7 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
                     snapshot,
                     kinds,
                 );
-            }
+            });
             propagate_expr_callee_buffer_requirements_to_params(
                 expr,
                 caller_name,
@@ -1081,102 +1095,8 @@ fn propagate_expr_callee_buffer_requirements_to_params(
     snapshot: &HashMap<String, Vec<InferredFnParam>>,
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
 ) {
-    match expr {
-        Expr::Number { .. }
-        | Expr::Int { .. }
-        | Expr::Bool { .. }
-        | Expr::Var { .. }
-        | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                propagate_expr_callee_buffer_requirements_to_params(
-                    value,
-                    caller_name,
-                    caller_param_index,
-                    fn_signatures,
-                    declared_buffer_params,
-                    snapshot,
-                    kinds,
-                );
-            }
-        }
-        Expr::Index { index, .. } => {
-            propagate_expr_callee_buffer_requirements_to_params(
-                index,
-                caller_name,
-                caller_param_index,
-                fn_signatures,
-                declared_buffer_params,
-                snapshot,
-                kinds,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                propagate_expr_callee_buffer_requirements_to_params(
-                    coordinate,
-                    caller_name,
-                    caller_param_index,
-                    fn_signatures,
-                    declared_buffer_params,
-                    snapshot,
-                    kinds,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            propagate_expr_callee_buffer_requirements_to_params(
-                lhs,
-                caller_name,
-                caller_param_index,
-                fn_signatures,
-                declared_buffer_params,
-                snapshot,
-                kinds,
-            );
-            propagate_expr_callee_buffer_requirements_to_params(
-                rhs,
-                caller_name,
-                caller_param_index,
-                fn_signatures,
-                declared_buffer_params,
-                snapshot,
-                kinds,
-            );
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            propagate_expr_callee_buffer_requirements_to_params(
-                expr,
-                caller_name,
-                caller_param_index,
-                fn_signatures,
-                declared_buffer_params,
-                snapshot,
-                kinds,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                propagate_expr_callee_buffer_requirements_to_params(
-                    arg,
-                    caller_name,
-                    caller_param_index,
-                    fn_signatures,
-                    declared_buffer_params,
-                    snapshot,
-                    kinds,
-                );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
+    expr.visit(|expr| {
+        if let Expr::UserCall { name, args, .. } = expr {
             if let Some(sig) = fn_signatures.get(name) {
                 let mut bind_errors = Vec::new();
                 let resolved = resolve_call_args(
@@ -1212,19 +1132,9 @@ fn propagate_expr_callee_buffer_requirements_to_params(
                     }
                 }
             }
-            for arg in args {
-                propagate_expr_callee_buffer_requirements_to_params(
-                    &arg.expr,
-                    caller_name,
-                    caller_param_index,
-                    fn_signatures,
-                    declared_buffer_params,
-                    snapshot,
-                    kinds,
-                );
-            }
         }
-    }
+        !matches!(expr, Expr::ArrayCtor { .. })
+    });
 }
 
 fn collect_declared_struct_param_types(
@@ -1423,21 +1333,15 @@ fn collect_stmt_field_usage(
         Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
-                AssignTarget::Var(name) => {
-                    if let Some((base, field)) = split_simple_field_path(name) {
-                        if let Some(param_idx) = param_index.get(base).copied() {
-                            mark_param_field_usage(
-                                usage,
-                                param_idx,
-                                field,
-                                StructFieldUsage::Scalar,
-                                fn_name,
-                                base,
-                                errors,
-                            );
-                        }
-                    }
-                }
+                AssignTarget::Var(name) => collect_expr_field_usage(
+                    &Expr::var(name),
+                    fn_name,
+                    param_index,
+                    param_structs,
+                    struct_defs,
+                    usage,
+                    errors,
+                ),
                 AssignTarget::Index { base, index } => {
                     if let Some((root, field)) = split_simple_field_path(base) {
                         if let Some(param_idx) = param_index.get(root).copied() {
@@ -1461,6 +1365,47 @@ fn collect_stmt_field_usage(
                         usage,
                         errors,
                     );
+                }
+                AssignTarget::IndexedMember {
+                    base,
+                    index,
+                    field,
+                    field_index,
+                } => {
+                    let path = format!("{base}.{field}");
+                    if let Some((root, field)) = split_simple_field_path(&path) {
+                        if let Some(param_idx) = param_index.get(root).copied() {
+                            mark_param_field_usage(
+                                usage,
+                                param_idx,
+                                field,
+                                StructFieldUsage::Array,
+                                fn_name,
+                                root,
+                                errors,
+                            );
+                        }
+                    }
+                    collect_expr_field_usage(
+                        index,
+                        fn_name,
+                        param_index,
+                        param_structs,
+                        struct_defs,
+                        usage,
+                        errors,
+                    );
+                    if let Some(field_index) = field_index {
+                        collect_expr_field_usage(
+                            field_index,
+                            fn_name,
+                            param_index,
+                            param_structs,
+                            struct_defs,
+                            usage,
+                            errors,
+                        );
+                    }
                 }
                 AssignTarget::Slice {
                     base,
@@ -1667,157 +1612,47 @@ fn collect_expr_field_usage(
     usage: &mut [HashMap<String, StructFieldUsage>],
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_expr_field_usage(
-                    value,
-                    fn_name,
-                    param_index,
-                    param_structs,
-                    struct_defs,
-                    usage,
-                    errors,
-                );
-            }
-        }
-        Expr::Var { name, .. } => {
-            if let Some((base, field)) = split_simple_field_path(name) {
-                if let Some(param_idx) = param_index.get(base).copied() {
-                    let kind = param_structs
-                        .get(param_idx)
-                        .and_then(|s| s.as_deref())
-                        .and_then(|struct_name| {
-                            resolve_struct_field_decl(struct_name, field, struct_defs)
-                        })
-                        .map(|decl| {
-                            if matches!(decl.ty, TypedFieldType::Array(_)) {
-                                StructFieldUsage::Array
-                            } else {
-                                StructFieldUsage::Scalar
-                            }
-                        })
-                        .unwrap_or(StructFieldUsage::Scalar);
-                    mark_param_field_usage(usage, param_idx, field, kind, fn_name, base, errors);
+    for expr in expr.walk() {
+        match expr {
+            Expr::Var { name, .. } => {
+                if let Some((base, field)) = split_simple_field_path(name) {
+                    if let Some(param_idx) = param_index.get(base).copied() {
+                        let kind = param_structs
+                            .get(param_idx)
+                            .and_then(|s| s.as_deref())
+                            .and_then(|struct_name| {
+                                resolve_struct_field_decl(struct_name, field, struct_defs)
+                            })
+                            .map(|decl| {
+                                if matches!(decl.ty, TypedFieldType::Array(_)) {
+                                    StructFieldUsage::Array
+                                } else {
+                                    StructFieldUsage::Scalar
+                                }
+                            })
+                            .unwrap_or(StructFieldUsage::Scalar);
+                        mark_param_field_usage(
+                            usage, param_idx, field, kind, fn_name, base, errors,
+                        );
+                    }
                 }
             }
-        }
-        Expr::Index { base, index, .. } => {
-            if let Some((root, field)) = split_simple_field_path(base) {
-                if let Some(param_idx) = param_index.get(root).copied() {
-                    mark_param_field_usage(
-                        usage,
-                        param_idx,
-                        field,
-                        StructFieldUsage::Array,
-                        fn_name,
-                        root,
-                        errors,
-                    );
+            Expr::Index { base, .. } | Expr::Slice { base, .. } => {
+                if let Some((root, field)) = split_simple_field_path(base) {
+                    if let Some(param_idx) = param_index.get(root).copied() {
+                        mark_param_field_usage(
+                            usage,
+                            param_idx,
+                            field,
+                            StructFieldUsage::Array,
+                            fn_name,
+                            root,
+                            errors,
+                        );
+                    }
                 }
             }
-            collect_expr_field_usage(
-                index,
-                fn_name,
-                param_index,
-                param_structs,
-                struct_defs,
-                usage,
-                errors,
-            );
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            if let Some((root, field)) = split_simple_field_path(base) {
-                if let Some(param_idx) = param_index.get(root).copied() {
-                    mark_param_field_usage(
-                        usage,
-                        param_idx,
-                        field,
-                        StructFieldUsage::Array,
-                        fn_name,
-                        root,
-                        errors,
-                    );
-                }
-            }
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_expr_field_usage(
-                    coordinate,
-                    fn_name,
-                    param_index,
-                    param_structs,
-                    struct_defs,
-                    usage,
-                    errors,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            collect_expr_field_usage(
-                lhs,
-                fn_name,
-                param_index,
-                param_structs,
-                struct_defs,
-                usage,
-                errors,
-            );
-            collect_expr_field_usage(
-                rhs,
-                fn_name,
-                param_index,
-                param_structs,
-                struct_defs,
-                usage,
-                errors,
-            );
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_expr_field_usage(
-                expr,
-                fn_name,
-                param_index,
-                param_structs,
-                struct_defs,
-                usage,
-                errors,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_expr_field_usage(
-                    arg,
-                    fn_name,
-                    param_index,
-                    param_structs,
-                    struct_defs,
-                    usage,
-                    errors,
-                );
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                collect_expr_field_usage(
-                    &arg.expr,
-                    fn_name,
-                    param_index,
-                    param_structs,
-                    struct_defs,
-                    usage,
-                    errors,
-                );
-            }
+            _ => {}
         }
     }
 }
@@ -2036,7 +1871,7 @@ pub(crate) fn param_struct_array_map_from_kinds(
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
-        if let TypedFnParam::StructArray { struct_name } = kind {
+        if let TypedFnParam::StructArray { struct_name, .. } = kind {
             out.insert(name.clone(), struct_name.clone());
         }
     }
@@ -2088,7 +1923,7 @@ pub(crate) fn param_array_map_from_kinds(
 ) -> HashMap<String, PrimitiveType> {
     let mut out = HashMap::new();
     for (name, kind) in param_names.iter().zip(kinds.iter()) {
-        if let TypedFnParam::Array { elem_ty } = kind {
+        if let TypedFnParam::Array { elem_ty, .. } = kind {
             out.insert(name.clone(), *elem_ty);
         }
     }
@@ -2206,57 +2041,25 @@ fn infer_untyped_array_from_observations(
 }
 
 pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, context: &str) {
-    with_expr_diag_context(expr, |expr_diag| match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-        Expr::Tuple { values, .. } => {
-            for value in values {
-                validate_default_expr(value, errors, context);
+    for expr in expr.walk() {
+        with_expr_diag_context(expr, |expr_diag| match expr {
+            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. }
+            | Expr::Tuple { .. } | Expr::ArrayLiteral { .. }
+            | Expr::ArrayCtor { .. }
+            | Expr::Cast { .. } | Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. }
+            | Expr::Logical { .. } | Expr::Binary { .. } | Expr::Compare { .. }
+            // Constructors and generic casts are resolved during monomorphization.
+            | Expr::UserCall { .. } => {}
+            Expr::Var { name, .. } => {
+                if !is_builtin_constant_name(name) {
+                    push_semantic(expr_diag, errors,
+                        format!("{context} default expression uses non-constant symbol '{name}'"));
+                }
             }
-        }
-        Expr::ArrayLiteral { values, .. } => {
-            for value in values {
-                validate_default_expr(value, errors, context);
-            }
-            push_semantic(
-                expr_diag,
-                errors,
-                "array literals are only allowed in typed array declarations and parameter defaults",
-            );
-        }
-        Expr::Var { name, .. } => {
-            if !is_builtin_constant_name(name) {
-                push_semantic(
-                    expr_diag,
-                    errors,
-                    format!("{context} default expression uses non-constant symbol '{name}'"),
-                );
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            validate_default_expr(expr, errors, context);
-        }
-        Expr::Logical { lhs, rhs, .. } => {
-            validate_default_expr(lhs, errors, context);
-            validate_default_expr(rhs, errors, context);
-        }
-        Expr::Binary { lhs, rhs, .. } | Expr::Compare { lhs, rhs, .. } => {
-            validate_default_expr(lhs, errors, context);
-            validate_default_expr(rhs, errors, context);
-        }
-        Expr::UserCall { args, .. } => {
-            // Allow T(constant) in defaults — will be resolved to a cast during mono.
-            for arg in args {
-                validate_default_expr(&arg.expr, errors, context);
-            }
-        }
-        _ => {
-            push_semantic(
-                expr_diag,
-                errors,
-                format!("{context} default expression must be constant"),
-            );
-        }
-    })
+            _ => push_semantic(expr_diag, errors,
+                format!("{context} default expression must be constant")),
+        });
+    }
 }
 
 pub(crate) fn can_implicitly_assign(src: PrimitiveType, dst: PrimitiveType) -> bool {

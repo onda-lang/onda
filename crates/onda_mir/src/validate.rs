@@ -8,7 +8,9 @@ use crate::{
     PROCESS_PARAM_COUNT, PROCESS_PARAM_NAMES,
 };
 
+mod call_arguments;
 mod helpers;
+mod messages;
 use helpers::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -101,9 +103,13 @@ pub fn validate(program: &Program) -> Result<(), Vec<ValidationError>> {
 ///
 /// # Safety
 ///
+/// Every result-reference parameter must be completely initialized before any
+/// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
-/// bounds for every execution reaching it. Backends may lower those operations
-/// without runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
+/// bounds for every execution reaching it. Every slice copy marked
+/// [`crate::SliceCopyPreflight::ProvenUnnecessary`] must have only disjoint or
+/// equal-stride leaf pairs. Backends may lower those operations without their
+/// respective runtime checks. Every [`crate::IntegerRangeInvariant`] attached to a
 /// state slot, function parameter, or local must also contain every value
 /// observable from that storage. This includes values supplied by callers or
 /// restored from external state. Backends may use those invariants as hard
@@ -145,8 +151,12 @@ pub fn validate_owned(program: Program) -> Result<ValidatedProgram, Vec<Validati
 ///
 /// # Safety
 ///
+/// Every result-reference parameter must be completely initialized before any
+/// read through it and on every successful return from its function.
 /// Every unchecked index, slice, and reference window in `program` must be in
-/// bounds for every execution reaching it. Every
+/// bounds for every execution reaching it. Every slice copy marked
+/// [`crate::SliceCopyPreflight::ProvenUnnecessary`] must have only disjoint or
+/// equal-stride leaf pairs. Every
 /// [`crate::IntegerRangeInvariant`] attached to a state slot, function
 /// parameter, or local must contain every value observable from that storage,
 /// including values supplied by callers or restored from external state. Every
@@ -327,7 +337,8 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         Rvalue::InputLoad { bounds, .. }
         | Rvalue::OutputLoad { bounds, .. }
         | Rvalue::ConstDataLoad { bounds, .. }
-        | Rvalue::SliceLoad { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
+        | Rvalue::SliceLoad { bounds, .. }
+        | Rvalue::NormalizeIndex { bounds, .. } => *bounds == crate::BoundsMode::Unchecked,
         Rvalue::MakeSlice { source, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || slice_source_uses_unchecked_bounds(source)
         }
@@ -492,6 +503,7 @@ impl Validator<'_> {
         }
         self.validate_fixed_aggregate_types();
         self.validate_interface_names();
+        self.validate_message_schemas();
         for input in &self.program.interface.inputs {
             self.require_type(input.ty, None, SourceSpan::UNKNOWN);
             self.reject_runtime_handle_storage(
@@ -1123,6 +1135,27 @@ impl Validator<'_> {
         }
         for param in &function.params {
             self.require_type(param.ty, Some(id), function.source);
+            if param.mode == crate::PassingMode::ResultReference
+                && !matches!(
+                    self.program.types.get(param.ty.index()),
+                    Some(Type::Scalar(_) | Type::Array { .. })
+                )
+            {
+                self.function_error(
+                    id,
+                    function.source,
+                    "result reference must refer to fixed scalar or array storage",
+                );
+            }
+            if param.mode == crate::PassingMode::ResultReference
+                && self.producer_proofs == ProducerProofStatus::Absent
+            {
+                self.function_error(
+                    id,
+                    function.source,
+                    "result reference requires trusted producer validation",
+                );
+            }
             if let Some(range) = param.integer_range {
                 if self.producer_proofs == ProducerProofStatus::Absent {
                     self.function_error(
@@ -1903,21 +1936,32 @@ impl Validator<'_> {
                         ),
                     }
                 }
-                StatementKind::SliceCopy {
-                    destination,
-                    source,
-                } => {
-                    self.validate_value(function_id, function, *destination, statement.source);
-                    self.validate_value(function_id, function, *source, statement.source);
-                    let destination_ty = self.value_slice_type(function, *destination);
-                    let source_ty = self.value_slice_type(function, *source);
-                    match (destination_ty, source_ty) {
-                        (
-                            Some((destination_element, crate::AccessMode::ReadWrite)),
-                            Some((source_element, _)),
-                        ) => {
-                            if source_element != destination_element {
-                                self.function_error(
+                StatementKind::SliceCopy { copies, preflight } => {
+                    if *preflight == crate::SliceCopyPreflight::ProvenUnnecessary
+                        && self.producer_proofs == ProducerProofStatus::Absent
+                    {
+                        self.function_error(
+                            function_id,
+                            statement.source,
+                            "omitting slice-copy overlap preflight requires a trusted MIR producer proof",
+                        );
+                    }
+                    for crate::SliceCopy {
+                        destination,
+                        source,
+                    } in copies
+                    {
+                        self.validate_value(function_id, function, *destination, statement.source);
+                        self.validate_value(function_id, function, *source, statement.source);
+                        let destination_ty = self.value_slice_type(function, *destination);
+                        let source_ty = self.value_slice_type(function, *source);
+                        match (destination_ty, source_ty) {
+                            (
+                                Some((destination_element, crate::AccessMode::ReadWrite)),
+                                Some((source_element, _)),
+                            ) => {
+                                if source_element != destination_element {
+                                    self.function_error(
                                     function_id,
                                     statement.source,
                                     format!(
@@ -1926,23 +1970,25 @@ impl Validator<'_> {
                                         destination_element.name()
                                     ),
                                 );
+                                }
                             }
+                            (Some((_, crate::AccessMode::ReadOnly)), Some(_)) => self
+                                .function_error(
+                                    function_id,
+                                    statement.source,
+                                    "slice copy destination is read-only",
+                                ),
+                            (None, _) => self.function_error(
+                                function_id,
+                                statement.source,
+                                "slice copy destination is not a slice",
+                            ),
+                            (_, None) => self.function_error(
+                                function_id,
+                                statement.source,
+                                "slice copy source is not a slice",
+                            ),
                         }
-                        (Some((_, crate::AccessMode::ReadOnly)), Some(_)) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy destination is read-only",
-                        ),
-                        (None, _) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy destination is not a slice",
-                        ),
-                        (_, None) => self.function_error(
-                            function_id,
-                            statement.source,
-                            "slice copy source is not a slice",
-                        ),
                     }
                 }
                 StatementKind::If {
@@ -2123,7 +2169,25 @@ impl Validator<'_> {
                 function: callee,
                 args,
             } => {
-                for argument in args {
+                for (index, argument) in args.iter().enumerate() {
+                    if self
+                        .program
+                        .functions
+                        .get(callee.index())
+                        .and_then(|callee| callee.params.get(index))
+                        .is_some_and(|param| param.mode == crate::PassingMode::ResultReference)
+                    {
+                        if let CallArgument::Place(place) = argument {
+                            self.assignment_read_place_indices(
+                                function_id,
+                                function,
+                                place,
+                                statement.source,
+                                state,
+                            );
+                        }
+                        continue;
+                    }
                     match argument {
                         CallArgument::Value(value) => self.assignment_read_value(
                             function_id,
@@ -2216,7 +2280,18 @@ impl Validator<'_> {
                     .map(|callee| callee.params.as_slice())
                 {
                     for (argument, parameter) in args.iter().zip(parameters) {
-                        if parameter.mode == crate::PassingMode::ReadWriteReference {
+                        if parameter.mode == crate::PassingMode::ResultReference {
+                            if let CallArgument::Place(place) = argument {
+                                self.assignment_write_place(
+                                    function_id,
+                                    function,
+                                    place,
+                                    false,
+                                    statement.source,
+                                    state,
+                                );
+                            }
+                        } else if parameter.mode == crate::PassingMode::ReadWriteReference {
                             self.assignment_invalidate_read_write_argument(argument, state);
                         }
                     }
@@ -2407,18 +2482,21 @@ impl Validator<'_> {
                     );
                 }
             }
-            StatementKind::SliceCopy {
-                destination,
-                source,
-            } => {
-                for value in [*destination, *source] {
-                    self.assignment_read_value(
-                        function_id,
-                        function,
-                        value,
-                        statement.source,
-                        state,
-                    );
+            StatementKind::SliceCopy { copies, .. } => {
+                for crate::SliceCopy {
+                    destination,
+                    source,
+                } in copies
+                {
+                    for value in [*destination, *source] {
+                        self.assignment_read_value(
+                            function_id,
+                            function,
+                            value,
+                            statement.source,
+                            state,
+                        );
+                    }
                 }
             }
             StatementKind::If { .. }
@@ -2463,6 +2541,11 @@ impl Validator<'_> {
             }
             Rvalue::ProcessFrame { offset } => {
                 self.assignment_read_value(function_id, function, *offset, source, state)
+            }
+            Rvalue::NormalizeIndex { index, length, .. } => {
+                for value in [*index, *length] {
+                    self.assignment_read_value(function_id, function, value, source, state);
+                }
             }
             Rvalue::InputLoad { element, frame, .. }
             | Rvalue::OutputLoad { element, frame, .. } => {
@@ -2981,6 +3064,18 @@ impl Validator<'_> {
                     "process-frame offset",
                 );
             }
+            Rvalue::NormalizeIndex { index, length, .. } => {
+                self.validate_value(function_id, function, *index, source);
+                self.validate_value(function_id, function, *length, source);
+                self.require_i32_value(function_id, function, *index, source, "normalized index");
+                self.require_i32_value(
+                    function_id,
+                    function,
+                    *length,
+                    source,
+                    "normalized index length",
+                );
+            }
             Rvalue::InputLoad {
                 input,
                 element,
@@ -3470,7 +3565,7 @@ impl Validator<'_> {
             PlaceBase::Parameter(parameter) => function
                 .params
                 .get(parameter.index())
-                .is_some_and(|param| param.mode == crate::PassingMode::ReadWriteReference),
+                .is_some_and(|param| param.mode.is_writable_reference()),
             PlaceBase::Param(_) | PlaceBase::EventParam(_) => false,
         }
     }
@@ -3530,6 +3625,7 @@ impl Validator<'_> {
             }
             Rvalue::InitAll => self.type_is_scalar(expected, crate::ScalarType::Bool),
             Rvalue::ProcessFrame { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
+            Rvalue::NormalizeIndex { .. } => self.type_is_scalar(expected, crate::ScalarType::I32),
             Rvalue::InputLoad { input, element, .. } => self
                 .program
                 .interface
@@ -3642,6 +3738,14 @@ impl Validator<'_> {
             SliceSource::Place(place) => {
                 let ty = self.place_type(function, place)?;
                 match self.program.types.get(ty.index())? {
+                    Type::Scalar(element) => Some((
+                        *element,
+                        if self.place_is_writable(function, place) {
+                            crate::AccessMode::ReadWrite
+                        } else {
+                            crate::AccessMode::ReadOnly
+                        },
+                    )),
                     Type::Array { element, .. } => {
                         let Type::Scalar(element) = self.program.types.get(element.index())? else {
                             return None;
@@ -3681,6 +3785,7 @@ impl Validator<'_> {
             SliceSource::Place(place) => {
                 let ty = self.place_type(function, place)?;
                 match self.program.types.get(ty.index())? {
+                    Type::Scalar(_) => Some(1),
                     Type::Array { len, .. } => Some(*len),
                     Type::Slice { .. } => None,
                     _ => None,
@@ -3790,341 +3895,6 @@ impl Validator<'_> {
                 .get(local.index())
                 .is_some_and(|local| self.value_matches_type(function, rhs, local.ty)),
             Value::Constant(value) => self.value_matches_scalar(function, rhs, value.ty()),
-        }
-    }
-
-    fn call_argument_matches(
-        &self,
-        function: &Function,
-        argument: &CallArgument,
-        parameter: &crate::FunctionParam,
-    ) -> bool {
-        match (parameter.mode, argument) {
-            (crate::PassingMode::Value, CallArgument::Value(value)) => {
-                self.value_matches_type(function, *value, parameter.ty)
-            }
-            (crate::PassingMode::Value, CallArgument::BufferSpan(span)) => {
-                self.buffer_span_matches_type(function, *span, parameter.ty)
-            }
-            (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
-                CallArgument::Place(place),
-            ) => self.place_type(function, place).is_some_and(|actual| {
-                self.reference_type_matches(actual, parameter.ty)
-                    && (parameter.mode != crate::PassingMode::ReadWriteReference
-                        || self.place_is_writable(function, place))
-            }),
-            (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
-                CallArgument::SliceElement { slice, .. },
-            ) => {
-                let requested_access = match parameter.mode {
-                    crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
-                    crate::PassingMode::Value => unreachable!(),
-                };
-                self.value_slice_type(function, *slice).is_some_and(
-                    |(slice_element, slice_access)| {
-                        access_permits(slice_access, requested_access)
-                            && match self.program.types.get(parameter.ty.index()) {
-                                Some(Type::Scalar(expected)) => *expected == slice_element,
-                                _ => false,
-                            }
-                    },
-                )
-            }
-            (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
-                CallArgument::ArrayWindow {
-                    array,
-                    start,
-                    bounds,
-                },
-            ) => {
-                let requested_access = match parameter.mode {
-                    crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
-                    crate::PassingMode::Value => unreachable!(),
-                };
-                let Some(Type::Array {
-                    element: expected_element,
-                    len: required_len,
-                }) = self.program.types.get(parameter.ty.index())
-                else {
-                    return false;
-                };
-                let Some(actual_ty) = self.place_type(function, array) else {
-                    return false;
-                };
-                let Some(Type::Array {
-                    element: actual_element,
-                    len: actual_len,
-                }) = self.program.types.get(actual_ty.index())
-                else {
-                    return false;
-                };
-                self.program
-                    .types_equivalent(*actual_element, *expected_element)
-                    && required_len <= actual_len
-                    && access_permits(
-                        if self.place_is_writable(function, array) {
-                            crate::AccessMode::ReadWrite
-                        } else {
-                            crate::AccessMode::ReadOnly
-                        },
-                        requested_access,
-                    )
-                    && self.window_start_is_statically_valid(
-                        *start,
-                        *bounds,
-                        *actual_len,
-                        *required_len,
-                    )
-            }
-            (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
-                CallArgument::SliceWindow { slice, .. },
-            ) => {
-                let requested_access = match parameter.mode {
-                    crate::PassingMode::ReadOnlyReference => crate::AccessMode::ReadOnly,
-                    crate::PassingMode::ReadWriteReference => crate::AccessMode::ReadWrite,
-                    crate::PassingMode::Value => unreachable!(),
-                };
-                let Some(Type::Array { element, .. }) =
-                    self.program.types.get(parameter.ty.index())
-                else {
-                    return false;
-                };
-                let Some(Type::Scalar(expected_element)) = self.program.types.get(element.index())
-                else {
-                    return false;
-                };
-                self.value_slice_type(function, *slice).is_some_and(
-                    |(slice_element, slice_access)| {
-                        slice_element == *expected_element
-                            && access_permits(slice_access, requested_access)
-                    },
-                )
-            }
-            (_, CallArgument::Buffer(buffer)) => self.buffer_matches_type(*buffer, parameter.ty),
-            (
-                crate::PassingMode::ReadOnlyReference | crate::PassingMode::ReadWriteReference,
-                CallArgument::BufferParam(reference),
-            ) => self.buffer_param_ref_matches_type(function, *reference, parameter.ty),
-            _ => false,
-        }
-    }
-
-    fn buffer_matches_type(&self, buffer: crate::BufferRef, expected: crate::TypeId) -> bool {
-        let Some(first_buffer) = self.program.interface.buffers.get(buffer.index()) else {
-            return false;
-        };
-        let matches = self.program.types.get(expected.index()).is_some_and(|ty| {
-            matches!(
-                ty,
-                Type::Buffer {
-                    element,
-                    channels,
-                    access,
-                } if *element == first_buffer.element
-                    && buffer_channels_accept(*channels, first_buffer.channels)
-                    && access_permits(first_buffer.access, *access)
-            )
-        });
-        matches
-            && buffer.possible_indices().all(|index| {
-                self.program
-                    .interface
-                    .buffers
-                    .get(index)
-                    .is_some_and(|candidate| {
-                        candidate.element == first_buffer.element
-                            && candidate.channels == first_buffer.channels
-                            && candidate.access == first_buffer.access
-                    })
-            })
-    }
-
-    fn buffer_span_matches_type(
-        &self,
-        function: &Function,
-        span: crate::BufferSpanRef,
-        expected: crate::TypeId,
-    ) -> bool {
-        let Some(Type::BufferSpan {
-            element: expected_element,
-            channels: expected_channels,
-            access: expected_access,
-            len: expected_len,
-        }) = self.program.types.get(expected.index())
-        else {
-            return false;
-        };
-        match span {
-            crate::BufferSpanRef::Interface { first, len } => {
-                if len != *expected_len {
-                    return false;
-                }
-                let Some(source) = self.program.interface.buffers.get(first.index()) else {
-                    return false;
-                };
-                source.element == *expected_element
-                    && buffer_channels_accept(*expected_channels, source.channels)
-                    && access_permits(source.access, *expected_access)
-                    && (first.index()..first.index().saturating_add(len as usize)).all(|index| {
-                        self.program
-                            .interface
-                            .buffers
-                            .get(index)
-                            .is_some_and(|candidate| {
-                                candidate.element == source.element
-                                    && candidate.channels == source.channels
-                                    && candidate.access == source.access
-                            })
-                    })
-            }
-            crate::BufferSpanRef::Parameter { span, start, len } => {
-                if len != *expected_len {
-                    return false;
-                }
-                let Some(source) = function.params.get(span.index()) else {
-                    return false;
-                };
-                let Some(Type::BufferSpan {
-                    element,
-                    channels,
-                    access,
-                    len: source_len,
-                }) = self.program.types.get(source.ty.index())
-                else {
-                    return false;
-                };
-                start.checked_add(len).is_some_and(|end| end <= *source_len)
-                    && element == expected_element
-                    && buffer_channels_accept(*expected_channels, *channels)
-                    && access_permits(*access, *expected_access)
-            }
-        }
-    }
-
-    fn reference_type_matches(&self, actual: crate::TypeId, expected: crate::TypeId) -> bool {
-        match (
-            self.program.types.get(actual.index()),
-            self.program.types.get(expected.index()),
-        ) {
-            (
-                Some(Type::Buffer {
-                    element: actual_element,
-                    channels: actual_channels,
-                    access: actual_access,
-                }),
-                Some(Type::Buffer {
-                    element: expected_element,
-                    channels: expected_channels,
-                    access: expected_access,
-                }),
-            ) => {
-                actual_element == expected_element
-                    && buffer_channels_accept(*expected_channels, *actual_channels)
-                    && access_permits(*actual_access, *expected_access)
-            }
-            _ => self.program.types_equivalent(actual, expected),
-        }
-    }
-
-    fn function_buffer_param(
-        &self,
-        function: &Function,
-        parameter: crate::ParameterId,
-    ) -> Option<(crate::ScalarType, crate::AccessMode)> {
-        let parameter = function.params.get(parameter.index())?;
-        match self.program.types.get(parameter.ty.index())? {
-            Type::Buffer {
-                element, access, ..
-            } => Some((*element, *access)),
-            _ => None,
-        }
-    }
-
-    fn buffer_param_ref_matches_type(
-        &self,
-        function: &Function,
-        reference: crate::BufferParamRef,
-        expected: crate::TypeId,
-    ) -> bool {
-        let actual = function
-            .params
-            .get(reference.index())
-            .and_then(|parameter| self.program.types.get(parameter.ty.index()));
-        let (actual_element, actual_channels, actual_access) = match (reference, actual) {
-            (
-                crate::BufferParamRef::Direct(_),
-                Some(Type::Buffer {
-                    element,
-                    channels,
-                    access,
-                }),
-            )
-            | (
-                crate::BufferParamRef::ArrayElement { .. },
-                Some(Type::BufferSpan {
-                    element,
-                    channels,
-                    access,
-                    ..
-                }),
-            ) => (*element, *channels, *access),
-            _ => return false,
-        };
-        matches!(
-            self.program.types.get(expected.index()),
-            Some(Type::Buffer {
-                element,
-                channels,
-                access,
-            }) if *element == actual_element
-                && buffer_channels_accept(*channels, actual_channels)
-                && access_permits(actual_access, *access)
-        )
-    }
-
-    fn function_buffer_param_ref(
-        &self,
-        function: &Function,
-        reference: crate::BufferParamRef,
-    ) -> Option<(crate::ScalarType, crate::AccessMode)> {
-        match reference {
-            crate::BufferParamRef::Direct(parameter) => {
-                self.function_buffer_param(function, parameter)
-            }
-            crate::BufferParamRef::ArrayElement { span, .. } => {
-                let parameter = function.params.get(span.index())?;
-                match self.program.types.get(parameter.ty.index())? {
-                    Type::BufferSpan {
-                        element, access, ..
-                    } => Some((*element, *access)),
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    fn validate_buffer_param_ref(
-        &mut self,
-        function_id: crate::FunctionId,
-        function: &Function,
-        reference: crate::BufferParamRef,
-        source: crate::SourceSpan,
-    ) {
-        if let crate::BufferParamRef::ArrayElement { selector, .. } = reference {
-            self.validate_value(function_id, function, selector, source);
-            self.require_i32_value(
-                function_id,
-                function,
-                selector,
-                source,
-                "buffer-parameter collection selector",
-            );
         }
     }
 

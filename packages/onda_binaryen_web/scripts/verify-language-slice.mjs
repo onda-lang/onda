@@ -1,3 +1,4 @@
+import { PayloadPlan, writeEventInput } from "@onda-lang/processor-abi";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -77,7 +78,11 @@ try {
   if (onda_processor_init(params, state, 1, 0, 0, 0, 0, 0) !== 0) {
     throw new Error("real-Onda init returned a generated execution failure");
   }
-  if (onda_event_0(payload, params, state, 0, 0, 0, 0) !== 0) {
+  const workspaceBytes = new PayloadPlan(event.schema).sizes([]).workspace;
+  const workspace = allocate(workspaceBytes, 8);
+  const descriptor = allocate(16, 4);
+  writeEventInput(memory, descriptor, payload, event.payload_size_bytes, workspace, workspaceBytes);
+  if (onda_event_0(descriptor, params, state, 0, 0, 0, 0) !== 0) {
     throw new Error("real-Onda event returned a generated execution failure");
   }
   if (onda_process(state, params, 0, outputTable, 0, 4, 3, 0, 0, 0, 0) !== 0) {
@@ -123,12 +128,9 @@ try {
       initialize: true,
     },
   });
-  processor.port.onmessage({
-    data: {
-      type: "event",
-      event: "set_phase",
-      values: { step: 3, values: new Float32Array([2, 4]) },
-    },
+  dispatchEvent(processor, artifact, "set_phase", {
+    step: 3,
+    values: new Float32Array([2, 4]),
   });
   const browserOutput = new Float32Array(4);
   processor.process([], [[browserOutput]]);
@@ -247,17 +249,8 @@ try {
   ) {
     throw new Error("slice event metadata does not describe its dynamic payload");
   }
-  sliceProcessor.port.onmessage({
-    data: {
-      type: "event",
-      requestId: "seed-event",
-      event: "seed",
-      values: {
-        scale: 2,
-        values: new Float32Array([4, 8]),
-        add: 1,
-      },
-    },
+  dispatchEvent(sliceProcessor, sliceArtifact, "seed", {
+    scale: 2, values: new Float32Array([4, 8]), add: 1,
   });
   const sliceOutput = new Float32Array(4);
   sliceProcessor.process([], [[sliceOutput]]);
@@ -288,12 +281,12 @@ try {
   };
   assert.deepEqual(renderArray(2), [0.5, 0.5]);
   arrayProcessor.setParam("gains[0]", 2);
-  arrayProcessor.port.onmessage({ data: { type: "event", event: "capture", values: {} } });
+  dispatchEvent(arrayProcessor, arrayArtifact, "capture", {});
   // The event sees the new clamped value; the unfinished process block keeps its snapshot.
   assert.deepEqual(renderArray(2), [1.25, 1.25]);
   assert.deepEqual(renderArray(4), [2, 2, 2, 2]);
   arrayProcessor.setParam("gains[0]", NaN);
-  arrayProcessor.port.onmessage({ data: { type: "event", event: "capture", values: {} } });
+  dispatchEvent(arrayProcessor, arrayArtifact, "capture", {});
   assert.deepEqual(renderArray(4), [0, 0, 0, 0]);
 
   process.stdout.write(
@@ -301,4 +294,27 @@ try {
   );
 } finally {
   rmSync(temporary, { recursive: true, force: true });
+}
+
+function dispatchEvent(processor, artifact, name, values) {
+  const event = artifact.metadata.metadata.events.find((event) => event.name === name);
+  assert.ok(event, `missing event '${name}'`);
+  const start = processor.port.messages.length;
+  processor.port.onmessage({
+    data: {
+      type: "event",
+      event: name,
+      requestId: "dispatch",
+      payload: new PayloadPlan(event.schema).encode(values),
+    },
+  });
+  const messages = processor.port.messages.slice(start);
+  assert.equal(
+    messages.some((message) => message.type === "onda-error"),
+    false,
+    JSON.stringify(messages),
+  );
+  assert.ok(messages.some((message) =>
+    message.type === "onda-ok" && message.requestId === "dispatch"
+  ));
 }

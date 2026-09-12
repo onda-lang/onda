@@ -707,12 +707,18 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             let mut text = prefix.to_owned();
             text.push_str(&lhs);
             if *is_typed_decl {
-                if let Expr::ArrayCtor { spec, init, .. } = expr {
+                if let Expr::ArrayCtor {
+                    spec,
+                    init,
+                    init_is_value,
+                    ..
+                } = expr
+                {
                     text.push_str(": ");
                     text.push_str(&format_array_type_spec(spec));
                     if let Some(values) = init {
                         text.push_str(" = ");
-                        if matches!(spec.elem, ArrayElemType::Struct(_)) && values.len() == 1 {
+                        if *init_is_value && values.len() == 1 {
                             text.push_str(&format_expr(&values[0]));
                         } else {
                             text.push('[');
@@ -876,6 +882,19 @@ fn format_assign_target(target: &AssignTarget) -> String {
     match target {
         AssignTarget::Var(name) => name.clone(),
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index,
+        } => format!(
+            "{base}[{}].{field}{}",
+            format_expr(index),
+            field_index
+                .as_deref()
+                .map(|index| format!("[{}]", format_expr(index)))
+                .unwrap_or_default()
+        ),
         AssignTarget::Slice {
             base,
             selector,
@@ -1165,6 +1184,13 @@ fn format_call_type_arg(arg: &CallTypeArg) -> String {
 
 pub fn format_decl_type(ty: &DeclType) -> String {
     match ty {
+        DeclType::Slice(element) => format!(
+            "{}[]",
+            match element {
+                ArrayElemType::Primitive(ty) => primitive_type_name(*ty),
+                ArrayElemType::Struct(name) => name,
+            }
+        ),
         DeclType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         DeclType::Generic(name) => name.clone(),
         DeclType::ArrayGeneric { elem, size } => format!("{elem}[{}]", format_expr(size)),
@@ -1263,7 +1289,11 @@ fn format_fn_return_type(ty: &FnReturnType) -> String {
     match ty {
         FnReturnType::Scalar(ty) => format_fn_return_scalar_type(ty),
         FnReturnType::Array { elem, size } => {
-            format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+            format!(
+                "{}[{}]",
+                format_fn_return_scalar_type(elem),
+                format_expr(size)
+            )
         }
         FnReturnType::Tuple(elems) => {
             let inner = elems
@@ -1316,6 +1346,14 @@ fn format_slice_access(
 
 pub fn format_event_param_type(ty: &EventParamType) -> String {
     match ty {
+        EventParamType::Tuple(types) => format!(
+            "({})",
+            types
+                .iter()
+                .map(|ty| primitive_type_name(*ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventParamType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         EventParamType::GenericScalar { name } => name.clone(),
         EventParamType::Array { elem, size } => {
@@ -1476,6 +1514,51 @@ mod tests {
     use onda_frontend::parse_program;
 
     use super::format_program;
+
+    #[test]
+    fn formatting_preserves_data_views_and_broadcast_distinctions() {
+        let source = r#"
+struct Note:
+  value = 1.0
+  taps: f32[2]
+def pair(value: Note) -> Note[2]:
+  return [value, value]
+sample:
+  listed: Note[1] = [Note()]
+  broadcast: Note[2] = Note()
+  selected: Note[] = broadcast[:]
+  primitive: f32[] = [1.0, 2.0]
+  listed[0].taps[1] = primitive[0]
+  selected[:] = pair(listed[0])
+"#;
+        let program = parse_program(source).unwrap();
+        let formatted = format_program(&program);
+        let function = program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                onda_frontend::Block::Def(function) => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            super::format_function_signature(function),
+            "def pair(value: Note) -> Note[2]:"
+        );
+        for syntax in [
+            "listed: Note[1] = [Note()]",
+            "broadcast: Note[2] = Note()",
+            "selected: Note[] = broadcast[:]",
+            "primitive: f32[] = [1.0, 2.0]",
+            "listed[0].taps[1] = primitive[0]",
+        ] {
+            assert!(formatted.contains(syntax), "{formatted}");
+        }
+        assert_eq!(
+            formatted,
+            format_program(&parse_program(&formatted).unwrap())
+        );
+    }
 
     #[test]
     fn formatting_canonicalizes_tuple_targets_without_parentheses() {

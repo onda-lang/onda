@@ -1524,6 +1524,7 @@ pub(super) fn parse_fn_param_decl(
     }
 
     Ok(FnParamDecl {
+        readonly: false,
         loc,
         name: name_pair.as_str().to_owned(),
         ty,

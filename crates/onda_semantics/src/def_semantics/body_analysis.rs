@@ -29,8 +29,8 @@ pub(crate) fn analyze_def_stmt_list(
     let state_arrays = HashMap::new();
     let nested_proc_instances = HashMap::new();
     let registration_names = HashMap::new();
-    let forbidden_assign_names = HashSet::new();
     let state_tuples = HashMap::new();
+    let forbidden_assign_names = HashSet::new();
     let scope_ctx = FlowStmtAnalysisCtx {
         common: ctx.common,
         registration_mode: RuntimeRegistrationMode::None,
@@ -48,6 +48,7 @@ pub(crate) fn analyze_def_stmt_list(
         resolved_scalar_locals: Some(ctx.resolved_scalar_locals),
         resolved_array_locals: None,
         resolved_tuple_locals: None,
+        resolved_struct_locals: None,
     };
 
     analyze_flow_scope_stmts(

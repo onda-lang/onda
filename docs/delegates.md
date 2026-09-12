@@ -36,8 +36,10 @@ u32 call-local sequence
 payload bytes
 ```
 
-The fixed record header is therefore twelve bytes. Scalars and fixed arrays are packed in parameter
-order. A slice contributes a four-byte element count followed by its contiguous element bytes.
+The fixed record header is therefore twelve bytes. Message values are packed in parameter order using the recursive schema. Struct arrays use one
+contiguous tensor per primitive leaf; nested fixed arrays add tensor axes. A slice contributes one
+four-byte logical element count followed by all its leaf tensors. Payload scalars and lengths use
+little-endian order. Record headers use the artifact target byte order.
 Native hosted APIs use native byte order; complete WebAssembly artifacts use the byte order declared
 by their processor descriptor.
 
@@ -177,7 +179,8 @@ if batch.overflow_count != 0 {
 ```
 
 Use `ExecutionOutput::none()` or the corresponding unchecked/event API when collection is not
-needed. `Instance::delegate_descriptor` exposes parameter shapes for generic payload decoders.
+needed. `Instance::delegate_descriptor` exposes the recursive schema and prepared payload plan for generic
+encoders and decoders, including exact `i64` values and nested defaults.
 
 ## Raw processor ABI
 

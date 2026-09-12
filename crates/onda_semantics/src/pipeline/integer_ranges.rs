@@ -427,18 +427,15 @@ pub(crate) fn extend_struct_field_integer_ranges(
     struct_name: &str,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
-    let Some(fields) = struct_defs.get(struct_name) else {
-        return;
-    };
-    for field in fields {
+    visit_struct_field_paths(struct_name, struct_defs, |path, field| {
         let Some(range) = &field.integer_range else {
-            continue;
+            return;
         };
         ranges.insert(
-            format!("{root}.{}", field.name),
+            format!("{root}.{path}"),
             integer_binding_range_from_typed(range),
         );
-    }
+    });
 }
 
 pub(crate) fn struct_param_integer_ranges(
@@ -463,7 +460,7 @@ pub(crate) fn struct_array_param_integer_ranges(
 ) -> HashMap<String, IntegerBindingRange> {
     let mut ranges = HashMap::new();
     for (param, kind) in def.params.iter().zip(param_kinds) {
-        let TypedFnParam::StructArray { struct_name } = kind else {
+        let TypedFnParam::StructArray { struct_name, .. } = kind else {
             continue;
         };
         extend_struct_field_integer_ranges(&mut ranges, &param.name, struct_name, struct_defs);
@@ -482,19 +479,15 @@ pub(crate) fn normalize_struct_constructor_ranges_in_expr(
         let Some(fields) = struct_defs.get(name) else {
             return;
         };
-        let scalar_fields = fields
-            .iter()
-            .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
-            .collect::<Vec<_>>();
+        let constructor_fields = fields;
         let mut positional_index = 0usize;
         for arg in args {
             let field = if let Some(arg_name) = &arg.name {
-                scalar_fields
+                constructor_fields
                     .iter()
-                    .copied()
                     .find(|field| field.name == *arg_name)
             } else {
-                let field = scalar_fields.get(positional_index).copied();
+                let field = constructor_fields.get(positional_index);
                 positional_index += 1;
                 field
             };
@@ -559,12 +552,10 @@ pub(crate) fn rewrite_indexed_integer_ranges_in_list(
 ) {
     for statement in statements {
         match statement {
-            Stmt::Assign {
-                target: AssignTarget::Index { base, .. },
-                expr,
-                ..
-            } => {
-                if let Some(range) = ranges.get(base) {
+            Stmt::Assign { target, expr, .. } => {
+                if let Some(range) = indexed_assignment_target(target)
+                    .and_then(|target| ranges.get(target.base.as_ref()))
+                {
                     wrap_ranged_assignment(expr, range);
                 }
             }
@@ -580,7 +571,6 @@ pub(crate) fn rewrite_indexed_integer_ranges_in_list(
                 rewrite_indexed_integer_ranges_in_list(body, ranges);
             }
             Stmt::Const { .. }
-            | Stmt::Assign { .. }
             | Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }

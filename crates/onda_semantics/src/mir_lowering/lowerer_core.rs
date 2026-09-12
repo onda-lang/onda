@@ -51,8 +51,10 @@ impl<'a> FunctionLowerer<'a> {
             results: Vec::new(),
             locals: Vec::new(),
             bindings: HashMap::new(),
+            next_data_id: 0,
             nested_proc_aliases: HashMap::new(),
             event_slice_parameters: Vec::new(),
+            event_struct_slices: Vec::new(),
         }
     }
 
@@ -92,6 +94,10 @@ impl<'a> FunctionLowerer<'a> {
             log_sites,
         );
         lowerer.runtime_globals = Some(globals);
+        if let Some(retained) = &globals.retained_init {
+            lowerer.locals = retained.locals.clone();
+            lowerer.bindings = retained.bindings.clone();
+        }
         lowerer
     }
 
@@ -101,7 +107,8 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn bind_event_params(&mut self, event: &TypedEvent) -> Result<(), MirLoweringError> {
-        for (index, param) in event.params.iter().enumerate() {
+        let flattened = messages::message_params(&event.params, self.aggregate_layouts)?;
+        for (index, param) in flattened.iter().enumerate() {
             let id = onda_mir::EventParamId::new(index as u32);
             if let TypedEventParamType::Slice { elem } = &param.ty {
                 self.event_slice_parameters
@@ -109,6 +116,11 @@ impl<'a> FunctionLowerer<'a> {
                 continue;
             }
             let binding = match &param.ty {
+                TypedEventParamType::Tuple(_)
+                | TypedEventParamType::Data(_)
+                | TypedEventParamType::StructSlice { .. } => {
+                    unreachable!("message tensors are primitive")
+                }
                 TypedEventParamType::Scalar(ty) => Binding::EventParameter(id, *ty),
                 TypedEventParamType::Array { elem, len } => {
                     let len = u32::try_from(*len).map_err(|_| {
@@ -125,6 +137,15 @@ impl<'a> FunctionLowerer<'a> {
                 TypedEventParamType::Slice { .. } => unreachable!("handled above"),
             };
             self.bindings.insert(param.name.clone(), binding);
+        }
+        for param in &event.params {
+            if let TypedEventParamType::StructSlice { name } = &param.ty {
+                self.event_struct_slices
+                    .push((param.name.clone(), name.clone()));
+            }
+            if let TypedEventParamType::Data(data) = &param.ty {
+                self.bind_data_root(&param.name, data, function_location(self.function))?;
+            }
         }
         Ok(())
     }
@@ -282,6 +303,7 @@ impl<'a> FunctionLowerer<'a> {
                 .value
             }
             StructArrayLength::Fixed(len) => Value::Constant(ScalarValue::I32(len as i32)),
+            StructArrayLength::Local(local) => Value::Local(local),
         }
     }
 
@@ -370,7 +392,20 @@ impl<'a> FunctionLowerer<'a> {
         self.struct_field_shapes(proc_name, location)
     }
 
-    pub(super) fn lower(mut self) -> Result<onda_mir::Function, MirLoweringError> {
+    pub(super) fn lower(self) -> Result<onda_mir::Function, MirLoweringError> {
+        self.lower_with_bindings().map(|(function, _)| function)
+    }
+
+    pub(super) fn retained_entry(&self) -> MirBlock {
+        self.runtime_globals
+            .and_then(|globals| globals.retained_init.as_ref())
+            .map(|retained| retained.restore.clone())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn lower_with_bindings(
+        mut self,
+    ) -> Result<(onda_mir::Function, HashMap<String, Binding>), MirLoweringError> {
         let mut scalar_parameters = Vec::new();
         let mut slice_parameters = Vec::new();
         let mut tuple_parameters = Vec::new();
@@ -401,8 +436,8 @@ impl<'a> FunctionLowerer<'a> {
                     scalar_parameters.push((name.clone(), ParameterId::new(next_parameter_id), ty));
                     next_parameter_id += 1;
                 }
-                TypedFnParam::Array { elem_ty } => {
-                    let access = if self.function.readonly_array_params.contains(name) {
+                TypedFnParam::Array { elem_ty, len } => {
+                    let access = if self.function.readonly_data_params.contains(name) {
                         onda_mir::AccessMode::ReadOnly
                     } else {
                         onda_mir::AccessMode::ReadWrite
@@ -419,6 +454,8 @@ impl<'a> FunctionLowerer<'a> {
                         ParameterId::new(next_parameter_id),
                         *elem_ty,
                         access,
+                        len.map(|len| self.data_extent(len, function_location(self.function)))
+                            .transpose()?,
                     ));
                     next_parameter_id += 1;
                 }
@@ -506,6 +543,11 @@ impl<'a> FunctionLowerer<'a> {
                     );
                 }
                 TypedFnParam::Struct { struct_name } => {
+                    let mode = if self.function.readonly_data_params.contains(name) {
+                        onda_mir::PassingMode::ReadOnlyReference
+                    } else {
+                        onda_mir::PassingMode::ReadWriteReference
+                    };
                     let shapes =
                         self.struct_field_shapes(struct_name, function_location(self.function))?;
                     let mut fields = Vec::with_capacity(shapes.len());
@@ -521,7 +563,7 @@ impl<'a> FunctionLowerer<'a> {
                                 self.params.push(onda_mir::FunctionParam {
                                     name: parameter_name.clone(),
                                     ty: type_id,
-                                    mode: onda_mir::PassingMode::ReadWriteReference,
+                                    mode,
                                     integer_range: self
                                         .function
                                         .integer_range_params
@@ -544,18 +586,27 @@ impl<'a> FunctionLowerer<'a> {
                                 element,
                                 len,
                             } => {
-                                let type_id = intern_array_type(self.types, element, len);
+                                let access = if mode == onda_mir::PassingMode::ReadOnlyReference {
+                                    onda_mir::AccessMode::ReadOnly
+                                } else {
+                                    onda_mir::AccessMode::ReadWrite
+                                };
+                                let type_id = intern_slice_type(self.types, element, access);
                                 let parameter = ParameterId::new(next_parameter_id);
+                                let parameter_name = format!("{name}.{field_name}");
                                 self.params.push(onda_mir::FunctionParam {
-                                    name: format!("{name}.{field_name}"),
+                                    name: parameter_name.clone(),
                                     ty: type_id,
-                                    mode: onda_mir::PassingMode::ReadWriteReference,
+                                    mode: onda_mir::PassingMode::Value,
                                     integer_range: None,
                                 });
-                                self.bindings.insert(
-                                    format!("{name}.{field_name}"),
-                                    Binding::ArrayParameter(parameter, element, len),
-                                );
+                                slice_parameters.push((
+                                    parameter_name,
+                                    parameter,
+                                    element,
+                                    access,
+                                    Some(len),
+                                ));
                                 fields.push(StructFieldReference::Array {
                                     name: field_name,
                                     parameter,
@@ -617,103 +668,10 @@ impl<'a> FunctionLowerer<'a> {
                             let Some(nested_struct) = &field.struct_name else {
                                 continue;
                             };
-                            let nested_shapes = self.struct_field_shapes(
-                                nested_struct,
-                                function_location(self.function),
-                            )?;
-                            let mut nested_fields = Vec::with_capacity(nested_shapes.len());
-                            for nested_shape in nested_shapes {
-                                match nested_shape {
-                                    StructFieldShape::Scalar {
-                                        name: nested_name,
-                                        ty,
-                                    } => {
-                                        let outer_name = format!("{}.{}", field.name, nested_name);
-                                        let Some(StructFieldReference::Scalar {
-                                            parameter,
-                                            ty: actual,
-                                            ..
-                                        }) = fields.iter().find(|candidate| {
-                                            matches!(
-                                                candidate,
-                                                StructFieldReference::Scalar { name, .. }
-                                                    if *name == outer_name
-                                            )
-                                        })
-                                        else {
-                                            return Err(self.error(
-                                                format!(
-                                                    "nested struct field '{name}.{}' is missing scalar field '{nested_name}'",
-                                                    field.name
-                                                ),
-                                                function_location(self.function),
-                                            ));
-                                        };
-                                        if *actual != ty {
-                                            return Err(self.error(
-                                                format!(
-                                                    "nested struct field '{name}.{}.{nested_name}' changed type",
-                                                    field.name
-                                                ),
-                                                function_location(self.function),
-                                            ));
-                                        }
-                                        nested_fields.push(StructFieldReference::Scalar {
-                                            name: nested_name,
-                                            parameter: *parameter,
-                                            ty,
-                                        });
-                                    }
-                                    StructFieldShape::Array {
-                                        name: nested_name,
-                                        element,
-                                        len,
-                                    } => {
-                                        let outer_name = format!("{}.{}", field.name, nested_name);
-                                        let Some(StructFieldReference::Array {
-                                            parameter,
-                                            element: actual_element,
-                                            len: actual_len,
-                                            ..
-                                        }) = fields.iter().find(|candidate| {
-                                            matches!(
-                                                candidate,
-                                                StructFieldReference::Array { name, .. }
-                                                    if *name == outer_name
-                                            )
-                                        })
-                                        else {
-                                            return Err(self.error(
-                                                format!(
-                                                    "nested struct field '{name}.{}' is missing array field '{nested_name}'",
-                                                    field.name
-                                                ),
-                                                function_location(self.function),
-                                            ));
-                                        };
-                                        if *actual_element != element || *actual_len != len {
-                                            return Err(self.error(
-                                                format!(
-                                                    "nested struct array field '{name}.{}.{nested_name}' changed shape",
-                                                    field.name
-                                                ),
-                                                function_location(self.function),
-                                            ));
-                                        }
-                                        nested_fields.push(StructFieldReference::Array {
-                                            name: nested_name,
-                                            parameter: *parameter,
-                                            element,
-                                            len,
-                                        });
-                                    }
-                                }
-                            }
                             self.bindings.insert(
                                 format!("{name}.{}", field.name),
                                 Binding::StructParameter {
                                     struct_name: nested_struct.clone(),
-                                    fields: nested_fields,
                                 },
                             );
                         }
@@ -784,11 +742,15 @@ impl<'a> FunctionLowerer<'a> {
                         name.clone(),
                         Binding::StructParameter {
                             struct_name: struct_name.clone(),
-                            fields,
                         },
                     );
                 }
-                TypedFnParam::StructArray { struct_name } => {
+                TypedFnParam::StructArray { struct_name, len } => {
+                    let access = if self.function.readonly_data_params.contains(name) {
+                        onda_mir::AccessMode::ReadOnly
+                    } else {
+                        onda_mir::AccessMode::ReadWrite
+                    };
                     let length_parameter = ParameterId::new(next_parameter_id);
                     let length_type = self.scalar_type_id(PrimitiveType::I32);
                     self.params.push(onda_mir::FunctionParam {
@@ -808,8 +770,7 @@ impl<'a> FunctionLowerer<'a> {
                             StructFieldShape::Array { name, element, .. } => (name, element),
                         };
                         let parameter = ParameterId::new(next_parameter_id);
-                        let ty =
-                            intern_slice_type(self.types, element, onda_mir::AccessMode::ReadWrite);
+                        let ty = intern_slice_type(self.types, element, access);
                         self.params.push(onda_mir::FunctionParam {
                             name: format!("{name}.{field_name}"),
                             ty,
@@ -817,12 +778,7 @@ impl<'a> FunctionLowerer<'a> {
                             integer_range: None,
                         });
                         let binding_name = format!("{name}.{field_name}");
-                        slice_parameters.push((
-                            binding_name,
-                            parameter,
-                            element,
-                            onda_mir::AccessMode::ReadWrite,
-                        ));
+                        slice_parameters.push((binding_name, parameter, element, access, None));
                         fields.push((field_name, parameter, element));
                         next_parameter_id += 1;
                     }
@@ -830,6 +786,8 @@ impl<'a> FunctionLowerer<'a> {
                         name.clone(),
                         struct_name.clone(),
                         length_parameter,
+                        len.map(|len| self.data_extent(len, function_location(self.function)))
+                            .transpose()?,
                         fields,
                     ));
                 }
@@ -868,6 +826,7 @@ impl<'a> FunctionLowerer<'a> {
                         active_parameter,
                         PrimitiveType::Bool,
                         onda_mir::AccessMode::ReadWrite,
+                        None,
                     ));
                     next_parameter_id += 1;
 
@@ -894,6 +853,7 @@ impl<'a> FunctionLowerer<'a> {
                             parameter,
                             element,
                             onda_mir::AccessMode::ReadWrite,
+                            None,
                         ));
                         fields.push((field_name, parameter, element));
                         next_parameter_id += 1;
@@ -913,6 +873,10 @@ impl<'a> FunctionLowerer<'a> {
             let result_types = match &self.function.return_ty {
                 ReturnType::Scalar(result) => vec![*result],
                 ReturnType::Tuple(results) => results.clone(),
+                ReturnType::Data(data) => {
+                    self.bind_data_result_parameters(data.clone())?;
+                    Vec::new()
+                }
             };
             for result in result_types {
                 let result_type = self.scalar_type_id(result);
@@ -920,7 +884,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        let mut body = MirBlock::default();
+        let mut body = self.retained_entry();
         for (name, parameter, ty) in scalar_parameters {
             let local = self.new_local(Some(name.clone()), ty);
             self.push_statement(
@@ -956,26 +920,38 @@ impl<'a> FunctionLowerer<'a> {
             self.bindings.insert(name, Binding::Tuple(locals));
         }
         let mut lowered_slice_parameters = HashMap::new();
-        for (name, parameter, element, access) in slice_parameters {
+        for (name, parameter, element, access, len) in slice_parameters {
+            let source = Place {
+                base: PlaceBase::Parameter(parameter),
+                projections: Vec::new(),
+            };
+            let value = if let Some(len) = len {
+                Rvalue::MakeSlice {
+                    source: onda_mir::SliceSource::Place(source),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len: Value::Constant(ScalarValue::I32(len as i32)),
+                    bounds: BoundsMode::Unchecked,
+                    access,
+                }
+            } else {
+                Rvalue::Load(source)
+            };
             let slice = self.emit_slice_temp(
                 &mut body,
                 Some(name.clone()),
                 element,
                 access,
-                Rvalue::Load(Place {
-                    base: PlaceBase::Parameter(parameter),
-                    projections: Vec::new(),
-                }),
+                value,
                 function_location(self.function),
             );
             let Value::Local(local) = slice.value else {
                 unreachable!("slice temporaries are always locals")
             };
             self.bindings
-                .insert(name.clone(), Binding::Slice(local, element, access));
+                .insert(name.clone(), Binding::Slice(local, element, access, len));
             lowered_slice_parameters.insert(name, (local, element));
         }
-        for (name, struct_name, length, fields) in struct_array_parameters {
+        for (name, struct_name, length, fixed_len, fields) in struct_array_parameters {
             let mut lowered_fields = Vec::with_capacity(fields.len());
             for (field_name, _, element) in fields {
                 let binding_name = format!("{name}.{field_name}");
@@ -1004,7 +980,9 @@ impl<'a> FunctionLowerer<'a> {
                 name,
                 Binding::StructArrayParameter {
                     struct_name,
-                    length: StructArrayLength::Dynamic(length),
+                    length: fixed_len
+                        .map(StructArrayLength::Fixed)
+                        .unwrap_or(StructArrayLength::Dynamic(length)),
                     fields: lowered_fields,
                 },
             );
@@ -1012,11 +990,16 @@ impl<'a> FunctionLowerer<'a> {
         for embedded in embedded_struct_array_parameters {
             let mut fields = Vec::with_capacity(embedded.fields.len());
             for field in embedded.fields {
+                let MirType::Slice { access, .. } =
+                    self.types[self.params[field.parameter.index()].ty.index()]
+                else {
+                    unreachable!("aggregate tensor parameters use slice descriptors")
+                };
                 let slice = self.emit_slice_temp(
                     &mut body,
                     Some(format!("{}.{}", embedded.name, field.inner_name)),
                     field.element,
-                    onda_mir::AccessMode::ReadWrite,
+                    access,
                     Rvalue::MakeSlice {
                         source: onda_mir::SliceSource::Place(Place {
                             base: PlaceBase::Parameter(field.parameter),
@@ -1025,7 +1008,7 @@ impl<'a> FunctionLowerer<'a> {
                         start: Value::Constant(ScalarValue::I32(0)),
                         len: Value::Constant(ScalarValue::I32(field.total_len as i32)),
                         bounds: BoundsMode::Unchecked,
-                        access: onda_mir::AccessMode::ReadWrite,
+                        access,
                     },
                     function_location(self.function),
                 );
@@ -1115,8 +1098,9 @@ impl<'a> FunctionLowerer<'a> {
                 unreachable!("slice temporaries are always locals")
             };
             self.bindings
-                .insert(name, Binding::Slice(local, element, access));
+                .insert(name, Binding::Slice(local, element, access, None));
         }
+        self.bind_event_struct_slices(&mut body)?;
         self.bind_runtime_embedded_struct_arrays(&mut body)?;
         if let Some(meta) = self.proc_step_oversample_meta.cloned() {
             let factor = self
@@ -1129,21 +1113,24 @@ impl<'a> FunctionLowerer<'a> {
             self.lower_statements(&self.function.body, &mut body, ContinueMode::None)?;
         }
         let source = self.source_span(function_location(self.function));
-        Ok(onda_mir::Function {
-            name: self.emitted_name,
-            kind: onda_mir::FunctionKind::User,
-            attributes: if self.function.runtime_context {
-                compiler_shared_function_attributes()
-            } else if self.runtime_globals.is_some() {
-                compiler_generated_function_attributes()
-            } else {
-                source_function_attributes(&self.function.name, self.function.publishes_print)
+        Ok((
+            onda_mir::Function {
+                name: self.emitted_name,
+                kind: onda_mir::FunctionKind::User,
+                attributes: if self.function.runtime_context {
+                    compiler_shared_function_attributes()
+                } else if self.runtime_globals.is_some() {
+                    compiler_generated_function_attributes()
+                } else {
+                    source_function_attributes(&self.function.name, self.function.publishes_print)
+                },
+                params: self.params,
+                results: self.results,
+                locals: self.locals,
+                body,
+                source,
             },
-            params: self.params,
-            results: self.results,
-            locals: self.locals,
-            body,
-            source,
-        })
+            self.bindings,
+        ))
     }
 }

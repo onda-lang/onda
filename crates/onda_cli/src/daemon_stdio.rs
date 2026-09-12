@@ -131,6 +131,8 @@ struct ProcessSegmentRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum EventValueRequest {
+    Array(Vec<EventValueRequest>),
+    Struct(std::collections::BTreeMap<String, EventValueRequest>),
     Bool(bool),
     Number(f64),
     I64(String),
@@ -141,6 +143,16 @@ impl TryFrom<EventValueRequest> for RunEventValue {
 
     fn try_from(value: EventValueRequest) -> Result<Self, Self::Error> {
         match value {
+            EventValueRequest::Array(values) => values
+                .into_iter()
+                .map(Self::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::Array),
+            EventValueRequest::Struct(fields) => fields
+                .into_iter()
+                .map(|(name, value)| Self::try_from(value).map(|value| (name, value)))
+                .collect::<Result<_, _>>()
+                .map(Self::Struct),
             EventValueRequest::Bool(value) => Ok(Self::Bool(value)),
             EventValueRequest::Number(value) => Ok(Self::Number(value)),
             EventValueRequest::I64(value) => value
@@ -538,6 +550,12 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
         RunEventValue::Array(values) => {
             Value::Array(values.iter().map(run_event_value_json).collect())
         }
+        RunEventValue::Struct(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, value)| (name.clone(), run_event_value_json(value)))
+                .collect(),
+        ),
     }
 }
 

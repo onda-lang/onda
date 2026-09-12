@@ -1,0 +1,59 @@
+struct N:
+  x = 2.0
+
+struct Data:
+  values: f32[2]
+
+def assign(a: N, b: N, choose: bool):
+  if choose:
+    selected = a
+  else:
+    selected = b
+  selected.x = 9.0
+
+def forward(a: N, b: N, choose: bool):
+  assign(a, b, choose)
+
+def mixed(n: N, choose: bool):
+  if choose:
+    selected = n
+  else:
+    selected = N(x = 7.0)
+  selected.x += 1.0
+  return selected.x
+
+def read_selected(a: N, b: N, choose: bool):
+  if choose:
+    selected = a
+  else:
+    selected = b
+  return selected.x
+
+def primitive_default(a: f32[2] = [3.0, 5.0]):
+  a[0] = a[0] + 1.0
+  return a[0]
+
+def mutate_nominal(a: N[2]):
+  a[0].x = a[0].x + 1.0
+  return a[0].x + a[1].x
+
+def mutate_nested(a: Data):
+  a.values[0] = a.values[0] + 1.0
+  return a.values[0]
+
+sample:
+  a = N()
+  b = N()
+  forward(a, b, true)
+  first = a.x + b.x
+  forward(a, b, false)
+  second = a.x + b.x
+  n = N()
+  third = mixed(n, true) + mixed(n, false) + n.x
+  literal = Data(values = [3.0, 5.0])
+  nominal_a: N[2]
+  nominal_b: N[2]
+  nested_a = Data(values = [3.0, 5.0])
+  nested_b = Data(values = [3.0, 5.0])
+  out1 = first + second + third + literal.values[0] + literal.values[1] + read_selected(a, b, false)
+  out2 = primitive_default() + primitive_default() + mutate_nominal(nominal_a) + mutate_nominal(nominal_b) + mutate_nested(nested_a) + mutate_nested(nested_b)

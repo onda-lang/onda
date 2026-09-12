@@ -167,7 +167,7 @@ export class MirCompilerLowering extends MirCompilerCore {
                 argument.data.index,
                 argument.data.bounds,
                 context,
-                target.params[index].mode === "read_write_reference",
+                ["read_write_reference", "result_reference"].includes(target.params[index].mode),
               ),
         ];
       }
@@ -201,7 +201,7 @@ export class MirCompilerLowering extends MirCompilerCore {
               argument.data,
               parameterType,
               context,
-              target.params[index].mode === "read_write_reference",
+              ["read_write_reference", "result_reference"].includes(target.params[index].mode),
             ),
         ];
       }
@@ -252,10 +252,11 @@ export class MirCompilerLowering extends MirCompilerCore {
         localId: argument.data.base.data,
         address: layout.address,
         scalar: layout.scalar,
-        writeBack: parameter.mode === "read_write_reference",
+        writeBack: ["read_write_reference", "result_reference"].includes(parameter.mode),
+        readBefore: parameter.mode !== "result_reference",
       }];
     });
-    const beforeCall = localReferenceSync.map((sync) =>
+    const beforeCall = localReferenceSync.filter((sync) => sync.readBefore).map((sync) =>
       this.storeScalar(
         sync.scalar,
         this.module.i32.const(sync.address),
@@ -379,7 +380,19 @@ export class MirCompilerLowering extends MirCompilerCore {
     const tooLarge = () => this.module.local.get(oversized, binaryen.i32);
     const batch = () =>
       this.module.global.get(POINTER_GLOBALS.delegateBatch, binaryen.i32);
+    const plan = this.delegatePlans[data.delegate];
     const validationStatements = [];
+    for (const group of plan.parameters) {
+      if (group.lengthParameter === null) continue;
+      const length = () => this.compileValue(data.args[group.lengthParameter].data, context);
+      validationStatements.push(this.module.if(this.module.i32.lt_s(length(), this.module.i32.const(0)), this.raiseRuntimeFailure(context)));
+      for (let index = group.start; index < group.end; index += 1) {
+        const tensor = plan.tensors[index];
+        const actual = () => this.compileSliceValue(data.args[tensor.parameter].data, context)[2];
+        const expected = () => this.module.i64.mul(this.module.i64.extend_u(length()), this.module.i64.const(tensor.elements));
+        validationStatements.push(this.module.if(this.module.i64.ne(this.module.i64.extend_u(actual()), expected()), this.raiseRuntimeFailure(context)));
+      }
+    }
     const collectionStatements = [
       this.module.local.set(
         payloadBytes,
@@ -791,7 +804,7 @@ export class MirCompilerLowering extends MirCompilerCore {
       const count = type.kind === "array"
         ? () => this.module.i32.const(type.data.len)
         : () => slice()[2];
-      if (type.kind === "slice") {
+      if (type.kind === "slice" && this.delegateLayout[delegateId][paramId].headerSize !== 0) {
         statements.push(
           this.module.i32.store(0, 1, cursor(), count()),
           this.module.local.set(
@@ -1035,6 +1048,13 @@ export class MirCompilerLowering extends MirCompilerCore {
         return this.module.global.get(INIT_ALL_GLOBAL, binaryen.i32);
       case "process_frame":
         return this.compileProcessFrame(data, context);
+      case "normalize_index":
+        return this.compileDynamicBoundedIndex(
+          () => this.compileValue(data.index, context),
+          () => this.compileValue(data.length, context),
+          data.bounds,
+          context,
+        );
       case "input_load":
         return this.compileInputLoad(data, context);
       case "output_load":
@@ -2126,16 +2146,9 @@ export class MirCompilerLowering extends MirCompilerCore {
       if (!type || type.kind !== "slice") {
         this.fail(`event parameter id ${place.base.data} is not a slice`);
       }
-      const header = () =>
-        this.compileEventParamAddress(context.eventId, place.base.data);
-      const address = () =>
-        this.module.i32.add(header(), this.module.i32.const(4));
-      return [
-        address(),
-        address(),
-        this.module.i32.load(0, 4, header()),
-        this.module.i32.const(this.scalarSize(type.data.element)),
-      ];
+      const view = this.compileEventParamView(context.eventId, place.base.data);
+      return [view.address(), view.address(), view.length(),
+        this.module.i32.const(this.scalarSize(type.data.element))];
     } else {
       this.fail(`slice place base '${place.base.kind}' is not supported yet`);
     }
@@ -2147,44 +2160,40 @@ export class MirCompilerLowering extends MirCompilerCore {
     );
   }
 
+  alignEventAddress(address, alignment) {
+    return this.module.i32.and(
+      this.module.i32.add(address, this.module.i32.const(alignment - 1)),
+      this.module.i32.const(-alignment));
+  }
+
   compileEventParamAddress(eventId, paramId) {
-    const event = this.mir.interface.events[eventId];
-    if (!event || !Number.isInteger(paramId) || paramId < 0 || paramId >= event.params.length) {
+    return this.compileEventParamView(eventId, paramId).address();
+  }
+
+  compileEventParamView(eventId, paramId) {
+    const plan = this.eventPlans[eventId];
+    if (!plan || !Number.isInteger(paramId) || paramId < 0 || paramId >= plan.abiParameterCount) {
       this.fail(`event parameter id ${paramId} is invalid for event ${eventId}`);
     }
-    let offset = () => this.module.i32.const(0);
-    for (let index = 0; index < paramId; index += 1) {
-      const previous = offset;
-      const type = this.type(event.params[index].ty);
-      if (type.kind === "slice") {
-        const elementSize = this.scalarSize(type.data.element);
-        offset = () =>
-          this.module.i32.add(
-            previous(),
-            this.module.i32.add(
-              this.module.i32.const(4),
-              this.module.i32.mul(
-                this.module.i32.load(
-                  0,
-                  4,
-                  this.module.i32.add(
-                    this.module.global.get(POINTER_GLOBALS.eventPayload, binaryen.i32),
-                    previous(),
-                  ),
-                ),
-                this.module.i32.const(elementSize),
-              ),
-            ),
-          );
-      } else {
-        const size = this.typeLayout(event.params[index].ty).size;
-        offset = () => this.module.i32.add(previous(), this.module.i32.const(size));
+    let address = () => this.module.global.get(POINTER_GLOBALS.eventPayload, binaryen.i32);
+    for (const group of plan.parameters) {
+      let length = () => this.module.i32.const(1);
+      if (group.dynamic) {
+        const previous = address;
+        const header = () => this.alignEventAddress(previous(), 4);
+        if (group.lengthParameter === paramId) return { address: header };
+        length = () => this.module.i32.load(0, 4, header());
+        address = () => this.module.i32.add(header(), this.module.i32.const(4));
+      }
+      for (let index = group.start; index < group.end; index += 1) {
+        const tensor = plan.tensors[index];
+        const previous = address;
+        const start = () => this.alignEventAddress(previous(), tensor.size);
+        const elements = () => this.module.i32.mul(length(), this.module.i32.const(tensor.elements));
+        if (tensor.parameter === paramId) return { address: start, length: elements };
+        address = () => this.module.i32.add(start(), this.module.i32.mul(elements(), this.module.i32.const(tensor.size)));
       }
     }
-    return this.module.i32.add(
-      this.module.global.get(POINTER_GLOBALS.eventPayload, binaryen.i32),
-      offset(),
-    );
   }
 
   storeSlicePlace(place, components, context) {

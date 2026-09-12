@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 5;
-export const PROCESSOR_ABI_VERSION: 5;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 6;
+export const PROCESSOR_ABI_VERSION: 6;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
@@ -18,6 +18,9 @@ export const PRINT_RECORD_HEADER_SIZE_BYTES: 12;
 export const PRINT_BATCH_SIZE_BYTES: 20;
 /** wasm32 byte size of the call-scoped execution-output descriptor. */
 export const EXECUTION_OUTPUT_SIZE_BYTES: 12;
+
+/** Returns the shortest host number that round-trips to the same f32. */
+export function canonicalF32Number(value: number): number;
 
 export type OndaScalarType = "f32" | "f64" | "i32" | "i64" | "bool";
 export type OndaArtifactKind = "webassembly_module" | "relocatable_object";
@@ -150,6 +153,42 @@ export interface OndaBufferArrayMetadata {
   len: number;
 }
 
+export type OndaPayloadDefault = string | OndaPayloadDefault[];
+export type OndaPayloadType =
+  | { kind: "scalar"; encoding: OndaScalarType; integer_range?: OndaStateMetadata["integer_range"] }
+  | { kind: "tuple"; elements: OndaPayloadType[] }
+  | { kind: "struct"; name: string; fields: OndaPayloadField[] }
+  | { kind: "array"; element: OndaPayloadType; len: number }
+  | { kind: "slice"; element: OndaPayloadType };
+export interface OndaPayloadField {
+  name: string;
+  ty: OndaPayloadType;
+  default?: OndaPayloadDefault;
+}
+export interface OndaPayloadSchema { params: OndaPayloadField[] }
+
+export type OndaPayloadValue = number | bigint | boolean | string | OndaPayloadValue[] | { [name: string]: OndaPayloadValue };
+export interface OndaPayloadSizes { wire: number; workspace: number }
+export class PayloadPlan {
+  constructor(schema: OndaPayloadSchema);
+  readonly schema: OndaPayloadSchema;
+  readonly fixedWireSize: number | null;
+  readonly minimumWorkspace: number;
+  readonly dynamicParameters: number;
+  readonly abiParameterCount: number;
+  /** Whether scalar representations match this flattened ABI parameter's schema default. */
+  matchesAbiDefault(parameter: number, defaultReprs: readonly string[] | null): boolean;
+  sizes(lengths: readonly number[]): OndaPayloadSizes;
+  requiredWorkspace(input: Uint8Array | ArrayBuffer): number;
+  encode(values: readonly unknown[] | Record<string, unknown>): Uint8Array;
+  decode(input: Uint8Array | ArrayBuffer): Record<string, OndaPayloadValue>;
+}
+export const EVENT_INPUT_SIZE_BYTES: 16;
+export const PROCESSOR_EXECUTION_INPUT_REJECTED: 2;
+export function writeEventInput(memory: WebAssembly.Memory | ArrayBuffer, address: number,
+  payloadAddress: number, payloadBytes: number, workspaceAddress: number, workspaceCapacityBytes: number): void;
+
+
 export interface OndaEventParamMetadata {
   name: string;
   type_repr: string;
@@ -165,6 +204,7 @@ export interface OndaEventParamMetadata {
 }
 
 export interface OndaEventMetadata {
+  schema: OndaPayloadSchema;
   name: string;
   export: string;
   payload_size_bytes: number | null;
@@ -186,6 +226,7 @@ export interface OndaDelegateParamMetadata {
 }
 
 export interface OndaDelegateMetadata {
+  schema: OndaPayloadSchema;
   index: number;
   name: string;
   payload_size_bytes: number | null;
@@ -214,9 +255,9 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 5;
+  format_version: 6;
   artifact_kind: OndaArtifactKind;
-  abi_version: 5;
+  abi_version: 6;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;

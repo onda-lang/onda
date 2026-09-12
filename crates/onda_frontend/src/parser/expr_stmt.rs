@@ -49,7 +49,9 @@ fn parse_init_stmt_list_pair(
                             .map(str::to_owned),
                     );
                 }
-                AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                AssignTarget::Index { .. }
+                | AssignTarget::IndexedMember { .. }
+                | AssignTarget::Slice { .. } => {}
             }
         }
         stmts.push(stmt);
@@ -517,6 +519,35 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 )]);
             }
             match ty_pair.as_rule() {
+                Rule::fn_typed_array_param => {
+                    let Some(expr_pair) = expr_pair else {
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "slice declaration requires an initializer",
+                        )]);
+                    };
+                    let element = ty_pair
+                        .into_inner()
+                        .next()
+                        .expect("slice grammar has an element type");
+                    let element = if element.as_rule() == Rule::type_name {
+                        ArrayElemType::Primitive(
+                            parse_primitive_type(element.as_str()).map_err(|d| vec![d])?,
+                        )
+                    } else {
+                        ArrayElemType::Struct(element.as_str().to_owned())
+                    };
+                    Ok(Stmt::Assign {
+                        loc,
+                        target_loc: stmt_loc_from_pair(&name_pair),
+                        target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                        decl_ty: Some(DeclType::Slice(element)),
+                        generic_decl_ty: None,
+                        is_typed_decl: true,
+                        typed_decl_ty_loc,
+                        expr: parse_expr(expr_pair)?,
+                    })
+                }
                 Rule::type_name => {
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![syntax_at_loc(
@@ -554,18 +585,32 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 }
                 Rule::array_type => {
                     let spec = parse_array_type_spec(ty_pair)?;
+                    let mut init_is_value = false;
                     let init = if let Some(expr_pair) = expr_pair {
                         let init_expr = parse_expr(expr_pair)?;
                         match init_expr {
                             Expr::ArrayLiteral { values, .. } => Some(values),
                             other => {
                                 if matches!(spec.elem, ArrayElemType::Struct(_)) {
+                                    init_is_value = true;
                                     Some(vec![other])
                                 } else {
-                                    return Err(vec![syntax_at_loc(
-                                        loc.as_ref(),
-                                        "array typed declaration initializer must be an array literal like [a, b, ...]",
-                                    )]);
+                                    let ArrayElemType::Primitive(elem) = spec.elem else {
+                                        unreachable!()
+                                    };
+                                    return Ok(Stmt::Assign {
+                                        loc,
+                                        target_loc: stmt_loc_from_pair(&name_pair),
+                                        target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                                        decl_ty: Some(DeclType::Array {
+                                            elem,
+                                            size: *spec.size,
+                                        }),
+                                        generic_decl_ty: None,
+                                        is_typed_decl: true,
+                                        typed_decl_ty_loc,
+                                        expr: other,
+                                    });
                                 }
                             }
                         }
@@ -585,12 +630,17 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                             spec,
                             init,
                             initialize: true,
+                            init_is_value,
                         },
                     })
                 }
                 Rule::named_type => {
+                    let declared_type = ty_pair
+                        .as_str()
+                        .chars()
+                        .filter(|ch| !ch.is_whitespace())
+                        .collect::<String>();
                     let (decl_name, decl_type_args) = parse_named_type_ref(ty_pair)?;
-                    let missing_decl_type_args = decl_type_args.is_empty();
                     let mut expr = if let Some(expr_pair) = expr_pair {
                         parse_expr(expr_pair)?
                     } else {
@@ -613,7 +663,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
                                 decl_ty: None,
                                 generic_decl_ty: None,
-                                is_typed_decl: missing_decl_type_args,
+                                is_typed_decl: true,
                                 typed_decl_ty_loc,
                                 expr,
                             });
@@ -624,7 +674,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
-                        generic_decl_ty: Some(decl_name),
+                        generic_decl_ty: Some(declared_type),
                         is_typed_decl: true,
                         typed_decl_ty_loc,
                         expr,

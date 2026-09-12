@@ -73,7 +73,7 @@ async function startAudio() {
     });
     processor.node.connect(context.destination);
     await context.resume();
-    await processor.trigger("play", { enabled: true });
+    await processor.trigger("play", { start_frame: 0 });
     audioButton.textContent = "Stop audio";
     playButton.disabled = false;
     stopPlaybackButton.disabled = false;
@@ -113,13 +113,13 @@ audioButton.addEventListener("click", async () => {
 });
 
 playButton.addEventListener("click", () => {
-  processor?.trigger("play", { enabled: true }).catch((error) =>
+  processor?.trigger("play", { start_frame: 0 }).catch((error) =>
     setStatus(errorMessage(error), "fail")
   );
 });
 
 stopPlaybackButton.addEventListener("click", () => {
-  processor?.trigger("play", { enabled: false }).catch((error) =>
+  processor?.trigger("stop").catch((error) =>
     setStatus(errorMessage(error), "fail")
   );
 });

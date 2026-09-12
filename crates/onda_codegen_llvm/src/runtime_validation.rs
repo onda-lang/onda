@@ -1,6 +1,5 @@
 use onda_frontend::Diagnostic;
 
-use crate::primitives::primitive_type_bytes;
 use crate::{
     BufferDescriptorTables, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
     RuntimeState, UninitializedRuntimeState,
@@ -21,10 +20,7 @@ fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutpu
     }
 }
 
-pub(crate) fn validate_event_payload(
-    desc: &DeclaredEvent,
-    payload: &[u8],
-) -> Result<(), Diagnostic> {
+fn validate_event_payload(desc: &DeclaredEvent, payload: &[u8]) -> Result<(), Diagnostic> {
     if let Some(expected) = desc.payload_bytes() {
         if payload.len() != expected {
             return Err(Diagnostic::runtime(
@@ -41,97 +37,16 @@ pub(crate) fn validate_event_payload(
         return Ok(());
     }
 
-    let mut offset = 0usize;
-    for param in desc.params() {
-        if param.is_slice() {
-            if payload.len().saturating_sub(offset) < std::mem::size_of::<i32>() {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "event '{}' payload is truncated before slice parameter '{}'",
-                        desc.name(),
-                        param.name()
-                    ),
-                    0,
-                    0,
-                ));
-            }
-            let len_bytes: [u8; 4] = payload[offset..offset + 4]
-                .try_into()
-                .expect("slice len bytes");
-            let len = i32::from_ne_bytes(len_bytes);
-            if len < 0 {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "event '{}' slice parameter '{}' has negative length {}",
-                        desc.name(),
-                        param.name(),
-                        len
-                    ),
-                    0,
-                    0,
-                ));
-            }
-            let len = len as usize;
-            let data_bytes = primitive_type_bytes(param.elem_ty())
-                .checked_mul(len)
-                .filter(|bytes| *bytes <= i32::MAX as usize)
-                .ok_or_else(|| {
-                    Diagnostic::runtime(
-                        format!(
-                            "event '{}' slice parameter '{}' byte extent exceeds i32 runtime limit",
-                            desc.name(),
-                            param.name()
-                        ),
-                        0,
-                        0,
-                    )
-                })?;
-            offset = offset.saturating_add(4);
-            if payload.len().saturating_sub(offset) < data_bytes {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "event '{}' payload is truncated in slice parameter '{}'; expected {} element bytes after length prefix",
-                        desc.name(),
-                        param.name(),
-                        data_bytes
-                    ),
-                    0,
-                    0,
-                ));
-            }
-            offset = offset.saturating_add(data_bytes);
-        } else {
-            let bytes = param.byte_size().unwrap_or(0);
-            if payload.len().saturating_sub(offset) < bytes {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "event '{}' payload is truncated in parameter '{}'; expected {} bytes",
-                        desc.name(),
-                        param.name(),
-                        bytes
-                    ),
-                    0,
-                    0,
-                ));
-            }
-            offset = offset.saturating_add(bytes);
-        }
-    }
-
-    if offset != payload.len() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "event '{}' expects {} payload bytes for its dynamic layout, got {}",
-                desc.name(),
-                offset,
-                payload.len()
-            ),
-            0,
-            0,
-        ));
-    }
-
-    Ok(())
+    desc.payload_plan
+        .required_workspace(payload)
+        .map(|_| ())
+        .map_err(|error| {
+            Diagnostic::runtime(
+                format!("event '{}' rejected payload: {error}", desc.name()),
+                0,
+                0,
+            )
+        })
 }
 
 impl JitProgram {
@@ -352,6 +267,12 @@ impl JitProgram {
             .and_then(|event| event.payload_bytes())
     }
 
+    pub fn event_payload_min_bytes(&self, index: usize) -> Option<usize> {
+        self.events
+            .get(index)
+            .map(crate::DeclaredEvent::payload_min_bytes)
+    }
+
     pub fn delegate_payload_bytes(&self, index: usize) -> Option<usize> {
         self.delegates
             .get(index)
@@ -565,6 +486,19 @@ impl JitProgram {
 
     pub fn event_descriptor(&self, index: usize) -> Option<&crate::DeclaredEvent> {
         self.events.get(index)
+    }
+
+    /// Validates one packed event payload. Returns `false` for an unknown event index.
+    pub fn validate_event_payload(
+        &self,
+        event_index: usize,
+        payload: &[u8],
+    ) -> Result<bool, Diagnostic> {
+        let Some(event) = self.event_descriptor(event_index) else {
+            return Ok(false);
+        };
+        validate_event_payload(event, payload)?;
+        Ok(true)
     }
 
     pub fn delegate_descriptor(&self, index: usize) -> Option<&crate::DeclaredDelegate> {
@@ -903,15 +837,14 @@ impl JitProgram {
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
-        let Some(desc) = self.event_descriptor(event_index) else {
+        if !self.validate_event_payload(event_index, payload)? {
             reset_execution_output(output);
             return Ok(0);
-        };
-        validate_event_payload(desc, payload)?;
+        }
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index_with_status(
+                self.compiled.trigger_event_by_index_with_validated_payload(
                     state,
                     params,
                     event_index,
@@ -943,14 +876,15 @@ impl JitProgram {
         }
     }
 
-    /// Enters generated event code without validating payload or buffer shape.
+    /// Enters generated event code without hosted payload or buffer-shape validation.
+    /// The generated entry still performs mandatory payload preflight.
     ///
     /// # Safety
     ///
-    /// The state, parameters, event payload, and raw external-buffer tables
-    /// must satisfy the same invariants enforced by
-    /// [`Self::trigger_event_by_index`] and remain valid for the duration of
-    /// the call.
+    /// The state, parameters, and raw external-buffer tables must satisfy the
+    /// same invariants enforced by [`Self::trigger_event_by_index`] and remain
+    /// valid for the duration of the call. Malformed payload bytes are safely
+    /// rejected by the generated entry.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index_unchecked(
         &self,
@@ -1118,6 +1052,18 @@ impl RuntimeState {
         Ok(())
     }
 
+    /// Provision event input storage outside realtime execution. A larger request
+    /// reallocates with the instance allocator; otherwise existing storage is retained.
+    /// Allocation failure preserves the existing workspace. Payload sizing is available
+    /// on the message plan.
+    pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
+        reserve_event_workspace(&mut self.event_workspace, bytes)
+    }
+
+    pub fn event_workspace_capacity(&self) -> usize {
+        self.event_workspace.len() * 8
+    }
+
     pub fn try_clone_with_allocator(
         &self,
         allocator: Option<RuntimeAllocator>,
@@ -1125,6 +1071,37 @@ impl RuntimeState {
         Ok(Self {
             state_words: RuntimeBuffer::try_from_slice_in(self.state_words.as_slice(), allocator)?,
             state_size_bytes: self.state_size_bytes,
+            event_workspace: RuntimeBuffer::try_from_elem_in(
+                self.event_workspace.len(),
+                0,
+                allocator,
+            )?,
         })
     }
+}
+
+impl crate::UninitializedRuntimeState {
+    /// Provision event input storage before initialization, outside realtime execution.
+    /// A larger request reallocates with the instance allocator; allocation failure
+    /// preserves the existing workspace.
+    pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
+        reserve_event_workspace(&mut self.event_workspace, bytes)
+    }
+    pub fn event_workspace_capacity(&self) -> usize {
+        self.event_workspace.len() * 8
+    }
+}
+
+fn reserve_event_workspace(
+    workspace: &mut RuntimeBuffer<u64>,
+    bytes: usize,
+) -> Result<(), Diagnostic> {
+    if bytes > i32::MAX as usize - 7 {
+        return Err(Diagnostic::runtime("event workspace exceeds i32", 0, 0));
+    }
+    let words = bytes.div_ceil(8);
+    if words > workspace.len() {
+        *workspace = RuntimeBuffer::try_from_elem_in(words, 0, workspace.allocator())?;
+    }
+    Ok(())
 }

@@ -42,7 +42,7 @@ pub(crate) struct TimedMidiMessage {
 
 impl MidiMessage {
     pub(crate) fn event(self) -> (&'static str, Vec<RunEventValue>) {
-        let number = |value| RunEventValue::Number(f64::from(value));
+        let number = RunEventValue::from_f32;
         let integer = |value| RunEventValue::Number(f64::from(value));
         match self.kind {
             MidiMessageKind::NoteOn => (

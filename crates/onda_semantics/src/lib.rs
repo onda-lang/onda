@@ -35,6 +35,7 @@ pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) 
 
 fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
     let ty = match &param.ty {
+        EventParamType::Tuple(types) => FnParamType::Tuple(types.clone()),
         EventParamType::Scalar(ty) => FnParamType::Primitive(*ty),
         EventParamType::Array { elem, size } => FnParamType::SizedArray {
             elem: Some(*elem),
@@ -51,6 +52,7 @@ fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
         EventParamType::GenericSlice { elem } => FnParamType::ArrayGeneric(elem.clone()),
     };
     FnParamDecl {
+        readonly: true,
         loc: param.loc,
         name: param.name.clone(),
         ty: Some(ty),
@@ -62,12 +64,15 @@ fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
 pub mod aggregate_layout;
 mod analysis_session;
 mod array_structs;
+mod assignment_places;
 pub mod builtins;
 mod callable_validation;
+mod data_construction;
 mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
 mod diag_utils;
+mod executable_data;
 mod executable_owner_analysis;
 mod expr_analysis;
 mod expr_typing;
@@ -96,6 +101,7 @@ pub use analysis_session::{
     normalize_session_path, AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument,
 };
 use array_structs::*;
+use assignment_places::*;
 use builtins::*;
 use decl_symbols::*;
 use declaration_coercion::*;
@@ -178,6 +184,10 @@ pub struct TypedProgram {
     pub state_tuples: HashMap<String, Vec<PrimitiveType>>,
     pub array_vars: Vec<TypedArrayVar>,
     pub array_struct_roots: Vec<TypedArrayStructRoot>,
+    /// Resolved nominal identities of persistent struct roots and nested structs.
+    pub struct_roots: HashMap<String, String>,
+    pub(crate) init_view_names: HashSet<String>,
+    pub(crate) init_local_data_names: HashSet<String>,
     /// Canonical processor-array members retained on their owning processor
     /// struct after processor desugaring has flattened the physical state
     /// fields. MIR uses this semantic map to resolve nested indexed processor
@@ -218,6 +228,9 @@ pub struct TypedEventParam {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TypedEventParamType {
+    StructSlice { name: String },
+    Tuple(Vec<PrimitiveType>),
+    Data(DataType),
     Scalar(PrimitiveType),
     Array { elem: PrimitiveType, len: usize },
     Slice { elem: PrimitiveType },
@@ -401,6 +414,9 @@ pub struct TypedBufferDecl {
 #[derive(Debug, Clone)]
 pub struct TypedStruct {
     pub name: String,
+    /// Fields declared directly on this type, in source order. Nested fields
+    /// remain structural references and are traversed through the aggregate
+    /// layout helpers instead of being duplicated as dotted paths.
     pub fields: Vec<TypedStructField>,
 }
 
@@ -427,6 +443,35 @@ pub enum TypedFieldType {
 pub enum ReturnType {
     Scalar(PrimitiveType),
     Tuple(Vec<PrimitiveType>),
+    Data(DataType),
+}
+
+/// Resolved, fixed-size data. References and resources are deliberately absent:
+/// these types describe contents that can occupy independent storage.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum DataType {
+    Struct(String),
+    Array { element: ArrayElemType, len: usize },
+}
+
+impl DataType {
+    pub(crate) fn diagnostic_name(&self) -> String {
+        match self {
+            Self::Struct(name) => name.clone(),
+            Self::Array { element, len } => match element {
+                ArrayElemType::Primitive(ty) => format!("{}[{len}]", ty.name()),
+                ArrayElemType::Struct(name) => format!("{name}[{len}]"),
+            },
+        }
+    }
+}
+
+pub(crate) fn data_type_mismatch(expected: &DataType, actual: Option<&DataType>) -> String {
+    let expected = expected.diagnostic_name();
+    match actual {
+        Some(actual) => format!("expects '{expected}', got '{}'", actual.diagnostic_name()),
+        None => format!("expects '{expected}', got a non-data value"),
+    }
 }
 
 pub(crate) fn is_bare_return_expr(expr: &Expr) -> bool {
@@ -450,7 +495,7 @@ impl ReturnType {
     pub fn as_scalar(&self) -> PrimitiveType {
         match self {
             ReturnType::Scalar(ty) => *ty,
-            ReturnType::Tuple(_) => panic!("expected scalar return type, got tuple"),
+            ReturnType::Tuple(_) | ReturnType::Data(_) => panic!("expected scalar return type"),
         }
     }
 
@@ -458,7 +503,7 @@ impl ReturnType {
     pub fn scalar(&self) -> Option<PrimitiveType> {
         match self {
             ReturnType::Scalar(ty) => Some(*ty),
-            ReturnType::Tuple(_) => None,
+            ReturnType::Tuple(_) | ReturnType::Data(_) => None,
         }
     }
 }
@@ -476,10 +521,10 @@ pub struct TypedFunction {
     pub params: Vec<String>,
     pub param_defaults: Vec<Option<Expr>>,
     pub param_kinds: Vec<TypedFnParam>,
-    /// Primitive array parameters that semantic analysis proved are not
+    /// Data parameters that semantic analysis proved are not
     /// mutated directly or through calls. MIR uses this to choose the slice
     /// access contract instead of rediscovering mutability from source AST.
-    pub readonly_array_params: HashSet<String>,
+    pub readonly_data_params: HashSet<String>,
     /// Integer range contracts for concrete flattened reference parameters.
     /// The function boundary supplies the binding identity that source names
     /// alone cannot provide.
@@ -545,9 +590,11 @@ pub enum TypedFnParam {
     },
     StructArray {
         struct_name: String,
+        len: Option<usize>,
     },
     Array {
         elem_ty: PrimitiveType,
+        len: Option<usize>,
     },
     Buffer {
         elem_ty: PrimitiveType,
@@ -747,6 +794,8 @@ pub(crate) struct LocalArrayAliasInfo {
     /// separate from `len` prevents lowering placeholders from satisfying a
     /// fixed-array call contract.
     pub(crate) static_len: Option<usize>,
+    /// Exact length proven for a slice initializer, without changing its view contract.
+    pub(crate) proven_len: Option<usize>,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) elem_struct: Option<String>,
     pub(crate) writable: bool,
@@ -784,6 +833,17 @@ enum ScopeKind {
     Block,
     Sample,
     Def,
+}
+
+impl ScopeKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Block => "block",
+            Self::Sample => "sample",
+            Self::Def => "def",
+        }
+    }
 }
 
 fn with_stmt_diag_context<T>(stmt: &Stmt, f: impl FnOnce(DiagCtx) -> T) -> T {

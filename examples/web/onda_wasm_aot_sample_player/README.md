@@ -16,7 +16,8 @@ finished `sample-player.wasm` and integrity-checked `sample-player.onda.json`, d
 
 The processor is the exact shared
 [`sample_player.onda`](../../buffers/sample_player.onda) used by the native raw-object
-example. `play(bool)` starts or stops the clip, and the `speed` parameter changes playback rate.
+example. `play(start_frame)` starts the clip at a chosen frame, `stop()` stops it, and the `speed`
+parameter changes playback rate.
 
 ## Build and run
 
@@ -33,7 +34,8 @@ Windows PowerShell:
 ```
 
 Open `http://127.0.0.1:8788/`. **Start audio** instantiates the already-built module, loads the WAV,
-and sends `play(true)`. The other controls replay the clip, send `play(false)`, and update `speed`.
+and sends `play(0)`. The other controls replay the clip from frame zero, send `stop()`, and update
+`speed`.
 
 Without `--serve` or `-Serve`, the scripts only build the static assets. They require Rust/Cargo
 and Node/npm, but not LLVM, the native audio/GUI stack, `wasm-pack`, or a Wasm linker. Binaryen is a

@@ -709,6 +709,7 @@ pub enum ConstType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclType {
     Scalar(PrimitiveType),
+    Slice(ArrayElemType),
     Generic(String),
     ArrayGeneric { elem: String, size: Expr },
     Array { elem: PrimitiveType, size: Expr },
@@ -719,18 +720,22 @@ impl DeclType {
     pub fn scalar(&self) -> Option<PrimitiveType> {
         match self {
             Self::Scalar(ty) => Some(*ty),
-            Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } | Self::Tuple(_) => {
-                None
-            }
+            Self::Slice(_)
+            | Self::Generic(_)
+            | Self::ArrayGeneric { .. }
+            | Self::Array { .. }
+            | Self::Tuple(_) => None,
         }
     }
 
     pub fn tuple(&self) -> Option<&[PrimitiveType]> {
         match self {
             Self::Tuple(elements) => Some(elements),
-            Self::Scalar(_) | Self::Generic(_) | Self::ArrayGeneric { .. } | Self::Array { .. } => {
-                None
-            }
+            Self::Slice(_)
+            | Self::Scalar(_)
+            | Self::Generic(_)
+            | Self::ArrayGeneric { .. }
+            | Self::Array { .. } => None,
         }
     }
 }
@@ -770,7 +775,10 @@ pub enum FnReturnScalarType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FnReturnType {
     Scalar(FnReturnScalarType),
-    Array { elem: PrimitiveType, size: Expr },
+    Array {
+        elem: FnReturnScalarType,
+        size: Expr,
+    },
     Tuple(Vec<FnReturnScalarType>),
 }
 
@@ -795,6 +803,8 @@ pub struct BufferType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnParamDecl {
+    /// Compiler-enforced payload permission; ordinary def parameters infer access.
+    pub readonly: bool,
     pub loc: Span,
     pub name: String,
     pub ty: Option<FnParamType>,
@@ -855,6 +865,7 @@ pub struct EventParamDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventParamType {
+    Tuple(Vec<PrimitiveType>),
     Scalar(PrimitiveType),
     GenericScalar { name: String },
     Array { elem: PrimitiveType, size: Expr },
@@ -901,7 +912,7 @@ pub enum FieldType {
     Tuple(Vec<PrimitiveType>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ArrayElemType {
     Primitive(PrimitiveType),
     Struct(String),
@@ -942,6 +953,12 @@ pub enum AssignTarget {
         base: String,
         index: Expr,
     },
+    IndexedMember {
+        base: String,
+        index: Expr,
+        field: String,
+        field_index: Option<Box<Expr>>,
+    },
     Slice {
         base: String,
         selector: Option<Box<Expr>>,
@@ -950,6 +967,62 @@ pub enum AssignTarget {
         end: Option<Box<Expr>>,
     },
     Tuple(Vec<TupleAssignTarget>),
+}
+
+impl AssignTarget {
+    /// Visits selector expressions in source evaluation order.
+    pub fn visit_selectors(&self, mut visitor: impl FnMut(&Expr)) {
+        match self {
+            Self::Index { index, .. } => visitor(index),
+            Self::IndexedMember {
+                index, field_index, ..
+            } => {
+                visitor(index);
+                if let Some(field_index) = field_index {
+                    visitor(field_index);
+                }
+            }
+            Self::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for expression in [selector, channel, start, end].into_iter().flatten() {
+                    visitor(expression);
+                }
+            }
+            Self::Var(_) | Self::Tuple(_) => {}
+        }
+    }
+
+    /// Mutably visits selector expressions in source evaluation order.
+    pub fn visit_selectors_mut(&mut self, mut visitor: impl FnMut(&mut Expr)) {
+        match self {
+            Self::Index { index, .. } => visitor(index),
+            Self::IndexedMember {
+                index, field_index, ..
+            } => {
+                visitor(index);
+                if let Some(field_index) = field_index {
+                    visitor(field_index);
+                }
+            }
+            Self::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for expression in [selector, channel, start, end].into_iter().flatten() {
+                    visitor(expression);
+                }
+            }
+            Self::Var(_) | Self::Tuple(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
@@ -1453,6 +1526,53 @@ pub struct PrintSourceOrigin {
 }
 
 impl Stmt {
+    /// Visits every expression owned by this statement tree in source
+    /// evaluation order. Nested expressions remain owned by their root and can
+    /// be traversed with [`Expr::walk`].
+    pub fn visit_exprs(&self, mut visitor: impl FnMut(&Expr)) {
+        let mut pending = vec![self];
+        while let Some(statement) = pending.pop() {
+            match statement {
+                Self::Const { decl, .. } => visitor(&decl.expr),
+                Self::Assign { target, expr, .. } => {
+                    target.visit_selectors(&mut visitor);
+                    visitor(expr);
+                }
+                Self::Expr { expr, .. } | Self::Return { expr, .. } => visitor(expr),
+                Self::Print { values, .. } => values.iter().for_each(&mut visitor),
+                Self::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    visitor(cond);
+                    pending.extend(else_branch.iter().rev());
+                    pending.extend(then_branch.iter().rev());
+                }
+                Self::For {
+                    step,
+                    start,
+                    end,
+                    body,
+                    ..
+                } => {
+                    visitor(start);
+                    visitor(end);
+                    if let Some(step) = step {
+                        visitor(step);
+                    }
+                    pending.extend(body.iter().rev());
+                }
+                Self::While { cond, body, .. } => {
+                    visitor(cond);
+                    pending.extend(body.iter().rev());
+                }
+                Self::Break { .. } | Self::Continue { .. } => {}
+            }
+        }
+    }
+
     pub fn loc(&self) -> SourceLoc {
         match self {
             Self::Const { loc, .. } => (*loc).into(),
@@ -1501,7 +1621,7 @@ impl GraphEndpoint {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Expr {
     Number {
         loc: Span,
@@ -1540,6 +1660,9 @@ pub enum Expr {
         loc: Span,
         spec: ArrayTypeSpec,
         init: Option<Vec<Expr>>,
+        /// A single expression copies an array or broadcasts an element;
+        /// a list initializer must match the declared extent exactly.
+        init_is_value: bool,
         /// Whether evaluating this compiler-level constructor initializes the
         /// allocated storage. Source constructors always set this; lowering
         /// passes may clear it for declaration-only scratch storage.
@@ -1725,15 +1848,22 @@ impl PartialEq for Expr {
                     spec: lhs_spec,
                     init: lhs_init,
                     initialize: lhs_initialize,
+                    init_is_value: lhs_value,
                     ..
                 },
                 Self::ArrayCtor {
                     spec: rhs_spec,
                     init: rhs_init,
                     initialize: rhs_initialize,
+                    init_is_value: rhs_value,
                     ..
                 },
-            ) => lhs_spec == rhs_spec && lhs_init == rhs_init && lhs_initialize == rhs_initialize,
+            ) => {
+                lhs_spec == rhs_spec
+                    && lhs_init == rhs_init
+                    && lhs_initialize == rhs_initialize
+                    && lhs_value == rhs_value
+            }
             (
                 Self::Compare {
                     op: lhs_op,

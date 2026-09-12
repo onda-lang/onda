@@ -957,8 +957,9 @@ fn invalid_instance_error() -> Diagnostic {
 // SAFETY: Instance is an exclusive mutable runtime owner. Its raw pointers are non-owning host
 // bindings and are never dereferenced without `&mut Instance`; their validity remains governed by
 // the bind/prepare/process contract. Moving an instance does not move the bound host allocations.
-// Custom allocator construction guarantees that its free callback remains valid on whichever
-// thread eventually destroys the instance. Onda performs no instance allocation after creation.
+// Custom allocator construction guarantees that its callbacks remain valid on whichever thread
+// creates, grows the event workspace of, or destroys the instance. Realtime dispatch performs no
+// instance allocation; explicit workspace reservation happens outside realtime execution.
 unsafe impl Send for Instance {}
 
 #[derive(Debug, Clone, Copy)]
@@ -1157,8 +1158,32 @@ impl Instance {
         self.program.param_type_bytes(index)
     }
 
+    /// Increase prepared event capacity outside realtime execution, using the instance allocator.
+    /// The default is sufficient for fixed payloads and at least 64 KiB for dynamic payloads.
+    /// A larger request reallocates; smaller requests reuse the existing workspace, and allocation
+    /// failure preserves it.
+    pub fn reserve_event_workspace(&mut self, bytes: usize) -> Result<(), Diagnostic> {
+        match &mut self.state {
+            InstanceState::Pending(state) => state.reserve_event_workspace(bytes),
+            InstanceState::Allocated(state) => state.storage.reserve_event_workspace(bytes),
+        }
+    }
+
+    pub fn event_workspace_capacity(&self) -> usize {
+        match &self.state {
+            InstanceState::Pending(state) => state.event_workspace_capacity(),
+            InstanceState::Allocated(state) => state.storage.event_workspace_capacity(),
+        }
+    }
+
     pub fn event_payload_bytes(&self, index: usize) -> Option<usize> {
         self.program.event_payload_bytes(index)
+    }
+
+    /// Returns the minimum payload size for an event. Each dynamic slice contributes its
+    /// four-byte length prefix and no element bytes.
+    pub fn event_payload_min_bytes(&self, index: usize) -> Option<usize> {
+        self.program.event_payload_min_bytes(index)
     }
 
     /// Returns the exact payload size for a fixed-shape delegate, or `None` for a dynamic payload
@@ -2319,15 +2344,39 @@ fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnost
 
 /// Dispatches an event, optionally collects delegate and print occurrences, and invalidates the
 /// instance if generated execution fails.
-/// A later full initialization or snapshot restore is required before state can be used again.
+/// Input rejection preserves the instance; execution failure requires full initialization or restore.
 pub fn trigger_event_by_index(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
+    let status = trigger_event_by_index_impl(instance, event_index, payload, output, false)?;
+    onda_codegen_llvm::check_execution_status(status)
+}
+
+/// Dispatches a validated event while preserving the generated execution status.
+/// Input rejection returns status 2 without invalidating the instance.
+pub fn trigger_event_by_index_with_status(
+    instance: &mut Instance,
+    event_index: usize,
+    payload: &[u8],
+    output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
+    trigger_event_by_index_impl(instance, event_index, payload, output, true)
+}
+
+fn trigger_event_by_index_impl(
+    instance: &mut Instance,
+    event_index: usize,
+    payload: &[u8],
+    output: ExecutionOutput<'_, '_>,
+    map_input_rejection: bool,
+) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    output.reset();
+    let payload_validation = instance
+        .program
+        .validate_event_payload(event_index, payload);
     if !instance.buffers_validated {
         validate_buffers(instance)?;
     }
@@ -2336,12 +2385,18 @@ pub fn trigger_event_by_index(
         InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
+    if let Err(error) = payload_validation {
+        if map_input_rejection {
+            return Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED);
+        }
+        return Err(error);
+    }
     // Payload and host-region validation happens before generated code is
     // entered and must not invalidate otherwise usable processor state. Keep
     // the execution status separate so only a generated failure closes the
     // instance, matching the process entry-point lifecycle.
     let status = with_processor_execution_output(output, |output| unsafe {
-        instance.program.trigger_event_by_index_with_status(
+        instance.program.trigger_event_by_index_unchecked(
             &mut state.storage,
             &instance.params,
             event_index,
@@ -2353,34 +2408,31 @@ pub fn trigger_event_by_index(
             output,
         )
     })?;
-    let result = onda_codegen_llvm::check_execution_status(status);
-    if result.is_err() {
+    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
         state.initialized = false;
     }
-    result
+    Ok(status)
 }
 
-/// Dispatches an event without validating its payload or current buffer bindings, optionally
-/// collecting delegate and print occurrences.
+/// Dispatches an event without hosted payload or current-buffer validation, optionally collecting
+/// delegate and print occurrences. The generated entry still performs mandatory payload preflight.
 ///
-/// A nonzero generated execution status invalidates the instance. Full initialization is then
-/// required before any further processing, event dispatch, or task execution.
+/// Runtime safety failure invalidates the instance. Rejected input (status 2), including insufficient
+/// workspace capacity, preserves it. Full initialization is required after execution failure.
 ///
 /// # Safety
 ///
 /// Buffer bindings must have been validated after their most recent mutation and must remain valid
-/// for the call. `payload` must exactly match the declared fixed or dynamic layout for
-/// `event_index`, including all slice length prefixes and element data. The instance must have
-/// completed full initialization; violating that lifecycle contract is undefined behavior in
-/// release builds.
+/// for the call. The instance must have completed full initialization; violating that lifecycle
+/// contract is undefined behavior in release builds. Malformed payload bytes are safely rejected by
+/// the generated entry.
 pub unsafe fn trigger_event_by_index_unchecked(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
-    output.reset();
     debug_assert!(
         instance.is_initialized(),
         "trigger_event_by_index_unchecked called before full initialization; this is UB in release builds"
@@ -2408,7 +2460,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
             output,
         )
     })?;
-    if status != onda_codegen_llvm::PROCESSOR_EXECUTION_OK {
+    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
         state.initialized = false;
     }
     Ok(status)

@@ -538,6 +538,62 @@ sample:
     }
 
     #[test]
+    fn indexed_struct_array_member_writes_reject_invalid_field_shapes() {
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+task invalid():
+  cells: Cell[1]
+  index: i32 = 0
+  cells[0].pair[index] = 1.0
+  yield
+
+block:
+  await invalid()
+  sample:
+    out1 = 0.0
+"#,
+            "tuple field index must be a compile-time integer constant",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+sample:
+  cells: Cell[1]
+  cells[0].value[0] = 1.0
+  out1 = 0.0
+"#,
+            "is not a array/buffer symbol",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  taps: f32[2]
+
+proc Invalid:
+  sample:
+    cells: Cell[1]
+    replacement: f32[3] = [1.0, 2.0, 3.0]
+    cells[0].taps = replacement
+    out1 = 0.0
+
+init:
+  invalid = Invalid()
+
+sample:
+  out1 = invalid()
+"#,
+            "expects 'f32[2]', got 'f32[3]'",
+        );
+    }
+
+    #[test]
     fn write_unsafe_rejects_aggregate_arrays_during_analysis() {
         let source = r#"
 struct Cell:
@@ -2269,4 +2325,540 @@ proc Main:
         assert_eq!(typed.outs, ["output"]);
         assert_eq!(typed.param_default("gain"), Some(0.5));
         assert!(typed.state_vars.iter().any(|name| name == "state"));
+    }
+
+    #[test]
+    fn struct_assignment_from_untyped_event_parameter_suggests_its_annotation() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+event configure(patch):
+  current = patch
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("an untyped event parameter must not replace a struct");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:#?}");
+        assert_eq!(
+            errors[0].message,
+            "cannot assign f32 event parameter 'patch' to struct instance 'current' of type 'Patch'; declare the parameter as 'patch: Patch'"
+        );
+        assert!(!errors[0].message.contains("sample"));
+    }
+
+    #[test]
+    fn struct_assignment_diagnostics_preserve_the_authored_task_context() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+task load():
+  current = f32(1.0)
+
+block:
+  await load()
+  sample:
+    out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("a scalar must not replace a struct");
+        assert!(errors.iter().any(|error| {
+            error.message
+                == "cannot assign f32 value to struct instance 'current' of type 'Patch' in task; whole-struct replacement requires another 'Patch' value"
+        }), "unexpected diagnostics: {errors:#?}");
+        assert!(errors.iter().all(|error| !error.message.contains("in block")));
+    }
+
+    #[test]
+    fn nominal_data_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  current: Patch
+
+event configure(envelope: Envelope):
+  current = envelope
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal struct types must not be interchangeable");
+        assert!(errors.iter().any(|error| {
+            error.message == "data replacement for 'current' expects 'Patch', got 'Envelope'"
+        }), "unexpected diagnostics: {errors:#?}");
+    }
+
+    #[test]
+    fn nominal_array_element_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  patches: Patch[2] = Patch()
+  envelopes: Envelope[2] = Envelope()
+
+event configure():
+  patches[0] = envelopes[0]
+
+sample:
+  out1 = patches[0].gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal element types must not be interchangeable");
+        assert!(
+            errors.iter().any(|error| {
+                error.message
+                    == "element replacement for 'patches[...]' expects 'Patch', got 'Envelope'"
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn nested_proc_events_accept_struct_values_and_constructors() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event accept(item: Item):
+    captured = item.value
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Item):
+    child.accept(item)
+  event construct():
+    child.accept(Item(value = 3.0))
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Item):
+  parent.forward(item)
+event construct():
+  parent.construct()
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should accept nominal values and constructors");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested nominal event calls should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_can_read_struct_arrays_and_slices() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event fixed(items: Item[2]):
+    captured = items[0].value + items[1].value
+  event dynamic(items: Item[]):
+    captured = items[0].value + f32(items.len())
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event fixed(items: Item[2]):
+    child.fixed(items)
+  event dynamic(items: Item[]):
+    child.dynamic(items)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event fixed(items: Item[2]):
+  parent.fixed(items)
+event dynamic(items: Item[]):
+  parent.dynamic(items)
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should read struct arrays and slices");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested structured-array event reads should lower to MIR");
+    }
+
+    #[test]
+    fn proc_event_tuple_elements_can_initialize_scalar_locals() {
+        let source = r#"
+proc Child:
+  init:
+    captured = 0.0
+  event accept(pair: (f32, i32)):
+    first: f32 = pair[0]
+    combined = first + f32(pair[1])
+    unused = pair[0]
+    captured = combined
+  sample:
+    out1 = captured
+
+init:
+  child = Child()
+event accept(pair: (f32, i32)):
+  child.accept(pair)
+sample:
+  out1 = child()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("tuple-derived proc-event locals should retain their bindings and types");
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple-derived proc-event locals should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_reject_mismatched_nominal_payloads() {
+        let source = r#"
+struct Expected:
+  value: f32
+struct Actual:
+  value: f32
+
+proc Child:
+  event accept(item: Expected):
+    value = item.value
+  sample:
+    out1 = 0.0
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Actual):
+    child.accept(item)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Actual):
+  parent.forward(item)
+sample:
+  out1 = parent()
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("nested event payloads preserve nominal struct identity");
+        assert!(
+            errors.iter().any(|error| {
+                error.message.contains("Expected") && error.message.contains("Actual")
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn instance_methods_resolve_for_runtime_struct_bindings_in_every_top_level_scope() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+def make():
+  return Cell(value = 0.25)
+
+def use_local() -> f32:
+  local = Cell()
+  local.set(0.5)
+  return local.read()
+
+init:
+  state = Cell()
+  observed = 0.0
+
+block:
+  local = make()
+  local.set(local.read() + 0.25)
+
+event inspect(value: Cell):
+  observed = value.read()
+
+sample:
+  alias = state
+  alias.set(use_local())
+  result = make()
+  result.set(result.read() + observed)
+  out1 = state.read() + result.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("runtime struct receivers should resolve uniformly");
+        lower_program_to_optimized_mir(&typed)
+            .expect("runtime struct receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_runtime_struct_elements_and_slices() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+  def position(self) -> i32:
+    return i32(self.value)
+
+init:
+  cells: Cell[3] = Cell()
+
+sample:
+  element = cells[1]
+  element.set(0.25)
+  slice = cells[1:3]
+  slice[1].set(0.5)
+  cursor = Cell(value = 1.0)
+  values = [0.0, 0.0]
+  values[cursor.position():] = 0.75
+  out1 = cells[1].value + cells[2].value + values[1]
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("element and slice aliases should retain their receiver type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("element and slice receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_method_resolution_joins_runtime_branch_types() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+sample:
+  if in1 > 0.0:
+    selected = Cell(value = 0.25)
+  else:
+    selected = Cell(value = 0.5)
+  out1 = selected.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("matching branch-local receiver types should join");
+        lower_program_to_optimized_mir(&typed)
+            .expect("joined branch receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_proc_runtime_locals_and_event_payloads() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+struct Factory:
+  seed: f32
+
+  def make(self, offset: i32) -> Cell:
+    return Cell(value = self.seed + f32(offset))
+
+  def make(self, offset: f32) -> Cell:
+    return Cell(value = self.seed + offset)
+
+def make():
+  return Cell(value = 0.25)
+
+def factory(value: i32) -> Factory:
+  return Factory(seed = f32(value))
+
+def factory(value: f32) -> Factory:
+  return Factory(seed = value)
+
+proc Voice:
+  init:
+    state = Cell()
+    observed = 0.0
+
+  def use_local() -> f32:
+    local = Cell()
+    local.set(0.5)
+    return local.read()
+
+  event inspect(value: Cell):
+    observed = value.read()
+
+  block:
+    local = make()
+    local.set(0.75)
+
+    sample:
+      alias = state
+      alias.set(use_local())
+      result = make()
+      result.set(result.read() + observed)
+      source = factory(1)
+      made = source.make(2)
+      out1 = alias.read() + result.read() + made.read()
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("proc executable scopes should share method receiver resolution");
+        lower_program_to_optimized_mir(&typed)
+            .expect("proc runtime receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_methods_preserve_read_only_event_payload_permissions() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+event update(cell: Cell):
+  cell.set(0.25)
+
+sample:
+  out1 = 0.0
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("event payload receiver methods must preserve read-only permissions");
+        assert!(
+            errors.iter().any(|error| error.message
+                == "cannot write through read-only payload parameter 'cell'"),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn instance_methods_follow_overloaded_aggregate_result_types() {
+        let source = r#"
+struct A:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct B:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Leaf:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Root:
+  value: f32
+
+  def descend(self, offset: i32) -> Leaf:
+    return Leaf(value = self.value + f32(offset))
+
+  def descend(self, offset: f32) -> Leaf:
+    return Leaf(value = self.value + offset)
+
+def make(value: i32) -> A:
+  return A(value = f32(value))
+
+def make(value: f32) -> B:
+  return B(value = value)
+
+def root(value: i32) -> Root:
+  return Root(value = f32(value))
+
+def root(value: f32) -> Root:
+  return Root(value = value)
+
+sample:
+  a = make(1)
+  b = make(2.0)
+  root_value = root(3)
+  leaf = root_value.descend(4)
+  out1 = a.read() + b.read() + leaf.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("receiver types should follow the selected result overload");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded aggregate result methods should lower to MIR");
+    }
+
+    #[test]
+    fn recursive_aggregate_diagnostics_point_to_the_source_declaration() {
+        let source = "struct Recursive:\n  children: Recursive[2]\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("recursive aggregate layouts must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("recursive aggregate layout cycle"))
+            .expect("recursive aggregate diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (1, 1));
+    }
+
+    #[test]
+    fn aggregate_field_layout_diagnostics_point_to_the_field_type() {
+        let source = "struct Container:\n  value: Missing\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unknown aggregate field types must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("references unknown struct 'Missing'"))
+            .expect("unknown aggregate field diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 10));
     }

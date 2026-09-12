@@ -1513,10 +1513,11 @@ fn decode_run_param_scalar_repr(
         return Ok(Value::Null);
     };
     let value = match ty {
+        // The wire representation is already the shortest decimal for the f32.
+        // Keep that decimal in host JSON instead of widening the parsed f32 bits.
         "f32" => repr
-            .parse::<f32>()
+            .parse::<f64>()
             .ok()
-            .map(f64::from)
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number),
         "f64" => repr
@@ -1583,6 +1584,12 @@ fn run_event_value_json(value: &RunEventValue) -> Value {
         RunEventValue::Array(values) => {
             Value::Array(values.iter().map(run_event_value_json).collect())
         }
+        RunEventValue::Struct(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, value)| (name.clone(), run_event_value_json(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -2874,11 +2881,12 @@ mod tests {
         classify_host_events, compiled_snapshot_is_current, events_are_compatible_for_preservation,
         format_delegate_log_line, params_are_compatible_for_preservation,
         reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
-        relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
-        source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
-        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
-        PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunEventValue, RunHostOptions,
-        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
+        relevant_source_change_paths, run_event_value_json, run_param_json, source_change_paths,
+        source_snapshot, source_snapshot_with_project, source_watch_root,
+        watcher_gap_validation_paths, ControllerEvent, FileWatcher, ParamDomain, ParamScalarType,
+        ParamScale, PendingCommand, PreservedBufferBinding, RunEventInfo, RunEventParamInfo,
+        RunEventValue, RunHostOptions, RunParamInfo, RunParamWire, SourceCompilationState,
+        SourceWatchRevision,
     };
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -2978,6 +2986,10 @@ mod tests {
             format_delegate_log_line(&json!({ "name": "done", "values": {} }), &[],),
             "delegate done"
         );
+
+        let displayed = run_event_value_json(&RunEventValue::from_f32(0.15));
+        assert_eq!(displayed, json!(0.15));
+        assert_eq!(displayed.to_string(), "0.15");
     }
 
     #[test]
@@ -3060,15 +3072,18 @@ mod tests {
                 .as_f64()
                 .expect("numeric range maximum")
                 .to_bits(),
-            f64::from(0.98_f32).to_bits()
+            0.98_f64.to_bits()
         );
         assert_eq!(
             decoded[1]["step"]
                 .as_f64()
                 .expect("numeric parameter step")
                 .to_bits(),
-            f64::from(0.1_f32).to_bits()
+            0.1_f64.to_bits()
         );
+        assert!(!serde_json::to_string(&decoded)
+            .expect("serialize host parameters")
+            .contains("0.980000019"));
         assert_eq!(
             decoded[0]["curve"]
                 .as_f64()

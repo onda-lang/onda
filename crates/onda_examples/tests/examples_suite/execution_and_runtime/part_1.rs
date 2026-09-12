@@ -104,6 +104,93 @@ sample:
 }
 
 #[test]
+fn local_struct_array_field_writes_are_observable_in_sample() {
+    let source = r#"
+struct Something:
+  value: f32
+
+const Count = 1000
+
+sample:
+  values: Something[Count * 10]
+  values[0].value = 0.5
+  out1 = values[0].value
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process local struct-array field write");
+    assert_eq!(output, [0.5; 4]);
+}
+
+#[test]
+fn indexed_struct_array_aggregate_fields_replace_through_one_canonical_view() {
+    let source = r#"
+struct Inner:
+  value: f32
+
+struct Voice:
+  taps: f32[4]
+  pair: (f32, i32)
+  inner: Inner
+
+init:
+  voices: Voice[2]
+
+sample:
+  const Outer = -5
+  const Tap = 99
+  replacement: f32[4] = [0.1, 0.2, 0.3, 0.4]
+  voices[Outer].taps[Tap] = 0.75
+  voices[1].taps = replacement
+  voices[1].pair = (0.5, 2)
+  voices[1].inner = Inner(value = 0.25)
+  selected = voices[1]
+  out1 = (voices[0].taps[3] + voices[1].taps[2] + selected.pair[0] + selected.inner.value) / 4
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process indexed struct-array aggregate fields");
+    assert_eq!(output, [0.45; 4]);
+}
+
+#[test]
+fn indexed_member_assignment_evaluates_selectors_once_before_the_value() {
+    let source = r#"
+struct Voice:
+  taps: f32[2]
+
+def mark(trace: f32[], digit: i32, result: i32) -> i32:
+  trace[0] = trace[0] * 10.0 + f32(digit)
+  return result
+
+sample:
+  voices: Voice[2]
+  trace: f32[1] = [0.0]
+  voices[mark(trace, 1, 0)].taps[mark(trace, 2, 1)] = f32(mark(trace, 3, 75)) / 100.0
+  out1 = trace[0] / 1000.0 + voices[0].taps[1]
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process indexed-member evaluation order");
+    assert_eq!(output, [0.873; 4]);
+}
+
+#[test]
 fn mixed_width_stdlib_clamp_and_lerp_preserve_f64_distinctions() {
     let frames = 4;
     let src = r#"

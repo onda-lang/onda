@@ -1,4 +1,8 @@
 use super::*;
+use crate::def_semantics::call_types::{
+    infer_struct_expr_type, infer_struct_symbol_type, join_branch_envs,
+    update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
+};
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 use crate::processor_lowering::{
@@ -88,6 +92,7 @@ pub(super) fn build_proc_read_helper(
 ) -> FunctionDef {
     let mut params = Vec::<onda_frontend::FnParamDecl>::new();
     params.push(onda_frontend::FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: "idx".to_owned(),
         ty: None,
@@ -96,6 +101,7 @@ pub(super) fn build_proc_read_helper(
     });
     for i in 0..len {
         params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: format!("s{i}"),
             ty: None,
@@ -226,6 +232,7 @@ pub(super) fn build_proc_write_helper(
 ) -> FunctionDef {
     let params = vec![
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(owner_proc.to_owned())),
@@ -233,6 +240,7 @@ pub(super) fn build_proc_write_helper(
             default: None,
         },
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "idx".to_owned(),
             ty: None,
@@ -240,6 +248,7 @@ pub(super) fn build_proc_write_helper(
             default: None,
         },
         onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "value".to_owned(),
             ty: None,
@@ -643,7 +652,7 @@ fn canonicalize_indexed_proc_receiver_call(
     *name = format!("{PROC_INDEX_CALL_SENTINEL}.{name}");
 }
 
-fn can_resolve_proc_index_base(
+pub(super) fn can_resolve_proc_index_base(
     args: &[CallArg],
     proc_array_slots: &HashMap<String, Vec<String>>,
 ) -> bool {
@@ -1537,21 +1546,11 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
 ) {
     match target {
         AssignTarget::Var(name) => normalize_proc_output_alias_path(name, proc_vars, proc_api),
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            normalize_proc_output_aliases_in_expr(index, proc_vars, proc_api);
         }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
+        AssignTarget::Slice { base, .. } => {
             normalize_proc_output_alias_path(base, proc_vars, proc_api);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                normalize_proc_output_aliases_in_expr(coordinate, proc_vars, proc_api);
-            }
         }
         AssignTarget::Tuple(names) => {
             for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
@@ -1559,6 +1558,9 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
             }
         }
     }
+    target.visit_selectors_mut(|selector| {
+        normalize_proc_output_aliases_in_expr(selector, proc_vars, proc_api)
+    });
 }
 
 fn normalize_proc_array_slot_assign_target(
@@ -1577,6 +1579,30 @@ fn normalize_proc_array_slot_assign_target(
     *target = AssignTarget::Index {
         base: format!("{array_base}.{field}"),
         index: Expr::int(slot_idx as i64),
+    };
+}
+
+fn lower_proc_indexed_member_target(
+    target: &mut AssignTarget,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_api: &HashMap<String, ProcApi>,
+) {
+    let AssignTarget::IndexedMember {
+        base,
+        index,
+        field,
+        field_index: None,
+    } = target
+    else {
+        return;
+    };
+    if proc_api_for_receiver(base, proc_vars, proc_array_slots, proc_api).is_none() {
+        return;
+    }
+    *target = AssignTarget::Index {
+        base: format!("{base}.{field}"),
+        index: index.clone(),
     };
 }
 
@@ -1912,9 +1938,14 @@ fn maybe_clamp_flattened_nested_proc_param_assignment_expr(
     proc_array_slots: &HashMap<String, Vec<String>>,
     proc_api: &HashMap<String, ProcApi>,
 ) {
+    let indexed_member_path;
     let Some((nested_path, field)) = (match target {
         AssignTarget::Var(name) => flattened_nested_proc_field(name, proc_vars),
         AssignTarget::Index { base, .. } => flattened_nested_proc_field(base, proc_vars),
+        AssignTarget::IndexedMember { base, field, .. } => {
+            indexed_member_path = format!("{base}.{field}");
+            flattened_nested_proc_field(&indexed_member_path, proc_vars)
+        }
         AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => None,
     }) else {
         return;
@@ -1941,6 +1972,7 @@ fn dynamic_params_assignment_target<'a>(
 ) -> Option<(&'a str, &'a ProcApi, String)> {
     let base = match target {
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => base,
+        AssignTarget::IndexedMember { .. } => return None,
         AssignTarget::Var(_) | AssignTarget::Tuple(_) => return None,
     };
 
@@ -1995,6 +2027,7 @@ fn private_proc_param_assignment_target<'a>(
             }
             split_receiver_field(base)?
         }
+        AssignTarget::IndexedMember { base, field, .. } => (base.as_str(), field.as_str()),
         AssignTarget::Tuple(_) => return None,
     };
     if base == "self" {
@@ -2192,7 +2225,28 @@ fn bound_proc_param_hook_stmts_for_target(
                 );
             }
         }
-        AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => {}
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => {
+            let flat = format!("{base}.{field}");
+            if let Some((nested_path, field)) = flattened_nested_proc_field(&flat, proc_vars) {
+                return bound_proc_param_hook_stmts_for_flattened_nested_target(
+                    owner_proc,
+                    &nested_path,
+                    field,
+                    Some(index),
+                    proc_vars,
+                    proc_array_slots,
+                    proc_api,
+                );
+            }
+        }
+        AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. }
+        | AssignTarget::Tuple(_) => {}
     }
 
     let (receiver, field, index, receiver_expr) = match target {
@@ -2218,7 +2272,20 @@ fn bound_proc_param_hook_stmts_for_target(
                 bound_proc_indexed_receiver_expr(receiver, index, proc_array_slots),
             )
         }
-        AssignTarget::Slice { .. } | AssignTarget::Tuple(_) => return Vec::new(),
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => (
+            base.as_str(),
+            field.as_str(),
+            Some(index),
+            bound_proc_indexed_receiver_expr(base, index, proc_array_slots),
+        ),
+        AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. }
+        | AssignTarget::Tuple(_) => return Vec::new(),
     };
     let Some((proc_name, param_slot)) =
         proc_param_slot_for_receiver(receiver, field, proc_vars, proc_array_slots, proc_api)
@@ -2264,6 +2331,11 @@ fn rewrite_proc_alias_assign_target(
                 return;
             };
             *base = format!("{}.{}", alias.array_base, field);
+        }
+        AssignTarget::IndexedMember { base, .. } => {
+            if let Some(alias) = aliases.get(base) {
+                *base = alias.array_base.clone();
+            }
         }
         AssignTarget::Tuple(_) => {}
     }
@@ -2576,6 +2648,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     let Some((base, field)) = (match target {
         AssignTarget::Var(name) => split_receiver_field(name),
         AssignTarget::Index { base, .. } => split_receiver_field(base),
+        AssignTarget::IndexedMember { base, field, .. } => Some((base.as_str(), field.as_str())),
         AssignTarget::Slice { base, .. } => split_dot_path(base),
         AssignTarget::Tuple(_) => None,
     }) else {
@@ -2617,6 +2690,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             normalize_proc_array_slot_assign_target(target, proc_array_slots);
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
+            lower_proc_indexed_member_target(target, proc_vars, proc_array_slots, proc_api);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
             maybe_clamp_proc_param_assignment_expr(
                 target,
@@ -3088,21 +3162,8 @@ pub(super) fn rewrite_proc_array_param_field_reads(
     ) {
         match stmt {
             Stmt::Assign { target, expr, .. } => {
-                match target {
-                    AssignTarget::Index { index, .. } => rewrite_expr(index, proc_arrays, proc_api),
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for nested in [selector, channel, start, end].into_iter().flatten() {
-                            rewrite_expr(nested, proc_arrays, proc_api);
-                        }
-                    }
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                }
+                target
+                    .visit_selectors_mut(|selector| rewrite_expr(selector, proc_arrays, proc_api));
                 rewrite_expr(expr, proc_arrays, proc_api);
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -3419,9 +3480,10 @@ pub(super) fn collect_called_proc_instances_in_stmts(
 
 pub(super) fn desugar_expr_instance_method_calls(
     expr: &mut Expr,
-    struct_instances: &HashMap<String, String>,
-    struct_array_roots: &HashMap<String, String>,
+    env: &CallTypeEnv,
+    context: CallTypeContext<'_>,
     current_ns: &str,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
     fn extract_indexed_receiver(args: &[CallArg]) -> Option<(&str, Expr, IndexAccess)> {
@@ -3453,35 +3515,23 @@ pub(super) fn desugar_expr_instance_method_calls(
 
     expr.visit_mut_postorder(|expr| {
         if let Expr::UserCall { name, args, .. } = expr {
-            if let Some(CallArg {
-                name: receiver_name,
-                expr: Expr::Index { base, .. },
-            }) = args.first()
+            if let Some(receiver) = args
+                .first()
+                .filter(|arg| arg.name.as_deref() == Some(METHOD_RECEIVER_ARG))
             {
-                if receiver_name.as_deref() == Some(METHOD_RECEIVER_ARG) {
-                    if let Some(struct_name) = struct_array_roots.get(base) {
-                        let resolved_method = format!("{struct_name}.{name}");
-                        if callable_symbols.contains(&resolved_method) {
-                            args[0].name = None;
-                            *name = resolved_method;
-                            return;
-                        }
-                    }
-                }
-            }
-            if let Some(CallArg {
-                name: receiver_name,
-                expr: Expr::Var { name: receiver, .. },
-            }) = args.first()
-            {
-                if receiver_name.as_deref() == Some(METHOD_RECEIVER_ARG) {
-                    if let Some(struct_name) = struct_instances.get(receiver) {
-                        let resolved_method = format!("{struct_name}.{name}");
-                        if callable_symbols.contains(&resolved_method) {
-                            args[0].name = None;
-                            *name = resolved_method;
-                            return;
-                        }
+                let receiver_type = infer_struct_expr_type(&receiver.expr, env, context);
+                if let Some(struct_name) = receiver_type
+                    .as_deref()
+                    .filter(|name| context.struct_defs.contains_key(*name))
+                {
+                    let resolved_method = format!("{struct_name}.{name}");
+                    // Processor state can also have a nominal struct shape. Claim only
+                    // methods declared by data structs and leave processor receivers to
+                    // the processor-call resolver.
+                    if struct_method_symbols.contains(&resolved_method) {
+                        args[0].name = None;
+                        *name = resolved_method;
+                        return;
                     }
                 }
             }
@@ -3527,22 +3577,39 @@ pub(super) fn desugar_expr_instance_method_calls(
                 .first_mut()
                 .filter(|arg| arg.name.as_deref() == Some(METHOD_RECEIVER_ARG))
             {
-                let resolved_name = if callable_symbols.contains(name) {
-                    Some(name.clone())
-                } else {
-                    resolve_unqualified_symbol_name(name, current_ns, callable_symbols)
-                };
-                if let Some(resolved_name) = resolved_name {
-                    receiver.name = None;
-                    *name = resolved_name;
+                let unresolved_receiver = infer_struct_expr_type(&receiver.expr, env, context)
+                    .is_some()
+                    || match &receiver.expr {
+                        Expr::Var { name, .. } => env.unresolved_bindings.contains(name),
+                        Expr::Index { base, .. } => env.unresolved_bindings.contains(base),
+                        _ => false,
+                    };
+                if !unresolved_receiver {
+                    let resolved_name = if callable_symbols.contains(name) {
+                        Some(name.clone())
+                    } else {
+                        resolve_unqualified_symbol_name(name, current_ns, callable_symbols)
+                    };
+                    if let Some(resolved_name) = resolved_name {
+                        receiver.name = None;
+                        *name = resolved_name;
+                    }
                 }
             }
             if let Some(method) = name.strip_prefix(&format!("{PROC_INDEX_CALL_SENTINEL}.")) {
                 if let Some((base, index_expr, access)) = extract_indexed_receiver(args) {
                     let base = base.to_owned();
-                    if let Some(struct_name) = struct_array_roots.get(base.as_str()) {
+                    let receiver = indexed_read_expr(
+                        base.clone(),
+                        index_expr.clone(),
+                        access,
+                        Default::default(),
+                    );
+                    if let Some(struct_name) = infer_struct_expr_type(&receiver, env, context)
+                        .filter(|name| context.struct_defs.contains_key(name))
+                    {
                         let resolved_method = format!("{}.{}", struct_name, method);
-                        if callable_symbols.contains(&resolved_method) {
+                        if struct_method_symbols.contains(&resolved_method) {
                             *name = resolved_method;
                             args.retain(|arg| {
                                 !matches!(
@@ -3556,12 +3623,7 @@ pub(super) fn desugar_expr_instance_method_calls(
                                 0,
                                 CallArg {
                                     name: None,
-                                    expr: indexed_read_expr(
-                                        base,
-                                        index_expr,
-                                        access,
-                                        Default::default(),
-                                    ),
+                                    expr: receiver,
                                 },
                             );
                             return;
@@ -3585,18 +3647,27 @@ pub(super) fn desugar_expr_instance_method_calls(
                     );
                     return;
                 }
-                if let Some(struct_name) = struct_instances.get(base) {
+                let receiver_type = infer_struct_symbol_type(base, env, context);
+                if let Some(struct_name) = receiver_type
+                    .as_deref()
+                    .filter(|name| context.struct_defs.contains_key(*name))
+                {
                     let base_name = base.to_owned();
                     let method_name = method.to_owned();
-                    *name = format!("{}.{}", struct_name, method_name);
-                    args.insert(
-                        0,
-                        CallArg {
-                            name: None,
-                            expr: Expr::var(base_name),
-                        },
-                    );
-                } else if !base.contains("::")
+                    let resolved_method = format!("{struct_name}.{method_name}");
+                    if struct_method_symbols.contains(&resolved_method) {
+                        *name = resolved_method;
+                        args.insert(
+                            0,
+                            CallArg {
+                                name: None,
+                                expr: Expr::var(base_name),
+                            },
+                        );
+                    }
+                } else if receiver_type.is_none()
+                    && !env.unresolved_bindings.contains(base)
+                    && !base.contains("::")
                     && !method.is_empty()
                     && !method.contains('.')
                     && !is_builtin_instance_method_name(method)
@@ -3623,407 +3694,393 @@ pub(super) fn desugar_expr_instance_method_calls(
     });
 }
 
-pub(crate) fn desugar_init_instance_method_calls(
-    stmt: &mut Stmt,
-    struct_instances: &mut HashMap<String, String>,
-    struct_array_roots: &mut HashMap<String, String>,
+fn desugar_instance_method_calls_in_stmts(
+    stmts: &mut [Stmt],
+    env: &mut CallTypeEnv,
+    context: CallTypeContext<'_>,
+    current_ns: &str,
+    struct_method_symbols: &HashSet<String>,
+    callable_symbols: &HashSet<String>,
+) -> StatementFlow {
+    for stmt in stmts {
+        let flow = match stmt {
+            Stmt::Const { .. } => StatementFlow::Continues,
+            Stmt::Assign {
+                target,
+                decl_ty,
+                generic_decl_ty,
+                expr,
+                ..
+            } => {
+                target.visit_selectors_mut(|selector| {
+                    desugar_expr_instance_method_calls(
+                        selector,
+                        env,
+                        context,
+                        current_ns,
+                        struct_method_symbols,
+                        callable_symbols,
+                    )
+                });
+                desugar_expr_instance_method_calls(
+                    expr,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                update_call_type_env_after_assign(
+                    target,
+                    decl_ty.as_ref(),
+                    generic_decl_ty.as_deref(),
+                    expr,
+                    env,
+                    context,
+                );
+                StatementFlow::Continues
+            }
+            Stmt::Expr { expr, .. } => {
+                desugar_expr_instance_method_calls(
+                    expr,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                StatementFlow::Continues
+            }
+            Stmt::Return { expr, .. } => {
+                desugar_expr_instance_method_calls(
+                    expr,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                StatementFlow::Terminates
+            }
+            Stmt::Print { values, .. } => {
+                for value in values {
+                    desugar_expr_instance_method_calls(
+                        value,
+                        env,
+                        context,
+                        current_ns,
+                        struct_method_symbols,
+                        callable_symbols,
+                    );
+                }
+                StatementFlow::Continues
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                desugar_expr_instance_method_calls(
+                    cond,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                let mut then_env = env.clone();
+                let then_flow = desugar_instance_method_calls_in_stmts(
+                    then_branch,
+                    &mut then_env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                let mut else_env = env.clone();
+                let else_flow = desugar_instance_method_calls_in_stmts(
+                    else_branch,
+                    &mut else_env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
+                *env = joined;
+                flow
+            }
+            Stmt::For {
+                var,
+                var_ty,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                desugar_expr_instance_method_calls(
+                    start,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                desugar_expr_instance_method_calls(
+                    end,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                if let Some(step) = step {
+                    desugar_expr_instance_method_calls(
+                        step,
+                        env,
+                        context,
+                        current_ns,
+                        struct_method_symbols,
+                        callable_symbols,
+                    );
+                }
+                let mut body_env = env.clone();
+                body_env.shadow_binding(var);
+                body_env.scalar_types.insert(var.clone(), *var_ty);
+                desugar_instance_method_calls_in_stmts(
+                    body,
+                    &mut body_env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                StatementFlow::Continues
+            }
+            Stmt::While { cond, body, .. } => {
+                desugar_expr_instance_method_calls(
+                    cond,
+                    env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                let mut body_env = env.clone();
+                desugar_instance_method_calls_in_stmts(
+                    body,
+                    &mut body_env,
+                    context,
+                    current_ns,
+                    struct_method_symbols,
+                    callable_symbols,
+                );
+                StatementFlow::Continues
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
+        };
+        if flow == StatementFlow::Terminates {
+            return flow;
+        }
+    }
+    StatementFlow::Continues
+}
+
+pub(crate) fn desugar_executable_instance_method_calls(
+    stmts: &mut [Stmt],
+    env: &mut CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     current_ns: &str,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
-    match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
-            let expr_diag = DiagCtx::new(expr.loc());
-            if let AssignTarget::Var(name) = target {
-                if let Expr::UserCall {
-                    name: struct_name,
-                    type_args,
-                    ..
-                } = expr
-                {
-                    if type_args.is_empty() && struct_defs.contains_key(struct_name) {
-                        register_struct_instance_and_array_roots(
-                            name,
-                            struct_name,
-                            struct_defs,
-                            struct_instances,
-                            struct_array_roots,
-                        );
-                    } else if !type_args.is_empty() && struct_defs.contains_key(struct_name) {
-                        let mut local_errors = Vec::new();
-                        if resolve_explicit_call_type_args(
-                            type_args,
-                            &format!("proc init struct constructor '{}'", struct_name),
-                            expr_diag,
-                            &mut local_errors,
-                        )
-                        .is_some()
-                        {
-                            register_struct_instance_and_array_roots(
-                                name,
-                                struct_name,
-                                struct_defs,
-                                struct_instances,
-                                struct_array_roots,
-                            );
-                        }
-                    }
-                }
-                if let Expr::ArrayCtor { spec, .. } = expr {
-                    if let ArrayElemType::Struct(struct_name) = &spec.elem {
-                        register_struct_array_roots(
-                            name,
-                            struct_name,
-                            struct_defs,
-                            struct_array_roots,
-                        );
-                    }
-                }
-            }
-            if let AssignTarget::Index { index, .. } = target {
-                desugar_expr_instance_method_calls(
-                    index,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            desugar_expr_instance_method_calls(
-                expr,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
+    desugar_instance_method_calls_in_stmts(
+        stmts,
+        env,
+        CallTypeContext {
+            return_types,
+            struct_defs,
+        },
+        current_ns,
+        struct_method_symbols,
+        callable_symbols,
+    );
+}
+
+pub(crate) fn desugar_function_instance_method_calls(
+    def: &mut FunctionDef,
+    env_seed: &CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
+    callable_symbols: &HashSet<String>,
+) {
+    let mut env = env_seed.clone();
+    env.set_owner_type_params(&def.type_params);
+    for param in &def.params {
+        env.bind_function_param(param, &def.type_params);
+    }
+    desugar_executable_instance_method_calls(
+        &mut def.body,
+        &mut env,
+        return_types,
+        struct_defs,
+        &namespace_of_symbol(&def.name),
+        struct_method_symbols,
+        callable_symbols,
+    );
+}
+
+pub(crate) fn infer_instance_method_return_types(
+    defs: &[FunctionDef],
+    env: &CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> HashMap<String, ReturnType> {
+    let mut unique_names = HashSet::new();
+    let mut duplicate_names = HashSet::new();
+    for def in defs {
+        if !unique_names.insert(def.name.clone()) {
+            duplicate_names.insert(def.name.clone());
         }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            desugar_expr_instance_method_calls(
-                expr,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
+    }
+    let signatures = defs
+        .iter()
+        .map(|def| (def.name.clone(), FnSignature::from_def(def)))
+        .collect::<HashMap<_, _>>();
+    let mut return_types =
+        infer_known_def_return_types(defs, &[], &signatures, &HashMap::new(), env, struct_defs);
+    // An overloaded public name has no single return type until its call is
+    // selected. Using whichever overload was inserted last would make receiver
+    // resolution order-dependent.
+    return_types.retain(|name, _| !duplicate_names.contains(name));
+    return_types
+}
+
+pub(crate) fn bind_event_method_receiver_types(
+    env: &mut CallTypeEnv,
+    params: &[EventParamDecl],
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    for param in params {
+        let nominal = match &param.ty {
+            EventParamType::GenericScalar { name } => Some(name),
+            EventParamType::GenericArray { elem, .. } | EventParamType::GenericSlice { elem } => {
+                Some(elem)
+            }
+            EventParamType::Tuple(_)
+            | EventParamType::Scalar(_)
+            | EventParamType::Array { .. }
+            | EventParamType::Slice { .. } => None,
+        };
+        if nominal.is_some_and(|name| !struct_defs.contains_key(name)) {
+            env.shadow_binding(&param.name);
+            env.unresolved_bindings.insert(param.name.clone());
+        } else {
+            env.bind_function_param(&event_param_as_fn_param(param), &[]);
         }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                desugar_expr_instance_method_calls(
-                    value,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            desugar_expr_instance_method_calls(
-                cond,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            for nested in then_branch.iter_mut() {
-                desugar_init_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    struct_defs,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            for nested in else_branch.iter_mut() {
-                desugar_init_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    struct_defs,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            desugar_expr_instance_method_calls(
-                start,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            desugar_expr_instance_method_calls(
-                end,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            if let Some(step_expr) = step {
-                desugar_expr_instance_method_calls(
-                    step_expr,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            for nested in body.iter_mut() {
-                desugar_init_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    struct_defs,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            desugar_expr_instance_method_calls(
-                cond,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            for nested in body.iter_mut() {
-                desugar_init_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    struct_defs,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 
-pub(super) fn desugar_sample_instance_method_calls(
-    stmt: &mut Stmt,
-    struct_instances: &HashMap<String, String>,
-    struct_array_roots: &HashMap<String, String>,
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn desugar_executable_owner_instance_method_calls(
+    init: &mut [Stmt],
+    runtime_bodies: [&mut [Stmt]; 3],
+    events: &mut [EventDef],
+    defs: &mut [FunctionDef],
+    state_env_seed: &CallTypeEnv,
+    function_env_seed: &CallTypeEnv,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     current_ns: &str,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
-) {
-    match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
-                desugar_expr_instance_method_calls(
-                    index,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            desugar_expr_instance_method_calls(
-                expr,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            desugar_expr_instance_method_calls(
-                expr,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                desugar_expr_instance_method_calls(
-                    value,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            desugar_expr_instance_method_calls(
-                cond,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            for nested in then_branch.iter_mut() {
-                desugar_sample_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            for nested in else_branch.iter_mut() {
-                desugar_sample_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
+) -> CallTypeEnv {
+    let mut state_env = state_env_seed.clone();
+    let context = CallTypeContext {
+        return_types,
+        struct_defs,
+    };
+    desugar_instance_method_calls_in_stmts(
+        init,
+        &mut state_env,
+        context,
+        current_ns,
+        struct_method_symbols,
+        callable_symbols,
+    );
+    for body in runtime_bodies {
+        let mut env = state_env.clone();
+        desugar_instance_method_calls_in_stmts(
             body,
-            ..
-        } => {
-            desugar_expr_instance_method_calls(
-                start,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            desugar_expr_instance_method_calls(
-                end,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            if let Some(step_expr) = step {
-                desugar_expr_instance_method_calls(
-                    step_expr,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-            for nested in body.iter_mut() {
-                desugar_sample_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            desugar_expr_instance_method_calls(
-                cond,
-                struct_instances,
-                struct_array_roots,
-                current_ns,
-                callable_symbols,
-            );
-            for nested in body.iter_mut() {
-                desugar_sample_instance_method_calls(
-                    nested,
-                    struct_instances,
-                    struct_array_roots,
-                    current_ns,
-                    callable_symbols,
-                );
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            &mut env,
+            context,
+            current_ns,
+            struct_method_symbols,
+            callable_symbols,
+        );
     }
+    for event in events {
+        let mut env = state_env.clone();
+        bind_event_method_receiver_types(&mut env, &event.params, struct_defs);
+        desugar_instance_method_calls_in_stmts(
+            &mut event.body,
+            &mut env,
+            context,
+            current_ns,
+            struct_method_symbols,
+            callable_symbols,
+        );
+    }
+    for def in defs {
+        desugar_function_instance_method_calls(
+            def,
+            function_env_seed,
+            return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
+    }
+    state_env
 }
 
 pub(super) fn desugar_processor_instance_method_calls(
     proc: &mut ProcessorDef,
+    return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
-    let current_ns = namespace_of_symbol(&proc.name);
-    let mut struct_instances = HashMap::<String, String>::new();
-    let mut struct_array_roots = HashMap::<String, String>::new();
-
-    for stmt in &mut proc.init {
-        desugar_init_instance_method_calls(
-            stmt,
-            &mut struct_instances,
-            &mut struct_array_roots,
-            struct_defs,
-            &current_ns,
-            callable_symbols,
-        );
-    }
-
-    for stmt in &mut proc.block_pre {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &struct_instances,
-            &struct_array_roots,
-            &current_ns,
-            callable_symbols,
-        );
-    }
-    for stmt in &mut proc.block_post {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &struct_instances,
-            &struct_array_roots,
-            &current_ns,
-            callable_symbols,
-        );
-    }
-    for stmt in &mut proc.sample {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &struct_instances,
-            &struct_array_roots,
-            &current_ns,
-            callable_symbols,
-        );
-    }
-    for event in &mut proc.events {
-        for stmt in &mut event.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &struct_instances,
-                &struct_array_roots,
-                &current_ns,
-                callable_symbols,
-            );
-        }
-    }
+    let state_seed = CallTypeEnv::default();
+    let function_seed = CallTypeEnv::default();
+    let state_env = desugar_executable_owner_instance_method_calls(
+        &mut proc.init,
+        [
+            proc.block_pre.as_mut_slice(),
+            proc.block_post.as_mut_slice(),
+            proc.sample.as_mut_slice(),
+        ],
+        &mut proc.events,
+        &mut [],
+        &state_seed,
+        &function_seed,
+        return_types,
+        struct_defs,
+        &namespace_of_symbol(&proc.name),
+        struct_method_symbols,
+        callable_symbols,
+    );
     for def in &mut proc.local_defs {
-        for stmt in &mut def.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &struct_instances,
-                &struct_array_roots,
-                &current_ns,
-                callable_symbols,
-            );
-        }
+        desugar_function_instance_method_calls(
+            def,
+            &state_env,
+            return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
     }
 }

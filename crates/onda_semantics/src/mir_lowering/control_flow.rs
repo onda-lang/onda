@@ -1,6 +1,6 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
-use crate::is_bare_return_expr;
+use crate::{flatten_indexed_member_target, is_bare_return_expr};
 use onda_frontend::DeclType;
 
 #[derive(Clone, Copy)]
@@ -82,13 +82,118 @@ impl<'a> FunctionLowerer<'a> {
                 Stmt::Assign {
                     target,
                     decl_ty,
+                    generic_decl_ty,
+                    is_typed_decl,
                     expr,
                     loc,
                     ..
                 } => {
+                    let target = flatten_indexed_member_target(target);
+                    let target = target.as_ref();
+                    if let (AssignTarget::Var(name), Some(DeclType::Slice(element))) =
+                        (target, decl_ty)
+                    {
+                        self.lower_typed_slice_binding(name, element, expr, block)?;
+                        continue;
+                    }
                     let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
                     let declared_integer_range = integer_range_invariant(expr, declared_scalar_ty);
+                    if let AssignTarget::Index { base, index } = target {
+                        if let Some(data @ DataType::Struct(_)) = self.data_type_of(expr) {
+                            // Resolve the destination once, before evaluating the RHS.
+                            let selection = Expr::Index {
+                                loc: *loc,
+                                base: base.clone(),
+                                index: Box::new(index.clone()),
+                            };
+                            let destination = self.lower_data_expr(&selection, &data, block)?;
+                            let source = self.lower_data_expr(expr, &data, block)?;
+                            self.copy_data(&destination, &source, &data, block, (*loc).into())?;
+                            continue;
+                        }
+                    }
                     if let AssignTarget::Var(name) = target {
+                        // Literal scalar initializers have no observable reads
+                        // or effects to capture before replacing their storage.
+                        if matches!(expr, Expr::ArrayCtor { spec, init, init_is_value: false, initialize: true, .. }
+                            if matches!(spec.elem, ArrayElemType::Primitive(_))
+                                && init.as_ref().is_none_or(|values| values.iter().all(|value|
+                                    matches!(value, Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. }))))
+                            && self.lower_state_array_initializer(
+                                name,
+                                expr,
+                                block,
+                                (*loc).into(),
+                            )?
+                        {
+                            continue;
+                        }
+                        let data = self.data_type_of(expr).or_else(|| match decl_ty {
+                            Some(DeclType::Array { elem, size }) => Some(DataType::Array {
+                                element: ArrayElemType::Primitive(*elem),
+                                len: crate::def_semantics::const_positive_usize_for_call_type(
+                                    size,
+                                )?,
+                            }),
+                            _ if matches!(expr, Expr::ArrayLiteral { .. }) => {
+                                self.data_type_of(&Expr::var(name))
+                            }
+                            _ => None,
+                        });
+                        if let Some(data) = data {
+                            let existing = self.data_type_of(&Expr::var(name));
+                            if existing.is_none()
+                                && (*is_typed_decl || generic_decl_ty.is_some())
+                                && matches!(
+                                    (&data, expr),
+                                    (
+                                        DataType::Array {
+                                            element: ArrayElemType::Struct(_),
+                                            ..
+                                        },
+                                        Expr::ArrayCtor {
+                                            initialize: false,
+                                            ..
+                                        }
+                                    )
+                                )
+                            {
+                                self.allocate_data(name, &data, (*loc).into())?;
+                                continue;
+                            }
+                            if existing.is_some()
+                                && (*is_typed_decl || generic_decl_ty.is_some())
+                                && matches!(
+                                    data,
+                                    DataType::Struct(_)
+                                        | DataType::Array {
+                                            element: ArrayElemType::Struct(_),
+                                            ..
+                                        }
+                                )
+                                && !Self::data_expr_selects_storage(expr)
+                            {
+                                self.initialize_data_expr(name, expr, &data, block)?;
+                                continue;
+                            }
+                            let source = self.lower_data_expr(expr, &data, block)?;
+                            if existing.is_some() {
+                                self.copy_data(name, &source, &data, block, (*loc).into())?;
+                            } else if (*is_typed_decl || generic_decl_ty.is_some())
+                                && Self::data_expr_selects_storage(expr)
+                            {
+                                self.allocate_data(name, &data, (*loc).into())?;
+                                self.copy_data(name, &source, &data, block, (*loc).into())?;
+                            } else {
+                                self.bind_data_alias(name, &source, &data, block, (*loc).into())?;
+                            }
+                            continue;
+                        }
+                    }
+                    if let AssignTarget::Var(name) = target {
+                        if self.lower_struct_slice_alias(name, expr, block)? {
+                            continue;
+                        }
                         if self.is_slice_expression(expr) {
                             let slice = self.lower_slice_expression(expr, None, block)?;
                             self.assign_slice_alias(name, slice, block, (*loc).into())?;
@@ -107,17 +212,6 @@ impl<'a> FunctionLowerer<'a> {
                         )? {
                             continue;
                         }
-                        if self.lower_struct_array_state_initializer(
-                            name,
-                            expr,
-                            block,
-                            (*loc).into(),
-                        )? {
-                            continue;
-                        }
-                        if self.lower_struct_state_initializer(name, expr, block, (*loc).into())? {
-                            continue;
-                        }
                         if self.lower_state_array_initializer(name, expr, block, (*loc).into())? {
                             continue;
                         }
@@ -133,6 +227,17 @@ impl<'a> FunctionLowerer<'a> {
                         end,
                     } = target
                     {
+                        let selection = Expr::Slice {
+                            loc: *loc,
+                            base: base.clone(),
+                            selector: selector.clone(),
+                            channel: channel.clone(),
+                            start: start.clone(),
+                            end: end.clone(),
+                        };
+                        if self.lower_struct_slice_assignment(&selection, expr, block)? {
+                            continue;
+                        }
                         self.lower_slice_assignment(
                             base,
                             SliceSelection {
@@ -147,6 +252,20 @@ impl<'a> FunctionLowerer<'a> {
                         )?;
                         continue;
                     }
+                    // Assignment places are evaluated before their value. Keep
+                    // the selected index as an SSA value so compiler-generated
+                    // normalization never turns it into persistent state.
+                    let index_value = if let AssignTarget::Index { index, .. } = target {
+                        let value = self.lower_expr(index, block)?;
+                        Some(AssignmentIndex {
+                            expr: index,
+                            value: self
+                                .coerce(value, PrimitiveType::I32, block, index.loc())?
+                                .value,
+                        })
+                    } else {
+                        None
+                    };
                     let values = self.lower_value_expr(expr, block)?;
                     match target {
                         AssignTarget::Var(name) => {
@@ -181,14 +300,17 @@ impl<'a> FunctionLowerer<'a> {
                             expr.loc(),
                             (*loc).into(),
                         )?,
-                        AssignTarget::Index { base, index } => self.assign_index_target(
+                        AssignTarget::Index { base, .. } => self.assign_index_target(
                             base,
-                            index,
+                            index_value.expect("indexed assignment prepared its selector"),
                             &values,
                             block,
                             expr.loc(),
                             (*loc).into(),
                         )?,
+                        AssignTarget::IndexedMember { .. } => {
+                            unreachable!("indexed member target was flattened")
+                        }
                         AssignTarget::Slice { .. } => {
                             unreachable!("slice assignments are lowered before scalar/tuple values")
                         }
@@ -247,6 +369,17 @@ impl<'a> FunctionLowerer<'a> {
                     let result_types = match &self.function.return_ty {
                         ReturnType::Scalar(result) => vec![*result],
                         ReturnType::Tuple(results) => results.clone(),
+                        ReturnType::Data(data) => {
+                            let data = data.clone();
+                            let source = self.lower_data_expr(expr, &data, block)?;
+                            self.copy_data("__onda_result", &source, &data, block, (*loc).into())?;
+                            self.push_statement(
+                                block,
+                                StatementKind::Return { values: Vec::new() },
+                                (*loc).into(),
+                            );
+                            return Ok(StatementFlow::Terminates);
+                        }
                     };
                     let values = self.lower_value_expr(expr, block)?;
                     if values.len() != result_types.len() {
@@ -581,7 +714,11 @@ impl<'a> FunctionLowerer<'a> {
         merged_binding_names.sort();
 
         self.bindings = outer_bindings;
+        let mut covered_binding_names = HashSet::new();
         for name in merged_binding_names {
+            if covered_binding_names.contains(&name) {
+                continue;
+            }
             let Some(then_binding) = then_bindings.get(&name).cloned() else {
                 continue;
             };
@@ -596,6 +733,7 @@ impl<'a> FunctionLowerer<'a> {
                 else_block,
                 location,
             )? {
+                covered_binding_names.extend(self.bind_joined_struct_array_leaves(&name, &binding));
                 self.bindings.insert(name, binding);
             }
         }
@@ -638,6 +776,33 @@ impl<'a> FunctionLowerer<'a> {
         else_block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<Option<Binding>, MirLoweringError> {
+        if let Some(binding) = self.join_scalar_references(
+            &then_binding,
+            &else_binding,
+            then_block,
+            else_block,
+            location,
+        )? {
+            return Ok(Some(binding));
+        }
+        if let Some(binding) = self.join_array_references(
+            &then_binding,
+            &else_binding,
+            then_block,
+            else_block,
+            location,
+        )? {
+            return Ok(Some(binding));
+        }
+        if let Some(binding) = self.join_struct_array_references(
+            &then_binding,
+            &else_binding,
+            then_block,
+            else_block,
+            location,
+        )? {
+            return Ok(Some(binding));
+        }
         match (then_binding, else_binding) {
             (Binding::Local(then_local, then_ty), Binding::Local(else_local, else_ty)) => self
                 .reconcile_branch_scalar(
@@ -645,26 +810,6 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 )
                 .map(|binding| binding.map(|(local, ty)| Binding::Local(local, ty))),
-            (
-                Binding::Array(then_local, then_element, then_len),
-                Binding::Array(else_local, else_element, else_len),
-            ) if then_element == else_element
-                && then_len == else_len
-                && self.local_types_match(then_local, else_local) =>
-            {
-                self.copy_branch_local(else_block, then_local, else_local, location);
-                Ok(Some(Binding::Array(then_local, then_element, then_len)))
-            }
-            (
-                Binding::Slice(then_local, then_element, then_access),
-                Binding::Slice(else_local, else_element, else_access),
-            ) if then_element == else_element
-                && then_access == else_access
-                && self.local_types_match(then_local, else_local) =>
-            {
-                self.copy_branch_local(else_block, then_local, else_local, location);
-                Ok(Some(Binding::Slice(then_local, then_element, then_access)))
-            }
             (Binding::Tuple(then_values), Binding::Tuple(else_values))
                 if then_values.len() == else_values.len()
                     && then_values.iter().zip(&else_values).all(
@@ -699,86 +844,59 @@ impl<'a> FunctionLowerer<'a> {
                 Binding::TupleSliceElementAlias(then_values),
                 Binding::TupleSliceElementAlias(else_values),
             ) if then_values.len() == else_values.len()
-                && then_values.iter().zip(&else_values).all(
-                    |((then_slice, then_ty, then_index), (else_slice, else_ty, else_index))| {
-                        then_ty == else_ty
-                            && self.local_types_match(*then_slice, *else_slice)
-                            && self.local_types_match(*then_index, *else_index)
-                    },
-                ) =>
+                && then_values
+                    .iter()
+                    .zip(&else_values)
+                    .all(|((_, then_ty, _), (_, else_ty, _))| then_ty == else_ty) =>
             {
-                for ((then_slice, _, then_index), (else_slice, _, else_index)) in
-                    then_values.iter().zip(&else_values)
+                let mut joined = Vec::with_capacity(then_values.len());
+                for ((then_slice, element, then_index), (else_slice, _, else_index)) in
+                    then_values.into_iter().zip(else_values)
                 {
-                    self.copy_branch_local(else_block, *then_slice, *else_slice, location);
-                    self.copy_branch_local(else_block, *then_index, *else_index, location);
+                    let Some(Binding::SliceElementAlias {
+                        slice,
+                        element,
+                        index,
+                    }) = self.join_scalar_references(
+                        &Binding::SliceElementAlias {
+                            slice: then_slice,
+                            element,
+                            index: then_index,
+                        },
+                        &Binding::SliceElementAlias {
+                            slice: else_slice,
+                            element,
+                            index: else_index,
+                        },
+                        then_block,
+                        else_block,
+                        location,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    joined.push((slice, element, index));
                 }
-                Ok(Some(Binding::TupleSliceElementAlias(then_values)))
+                Ok(Some(Binding::TupleSliceElementAlias(joined)))
             }
             (
-                Binding::SliceElementAlias {
-                    slice: then_slice,
-                    element: then_element,
-                    index: then_index,
-                },
-                Binding::SliceElementAlias {
-                    slice: else_slice,
-                    element: else_element,
-                    index: else_index,
-                },
-            ) if then_element == else_element
-                && self.local_types_match(then_slice, else_slice)
-                && self.local_types_match(then_index, else_index) =>
-            {
-                self.copy_branch_local(else_block, then_slice, else_slice, location);
-                self.copy_branch_local(else_block, then_index, else_index, location);
-                Ok(Some(Binding::SliceElementAlias {
-                    slice: then_slice,
-                    element: then_element,
-                    index: then_index,
-                }))
-            }
-            (
-                Binding::StructArrayElementAlias {
+                Binding::StructView {
                     struct_name: then_struct,
                 },
-                Binding::StructArrayElementAlias {
+                Binding::StructView {
                     struct_name: else_struct,
                 },
-            ) if then_struct == else_struct => Ok(Some(Binding::StructArrayElementAlias {
+            ) if then_struct == else_struct => Ok(Some(Binding::StructView {
                 struct_name: then_struct,
             })),
             (
-                Binding::StructArrayParameter {
-                    struct_name: then_struct,
-                    length: StructArrayLength::Fixed(then_len),
-                    fields: then_fields,
+                Binding::StructArrayStorage { struct_name, len },
+                Binding::StructArrayStorage {
+                    struct_name: other_struct,
+                    len: other_len,
                 },
-                Binding::StructArrayParameter {
-                    struct_name: else_struct,
-                    length: StructArrayLength::Fixed(else_len),
-                    fields: else_fields,
-                },
-            ) if then_struct == else_struct
-                && then_len == else_len
-                && then_fields.len() == else_fields.len()
-                && then_fields.iter().zip(&else_fields).all(
-                    |((then_name, then_local, then_ty), (else_name, else_local, else_ty))| {
-                        then_name == else_name
-                            && then_ty == else_ty
-                            && self.local_types_match(*then_local, *else_local)
-                    },
-                ) =>
-            {
-                for ((_, then_local, _), (_, else_local, _)) in then_fields.iter().zip(&else_fields)
-                {
-                    self.copy_branch_local(else_block, *then_local, *else_local, location);
-                }
-                Ok(Some(Binding::StructArrayParameter {
-                    struct_name: then_struct,
-                    length: StructArrayLength::Fixed(then_len),
-                    fields: then_fields,
-                }))
+            ) if struct_name == other_struct && len == other_len => {
+                Ok(Some(Binding::StructArrayStorage { struct_name, len }))
             }
             _ => Ok(None),
         }

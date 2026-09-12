@@ -179,6 +179,10 @@ pub fn analyze_effects(program: &Program) -> EffectAnalysis {
                         reads: true,
                         writes: true,
                     },
+                    crate::PassingMode::ResultReference => ReferenceEffects {
+                        reads: false,
+                        writes: true,
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -565,8 +569,7 @@ fn collect_block_resource_writes(
                     output,
                 )?;
             }
-            StatementKind::SliceFill { destination, .. }
-            | StatementKind::SliceCopy { destination, .. } => {
+            StatementKind::SliceFill { destination, .. } => {
                 mark_value_resource_write(
                     *destination,
                     aliases,
@@ -574,6 +577,17 @@ fn collect_block_resource_writes(
                     "slice write",
                     output,
                 )?;
+            }
+            StatementKind::SliceCopy { copies, .. } => {
+                for copy in copies {
+                    mark_value_resource_write(
+                        copy.destination,
+                        aliases,
+                        unsupported_results,
+                        "slice write",
+                        output,
+                    )?;
+                }
             }
             StatementKind::Call {
                 function: callee,
@@ -1225,8 +1239,9 @@ fn analyze_range_block(
                     record_range(&mut summaries.locals[result.index()], range);
                 }
                 for (index, argument) in args.iter().enumerate() {
-                    if context.program.functions[callee.index()].params[index].mode
-                        == crate::PassingMode::ReadWriteReference
+                    if context.program.functions[callee.index()].params[index]
+                        .mode
+                        .is_writable_reference()
                     {
                         if let Some(local) = argument_local(argument) {
                             let range = context.function.locals[local.index()]
@@ -1358,7 +1373,8 @@ fn range_of_rvalue(
             0,
             i64::from(program.config.block_size.saturating_sub(1)),
         ),
-        Rvalue::BufferLen(_)
+        Rvalue::NormalizeIndex { .. }
+        | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
@@ -1501,8 +1517,9 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
                     insert_range_mutation(mutated, *local);
                 }
                 for (index, argument) in args.iter().enumerate() {
-                    if program.functions[function.index()].params[index].mode
-                        == crate::PassingMode::ReadWriteReference
+                    if program.functions[function.index()].params[index]
+                        .mode
+                        .is_writable_reference()
                     {
                         if let Some(local) = argument_local(argument) {
                             insert_range_mutation(mutated, local);
@@ -1562,7 +1579,10 @@ fn scan_block(
                     .delegates
                     .get(delegate.index())
                     .is_some_and(|delegate| {
-                        delegate.params.iter().any(|param| {
+                        delegate.schema.params.iter().any(|param| matches!(&param.ty,
+                            onda_processor_abi::payload::PayloadType::Slice { element }
+                                if matches!(element.as_ref(), onda_processor_abi::payload::PayloadType::Struct { .. })
+                        )) || delegate.params.iter().any(|param| {
                             matches!(
                                 program.types.get(param.ty.index()),
                                 Some(Type::Array { .. })
@@ -1570,9 +1590,8 @@ fn scan_block(
                         })
                     })
                 {
-                    // Fixed-array publications accept evaluated slice values.
-                    // Backends verify their runtime length before copying the
-                    // descriptor's fixed element count.
+                    // Publications check fixed array lengths and the relationship
+                    // between a struct slice's logical length and leaf tensors.
                     effects.may_fail = true;
                 }
             }
@@ -1641,15 +1660,19 @@ fn scan_block(
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_value(*destination, effects);
             }
-            StatementKind::SliceCopy {
-                destination,
-                source,
-            } => {
-                effects.reads.insert(MemoryRegionSet::INDIRECT);
-                effects.writes.insert(MemoryRegionSet::INDIRECT);
-                scan_value(*destination, effects);
-                scan_value(*source, effects);
-                effects.may_fail = true;
+            StatementKind::SliceCopy { copies, preflight } => {
+                effects.may_fail |=
+                    !copies.is_empty() && *preflight == crate::SliceCopyPreflight::Required;
+                for crate::SliceCopy {
+                    destination,
+                    source,
+                } in copies
+                {
+                    effects.reads.insert(MemoryRegionSet::INDIRECT);
+                    effects.writes.insert(MemoryRegionSet::INDIRECT);
+                    scan_value(*destination, effects);
+                    scan_value(*source, effects);
+                }
             }
             StatementKind::If {
                 condition,
@@ -1710,6 +1733,15 @@ fn scan_rvalue(
         Rvalue::ProcessFrame { offset } => {
             scan_value(*offset, effects);
             effects.may_fail = true;
+        }
+        Rvalue::NormalizeIndex {
+            index,
+            length,
+            bounds,
+        } => {
+            scan_value(*index, effects);
+            scan_value(*length, effects);
+            mark_dynamic_bounds(*bounds, effects);
         }
         Rvalue::InputLoad {
             element,
@@ -1781,9 +1813,19 @@ fn scan_rvalue(
             start,
             len,
             bounds,
-            ..
+            access,
         } => {
             scan_slice_source(source, effects);
+            // Descriptor stores no longer name their originating parameter.
+            // Preserve its writable contract when taking that address, including
+            // scalar leaves selected by aggregate branch joins.
+            if *access == crate::AccessMode::ReadWrite {
+                if let SliceSource::Place(place) = source {
+                    if matches!(place.base, PlaceBase::Parameter(_)) {
+                        scan_place(place, Access::Write, effects);
+                    }
+                }
+            }
             scan_value(*start, effects);
             scan_value(*len, effects);
             mark_checked_bounds(*bounds, effects);
@@ -2374,6 +2416,7 @@ mod tests {
             })
             .collect();
         program.interface.events.push(crate::Event {
+            schema: Default::default(),
             name: "event".to_owned(),
             params: Vec::new(),
             handler: FunctionId::new(5),
@@ -2739,6 +2782,32 @@ mod tests {
                 },
             )
         };
+        let slice_copy = |name: &str, preflight| {
+            let mut function = function(name, Vec::new(), Block::default());
+            function.locals.extend([
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+            ]);
+            function
+                .body
+                .statements
+                .push(statement(StatementKind::SliceCopy {
+                    copies: vec![crate::SliceCopy {
+                        destination: Value::Local(LocalId::new(0)),
+                        source: Value::Local(LocalId::new(1)),
+                    }],
+                    preflight,
+                }));
+            function
+        };
 
         let mut program = Program::new(
             CompileConfig {
@@ -2768,6 +2837,11 @@ mod tests {
             clamped_slice,
             call("calls_float_divide", 0),
             call("calls_integer_divide", 1),
+            slice_copy("checked_slice_copy", crate::SliceCopyPreflight::Required),
+            slice_copy(
+                "proven_slice_copy",
+                crate::SliceCopyPreflight::ProvenUnnecessary,
+            ),
         ];
 
         let analysis = analyze_effects(&program);
@@ -2778,6 +2852,8 @@ mod tests {
         assert!(analysis.function(FunctionId::new(4)).may_fail);
         assert!(!analysis.function(FunctionId::new(5)).may_fail);
         assert!(analysis.function(FunctionId::new(6)).may_fail);
+        assert!(analysis.function(FunctionId::new(7)).may_fail);
+        assert!(!analysis.function(FunctionId::new(8)).may_fail);
     }
 
     #[test]

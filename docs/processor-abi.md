@@ -68,7 +68,7 @@ onda_process(
 ) -> i32
 
 onda_event_N(
-  payload: Ptr,
+  input: Ptr,  // const EventInput*
   params: Ptr,
   state: Ptr,
   buffers: Ptr,
@@ -78,6 +78,29 @@ onda_event_N(
   output: Ptr,
 ) -> i32
 ```
+
+Processor ABI and descriptor version 6 require an `EventInput` descriptor for every event:
+
+```c
+struct EventInput {
+  const uint8_t *payload;
+  uint32_t payload_bytes;
+  uint8_t *workspace;
+  uint32_t workspace_capacity_bytes;
+};
+```
+
+It uses target C layout (16 bytes on wasm32, 32 bytes on native 64-bit targets). The descriptor
+itself is required even for an empty payload. Workspace starts at an eight-byte-aligned address;
+its capacity is provisioned by the host before realtime execution. Input, workspace, descriptor,
+state, parameters, and output storage are disjoint for the call. Native callers supply valid memory
+regions; wasm entry points also check regions against linear-memory bounds.
+
+Before any handler or output access, generated code validates all lengths, checked byte extents,
+exact input consumption, alignment, and workspace capacity. Rejection returns status `2` without
+changing workspace, state, or output records. Accepted input is copied into aligned native tensors;
+bools become zero or one and ranged integers are normalized before observation. Status `1` means
+execution failed after entry and requires the usual instance recovery. Neither path allocates.
 
 There is one `onda_event_N` for each declared event, in metadata order. The current ABI permits one
 public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
@@ -89,7 +112,7 @@ continuations. Preserve-pinned initialization skips those guarded declarations a
 existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
 not transactional: a host that needs rollback must provide that policy itself.
 
-Processor ABI version 5 introduces the named initialization mode, supplies current external-buffer
+The initialization interface uses the named initialization mode, supplies current external-buffer
 descriptors to initialization, and adds one optional `ExecutionOutput` to init, process, and event
 entries. Its independently optional print and delegate batches share one call-local sequence so
 hosts can preserve source order across both streams. The instance-level C and WebAssembly host APIs
@@ -134,9 +157,8 @@ overflow_count: u32
 
 The fixed header of every contiguous record is three `u32` values followed immediately by payload
 bytes. A delegate record stores declaration-order delegate index, payload byte count, and call-local
-sequence. Scalar and
-fixed arrays are packed in parameter order; each slice is an `i32` count followed by contiguous
-elements. The descriptor's `metadata.delegates` supplies its layout.
+sequence. Delegate payloads use the recursive schema described below, in little-endian wire order.
+Record headers retain the artifact target's byte order.
 
 A print record stores log-site index, payload byte count, and the same call-local sequence. Its
 payload contains only the site's
@@ -152,10 +174,11 @@ There is no exact whole-batch size because occurrence counts, delegate selection
 may depend on runtime control flow. Capacity is a host policy, and `overflow_count` reports when it
 was insufficient.
 
-Before every init, process, or input-event entry, the host resets the counters of each supplied
-batch and resets `next_sequence` to zero. Publications into either present batch consume that shared
-counter. A complete record is appended only when it fits. Otherwise it is discarded whole and that
-batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
+Before every init or process entry, the host resets the counters of each supplied batch and resets
+`next_sequence` to zero. An input-event entry performs that reset itself after successful preflight,
+so rejected input preserves existing records. Publications into either present batch consume the
+shared counter. A complete record is appended only when it fits. Otherwise it is discarded whole
+and that batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
 batch, or storage is neutral and does not count overflow. Generated execution failure clears
 delegate results but retains print records and overflow already produced, because they may diagnose
 the failure. Storage
@@ -287,7 +310,8 @@ host passes null exactly when the corresponding surface is absent:
 - `state` when `runtime.state_size_bytes` is zero;
 - `inputs` or `outputs` when the corresponding flattened metadata slot count is zero;
 - all four external-buffer table pointers when `metadata.buffers` is empty;
-- an event's `payload` when that event's `payload_size_bytes` is zero.
+- `EventInput.payload` when its byte count is zero, and workspace when its required size is zero.
+  The `EventInput` descriptor itself is always present.
 
 A declared surface is not absent merely because the application does not use it. Every declared
 input/output slot requires valid compile-block storage. A non-empty buffer declaration list
@@ -313,10 +337,26 @@ audio indices from `start_frame`.
 
 ## Parameters, events, delegates, buffers, and control outputs
 
-Parameter and event-payload storage follows the exact offsets and scalar shapes in the paired
-descriptor. A dynamic event slice contains its scalar data after the fixed payload header and stores
-the generated offset and length in that header. Event handlers receive the same parameter, state,
-and buffer bindings as processing.
+Parameter storage follows the paired descriptor's offsets and scalar shapes. Every event and
+delegate also carries a recursive `schema`: named parameters with scalar, primitive tuple, nominal
+struct, fixed array, or top-level slice types. Fields include constant defaults and integer domains.
+The schema is the authority for host encoding and decoding; flattened executable parameters are
+validated against it.
+
+Wire payloads are packed little-endian in parameter and depth-first field order. Every primitive
+leaf is one contiguous tensor with outer array axes before inner field-array axes. A runtime slice
+contributes one signed `i32` logical length, then its field tensors; there is no padding or separate
+length per struct field. Prepared workspace inserts scalar alignment padding and uses native byte
+order. Its required size is computed by the shared payload planner, independently of wire size.
+
+The Rust `onda_processor_abi::payload::PayloadPlan` and JavaScript `PayloadPlan` expose recursive
+host codecs and checked sizing. Construct plans and encode logical host values off the rendering
+thread. Rust instances initially reserve fixed requirements and at least 64 KiB for dynamic events;
+`Instance::reserve_event_workspace` and `onda_instance_reserve_event_workspace` can increase this
+capacity outside realtime execution, using the instance allocator. WebAudio transfers encoded
+bytes to its worklet and uses the configured event capacity without memory growth during dispatch.
+Internal event/delegate forwarding borrows read-only tensors without another payload-sized copy;
+host publication writes a complete packed record or drops it whole on overflow.
 
 Descriptor format version 2 gives every parameter `range_min_repr`, `range_max_repr`, and
 `param_control`. `param_control` is null for a parameter without a numeric host-control domain;

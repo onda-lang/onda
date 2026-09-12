@@ -161,6 +161,7 @@ struct RunApp {
     load_error: Option<String>,
     project_notice: Option<Result<String, String>>,
     event_inputs: HashMap<String, Vec<Value>>,
+    event_json_drafts: HashMap<String, Vec<String>>,
     event_input_signatures: HashMap<String, Vec<EventArgSignature>>,
     number_drafts: HashMap<String, f64>,
     current_icon_dark: Option<bool>,
@@ -185,6 +186,7 @@ impl RunApp {
             load_error: None,
             project_notice: None,
             event_inputs: HashMap::new(),
+            event_json_drafts: HashMap::new(),
             event_input_signatures: HashMap::new(),
             number_drafts: HashMap::new(),
             current_icon_dark,
@@ -446,6 +448,7 @@ impl RunApp {
     fn sync_event_inputs(&mut self) {
         let Some(controller) = self.controller.as_ref() else {
             self.event_inputs.clear();
+            self.event_json_drafts.clear();
             self.event_input_signatures.clear();
             self.number_drafts.clear();
             return;
@@ -470,6 +473,7 @@ impl RunApp {
                     .get(&name)
                     .is_some_and(|existing| existing.len() == values.len());
             if !preserves_inputs {
+                self.event_json_drafts.remove(&name);
                 self.event_inputs.insert(name.clone(), values);
             }
             self.event_input_signatures.insert(name, signature);
@@ -487,6 +491,8 @@ impl RunApp {
             .retain(|name, _| valid_names.iter().any(|valid| valid == name));
         self.event_input_signatures
             .retain(|name, _| valid_names.iter().any(|valid| valid == name));
+        self.event_json_drafts
+            .retain(|name, _| valid_names.iter().any(|valid| valid == name));
         let valid_params = self
             .controller
             .as_ref()
@@ -502,6 +508,7 @@ impl RunApp {
 
     fn reset_event_inputs(&mut self) {
         self.event_inputs.clear();
+        self.event_json_drafts.clear();
         self.event_input_signatures.clear();
         self.sync_event_inputs();
     }
@@ -532,6 +539,7 @@ impl RunApp {
         self.load_error = None;
         self.project_notice = None;
         self.event_inputs.clear();
+        self.event_json_drafts.clear();
         self.event_input_signatures.clear();
         self.number_drafts.clear();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(run_window_title(None)));
@@ -856,6 +864,20 @@ impl RunApp {
                     .collect()
             });
 
+            let drafts = self
+                .event_json_drafts
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    values
+                        .iter()
+                        .map(|value| serde_json::to_string_pretty(value).expect("JSON value"))
+                        .collect()
+                });
+            let valid = args.iter().enumerate().all(|(index, arg)| {
+                !structured_event_type(arg_type(arg))
+                    || serde_json::from_str::<Value>(&drafts[index]).is_ok()
+            });
+
             egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
@@ -887,7 +909,7 @@ impl RunApp {
                                 |ui| {
                                     if ui
                                         .add_enabled(
-                                            connected,
+                                            connected && valid,
                                             run_button(egui::RichText::new("Trigger").strong())
                                                 .min_size(egui::vec2(72.0, 30.0)),
                                         )
@@ -908,13 +930,16 @@ impl RunApp {
                         ui.separator();
                         ui.add_space(6.0);
                         for (index, arg) in args.iter().enumerate() {
-                            render_event_arg_editor(
-                                ui,
-                                arg_name(arg).unwrap_or("arg"),
-                                arg_type(arg),
-                                &mut values[index],
-                                connected,
-                            );
+                            ui.push_id((name, index, arg_type(arg)), |ui| {
+                                render_event_arg_editor(
+                                    ui,
+                                    arg_name(arg).unwrap_or("arg"),
+                                    arg_type(arg),
+                                    &mut values[index],
+                                    &mut drafts[index],
+                                    connected,
+                                );
+                            });
                             if index + 1 < args.len() {
                                 ui.add_space(1.0);
                             }
@@ -1779,13 +1804,50 @@ fn ellipsize_middle(text: &str, max_chars: usize) -> String {
     format!("{head}...{tail}")
 }
 
+fn structured_event_type(ty: &str) -> bool {
+    !matches!(
+        ty.split('[').next().unwrap_or(ty),
+        "f32" | "f64" | "i32" | "i64" | "bool"
+    )
+}
+
 fn render_event_arg_editor(
     ui: &mut egui::Ui,
     label: &str,
     ty: &str,
     value: &mut Value,
+    draft: &mut String,
     connected: bool,
 ) {
+    if structured_event_type(ty) {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!("{label}: {ty}"))
+                .strong()
+                .monospace(),
+        )
+        .id_salt("structured-event-argument")
+        .default_open(true)
+        .show(ui, |ui| {
+            let changed = ui
+                .add_enabled_ui(connected, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(draft)
+                            .code_editor()
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                })
+                .inner;
+            match serde_json::from_str::<Value>(draft) {
+                Ok(parsed) if changed => *value = parsed,
+                Err(_) => {
+                    ui.colored_label(ui.visuals().error_fg_color, "Enter a valid JSON value");
+                }
+                _ => {}
+            }
+        });
+        return;
+    }
     if is_array_type(ty) {
         render_event_array_editor(ui, label, ty, value, connected);
         return;
@@ -1947,6 +2009,24 @@ fn render_event_scalar_editor(
             .inner;
         if changed {
             *value = Value::Bool(checked);
+        }
+        return;
+    }
+
+    if ty == "i64" {
+        let mut integer = value
+            .as_str()
+            .and_then(|text| text.parse::<i64>().ok())
+            .or_else(|| value.as_i64())
+            .unwrap_or(0);
+        if ui
+            .add_enabled_ui(connected, |ui| {
+                ui.add_sized([width, 24.0], egui::DragValue::new(&mut integer))
+                    .changed()
+            })
+            .inner
+        {
+            *value = Value::String(integer.to_string());
         }
         return;
     }

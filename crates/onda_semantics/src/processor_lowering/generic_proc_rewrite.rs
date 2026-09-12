@@ -1,7 +1,7 @@
 use super::*;
 use onda_frontend::{DeclRange, Span};
 
-pub(super) fn rewrite_and_materialize_generic_processors(
+pub(crate) fn rewrite_and_materialize_generic_processors(
     program: &mut Program,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -16,6 +16,10 @@ pub(super) fn rewrite_and_materialize_generic_processors(
     if initial_proc_defs.is_empty() {
         return;
     }
+    let initial_proc_delegates = initial_proc_defs
+        .iter()
+        .map(|proc| (proc.name.clone(), proc.delegates.clone()))
+        .collect::<HashMap<_, _>>();
 
     let mut generic_proc_templates = HashMap::<String, ProcessorDef>::new();
     for p in &initial_proc_defs {
@@ -59,15 +63,37 @@ pub(super) fn rewrite_and_materialize_generic_processors(
     }
 
     let mut generated_specializations = HashMap::<String, ProcessorDef>::new();
-    let top_level_seed = generic_inference_seed_for_top_level(&program.blocks);
-    let empty_seed = GenericInferenceLocals::default();
+    let inference_facts = generic_inference_facts(
+        program
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Def(def) => Some(def),
+                _ => None,
+            })
+            .chain(program.blocks.iter().flat_map(|block| match block {
+                Block::Struct(strukt) => strukt.methods.iter(),
+                _ => [].iter(),
+            }))
+            .chain(program.blocks.iter().flat_map(|block| match block {
+                Block::Proc(proc) => proc.local_defs.iter(),
+                _ => [].iter(),
+            })),
+        program.blocks.iter().filter_map(|block| match block {
+            Block::Struct(strukt) => Some(strukt),
+            _ => None,
+        }),
+    );
+    let top_level_seed =
+        generic_inference_seed_for_top_level(&program.blocks, inference_facts.clone());
+    let empty_seed = GenericInferenceLocals::with_facts(inference_facts.clone());
     for block in &mut program.blocks {
         match block {
             Block::Struct(s) => {
                 let struct_ns = namespace_of_symbol(&s.name);
                 for field in &mut s.fields {
                     if let Some(default) = &mut field.default {
-                        let mut locals = GenericInferenceLocals::default();
+                        let mut locals = empty_seed.clone();
                         rewrite_generic_proc_ctor_expr(
                             default,
                             &generic_proc_templates,
@@ -79,24 +105,26 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     }
                 }
                 for method in &mut s.methods {
+                    let method_seed = generic_inference_seed_for_function(method, &empty_seed);
                     rewrite_generic_proc_ctor_stmt_list(
                         &mut method.body,
                         &generic_proc_templates,
                         &mut generated_specializations,
                         errors,
-                        &empty_seed,
+                        &method_seed,
                         &struct_ns,
                     );
                 }
             }
             Block::Def(d) => {
                 let def_ns = namespace_of_symbol(&d.name);
+                let def_seed = generic_inference_seed_for_function(d, &top_level_seed);
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut d.body,
                     &generic_proc_templates,
                     &mut generated_specializations,
                     errors,
-                    &empty_seed,
+                    &def_seed,
                     &def_ns,
                 );
             }
@@ -105,7 +133,7 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     continue;
                 }
                 let proc_ns = namespace_of_symbol(&p.name);
-                let proc_seed = generic_inference_seed_for_processor(p);
+                let proc_seed = generic_inference_seed_for_processor(p, inference_facts.clone());
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut p.init,
                     &generic_proc_templates,
@@ -139,12 +167,48 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     &proc_ns,
                 );
                 for event in &mut p.events {
+                    let event_seed = generic_inference_seed_for_event(event, &proc_seed);
                     rewrite_generic_proc_ctor_stmt_list(
                         &mut event.body,
                         &generic_proc_templates,
                         &mut generated_specializations,
                         errors,
+                        &event_seed,
+                        &proc_ns,
+                    );
+                }
+                let proc_names = initial_proc_delegates
+                    .keys()
+                    .chain(generated_specializations.keys())
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                let children = child_proc_instances(&p.init.body, &proc_names);
+                for when in &mut p.whens {
+                    let (delegate, takes_index) = resolve_generic_when_delegate(
+                        when,
+                        &p.delegates,
+                        when.target
+                            .receiver
+                            .first()
+                            .filter(|_| when.target.receiver.len() == 1)
+                            .and_then(|receiver| children.get(receiver))
+                            .map(|child| (child.proc_name.as_str(), child.is_array)),
+                        None,
+                        &initial_proc_delegates,
+                        &generated_specializations,
+                    );
+                    let when_seed = generic_inference_seed_for_when(
+                        when,
+                        delegate.as_ref(),
+                        takes_index,
                         &proc_seed,
+                    );
+                    rewrite_generic_proc_ctor_stmt_list(
+                        &mut when.body,
+                        &generic_proc_templates,
+                        &mut generated_specializations,
+                        errors,
+                        &when_seed,
                         &proc_ns,
                     );
                 }
@@ -159,12 +223,13 @@ pub(super) fn rewrite_and_materialize_generic_processors(
                     );
                 }
                 for def in &mut p.local_defs {
+                    let def_seed = generic_inference_seed_for_function(def, &proc_seed);
                     rewrite_generic_proc_ctor_stmt_list(
                         &mut def.body,
                         &generic_proc_templates,
                         &mut generated_specializations,
                         errors,
-                        &proc_seed,
+                        &def_seed,
                         &proc_ns,
                     );
                 }
@@ -219,8 +284,21 @@ pub(super) fn rewrite_and_materialize_generic_processors(
             }
             Block::Events(events) => {
                 for event in events {
+                    let event_seed = generic_inference_seed_for_event(event, &top_level_seed);
                     rewrite_generic_proc_ctor_stmt_list(
                         &mut event.body,
+                        &generic_proc_templates,
+                        &mut generated_specializations,
+                        errors,
+                        &event_seed,
+                        "",
+                    );
+                }
+            }
+            Block::Tasks(tasks) => {
+                for task in &mut tasks.tasks {
+                    rewrite_generic_proc_ctor_stmt_list(
+                        &mut task.body,
                         &generic_proc_templates,
                         &mut generated_specializations,
                         errors,
@@ -232,10 +310,61 @@ pub(super) fn rewrite_and_materialize_generic_processors(
             _ => {}
         }
     }
+    let proc_names = initial_proc_delegates
+        .keys()
+        .chain(generated_specializations.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let top_children = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Init(init) => Some(child_proc_instances(&init.body, &proc_names)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let top_delegates = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Delegates(delegates) => Some(delegates.delegates.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    for when in program.blocks.iter_mut().filter_map(|block| match block {
+        Block::When(when) => Some(when),
+        _ => None,
+    }) {
+        let (delegate, takes_index) = resolve_generic_when_delegate(
+            when,
+            &top_delegates,
+            when.target
+                .receiver
+                .first()
+                .filter(|_| when.target.receiver.len() == 1)
+                .and_then(|receiver| top_children.get(receiver))
+                .map(|child| (child.proc_name.as_str(), child.is_array)),
+            None,
+            &initial_proc_delegates,
+            &generated_specializations,
+        );
+        let when_seed =
+            generic_inference_seed_for_when(when, delegate.as_ref(), takes_index, &top_level_seed);
+        rewrite_generic_proc_ctor_stmt_list(
+            &mut when.body,
+            &generic_proc_templates,
+            &mut generated_specializations,
+            errors,
+            &when_seed,
+            "",
+        );
+    }
     finalize_generated_generic_proc_specializations(
         &generic_proc_templates,
         &mut generated_specializations,
         errors,
+        &empty_seed,
+        &initial_proc_delegates,
     );
 
     program
@@ -383,9 +512,9 @@ fn validate_stmt_type_args(
             validate_expr_type_args(&decl.expr, allowed, proc, context, errors);
         }
         Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
+            target.visit_selectors(|index| {
                 validate_expr_type_args(index, allowed, proc, context, errors);
-            }
+            });
             validate_expr_type_args(expr, allowed, proc, context, errors);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {

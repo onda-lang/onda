@@ -1,5 +1,6 @@
 // Shared browser adapter for the transport-neutral Onda run view.
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
+import { canonicalF32Number } from "@onda-lang/processor-abi";
 import { partitionHostEvents } from "./midi.js";
 
 export class BrowserRunViewHost {
@@ -406,25 +407,19 @@ export function mergeEvents(events, existing) {
     return {
       index,
       name: event.name,
-      args: (event.params ?? []).map((param, argIndex) => {
+      args: event.schema.params.map((param, argIndex) => {
         const prior = previous?.args.find((arg) => arg.name === param.name);
+        const ty = param.ty;
+        const scalar = ty.kind === "scalar" ? ty.encoding : ty.element?.encoding ?? null;
         const next = {
           index: argIndex,
           name: param.name,
-          type: param.type_repr,
-          scalar: param.scalar,
-          arrayLength: param.is_slice ? null : param.array_len,
-          isSlice: param.is_slice === true,
-          default: param.is_slice
-            ? []
-            : param.array_len === 1
-              ? decodeEventScalarRepr(param.scalar, param.default_reprs?.[0])
-              : Array.from(
-                { length: param.array_len },
-                (_, valueIndex) =>
-                  decodeEventScalarRepr(param.scalar, param.default_reprs?.[valueIndex])
-                  ?? (param.scalar === "bool" ? false : param.scalar === "i64" ? "0" : 0),
-              ),
+          type: payloadTypeName(ty),
+          scalar,
+          arrayLength: ty.kind === "slice" ? null : ty.kind === "array" ? ty.len : 1,
+          isSlice: ty.kind === "slice",
+          default: payloadDefault(ty, param.default),
+          ...(scalar === null ? { shape: JSON.stringify(ty) } : {}),
         };
         return {
           ...next,
@@ -453,6 +448,7 @@ function paramShapeMatches(left, right) {
 
 function eventArgShapeMatches(left, right) {
   return left.type === right.type
+    && left.shape === right.shape
     && left.scalar === right.scalar
     && left.arrayLength === right.arrayLength
     && left.isSlice === right.isSlice
@@ -460,9 +456,29 @@ function eventArgShapeMatches(left, right) {
 }
 
 function eventDefaultsMatch(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right)) return left === right;
-  return left.length === right.length
-    && left.every((value, index) => value === right[index]);
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function payloadTypeName(ty) {
+  switch (ty.kind) {
+    case "scalar": return ty.encoding;
+    case "struct": return ty.name;
+    case "tuple": return `(${ty.elements.map(payloadTypeName).join(", ")})`;
+    case "array": return `${payloadTypeName(ty.element)}[${ty.len}]`;
+    case "slice": return `${payloadTypeName(ty.element)}[]`;
+  }
+}
+
+function payloadDefault(ty, value) {
+  switch (ty.kind) {
+    case "scalar": return decodeEventScalarRepr(ty.encoding, value)
+      ?? (ty.encoding === "bool" ? false : ty.encoding === "i64" ? "0" : 0);
+    case "struct": return Object.fromEntries(ty.fields.map((field, index) =>
+      [field.name, payloadDefault(field.ty, value?.[index] ?? field.default)]));
+    case "tuple": return ty.elements.map((element, index) => payloadDefault(element, value?.[index]));
+    case "array": return Array.from({ length: ty.len }, (_, index) => payloadDefault(ty.element, value?.[index]));
+    case "slice": return [];
+  }
 }
 
 function initialParamValue(param) {
@@ -473,16 +489,7 @@ function initialParamValue(param) {
 }
 
 function initialEventArgValue(arg) {
-  if (
-    arg.isSlice
-    || (typeof arg.arrayLength === "number" && arg.arrayLength !== 1)
-    || (typeof arg.type === "string" && /\[[0-9]*\]$/.test(arg.type))
-  ) {
-    return Array.isArray(arg.default) ? [...arg.default] : [];
-  }
-  if (arg.type === "bool") return Boolean(arg.default);
-  if (arg.type === "i64") return typeof arg.default === "string" ? arg.default : "0";
-  return Number.isFinite(Number(arg.default)) ? Number(arg.default) : 0;
+  return structuredClone(arg.default ?? (arg.type === "bool" ? false : arg.type === "i64" ? "0" : 0));
 }
 
 function decodeEventScalarRepr(type, value) {
@@ -496,7 +503,7 @@ function decodeScalarRepr(type, value) {
   if (type !== "f32" && type !== "f64") return Number(value);
   if (!value.startsWith("0x")) {
     const decoded = Number(value);
-    return type === "f32" ? Math.fround(decoded) : decoded;
+    return type === "f32" ? canonicalF32Number(decoded) : decoded;
   }
   const width = type === "f32" ? 32 : 64;
   const digits = value.startsWith("0x") ? value.slice(2) : "";
@@ -505,7 +512,7 @@ function decodeScalarRepr(type, value) {
   const view = new DataView(bytes);
   if (width === 32) {
     view.setUint32(0, Number.parseInt(digits, 16), false);
-    return view.getFloat32(0, false);
+    return canonicalF32Number(view.getFloat32(0, false));
   }
   view.setBigUint64(0, BigInt(value), false);
   return view.getFloat64(0, false);

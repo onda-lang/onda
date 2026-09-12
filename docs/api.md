@@ -116,9 +116,10 @@ The metadata and binding APIs use these primitive identifiers:
 | `ONDA_PRIMITIVE_I64` | `int64_t` |
 | `ONDA_PRIMITIVE_BOOL` | `uint8_t`, exactly `0` or `1` |
 
-Packed hosted payloads use native byte order and contain no implicit alignment padding. Fixed arrays
-are contiguous. A slice is encoded as a native `int32_t` element count followed by contiguous
-elements.
+Native parameter storage and `onda_param_default_bytes` use native byte order. Event and delegate
+wire payloads contain no implicit alignment padding and use little-endian byte order. Fixed arrays
+are contiguous; a top-level slice is encoded as a little-endian signed `int32_t` element count
+followed by its packed field tensors.
 
 ## Minimal host
 
@@ -375,9 +376,9 @@ persistent snapshot size.
 ### Defaults, ranges, and parameter controls
 
 Input, output, and parameter defaults use `onda_*_has_default` and `onda_*_default_f64`.
-`onda_param_default_bytes` preserves the exact scalar or fixed-array representation and supports a
-size query. Event defaults use `onda_event_param_has_default` and
-`onda_event_param_default_bytes`.
+`onda_param_default_bytes` preserves the exact native scalar or fixed-array representation and
+supports a size query. Event defaults use `onda_event_param_has_default` and
+`onda_event_param_default_bytes`; their packed representation is little-endian event-wire data.
 
 Input, output, and parameter ranges use `onda_*_has_range`, `onda_*_range_min_f64`, and
 `onda_*_range_max_f64`. The parameter-only host-control surface adds:
@@ -425,8 +426,19 @@ scalar from a fixed array of length one. The first slice itself has a fixed offs
 prefix. Every parameter following a slice has a runtime-dependent offset, so the offset query
 returns `-1`; decode sequentially from the preceding slice length instead.
 
-`onda_event_payload_bytes` returns the exact payload size for a fixed event and `-1` for a dynamic
-event. Delegate sizing is described in [Delegates](#delegates).
+These parameter queries describe the flattened executable tensors. For logical structs, tuples,
+nested arrays, field names, defaults, and integer domains, use `onda_event_schema_json` or
+`onda_delegate_schema_json`. Each returns the same recursive `PayloadSchema` JSON carried by a raw
+processor descriptor. Struct values are objects keyed by field name; tuples and arrays are ordered
+sequences. The string is borrowed and remains valid until the program is destroyed.
+
+`onda_event_payload_bytes` returns the exact wire size for a fixed event and `-1` for a dynamic
+event. `onda_event_payload_min_bytes` includes every dynamic slice's four-byte length prefix with
+zero elements. `onda_event_payload_sizes` accepts one signed logical length per top-level slice, in
+declaration order, and returns both the exact packed wire size and the aligned preparation workspace
+size. Allocate the payload using the former and, when increasing the instance's realtime capacity,
+pass the latter to `onda_instance_reserve_event_workspace`. The delegate sizing function follows the
+same rules. Delegate batch capacity is described in [Delegates](#delegates).
 
 ### Print source metadata
 
@@ -452,9 +464,17 @@ collected on success. If initialized creation fails, both output batches are cle
 diagnostic is the only result. Release every successful instance with `onda_instance_destroy`.
 
 `onda_allocator_t` affects only instance-owned runtime storage. Its `alloc` callback runs
-synchronously during creation; no later operation allocates instance storage. `free` may run during
-failed creation or destruction. The context and callbacks must remain valid until every associated
+synchronously during creation and explicit `onda_instance_reserve_event_workspace` calls. Realtime
+dispatch does not allocate. `free` may run during failed creation, reservation, or destruction.
+The context and callbacks must remain valid until every associated
 instance is destroyed and must support the threads/concurrency used by the host.
+
+`onda_instance_reserve_event_workspace(instance, capacity_bytes, out_diag)` provisions aligned
+input preparation storage outside realtime execution. Fixed messages fit the initial capacity;
+dynamic messages start with at least 64 KiB. A request above the current capacity allocates
+replacement storage and frees the old storage; other requests retain it. Reservation can run before
+or after initialization, and allocation failure preserves the existing workspace and processor
+state. Capacity rejection during event dispatch does not invalidate the instance.
 
 ### Initialization
 
@@ -564,7 +584,9 @@ state until successful full initialization or snapshot restoration.
 ## Events
 
 `onda_trigger_event_by_index` validates the packed payload and current buffer descriptors before
-running a top-level event. Unknown event indices are deliberately neutral and return success.
+running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
+insufficient workspace and `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` for handler failure. Unknown
+event indices are deliberately neutral and return success.
 
 `onda_trigger_event_by_index_unchecked` requires successful full initialization and a payload plus
 buffer state satisfying the ABI contract. Like unchecked processing, it may return a positive
@@ -791,6 +813,7 @@ onda_instance_create
 onda_instance_create_initialized
 onda_instance_create_with_allocator
 onda_instance_create_initialized_with_allocator
+onda_instance_reserve_event_workspace
 onda_instance_destroy
 onda_set_param_by_index
 onda_set_param_plain_f64
@@ -868,8 +891,13 @@ onda_control_output_type_bytes
 onda_param_type_bytes
 onda_state_type_bytes
 onda_event_payload_bytes
+onda_event_payload_min_bytes
+onda_event_schema_json
+onda_event_payload_sizes
 onda_delegate_payload_bytes
 onda_delegate_payload_min_bytes
+onda_delegate_schema_json
+onda_delegate_payload_sizes
 onda_delegate_record_bytes
 onda_delegate_record_min_bytes
 onda_event_param_elem_type

@@ -9,15 +9,17 @@ fn long_expression_compiles_on_a_worker_stack() {
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
         .spawn(|| {
-            let expression = std::iter::repeat_n("x", 1024)
+            let expression = std::iter::repeat_n("x", 15_000)
                 .collect::<Vec<_>>()
                 .join(" + ");
-            let parsed = parse_program(&format!(
-                "params:\n  x = 0.1\nsample:\n  out1 = {expression}\n"
-            ))
-            .unwrap();
-            let typed = analyze(parsed).unwrap();
-            lower_program_to_optimized_mir(&typed).unwrap();
+            for source in [
+                format!("def sum(x):\n  return {expression}\nsample:\n  out1 = sum(0.000001)\n"),
+                format!("params:\n  x = 0.000001\nsample:\n  out1 = {expression}\n"),
+            ] {
+                let parsed = parse_program(&source).unwrap();
+                let typed = analyze(parsed).unwrap();
+                lower_program_to_optimized_mir(&typed).unwrap();
+            }
         })
         .unwrap()
         .join()
@@ -1771,10 +1773,12 @@ sample 2:
         "2x interpolation stays static around one explicit sample oversampling loop"
     );
     assert!(
-        process
-            .locals
+        mir.state
             .iter()
-            .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
+            .filter(
+                |slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch
+                    && matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })
+            )
             .count()
             >= 2
     );
@@ -1869,10 +1873,9 @@ sample:
         1,
         "fixed processor oversampling should remain one explicit MIR loop"
     );
-    assert!(step
-        .locals
-        .iter()
-        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. })));
+    assert!(mir.state.iter().any(|slot| slot.persistence
+        == onda_mir::StatePersistence::InstanceScratch
+        && matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
     let dump = format_program(&mir);
     assert!(dump.contains("self.__onda_os_down_out__out1__stage0__a0"));
     assert_eq!(
@@ -2614,8 +2617,6 @@ sample 2:
     let dump = format_program(&mir);
     assert_eq!(dump.matches("load_input ").count(), 2);
     assert_eq!(dump.matches("store_output ").count(), 2);
-    assert!(dump.contains("$oversample.input.pair.current"));
-    assert!(dump.contains("$oversample.output.pair_out.current"));
     assert!(dump.contains("$oversample.input.pair[0].stage0.a0"));
     assert!(dump.contains("$oversample.output.pair_out[1].stage0.a0"));
 }
@@ -2809,19 +2810,20 @@ sample:
         .iter()
         .find(|function| function.name == "local_total")
         .expect("missing local_total function");
-    let arrays = function
+    assert!(function
         .locals
         .iter()
-        .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
-        .count();
-    assert_eq!(arrays, 2);
-
-    let dump = format_program(&mir);
-    assert!(dump.contains("\"inferred\": @"));
-    assert!(dump.contains("\"scratch\": @"));
-    assert!(dump.contains("load %"));
-    assert!(dump.contains("make_slice %"));
-    assert!(dump.contains("slice_copy"));
+        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { .. })));
+    let scratch = mir
+        .state
+        .iter()
+        .filter(|slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch)
+        .collect::<Vec<_>>();
+    assert_eq!(scratch.len(), 2);
+    assert!(scratch
+        .iter()
+        .all(|slot| matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
+    assert!(format_program(&mir).contains("slice_copy"));
 }
 
 #[test]
@@ -2839,40 +2841,17 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_raw_mir(&typed).expect("local array should lower");
-    validate(&mir).expect("local-array MIR should validate");
-
+    let mut mir = lower_program_to_raw_mir(&typed).expect("local array should lower");
+    super::storage::plan_fixed_scratch(&mut mir).expect("fixed scratch should be prepared");
+    validate(&mir).expect("prepared MIR should validate");
     let function = mir
         .functions
         .iter()
         .find(|function| function.name == "first")
-        .expect("missing first function");
-    let scratch = function
-        .locals
-        .iter()
-        .position(|local| local.name.as_deref() == Some("scratch"))
-        .map(|index| LocalId::new(index as u32))
-        .expect("missing scratch local");
-    let initialized_elements = function
-        .body
-        .statements
-        .iter()
-        .filter(|statement| {
-            matches!(
-                statement.kind,
-                StatementKind::Assign {
-                    destination: Place {
-                        base: PlaceBase::Local(local),
-                        ref projections,
-                    },
-                    value: Rvalue::Use(value),
-                } if local == scratch
-                    && projections.len() == 1
-                    && scalar_value_is_all_bits_zero(value)
-            )
-        })
-        .count();
-    assert_eq!(initialized_elements, 4);
+        .unwrap();
+    assert!(function.body.statements.iter().any(|statement| matches!(
+        statement.kind, StatementKind::SliceFill { value, .. } if scalar_value_is_all_bits_zero(value)
+    )), "every invocation must initialize its prepared backing storage");
 }
 
 #[test]
@@ -3203,6 +3182,136 @@ sample:
 }
 
 #[test]
+fn lowers_indexed_struct_array_field_writes_in_every_runtime_region() {
+    let source = r#"
+outs:
+  out1
+
+struct Cell:
+  value: f32
+  taps: f32[2]
+  pair: (f32, i32)
+
+init:
+  state: Cell[2]
+  state[0].value = 1.0
+  state[0].taps[1] = 1.5
+  state[0].pair = (2.0, 3)
+
+block:
+  block_cells: Cell[2]
+  block_cells[0].value = 2.0
+  block_cells[0].taps[1] = 2.5
+
+  sample:
+    sample_cells: Cell[2]
+    sample_cells[0].value = 3.0
+    sample_cells[0].taps = [3.5, 4.5]
+    sample_cells[0].pair = (4.0, 5)
+    state[1].value = sample_cells[0].value
+    out1 = state[0].value + state[1].value + block_cells[0].value
+
+  block_cells[1].value = 4.0
+
+events:
+  reset():
+    event_cells: Cell[2]
+    event_cells[0].value = 5.0
+    event_cells[0].taps[1] = 5.5
+    event_cells[0].pair = (6.0, 7)
+    state[0].value = event_cells[0].value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every region");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("store_slice"));
+    assert!(!dump.contains("IndexedMember"));
+    assert!(!dump.contains("__onda_indexed_selector"));
+}
+
+#[test]
+fn lowers_deeply_nested_local_struct_array_field_writes() {
+    let source = r#"
+outs:
+  out1
+
+struct Leaf:
+  value: f64
+
+struct Branch:
+  leaves: Leaf[4]
+
+struct Trunk:
+  branch: Branch
+
+struct Tree:
+  trunk: Trunk
+
+sample:
+  tree: Tree
+  tree.trunk.branch.leaves[3].value = 0.75
+  out1 = f32(tree.trunk.branch.leaves[3].value)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("deep indexed field write should analyze");
+    let mir = lower_test_program(&typed).expect("deep indexed field write should lower");
+    validate(&mir).expect("deep indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("trunk.branch.leaves.value"));
+    assert!(dump.contains("f64(0.75)"));
+}
+
+#[test]
+fn lowers_local_struct_array_field_writes_in_defs_tasks_and_procs() {
+    let source = r#"
+struct Cell:
+  value: f32
+  taps: f32[2]
+  pair: (f32, i32)
+
+def seed():
+  def_cells: Cell[2]
+  def_cells[0].value = 1.0
+  def_cells[0].taps[1] = 1.5
+  def_cells[0].pair = (2.0, 3)
+  return def_cells[0].value + def_cells[0].taps[1]
+
+task worker():
+  task_cells: Cell[2]
+  task_cells[0].value = 2.0
+  task_cells[0].taps[1] = 2.5
+  task_cells[0].pair = (3.0, 4)
+  yield
+
+proc Writer:
+  sample:
+    proc_cells: Cell[2]
+    proc_taps: f32[2] = [3.5, 4.5]
+    proc_cells[0].value = 3.0
+    proc_cells[0].taps = proc_taps
+    proc_cells[0].pair = (5.0, 6)
+    out1 = proc_cells[0].value + proc_cells[0].taps[1]
+
+init:
+  writer = Writer()
+
+block:
+  await worker()
+
+  sample:
+    out1 = seed() + writer()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every owner");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+}
+
+#[test]
 fn lowers_canonical_nested_struct_array_views_across_state_calls_and_aliases() {
     let source = r#"
 outs:
@@ -3262,11 +3371,18 @@ sample:
     assert!(inspect
         .params
         .iter()
-        .all(|param| param.mode == onda_mir::PassingMode::ReadWriteReference));
+        .all(|param| param.mode == onda_mir::PassingMode::Value
+            && matches!(
+                mir.types[param.ty.index()],
+                MirType::Slice {
+                    access: onda_mir::AccessMode::ReadWrite,
+                    ..
+                }
+            )));
 
     let dump = format_program(&mir);
     assert!(dump.contains("make_slice @p"));
-    assert!(dump.contains("slice_window"));
+    assert!(!dump.contains("slice_window"));
     assert!(dump.contains("load_slice"));
     assert!(dump.contains("store_slice"));
 }
@@ -3322,10 +3438,17 @@ sample:
     assert!(read_cell
         .params
         .iter()
-        .all(|param| param.mode == onda_mir::PassingMode::ReadWriteReference));
+        .all(|param| match mir.types[param.ty.index()] {
+            MirType::Slice {
+                access: onda_mir::AccessMode::ReadOnly,
+                ..
+            } => param.mode == onda_mir::PassingMode::Value,
+            MirType::Scalar(_) => param.mode == onda_mir::PassingMode::ReadOnlyReference,
+            _ => false,
+        }));
 
     let dump = format_program(&mir);
-    assert!(dump.contains("slice_window"));
+    assert!(!dump.contains("slice_window"));
     assert!(dump.contains("place @state"));
     assert!(dump.contains("make_slice @state"));
 }
@@ -3371,10 +3494,14 @@ sample:
 
     let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
     assert!(process.contains("load @state"), "{process}");
-    assert!(process.contains("slice_window"), "{process}");
+    assert!(!process.contains("slice_window"), "{process}");
     assert!(
-        process.contains("place @state3[") && process.contains("] unchecked"),
+        process.contains("slice_element") && process.contains("] unchecked"),
         "{process}"
+    );
+    assert!(
+        !process.contains("slice_copy"),
+        "aggregate arguments must retain references:\n{process}"
     );
     assert!(
         !process.contains("intrinsic range_clamp("),

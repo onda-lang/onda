@@ -1,16 +1,15 @@
 use super::super::call_types::{
-    infer_scalar_expr_type, infer_tuple_arg_types, join_branch_envs,
-    update_call_type_env_after_assign, CallTypeContext, CallTypeEnv, StatementFlow,
+    declared_call_return_type, infer_array_arg_type, infer_scalar_expr_type,
+    infer_struct_expr_type, infer_tuple_arg_types, join_branch_envs,
+    update_call_type_env_after_assign, CallArrayElemType, CallTypeContext, CallTypeEnv,
+    StatementFlow,
 };
 use super::*;
 use crate::{
-    effective_untyped_assignment_type, is_bare_return_expr, require_expr_assignable_type,
+    effective_untyped_assignment_type, is_bare_return_expr, require_expr_assignable_type, DataType,
     ReturnType,
 };
-use onda_frontend::{
-    ast::{FnReturnScalarType, FnReturnType},
-    SourceLoc,
-};
+use onda_frontend::ArrayElemType;
 
 #[derive(Clone)]
 struct ObservedReturn<'a> {
@@ -18,127 +17,70 @@ struct ObservedReturn<'a> {
     ty: ReturnType,
 }
 
-fn try_resolve_declared_return_type(def: &FunctionDef) -> Option<ReturnType> {
-    fn resolve_scalar(
-        ty: &FnReturnScalarType,
-        type_params: &[String],
-        strict: bool,
-        def_name: &str,
-        loc: SourceLoc,
-        errors: &mut Vec<Diagnostic>,
-    ) -> Option<PrimitiveType> {
-        match ty {
-            FnReturnScalarType::Primitive(prim) => Some(*prim),
-            FnReturnScalarType::Named(name) if type_params.contains(name) => None,
-            FnReturnScalarType::Named(name) => {
-                if strict {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "function '{def_name}' return type '{}' is not supported; return annotations only support primitive scalars, generic primitive type parameters, and tuples of those",
-                            name
-                        ),
-                        loc,
-                    ));
-                }
-                None
-            }
-        }
+fn resolve_declared_return_type(
+    def: &FunctionDef,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<ReturnType> {
+    let resolved = declared_call_return_type(def)?;
+    match &resolved {
+        ReturnType::Data(DataType::Struct(name)) if !struct_defs.contains_key(name) => None,
+        ReturnType::Data(DataType::Array {
+            element: ArrayElemType::Struct(name),
+            ..
+        }) if !struct_defs.contains_key(name) => None,
+        ReturnType::Scalar(_)
+        | ReturnType::Tuple(_)
+        | ReturnType::Data(DataType::Struct(_))
+        | ReturnType::Data(DataType::Array { .. }) => Some(resolved),
     }
-
-    fn resolve_inner(
-        def: &FunctionDef,
-        strict: bool,
-        errors: &mut Vec<Diagnostic>,
-    ) -> Option<ReturnType> {
-        let return_ty = def.return_ty.as_ref()?;
-        let loc = def.return_ty_loc.or(def.loc).into();
-        match return_ty {
-            FnReturnType::Scalar(scalar) => {
-                let prim =
-                    resolve_scalar(scalar, &def.type_params, strict, &def.name, loc, errors)?;
-                Some(ReturnType::Scalar(prim))
-            }
-            FnReturnType::Array { .. } => {
-                if strict {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "function '{}' array return types are only supported for const defs",
-                            def.name
-                        ),
-                        loc,
-                    ));
-                }
-                None
-            }
-            FnReturnType::Tuple(elems) => {
-                let mut resolved = Vec::with_capacity(elems.len());
-                for elem in elems {
-                    let prim =
-                        resolve_scalar(elem, &def.type_params, strict, &def.name, loc, errors)?;
-                    resolved.push(prim);
-                }
-                Some(ReturnType::Tuple(resolved))
-            }
-        }
-    }
-
-    resolve_inner(def, false, &mut Vec::new())
 }
 
 fn validate_declared_return_type(
     def: &FunctionDef,
     display_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ReturnType> {
-    fn resolve_scalar(
-        ty: &FnReturnScalarType,
-        type_params: &[String],
-        def_name: &str,
-        loc: SourceLoc,
-        errors: &mut Vec<Diagnostic>,
-    ) -> Option<PrimitiveType> {
-        match ty {
-            FnReturnScalarType::Primitive(prim) => Some(*prim),
-            FnReturnScalarType::Named(name) if type_params.contains(name) => None,
-            FnReturnScalarType::Named(name) => {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "function '{def_name}' return type '{}' is not supported; return annotations only support primitive scalars, generic primitive type parameters, and tuples of those",
-                        name
-                    ),
-                    loc,
-                ));
-                None
-            }
-        }
+    if let Some(ty) = resolve_declared_return_type(def, struct_defs) {
+        return Some(ty);
     }
+    // Generic templates are validated once their primitive arguments resolve.
+    if !def.type_params.is_empty() {
+        return None;
+    }
+    errors.push(Diagnostic::semantic_span(
+        format!("function '{display_name}' return type must resolve to a primitive, primitive tuple, struct, or fixed data array"),
+        def.return_ty_loc.or(def.loc),
+    ));
+    None
+}
 
-    let return_ty = def.return_ty.as_ref()?;
-    let loc = def.return_ty_loc.or(def.loc).into();
-    match return_ty {
-        FnReturnType::Scalar(scalar) => {
-            let prim = resolve_scalar(scalar, &def.type_params, display_name, loc, errors)?;
-            Some(ReturnType::Scalar(prim))
-        }
-        FnReturnType::Array { .. } => {
-            errors.push(Diagnostic::semantic_span(
-                format!(
-                    "function '{}' array return types are only supported for const defs",
-                    display_name
-                ),
-                loc,
-            ));
-            None
-        }
-        FnReturnType::Tuple(elems) => {
-            let mut resolved = Vec::with_capacity(elems.len());
-            for elem in elems {
-                let prim = resolve_scalar(elem, &def.type_params, display_name, loc, errors)?;
-                resolved.push(prim);
-            }
-            Some(ReturnType::Tuple(resolved))
-        }
+fn infer_return_data_type(
+    expr: &Expr,
+    env: &CallTypeEnv,
+    context: CallTypeContext<'_>,
+) -> Option<DataType> {
+    if let Some(name) = infer_struct_expr_type(expr, env, context) {
+        return context
+            .struct_defs
+            .contains_key(&name)
+            .then_some(DataType::Struct(name));
     }
+    // A slice remains a view even when a caller supplies a fixed array.
+    if matches!(expr, Expr::Slice { .. }) {
+        return None;
+    }
+    let array = infer_array_arg_type(expr, env, context)?;
+    Some(DataType::Array {
+        element: match array.elem {
+            CallArrayElemType::Primitive(ty) => ArrayElemType::Primitive(ty),
+            CallArrayElemType::Nominal(name) if context.struct_defs.contains_key(&name) => {
+                ArrayElemType::Struct(name)
+            }
+            CallArrayElemType::Nominal(_) => return None,
+        },
+        len: array.len?,
+    })
 }
 
 fn infer_return_scalar_type(
@@ -215,6 +157,7 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                         }
                         AssignTarget::Var(_)
                         | AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
                         | AssignTarget::Slice { .. } => {}
                     }
                 }
@@ -225,7 +168,12 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
                 if is_bare_return_expr(expr) {
                     return StatementFlow::Terminates;
                 }
-                if let Some(elem_tys) =
+                if let Some(data) = infer_return_data_type(expr, env, context) {
+                    out.push(ObservedReturn {
+                        expr,
+                        ty: ReturnType::Data(data),
+                    });
+                } else if let Some(elem_tys) =
                     infer_return_tuple_type(expr, env, context, require_known_calls)
                 {
                     out.push(ObservedReturn {
@@ -356,7 +304,8 @@ fn merge_return_types(a: ReturnType, b: ReturnType) -> Option<ReturnType> {
                 .collect();
             merged.map(ReturnType::Tuple)
         }
-        _ => None, // scalar/tuple mismatch or different tuple lengths
+        (ReturnType::Data(a), ReturnType::Data(b)) if a == b => Some(ReturnType::Data(a.clone())),
+        _ => None,
     }
 }
 
@@ -368,7 +317,7 @@ fn infer_def_return_type(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     require_known_calls: bool,
 ) -> Option<ReturnType> {
-    if let Some(declared) = try_resolve_declared_return_type(def) {
+    if let Some(declared) = resolve_declared_return_type(def, struct_defs) {
         return Some(declared);
     }
     let (returns, complete) = collect_def_return_observations(
@@ -422,6 +371,14 @@ fn format_primitive_type(ty: PrimitiveType) -> &'static str {
 fn format_return_type(ty: &ReturnType) -> String {
     match ty {
         ReturnType::Scalar(ty) => format_primitive_type(*ty).to_owned(),
+        ReturnType::Data(DataType::Struct(name)) => name.clone(),
+        ReturnType::Data(DataType::Array { element, len }) => {
+            let name = match element {
+                ArrayElemType::Primitive(ty) => ty.name(),
+                ArrayElemType::Struct(name) => name.as_str(),
+            };
+            format!("{name}[{len}]")
+        }
         ReturnType::Tuple(elem_tys) => {
             let elems = elem_tys
                 .iter()
@@ -442,6 +399,7 @@ fn return_type_is_assignable(src: &ReturnType, dst: &ReturnType) -> bool {
             .iter()
             .zip(dst.iter())
             .all(|(src, dst)| *src == *dst || can_implicitly_assign(*src, *dst)),
+        (ReturnType::Data(src), ReturnType::Data(dst)) => src == dst,
         _ => false,
     }
 }
@@ -621,7 +579,9 @@ pub(crate) fn validate_def_return_types(
         };
         let display_name = sig.display_name.as_deref().unwrap_or(&def.name);
         let expected = if def.return_ty.is_some() {
-            let Some(expected) = validate_declared_return_type(def, display_name, errors) else {
+            let Some(expected) =
+                validate_declared_return_type(def, display_name, struct_defs, errors)
+            else {
                 continue;
             };
             expected
@@ -659,7 +619,7 @@ fn infer_def_return_types_impl(
     let mut out = seed.clone();
     if require_known_calls {
         out.extend(all_defs().filter_map(|def| {
-            try_resolve_declared_return_type(def).map(|ty| (def.name.clone(), ty))
+            resolve_declared_return_type(def, struct_defs).map(|ty| (def.name.clone(), ty))
         }));
     } else {
         for def in all_defs() {

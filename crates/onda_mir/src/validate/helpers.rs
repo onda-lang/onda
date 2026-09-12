@@ -328,6 +328,7 @@ pub(super) fn passing_mode_name(mode: crate::PassingMode) -> &'static str {
         crate::PassingMode::Value => "value",
         crate::PassingMode::ReadOnlyReference => "read-only reference",
         crate::PassingMode::ReadWriteReference => "read-write reference",
+        crate::PassingMode::ResultReference => "result reference",
     }
 }
 

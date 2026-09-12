@@ -27,6 +27,9 @@ impl<'a> FunctionLowerer<'a> {
         children: &mut std::vec::Drain<'_, LoweredValue>,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        if let Some(field) = self.lower_indexed_data_field(expression, block)? {
+            return self.lower_expr(&field, block);
+        }
         match expression {
             Expr::Number { value, .. } => Ok(LoweredValue {
                 value: Value::Constant(ScalarValue::F64(*value)),
@@ -156,12 +159,23 @@ impl<'a> FunctionLowerer<'a> {
         expression: &Expr,
         block: &mut MirBlock,
     ) -> Result<Vec<LoweredValue>, MirLoweringError> {
+        if let Some(field) = self.lower_indexed_data_field(expression, block)? {
+            return Ok(vec![self.lower_expr(&field, block)?]);
+        }
         match expression {
             Expr::Tuple { values, .. } => values
                 .iter()
                 .map(|value| self.lower_expr(value, block))
                 .collect(),
             Expr::Var { name, .. } => {
+                if let Some(components) = self.data_tuple_components(name) {
+                    return components
+                        .iter()
+                        .map(|name| {
+                            self.lower_expr(&Expr::var(name).with_loc(expression.loc()), block)
+                        })
+                        .collect();
+                }
                 if let Some(Binding::TupleReferenceParameter(components)) =
                     self.bindings.get(name).cloned()
                 {
@@ -189,7 +203,7 @@ impl<'a> FunctionLowerer<'a> {
                             ty,
                             Rvalue::SliceLoad {
                                 slice: Value::Local(slice),
-                                index: Value::Local(index),
+                                index,
                                 bounds: BoundsMode::Unchecked,
                             },
                             expression.loc(),
@@ -262,6 +276,7 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<LoweredValue, MirLoweringError> {
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
+                Binding::PlaceAlias(place, ty) => Ok(self.emit_temp(block, ty, Rvalue::Load(place), location)),
                 Binding::InitAll => Ok(self.emit_temp(
                     block,
                     PrimitiveType::Bool,
@@ -290,7 +305,7 @@ impl<'a> FunctionLowerer<'a> {
                     element,
                     Rvalue::SliceLoad {
                         slice: Value::Local(slice),
-                        index: Value::Local(index),
+                        index,
                         bounds: BoundsMode::Unchecked,
                     },
                     location,
@@ -328,7 +343,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("array field '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::Slice(_, _, _) => Err(self.error(
+                Binding::Slice(_, _, _, _) => Err(self.error(
                     format!("slice variable '{name}' used where a scalar value is required"),
                     location,
                 )),
@@ -348,7 +363,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("struct parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::StructArrayParameter { .. } => Err(self.error(
+                Binding::StructArrayParameter { .. } | Binding::StructArrayStorage { .. } => Err(self.error(
                     format!(
                         "struct-array parameter '{name}' used where a scalar value is required"
                     ),
@@ -358,7 +373,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("proc-array parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::StructArrayElementAlias { .. } => Err(self.error(
+                Binding::StructView { .. } => Err(self.error(
                     format!("struct-array element alias '{name}' used as a scalar value"),
                     location,
                 )),
@@ -489,7 +504,7 @@ impl<'a> FunctionLowerer<'a> {
                 ty,
                 Rvalue::SliceLoad {
                     slice: Value::Local(slice),
-                    index: Value::Local(element_index),
+                    index: element_index,
                     bounds: BoundsMode::Unchecked,
                 },
                 location,
@@ -559,6 +574,10 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        if let Some(components) = self.data_tuple_components(base) {
+            let component = self.constant_tuple_index(base, index, components.len())?;
+            return self.lower_expr(&Expr::var(&components[component]).with_loc(location), block);
+        }
         if let Some(Binding::TupleReferenceParameter(components)) = self.bindings.get(base).cloned()
         {
             let component_index = self.constant_tuple_index(base, index, components.len())?;
@@ -643,7 +662,7 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         }
-        if let Some(Binding::Slice(local, element, _)) = self.bindings.get(base).cloned() {
+        if let Some(Binding::Slice(local, element, _, _)) = self.bindings.get(base).cloned() {
             let index_value = self.lower_expr(index, block)?;
             let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             return Ok(self.emit_temp(
@@ -881,8 +900,25 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<Value, MirLoweringError> {
         let index_value = self.lower_expr(index, block)?;
         let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
+        self.apply_dynamic_interface_index_bounds(
+            index_value.value,
+            slot_count,
+            bounds,
+            index.loc(),
+            block,
+        )
+    }
+
+    pub(super) fn apply_dynamic_interface_index_bounds(
+        &mut self,
+        index: Value,
+        slot_count: usize,
+        bounds: BoundsMode,
+        location: SourceLoc,
+        block: &mut MirBlock,
+    ) -> Result<Value, MirLoweringError> {
         if bounds == BoundsMode::Unchecked {
-            return Ok(index_value.value);
+            return Ok(index);
         }
         let upper = slot_count
             .checked_sub(1)
@@ -890,14 +926,14 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     "dynamic interface slot count is outside the i32 indexing boundary",
-                    index.loc(),
+                    location,
                 )
             })?;
         Ok(Value::Local(self.clamp_index_to_inclusive_upper(
-            index_value.value,
+            index,
             Value::Constant(ScalarValue::I32(upper)),
             block,
-            index.loc(),
+            location,
         )))
     }
 

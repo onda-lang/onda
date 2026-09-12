@@ -53,6 +53,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
         params: {
             let mut params = local_def.params.clone();
             params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -112,6 +113,7 @@ fn proc_local_hidden_def_params(
     let mut params =
         Vec::<FnParamDecl>::with_capacity(local_def.params.len() + captured_buffers.len() + 1);
     params.push(FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: "self".to_owned(),
         ty: Some(FnParamType::Struct(owner_proc.to_owned())),
@@ -120,6 +122,7 @@ fn proc_local_hidden_def_params(
     });
     params.extend(local_def.params.clone());
     params.extend(captured_buffers.iter().map(|buffer| FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: buffer.name.clone(),
         ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -346,21 +349,7 @@ fn collect_local_def_calls_in_target(
     def_map: &HashMap<String, FunctionDef>,
     calls: &mut Vec<String>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => collect_local_def_calls_in_expr(index, def_map, calls),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_local_def_calls_in_expr(coordinate, def_map, calls);
-            }
-        }
-    }
+    target.visit_selectors(|selector| collect_local_def_calls_in_expr(selector, def_map, calls));
 }
 
 fn collect_local_def_calls_in_expr(
@@ -575,33 +564,15 @@ fn rewrite_target_local_calls(
     captured_buffers: &[String],
     owner_proc: &str,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => rewrite_expr_local_calls(
-            index,
+    target.visit_selectors_mut(|selector| {
+        rewrite_expr_local_calls(
+            selector,
             local_names,
             buffer_capturing_names,
             captured_buffers,
             owner_proc,
-        ),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_local_calls(
-                    coordinate,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-    }
+        )
+    });
 }
 
 fn rewrite_expr_local_calls(
@@ -797,23 +768,9 @@ fn inject_owner_self_into_hidden_local_calls_in_target(
     owner_proc: &str,
     receiver: &Expr,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
-            inject_owner_self_into_hidden_local_calls_in_expr(index, owner_proc, receiver);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                inject_owner_self_into_hidden_local_calls_in_expr(coordinate, owner_proc, receiver);
-            }
-        }
-    }
+    target.visit_selectors_mut(|selector| {
+        inject_owner_self_into_hidden_local_calls_in_expr(selector, owner_proc, receiver)
+    });
 }
 
 fn inject_owner_self_into_hidden_local_calls_in_expr(
@@ -1031,35 +988,15 @@ fn rewrite_nested_wrapper_local_calls_in_target(
     nested_path: &str,
     delegate_context_args: &[String],
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
-            rewrite_nested_wrapper_local_calls_in_expr(
-                index,
-                callee_proc,
-                owner_proc,
-                nested_path,
-                delegate_context_args,
-            );
-        }
-        AssignTarget::Slice {
+    target.visit_selectors_mut(|selector| {
+        rewrite_nested_wrapper_local_calls_in_expr(
             selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_nested_wrapper_local_calls_in_expr(
-                    coordinate,
-                    callee_proc,
-                    owner_proc,
-                    nested_path,
-                    delegate_context_args,
-                );
-            }
-        }
-    }
+            callee_proc,
+            owner_proc,
+            nested_path,
+            delegate_context_args,
+        );
+    });
 }
 
 fn rewrite_nested_wrapper_local_calls_in_expr(
@@ -1192,5 +1129,27 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
             }
         }
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+    }
+}
+
+impl super::ProcLoweringShape {
+    /// Parameter bindings shadow implicit owner fields; explicit `self` paths
+    /// remain available to retained aliases and authored code.
+    pub(super) fn without_parameters(&self, params: &[FnParamDecl]) -> Self {
+        let shadows = params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<HashSet<_>>();
+        let visible = |name: &String| !crate::path_or_ancestor_is_declared(name, &shadows);
+        let mut result = self.clone();
+        result.field_names.retain(&visible);
+        result.ins.retain(&visible);
+        result.field_array_slots.retain(|name, _| visible(name));
+        result.in_array_slots.retain(|name, _| visible(name));
+        result
+            .nested_proc_array_slots
+            .retain(|name, _| visible(name));
+        result.nested_fields.retain(|name, _| visible(name));
+        result
     }
 }

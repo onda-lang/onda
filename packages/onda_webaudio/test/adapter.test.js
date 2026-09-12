@@ -188,7 +188,7 @@ function writeTestOutput(ring, fields, delegateStorage = null, printStorage = nu
 test("closed processors reject new work and settle pending requests", async () => {
   const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
   const processor = new OndaAudioProcessor(node, artifact().metadata);
-  const pending = processor.trigger("note");
+  const pending = processor.request("event", { event: "note", payload: new Uint8Array() });
   const reason = new Error("closed by host");
 
   processor.close(reason);
@@ -198,6 +198,26 @@ test("closed processors reject new work and settle pending requests", async () =
   await assert.rejects(processor.trigger("note"), reason);
   assert.throws(() => processor.onPrint(() => {}), reason);
   assert.equal(node.port.messages.length, 1);
+});
+
+test("event triggers reject unknown payload parameters before posting work", async () => {
+  const source = artifact();
+  source.metadata.metadata.events = [{
+    name: "note",
+    schema: { params: [{ name: "gain", ty: { kind: "scalar", encoding: "f32" } }] },
+  }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+
+  await assert.rejects(processor.trigger("note", { gain: 1, typo: 2 }), /unexpected payload parameter 'typo'/);
+  assert.equal(node.port.messages.length, 0);
+
+  const pending = processor.trigger("note", { gain: 1 });
+  const request = node.port.messages.at(-1);
+  assert.equal(request.type, "event");
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
+  processor.close();
 });
 
 test("derives explicit Web Audio channel options from processor metadata", () => {
@@ -443,6 +463,10 @@ test("subscribes lazily and decodes delegate records on the main side", () => {
   const source = artifact();
   source.metadata.metadata.delegates = [{
     name: "report",
+    schema: { params: [
+      { name: "code", ty: { kind: "scalar", encoding: "i32" } },
+      { name: "values", ty: { kind: "slice", element: { kind: "scalar", encoding: "f32" } } },
+    ] },
     params: [
       {
         name: "code",
@@ -528,6 +552,7 @@ test("delivers print and delegate callbacks in call-local source order", () => {
   }];
   source.metadata.metadata.delegates = [{
     name: "tick",
+    schema: { params: [{ name: "value", ty: { kind: "scalar", encoding: "i32" } }] },
     params: [{
       name: "value",
       scalar: "i32",

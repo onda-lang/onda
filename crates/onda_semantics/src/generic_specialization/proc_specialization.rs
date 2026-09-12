@@ -1,5 +1,4 @@
 use super::*;
-use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 
 fn parse_explicit_proc_array_elem_type_args(
     name: &str,
@@ -46,69 +45,39 @@ fn parse_explicit_proc_array_elem_type_args(
 pub(crate) fn specialize_generic_proc_event_param_type(
     ty: &EventParamType,
     type_bindings: &HashMap<String, PrimitiveType>,
-    proc_name: &str,
-    event_name: &str,
-    param_name: &str,
+    context: &str,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> EventParamType {
     match ty {
-        EventParamType::Scalar(prim) => EventParamType::Scalar(*prim),
-        EventParamType::GenericScalar { name } => match type_bindings.get(name).copied() {
-            Some(bound) => EventParamType::Scalar(bound),
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic scalar type '{}'",
-                        proc_name, event_name, param_name, name
-                    ),
-                );
-                EventParamType::Scalar(PrimitiveType::F32)
+        EventParamType::GenericScalar { name } => {
+            match specialize_generic_type_name(name, type_bindings, context, diag, errors) {
+                Some(SpecializedTypeName::Primitive(ty)) => EventParamType::Scalar(ty),
+                Some(SpecializedTypeName::Named(name)) => EventParamType::GenericScalar { name },
+                None => ty.clone(),
             }
-        },
-        EventParamType::Array { elem, size } => EventParamType::Array {
-            elem: *elem,
-            size: size.clone(),
-        },
-        EventParamType::GenericArray { elem, size } => match type_bindings.get(elem).copied() {
-            Some(bound) => EventParamType::Array {
-                elem: bound,
-                size: size.clone(),
-            },
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic array element type '{}'",
-                        proc_name, event_name, param_name, elem
-                    ),
-                );
-                EventParamType::Array {
-                    elem: PrimitiveType::F32,
+        }
+        EventParamType::GenericArray { elem, size } => {
+            match specialize_generic_type_name(elem, type_bindings, context, diag, errors) {
+                Some(SpecializedTypeName::Primitive(elem)) => EventParamType::Array {
+                    elem,
                     size: size.clone(),
-                }
+                },
+                Some(SpecializedTypeName::Named(elem)) => EventParamType::GenericArray {
+                    elem,
+                    size: size.clone(),
+                },
+                None => ty.clone(),
             }
-        },
-        EventParamType::Slice { elem } => EventParamType::Slice { elem: *elem },
-        EventParamType::GenericSlice { elem } => match type_bindings.get(elem).copied() {
-            Some(bound) => EventParamType::Slice { elem: bound },
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}.{}' event parameter '{}' references unknown generic slice element type '{}'",
-                        proc_name, event_name, param_name, elem
-                    ),
-                );
-                EventParamType::Slice {
-                    elem: PrimitiveType::F32,
-                }
+        }
+        EventParamType::GenericSlice { elem } => {
+            match specialize_generic_type_name(elem, type_bindings, context, diag, errors) {
+                Some(SpecializedTypeName::Primitive(elem)) => EventParamType::Slice { elem },
+                Some(SpecializedTypeName::Named(elem)) => EventParamType::GenericSlice { elem },
+                None => ty.clone(),
             }
-        },
+        }
+        _ => ty.clone(),
     }
 }
 
@@ -121,48 +90,13 @@ pub(crate) fn specialize_generic_proc_decl_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> DeclType {
-    match ty {
-        DeclType::Scalar(prim) => DeclType::Scalar(*prim),
-        DeclType::Generic(param) => match type_bindings.get(param).copied() {
-            Some(bound) => DeclType::Scalar(bound),
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}' {} '{}' references unknown generic type parameter '{}'",
-                        proc_name, symbol_kind, symbol_name, param
-                    ),
-                );
-                DeclType::Scalar(PrimitiveType::F32)
-            }
-        },
-        DeclType::ArrayGeneric { elem, size } => match type_bindings.get(elem).copied() {
-            Some(bound) => DeclType::Array {
-                elem: bound,
-                size: size.clone(),
-            },
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}' {} '{}' references unknown generic array element type '{}'",
-                        proc_name, symbol_kind, symbol_name, elem
-                    ),
-                );
-                DeclType::Array {
-                    elem: PrimitiveType::F32,
-                    size: size.clone(),
-                }
-            }
-        },
-        DeclType::Array { elem, size } => DeclType::Array {
-            elem: *elem,
-            size: size.clone(),
-        },
-        DeclType::Tuple(elems) => DeclType::Tuple(elems.clone()),
-    }
+    specialize_decl_type(
+        ty,
+        type_bindings,
+        &format!("processor '{proc_name}' {symbol_kind} '{symbol_name}'"),
+        diag,
+        errors,
+    )
 }
 
 pub(crate) fn specialize_generic_proc_buffer_type(
@@ -173,251 +107,19 @@ pub(crate) fn specialize_generic_proc_buffer_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> BufferType {
-    let elem = match &ty.elem {
-        BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
-        BufferElemType::Generic(param) => match type_bindings.get(param).copied() {
-            Some(bound) => BufferElemType::Primitive(bound),
-            None => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}' buffer '{}' references unknown generic element type '{}'",
-                        proc_name, buffer_name, param
-                    ),
-                );
-                BufferElemType::Primitive(PrimitiveType::F32)
-            }
-        },
-    };
-    BufferType {
-        elem,
-        channels: ty.channels.clone(),
+    let mut specialized = specialize_buffer_type(ty, type_bindings);
+    if let BufferElemType::Generic(param) = &specialized.elem {
+        push_semantic(
+            diag,
+            errors,
+            format!(
+                "processor '{}' buffer '{}' references unknown generic element type '{}'",
+                proc_name, buffer_name, param
+            ),
+        );
+        specialized.elem = BufferElemType::Primitive(PrimitiveType::F32);
     }
-}
-
-pub(crate) fn rewrite_generic_array_ctor_expr_types(
-    expr: &mut Expr,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    let diag = DiagCtx::new(expr.loc());
-    match expr {
-        Expr::Index { index, .. } => {
-            rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_generic_array_ctor_expr_types(coordinate, type_bindings, errors);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            if let ArrayElemType::Struct(elem_name) = &spec.elem {
-                if let Some(bound) = type_bindings.get(elem_name).copied() {
-                    spec.elem = ArrayElemType::Primitive(bound);
-                } else if let Some(specialized) = specialize_named_type_ref(
-                    elem_name,
-                    type_bindings,
-                    &format!("array element type '{elem_name}'"),
-                    diag,
-                    errors,
-                ) {
-                    match specialized {
-                        FieldType::Scalar(bound) => spec.elem = ArrayElemType::Primitive(bound),
-                        FieldType::Generic(name) => spec.elem = ArrayElemType::Struct(name),
-                        FieldType::Array(_) | FieldType::Tuple(_) => {}
-                    }
-                }
-            }
-            rewrite_generic_array_ctor_expr_types(&mut spec.size, type_bindings, errors);
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_generic_array_ctor_expr_types(lhs, type_bindings, errors);
-            rewrite_generic_array_ctor_expr_types(rhs, type_bindings, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_generic_array_ctor_expr_types(arg, type_bindings, errors);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                rewrite_generic_array_ctor_expr_types(&mut arg.expr, type_bindings, errors);
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            rewrite_generic_array_ctor_expr_types(inner, type_bindings, errors);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
-}
-
-pub(crate) fn rewrite_generic_array_ctor_stmt_types(
-    stmt: &mut Stmt,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
-            if let AssignTarget::Index { index, .. } = target {
-                rewrite_generic_array_ctor_expr_types(index, type_bindings, errors);
-            }
-            rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_array_ctor_expr_types(expr, type_bindings, errors);
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_generic_array_ctor_expr_types(value, type_bindings, errors);
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_generic_array_ctor_expr_types(cond, type_bindings, errors);
-            for nested in then_branch {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
-            }
-            for nested in else_branch {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_generic_array_ctor_expr_types(start, type_bindings, errors);
-            rewrite_generic_array_ctor_expr_types(end, type_bindings, errors);
-            if let Some(step_expr) = step {
-                rewrite_generic_array_ctor_expr_types(step_expr, type_bindings, errors);
-            }
-            for nested in body {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            rewrite_generic_array_ctor_expr_types(cond, type_bindings, errors);
-            for nested in body {
-                rewrite_generic_array_ctor_stmt_types(nested, type_bindings, errors);
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    });
-}
-
-pub(crate) fn specialize_generic_typed_decls(
-    stmt: &mut Stmt,
-    type_bindings: &HashMap<String, PrimitiveType>,
-    proc_name: &str,
-    errors: &mut Vec<Diagnostic>,
-) {
-    with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign {
-            target,
-            decl_ty,
-            generic_decl_ty,
-            is_typed_decl,
-            ..
-        } => {
-            let Some(param) = generic_decl_ty.clone() else {
-                return;
-            };
-            let AssignTarget::Var(name) = target else {
-                push_semantic(
-                    diag,
-                    errors,
-                    "typed declaration is only supported for plain variables",
-                );
-                *generic_decl_ty = None;
-                return;
-            };
-            if decl_ty.is_some() {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "processor '{}' init declaration '{}: {}' cannot combine primitive and generic type annotations",
-                        proc_name, name, param
-                    ),
-                );
-                *generic_decl_ty = None;
-                return;
-            }
-            match type_bindings.get(&param).copied() {
-                Some(bound) => {
-                    *decl_ty = Some(DeclType::Scalar(bound));
-                    *generic_decl_ty = None;
-                    *is_typed_decl = true;
-                }
-                None => {
-                    push_semantic(
-                        diag,
-                        errors,
-                        format!(
-                            "processor '{}' init declaration '{}: {}' references unknown generic type parameter '{}'",
-                            proc_name, name, param, param
-                        ),
-                    );
-                }
-            }
-        }
-        Stmt::If {
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            for nested in then_branch {
-                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
-            }
-            for nested in else_branch {
-                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
-            }
-        }
-        Stmt::For { body, .. } => {
-            for nested in body {
-                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
-            }
-        }
-        Stmt::While { body, .. } => {
-            for nested in body {
-                specialize_generic_typed_decls(nested, type_bindings, proc_name, errors);
-            }
-        }
-        Stmt::Expr { .. }
-        | Stmt::Print { .. }
-        | Stmt::Return { .. }
-        | Stmt::Break { .. }
-        | Stmt::Continue { .. } => {}
-    });
+    specialized
 }
 
 pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
@@ -574,7 +276,6 @@ pub(crate) fn specialize_generic_proc_template(
         .collect::<Vec<_>>();
     for input in &mut ins {
         if let Some(default) = &mut input.default {
-            rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 default,
                 &type_bindings,
@@ -584,7 +285,6 @@ pub(crate) fn specialize_generic_proc_template(
         }
         if let Some(range) = &mut input.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -592,7 +292,6 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -604,7 +303,6 @@ pub(crate) fn specialize_generic_proc_template(
     for output in &mut outs {
         if let Some(range) = &mut output.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -612,7 +310,6 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -623,7 +320,6 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for param in &mut params {
         if let Some(default) = &mut param.default {
-            rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 default,
                 &type_bindings,
@@ -633,7 +329,6 @@ pub(crate) fn specialize_generic_proc_template(
         }
         if let Some(range) = &mut param.range {
             if let Some(min) = &mut range.min {
-                rewrite_generic_array_ctor_expr_types(min, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     min,
                     &type_bindings,
@@ -641,7 +336,6 @@ pub(crate) fn specialize_generic_proc_template(
                     errors,
                 );
             }
-            rewrite_generic_array_ctor_expr_types(&mut range.max, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 &mut range.max,
                 &type_bindings,
@@ -656,7 +350,6 @@ pub(crate) fn specialize_generic_proc_template(
         .into_iter()
         .filter_map(|(field, expr)| expr.as_mut().map(|expr| (field, expr)))
         {
-            rewrite_generic_array_ctor_expr_types(expr, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 expr,
                 &type_bindings,
@@ -696,17 +389,18 @@ pub(crate) fn specialize_generic_proc_template(
     let mut tasks = template.tasks.clone();
     for event in &mut events {
         for param in &mut event.params {
+            let param_context = format!(
+                "processor '{}.{}' event parameter '{}'",
+                template.name, event.name, param.name
+            );
             param.ty = specialize_generic_proc_event_param_type(
                 &param.ty,
                 &type_bindings,
-                &template.name,
-                &event.name,
-                &param.name,
+                &param_context,
                 DiagCtx::new(param.ty_loc.or(param.loc)),
                 errors,
             );
             if let Some(default) = &mut param.default {
-                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
@@ -721,17 +415,18 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for delegate in &mut delegates {
         for param in &mut delegate.params {
+            let param_context = format!(
+                "processor '{}.{}' delegate parameter '{}'",
+                template.name, delegate.name, param.name
+            );
             param.ty = specialize_generic_proc_event_param_type(
                 &param.ty,
                 &type_bindings,
-                &template.name,
-                &delegate.name,
-                &param.name,
+                &param_context,
                 DiagCtx::new(param.ty_loc.or(param.loc)),
                 errors,
             );
             if let Some(default) = &mut param.default {
-                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
@@ -758,7 +453,10 @@ pub(crate) fn specialize_generic_proc_template(
             DeclType::Scalar(_) | DeclType::Generic(_) => {
                 init.default_ty = Some(specialized);
             }
-            DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
+            DeclType::Slice(_)
+            | DeclType::Array { .. }
+            | DeclType::ArrayGeneric { .. }
+            | DeclType::Tuple(_) => {
                 push_semantic(
                     DiagCtx::new(init.default_ty_loc.or(init.loc)),
                     errors,
@@ -772,10 +470,6 @@ pub(crate) fn specialize_generic_proc_template(
         }
     }
     for stmt in &mut init.body {
-        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-    }
-    for stmt in &mut init.body {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -784,10 +478,6 @@ pub(crate) fn specialize_generic_proc_template(
         );
     }
     for stmt in &mut block_pre {
-        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-    }
-    for stmt in &mut block_pre {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -796,10 +486,6 @@ pub(crate) fn specialize_generic_proc_template(
         );
     }
     for stmt in &mut sample {
-        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-    }
-    for stmt in &mut sample {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -808,10 +494,6 @@ pub(crate) fn specialize_generic_proc_template(
         );
     }
     for stmt in &mut block_post {
-        specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-    }
-    for stmt in &mut block_post {
-        rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
         substitute_call_type_args_with_bindings_stmt(
             stmt,
             &type_bindings,
@@ -819,14 +501,8 @@ pub(crate) fn specialize_generic_proc_template(
             errors,
         );
     }
-    for event in &mut events {
-        for stmt in &mut event.body {
-            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-        }
-    }
     for when in &mut whens {
         if let Some(index) = &mut when.target.index {
-            rewrite_generic_array_ctor_expr_types(index, &type_bindings, errors);
             substitute_call_type_args_with_bindings_expr(
                 index,
                 &type_bindings,
@@ -835,8 +511,6 @@ pub(crate) fn specialize_generic_proc_template(
             );
         }
         for stmt in &mut when.body {
-            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -848,7 +522,6 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for event in &mut events {
         for stmt in &mut event.body {
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -866,8 +539,6 @@ pub(crate) fn specialize_generic_proc_template(
     }
     for task in &mut tasks {
         for stmt in &mut task.body {
-            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
@@ -878,119 +549,23 @@ pub(crate) fn specialize_generic_proc_template(
         expand_inline_array_ctor_initializers(&mut task.body);
     }
     for def in &mut local_defs {
-        let specialize_return_scalar = |ty: &FnReturnScalarType| -> FnReturnScalarType {
-            match ty {
-                FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
-                FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
-                    Some(bound) => FnReturnScalarType::Primitive(bound),
-                    None => FnReturnScalarType::Named(name.clone()),
-                },
-            }
-        };
+        let def_context = format!("processor '{}' local def '{}'", template.name, def.name);
+        specialize_function_type_annotations(def, &type_bindings, &def_context, errors);
         for param in &mut def.params {
-            if let Some(ty) = &mut param.ty {
-                *ty = match ty {
-                    FnParamType::Primitive(prim) => FnParamType::Primitive(*prim),
-                    FnParamType::Struct(name) => match type_bindings.get(name).copied() {
-                        Some(bound) => FnParamType::Primitive(bound),
-                        None => FnParamType::Struct(name.clone()),
-                    },
-                    FnParamType::Buffer(buffer_ty) => {
-                        let elem = match &buffer_ty.elem {
-                            BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
-                            BufferElemType::Generic(param) => {
-                                match type_bindings.get(param).copied() {
-                                    Some(bound) => BufferElemType::Primitive(bound),
-                                    None => BufferElemType::Generic(param.clone()),
-                                }
-                            }
-                        };
-                        FnParamType::Buffer(BufferType {
-                            elem,
-                            channels: buffer_ty.channels.clone(),
-                        })
-                    }
-                    FnParamType::BufferArray { buffer, len } => {
-                        let elem = match &buffer.elem {
-                            BufferElemType::Primitive(prim) => BufferElemType::Primitive(*prim),
-                            BufferElemType::Generic(param) => type_bindings
-                                .get(param)
-                                .copied()
-                                .map(BufferElemType::Primitive)
-                                .unwrap_or_else(|| BufferElemType::Generic(param.clone())),
-                        };
-                        FnParamType::BufferArray {
-                            buffer: BufferType {
-                                elem,
-                                channels: buffer.channels.clone(),
-                            },
-                            len: *len,
-                        }
-                    }
-                    FnParamType::Array(elem) => FnParamType::Array(*elem),
-                    FnParamType::ArrayGeneric(name) => match type_bindings.get(name).copied() {
-                        Some(bound) => FnParamType::Array(Some(bound)),
-                        None => FnParamType::ArrayGeneric(name.clone()),
-                    },
-                    FnParamType::SizedArray {
-                        elem,
-                        generic_name,
-                        size,
-                    } => {
-                        let resolved_elem = generic_name
-                            .as_ref()
-                            .and_then(|n| type_bindings.get(n).copied())
-                            .or(*elem);
-                        FnParamType::SizedArray {
-                            elem: resolved_elem,
-                            generic_name: if resolved_elem.is_some() {
-                                None
-                            } else {
-                                generic_name.clone()
-                            },
-                            size: size.clone(),
-                        }
-                    }
-                    FnParamType::BareBuffer => FnParamType::BareBuffer,
-                    FnParamType::Tuple(elems) => FnParamType::Tuple(elems.clone()),
-                };
-            }
             if let Some(default) = &mut param.default {
-                rewrite_generic_array_ctor_expr_types(default, &type_bindings, errors);
                 substitute_call_type_args_with_bindings_expr(
                     default,
                     &type_bindings,
-                    &format!(
-                        "processor '{}' local def '{}' parameter default",
-                        template.name, def.name
-                    ),
+                    &format!("{def_context} parameter default"),
                     errors,
                 );
             }
         }
-        if let Some(return_ty) = &mut def.return_ty {
-            *return_ty = match return_ty {
-                FnReturnType::Scalar(scalar) => {
-                    FnReturnType::Scalar(specialize_return_scalar(scalar))
-                }
-                FnReturnType::Array { elem, size } => FnReturnType::Array {
-                    elem: *elem,
-                    size: size.clone(),
-                },
-                FnReturnType::Tuple(elems) => {
-                    FnReturnType::Tuple(elems.iter().map(specialize_return_scalar).collect())
-                }
-            };
-        }
         for stmt in &mut def.body {
-            specialize_generic_typed_decls(stmt, &type_bindings, &template.name, errors);
-        }
-        for stmt in &mut def.body {
-            rewrite_generic_array_ctor_stmt_types(stmt, &type_bindings, errors);
             substitute_call_type_args_with_bindings_stmt(
                 stmt,
                 &type_bindings,
-                &format!("processor '{}' local def '{}'", template.name, def.name),
+                &def_context,
                 errors,
             );
         }
@@ -1139,15 +714,8 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                         *elem_name = resolved_name.clone();
                     }
                     if let Some(template) = templates.get(elem_name) {
-                        let type_args_to_use = infer_generic_proc_ctor_type_args(
-                            template,
-                            &[],
-                            &locals.scalar_types,
-                            &locals.array_elem_types,
-                            locals.default_ctor_missing_type_params_to_f32,
-                            diag,
-                            errors,
-                        );
+                        let type_args_to_use =
+                            infer_generic_proc_ctor_type_args(template, &[], locals, diag, errors);
                         if let Some(type_args_to_use) = type_args_to_use {
                             if let Some(specialized) = specialize_generic_proc_template(
                                 template,
@@ -1220,15 +788,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
             }
             if let Some(template) = templates.get(name) {
                 let type_args_to_use = if type_args.is_empty() {
-                    infer_generic_proc_ctor_type_args(
-                        template,
-                        args,
-                        &locals.scalar_types,
-                        &locals.array_elem_types,
-                        locals.default_ctor_missing_type_params_to_f32,
-                        diag,
-                        errors,
-                    )
+                    infer_generic_proc_ctor_type_args(template, args, locals, diag, errors)
                 } else {
                     resolve_explicit_call_type_args(
                         type_args,
@@ -1257,126 +817,28 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
     }
 }
 
-pub(crate) fn rewrite_generic_proc_ctor_stmt(
-    stmt: &mut Stmt,
-    templates: &HashMap<String, ProcessorDef>,
-    generated: &mut HashMap<String, ProcessorDef>,
-    errors: &mut Vec<Diagnostic>,
-    locals: &mut GenericInferenceLocals,
-    current_ns: &str,
-) {
-    with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign {
-            target,
-            decl_ty,
-            generic_decl_ty,
-            is_typed_decl,
+struct GenericProcCtorRewriter<'a> {
+    templates: &'a HashMap<String, ProcessorDef>,
+    generated: &'a mut HashMap<String, ProcessorDef>,
+    current_ns: &'a str,
+}
+
+impl GenericCtorRewriter for GenericProcCtorRewriter<'_> {
+    fn rewrite_expr(
+        &mut self,
+        expr: &mut Expr,
+        locals: &mut GenericInferenceLocals,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        rewrite_generic_proc_ctor_expr(
             expr,
-            ..
-        } => {
-            let prior_default_mode = locals.default_ctor_missing_type_params_to_f32;
-            let typed_named_ctor_decl_without_type_args =
-                *is_typed_decl && decl_ty.is_none() && generic_decl_ty.is_none();
-            if typed_named_ctor_decl_without_type_args {
-                locals.default_ctor_missing_type_params_to_f32 = false;
-            }
-            if let AssignTarget::Index { index, .. } = target {
-                rewrite_generic_proc_ctor_expr(
-                    index, templates, generated, errors, locals, current_ns,
-                );
-            }
-            rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-            update_generic_inference_locals_from_assign(
-                target,
-                decl_ty.as_ref().and_then(DeclType::scalar),
-                expr,
-                locals,
-            );
-            locals.default_ctor_missing_type_params_to_f32 = prior_default_mode;
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_generic_proc_ctor_expr(expr, templates, generated, errors, locals, current_ns);
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_generic_proc_ctor_expr(
-                    value, templates, generated, errors, locals, current_ns,
-                );
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_generic_proc_ctor_expr(cond, templates, generated, errors, locals, current_ns);
-            let mut then_locals = locals.clone();
-            for nested in then_branch {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut then_locals,
-                    current_ns,
-                );
-            }
-            let mut else_locals = locals.clone();
-            for nested in else_branch {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut else_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_generic_proc_ctor_expr(start, templates, generated, errors, locals, current_ns);
-            rewrite_generic_proc_ctor_expr(end, templates, generated, errors, locals, current_ns);
-            if let Some(step_expr) = step {
-                rewrite_generic_proc_ctor_expr(
-                    step_expr, templates, generated, errors, locals, current_ns,
-                );
-            }
-            let mut body_locals = locals.clone();
-            for nested in body {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::While { cond, body, .. } => {
-            rewrite_generic_proc_ctor_expr(cond, templates, generated, errors, locals, current_ns);
-            let mut body_locals = locals.clone();
-            for nested in body {
-                rewrite_generic_proc_ctor_stmt(
-                    nested,
-                    templates,
-                    generated,
-                    errors,
-                    &mut body_locals,
-                    current_ns,
-                );
-            }
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    });
+            self.templates,
+            self.generated,
+            errors,
+            locals,
+            self.current_ns,
+        );
+    }
 }
 
 pub(crate) fn rewrite_generic_proc_ctor_stmt_list(
@@ -1386,17 +848,21 @@ pub(crate) fn rewrite_generic_proc_ctor_stmt_list(
     errors: &mut Vec<Diagnostic>,
     seed_locals: &GenericInferenceLocals,
     current_ns: &str,
-) {
-    let mut locals = seed_locals.clone();
-    for stmt in stmts {
-        rewrite_generic_proc_ctor_stmt(stmt, templates, generated, errors, &mut locals, current_ns);
-    }
+) -> GenericInferenceLocals {
+    let mut rewriter = GenericProcCtorRewriter {
+        templates,
+        generated,
+        current_ns,
+    };
+    rewrite_generic_ctor_stmt_list(stmts, errors, seed_locals, &mut rewriter)
 }
 
 pub(crate) fn finalize_generated_generic_proc_specializations(
     templates: &HashMap<String, ProcessorDef>,
     generated: &mut HashMap<String, ProcessorDef>,
     errors: &mut Vec<Diagnostic>,
+    base_seed: &GenericInferenceLocals,
+    proc_delegates: &HashMap<String, Vec<DelegateDef>>,
 ) {
     let mut processed = HashSet::<String>::new();
     loop {
@@ -1410,7 +876,7 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 continue;
             };
             let spec_ns = namespace_of_symbol(&spec.name);
-            let spec_seed = generic_inference_seed_for_processor(&spec);
+            let spec_seed = generic_inference_seed_for_processor(&spec, base_seed.facts.clone());
             rewrite_generic_proc_ctor_stmt_list(
                 &mut spec.init,
                 templates,
@@ -1444,8 +910,59 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 &spec_ns,
             );
             for event in &mut spec.events {
+                let event_seed = generic_inference_seed_for_event(event, &spec_seed);
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut event.body,
+                    templates,
+                    generated,
+                    errors,
+                    &event_seed,
+                    &spec_ns,
+                );
+            }
+            let proc_names = proc_delegates
+                .keys()
+                .chain(generated.keys())
+                .chain(std::iter::once(&spec.name))
+                .cloned()
+                .collect::<HashSet<_>>();
+            let children = child_proc_instances(&spec.init.body, &proc_names);
+            let current_proc_name = spec.name.clone();
+            let current_proc_delegates = spec.delegates.clone();
+            for when in &mut spec.whens {
+                let child = when
+                    .target
+                    .receiver
+                    .first()
+                    .filter(|_| when.target.receiver.len() == 1)
+                    .and_then(|receiver| children.get(receiver))
+                    .map(|child| (child.proc_name.as_str(), child.is_array));
+                let (delegate, takes_index) = resolve_generic_when_delegate(
+                    when,
+                    &current_proc_delegates,
+                    child,
+                    Some((&current_proc_name, &current_proc_delegates)),
+                    proc_delegates,
+                    generated,
+                );
+                let when_seed = generic_inference_seed_for_when(
+                    when,
+                    delegate.as_ref(),
+                    takes_index,
+                    &spec_seed,
+                );
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut when.body,
+                    templates,
+                    generated,
+                    errors,
+                    &when_seed,
+                    &spec_ns,
+                );
+            }
+            for task in &mut spec.tasks {
+                rewrite_generic_proc_ctor_stmt_list(
+                    &mut task.body,
                     templates,
                     generated,
                     errors,
@@ -1454,12 +971,13 @@ pub(crate) fn finalize_generated_generic_proc_specializations(
                 );
             }
             for def in &mut spec.local_defs {
+                let def_seed = generic_inference_seed_for_function(def, &spec_seed);
                 rewrite_generic_proc_ctor_stmt_list(
                     &mut def.body,
                     templates,
                     generated,
                     errors,
-                    &spec_seed,
+                    &def_seed,
                     &spec_ns,
                 );
             }

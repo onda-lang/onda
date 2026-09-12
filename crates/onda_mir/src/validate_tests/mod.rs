@@ -53,6 +53,74 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
+fn result_references_require_producer_proof_and_initialize_caller_storage() {
+    let mut program = empty_program();
+    let mut producer = function("produce", FunctionKind::User);
+    producer.params.push(FunctionParam {
+        name: "result".to_owned(),
+        ty: TypeId::new(0),
+        mode: PassingMode::ResultReference,
+        integer_range: None,
+    });
+    producer.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place {
+                base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                projections: Vec::new(),
+            },
+            value: Rvalue::Use(Value::Constant(ScalarValue::I32(42))),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(producer);
+    let caller = &mut program.functions[0];
+    caller.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    caller.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    caller.body.statements.extend([
+        Statement {
+            kind: StatementKind::Call {
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place::local(LocalId::new(0)))],
+                results: Vec::new(),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::Use(Value::Local(LocalId::new(0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+    ]);
+    let errors = super::validate(&program).expect_err("result contracts are producer proofs");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("result reference requires trusted producer")));
+    // SAFETY: produce unconditionally initializes its only output before returning.
+    unsafe { super::validate_with_producer_proofs(&program) }
+        .expect("a result reference initializes its caller place");
+
+    program.functions[2].params[0].mode = PassingMode::ReadWriteReference;
+    let errors =
+        super::validate(&program).expect_err("ordinary references read their previous contents");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("before") && error.message.contains("assign")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn delegate_fixed_arrays_require_primitive_elements() {
     let mut program = empty_program();
     program.structs.push(StructType {
@@ -67,6 +135,7 @@ fn delegate_fixed_arrays_require_primitive_elements() {
         },
     ]);
     program.interface.delegates.push(Delegate {
+        schema: Default::default(),
         name: "invalid".to_owned(),
         params: vec![DelegateParam {
             name: "values".to_owned(),
@@ -389,6 +458,7 @@ fn rejects_explicit_init_and_event_entry_signatures() {
     });
     handler.results.push(TypeId::new(0));
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "tick".to_owned(),
         params: Vec::new(),
         handler: handler_id,
@@ -415,6 +485,7 @@ fn rejects_unowned_entry_role_functions() {
     let mut program = empty_program();
     let handler_id = FunctionId::new(2);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "tick".to_owned(),
         params: Vec::new(),
         handler: handler_id,
@@ -1294,6 +1365,9 @@ fn accepts_direct_read_only_slice_event_parameters() {
         access: AccessMode::ReadOnly,
     });
     program.interface.events.push(Event {
+        schema: program
+            .payload_schema([("values", test_type(0), None)])
+            .unwrap(),
         name: "set_curve".to_owned(),
         params: vec![EventParam {
             name: "values".to_owned(),
@@ -1333,6 +1407,7 @@ fn rejects_mutable_buffer_and_nested_event_handles() {
         },
     ]);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "invalid".to_owned(),
         params: vec![
             EventParam {
@@ -2019,8 +2094,11 @@ fn rejects_slice_copy_with_different_element_types() {
     ]);
     program.functions[1].body.statements.push(Statement {
         kind: StatementKind::SliceCopy {
-            destination: Value::Local(LocalId::new(0)),
-            source: Value::Local(LocalId::new(1)),
+            copies: vec![crate::SliceCopy {
+                destination: Value::Local(LocalId::new(0)),
+                source: Value::Local(LocalId::new(1)),
+            }],
+            preflight: crate::SliceCopyPreflight::Required,
         },
         source: SourceSpan::UNKNOWN,
     });
@@ -2029,6 +2107,42 @@ fn rejects_slice_copy_with_different_element_types() {
     assert!(errors
         .iter()
         .any(|error| error.message.contains("identical element types")));
+}
+
+#[test]
+fn rejects_untrusted_slice_copy_overlap_proofs() {
+    let mut program = empty_program();
+    program.types.push(Type::Slice {
+        element: ScalarType::F32,
+        access: AccessMode::ReadWrite,
+    });
+    program.functions[1].locals.extend([
+        Local {
+            integer_range: None,
+            name: Some("destination".to_owned()),
+            ty: test_type(0),
+        },
+        Local {
+            integer_range: None,
+            name: Some("source".to_owned()),
+            ty: test_type(0),
+        },
+    ]);
+    program.functions[1].body.statements.push(Statement {
+        kind: StatementKind::SliceCopy {
+            copies: vec![crate::SliceCopy {
+                destination: Value::Local(LocalId::new(0)),
+                source: Value::Local(LocalId::new(1)),
+            }],
+            preflight: crate::SliceCopyPreflight::ProvenUnnecessary,
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+
+    let errors = super::validate(&program).expect_err("untrusted overlap proof should fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("trusted MIR producer proof")));
 }
 
 #[test]
@@ -2419,6 +2533,7 @@ fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
         control: crate::ParamControl::default(),
     });
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "update".to_owned(),
         params: vec![
             EventParam {
@@ -2589,6 +2704,7 @@ fn rejects_control_output_store_from_event_handler() {
             mirror: crate::StateId::new(0),
         });
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "update".to_owned(),
         params: Vec::new(),
         handler: FunctionId::new(2),
@@ -2665,6 +2781,7 @@ fn control_mirrors_are_readable_but_only_control_stores_can_mutate_them() {
 
     let handler_id = FunctionId::new(3);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "bad_event".to_owned(),
         params: Vec::new(),
         handler: handler_id,

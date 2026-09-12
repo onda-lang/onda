@@ -46,6 +46,7 @@ pub(crate) struct InitAnalysisState {
     pub local_aliases: LocalAliasTypes,
     pub tuple_vars: HashMap<String, usize>,
     pub integer_ranges: HashMap<String, TypedIntegerRange>,
+    pub local_struct_aliases: HashMap<String, String>,
     pub local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
     pub declared_symbols: DeclaredSymbolMap,
     pub state_scalars: HashMap<String, PrimitiveType>,
@@ -60,49 +61,63 @@ pub(crate) struct InitAnalysisState {
     pub nested_proc_arrays: HashMap<String, ProcNestedArrayState>,
 }
 
-fn infer_init_slice_alias_info(
-    base: &str,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+pub(crate) fn persistent_init_bindings(
+    init: &[Stmt],
+    state: &InitAnalysisState,
+    pinned: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_slice_alias_info(
-        base,
-        start,
-        end,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-        false,
-    )
-}
-
-fn infer_init_data_like_info(
-    expr: &Expr,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_data_like_info(
-        expr,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-    )
+) -> ScopeFlowState {
+    let mut names = HashSet::new();
+    for stmt in init {
+        let Stmt::Assign { target, .. } = stmt else {
+            continue;
+        };
+        match target {
+            AssignTarget::Var(name) => {
+                names.insert(name.as_str());
+            }
+            AssignTarget::Tuple(targets) => {
+                names.extend(targets.iter().filter_map(|target| target.binding()));
+            }
+            AssignTarget::Index { .. }
+            | AssignTarget::IndexedMember { .. }
+            | AssignTarget::Slice { .. } => {}
+        }
+    }
+    let visible = |name: &str| {
+        names.contains(name)
+            || name
+                .match_indices('.')
+                .any(|(index, _)| names.contains(&name[..index]))
+    };
+    let mut flow = state.flow_state();
+    flow.known_scalars.retain(|name| visible(name));
+    flow.local_aliases.retain(|name, _| visible(name));
+    flow.local_array_aliases.retain(|name, _| visible(name));
+    flow.local_struct_aliases.retain(|name, _| visible(name));
+    flow.tuple_vars.retain(|name, _| visible(name));
+    flow.integer_ranges.retain(|name, _| visible(name));
+    for stmt in init {
+        let Stmt::Assign {
+            target: AssignTarget::Var(name),
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        if pinned.contains(name)
+            && (flow.local_struct_aliases.contains_key(name)
+                || (flow.local_array_aliases.contains_key(name)
+                    && !state.state_arrays.contains_key(name)
+                    && !state.state_array_struct_roots.contains_key(name)))
+        {
+            errors.push(Diagnostic::semantic_span(
+                "a data view cannot be pinned; pin an explicit owned root and select a view from it",
+                stmt.loc(),
+            ));
+        }
+    }
+    flow
 }
 
 impl InitAnalysisState {
@@ -119,6 +134,7 @@ impl InitAnalysisState {
             tuple_vars: HashMap::new(),
             integer_ranges: HashMap::new(),
             local_array_aliases,
+            local_struct_aliases: HashMap::new(),
             declared_symbols,
             state_scalars,
             state_arrays: HashMap::new(),
@@ -132,13 +148,14 @@ impl InitAnalysisState {
         }
     }
 
-    fn flow_state(&self) -> ScopeFlowState {
+    pub(crate) fn flow_state(&self) -> ScopeFlowState {
         let mut flow = ScopeFlowState::from_parts(
             self.known_scalars.clone(),
             self.local_aliases.clone(),
             self.local_array_aliases.clone(),
             HashMap::new(),
         );
+        flow.local_struct_aliases = self.local_struct_aliases.clone();
         flow.integer_ranges = self.integer_ranges.clone();
         flow.tuple_vars = self.tuple_vars.clone();
         flow
@@ -149,6 +166,7 @@ impl InitAnalysisState {
         self.local_aliases = flow.local_aliases;
         self.integer_ranges = flow.integer_ranges;
         self.local_array_aliases = flow.local_array_aliases;
+        self.local_struct_aliases = flow.local_struct_aliases;
         self.tuple_vars = flow.tuple_vars;
     }
 
@@ -251,7 +269,7 @@ fn build_decl_check_state(st: &InitAnalysisState) -> ProcStateFields {
                 size: Box::new(Expr::int(0)),
             });
     }
-    for (k, v) in &st.struct_instances {
+    for (k, v) in st.struct_instances.iter().chain(&st.local_struct_aliases) {
         let type_args = st
             .struct_instance_type_args
             .get(k)
@@ -295,6 +313,11 @@ pub(crate) fn analyze_init_stmt(
     scope_depth: usize,
     errors: &mut Vec<Diagnostic>,
 ) {
+    seed_struct_array_aliases(
+        &mut st.local_array_aliases,
+        &st.state_array_struct_roots,
+        ctx.init.common.struct_defs,
+    );
     if crate::processor_lowering::is_pinned_initializer_marker(stmt) {
         return;
     }
@@ -305,13 +328,15 @@ pub(crate) fn analyze_init_stmt(
         let locals = ctx.locals;
         let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
         let empty_param_structs = HashMap::<String, String>::new();
+        let mut visible_structs = st.struct_instances.clone();
+        visible_structs.extend(st.local_struct_aliases.clone());
         let expr_inputs = build_scope_analysis_expr_inputs(
             common,
             locals,
             &st.state_scalars,
             &st.declared_symbols,
             &empty_param_structs,
-            &st.struct_instances,
+            &visible_structs,
             common.output_names,
             &st.state_array_struct_roots,
             &st.nested_proc_arrays,
@@ -327,6 +352,46 @@ pub(crate) fn analyze_init_stmt(
                 &st.tuple_vars,
             )
         };
+        if scope_depth > 0 {
+            if let Stmt::Assign { expr, decl_ty, .. } = stmt {
+                if infer_fixed_data_type(expr, stmt_expr_env(common.scope_kind()).expr_env)
+                    .is_some()
+                    || matches!(decl_ty, Some(DeclType::Slice(_)))
+                    || matches!(expr, Expr::Slice { .. })
+                {
+                    let empty_names = HashSet::new();
+                    let registered_tuples = HashMap::new();
+                    let flow_ctx = build_runtime_stmt_analysis_ctx(
+                        common,
+                        RuntimeRegistrationMode::None,
+                        &st.declared_symbols,
+                        &st.state_arrays,
+                        &st.state_array_struct_roots,
+                        &st.nested_procs,
+                        &st.nested_proc_arrays,
+                        &st.struct_instances,
+                        &empty_names,
+                        &empty_names,
+                        None,
+                        &st.state_tuples,
+                        &registered_tuples,
+                    );
+                    let mut flow = st.flow_state();
+                    analyze_flow_scope_stmts(
+                        [stmt],
+                        locals,
+                        &mut st.state_scalars,
+                        &flow_ctx,
+                        &mut flow,
+                        loop_depth,
+                        scope_depth,
+                        errors,
+                    );
+                    st.restore_flow_state(flow);
+                    return;
+                }
+            }
+        }
         match stmt {
             Stmt::Const { .. } => {}
             Stmt::Assign {
@@ -442,7 +507,6 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(else_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
-                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 merge_reachable_branch_scope_flow_state(
                     &mut st.known_scalars,
@@ -450,7 +514,7 @@ pub(crate) fn analyze_init_stmt(
                     &mut st.integer_ranges,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
-                    &mut struct_aliases,
+                    &mut st.local_struct_aliases,
                     &mut buffer_aliases,
                     &mut st.tuple_vars,
                     then_flow,
@@ -505,14 +569,13 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
-                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
-                    &mut struct_aliases,
+                    &mut st.local_struct_aliases,
                     &mut buffer_aliases,
                     &mut st.tuple_vars,
                     loop_flow,
@@ -540,14 +603,13 @@ pub(crate) fn analyze_init_stmt(
                 st.absorb_registered_state(loop_st, init_ctx.context_label, errors);
                 st.restore_flow_state(base_flow);
                 let mut proc_aliases = HashMap::new();
-                let mut struct_aliases = HashMap::new();
                 let mut buffer_aliases = HashMap::new();
                 adopt_loop_scope_flow_state(
                     &st.known_scalars,
                     &mut st.local_aliases,
                     &mut st.local_array_aliases,
                     &mut proc_aliases,
-                    &mut struct_aliases,
+                    &mut st.local_struct_aliases,
                     &mut buffer_aliases,
                     &mut st.tuple_vars,
                     loop_flow,
@@ -583,6 +645,8 @@ fn analyze_assign_init(
     let options = common.options;
     let scope = common.scope_kind();
     let allow_owner_state_intro = scope_depth == 0;
+    let mut visible_structs = st.struct_instances.clone();
+    visible_structs.extend(st.local_struct_aliases.clone());
     let array_vars = merged_data_vars(&st.state_arrays, &st.local_array_aliases);
     let mut rewritten_expr = expr.clone();
     rewrite_struct_array_inline_field_expr(
@@ -601,7 +665,7 @@ fn analyze_assign_init(
                 &st.state_scalars,
                 &st.declared_symbols,
                 &empty_param_structs,
-                &st.struct_instances,
+                &visible_structs,
                 output_names,
                 &st.state_array_struct_roots,
                 &st.nested_proc_arrays,
@@ -644,8 +708,27 @@ fn analyze_assign_init(
             }
         }};
     }
+    if validate_struct_array_member_assignment(
+        target,
+        expr,
+        scope_expr_env!(scope),
+        target_loc,
+        errors,
+    ) {
+        return;
+    }
+    let target = flatten_indexed_member_target(target);
+    let target = target.as_ref();
     match target {
         AssignTarget::Index { base, index } => {
+            let aggregate_target_ty = indexed_assignment_element_type(
+                target,
+                &visible_structs,
+                &st.state_array_struct_roots,
+                &st.local_array_aliases,
+                &st.nested_proc_arrays,
+                struct_defs,
+            );
             let lexical_root = base.split('.').next().unwrap_or(base);
             if locals.contains(lexical_root) {
                 target_error!(format!(
@@ -667,6 +750,16 @@ fn analyze_assign_init(
                 ),);
                 validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
                 validate_expr(expr, scope_expr_env!(scope), errors);
+                return;
+            }
+            if validate_data_element_replacement(
+                base,
+                index,
+                expr,
+                scope_expr_env!(scope),
+                target_loc,
+                errors,
+            ) {
                 return;
             }
             if st.state_array_struct_roots.contains_key(base) {
@@ -728,8 +821,11 @@ fn analyze_assign_init(
                 }
             }
             if !st.state_arrays.contains_key(base)
+                && !array_vars.contains_key(base)
                 && !st.local_array_aliases.contains_key(base)
+                && !is_declared_data_array_symbol(&st.declared_symbols, base)
                 && !has_declared_buffer_symbol_info(&st.declared_symbols, base)
+                && aggregate_target_ty.is_none()
             {
                 target_error!(format!(
                     "indexed assignment target '{base}[...]' is not a array/buffer symbol"
@@ -754,7 +850,7 @@ fn analyze_assign_init(
                 input_names,
                 output_names,
                 param_names,
-                &st.struct_instances,
+                &visible_structs,
                 struct_defs,
                 &st.nested_proc_arrays,
                 errors,
@@ -771,7 +867,7 @@ fn analyze_assign_init(
                 input_names,
                 output_names,
                 param_names,
-                &st.struct_instances,
+                &visible_structs,
                 struct_defs,
                 &st.nested_proc_arrays,
                 errors,
@@ -781,6 +877,7 @@ fn analyze_assign_init(
                 .get(base)
                 .map(|a| a.elem_ty)
                 .or_else(|| declared_symbol_scalar_type(&st.declared_symbols, base))
+                .or(aggregate_target_ty)
                 .unwrap_or(PrimitiveType::F32);
             require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
         }
@@ -860,14 +957,14 @@ fn analyze_assign_init(
                     return;
                 }
             }
-            let Some(target_info) = infer_init_slice_alias_info(
+            let Some(target_info) = resolve_executable_slice_alias_info(
                 base,
                 start.as_deref(),
                 end.as_deref(),
                 &st.declared_symbols,
                 &st.state_arrays,
                 &st.local_array_aliases,
-                &st.struct_instances,
+                &visible_structs,
                 struct_defs,
                 errors,
             ) else {
@@ -891,7 +988,7 @@ fn analyze_assign_init(
                     input_names,
                     output_names,
                     param_names,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     &st.nested_proc_arrays,
                     errors,
@@ -911,7 +1008,7 @@ fn analyze_assign_init(
                     input_names,
                     output_names,
                     param_names,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     &st.nested_proc_arrays,
                     errors,
@@ -927,14 +1024,35 @@ fn analyze_assign_init(
                 ScopeKind::Init,
                 &st.tuple_vars,
             );
+            if let Some(expected) = &target_info.elem_struct {
+                validate_struct_slice_assignment(
+                    expr,
+                    expected,
+                    target_loc,
+                    stmt_env,
+                    |errors| {
+                        resolve_executable_data_like_info(
+                            expr,
+                            &st.declared_symbols,
+                            &st.state_arrays,
+                            &st.local_array_aliases,
+                            &visible_structs,
+                            struct_defs,
+                            errors,
+                        )
+                    },
+                    errors,
+                );
+                return;
+            }
             if is_data_like_value_expr(expr, stmt_env) {
                 validate_data_like_value_expr(expr, stmt_env, errors);
-                if let Some(src_info) = infer_init_data_like_info(
+                if let Some(src_info) = resolve_executable_data_like_info(
                     expr,
                     &st.declared_symbols,
                     &st.state_arrays,
                     &st.local_array_aliases,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     errors,
                 ) {
@@ -959,7 +1077,7 @@ fn analyze_assign_init(
                     input_names,
                     output_names,
                     param_names,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     &st.nested_proc_arrays,
                     errors,
@@ -983,7 +1101,7 @@ fn analyze_assign_init(
             let declared_ty = if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else if let Some(param) = generic_decl_ty {
-                if !typed_named_ctor_decl_without_type_args {
+                if !typed_named_ctor_decl_without_type_args && !struct_defs.contains_key(param) {
                     target_error!(
                         format!(
                             "generic typed declaration for '{name}: {param}' is not supported; '{param}' is not a known type parameter"
@@ -1058,6 +1176,222 @@ fn analyze_assign_init(
                 }
             }
 
+            if let Some(DeclType::Slice(element)) = decl_ty {
+                if st.known_scalars.contains(name)
+                    || st.local_array_aliases.contains_key(name)
+                    || st.state_arrays.contains_key(name)
+                    || visible_structs.contains_key(name)
+                {
+                    target_error!(format!(
+                        "slice declaration '{name}' must introduce a new name"
+                    ));
+                    return;
+                }
+                if let Some(alias) =
+                    typed_slice_alias_info(expr, element, scope_expr_env!(scope), errors)
+                {
+                    st.local_array_aliases.insert(name.clone(), alias);
+                }
+                return;
+            }
+            if !is_typed_decl && generic_decl_ty.is_none() && !matches!(expr, Expr::UserCall { .. })
+            {
+                if matches!(expr, Expr::Var { .. })
+                    && !st.local_array_aliases.contains_key(name)
+                    && !st.known_scalars.contains(name)
+                    && !st.state_arrays.contains_key(name)
+                {
+                    if let Some(alias) = resolve_executable_data_like_info(
+                        expr,
+                        &st.declared_symbols,
+                        &st.state_arrays,
+                        &st.local_array_aliases,
+                        &visible_structs,
+                        struct_defs,
+                        errors,
+                    ) {
+                        validate_fixed_data_expr(expr, scope_expr_env!(scope), errors);
+                        st.local_array_aliases.insert(name.clone(), alias);
+                        return;
+                    }
+                }
+
+                if let Some(DataType::Struct(struct_name)) =
+                    infer_fixed_data_type(expr, scope_expr_env!(scope))
+                {
+                    if !visible_structs.contains_key(name) && !st.state_scalars.contains_key(name) {
+                        validate_fixed_data_expr(expr, scope_expr_env!(scope), errors);
+                        add_struct_element_alias_bindings(
+                            name,
+                            &struct_name,
+                            struct_defs,
+                            &mut st.known_scalars,
+                            &mut st.local_aliases,
+                            &mut st.local_array_aliases,
+                            &format!("data alias '{name}'"),
+                            errors,
+                        );
+                        st.local_struct_aliases.insert(name.clone(), struct_name);
+                        return;
+                    }
+                }
+            }
+
+            if allow_owner_state_intro {
+                if validate_primitive_array_literal_replacement(
+                    name,
+                    expr,
+                    is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                    scope_expr_env!(scope),
+                    target_loc,
+                    errors,
+                ) {
+                    return;
+                }
+                let fixed_data =
+                    infer_data_initializer_type(expr, decl_ty.as_ref(), scope_expr_env!(scope));
+                if let Some(DeclType::Array { elem, size }) = decl_ty {
+                    let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(size)
+                    else {
+                        target_error!(
+                            "fixed array declaration requires a positive, statically known length"
+                        );
+                        return;
+                    };
+                    let expected = DataType::Array {
+                        element: ArrayElemType::Primitive(*elem),
+                        len,
+                    };
+                    if fixed_data.as_ref() != Some(&expected) {
+                        target_error!(format!(
+                            "fixed array declaration for '{name}' {}",
+                            data_type_mismatch(&expected, fixed_data.as_ref())
+                        ));
+                        return;
+                    }
+                }
+                if let Some(DataType::Array { ref element, len }) = fixed_data {
+                    if matches!(expr, Expr::UserCall { .. })
+                        || decl_ty.is_some()
+                        || st.state_arrays.contains_key(name)
+                        || st.state_array_struct_roots.contains_key(name)
+                    {
+                        if let Some(existing) =
+                            infer_fixed_data_type(&Expr::var(name), scope_expr_env!(scope))
+                        {
+                            if is_typed_decl {
+                                target_error!("data declaration must introduce a new name");
+                                return;
+                            }
+                            if existing
+                                != (DataType::Array {
+                                    element: element.clone(),
+                                    len,
+                                })
+                            {
+                                let actual = DataType::Array {
+                                    element: element.clone(),
+                                    len,
+                                };
+                                target_error!(format!(
+                                    "data replacement for '{name}' {}",
+                                    data_type_mismatch(&existing, Some(&actual)),
+                                ));
+                                return;
+                            }
+                        } else if st.state_scalars.contains_key(name)
+                            || st.struct_instances.contains_key(name)
+                        {
+                            target_error!("data declaration conflicts with an existing binding");
+                            return;
+                        }
+                        validate_fixed_data_expr(expr, scope_expr_env!(scope), errors);
+                        match element {
+                            ArrayElemType::Primitive(elem_ty) => {
+                                insert_declared_symbol(
+                                    &mut st.state_scalars,
+                                    &mut st.declared_symbols,
+                                    name.clone(),
+                                    DeclaredSymbolInfo::DataArray { elem_ty: *elem_ty },
+                                );
+                                st.state_arrays.insert(name.clone(), len);
+                            }
+                            ArrayElemType::Struct(struct_name) => {
+                                if ctx.proc_init_resolution().is_some() {
+                                    st.state_array_specs.insert(
+                                        name.clone(),
+                                        ArrayTypeSpec {
+                                            elem: element.clone(),
+                                            size: Box::new(Expr::int(len as i64)),
+                                        },
+                                    );
+                                    st.state_array_struct_roots.insert(
+                                        name.clone(),
+                                        ArrayStructRootInfo {
+                                            struct_name: struct_name.clone(),
+                                            len,
+                                            static_len: Some(len),
+                                        },
+                                    );
+                                } else {
+                                    register_data_struct_root(
+                                        name,
+                                        struct_name,
+                                        len,
+                                        struct_defs,
+                                        ctx.context_label,
+                                        &mut st.state_scalars,
+                                        &mut st.declared_symbols,
+                                        &mut st.state_arrays,
+                                        &mut st.state_array_struct_roots,
+                                        errors,
+                                    );
+                                }
+                                st.known_scalars.insert(name.clone());
+                            }
+                        }
+                        return;
+                    }
+                }
+                if let Some(DataType::Struct(struct_name)) =
+                    infer_fixed_data_type(expr, scope_expr_env!(scope))
+                {
+                    if matches!(expr, Expr::UserCall { .. })
+                        || is_typed_decl
+                        || generic_decl_ty.is_some()
+                        || st.struct_instances.contains_key(name)
+                    {
+                        if decl_ty.is_some()
+                            || generic_decl_ty
+                                .as_ref()
+                                .is_some_and(|ty| *ty != struct_name)
+                        {
+                            target_error!(
+                                "data initializer does not match its declared nominal type"
+                            );
+                            return;
+                        }
+                        if (is_typed_decl || generic_decl_ty.is_some())
+                            && (st.struct_instances.contains_key(name)
+                                || st.local_struct_aliases.contains_key(name))
+                        {
+                            target_error!("data declaration must introduce a new name");
+                            return;
+                        }
+                        analyze_struct_data_init_assign(
+                            name,
+                            &struct_name,
+                            expr,
+                            target_loc.into(),
+                            stmt_ctx,
+                            st,
+                            errors,
+                        );
+                        return;
+                    }
+                }
+            }
+
             if st.local_aliases.contains_key(name) {
                 validate_expr(expr, scope_expr_env!(scope), errors);
                 let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
@@ -1071,7 +1405,7 @@ fn analyze_assign_init(
                     input_names,
                     output_names,
                     param_names,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     &st.nested_proc_arrays,
                     errors,
@@ -1084,6 +1418,17 @@ fn analyze_assign_init(
                     errors,
                 );
                 st.known_scalars.insert(name.clone());
+                return;
+            }
+            if name.contains('.')
+                && validate_fixed_data_binding_replacement(
+                    name,
+                    expr,
+                    scope_expr_env!(scope),
+                    target_loc,
+                    errors,
+                )
+            {
                 return;
             }
             if st.local_array_aliases.contains_key(name) {
@@ -1157,7 +1502,7 @@ fn analyze_assign_init(
                     input_names,
                     output_names,
                     param_names,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     &st.nested_proc_arrays,
                     errors,
@@ -1176,7 +1521,7 @@ fn analyze_assign_init(
                         input_names,
                         output_names,
                         param_names,
-                        &st.struct_instances,
+                        &visible_structs,
                         struct_defs,
                         &st.nested_proc_arrays,
                         errors,
@@ -1213,7 +1558,7 @@ fn analyze_assign_init(
                 &st.tuple_vars,
                 &st.local_aliases,
                 Some(&st.state_tuples),
-                &st.struct_instances,
+                &visible_structs,
                 struct_defs,
                 common.fn_return_types,
                 |value| {
@@ -1228,7 +1573,7 @@ fn analyze_assign_init(
                         input_names,
                         output_names,
                         param_names,
-                        &st.struct_instances,
+                        &visible_structs,
                         struct_defs,
                         &st.nested_proc_arrays,
                         errors,
@@ -1354,14 +1699,14 @@ fn analyze_assign_init(
                     return;
                 }
                 validate_expr(expr, scope_expr_env!(ScopeKind::Init), errors);
-                if let Some(alias) = infer_init_slice_alias_info(
+                if let Some(alias) = resolve_executable_slice_alias_info(
                     base,
                     start.as_deref(),
                     end.as_deref(),
                     &st.declared_symbols,
                     &st.state_arrays,
                     &st.local_array_aliases,
-                    &st.struct_instances,
+                    &visible_structs,
                     struct_defs,
                     errors,
                 ) {
@@ -1486,12 +1831,14 @@ fn analyze_assign_init(
                             Some(struct_template) => {
                                 if type_args.is_empty() {
                                     if !struct_template.type_params.is_empty() {
+                                        let locals = GenericInferenceLocals::from_scalar_types(
+                                            &st.state_scalars,
+                                            !typed_named_ctor_decl_without_type_args,
+                                        );
                                         infer_generic_struct_ctor_type_args(
                                             struct_template,
                                             args,
-                                            &st.state_scalars,
-                                            &HashMap::new(),
-                                            !typed_named_ctor_decl_without_type_args,
+                                            &locals,
                                             DiagCtx::new(expr.loc()),
                                             errors,
                                         )
@@ -1594,10 +1941,10 @@ fn analyze_assign_init(
                             );
                             return;
                         }
-                        analyze_struct_ctor_init_assign(
+                        analyze_struct_data_init_assign(
                             name,
                             ctor_name,
-                            args,
+                            expr,
                             target_loc.into(),
                             stmt_ctx,
                             st,
@@ -1721,13 +2068,22 @@ fn analyze_assign_init(
                     if let Some(size_val) = with_expr_diag_context(&spec.size, |_diag| {
                         eval_data_size_expr(&spec.size, options, &size_context, errors)
                     }) {
-                        st.state_arrays.entry(name.clone()).or_insert(size_val);
                         if let ArrayElemType::Primitive(elem_ty) = spec.elem {
+                            st.state_arrays.entry(name.clone()).or_insert(size_val);
                             insert_declared_symbol(
                                 &mut st.state_scalars,
                                 &mut st.declared_symbols,
                                 name.clone(),
                                 DeclaredSymbolInfo::DataArray { elem_ty },
+                            );
+                        } else if let ArrayElemType::Struct(struct_name) = &spec.elem {
+                            st.state_array_struct_roots.insert(
+                                name.clone(),
+                                ArrayStructRootInfo {
+                                    struct_name: struct_name.clone(),
+                                    len: size_val,
+                                    static_len: Some(size_val),
+                                },
                             );
                         }
                     }
@@ -1890,7 +2246,7 @@ fn analyze_assign_init(
                                         input_names,
                                         output_names,
                                         param_names,
-                                        &st.struct_instances,
+                                        &visible_structs,
                                         struct_defs,
                                         &st.nested_proc_arrays,
                                         errors,
@@ -1908,6 +2264,7 @@ fn analyze_assign_init(
                         }
                     }
                     ArrayElemType::Struct(struct_name) => {
+                        validate_fixed_data_expr(expr, scope_expr_env!(scope), errors);
                         if !register_data_struct_root(
                             name,
                             struct_name,
@@ -1948,7 +2305,7 @@ fn analyze_assign_init(
                         &st.state_scalars,
                         &st.state_arrays,
                         &st.state_array_struct_roots,
-                        &st.struct_instances,
+                        &visible_structs,
                         struct_defs,
                         &empty_proc_array_roots,
                         errors,
@@ -1965,7 +2322,7 @@ fn analyze_assign_init(
                             input_names,
                             output_names,
                             param_names,
-                            &st.struct_instances,
+                            &visible_structs,
                             struct_defs,
                             &st.nested_proc_arrays,
                             errors,
@@ -1973,6 +2330,8 @@ fn analyze_assign_init(
                         require_expr_numeric_type(index, idx_ty, "array index expression", errors);
                         match binding_kind {
                             IndexedBindingKind::StructElementAlias(struct_name) => {
+                                st.local_struct_aliases
+                                    .insert(name.clone(), struct_name.clone());
                                 if !add_struct_element_alias_bindings(
                                     name,
                                     &struct_name,
@@ -2008,9 +2367,9 @@ fn analyze_assign_init(
                     "cannot assign scalar expression to array symbol '{name}'"
                 ),);
             }
-            if st.struct_instances.contains_key(name) {
+            if let Some(expected) = st.struct_instances.get(name) {
                 target_error!(format!(
-                    "cannot assign scalar expression to struct instance '{name}'"
+                    "cannot assign a non-struct value to struct instance '{name}' of type '{expected}'; whole-struct replacement requires another '{expected}' value"
                 ),);
             }
             validate_expr(expr, scope_expr_env!(ScopeKind::Init), errors);
@@ -2026,7 +2385,7 @@ fn analyze_assign_init(
                 input_names,
                 output_names,
                 param_names,
-                &st.struct_instances,
+                &visible_structs,
                 struct_defs,
                 &st.nested_proc_arrays,
                 errors,
@@ -2094,13 +2453,117 @@ fn analyze_assign_init(
             st.state_scalars.insert(name.clone(), target_ty);
             st.known_scalars.insert(name.clone());
         }
-        AssignTarget::Tuple(_) => {}
+        AssignTarget::Tuple(targets) => {
+            if decl_ty.is_some() || generic_decl_ty.is_some() || is_typed_decl {
+                target_error!("tuple destructuring targets cannot have a type annotation");
+                return;
+            }
+            if let Some(pctx) = ctx.proc_init_resolution() {
+                let decl_state = build_decl_check_state(st);
+                if !validate_proc_init_expr_decl_order!(expr, pctx, &decl_state) {
+                    return;
+                }
+            }
+            let mut targets_ok = true;
+            for name in targets.iter().filter_map(|target| target.binding()) {
+                if locals.contains(name) {
+                    target_error!(format!("cannot assign to loop variable '{name}'"));
+                    targets_ok = false;
+                }
+                if is_builtin_constant_name(name) {
+                    target_error!(format!("cannot assign to builtin constant '{name}'"));
+                    targets_ok = false;
+                }
+                targets_ok &= validate_block_bound_surface_var_name(
+                    name,
+                    target_loc,
+                    scope_expr_env!(ScopeKind::Init),
+                    errors,
+                );
+                if input_names.contains(name)
+                    || output_names.contains(name)
+                    || param_names.contains(name)
+                {
+                    target_error!(format!("cannot assign to '{name}' in init block"));
+                    targets_ok = false;
+                }
+                if st.state_arrays.contains_key(name)
+                    || st.state_array_struct_roots.contains_key(name)
+                    || visible_structs.contains_key(name)
+                    || st.tuple_vars.contains_key(name)
+                {
+                    target_error!(format!(
+                        "cannot destructure a scalar component into non-scalar binding '{name}'"
+                    ));
+                    targets_ok = false;
+                }
+            }
+            let destructured_types = analyze_tuple_destructuring_expr(
+                expr,
+                targets.len(),
+                target_loc,
+                build_scope_stmt_expr_env_with_tuples(
+                    expr_inputs!(),
+                    &st.known_scalars,
+                    &st.local_aliases,
+                    &st.local_array_aliases,
+                    &array_vars,
+                    scope,
+                    &st.tuple_vars,
+                ),
+                &st.state_tuples,
+                common.fn_return_types,
+                errors,
+            );
+            if !targets_ok {
+                return;
+            }
+            clear_tuple_var_bindings(
+                &mut st.tuple_vars,
+                targets.iter().filter_map(|target| target.binding()),
+            );
+            for (index, target) in targets.iter().enumerate() {
+                let Some(name) = target.binding() else {
+                    continue;
+                };
+                let source_ty = destructured_types
+                    .as_ref()
+                    .and_then(|types| types.get(index))
+                    .copied()
+                    .unwrap_or(PrimitiveType::F32);
+                let target_ty = st
+                    .state_scalars
+                    .get(name)
+                    .or_else(|| st.local_aliases.get(name))
+                    .copied()
+                    .unwrap_or(source_ty);
+                let component = match expr {
+                    Expr::Tuple { values, .. } => values.get(index).unwrap_or(expr),
+                    _ => expr,
+                };
+                require_expr_assignable_type(
+                    component,
+                    Some(source_ty),
+                    target_ty,
+                    &format!("init tuple destructuring assignment to '{name}'"),
+                    errors,
+                );
+                replace_tracked_tuple_types(&mut st.local_aliases, name, None);
+                if allow_owner_state_intro && !st.local_aliases.contains_key(name) {
+                    st.state_scalars.entry(name.to_owned()).or_insert(target_ty);
+                } else {
+                    st.local_aliases.entry(name.to_owned()).or_insert(target_ty);
+                }
+                st.known_scalars.insert(name.to_owned());
+            }
+        }
+        AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }
 }
-fn analyze_struct_ctor_init_assign(
+fn analyze_struct_data_init_assign(
     target: &str,
     struct_name: &str,
-    args: &[CallArg],
+    expr: &Expr,
     diag: DiagCtx,
     ctx: InitStmtAnalysisCtx<'_>,
     st: &mut InitAnalysisState,
@@ -2110,6 +2573,8 @@ fn analyze_struct_ctor_init_assign(
     let locals = ctx.locals;
     let outputs = common.output_names;
     let struct_defs = common.struct_defs;
+    let mut visible_structs = st.struct_instances.clone();
+    visible_structs.extend(st.local_struct_aliases.clone());
     let InitAnalysisState {
         known_scalars,
         local_aliases,
@@ -2120,10 +2585,13 @@ fn analyze_struct_ctor_init_assign(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        local_struct_aliases,
         state_tuples,
         nested_proc_arrays,
         ..
     } = st;
+    let mut visible_structs = struct_instances.clone();
+    visible_structs.extend(local_struct_aliases.clone());
     let empty_param_structs = HashMap::<String, String>::new();
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     macro_rules! init_expr_env {
@@ -2135,7 +2603,7 @@ fn analyze_struct_ctor_init_assign(
                     state_scalars,
                     declared_symbols,
                     &empty_param_structs,
-                    struct_instances,
+                    &visible_structs,
                     outputs,
                     state_array_struct_roots,
                     nested_proc_arrays,
@@ -2150,12 +2618,20 @@ fn analyze_struct_ctor_init_assign(
             env
         }};
     }
-    if struct_instances.contains_key(target) {
-        push_semantic(
-            diag,
-            errors,
-            format!("struct instance '{target}' can only be initialized once"),
-        );
+    validate_fixed_data_expr(expr, init_expr_env!(), errors);
+    if let Some(existing) = struct_instances.get(target) {
+        if existing != struct_name {
+            let expected = DataType::Struct(existing.clone());
+            let actual = DataType::Struct(struct_name.to_owned());
+            push_semantic(
+                diag,
+                errors,
+                format!(
+                    "data replacement for '{target}' {}",
+                    data_type_mismatch(&expected, Some(&actual))
+                ),
+            );
+        }
         return;
     }
     if state_scalars.contains_key(target)
@@ -2170,64 +2646,15 @@ fn analyze_struct_ctor_init_assign(
         return;
     }
 
-    let Some(fields) = struct_defs.get(struct_name) else {
+    if !struct_defs.contains_key(struct_name) {
         push_semantic(diag, errors, format!("unknown struct '{struct_name}'"));
         return;
-    };
+    }
 
-    let scalar_param_names = fields
-        .iter()
-        .filter(|f| matches!(f.ty, TypedFieldType::Scalar(_)))
-        .map(|f| f.name.clone())
-        .collect::<Vec<_>>();
-    let scalar_defaults = fields
-        .iter()
-        .filter(|f| matches!(f.ty, TypedFieldType::Scalar(_)))
-        .map(|f| f.default.clone().or(Some(Expr::number(0.0))))
-        .collect::<Vec<_>>();
-
-    let resolved = resolve_call_args(
-        args,
-        &scalar_param_names,
-        &scalar_defaults,
-        false,
-        false,
-        &format!("struct constructor '{struct_name}'"),
-        errors,
-    );
-
-    let mut scalar_idx = 0usize;
-    for field in fields {
-        let flat = format!("{target}.{}", field.name);
+    visit_struct_field_paths(struct_name, struct_defs, |path, field| {
+        let flat = format!("{target}.{path}");
         match field.ty {
             TypedFieldType::Scalar(prim) => {
-                if let Some(arg) = resolved[scalar_idx] {
-                    validate_expr(arg, init_expr_env!(), errors);
-                    let arg_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                        arg,
-                        state_scalars,
-                        declared_symbols,
-                        None,
-                        local_aliases,
-                        local_array_aliases,
-                        locals,
-                        common.input_names,
-                        outputs,
-                        common.param_names,
-                        struct_instances,
-                        struct_defs,
-                        nested_proc_arrays,
-                        errors,
-                    );
-                    require_expr_assignable_type(
-                        arg,
-                        arg_ty,
-                        prim,
-                        &format!("struct constructor field '{flat}'"),
-                        errors,
-                    );
-                }
-                scalar_idx += 1;
                 state_scalars.insert(flat.clone(), prim);
                 known_scalars.insert(flat);
             }
@@ -2241,7 +2668,7 @@ fn analyze_struct_ctor_init_assign(
                 if let Some(elem_struct) = &field.array_elem_struct {
                     let context =
                         format!("struct constructor field '{flat}' array element '{elem_struct}'");
-                    if !register_data_struct_root(
+                    register_data_struct_root(
                         &flat,
                         elem_struct,
                         len,
@@ -2252,9 +2679,7 @@ fn analyze_struct_ctor_init_assign(
                         state_arrays,
                         state_array_struct_roots,
                         errors,
-                    ) {
-                        continue;
-                    }
+                    );
                 } else {
                     insert_declared_symbol(
                         state_scalars,
@@ -2268,7 +2693,7 @@ fn analyze_struct_ctor_init_assign(
                 }
             }
         }
-    }
+    });
 
     register_struct_instance_roots(target, struct_name, struct_defs, struct_instances);
 }
@@ -2297,10 +2722,13 @@ fn analyze_struct_field_init_assign(
         state_arrays,
         state_array_struct_roots,
         struct_instances,
+        local_struct_aliases,
         state_tuples,
         nested_proc_arrays,
         ..
     } = st;
+    let mut visible_structs = struct_instances.clone();
+    visible_structs.extend(local_struct_aliases.clone());
     let empty_param_structs = HashMap::<String, String>::new();
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     let expr_inputs = build_scope_analysis_expr_inputs(
@@ -2309,7 +2737,7 @@ fn analyze_struct_field_init_assign(
         state_scalars,
         declared_symbols,
         &empty_param_structs,
-        struct_instances,
+        &visible_structs,
         outputs,
         state_array_struct_roots,
         nested_proc_arrays,
@@ -2328,19 +2756,11 @@ fn analyze_struct_field_init_assign(
             env
         }};
     }
-    let Some(struct_name) = struct_instances.get(base) else {
+    let Some(struct_name) = visible_structs.get(base) else {
         push_semantic(diag, errors, format!("unknown struct instance '{base}'"));
         return;
     };
-    let Some(fields) = struct_defs.get(struct_name) else {
-        push_semantic(
-            diag,
-            errors,
-            format!("unknown struct type '{}'", struct_name),
-        );
-        return;
-    };
-    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, struct_defs) else {
         push_semantic(
             diag,
             errors,
@@ -2370,7 +2790,7 @@ fn analyze_struct_field_init_assign(
                 &HashSet::new(),
                 outputs,
                 &HashSet::new(),
-                struct_instances,
+                &visible_structs,
                 struct_defs,
                 errors,
             );
@@ -2391,7 +2811,7 @@ fn analyze_struct_field_init_assign(
                 tuple_vars,
                 local_aliases,
                 Some(state_tuples),
-                struct_instances,
+                &visible_structs,
                 struct_defs,
                 common.fn_return_types,
                 |value| {
@@ -2406,7 +2826,7 @@ fn analyze_struct_field_init_assign(
                         common.input_names,
                         outputs,
                         common.param_names,
-                        struct_instances,
+                        &visible_structs,
                         struct_defs,
                         nested_proc_arrays,
                         errors,

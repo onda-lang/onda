@@ -595,6 +595,26 @@
         padding: 0 3px;
       }
 
+      .event-structured-arg {
+        display: block;
+      }
+
+      .event-structured-heading {
+        cursor: pointer;
+        padding: 4px 0;
+      }
+
+      .event-structured-arg[open] > .event-structured-heading {
+        margin-bottom: 6px;
+      }
+
+      .event-structured-arg > textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 7rem;
+        resize: vertical;
+      }
+
       .event-array-arg {
         display: block;
         padding: 0;
@@ -2654,7 +2674,12 @@
         return Number.isFinite(number) ? number : 0;
       }
 
+      function isStructuredEventArg(arg) {
+        return !/^(?:f32|f64|i32|i64|bool)(?:\[[0-9]*\])?$/.test(arg.type);
+      }
+
       function initialEventArgValue(arg) {
+        if (isStructuredEventArg(arg)) return structuredClone(arg.default ?? arg.value ?? {});
         if (isArrayEventArg(arg)) {
           const scalar = eventArrayScalarType(arg);
           return Array.isArray(arg.default)
@@ -2692,7 +2717,7 @@
                 ? rawValue
                 : initialEventArgValue(arg);
               return Object.assign({}, arg, {
-                value: isArrayEventArg(arg)
+                value: isStructuredEventArg(arg) ? value : isArrayEventArg(arg)
                   ? (Array.isArray(value)
                     ? value.map((item) => eventScalarValue(eventArrayScalarType(arg), item))
                     : [])
@@ -2709,7 +2734,7 @@
       }
 
       function isArrayEventArg(arg) {
-        return Boolean(arg && (
+        return Boolean(arg && !isStructuredEventArg(arg) && (
           arg.isSlice
           || (typeof arg.arrayLength === "number" && arg.arrayLength !== 1)
           || (typeof arg.type === "string" && /\[[0-9]*\]$/.test(arg.type))
@@ -2879,6 +2904,10 @@
             isArrayEventArg(arg) ? arg.value.length : null)),
         ]);
         if (renderedEvents === state.events && renderedEventShape === shape) return;
+        const structuredOpenStates = new Map(
+          [...eventsNode.querySelectorAll(".event-structured-arg")]
+            .map(group => [group.dataset.foldKey, group.open]),
+        );
         renderedEvents = state.events;
         renderedEventShape = shape;
         eventsNode.replaceChildren();
@@ -2908,7 +2937,7 @@
             trigger.className = "event-trigger compact-action";
             trigger.textContent = "Trigger";
             const refreshTrigger = () => {
-              trigger.disabled = !state.connected;
+              trigger.disabled = !state.connected || Boolean(controls.querySelector(":invalid"));
             };
             eventHead.append(head, trigger);
             card.appendChild(eventHead);
@@ -2918,11 +2947,16 @@
             if (argumentCount > 0) card.appendChild(controls);
 
             for (const arg of event.args || []) {
-              const setting = document.createElement("div");
-              setting.className = "event-arg";
+              const structured = isStructuredEventArg(arg);
+              const setting = document.createElement(structured ? "details" : "div");
+              setting.className = structured
+                ? "event-arg event-structured-arg"
+                : "event-arg";
 
-              const label = document.createElement("div");
-              label.className = "event-arg-heading";
+              const label = document.createElement(structured ? "summary" : "div");
+              label.className = structured
+                ? "event-arg-heading event-structured-heading"
+                : "event-arg-heading";
               const argName = document.createElement("span");
               argName.className = "event-arg-name";
               argName.textContent = arg.name;
@@ -2933,7 +2967,25 @@
               label.title = arg.name + ": " + arg.type;
               setting.appendChild(label);
 
-              if (isArrayEventArg(arg)) {
+              if (structured) {
+                setting.dataset.foldKey = JSON.stringify([event.name, arg.name, arg.type]);
+                setting.open = structuredOpenStates.get(setting.dataset.foldKey) ?? true;
+                const input = document.createElement("textarea");
+                input.className = "param-number";
+                input.value = JSON.stringify(arg.value, null, 2);
+                input.disabled = !state.connected;
+                input.setAttribute("aria-label", arg.name + " JSON value");
+                input.addEventListener("input", () => {
+                  try {
+                    arg.value = JSON.parse(input.value);
+                    input.setCustomValidity("");
+                  } catch {
+                    input.setCustomValidity("Enter a valid JSON value");
+                  }
+                  refreshTrigger();
+                });
+                setting.appendChild(input);
+              } else if (isArrayEventArg(arg)) {
                 setting.classList.add("event-array-arg");
                 const arrayHead = document.createElement("div");
                 arrayHead.className = "event-array-head";
@@ -3035,7 +3087,7 @@
                 type: "triggerEvent",
                 name: event.name,
                 values: (event.args || []).map((arg) =>
-                  isArrayEventArg(arg)
+                  (isStructuredEventArg(arg) || isArrayEventArg(arg))
                     ? arg.value
                     : eventScalarValue(arg.type, arg.value)
                 ),

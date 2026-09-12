@@ -290,7 +290,9 @@ pub(super) fn fold_host_sr_assign_target(
     consts: &HashMap<String, TypedConstValue>,
 ) {
     match target {
-        AssignTarget::Index { index, .. } => fold_local_scalar_const_expr(index, consts),
+        AssignTarget::Index { .. } | AssignTarget::IndexedMember { .. } => {
+            target.visit_selectors_mut(|selector| fold_local_scalar_const_expr(selector, consts))
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -958,6 +960,13 @@ pub(super) fn const_def_return_type(
             None
         }
         Some(FnReturnType::Array { elem, size }) => {
+            let FnReturnScalarType::Primitive(elem) = elem else {
+                errors.push(Diagnostic::semantic_span(
+                    "const def array return requires primitive elements",
+                    def.return_ty_loc,
+                ));
+                return None;
+            };
             let locals = HashMap::new();
             let local_arrays = HashMap::new();
             let len = eval_const_array_size_with_defs(

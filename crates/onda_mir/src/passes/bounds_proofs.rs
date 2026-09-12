@@ -22,6 +22,7 @@ pub(super) fn eliminate_proven_bounds_checks(
             program,
             function: &function,
             ranges,
+            slice_lengths: fixed_slice_lengths(&function),
         };
         let eliminated = prove_block(&context, &mut body);
         program.functions[function_index].body = body;
@@ -35,6 +36,76 @@ struct Context<'a> {
     program: &'a crate::Program,
     function: &'a Function,
     ranges: &'a FunctionRangeAnalysis,
+    slice_lengths: Vec<Option<u32>>,
+}
+
+/// A descriptor assigned once has a stable shape even when its elements are
+/// mutable. Multiple definitions or address escapes discard the proof.
+fn fixed_slice_lengths(function: &Function) -> Vec<Option<u32>> {
+    fn scan(block: &Block, writes: &mut [u32], lengths: &mut [Option<u32>]) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign {
+                    destination:
+                        Place {
+                            base: PlaceBase::Local(local),
+                            projections,
+                        },
+                    value,
+                } if projections.is_empty() => {
+                    writes[local.index()] = writes[local.index()].saturating_add(1);
+                    lengths[local.index()] = match value {
+                        Rvalue::MakeSlice {
+                            len: Value::Constant(ScalarValue::I32(len)),
+                            bounds: BoundsMode::Checked | BoundsMode::Unchecked,
+                            ..
+                        } => u32::try_from(*len).ok(),
+                        _ => None,
+                    };
+                }
+                StatementKind::Call { results, args, .. } => {
+                    for local in results {
+                        writes[local.index()] = 2;
+                    }
+                    for argument in args {
+                        if let CallArgument::Place(Place {
+                            base: PlaceBase::Local(local),
+                            ..
+                        }) = argument
+                        {
+                            writes[local.index()] = 2;
+                        }
+                    }
+                }
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    scan(then_block, writes, lengths);
+                    scan(else_block, writes, lengths);
+                }
+                StatementKind::Loop { body } => scan(body, writes, lengths),
+                _ => {}
+            }
+        }
+    }
+    let mut writes = vec![0; function.locals.len()];
+    let mut lengths = vec![None; function.locals.len()];
+    scan(&function.body, &mut writes, &mut lengths);
+    for (count, length) in writes.into_iter().zip(&mut lengths) {
+        if count != 1 {
+            *length = None;
+        }
+    }
+    lengths
+}
+
+fn slice_length(context: &Context<'_>, value: Value) -> Option<u32> {
+    match value {
+        Value::Local(local) => context.slice_lengths.get(local.index()).copied().flatten(),
+        _ => None,
+    }
 }
 
 fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
@@ -106,8 +177,17 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
             StatementKind::BufferParamStore { parameter, .. } => {
                 eliminated += prove_buffer_param_ref(context, parameter);
             }
-            StatementKind::SliceStore { .. }
-            | StatementKind::SliceFill { .. }
+            StatementKind::SliceStore {
+                slice,
+                index,
+                bounds,
+                ..
+            } => {
+                if let Some(len) = slice_length(context, *slice) {
+                    eliminated += prove_index(context, *index, len, bounds);
+                }
+            }
+            StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
             | StatementKind::Break
             | StatementKind::Continue
@@ -185,6 +265,13 @@ fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => prove_buffer_param_ref(context, parameter),
         Rvalue::MakeSlice { source, .. } => prove_slice_source(context, source),
+        Rvalue::SliceLoad {
+            slice,
+            index,
+            bounds,
+        } => {
+            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
+        }
         _ => 0,
     }
 }
@@ -197,6 +284,13 @@ fn prove_call_argument(
 ) -> u64 {
     match argument {
         CallArgument::Place(place) => prove_place(context, place),
+        CallArgument::SliceElement {
+            slice,
+            index,
+            bounds,
+        } => {
+            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
+        }
         CallArgument::ArrayWindow {
             array,
             start,
@@ -441,6 +535,110 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn fixed_slice_proofs_exclude_clamped_empty_and_reassigned_descriptors() {
+        for creation in [
+            BoundsMode::Clamp,
+            BoundsMode::Checked,
+            BoundsMode::Unchecked,
+        ] {
+            for len in [0, 2] {
+                for reassigned in [false, true] {
+                    let mut program = Program::new(
+                        CompileConfig {
+                            sample_rate: 48_000.0,
+                            block_size: 1,
+                        },
+                        FunctionId::new(0),
+                        FunctionId::new(0),
+                    );
+                    program.types = vec![
+                        Type::Scalar(ScalarType::I32),
+                        Type::Slice {
+                            element: ScalarType::I32,
+                            access: AccessMode::ReadWrite,
+                        },
+                    ];
+                    let descriptor = Statement {
+                        source: SourceSpan::UNKNOWN,
+                        kind: StatementKind::Assign {
+                            destination: Place::local(LocalId::new(0)),
+                            value: Rvalue::MakeSlice {
+                                source: crate::SliceSource::Place(Place {
+                                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                                    projections: vec![],
+                                }),
+                                start: Value::Constant(ScalarValue::I32(0)),
+                                len: Value::Constant(ScalarValue::I32(len)),
+                                bounds: creation,
+                                access: AccessMode::ReadWrite,
+                            },
+                        },
+                    };
+                    let mut statements = vec![
+                        descriptor.clone(),
+                        Statement {
+                            source: SourceSpan::UNKNOWN,
+                            kind: StatementKind::Assign {
+                                destination: Place::local(LocalId::new(1)),
+                                value: Rvalue::SliceLoad {
+                                    slice: Value::Local(LocalId::new(0)),
+                                    index: Value::Constant(ScalarValue::I32(1)),
+                                    bounds: BoundsMode::Clamp,
+                                },
+                            },
+                        },
+                        Statement {
+                            source: SourceSpan::UNKNOWN,
+                            kind: StatementKind::SliceStore {
+                                slice: Value::Local(LocalId::new(0)),
+                                index: Value::Constant(ScalarValue::I32(1)),
+                                value: Value::Constant(ScalarValue::I32(3)),
+                                bounds: BoundsMode::Checked,
+                            },
+                        },
+                    ];
+                    if reassigned {
+                        statements.push(descriptor);
+                    }
+                    program.functions.push(Function {
+                        name: "slice_proof".into(),
+                        kind: FunctionKind::User,
+                        attributes: FunctionAttributes::default(),
+                        params: vec![FunctionParam {
+                            name: "source".into(),
+                            ty: TypeId::new(1),
+                            mode: PassingMode::Value,
+                            integer_range: None,
+                        }],
+                        results: vec![],
+                        locals: vec![
+                            Local {
+                                name: None,
+                                ty: TypeId::new(1),
+                                integer_range: None,
+                            },
+                            Local {
+                                name: None,
+                                ty: TypeId::new(0),
+                                integer_range: None,
+                            },
+                        ],
+                        body: Block { statements },
+                        source: SourceSpan::UNKNOWN,
+                    });
+                    let mut stats = PassStats::default();
+                    let proven = creation != BoundsMode::Clamp && len == 2 && !reassigned;
+                    assert_eq!(
+                        eliminate_proven_bounds_checks(&mut program, &mut stats),
+                        proven
+                    );
+                    assert_eq!(stats.eliminated_bounds_checks, if proven { 2 } else { 0 });
+                }
+            }
+        }
+    }
 
     #[test]
     fn eliminates_redundant_normalization_and_fixed_buffer_selectors() {

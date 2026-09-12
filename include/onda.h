@@ -1,6 +1,7 @@
 #ifndef ONDA_H
 #define ONDA_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -314,13 +315,13 @@ typedef void (*onda_free_fn)(void* context, void* ptr, size_t size, size_t align
 /* Host allocator used by custom instance creation.
    This allocator is instance-scoped; programs, diagnostics, owned strings, and other library
    objects continue to use Onda's allocator and their matching destroy/dispose functions.
-   Onda calls alloc only synchronously during an allocator-backed create function; no operation on
-   a successfully created instance calls alloc. free may be called during failed creation or later
-   instance destruction. The context and callbacks must remain valid until every instance created
-   with this allocator has been destroyed. alloc must be callable on each thread where the host
-   creates an instance. free must be callable on every thread where creation can fail or an instance
-   can be destroyed. When multiple instances share an allocator and are created or destroyed
-   concurrently, the corresponding callbacks must support those concurrent calls. */
+   Onda calls alloc synchronously during creation and when explicitly growing an event workspace.
+   free may be called during failed creation, after successful workspace growth, or during instance
+   destruction. Realtime execution calls neither callback. The context and callbacks must remain
+   valid until every associated instance has been destroyed and must be callable on every thread
+   where the host creates an instance, grows its event workspace, or destroys it. When multiple
+   instances share an allocator and those operations run concurrently, the callbacks must support
+   the concurrent calls. */
 typedef struct {
   void* context;
   onda_alloc_fn alloc;
@@ -743,6 +744,17 @@ onda_instance_t* onda_instance_create_initialized_with_allocator(
   onda_execution_output_t* output,
   onda_diag_t* out_diag
 );
+/* Reserve aligned event input workspace outside realtime execution, using the instance allocator.
+   Fixed payloads fit the initial capacity; dynamic payloads start with at least 64 KiB. A request
+   above the current capacity allocates replacement storage and frees the old storage; other requests
+   retain it. Failure preserves the existing workspace and processor state. Reservation is allowed
+   before or after full initialization. */
+bool onda_instance_reserve_event_workspace(
+  onda_instance_t* instance,
+  size_t capacity_bytes,
+  onda_diag_t* out_diag
+);
+
 /* Destroys an instance handle created by any onda_instance_create variant.
    An instance has one exclusive owner at a time. It may be transferred between threads, but no
    instance operation may overlap another operation on the same handle. Destruction is not
@@ -762,8 +774,10 @@ int onda_set_param_plain_f64(onda_instance_t* instance, int index, double plain)
 int onda_set_param_normalized(onda_instance_t* instance, int index, double normalized);
 
 /* Triggers one event by index with packed payload bytes and optionally collects host-facing
-   execution output; returns 0 on success, negative on error. Unknown event indices are ignored and
-   return success. */
+   execution output; returns 0 on success, ONDA_EXECUTION_INPUT_REJECTED for malformed input or
+   insufficient workspace, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE for handler failure, or a negative
+   API error. Rejection preserves existing execution output; an admitted event resets supplied
+   batches before running its handler. Unknown event indices are ignored and return success. */
 int onda_trigger_event_by_index(
   onda_instance_t* instance,
   int index,
@@ -771,9 +785,10 @@ int onda_trigger_event_by_index(
   int payload_bytes,
   onda_execution_output_t* output
 );
-/* Triggers one event without payload/binding validation. The instance must have completed full
-   initialization, and payload/buffer metadata must satisfy the ABI contract. Returns 0 on success,
-   a positive generated-runtime failure code, or a negative API error. */
+/* Triggers one event without hosted payload/binding validation. The generated entry still performs
+   mandatory payload preflight and preserves existing execution output on rejection. The instance
+   must have completed full initialization, and buffer metadata must satisfy the ABI contract.
+   Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -848,7 +863,8 @@ enum {
 
 enum {
   ONDA_EXECUTION_OK = 0,
-  ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE = 1
+  ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE = 1,
+  ONDA_EXECUTION_INPUT_REJECTED = 2
 };
 
 /* Processes up to one logical block with current bindings and parameters, optionally collecting
@@ -1057,12 +1073,42 @@ int onda_param_type_bytes(const onda_program_t* program, int index);
 int onda_state_type_bytes(const onda_program_t* program, int index);
 /* Returns event payload byte width for fixed-shape events, or -1 if invalid or dynamic. */
 int onda_event_payload_bytes(const onda_program_t* program, int index);
+/* Returns the minimum event payload byte width, or -1 if invalid. Each dynamic slice contributes
+   its four-byte element count and zero element bytes. */
+int onda_event_payload_min_bytes(const onda_program_t* program, int index);
+/* Returns the recursive event schema as UTF-8 JSON, or NULL if invalid. The borrowed string remains
+   valid until the program is destroyed. */
+const char* onda_event_schema_json(const onda_program_t* program, int index);
+/* Computes exact packed payload and aligned preparation-workspace sizes from one logical length per
+   top-level slice, in declaration order. Returns false for an invalid index, pointer, length count,
+   negative length, or overflowing shape. Output values are written only on success. */
+bool onda_event_payload_sizes(
+  const onda_program_t* program,
+  int index,
+  const int32_t* slice_lengths,
+  int slice_length_count,
+  int* out_payload_bytes,
+  int* out_workspace_bytes
+);
 /* Returns the exact payload byte width for a fixed-shape delegate, excluding the record header.
    Returns -1 for an invalid index or a delegate containing a dynamic slice. */
 int onda_delegate_payload_bytes(const onda_program_t* program, int index);
 /* Returns the minimum payload byte width, excluding the record header, or -1 if invalid. Each
    dynamic slice contributes its four-byte element count and zero element bytes to this minimum. */
 int onda_delegate_payload_min_bytes(const onda_program_t* program, int index);
+/* Returns the recursive delegate schema as UTF-8 JSON, or NULL if invalid. The borrowed string
+   remains valid until the program is destroyed. */
+const char* onda_delegate_schema_json(const onda_program_t* program, int index);
+/* Delegate equivalent of onda_event_payload_sizes. The workspace result describes the shared
+   prepared representation and is useful to hosts using raw generated processor entry points. */
+bool onda_delegate_payload_sizes(
+  const onda_program_t* program,
+  int index,
+  const int32_t* slice_lengths,
+  int slice_length_count,
+  int* out_payload_bytes,
+  int* out_workspace_bytes
+);
 /* Returns the exact complete record size, including ONDA_DELEGATE_RECORD_HEADER_SIZE, for a
    fixed-shape delegate. Returns -1 for an invalid index or dynamic payload. */
 int onda_delegate_record_bytes(const onda_program_t* program, int index);
@@ -1085,7 +1131,8 @@ int onda_event_param_offset_bytes(const onda_program_t* program, int event_index
 int onda_event_param_has_default(const onda_program_t* program, int event_index, int param_index);
 /*
  * Returns the byte count for the parameter default, 0 if no default exists, or -1 if invalid.
- * If out_bytes is non-NULL and out_capacity is large enough, the packed default bytes are copied.
+ * If out_bytes is non-NULL and out_capacity is large enough, the packed little-endian default
+ * bytes are copied.
  * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
  */
 int onda_event_param_default_bytes(

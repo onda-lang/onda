@@ -1,4 +1,8 @@
 use super::*;
+use crate::def_semantics::call_types::{
+    infer_array_arg_type, infer_struct_expr_type, update_call_type_env_after_assign, CallArrayType,
+    CallTypeContext, CallTypeEnv,
+};
 use crate::internal_names::runtime_buffer_alias_selector_symbol;
 
 pub(crate) fn resolve_init_default_ty(
@@ -38,7 +42,7 @@ pub(crate) fn resolve_init_default_ty(
             );
             None
         }
-        None => None,
+        Some(DeclType::Slice(_)) | None => None,
     }
 }
 
@@ -118,21 +122,11 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                 AssignTarget::Var(name) => {
                     infer_numbered_base_name(name, acc);
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                     infer_numbered_base_name(base, acc);
-                    infer_io_from_expr(index, acc);
                 }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
+                AssignTarget::Slice { base, .. } => {
                     infer_numbered_base_name(base, acc);
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        infer_io_from_expr(coordinate, acc);
-                    }
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names.iter().filter_map(|target| target.binding()) {
@@ -140,6 +134,7 @@ pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
                     }
                 }
             }
+            target.visit_selectors(|selector| infer_io_from_expr(selector, acc));
             infer_io_from_expr(expr, acc);
         }
         Stmt::Expr { expr, .. } => infer_io_from_expr(expr, acc),
@@ -202,55 +197,17 @@ pub(crate) fn proc_output_numbered_prefix(proc: &ProcessorDef) -> &'static str {
 }
 
 pub(crate) fn infer_io_from_expr(expr: &Expr, acc: &mut IoInference) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::ArrayCtor { .. } => {}
-        Expr::Var { name, .. } => {
-            infer_numbered_base_name(name, acc);
-        }
-        Expr::Index { base, index, .. } => {
-            infer_numbered_base_name(base, acc);
-            infer_io_from_expr(index, acc);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            infer_numbered_base_name(base, acc);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                infer_io_from_expr(coordinate, acc);
+    expr.visit(|expr| {
+        match expr {
+            Expr::Var { name, .. }
+            | Expr::Index { base: name, .. }
+            | Expr::Slice { base: name, .. } => {
+                infer_numbered_base_name(name, acc);
             }
+            _ => {}
         }
-        Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
-            infer_io_from_expr(lhs, acc);
-            infer_io_from_expr(rhs, acc);
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            infer_io_from_expr(expr, acc)
-        }
-        Expr::Logical { lhs, rhs, .. } => {
-            infer_io_from_expr(lhs, acc);
-            infer_io_from_expr(rhs, acc);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                infer_io_from_expr(arg, acc);
-            }
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                infer_io_from_expr(value, acc);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                infer_io_from_expr(&arg.expr, acc);
-            }
-        }
-    }
+        !matches!(expr, Expr::ArrayCtor { .. })
+    });
 }
 
 fn infer_numbered_base_name(name: &str, acc: &mut IoInference) {
@@ -321,32 +278,117 @@ pub(crate) fn register_scope_state<'a>(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_return_types: &HashMap<String, ReturnType>,
     registration_mode: RuntimeRegistrationMode,
-    buffer_alias_seed: &LocalBufferAliases,
+    preceding_scope: Option<&ScopeFlowState>,
 ) -> HashMap<String, SourceLoc> {
     let mut registered_tuples = HashMap::new();
     if matches!(registration_mode, RuntimeRegistrationMode::None) {
         return registered_tuples;
     }
-    let mut buffer_aliases = buffer_alias_seed.clone();
+    let mut buffer_aliases = preceding_scope
+        .map(|state| state.local_buffer_aliases.clone())
+        .unwrap_or_default();
+    let context = CallTypeContext {
+        return_types: fn_return_types,
+        struct_defs,
+    };
+    let mut types = CallTypeEnv::default();
+    types.scalar_types = state_scalars.clone();
+    types.struct_instances = struct_instances.clone();
+    types.tuple_elem_types = state_tuples.clone();
+    for (name, info) in declared_symbols {
+        if let DeclaredSymbolInfo::DataArray { elem_ty } = info {
+            types.array_types.insert(
+                name.clone(),
+                CallArrayType::primitive(*elem_ty, state_arrays.get(name).copied()),
+            );
+        } else if let DeclaredSymbolInfo::Buffer {
+            elem_ty,
+            channels,
+            array_len,
+            is_array,
+        } = info
+        {
+            let channels = match channels {
+                BufferChannelInfo::Mono => TypedBufferChannels::Mono,
+                BufferChannelInfo::Static(count) => TypedBufferChannels::Static(*count),
+                BufferChannelInfo::Dynamic => TypedBufferChannels::Dynamic,
+            };
+            types
+                .buffer_types
+                .insert(name.clone(), (*elem_ty, channels));
+            if *is_array {
+                types.buffer_array_lens.insert(name.clone(), *array_len);
+            }
+        }
+    }
+    for (name, info) in state_array_struct_roots {
+        types.array_types.insert(
+            name.clone(),
+            CallArrayType::nominal(&info.struct_name, info.static_len),
+        );
+    }
+    if let Some(previous) = preceding_scope {
+        types.scalar_types.extend(previous.local_aliases.clone());
+        types
+            .struct_instances
+            .extend(previous.local_struct_aliases.clone());
+        for (name, info) in &previous.local_array_aliases {
+            let ty = match &info.elem_struct {
+                Some(nominal) => CallArrayType::nominal(nominal, info.static_len),
+                None => CallArrayType::primitive(info.elem_ty, info.static_len),
+            };
+            types.array_types.insert(name.clone(), ty);
+        }
+    }
     for stmt in stmts {
         let visible_declared_symbols = with_local_buffer_aliases(declared_symbols, &buffer_aliases);
         let visible_declared_symbols = visible_declared_symbols.as_ref();
-        register_scope_stmt_state(
-            stmt,
-            state_scalars,
-            state_tuples,
-            visible_declared_symbols,
-            state_arrays,
-            state_array_struct_roots,
-            struct_instances,
-            input_names,
-            output_names,
-            param_names,
-            struct_defs,
-            fn_return_types,
-            registration_mode,
-            &mut registered_tuples,
-        );
+        // Data bindings are planned as storage/views. They must never fall
+        // through scalar registration's numeric inference fallback.
+        let data_binding = if let Stmt::Assign {
+            target,
+            decl_ty,
+            generic_decl_ty,
+            expr,
+            ..
+        } = stmt
+        {
+            let data = matches!(
+                decl_ty,
+                Some(DeclType::Slice(_) | DeclType::Array { .. } | DeclType::ArrayGeneric { .. })
+            ) || generic_decl_ty.is_some()
+                || infer_struct_expr_type(expr, &types, context).is_some()
+                || infer_array_arg_type(expr, &types, context).is_some();
+            update_call_type_env_after_assign(
+                target,
+                decl_ty.as_ref(),
+                generic_decl_ty.as_deref(),
+                expr,
+                &mut types,
+                context,
+            );
+            data
+        } else {
+            false
+        };
+        if !data_binding {
+            register_scope_stmt_state(
+                stmt,
+                state_scalars,
+                state_tuples,
+                visible_declared_symbols,
+                state_arrays,
+                state_array_struct_roots,
+                struct_instances,
+                input_names,
+                output_names,
+                param_names,
+                struct_defs,
+                fn_return_types,
+                registration_mode,
+                &mut registered_tuples,
+            );
+        }
         if let Stmt::Assign {
             target: AssignTarget::Var(name),
             expr,

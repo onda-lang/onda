@@ -313,6 +313,7 @@ fn map_event_metadata(index: usize, event: &crate::DeclaredEvent) -> AotEventMet
         .map(|param| map_event_param_metadata(param, param.byte_offset()))
         .collect();
     AotEventMetadata {
+        schema: event.schema().clone(),
         name: event.name().to_owned(),
         export: format!("onda_event_{index}"),
         payload_size_bytes: event.payload_bytes(),
@@ -340,6 +341,7 @@ fn map_delegate_metadata(index: usize, delegate: &crate::DeclaredDelegate) -> Ao
         })
         .collect();
     AotDelegateMetadata {
+        schema: delegate.schema().clone(),
         index,
         name: delegate.name().to_owned(),
         payload_size_bytes: delegate.payload_bytes(),
@@ -440,6 +442,9 @@ mod tests {
     #[test]
     fn dynamic_event_offsets_are_only_static_before_the_first_slice() {
         let event = crate::DeclaredEvent {
+            payload_plan: onda_processor_abi::payload::PayloadPlan::new(&Default::default())
+                .unwrap(),
+            schema: Default::default(),
             name: "curve".to_owned(),
             params: vec![
                 crate::DeclaredEventParam {

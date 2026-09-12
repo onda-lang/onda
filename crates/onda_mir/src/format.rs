@@ -371,14 +371,24 @@ impl<'a> Formatter<'a> {
                 format_value(*destination),
                 format_value(*value)
             )),
-            StatementKind::SliceCopy {
-                destination,
-                source: copy_source,
-            } => self.line(format_args!(
-                "{pad}slice_copy {}, {}{source}",
-                format_value(*destination),
-                format_value(*copy_source)
-            )),
+            StatementKind::SliceCopy { copies, preflight } => {
+                let pairs = copies
+                    .iter()
+                    .map(|copy| {
+                        format!(
+                            "{}, {}",
+                            format_value(copy.destination),
+                            format_value(copy.source)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let proof = match preflight {
+                    crate::SliceCopyPreflight::Required => "",
+                    crate::SliceCopyPreflight::ProvenUnnecessary => " overlap_safe",
+                };
+                self.line(format_args!("{pad}slice_copy{proof} {pairs}{source}"));
+            }
             StatementKind::If {
                 condition,
                 then_block,
@@ -560,6 +570,16 @@ fn format_rvalue(value: &Rvalue) -> String {
         Rvalue::ProcessFrame { offset } => {
             format!("process_frame {}", format_value(*offset))
         }
+        Rvalue::NormalizeIndex {
+            index,
+            length,
+            bounds,
+        } => format!(
+            "normalize_index {} length={} bounds={}",
+            format_value(*index),
+            format_value(*length),
+            format_bounds(*bounds)
+        ),
         Rvalue::InputLoad {
             input,
             element,
@@ -807,6 +827,7 @@ fn format_passing_mode(mode: PassingMode) -> &'static str {
         PassingMode::Value => "value",
         PassingMode::ReadOnlyReference => "readonly_ref",
         PassingMode::ReadWriteReference => "readwrite_ref",
+        PassingMode::ResultReference => "result_ref",
     }
 }
 

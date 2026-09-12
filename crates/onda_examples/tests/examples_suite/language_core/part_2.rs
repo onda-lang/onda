@@ -56,14 +56,14 @@ sample { out1 = o() }
 
 #[test]
 
-fn struct_initialization_in_sample_is_rejected() {
+fn struct_initialization_in_sample_is_supported() {
     let parsed = parse_program(STRUCT_INIT_IN_SAMPLE_ERROR_EXAMPLE).expect("parse should succeed");
 
     let result = analyze(parsed);
 
     assert!(
-        result.is_err(),
-        "semantic analysis should reject struct ctor in sample"
+        result.is_ok(),
+        "runtime struct construction should be accepted"
     );
 }
 

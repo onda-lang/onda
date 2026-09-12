@@ -7,7 +7,7 @@ use super::call_types::{
     CallTypeContext, CallTypeEnv, StatementFlow,
 };
 use crate::*;
-use onda_frontend::ast::{FnReturnScalarType, FnReturnType, Span};
+use onda_frontend::ast::{FnReturnType, Span};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
@@ -319,21 +319,7 @@ fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
 }
 
 fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
-    match target {
-        AssignTarget::Index { index, .. } => rebase_generated_expr(index, origin),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for value in [selector, channel, start, end].into_iter().flatten() {
-                rebase_generated_expr(value, origin);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors_mut(|selector| rebase_generated_expr(selector, origin));
 }
 
 fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
@@ -644,37 +630,17 @@ fn generate_mono_def(
                     );
                 }
             }
-            if let Some(return_ty) = &mut new_def.return_ty {
-                *return_ty = match return_ty {
-                    FnReturnType::Scalar(scalar) => FnReturnType::Scalar(match scalar {
-                        FnReturnScalarType::Primitive(prim) => FnReturnScalarType::Primitive(*prim),
-                        FnReturnScalarType::Named(name) => match type_bindings.get(name).copied() {
-                            Some(bound) => FnReturnScalarType::Primitive(bound),
-                            None => FnReturnScalarType::Named(name.clone()),
-                        },
-                    }),
-                    FnReturnType::Array { elem, size } => FnReturnType::Array {
-                        elem: *elem,
-                        size: size.clone(),
-                    },
-                    FnReturnType::Tuple(elems) => FnReturnType::Tuple(
-                        elems
-                            .iter()
-                            .map(|elem| match elem {
-                                FnReturnScalarType::Primitive(prim) => {
-                                    FnReturnScalarType::Primitive(*prim)
-                                }
-                                FnReturnScalarType::Named(name) => {
-                                    match type_bindings.get(name).copied() {
-                                        Some(bound) => FnReturnScalarType::Primitive(bound),
-                                        None => FnReturnScalarType::Named(name.clone()),
-                                    }
-                                }
-                            })
-                            .collect(),
-                    ),
-                };
-            }
+            crate::generic_specialization::specialize_function_type_annotations(
+                &mut new_def,
+                &type_bindings,
+                &context,
+                errors,
+            );
+            new_sig.param_types = new_def
+                .params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect();
         }
 
         // Clear type_params — the generated def is no longer generic.
@@ -926,58 +892,9 @@ fn resolve_generic_def_type_bindings(
 /// parameter: `T(1)` and `identity<T>(1)` acquire their type from `T`, rather
 /// than supplying a constraint for it.
 fn expr_references_type_param(expr: &Expr, type_param: &str) -> bool {
-    match expr {
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
-            .iter()
-            .any(|value| expr_references_type_param(value, type_param)),
-        Expr::Index { index, .. } => expr_references_type_param(index, type_param),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => [selector, channel, start, end]
-            .into_iter()
-            .flatten()
-            .any(|value| expr_references_type_param(value, type_param)),
-        Expr::ArrayCtor { spec, init, .. } => {
-            matches!(&spec.elem, ArrayElemType::Struct(name) if name == type_param)
-                || expr_references_type_param(&spec.size, type_param)
-                || init.as_ref().is_some_and(|values| {
-                    values
-                        .iter()
-                        .any(|value| expr_references_type_param(value, type_param))
-                })
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            expr_references_type_param(lhs, type_param)
-                || expr_references_type_param(rhs, type_param)
-        }
-        Expr::Call { args, .. } => args
-            .iter()
-            .any(|arg| expr_references_type_param(arg, type_param)),
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            name == type_param
-                || type_args
-                    .iter()
-                    .any(|arg| matches!(arg, CallTypeArg::Generic(name) if name == type_param))
-                || args
-                    .iter()
-                    .any(|arg| expr_references_type_param(&arg.expr, type_param))
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            expr_references_type_param(expr, type_param)
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => false,
-    }
+    crate::generic_specialization::expr_references_names(expr, &|_| false, &|name| {
+        name == type_param
+    })
 }
 
 /// Infer the primitive type of an expression for generic type inference.
@@ -1451,37 +1368,7 @@ fn monomorphize_calls_in_assign_target(
     errors: &mut Vec<Diagnostic>,
     owner: MonoOwnerContext<'_>,
 ) {
-    let coordinates = match target {
-        AssignTarget::Index { index, .. } => std::slice::from_mut(index),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                monomorphize_calls_in_expr(
-                    coordinate,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-            return;
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => return,
-    };
-    for coordinate in coordinates {
+    target.visit_selectors_mut(|coordinate| {
         monomorphize_calls_in_expr(
             coordinate,
             env,
@@ -1497,7 +1384,7 @@ fn monomorphize_calls_in_assign_target(
             errors,
             owner,
         );
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -12,8 +12,8 @@ from typing import Optional
 
 PROCESSOR_ARTIFACT_FORMAT = "onda-processor"
 # Synchronized from format-versions.json; do not edit these copies directly.
-PROCESSOR_ARTIFACT_FORMAT_VERSION = 5
-PROCESSOR_ABI_VERSION = 5
+PROCESSOR_ARTIFACT_FORMAT_VERSION = 6
+PROCESSOR_ABI_VERSION = 6
 MAX_EXACT_HOST_INTEGER = (1 << 53) - 1
 
 SCALAR_FORMATS = {
@@ -119,7 +119,7 @@ def encode_event_payload(descriptor: dict, event: dict) -> Optional[bytes]:
         fail(f"event {event['name']!r} has an invalid payload size")
 
     payload = bytearray(payload_size)
-    endian = target_endian(descriptor)
+    endian = "<"
     for param in event["params"]:
         if param.get("is_slice"):
             fail(f"fixed event {event['name']!r} unexpectedly contains a slice")
@@ -355,7 +355,7 @@ def generated_events(descriptor: dict) -> tuple[str, list[str], list[str], list[
         if not symbol.isidentifier():
             fail(f"event export {symbol!r} is not a C identifier")
         declarations.append(
-            f"extern uint32_t {symbol}(const void*, const void*, void*, void* const*, "
+            f"extern uint32_t {symbol}(const onda_processor_event_input_t*, const void*, void*, void* const*, "
             "const int32_t*, const int32_t*, const float*, onda_processor_execution_output_t*);"
         )
         functions.append(symbol)
@@ -423,6 +423,8 @@ def generate(descriptor: dict) -> str:
     event_block, event_functions, event_names, event_fixed, event_payloads = generated_events(
         descriptor
     )
+    event_sizes = [str(event.get("payload_size_bytes") or 0) for event in descriptor["metadata"]["events"]]
+    event_workspace_size = max((int(size) + 7 * len(event["params"]) for size, event in zip(event_sizes, descriptor["metadata"]["events"])), default=0)
     defaults = encode_parameter_defaults(descriptor)
     params = generated_params(descriptor)
     triple = c_string(descriptor["target"]["triple"], "target triple")
@@ -458,6 +460,7 @@ enum {{
 #define PROCESSOR_TARGET_TRIPLE {triple}
 #define PROCESSOR_SAMPLE_RATE {compile_info['sample_rate']!r}f
 #define PROCESSOR_BLOCK_SIZE {compile_info['block_size']}
+#define PROCESSOR_EVENT_WORKSPACE_SIZE {event_workspace_size}
 #define PROCESSOR_STATE_SIZE {runtime['state_size_bytes']}
 #define PROCESSOR_STATE_ALIGN {runtime['state_align_bytes']}
 #define PROCESSOR_PARAM_SIZE {runtime['param_size_bytes']}
@@ -736,6 +739,11 @@ PROCESSOR_EVENT_NAMES[(PROCESSOR_EVENT_COUNT > 0) ? PROCESSOR_EVENT_COUNT : 1] =
 static const unsigned char
 PROCESSOR_EVENT_HAS_FIXED_PAYLOAD[(PROCESSOR_EVENT_COUNT > 0) ? PROCESSOR_EVENT_COUNT : 1] = {{
   {c_array(event_fixed, '0')}
+}};
+
+static const uint32_t
+PROCESSOR_EVENT_PAYLOAD_SIZES[(PROCESSOR_EVENT_COUNT > 0) ? PROCESSOR_EVENT_COUNT : 1] = {{
+  {c_array(event_sizes, '0')}
 }};
 
 static const void* const
