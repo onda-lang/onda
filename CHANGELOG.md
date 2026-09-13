@@ -30,6 +30,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added the musical Aurora Pad and Orbital FM soundscapes. Aurora Pad combines a processor-array
   oscillator bank with returned coefficient structs and independent stereo filter memory; Orbital
   FM atomically installs and publishes a nested live-editable synthesis patch.
+- Added value-returning complex arithmetic and polar construction, structured biquad coefficient
+  design and installation, structured complex FFT overloads, and reusable real-transform storage to
+  the standard library.
+- Added typed ranged struct fields without a redundant zero initializer, for example
+  `index: i32 {Capacity, wrap}`.
 
 ### Changed
 
@@ -51,6 +56,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   with the number of struct-array elements.
 - Fixed flattened nested processor arrays losing aggregate permissions or selecting incorrect
   storage after processor lowering.
+- Fixed graph reads from proc-array scalar and fixed-array outputs stepping a node again instead of
+  reading its cached result, including output fan-out and indexed array slots.
+- Fixed the Binaryen backend rejecting scalar locals viewed through slices and kept ordinary,
+  reference, result, and slice access to address-taken locals coherent.
+- Fixed source formatting dropping user-authored top-level functions and emitting invalid explicit
+  loop-step syntax. Oversized numeric literals now produce syntax diagnostics.
 - Fixed JavaScript payload planning when schema names overlap object prototype properties.
 - Fixed artifact validation accepting contradictory recursive and flattened event defaults, while
   comparing equivalent floating-point spellings according to their encoded scalar semantics.

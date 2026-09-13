@@ -1325,12 +1325,7 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                         )]);
                     }
                     if let Some((func, lower, upper)) = range {
-                        let Some(value) = default.take() else {
-                            return Err(vec![syntax_at_loc(
-                                field_loc.as_ref(),
-                                "ranged struct fields require a default expression",
-                            )]);
-                        };
+                        let value = default.take().unwrap_or_else(|| Expr::int(0));
                         default = Some(Expr::Call {
                             loc: field_loc,
                             func,

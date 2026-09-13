@@ -918,3 +918,125 @@ fn processor_keywords_require_an_identifier_boundary() {
         assert!(parse_program(&format!("{keyword}:\n  sample:\n    out1 = 0.0\n")).is_err());
     }
 }
+
+#[test]
+fn numeric_literal_overflow_is_a_syntax_error() {
+    let cases = [
+        "999999999999999999999999999999999999999999".to_owned(),
+        format!("{}.", "9".repeat(400)),
+    ];
+
+    for literal in cases {
+        let source = format!("sample:\n  out1 = {literal}\n");
+        let errors = parse_program(&source).expect_err("out-of-range literal should be rejected");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("literal is out of range")),
+            "unexpected diagnostics for {literal:?}: {errors:#?}"
+        );
+    }
+}
+
+#[test]
+fn long_flat_expression_chains_parse_without_recursion_growth() {
+    let expression = std::iter::repeat_n("1", 4096).collect::<Vec<_>>().join(" + ");
+    let source = format!("sample:\n  out1 = {expression}\n");
+    parse_program(&source).expect("long flat expression should parse");
+}
+
+#[test]
+fn parser_never_panics_on_deterministic_syntax_mutations() {
+    const SEEDS: &[&str] = &[
+        r#"
+namespace Bank<N = 2>:
+  struct Cell<T>:
+    value: T
+    index: i32 {N, wrap}
+
+  proc Reader<T>:
+    outs<T> 1
+    init:
+      cells: Cell<T>[N] = Cell<T>(value = T(0.5))
+    sample:
+      cell = cells[N - 1]
+      out1 = cell.value
+"#,
+        r#"
+struct Message:
+  pair: (f32, i64)
+  values: f64[3]
+
+event update(value: Message, selected: Message[]):
+  copy: Message = value
+  view: Message[] = selected[:]
+  print("update", copy.values[0], view.len())
+"#,
+        r#"
+proc Voice<T> {
+  ins<T> { in1 }
+  outs<T> { out1 }
+  params { mode: i32 = 0 { count = 4, mode = wrap } }
+  sample {
+    out1 = select(mode == 0, in1, -in1)
+  }
+}
+"#,
+        r#"
+const def table() -> f32[4]:
+  result: f32[4] = [0.0, 0.25, 0.5, 1.0]
+  return result
+
+sample:
+  values = table()
+  out1 = values[clamp(i32(SAMPLE_RATE), 0, 3)]
+"#,
+    ];
+    const INSERTIONS: &[&str] = &[
+        " ", "\n", "\t", ":", ",", ".", "=", "<", ">", "[", "]", "{", "}", "(",
+        ")",
+        "#",
+        "::",
+        "..",
+        "\"",
+        "999999999999999999999999999999999999999999",
+        "é",
+        "\0",
+    ];
+
+    let assert_no_panic = |source: String| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = parse_program(&source);
+        }));
+        assert!(result.is_ok(), "parser panicked for mutated source {source:?}");
+    };
+
+    for seed in SEEDS {
+        let boundaries = seed
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(seed.len()))
+            .collect::<Vec<_>>();
+
+        for &boundary in boundaries.iter().step_by(8) {
+            for insertion in INSERTIONS {
+                let mut source = String::with_capacity(seed.len() + insertion.len());
+                source.push_str(&seed[..boundary]);
+                source.push_str(insertion);
+                source.push_str(&seed[boundary..]);
+                assert_no_panic(source);
+            }
+        }
+
+        for pair in boundaries.windows(2) {
+            let mut source = String::with_capacity(seed.len());
+            source.push_str(&seed[..pair[0]]);
+            source.push_str(&seed[pair[1]..]);
+            assert_no_panic(source);
+        }
+
+        for &boundary in &boundaries {
+            assert_no_panic(seed[..boundary].to_owned());
+        }
+    }
+}

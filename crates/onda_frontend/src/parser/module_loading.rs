@@ -661,6 +661,7 @@ fn parse_program_preprocessed(
         let program_pair = parsed
             .next()
             .ok_or_else(|| vec![Diagnostic::syntax("empty parse result", 1, 1)])?;
+        validate_numeric_literals(&program_pair)?;
 
         let mut blocks = Vec::new();
         let mut top_level_const_names = state.top_level_const_names.clone();

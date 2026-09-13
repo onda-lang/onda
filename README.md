@@ -81,7 +81,7 @@ The CLI surface is:
 ```text
 onda
 onda compile <input>
-onda run <input>
+onda run [input]
 onda run play <input>
 onda run render <input>
 onda project <directory> [--from <input.onda>]

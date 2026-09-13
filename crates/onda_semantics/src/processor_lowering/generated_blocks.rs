@@ -2588,7 +2588,7 @@ pub(super) fn generate_lowered_proc_blocks(
         for stmt in &proc_init_stmts {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: expr @ Expr::ArrayCtor { init, .. },
+                expr: expr @ Expr::ArrayCtor { spec, init, .. },
                 ..
             } = stmt
             {
@@ -2773,7 +2773,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     }
                     continue;
                 }
-                if let Some(values) = init {
+                if let (ArrayElemType::Primitive(_), Some(values)) = (&spec.elem, init) {
                     let mut decl_stmt = stmt.clone();
                     if let Stmt::Assign {
                         expr: Expr::ArrayCtor { init, .. },

@@ -56,7 +56,7 @@ sample:
 fn ranged_struct_fields_normalize_construction_and_method_assignments() {
     let source = r#"
 struct Cursor:
-  index: i32 = 0 {4, wrap}
+  index: i32 {4, wrap}
 
   def advance(self):
     self.index += 5
@@ -101,6 +101,72 @@ sample:
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process ranged struct-array field");
     assert_eq!(output, [2.0, 3.0, 0.0, 1.0]);
+}
+
+#[test]
+fn generic_proc_struct_arrays_preserve_ranges_and_independent_broadcast_elements() {
+    let sources = [
+        r#"
+struct Cell<T>:
+  value: T
+  index: i32 {4, wrap}
+
+proc Bank<T>:
+  outs<T> 1
+
+  init:
+    cells: Cell<T>[2] = Cell<T>(value = T(0.5))
+
+  sample:
+    out1 = T(cells[0].index) + cells[0].value * T(10) + cells[1].value * T(100)
+    cells[0].index = cells[0].index + 1
+    cells[0].value = cells[0].value + T(1)
+
+init:
+  bank = Bank<f32>()
+
+sample:
+  out1 = bank()
+"#,
+        r#"
+struct Cell<T> {
+  value: T
+  index: i32 {4, wrap}
+}
+
+proc Bank<T> {
+  outs<T> { out1 }
+  init {
+    cells: Cell<T>[2] = Cell<T>(value = T(0.5))
+  }
+  sample {
+    out1 = T(cells[0].index) + cells[0].value * T(10) + cells[1].value * T(100)
+    cells[0].index = cells[0].index + 1
+    cells[0].value = cells[0].value + T(1)
+  }
+}
+
+init {
+  bank = Bank<f64>()
+}
+
+sample {
+  out1 = f32(bank())
+}
+"#,
+    ];
+
+    for source in sources {
+        let frames = 5;
+        let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+        assert_eq!(in_channels, 0);
+        assert_eq!(out_channels, 1);
+
+        let mut output = [0.0_f32; 5];
+        process_interleaved(&mut instance, &[], &mut output, frames)
+            .expect("process generic struct-array state");
+        assert_eq!(output, [55.0, 66.0, 77.0, 88.0, 95.0]);
+    }
 }
 
 #[test]

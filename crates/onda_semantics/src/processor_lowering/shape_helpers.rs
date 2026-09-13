@@ -2887,11 +2887,29 @@ pub(super) fn compute_proc_shape(
     let mut proc_state_scalars = init_st.state_scalars;
     let mut proc_declared_symbols = init_st.declared_symbols;
     let mut proc_state_arrays = init_st.state_arrays;
-    let proc_state_array_struct_roots = init_st.state_array_struct_roots;
+    let mut proc_state_array_struct_roots = init_st.state_array_struct_roots;
     let proc_struct_instances = init_st.struct_instances;
     let init_st_type_args = init_st.struct_instance_type_args;
     let mut proc_state_tuples = init_st.state_tuples;
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
+
+    for (root, info) in proc_state_array_struct_roots.clone() {
+        if !typed_struct_defs.contains_key(&info.struct_name) {
+            continue;
+        }
+        register_data_struct_root(
+            &root,
+            &info.struct_name,
+            info.len,
+            &typed_struct_defs,
+            &format!("processor '{}' state array '{root}'", proc.name),
+            &mut proc_state_scalars,
+            &mut proc_declared_symbols,
+            &mut proc_state_arrays,
+            &mut proc_state_array_struct_roots,
+            errors,
+        );
+    }
 
     rewrite_owner_struct_array_inline_fields(
         ExecutableOwnerBodies {

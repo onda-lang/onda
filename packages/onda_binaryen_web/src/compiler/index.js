@@ -718,14 +718,7 @@ export class MirCompiler extends MirCompilerLowering {
   compileValue(value, context) {
     switch (value.kind) {
       case "local": {
-        const scalar = context.localScalars[value.data];
-        if (!scalar) {
-          this.fail(`local id ${value.data} is not a scalar or is out of range`);
-        }
-        return this.module.local.get(
-          this.localIndex(value.data, context),
-          this.wasmType(scalar),
-        );
+        return this.loadLocal(value.data, context);
       }
       case "constant":
         return this.compileConstant(value.data);
@@ -809,11 +802,7 @@ export class MirCompiler extends MirCompilerLowering {
 
   loadPlace(place, context) {
     if (place.base.kind === "local" && place.projections.length === 0) {
-      const scalar = this.placeScalarType(place, context);
-      return this.module.local.get(
-        this.localIndex(place.base.data, context),
-        this.wasmType(scalar),
-      );
+      return this.loadLocal(place.base.data, context);
     }
     if (place.base.kind === "parameter" && place.projections.length === 0) {
       const scalar = this.placeScalarType(place, context);
@@ -835,7 +824,7 @@ export class MirCompiler extends MirCompilerLowering {
 
   storePlace(place, value, scalar, context) {
     if (place.base.kind === "local" && place.projections.length === 0) {
-      return this.module.local.set(this.localIndex(place.base.data, context), value);
+      return this.storeLocal(place.base.data, value, context);
     }
     if (place.base.kind === "parameter" && place.projections.length === 0) {
       const layout = context.paramLayouts[place.base.data];
@@ -849,6 +838,28 @@ export class MirCompiler extends MirCompilerLowering {
       );
     }
     return this.storeScalar(scalar, this.placeAddress(place, context), value);
+  }
+
+  loadLocal(localId, context) {
+    const scalar = context.localScalars[localId];
+    if (!scalar) {
+      this.fail(`local id ${localId} is not a scalar or is out of range`);
+    }
+    const layout = this.localScalarRefLayout[context.functionId]?.[localId];
+    return layout
+      ? this.loadScalar(scalar, this.module.i32.const(layout.address))
+      : this.module.local.get(this.localIndex(localId, context), this.wasmType(scalar));
+  }
+
+  storeLocal(localId, value, context) {
+    const scalar = context.localScalars[localId];
+    if (!scalar) {
+      this.fail(`local id ${localId} is not a scalar or is out of range`);
+    }
+    const layout = this.localScalarRefLayout[context.functionId]?.[localId];
+    return layout
+      ? this.storeScalar(scalar, this.module.i32.const(layout.address), value)
+      : this.module.local.set(this.localIndex(localId, context), value);
   }
 
   placeAddress(place, context) {

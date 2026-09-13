@@ -1193,6 +1193,7 @@ pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> 
             "internal parser error: expected expression pair",
         )]);
     }
+    validate_numeric_literals(&pair)?;
     Ok(parse_expr_inner(pair))
 }
 

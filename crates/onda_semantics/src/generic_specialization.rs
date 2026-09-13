@@ -1355,6 +1355,12 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
         match expr {
             Expr::ArrayCtor { spec, .. } => {
                 if let ArrayElemType::Struct(elem_name) = &mut spec.elem {
+                    if parse_specialized_struct_name_ref(elem_name).is_some() {
+                        rewrite_resolved_struct_type_name(
+                            elem_name, templates, generated, diag, errors,
+                        );
+                        return;
+                    }
                     let elem_text = elem_name.clone();
                     let (template_lookup_name, explicit_type_args) =
                         match parse_array_struct_elem_with_type_args(&elem_text) {
@@ -1416,6 +1422,10 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                 args,
                 ..
             } => {
+                if parse_specialized_struct_name_ref(name).is_some() {
+                    rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
+                    return;
+                }
                 if let Some(template) = templates.get(name) {
                     let type_args_to_use = if type_args.is_empty() {
                         infer_generic_struct_ctor_type_args(template, args, locals, diag, errors)
@@ -2169,11 +2179,7 @@ fn rewrite_generic_struct_field_type(
     match ty {
         FieldType::Scalar(_) | FieldType::Tuple(_) => {}
         FieldType::Generic(name) => {
-            if let Some(specialized) =
-                specialize_explicit_struct_type_name(name, templates, generated, diag, errors)
-            {
-                *name = specialized;
-            }
+            rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
         }
         FieldType::Array(spec) => {
             if let Some(specialized) =
@@ -2183,11 +2189,7 @@ fn rewrite_generic_struct_field_type(
                 return;
             }
             if let ArrayElemType::Struct(name) = &mut spec.elem {
-                if let Some(specialized) =
-                    specialize_explicit_struct_type_name(name, templates, generated, diag, errors)
-                {
-                    *name = specialized;
-                }
+                rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
             }
         }
     }

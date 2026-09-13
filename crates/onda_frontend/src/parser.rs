@@ -215,6 +215,39 @@ pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) 
     }
 }
 
+fn validate_numeric_literals(pair: &Pair<'_, Rule>) -> Result<(), Vec<Diagnostic>> {
+    let mut errors = Vec::new();
+    let mut pending = vec![pair.clone()];
+    while let Some(pair) = pending.pop() {
+        if pair.as_rule() == Rule::number {
+            let text = pair.as_str();
+            let valid = if text.contains('.') {
+                text.parse::<f64>().is_ok_and(f64::is_finite)
+            } else {
+                text.parse::<i64>().is_ok()
+            };
+            if !valid {
+                let kind = if text.contains('.') {
+                    "floating-point"
+                } else {
+                    "integer"
+                };
+                errors.push(syntax_at_pair(
+                    &pair,
+                    format!("{kind} literal is out of range"),
+                ));
+            }
+        } else {
+            pending.extend(pair.into_inner());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 pub(super) fn pair_symbol_text(pair: &Pair<'_, Rule>) -> String {
     pair.as_str().trim().to_owned()
 }

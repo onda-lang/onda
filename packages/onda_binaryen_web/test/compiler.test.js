@@ -727,7 +727,53 @@ test("passes an addressable slice element to a reference parameter", async () =>
   assert.equal(view.getFloat32(state + 8, true), 7);
 });
 
-test("spills an address-taken scalar local around reference calls", async () => {
+test("keeps scalar locals coherent while viewed through slices", async () => {
+  const mir = executableMir();
+  const sliceType = mir.types.length;
+  mir.types.push(type("slice", { element: "f32", access: "read_write" }));
+  const process = mir.functions[1];
+  const valueLocal = process.locals.length;
+  const sliceLocal = valueLocal + 1;
+  process.locals.push(
+    { name: "value", ty: 0 },
+    { name: "value_view", ty: sliceType },
+  );
+  process.body.statements.splice(
+    3,
+    0,
+    assign(place("local", valueLocal), {
+      kind: "use",
+      data: constant("f32", 3),
+    }),
+    assign(place("local", sliceLocal), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "place", data: place("local", valueLocal) },
+        start: constant("i32", 0),
+        len: constant("i32", 1),
+        bounds: "unchecked",
+        access: "read_write",
+      },
+    }),
+    statement("slice_store", {
+      slice: local(sliceLocal),
+      index: constant("i32", 0),
+      bounds: "unchecked",
+      value: constant("f32", 7),
+    }),
+    assign(place("state", 0), { kind: "use", data: local(valueLocal) }),
+  );
+
+  const artifact = compileMir(mir);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const params = Number(instance.exports.__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  instance.exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+  callProcess(instance.exports.onda_process, 0, 0, 0, 0, 0, params, state, 0, 0, 0, 0);
+  assert.equal(new DataView(instance.exports.memory.buffer).getFloat32(state, true), 7);
+});
+
+test("keeps address-taken scalar locals coherent across reference calls", async () => {
   const mir = executableMir();
   mir.functions[1].locals.push({ name: "promoted_phase", ty: 0 });
   mir.functions[1].body.statements.unshift(

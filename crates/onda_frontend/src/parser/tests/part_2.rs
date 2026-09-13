@@ -803,6 +803,7 @@ fn parses_integer_binding_ranges_on_struct_fields() {
 struct Cursor:
   index: i32 = 0 {8, wrap}
   limit = 7 {0..=7}
+  implicit: i32 {8, wrap}
 "#,
     )
     .expect("integer struct field ranges should parse");
@@ -817,6 +818,7 @@ struct Cursor:
     let expected = [
         BuiltinFn::BindingCountWrap,
         BuiltinFn::BindingRangeInclusiveClamp,
+        BuiltinFn::BindingCountWrap,
     ];
     for (field, expected_func) in struct_def.fields.iter().zip(expected) {
         let Some(Expr::Call { func, args, .. }) = &field.default else {
@@ -826,6 +828,10 @@ struct Cursor:
         assert_eq!(args.len(), 3);
         assert_eq!(field.ty, FieldType::Scalar(PrimitiveType::I32));
     }
+    let Some(Expr::Call { args, .. }) = &struct_def.fields[2].default else {
+        panic!("expected the implicit field default to carry its range");
+    };
+    assert!(matches!(args[0], Expr::Int { value: 0, .. }));
 }
 
 #[test]

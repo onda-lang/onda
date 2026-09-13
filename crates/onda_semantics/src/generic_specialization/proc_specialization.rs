@@ -148,7 +148,16 @@ pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
         if let Stmt::Assign {
             loc,
             target: AssignTarget::Var(base),
-            expr: Expr::ArrayCtor { init, .. },
+            expr:
+                Expr::ArrayCtor {
+                    spec:
+                        onda_frontend::ArrayTypeSpec {
+                            elem: ArrayElemType::Primitive(_),
+                            ..
+                        },
+                    init,
+                    ..
+                },
             ..
         } = &mut stmt
         {
@@ -672,7 +681,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                     }
                 }
 
-                if let Some(inferred_ctor) = init.as_ref().and_then(|values| {
+                let inferred_ctor = init.as_ref().and_then(|values| {
                     let mut ctor_names = values.iter().filter_map(|value| match value {
                         Expr::UserCall { name, .. } => Some(name.as_str()),
                         _ => None,
@@ -681,8 +690,13 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                     ctor_names
                         .all(|name| name == first)
                         .then(|| first.to_owned())
-                }) {
-                    *elem_name = inferred_ctor;
+                });
+                if let Some(inferred_ctor) = inferred_ctor {
+                    if templates.contains_key(&inferred_ctor)
+                        || generated.contains_key(&inferred_ctor)
+                    {
+                        *elem_name = inferred_ctor;
+                    }
                 }
 
                 let resolved_name = if templates.contains_key(elem_name) {

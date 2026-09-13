@@ -15,12 +15,19 @@ pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
 }
 
 pub fn format_program(program: &Program) -> String {
+    format_program_blocks(program, |_| true)
+}
+
+pub fn format_graph_inspection_program(program: &Program) -> String {
+    format_program_blocks(
+        program,
+        |block| !matches!(block, Block::Def(def) if def.loc.file().is_some_and(|file| file.starts_with("<std/"))),
+    )
+}
+
+fn format_program_blocks(program: &Program, include: impl Fn(&Block) -> bool) -> String {
     let mut out = String::new();
-    for block in program
-        .blocks
-        .iter()
-        .filter(|block| !matches!(block, Block::Def(_)))
-    {
+    for block in program.blocks.iter().filter(|block| include(block)) {
         format_block(block, 0, &mut out);
         out.push('\n');
     }
@@ -540,12 +547,20 @@ pub fn format_struct_header(def: &StructDef) -> String {
 pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
     let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
     if let Some(default) = &field.default {
-        text.push_str(" = ");
         if let Some((value, range)) = format_binding_range_initializer(default) {
-            text.push_str(&value);
+            let has_implicit_default = matches!(
+                default,
+                Expr::Call { args, .. }
+                    if matches!(args.as_slice(), [Expr::Int { value: 0, .. }, _, _])
+            );
+            if !has_implicit_default {
+                text.push_str(" = ");
+                text.push_str(&value);
+            }
             text.push(' ');
             text.push_str(&range);
         } else {
+            text.push_str(" = ");
             text.push_str(&format_expr(default));
         }
     }
@@ -793,6 +808,7 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
         }
         Stmt::For {
             var,
+            var_ty,
             step,
             start,
             end,
@@ -800,15 +816,22 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             body,
             ..
         } => {
-            let mut text = format!("for {} in {}..", var, format_expr(start));
+            let mut text = format!("for {var}");
+            if *var_ty != PrimitiveType::I32 {
+                text.push_str(": ");
+                text.push_str(primitive_type_name(*var_ty));
+            }
+            if let Some(step) = step {
+                text.push_str(" @ ");
+                text.push_str(&format_expr(step));
+            }
+            text.push_str(" in ");
+            text.push_str(&format_expr(start));
+            text.push_str("..");
             if *end_inclusive {
                 text.push('=');
             }
             text.push_str(&format_expr(end));
-            if let Some(step) = step {
-                text.push_str(" step ");
-                text.push_str(&format_expr(step));
-            }
             text.push(':');
             push_line(out, indent, &text);
             format_stmt_list(body, indent + 1, out);
@@ -1516,7 +1539,7 @@ fn push_line(out: &mut String, indent: usize, line: &str) {
 mod tests {
     use onda_frontend::parse_program;
 
-    use super::format_program;
+    use super::{format_graph_inspection_program, format_program};
 
     #[test]
     fn formatting_preserves_data_views_and_broadcast_distinctions() {
@@ -1661,6 +1684,57 @@ block:
     }
 
     #[test]
+    fn formatting_preserves_explicit_loop_widths_and_steps() {
+        let source = r#"
+def descending_sum() -> i64:
+  total: i64 = 0
+  for i: i64 @ -1 in i64(10)..=i64(1):
+    total += i
+  return total
+
+sample:
+  out1 = f32(descending_sum())
+"#;
+        let program = parse_program(source).expect("explicit loop syntax should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains("for i: i64 @ -1 in i64(10)..=i64(1):\n"),
+            "{formatted}"
+        );
+        let reparsed = parse_program(&formatted).expect("formatted loop syntax should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn graph_inspection_filters_embedded_std_wrappers_without_affecting_full_formatting() {
+        let source = r#"
+import std/math
+
+def user_value() -> f32:
+  return 1.0
+
+sample:
+  out1 = user_value()
+"#;
+        let program = parse_program(source).expect("source with std import should parse");
+        let formatted = format_program(&program);
+        let graph_inspection = format_graph_inspection_program(&program);
+        let has_top_level_clamp =
+            |text: &str| text.lines().any(|line| line.starts_with("def clamp<T>("));
+
+        assert!(has_top_level_clamp(&formatted), "{formatted}");
+        assert!(
+            !has_top_level_clamp(&graph_inspection),
+            "{graph_inspection}"
+        );
+        assert!(
+            graph_inspection.contains("def user_value() -> f32:\n"),
+            "{graph_inspection}"
+        );
+    }
+
+    #[test]
     fn formatting_preserves_private_params_and_pinned_state() {
         let source = r#"
 proc Worker:
@@ -1693,14 +1767,16 @@ proc Worker:
 
     #[test]
     fn formatting_preserves_ranged_struct_fields() {
-        let source = "struct Cursor:\n  index: i32 = 0 {8, wrap}\n";
+        let source = "struct Cursor:\n  index: i32 {8, wrap}\n  explicit: i32 = 0 {8}\n  offset: i32 = 2 {8}\n";
         let program = parse_program(source).expect("ranged struct field should parse");
         let formatted = format_program(&program);
 
         assert!(
-            formatted.contains("  index: i32 = 0 {8, wrap}\n"),
+            formatted.contains("  index: i32 {8, wrap}\n"),
             "{formatted}"
         );
+        assert!(formatted.contains("  explicit: i32 {8}\n"), "{formatted}");
+        assert!(formatted.contains("  offset: i32 = 2 {8}\n"), "{formatted}");
         let reparsed = parse_program(&formatted).expect("formatted struct field should parse");
         assert_eq!(format_program(&reparsed), formatted);
     }

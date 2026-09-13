@@ -14,12 +14,13 @@ For the independent diagnostic stream carried by the same execution-output conta
 
 ## Delivery model
 
-Every process segment, initialization, and input-event dispatch is one independent collection
-boundary. Hosts prepare the complete execution-output descriptor, including its shared sequence,
-before crossing the processor ABI:
+Every process segment, initialization, and admitted input-event dispatch is one independent
+collection boundary. Hosts prepare the complete execution-output descriptor before crossing the
+processor ABI:
 
 1. The caller optionally supplies a delegate batch.
-2. The host resets its `used_bytes`, `record_count`, and `overflow_count` before entry.
+2. The host resets its counters and shared sequence before init or process entry. An event entry does
+   so itself after successful input preflight, preserving existing records when input is rejected.
 3. Each top-level occurrence is appended as one complete packed record when it fits.
 4. The caller consumes or copies successful records before reusing the batch.
 
@@ -36,12 +37,12 @@ u32 call-local sequence
 payload bytes
 ```
 
-The fixed record header is therefore twelve bytes. Message values are packed in parameter order using the recursive schema. Struct arrays use one
-contiguous tensor per primitive leaf; nested fixed arrays add tensor axes. A slice contributes one
-four-byte logical element count followed by all its leaf tensors. Payload scalars and lengths use
-little-endian order. Record headers use the artifact target byte order.
-Native hosted APIs use native byte order; complete WebAssembly artifacts use the byte order declared
-by their processor descriptor.
+The fixed record header is therefore twelve bytes. Message values are packed in parameter order
+using the recursive schema. Struct arrays use one contiguous tensor per primitive leaf; nested fixed
+arrays add tensor axes. A slice contributes one four-byte logical element count followed by all its
+leaf tensors. Payload scalars and lengths use little-endian order. Record headers use the artifact
+target byte order. The recursive payload schema is the authority for both native and WebAssembly
+hosts.
 
 ## Choosing a capacity
 

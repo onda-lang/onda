@@ -2831,31 +2831,6 @@ graph:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("indexed proc-array output array graph should analyze");
-        let proc_out_tmp = typed.sample.iter().find_map(|stmt| match stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(tmp),
-                expr: Expr::UserCall { name, args, .. },
-                ..
-            } if name == "Voice.__onda_proc_call_out1"
-                && args.iter().any(|inner| {
-                    matches!(
-                        inner.expr,
-                        Expr::Index { ref base, ref index, .. }
-                            if base == "voices"
-                                && matches!(**index, Expr::Int { value: 0, .. })
-                    )
-                }) =>
-            {
-                Some(tmp.as_str())
-            }
-            _ => None,
-        });
-        let Some(proc_out_tmp) = proc_out_tmp else {
-            panic!(
-                "expected lowered sample to hoist proc-array output slot voices[0].pair[1]: {:?}",
-                typed.sample
-            );
-        };
         assert!(
             typed.sample.iter().any(|stmt| matches!(
                 stmt,
@@ -2865,10 +2840,12 @@ graph:
                 } if name == "Take.__onda_proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
-                        Expr::Var { ref name, .. } if name == proc_out_tmp
+                        Expr::Index { ref base, ref index, .. }
+                            if base == "voices.pair[1]"
+                                && matches!(**index, Expr::Int { value: 0, .. })
                     ))
             )),
-            "expected lowered sample call to read hoisted proc-array output slot voices[0].pair[1]: {:?}",
+            "expected lowered sample call to read cached proc-array output slot voices[0].pair[1]: {:?}",
             typed.sample
         );
     }
@@ -2902,14 +2879,19 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::UserCall { name, .. },
+                        expr: Expr::Index {
+                            base: source_base,
+                            index: source_index,
+                            ..
+                        },
                         ..
                     } if base == "out_st"
                         && matches!(
                             index,
                             Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
                         )
-                        && name.starts_with("Voice.__onda_proc_call_out")
+                        && (source_base == "voices.pair[0]" || source_base == "voices.pair[1]")
+                        && matches!(**source_index, Expr::Int { value: 0, .. })
                 ))
                 .count()
                 == 2,

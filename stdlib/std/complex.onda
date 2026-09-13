@@ -29,6 +29,11 @@ namespace std::complex:
       self.re += other.re
       self.im += other.im
 
+    def added(self, other: Complex) -> Complex<T>:
+      result: Complex<T> = self
+      result.add_assign(other)
+      return result
+
     def add_parts(self, re, im):
       self.re += re
       self.im += im
@@ -37,12 +42,22 @@ namespace std::complex:
       self.re -= other.re
       self.im -= other.im
 
+    def subtracted(self, other: Complex) -> Complex<T>:
+      result: Complex<T> = self
+      result.sub_assign(other)
+      return result
+
     def sub_parts(self, re, im):
       self.re -= re
       self.im -= im
 
     def mul_assign(self, other: Complex):
       self.mul_parts(other.re, other.im)
+
+    def multiplied(self, other: Complex) -> Complex<T>:
+      result: Complex<T> = self
+      result.mul_assign(other)
+      return result
 
     def mul_parts(self, re, im):
       old_re = self.re
@@ -54,8 +69,18 @@ namespace std::complex:
       self.re *= gain
       self.im *= gain
 
+    def scaled(self, gain) -> Complex<T>:
+      result: Complex<T> = self
+      result.scale_assign(gain)
+      return result
+
     def conjugate(self):
       self.im = -self.im
+
+    def conjugated(self) -> Complex<T>:
+      result: Complex<T> = self
+      result.conjugate()
+      return result
 
     def power(self):
       return self.re * self.re + self.im * self.im
@@ -65,3 +90,8 @@ namespace std::complex:
 
     def phase(self):
       return atan2(self.im, self.re)
+
+  def polar<T>(magnitude: T, phase: T) -> Complex<T>:
+    result = Complex<T>()
+    result.set_polar(magnitude, phase)
+    return result

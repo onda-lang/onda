@@ -3070,3 +3070,224 @@ sample:
 
         assert_eq!((diagnostic.line, diagnostic.column), (2, 10));
     }
+
+    #[test]
+    fn equivalent_struct_range_and_block_syntaxes_analyze_and_lower() {
+        const FIELD_FORMS: &[&str] = &[
+            "index = 0 {4, wrap}",
+            "index: i32 = 0 {4, wrap}",
+            "index: i32 {4, wrap}",
+            "index: i32 {count = 4, mode = wrap}",
+            "index: i64 {range = 0..=3, mode = wrap}",
+        ];
+
+        for field in FIELD_FORMS {
+            let indented = format!(
+                r#"
+struct Cell<T>:
+  value: T
+  {field}
+
+proc Reader<T>:
+  outs<T> 1
+  init:
+    cells: Cell<T>[4] = Cell<T>(value = T(0.25))
+  sample:
+    cells[0].index = 1
+    out1 = cells[0].value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#
+            );
+            let braced = format!(
+                r#"
+struct Cell<T> {{
+  value: T
+  {field}
+}}
+
+proc Reader<T> {{
+  outs<T> {{ out1 }}
+  init {{
+    cells: Cell<T>[4] = Cell<T>(value = T(0.25))
+  }}
+  sample {{
+    cells[0].index = 1
+    out1 = cells[0].value
+  }}
+}}
+
+init {{
+  reader = Reader<f32>()
+}}
+
+sample {{
+  out1 = reader()
+}}
+"#
+            );
+
+            for (style, source) in [("indented", indented), ("braced", braced)] {
+                let parsed = parse_program(&source).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should parse: {errors:#?}")
+                });
+                let typed = analyze(parsed).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should analyze: {errors:#?}")
+                });
+                lower_program_to_optimized_mir(&typed).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should lower: {errors:#?}")
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn documented_feature_combinations_analyze_and_lower() {
+        const PROGRAMS: &[(&str, &str)] = &[
+            (
+                "control flow, tuples, slices, and overloads",
+                r#"
+def summarize(values: f32[]) -> (f32, i32):
+  total = 0.0
+  count = 0
+  for i in 0..values.len():
+    if i == 1:
+      continue
+    total += values[i]
+    count += 1
+  return (total, count)
+
+def bias(value: f32, amount: f32 = 0.5) -> f32:
+  return value + amount
+
+def bias(value: f64, amount: f64 = 0.5) -> f64:
+  return value + amount
+
+sample:
+  values: f32[4] = [1.0, 2.0, 3.0, 4.0]
+  total, count = summarize(values[:])
+  if count == 3:
+    adjusted = bias(amount = 1.0, value = total)
+  else:
+    adjusted = 0.0
+  out1 = adjusted
+"#,
+            ),
+            (
+                "structured events and delegates",
+                r#"
+struct Note:
+  velocity: f32
+  key: i32 {128, wrap}
+
+struct Patch:
+  notes: Note[2]
+  metadata: (f32, i64)
+
+proc VoiceBank:
+  init:
+    current: Patch
+
+  delegate configured(patch: Patch)
+
+  event configure(patch: Patch):
+    current = patch
+    configured(current)
+
+  sample:
+    out1 = current.notes[0].velocity + f32(current.notes[1].key)
+
+init:
+  bank = VoiceBank()
+  observed: Patch
+
+when bank.configured(patch):
+  observed = patch
+
+event configure(patch: Patch):
+  bank.configure(patch)
+
+sample:
+  out1 = bank() + observed.metadata[0]
+"#,
+            ),
+            (
+                "task-owned aggregate views across yield",
+                r#"
+struct Entry:
+  value: f32
+  index: i32 {4, wrap}
+
+init:
+  entries: Entry[4]
+
+task prepare():
+  pending: Entry[2] = Entry(value = 0.25)
+  selected: Entry[] = pending[:]
+  selected[0].value = 0.75
+  yield
+  entries[:2] = selected
+
+block:
+  await prepare()
+
+  sample:
+    out1 = entries[0].value + f32(entries[1].index)
+"#,
+            ),
+            (
+                "braced graph with processor arrays and fanout",
+                r#"
+proc Gain {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample { out1 = in1 * gain }
+}
+
+ins { in1, in2 }
+outs { out1, out2 }
+
+init {
+  gains: Gain[2] = Gain()
+}
+
+graph {
+  in1 >> gains[0].in1
+  in2 >> gains[1].in1
+  0.5 >> { gains[0].gain, gains[1].gain }
+  gains[0].out1 >>[1] out1
+  gains[1].out1 >> out2
+}
+"#,
+            ),
+        ];
+
+        for (description, source) in PROGRAMS {
+            let parsed = parse_program(source).unwrap_or_else(|errors| {
+                panic!("{description} should parse: {errors:#?}")
+            });
+            let typed = analyze(parsed).unwrap_or_else(|errors| {
+                panic!("{description} should analyze: {errors:#?}")
+            });
+            lower_program_to_optimized_mir(&typed).unwrap_or_else(|errors| {
+                panic!("{description} should lower to optimized MIR: {errors:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn long_flat_expression_chains_analyze_and_lower() {
+        let expression = std::iter::repeat_n("1.0", 2048)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!("sample:\n  out1 = {expression}\n");
+        let typed = analyze(parse_program(&source).expect("long expression should parse"))
+            .expect("long expression should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("long expression should lower to optimized MIR");
+    }

@@ -71,6 +71,11 @@ pub(crate) struct InferredProcArrayParam {
     pub(crate) len: usize,
 }
 
+fn remove_shadowed_root<T>(roots: &mut HashMap<String, T>, name: &str) {
+    let child_prefix = format!("{name}.");
+    roots.retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+}
+
 pub(crate) fn infer_def_param_kinds(
     defs: &[FunctionDef],
     init: &[Stmt],
@@ -307,8 +312,12 @@ pub(crate) fn infer_def_param_kinds(
             }
 
             let mut merged_struct_array_roots = struct_array_roots.clone();
-            merged_struct_array_roots.extend(local_struct_array_roots);
             let mut merged_proc_array_roots = proc_array_roots.clone();
+            for param in &def.params {
+                remove_shadowed_root(&mut merged_struct_array_roots, &param.name);
+                remove_shadowed_root(&mut merged_proc_array_roots, &param.name);
+            }
+            merged_struct_array_roots.extend(local_struct_array_roots);
             merged_proc_array_roots.extend(local_proc_array_roots);
             for stmt in &def.body {
                 infer_stmt_calls(

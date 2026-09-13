@@ -600,6 +600,95 @@ sample:
     }
 
     #[test]
+    fn generic_processor_materializes_struct_array_type_from_state_declaration() {
+        let src = r#"
+struct Cell<T>:
+  value: T
+
+proc Reader<T>:
+  outs<T> 1
+
+  init:
+    cells: Cell<T>[2]
+
+  sample:
+    cell = cells[0]
+    out1 = cell.value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("a specialized state annotation should materialize its generic struct");
+        assert!(typed
+            .structs
+            .iter()
+            .any(|strukt| strukt.name == "Cell.__gen__f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized processor struct-array state should lower");
+    }
+
+    #[test]
+    fn parameterized_namespace_materializes_broadcast_generic_struct_array_state() {
+        let src = r#"
+namespace Bank<N = 2>:
+  struct Cell<T>:
+    value: T
+
+  proc Reader<T>:
+    outs<T> 1
+
+    init:
+      cells: Cell<T>[N] = Cell<T>(value = T(.5))
+
+    sample:
+      cell = cells[N - 1]
+      out1 = cell.value
+
+init:
+  reader = Bank<3>::Reader<f64>()
+
+sample:
+  out1 = f32(reader())
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("namespace-local generic struct state should materialize transitively");
+        assert!(typed.structs.iter().any(|strukt| {
+            strukt.name.starts_with("Bank__nsinst")
+                && strukt.name.ends_with("::Cell.__gen__f64")
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("namespace-local broadcast struct-array state should lower");
+    }
+
+    #[test]
+    fn function_parameter_shadows_same_named_struct_array_root() {
+        let src = r#"
+struct Cell:
+  value: f32
+
+def first(input: f32[]):
+  return input[0]
+
+outs 1
+
+init:
+  input: Cell[2]
+  values: f32[2] = [0.25, 0.75]
+
+sample:
+  out1 = first(values)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("the function-local parameter must shadow the outer aggregate root");
+        lower_program_to_optimized_mir(&typed)
+            .expect("shadowed aggregate roots should lower to MIR");
+    }
+
+    #[test]
     fn generic_processor_preserves_local_def_type_parameters() {
         let src = r#"
 struct Pair<A, B>:
@@ -4312,7 +4401,7 @@ sample:
         let source = r#"
 struct Ring:
   values: f32[8]
-  index: i32 = 0 {8, wrap}
+  index: i32 {8, wrap}
 
   def write(self, value: f32):
     self.values[self.index] = value

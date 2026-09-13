@@ -1559,6 +1559,7 @@ export class MirCompilerCore {
 
   collectAddressTakenScalarLocals(functionId) {
     const result = new Set();
+    const func = this.mir.functions[functionId];
     const visitBlock = (block) => {
       for (const statement of block.statements) {
         const kind = statement.kind?.kind;
@@ -1578,6 +1579,19 @@ export class MirCompilerCore {
               result.add(argument.data.base.data);
             }
           });
+        } else if (
+          kind === "assign"
+          && data.value?.kind === "make_slice"
+          && data.value.data.source?.kind === "place"
+          && data.value.data.source.data.base?.kind === "local"
+        ) {
+          const source = data.value.data.source.data;
+          if (
+            source.projections.length === 0
+            && this.type(func.locals[source.base.data]?.ty).kind === "scalar"
+          ) {
+            result.add(source.base.data);
+          }
         } else if (kind === "if") {
           visitBlock(data.then_block);
           visitBlock(data.else_block);
@@ -1586,7 +1600,7 @@ export class MirCompilerCore {
         }
       }
     };
-    visitBlock(this.mir.functions[functionId].body);
+    visitBlock(func.body);
     return result;
   }
 
@@ -2035,14 +2049,7 @@ export class MirCompilerCore {
         if (kind === "call" && data.results.length > 0) {
           this.requireFunctionId(data.function, "call target");
           const target = this.mir.functions[data.function];
-          const aliasesResult = data.args.some((argument, index) =>
-            this.parameterPassingMode(data.function, index) !== "value"
-              && argument.kind === "place"
-              && argument.data.base.kind === "local"
-              && argument.data.projections.length === 0
-              && this.type(target.params[index].ty).kind === "scalar"
-          );
-          if (data.results.length === 1 && !aliasesResult) continue;
+          if (data.results.length === 1) continue;
           const scalars = target.results.map((typeId, resultId) =>
             this.requireScalarType(
               typeId,

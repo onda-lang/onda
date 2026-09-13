@@ -235,81 +235,11 @@ export class MirCompilerLowering extends MirCompilerCore {
     );
     const resultType = this.wasmResultType(resultScalars);
     const call = this.module.call(this.functionNames[data.function], args, resultType);
-    const localReferenceSync = data.args.flatMap((argument, index) => {
-      const parameter = target.params[index];
-      if (
-        this.parameterPassingMode(data.function, index) === "value"
-        || argument.kind !== "place"
-        || argument.data.base.kind !== "local"
-        || argument.data.projections.length !== 0
-      ) {
-        return [];
-      }
-      const layout =
-        this.localScalarRefLayout[context.functionId]?.[argument.data.base.data];
-      if (!layout) return [];
-      return [{
-        localId: argument.data.base.data,
-        address: layout.address,
-        scalar: layout.scalar,
-        writeBack: ["read_write_reference", "result_reference"].includes(parameter.mode),
-        readBefore: parameter.mode !== "result_reference",
-      }];
-    });
-    const beforeCall = localReferenceSync.filter((sync) => sync.readBefore).map((sync) =>
-      this.storeScalar(
-        sync.scalar,
-        this.module.i32.const(sync.address),
-        this.module.local.get(
-          this.localIndex(sync.localId, context),
-          this.wasmType(sync.scalar),
-        ),
-      ),
-    );
-    const afterCall = localReferenceSync
-      .filter((sync) => sync.writeBack)
-      .map((sync) =>
-        this.module.local.set(
-          this.localIndex(sync.localId, context),
-          this.loadScalar(sync.scalar, this.module.i32.const(sync.address)),
-        ),
-      );
-    const resultSpill = context.callResultLocals.get(data);
-    if (localReferenceSync.length > 0 && data.results.length > 0) {
-      if (!resultSpill) {
-        this.fail(`internal result spill is missing for call to '${target.name}'`);
-      }
-      const spilledValue = () =>
-        this.module.local.get(resultSpill.index, resultSpill.type);
-      const assignResults = data.results.length === 1
-        ? [
-            this.module.local.set(
-              this.localIndex(data.results[0], context),
-              spilledValue(),
-            ),
-          ]
-        : data.results.map((localId, index) =>
-            this.module.local.set(
-              this.localIndex(localId, context),
-              this.module.tuple.extract(spilledValue(), index),
-            ),
-          );
-      return this.module.block(null, [
-        ...beforeCall,
-        this.module.local.set(resultSpill.index, call),
-        ...afterCall,
-        ...assignResults,
-        ...this.propagateRuntimeFailure(data.function, context),
-      ]);
-    }
     let compiledCall;
     if (data.results.length === 0) {
       compiledCall = call;
     } else if (data.results.length === 1) {
-      compiledCall = this.module.local.set(
-        this.localIndex(data.results[0], context),
-        call,
-      );
+      compiledCall = this.storeLocal(data.results[0], call, context);
     } else {
       const tupleLocal = context.callResultLocals.get(data);
       if (!tupleLocal) {
@@ -320,25 +250,18 @@ export class MirCompilerLowering extends MirCompilerCore {
       compiledCall = this.module.block(null, [
         this.module.local.set(tupleLocal.index, call),
         ...data.results.map((localId, index) =>
-          this.module.local.set(
-            this.localIndex(localId, context),
+          this.storeLocal(
+            localId,
             this.module.tuple.extract(tupleValue(), index),
+            context,
           ),
         ),
       ]);
     }
-    if (localReferenceSync.length === 0) {
-      const propagation = this.propagateRuntimeFailure(data.function, context);
-      return propagation.length === 0
-        ? compiledCall
-        : this.module.block(null, [compiledCall, ...propagation]);
-    }
-    return this.module.block(null, [
-      ...beforeCall,
-      compiledCall,
-      ...afterCall,
-      ...this.propagateRuntimeFailure(data.function, context),
-    ]);
+    const propagation = this.propagateRuntimeFailure(data.function, context);
+    return propagation.length === 0
+      ? compiledCall
+      : this.module.block(null, [compiledCall, ...propagation]);
   }
 
   compilePublishDelegate(data, context) {

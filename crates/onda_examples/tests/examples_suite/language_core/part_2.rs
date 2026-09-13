@@ -996,6 +996,133 @@ fn graph_proc_array_indexed_param_destinations_and_output_sources_run() {
 
 #[test]
 
+fn graph_proc_array_slots_receive_wired_inputs_before_cached_outputs_are_read() {
+    let source = r#"
+proc Gain {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample { out1 = in1 * gain }
+}
+
+ins { in1, in2 }
+outs { out1, out2 }
+
+init {
+  gains: Gain[2] = Gain()
+}
+
+graph {
+  in1 >> gains[0].in1
+  in2 >> gains[1].in1
+  0.5 >> { gains[0].gain, gains[1].gain }
+  gains[0].out1 >>[1] out1
+  gains[1].out1 >> out2
+}
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 2);
+
+    let input = [1.0_f32, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0];
+    let mut output = [0.0_f32; 8];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process proc-array graph inputs");
+    assert_eq!(output, [0.0, 5.0, 0.5, 10.0, 1.0, 15.0, 1.5, 20.0]);
+}
+
+#[test]
+
+fn graph_proc_array_output_fanout_steps_each_slot_once_per_sample() {
+    let source = r#"
+proc Counter:
+  ins:
+    increment
+  outs:
+    out1
+  init:
+    value = 0.0
+  sample:
+    value += increment
+    out1 = value
+
+ins:
+  in1
+outs:
+  out1
+  out2
+
+init:
+  counters: Counter[1] = Counter()
+
+graph:
+  in1 >> counters[0].increment
+  counters[0].out1 >> out1
+  counters[0].out1 >> out2
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 1);
+    assert_eq!(out_channels, 2);
+
+    let input = [1.0_f32; 4];
+    let mut output = [0.0_f32; 8];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process stateful proc-array graph fanout");
+    assert_eq!(output, [1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0]);
+}
+
+#[test]
+
+fn graph_proc_array_slots_route_fixed_input_and_output_arrays() {
+    let source = r#"
+proc Stereo:
+  ins:
+    input: f32[2]
+  outs:
+    output: f32[2]
+  sample:
+    output[0] = input[0] * 2.0
+    output[1] = input[1] * 3.0
+
+ins:
+  input: f32[2]
+outs:
+  output: f32[2]
+  selected
+
+init:
+  processors: Stereo[2] = Stereo()
+
+graph:
+  input >> processors[1].input
+  processors[1].output >> output
+  processors[1].output[1] >> selected
+"#;
+    let frames = 3;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 2);
+    assert_eq!(out_channels, 3);
+
+    let input = [1.0_f32, 10.0, 2.0, 20.0, 3.0, 30.0];
+    let mut output = [0.0_f32; 9];
+
+    process_interleaved(&mut instance, &input, &mut output, frames)
+        .expect("process proc-array graph port arrays");
+    assert_eq!(
+        output,
+        [2.0, 30.0, 30.0, 4.0, 60.0, 60.0, 6.0, 90.0, 90.0]
+    );
+}
+
+#[test]
+
 fn graph_array_expressions_run_element_wise() {
     let frames = 4;
 

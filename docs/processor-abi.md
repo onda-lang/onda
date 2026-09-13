@@ -439,10 +439,11 @@ a raw-object host that wants the same audio policy must configure its calling th
 Bounds checks, integer division, and other generated safety checks return
 `RUNTIME_SAFETY_FAILURE` instead of trapping. Invalid host pointers, storage extents, or other
 violations of the raw ABI remain outside generated-code recovery and can still trap or cause
-undefined behavior. A host must treat every nonzero execution result as a failed processor state
-instead of continuing with potentially partial state or output writes. Audio hosts discard partial
-output and emit silence for the failed render interval and every later interval until full
-initialization or snapshot restoration establishes valid state again.
+undefined behavior. `RUNTIME_SAFETY_FAILURE` means execution may have partially changed state or
+output; a host must stop using that processor state until full initialization or snapshot restoration
+establishes valid state again, and audio hosts discard partial output. `INPUT_REJECTED` completes no
+handler work, preserves state and existing output records, and leaves the processor usable after the
+host corrects its payload or workspace capacity.
 
 ## Web Audio reference adapter
 

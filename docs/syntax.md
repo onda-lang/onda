@@ -1187,14 +1187,14 @@ struct Voice:
   phase                 # f32, default 0.0
   active = false        # bool inferred from the default
   gain: f64 = 1.0       # explicit type and default
-  cursor: i32 = 0 {8, wrap} # ranged integer field
+  cursor: i32 {8, wrap}     # ranged integer field; implicit default is 0
   taps: f32[4]          # fixed array, default-filled
 ```
 
 A bare field defaults to `f32`. A field with `= expr` infers its type from that compile-time
 default. Typed scalar and tuple fields accept compatible defaults. Array and nested-struct fields
 are initialized from their type's defaults; supply explicit values through constructor arguments.
-An `i32` or `i64` field may use the same [finite storage domain](#assignments) as an integer local or state binding. Constructor
+An `i32` or `i64` field may use the same [finite storage domain](#assignments) as an integer local or state binding. A ranged field without an explicit default uses the integer default `0`. Constructor
 arguments and every later field assignment are normalized on storage, and the compiler retains the
 domain on flattened state and reference parameters for index-range proofs.
 
@@ -1227,6 +1227,18 @@ error, including for specialized generic types such as `Box<f32>`. Returning a f
 independent contents, including when returning an argument.
 Bind a returned aggregate to a name before indexing it or selecting its fields. Use intermediate
 aliases for deeper selections.
+
+| Form | Result |
+| --- | --- |
+| `alias = existing` for a new name | Alias the existing struct or fixed array. |
+| `copy: T = existing` | Create independent fixed storage and copy the contents. |
+| `existing = replacement` | Replace the contents without redirecting existing aliases. |
+| `result = make_value()` | Own the fixed result returned by the helper. |
+| `view: T[] = existing[start:end]` | Capture a slice view; no element storage is copied. |
+
+Use an untyped binding when shared mutation is intentional, and a typed fixed declaration when later
+changes must be independent. Aggregate parameters are references to their caller's storage; fixed
+aggregate returns are independent values.
 
 ```onda
 struct Coefficients:
@@ -2305,6 +2317,21 @@ Current legal destinations include:
 - Proc inputs.
 - Proc params.
 - Proc-array slot inputs and params.
+
+Proc-array slots use the same fixed-array port shapes as ordinary proc instances. The processor
+index follows the instance name; an optional second index selects one element of an output array:
+
+```onda
+graph:
+  stereo_in >> processors[1].input
+  processors[1].output >> stereo_out
+  processors[1].output[0] >> left_out
+  processors[1].out1 >> monitor
+```
+
+`processors[1].output` reads the complete cached output array after that slot has been stepped.
+Fan-out reads the same cached result and does not step the processor again. A whole fixed input array
+must match the destination port shape; scalar broadcast follows the ordinary graph rules.
 
 Type and scheduling rules:
 

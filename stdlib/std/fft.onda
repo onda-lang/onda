@@ -1,4 +1,5 @@
 import std/math
+import std/complex
 
 namespace std::fft<N = 256>:
   assert(N > 1 && (N & (N - 1)) == 0)
@@ -138,6 +139,16 @@ namespace std::fft<N = 256>:
       for i in count..N:
         self.set_bin(i, 0.0, 0.0)
 
+    def load_complex(self, input: std::complex::Complex<T>[]):
+      count = _min_i(input.len(), N)
+      for i in 0..count:
+        value = input[i]
+        self.bin_real[i] = value.re
+        self.bin_imag[i] = value.im
+      for i in count..N:
+        self.bin_real[i] = 0.0
+        self.bin_imag[i] = 0.0
+
     def store_real(self, output: T[]):
       count = _min_i(output.len(), N)
       for i in 0..count:
@@ -147,6 +158,11 @@ namespace std::fft<N = 256>:
       count = _min_i(output.len(), N)
       for i in 0..count:
         output[i] = self.imag(i)
+
+    def store_complex(self, output: std::complex::Complex<T>[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i].set(self.real(i), self.imag(i))
 
     def store_magnitude(self, output: T[]):
       count = _min_i(output.len(), N)
@@ -243,6 +259,10 @@ namespace std::fft<N = 256>:
 
     def forward_complex(self, real: T[], imag: T[]):
       self.load_complex(real, imag)
+      self.forward()
+
+    def forward_complex(self, input: std::complex::Complex<T>[]):
+      self.load_complex(input)
       self.forward()
 
     def forward_real_magnitude(self, input: T[], output: T[]):

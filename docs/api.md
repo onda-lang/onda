@@ -593,8 +593,12 @@ buffer state satisfying the ABI contract. Like unchecked processing, it may retu
 generated failure code or a negative API error.
 
 Both functions accept an optional execution output and execute synchronously on the calling thread.
-Event payloads pack parameters in declaration order using the scalar, fixed-array, and slice layout
-described by program metadata.
+Event payloads use the recursive schema returned by `onda_event_schema_json`. Encode parameters in
+declaration order and fields depth-first; structs are structure-of-arrays tensors, and each dynamic
+slice contributes one little-endian `i32` logical length followed by its leaf tensors. Use
+`onda_event_payload_sizes` to size dynamic wire data and preparation workspace, reserve additional
+workspace before realtime dispatch when necessary, and treat input rejection separately from
+handler failure. The processor remains usable after rejected input.
 
 ## Delegates
 
@@ -639,7 +643,8 @@ if (status == ONDA_EXECUTION_OK) {
 ```
 
 `onda_delegate_batch_reset` clears counters without changing storage. The runtime host resets every
-supplied batch before entering generated code. `onda_delegate_batch_next` performs linear constant-time cursor
+supplied batch before init or process code; an event entry resets it only after accepting its input.
+`onda_delegate_batch_next` performs linear constant-time cursor
 iteration; `onda_delegate_batch_occurrence_at` is convenient for one index but repeated indexed
 iteration is quadratic.
 
