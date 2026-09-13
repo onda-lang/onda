@@ -94,6 +94,7 @@ type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 struct RenderThreadContext {
     sample_queue: SampleProducer,
     input_queue: SampleConsumer,
+    stream_errors: StreamErrorState,
     midi_rx: mpsc::Receiver<TimedMidiMessage>,
     midi_overflowed: Arc<AtomicBool>,
     midi_reset_requested: Arc<AtomicBool>,
@@ -382,6 +383,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         RenderThreadContext {
             sample_queue: sample_producer,
             input_queue: input_consumer,
+            stream_errors: error_state.clone(),
             midi_rx,
             midi_overflowed: Arc::clone(&midi_overflowed),
             midi_reset_requested: Arc::clone(&midi_reset_requested),
@@ -767,6 +769,7 @@ fn spawn_run_render_thread(
         let RenderThreadContext {
             sample_queue,
             input_queue,
+            stream_errors,
             midi_rx,
             midi_overflowed,
             midi_reset_requested,
@@ -940,6 +943,7 @@ fn spawn_run_render_thread(
                     };
                     match command {
                         PlaybackControlCommand::Pause { reply } => {
+                            stream_errors.set_output_expected(false);
                             play_requested = false;
                             playing = false;
                             cancel_pending_run_events(
@@ -950,6 +954,7 @@ fn spawn_run_render_thread(
                             let _ = reply.send(Ok(()));
                         }
                         PlaybackControlCommand::Play { reply } => {
+                            stream_errors.set_output_expected(false);
                             play_requested = true;
                             midi_timeline.reset();
                             flush_pending_param_updates(
@@ -1143,6 +1148,7 @@ fn spawn_run_render_thread(
                             buffer_worker.load(name, path, reply);
                         }
                         PlaybackControlCommand::ClearBuffer { name, reply } => {
+                            stream_errors.set_output_expected(false);
                             buffer_worker.invalidate(&name);
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -1191,6 +1197,7 @@ fn spawn_run_render_thread(
                 let result = if !buffer_worker.is_current(&loaded) {
                     Ok(BufferLoadStatus::Superseded)
                 } else {
+                    stream_errors.set_output_expected(false);
                     match &mut loaded.prepared {
                         Err(error) => Err(error.clone()),
                         Ok(prepared) => session
@@ -1225,6 +1232,7 @@ fn spawn_run_render_thread(
             }
 
             if !playing {
+                stream_errors.set_output_expected(false);
                 while midi_rx.try_recv().is_ok() {}
                 midi_overflowed.store(false, Ordering::Release);
                 midi_reset_requested.store(false, Ordering::Release);
@@ -1244,6 +1252,7 @@ fn spawn_run_render_thread(
                 sample_queue.capacity(),
             );
             if sample_queue.len() >= render_ahead_samples {
+                stream_errors.set_output_expected(true);
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }

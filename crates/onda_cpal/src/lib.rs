@@ -197,6 +197,7 @@ pub struct StreamErrorState {
 struct StreamErrorStateInner {
     output_failed: AtomicBool,
     input_failed: AtomicBool,
+    output_expected: AtomicBool,
     output_underrun_frames: AtomicUsize,
 }
 
@@ -212,7 +213,37 @@ impl StreamErrorState {
     }
 
     pub fn output_underrun_frames(&self) -> usize {
-        self.inner.output_underrun_frames.load(Ordering::Relaxed)
+        if self.inner.output_expected.load(Ordering::Acquire) {
+            self.inner.output_underrun_frames.load(Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+
+    /// Enable underrun accounting only while the producer is expected to supply audio.
+    /// Transitions clear stale counts from an earlier playback interval.
+    pub fn set_output_expected(&self, expected: bool) {
+        if expected {
+            if !self.inner.output_expected.load(Ordering::Acquire) {
+                self.inner
+                    .output_underrun_frames
+                    .store(0, Ordering::Relaxed);
+                self.inner.output_expected.store(true, Ordering::Release);
+            }
+        } else {
+            self.inner.output_expected.store(false, Ordering::Release);
+            self.inner
+                .output_underrun_frames
+                .store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn record_output_underrun(&self, frames: usize) {
+        if frames != 0 && self.inner.output_expected.load(Ordering::Acquire) {
+            self.inner
+                .output_underrun_frames
+                .fetch_add(frames, Ordering::Relaxed);
+        }
     }
 }
 
@@ -400,12 +431,7 @@ where
                 configure_current_thread_fp_mode();
                 let missing =
                     write_output_data(data, device_channels, source_channels, &sample_queue.inner);
-                if missing != 0 {
-                    callback_errors
-                        .inner
-                        .output_underrun_frames
-                        .fetch_add(missing, Ordering::Relaxed);
-                }
+                callback_errors.record_output_underrun(missing);
             },
             move |_err| {
                 errors.inner.output_failed.store(true, Ordering::Release);
@@ -621,7 +647,25 @@ fn with_stderr_silenced<T>(f: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 mod tests {
-    use super::{sample_ring, write_input_data, write_output_data};
+    use super::{sample_ring, write_input_data, write_output_data, StreamErrorState};
+
+    #[test]
+    fn output_underruns_only_count_while_audio_is_expected() {
+        let errors = StreamErrorState::default();
+        errors.record_output_underrun(32);
+        assert_eq!(errors.output_underrun_frames(), 0);
+
+        errors.set_output_expected(true);
+        errors.record_output_underrun(16);
+        assert_eq!(errors.output_underrun_frames(), 16);
+
+        errors.set_output_expected(false);
+        errors.record_output_underrun(32);
+        assert_eq!(errors.output_underrun_frames(), 0);
+
+        errors.set_output_expected(true);
+        assert_eq!(errors.output_underrun_frames(), 0);
+    }
 
     #[test]
     fn output_callback_maps_channels_with_bulk_ring_transfer() {
