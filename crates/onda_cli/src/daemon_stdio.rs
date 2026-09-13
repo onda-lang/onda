@@ -279,9 +279,11 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                     "delegates": run.delegate_info().iter().map(run_delegate_json).collect::<Vec<_>>(),
                     "output_channels": run.output_channel_count(),
                 });
-                let prints = session
+                let run = session
                     .run_mut(&path)
-                    .expect("run should be active after successful start")
+                    .expect("run should be active after successful start");
+                run.set_delegate_collection_enabled(true);
+                let prints = run
                     .take_print_batch()
                     .map_err(|diag| diagnostic_string("run_start print decoding failed", &diag));
                 prints.map(|prints| attach_run_print_batch(result, &prints))
@@ -932,6 +934,49 @@ mod tests {
             .as_f64()
             .expect("replayed sample");
         assert_eq!(advanced_first, replayed_first);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stdio_runs_collect_delegate_occurrences() {
+        let dir = mk_temp_dir("run_delegate");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: i32)\n\nevent trigger(value: i32):\n  report(value)\n\nsample:\n  out1 = 0.0\n",
+        );
+        let path = main.to_string_lossy().into_owned();
+        let mut session = DaemonSession::default();
+
+        let start = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunStart { path: path.clone() },
+            },
+        );
+        assert!(start.ok, "start response: {:?}", start.error);
+
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(2),
+                request: Request::RunTriggerEvent {
+                    path,
+                    name: "trigger".to_owned(),
+                    values: vec![EventValueRequest::Number(7.0)],
+                },
+            },
+        );
+        assert!(response.ok, "event response: {:?}", response.error);
+        let result = response.result.expect("event result");
+        assert_eq!(result["delegate_overflow_count"], 0);
+        assert_eq!(result["delegate_occurrences"][0]["name"], "report");
+        assert_eq!(
+            result["delegate_occurrences"][0]["values"]["value"].as_f64(),
+            Some(7.0)
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -345,13 +345,13 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
-    pub(super) fn append_data_result_arguments(
+    pub(super) fn data_result_arguments(
         &self,
         name: &str,
         data: &DataType,
-        args: &mut Vec<CallArgument>,
         loc: SourceLoc,
-    ) -> Result<(), MirLoweringError> {
+    ) -> Result<Option<Vec<CallArgument>>, MirLoweringError> {
+        let mut args = Vec::new();
         for shape in self.data_shapes(data, loc)? {
             let path = match shape {
                 StructFieldShape::Scalar { name, .. } | StructFieldShape::Array { name, .. } => {
@@ -371,9 +371,10 @@ impl FunctionLowerer<'_> {
                     Binding::ReferenceParameter(parameter, _)
                     | Binding::ArrayParameter(parameter, _, _),
                 ) => PlaceBase::Parameter(*parameter),
-                _ => {
+                Some(_) => return Ok(None),
+                None => {
                     return Err(self.error(
-                        format!("data result field '{field}' has no owned storage"),
+                        format!("data result field '{field}' has no storage binding"),
                         loc,
                     ))
                 }
@@ -383,7 +384,7 @@ impl FunctionLowerer<'_> {
                 projections: Vec::new(),
             }));
         }
-        Ok(())
+        Ok(Some(args))
     }
 
     pub(super) fn data_type_of(&self, expr: &Expr) -> Option<DataType> {

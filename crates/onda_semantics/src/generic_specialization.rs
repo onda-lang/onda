@@ -130,25 +130,13 @@ fn substitute_call_type_args_with_bindings_expr_in_scope(
     scope: TypeSpecializationScope<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let diag = DiagCtx::new(expr.loc());
-    match expr {
-        Expr::Index { index, .. } => {
-            substitute_call_type_args_with_bindings_expr_in_scope(index, scope, errors);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                substitute_call_type_args_with_bindings_expr_in_scope(coordinate, scope, errors);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            substitute_call_type_args_with_bindings_expr_in_scope(&mut spec.size, scope, errors);
-            if let ArrayElemType::Struct(type_name) = &mut spec.elem {
+    expr.visit_mut_postorder(|expr| {
+        let diag = DiagCtx::new(expr.loc());
+        match expr {
+            Expr::ArrayCtor { spec, .. } => {
+                let ArrayElemType::Struct(type_name) = &mut spec.elem else {
+                    return;
+                };
                 match specialize_generic_type_name(type_name, scope, diag, errors) {
                     Some(SpecializedTypeName::Primitive(bound)) => {
                         spec.elem = ArrayElemType::Primitive(bound);
@@ -157,75 +145,46 @@ fn substitute_call_type_args_with_bindings_expr_in_scope(
                     None => {}
                 }
             }
-            if let Some(values) = init {
-                for value in values {
-                    substitute_call_type_args_with_bindings_expr_in_scope(value, scope, errors);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            substitute_call_type_args_with_bindings_expr_in_scope(lhs, scope, errors);
-            substitute_call_type_args_with_bindings_expr_in_scope(rhs, scope, errors);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                substitute_call_type_args_with_bindings_expr_in_scope(arg, scope, errors);
-            }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            substitute_call_type_args_with_bindings_expr_in_scope(inner, scope, errors);
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                substitute_call_type_args_with_bindings_expr_in_scope(value, scope, errors);
-            }
-        }
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            for arg in args.iter_mut() {
-                substitute_call_type_args_with_bindings_expr_in_scope(&mut arg.expr, scope, errors);
-            }
-            for type_arg in type_args.iter_mut() {
-                if let CallTypeArg::Generic(param) = type_arg {
-                    let Some(bound) = scope.bindings.get(param).copied() else {
-                        if scope.preserved_type_params.contains(param) {
+            Expr::UserCall {
+                name,
+                type_args,
+                args,
+                ..
+            } => {
+                for type_arg in type_args.iter_mut() {
+                    if let CallTypeArg::Generic(param) = type_arg {
+                        let Some(bound) = scope.bindings.get(param).copied() else {
+                            if scope.preserved_type_params.contains(param) {
+                                continue;
+                            }
+                            push_semantic(
+                                diag,
+                                errors,
+                                format!(
+                                    "{}: unknown generic type argument '{}'; not declared in current generic owner",
+                                    scope.context,
+                                    param
+                                ),
+                            );
                             continue;
-                        }
-                        push_semantic(
-                            diag,
-                            errors,
-                            format!(
-                                "{}: unknown generic type argument '{}'; not declared in current generic owner",
-                                scope.context,
-                                param
-                            ),
-                        );
-                        continue;
-                    };
-                    *type_arg = CallTypeArg::Primitive(bound);
+                        };
+                        *type_arg = CallTypeArg::Primitive(bound);
+                    }
+                }
+                if type_args.is_empty() && args.len() == 1 && args[0].name.is_none() {
+                    if let Some(bound) = scope.bindings.get(name).copied() {
+                        let arg_expr = args.remove(0).expr;
+                        *expr = Expr::Cast {
+                            loc: Default::default(),
+                            to: bound,
+                            expr: Box::new(arg_expr),
+                        };
+                    }
                 }
             }
-            if type_args.is_empty() && args.len() == 1 && args[0].name.is_none() {
-                if let Some(bound) = scope.bindings.get(name).copied() {
-                    let arg_expr = args.remove(0).expr;
-                    *expr = Expr::Cast {
-                        loc: Default::default(),
-                        to: bound,
-                        expr: Box::new(arg_expr),
-                    };
-                }
-            }
+            _ => {}
         }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
+    });
 }
 
 pub(crate) fn expr_references_names(
@@ -233,57 +192,29 @@ pub(crate) fn expr_references_names(
     variable: &impl Fn(&str) -> bool,
     ty: &impl Fn(&str) -> bool,
 ) -> bool {
-    match expr {
-        Expr::Var { name, .. } => variable(name),
-        Expr::Index { index, .. } => expr_references_names(index, variable, ty),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => [selector, channel, start, end]
-            .into_iter()
-            .flatten()
-            .any(|coordinate| expr_references_names(coordinate, variable, ty)),
-        Expr::ArrayCtor { spec, init, .. } => {
-            matches!(&spec.elem, ArrayElemType::Struct(name) if ty(name))
-                || expr_references_names(&spec.size, variable, ty)
-                || init
-                    .iter()
-                    .flatten()
-                    .any(|value| expr_references_names(value, variable, ty))
+    let mut found = false;
+    expr.visit(|expr| {
+        if found {
+            return false;
         }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            expr_references_names(lhs, variable, ty) || expr_references_names(rhs, variable, ty)
-        }
-        Expr::Call { args, .. } => args
-            .iter()
-            .any(|arg| expr_references_names(arg, variable, ty)),
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            expr_references_names(expr, variable, ty)
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => values
-            .iter()
-            .any(|value| expr_references_names(value, variable, ty)),
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            ty(name)
-                || type_args
-                    .iter()
-                    .any(|arg| matches!(arg, CallTypeArg::Generic(name) if ty(name)))
-                || args
-                    .iter()
-                    .any(|arg| expr_references_names(&arg.expr, variable, ty))
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => false,
-    }
+        found = match expr {
+            Expr::Var { name, .. } => variable(name),
+            Expr::ArrayCtor { spec, .. } => {
+                matches!(&spec.elem, ArrayElemType::Struct(name) if ty(name))
+            }
+            Expr::UserCall {
+                name, type_args, ..
+            } => {
+                ty(name)
+                    || type_args
+                        .iter()
+                        .any(|arg| matches!(arg, CallTypeArg::Generic(name) if ty(name)))
+            }
+            _ => false,
+        };
+        !found
+    });
+    found
 }
 
 pub(crate) fn substitute_call_type_args_with_bindings_stmt(

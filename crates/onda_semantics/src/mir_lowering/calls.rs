@@ -2052,11 +2052,28 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        if let Some(data) = data_result {
+        let mut pending_data_copy = None;
+        if let Some(data) = data_result.as_ref() {
             let destination = result_storage.ok_or_else(|| {
                 self.error("aggregate function result requires data storage", location)
             })?;
-            self.append_data_result_arguments(destination, &data, &mut call_args, location)?;
+            let result_args = match self.data_result_arguments(destination, data, location)? {
+                Some(args) => args,
+                None => {
+                    // Result references require fixed caller-owned storage. A
+                    // selected aggregate can be slice-backed, so evaluate into
+                    // one owned temporary and commit the complete value after
+                    // the call instead of weakening the MIR ABI contract.
+                    let temporary = self.fresh_data_name();
+                    self.allocate_data(&temporary, data, location)?;
+                    let args = self
+                        .data_result_arguments(&temporary, data, location)?
+                        .expect("fresh data storage accepts result references");
+                    pending_data_copy = Some((destination.to_owned(), temporary, data.clone()));
+                    args
+                }
+            };
+            call_args.extend(result_args);
         }
         let result = if returns_value {
             let locals = result_types
@@ -2105,6 +2122,9 @@ impl<'a> FunctionLowerer<'a> {
                     .collect(),
             )
         };
+        if let Some((destination, temporary, data)) = pending_data_copy {
+            self.copy_data(&destination, &temporary, &data, block, location)?;
+        }
         Ok(result)
     }
 

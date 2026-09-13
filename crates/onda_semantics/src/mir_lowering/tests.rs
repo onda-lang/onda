@@ -20,6 +20,16 @@ fn long_expression_compiles_on_a_worker_stack() {
                 let typed = analyze(parsed).unwrap();
                 lower_program_to_optimized_mir(&typed).unwrap();
             }
+
+            let const_expression = std::iter::repeat_n("T(1.0)", 3_000)
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let source = format!(
+                "def deep<T>(x: T) -> T:\n  const c = {const_expression}\n  return x + c\n\nsample:\n  out1 = deep(0.0)\n"
+            );
+            let parsed = parse_program(&source).unwrap();
+            let typed = analyze(parsed).unwrap();
+            lower_program_to_optimized_mir(&typed).unwrap();
         })
         .unwrap()
         .join()
@@ -3213,6 +3223,38 @@ sample:
     assert!(dump.contains("make_slice"));
     assert!(dump.contains("load_slice"));
     assert!(dump.contains("store_slice"));
+}
+
+#[test]
+fn lowers_returned_structs_nested_inside_struct_array_literals() {
+    let source = r#"
+struct Item:
+  value: f32 = 0.0
+
+struct Bundle:
+  item: Item
+
+def make_item(value: f32) -> Item:
+  return Item(value = value)
+
+def make_bundle(value: f32) -> Bundle:
+  return Bundle(item = make_item(value))
+
+init:
+  source = Item(value = 1.0)
+  items: Item[3] = [source, make_item(2.0), Item(value = 3.0)]
+  bundles: Bundle[2] = [Bundle(item = make_item(4.0)), make_bundle(5.0)]
+
+sample:
+  out1 = items[0].value + items[1].value + items[2].value
+  left = bundles[0]
+  right = bundles[1]
+  out2 = left.item.value + right.item.value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("returned struct elements should analyze");
+    let mir = lower_test_program(&typed).expect("returned struct elements should lower");
+    validate(&mir).expect("returned struct element MIR should validate");
 }
 
 #[test]
