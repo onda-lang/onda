@@ -33,7 +33,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
-| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
+| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `RealTransform`, `Rectangular`, `STFT` |
 | [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver`, `impulse_window_count`, `impulse_window_end`, `stage_window_count` |
 | [`std/lookup`](#stdlookup) | `read`, `readC`, `readCW`, `readL`, `readLW`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
@@ -1027,7 +1027,8 @@ const Blackman: f64[N] = _blackman_window()
 
 ```onda
 struct FFT<T>:
-  bins: std::complex::Complex<T>[N]
+  bin_real: T[N]
+  bin_imag: T[N]
   def size(self):
   def real_bin_count(self):
   def clear(self):
@@ -1058,6 +1059,20 @@ struct FFT<T>:
   def forward(self):
   def inverse(self):
   def inverse_real_packed(self, input: T[], output: T[]):
+```
+
+### Struct `RealTransform<T>`
+
+```onda
+struct RealTransform<T>:
+  fft: FFT<T>
+  def size(self):
+  def real_bin_count(self):
+  def clear(self):
+  def real(self, i: i32):
+  def imag(self, i: i32):
+  def forward(self, input: T[]):
+  def inverse(self, real: T[], imag: T[], output: T[]):
 ```
 
 ### Struct `STFT<T>`
@@ -1207,6 +1222,7 @@ proc ZeroLatencyConvolver<T>:
   outs<T> 1
   events:
     set_offset(value: i32 = -1):
+    set_channel(channel: i32):
     set_impulse(values: T[]):
     begin_impulse(value_count: i32):
     set_impulse_window(start: i32, values: T[]):

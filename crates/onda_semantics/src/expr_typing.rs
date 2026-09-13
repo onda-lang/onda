@@ -601,6 +601,17 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     }
                 }
                 Expr::UserCall { name, args, .. } => {
+                    if name == crate::proc_state_rewrite::STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+                        let (base, _, field, field_index) =
+                            crate::array_structs::extract_safi_args(args)?;
+                        let struct_name = local_array_aliases.get(&base)?.elem_struct.as_ref()?;
+                        return crate::resolve_indexed_struct_field_scalar_type(
+                            struct_name,
+                            &field,
+                            &field_index,
+                            struct_defs,
+                        );
+                    }
                     if let Some(method) = name
                         .strip_prefix(PROC_INDEX_CALL_SENTINEL)
                         .and_then(|suffix| suffix.strip_prefix('.'))

@@ -11,12 +11,14 @@ type Origins = HashSet<String>;
 struct ReferenceEnv {
     types: CallTypeEnv,
     origins: HashMap<String, Origins>,
+    receiver_owner: Option<String>,
 }
 
 struct PermissionAnalysis<'a> {
     signatures: &'a HashMap<String, FnSignature>,
     readonly: &'a HashMap<String, Origins>,
     proc_types: &'a HashSet<String>,
+    receiver_fields: &'a HashMap<String, Origins>,
     types: CallTypeContext<'a>,
     writes: Origins,
 }
@@ -34,15 +36,22 @@ fn is_reference(ty: Option<&FnParamType>) -> bool {
 }
 
 impl ReferenceEnv {
-    fn for_parameters(
-        seed: &CallTypeEnv,
-        signature: &FnSignature,
-        candidates: &Origins,
-        structs: &HashMap<String, Vec<TypedStructField>>,
-    ) -> Self {
+    fn for_parameters(seed: &CallTypeEnv, signature: &FnSignature, candidates: &Origins) -> Self {
+        let receiver_owner = match (
+            signature.params.first().map(String::as_str),
+            signature.param_types.first(),
+        ) {
+            (Some("self"), Some(Some(FnParamType::Struct(owner))))
+                if candidates.contains("self") =>
+            {
+                Some(owner.clone())
+            }
+            _ => None,
+        };
         let mut env = Self {
             types: seed.clone(),
             origins: HashMap::new(),
+            receiver_owner,
         };
         env.types.set_owner_type_params(&signature.type_params);
         for (index, name) in signature.params.iter().enumerate() {
@@ -51,35 +60,27 @@ impl ReferenceEnv {
                 signature.param_types.get(index).and_then(Option::as_ref),
                 &signature.type_params,
             );
-            if candidates.contains(name) {
-                env.origins
-                    .insert(name.clone(), Origins::from([name.clone()]));
-            }
-        }
-        // Proc-generated functions access receiver storage through unqualified field
-        // names, including the logical roots of flattened nested proc arrays.
-        if let Some(Some(FnParamType::Struct(owner))) = signature.param_types.first() {
-            if signature.params.first().is_some_and(|name| name == "self")
-                && candidates.contains("self")
-            {
-                for field in structs.get(owner).into_iter().flatten() {
-                    let root = field.name.split(['.', '[']).next().unwrap();
-                    for name in [&field.name, root] {
-                        if !signature.params.iter().any(|param| param == name) {
-                            env.origins
-                                .insert(name.to_owned(), Origins::from(["self".to_owned()]));
-                        }
-                    }
-                }
-            }
+            let origins = if candidates.contains(name) {
+                Origins::from([name.clone()])
+            } else {
+                Origins::new()
+            };
+            env.origins.insert(name.clone(), origins);
         }
         env
     }
-    fn storage_origins(&self, name: &str) -> Origins {
+    fn storage_origins(&self, name: &str, receiver_fields: &HashMap<String, Origins>) -> Origins {
+        let receiver_fields = self
+            .receiver_owner
+            .as_ref()
+            .and_then(|owner| receiver_fields.get(owner));
         let mut path = name;
         loop {
             if let Some(origins) = self.origins.get(path) {
                 return origins.clone();
+            }
+            if receiver_fields.is_some_and(|fields| fields.contains(path)) {
+                return Origins::from(["self".to_owned()]);
             }
             let Some((parent, _)) = path.rsplit_once('.') else {
                 return Origins::new();
@@ -106,11 +107,16 @@ impl ReferenceEnv {
         Self {
             types: join_branch_envs(a.types, a_flow, b.types, b_flow).0,
             origins,
+            receiver_owner: a.receiver_owner,
         }
     }
 }
 
 impl PermissionAnalysis<'_> {
+    fn storage_origins(&self, name: &str, env: &ReferenceEnv) -> Origins {
+        env.storage_origins(name, self.receiver_fields)
+    }
+
     fn indexed_call_targets_processor(&self, args: &[CallArg], env: &ReferenceEnv) -> bool {
         let Some(base) = crate::proc_call_rewrite::proc_index_base_name(args) else {
             return false;
@@ -131,11 +137,11 @@ impl PermissionAnalysis<'_> {
 
     fn reference_origins(&self, expr: &Expr, env: &ReferenceEnv) -> Origins {
         match expr {
-            Expr::Var { name, .. } => env.storage_origins(name),
-            Expr::Slice { base, .. } => env.storage_origins(base),
+            Expr::Var { name, .. } => self.storage_origins(name, env),
+            Expr::Slice { base, .. } => self.storage_origins(base, env),
             _ => {
                 if let Some(source) = indexed_read_source(expr) {
-                    return env.storage_origins(source.base);
+                    return self.storage_origins(source.base, env);
                 }
                 Origins::new()
             }
@@ -152,7 +158,7 @@ impl PermissionAnalysis<'_> {
                 {
                     // Indexed proc execution also updates hidden block-activity storage.
                     if let Some(base) = crate::proc_call_rewrite::proc_index_base_name(args) {
-                        self.writes.extend(env.storage_origins(base));
+                        self.writes.extend(self.storage_origins(base, env));
                     }
                 } else if name == WRITE_UNSAFE_FN {
                     if let Some(arg) = args.first() {
@@ -206,9 +212,10 @@ impl PermissionAnalysis<'_> {
                             // Existing aggregate names preserve their storage identity.
                             let existing = env.types.has_binding(name)
                                 || env.origins.contains_key(name)
+                                || !self.storage_origins(name, env).is_empty()
                                 || name.contains('.');
                             if existing {
-                                self.writes.extend(env.storage_origins(name));
+                                self.writes.extend(self.storage_origins(name, env));
                             }
                             self.expression(expr, env);
                             if !existing {
@@ -228,16 +235,16 @@ impl PermissionAnalysis<'_> {
                         }
                         AssignTarget::Index { base, .. }
                         | AssignTarget::IndexedMember { base, .. } => {
-                            self.writes.extend(env.storage_origins(base));
+                            self.writes.extend(self.storage_origins(base, env));
                             self.expression(expr, env);
                         }
                         AssignTarget::Slice { base, .. } => {
-                            self.writes.extend(env.storage_origins(base));
+                            self.writes.extend(self.storage_origins(base, env));
                             self.expression(expr, env);
                         }
                         AssignTarget::Tuple(names) => {
                             for name in names.iter().filter_map(|target| target.binding()) {
-                                self.writes.extend(env.storage_origins(name));
+                                self.writes.extend(self.storage_origins(name, env));
                             }
                             self.expression(expr, env);
                         }
@@ -350,17 +357,28 @@ pub(super) fn update_readonly_data_param_signatures(
                 .map(|(owner, _)| owner.to_owned())
         })
         .collect::<HashSet<_>>();
+    let receiver_fields = structs
+        .iter()
+        .map(|(owner, fields)| {
+            let mut names = Origins::new();
+            for field in fields {
+                names.insert(field.name.clone());
+                names.insert(field.name.split(['.', '[']).next().unwrap().to_owned());
+            }
+            (owner.clone(), names)
+        })
+        .collect::<HashMap<_, _>>();
     let mut readonly = candidates.clone();
     loop {
         let mut changed = false;
         for def in defs {
             let signature = &signatures[&def.name];
-            let mut env =
-                ReferenceEnv::for_parameters(seed, signature, &candidates[&def.name], structs);
+            let mut env = ReferenceEnv::for_parameters(seed, signature, &candidates[&def.name]);
             let mut analysis = PermissionAnalysis {
                 signatures,
                 readonly: &readonly,
                 proc_types: &proc_types,
+                receiver_fields: &receiver_fields,
                 types: context,
                 writes: Origins::new(),
             };
@@ -398,11 +416,12 @@ pub(super) fn update_readonly_data_param_signatures(
     for event in events {
         let signature = FnSignature::from_event_params(&event.params);
         let candidates = signature.params.iter().cloned().collect();
-        let mut env = ReferenceEnv::for_parameters(seed, &signature, &candidates, structs);
+        let mut env = ReferenceEnv::for_parameters(seed, &signature, &candidates);
         let mut analysis = PermissionAnalysis {
             signatures,
             readonly: &readonly,
             proc_types: &proc_types,
+            receiver_fields: &receiver_fields,
             types: context,
             writes: Origins::new(),
         };

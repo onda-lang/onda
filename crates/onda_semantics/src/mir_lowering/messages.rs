@@ -196,9 +196,21 @@ impl FunctionLowerer<'_> {
         let mut args = args.into_iter();
         let mut result = Vec::new();
         for kind in kinds {
-            let shapes = match kind {
+            if let TypedFnParam::Array {
+                elem_ty,
+                len: Some(len),
+            } = kind
+            {
+                let len = self.data_extent(*len, loc)?;
+                let argument = args
+                    .next()
+                    .ok_or_else(|| self.error("message is missing an array", loc))?;
+                result.push(self.message_array_value(argument, *elem_ty, len, block, loc)?);
+                continue;
+            }
+            let (shapes, fixed_tensors) = match kind {
                 TypedFnParam::Struct { struct_name } => {
-                    Some(self.struct_field_shapes(struct_name, loc)?)
+                    (Some(self.struct_field_shapes(struct_name, loc)?), true)
                 }
                 TypedFnParam::StructArray { struct_name, len } => {
                     let length = args
@@ -207,21 +219,26 @@ impl FunctionLowerer<'_> {
                     if len.is_none() {
                         result.push(length);
                     }
-                    Some(
-                        self.struct_field_shapes(struct_name, loc)?
-                            .into_iter()
-                            .map(|shape| match shape {
-                                StructFieldShape::Scalar { name, ty } => StructFieldShape::Array {
-                                    name,
-                                    element: ty,
-                                    len: 1,
-                                },
-                                shape => shape,
-                            })
-                            .collect(),
+                    (
+                        Some(
+                            self.struct_field_shapes(struct_name, loc)?
+                                .into_iter()
+                                .map(|shape| match shape {
+                                    StructFieldShape::Scalar { name, ty } => {
+                                        StructFieldShape::Array {
+                                            name,
+                                            element: ty,
+                                            len: 1,
+                                        }
+                                    }
+                                    shape => shape,
+                                })
+                                .collect(),
+                        ),
+                        false,
                     )
                 }
-                _ => None,
+                _ => (None, false),
             };
             if let Some(shapes) = shapes {
                 for shape in shapes {
@@ -247,6 +264,11 @@ impl FunctionLowerer<'_> {
                             }
                         };
                         CallArgument::Value(self.emit_temp(block, ty, read, loc).value)
+                    } else if fixed_tensors {
+                        let StructFieldShape::Array { element, len, .. } = shape else {
+                            unreachable!()
+                        };
+                        self.message_array_value(arg, element, len, block, loc)?
                     } else {
                         arg
                     };
@@ -269,6 +291,54 @@ impl FunctionLowerer<'_> {
             return Err(self.error("message has excess arguments", loc));
         }
         Ok(result)
+    }
+
+    fn message_array_value(
+        &mut self,
+        argument: CallArgument,
+        element: PrimitiveType,
+        len: u32,
+        block: &mut MirBlock,
+        loc: SourceLoc,
+    ) -> Result<CallArgument, MirLoweringError> {
+        let CallArgument::SliceWindow {
+            slice: Value::Local(slice),
+            start,
+            bounds,
+        } = argument
+        else {
+            return match argument {
+                CallArgument::Value(_) => Ok(argument),
+                _ => Err(self.error("message array has no descriptor storage", loc)),
+            };
+        };
+        let MirType::Slice {
+            element: actual,
+            access,
+        } = self.types[self.locals[slice.index()].ty.index()]
+        else {
+            return Err(self.error("message array window source is not a slice", loc));
+        };
+        if source_scalar_type(actual) != element {
+            return Err(self.error("message array changed element type", loc));
+        }
+        Ok(CallArgument::Value(
+            self.emit_slice_temp(
+                block,
+                None,
+                element,
+                access,
+                Rvalue::MakeSlice {
+                    source: onda_mir::SliceSource::Place(Place::local(slice)),
+                    start,
+                    len: Value::Constant(ScalarValue::I32(len as i32)),
+                    bounds,
+                    access,
+                },
+                loc,
+            )
+            .value,
+        ))
     }
 }
 

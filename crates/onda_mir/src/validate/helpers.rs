@@ -190,9 +190,15 @@ pub(super) fn intersect_two_assignment_states(
             let process_frame = lhs.process_frame
                 && rhs.process_frame
                 && covered.iter().any(|path| path.is_empty());
+            let full_slice_backing = if lhs.full_slice_backing == rhs.full_slice_backing {
+                lhs.full_slice_backing
+            } else {
+                None
+            };
             LocalInitialization {
                 covered,
                 process_frame,
+                full_slice_backing,
             }
         })
         .collect();
@@ -333,11 +339,7 @@ pub(super) fn passing_mode_name(mode: crate::PassingMode) -> &'static str {
 }
 
 pub(super) fn logical_scalar_bytes(scalar: crate::ScalarType) -> u64 {
-    match scalar {
-        crate::ScalarType::F32 | crate::ScalarType::I32 => 4,
-        crate::ScalarType::F64 | crate::ScalarType::I64 => 8,
-        crate::ScalarType::Bool => 1,
-    }
+    scalar.logical_byte_width()
 }
 
 pub(super) fn buffer_static_channel_validation_error(

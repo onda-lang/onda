@@ -1182,12 +1182,9 @@ fn analyze_range_block(
                 let PlaceBase::Local(local) = destination.base else {
                     unreachable!()
                 };
-                let range = context.function.locals[local.index()]
-                    .integer_range
-                    .and_then(integer_range_from_invariant)
-                    .or_else(|| {
-                        range_of_rvalue(context.program, value, context.parameters, environment)
-                    });
+                let range = declared_local_range(context.function, local).or_else(|| {
+                    range_of_rvalue(context.program, value, context.parameters, environment)
+                });
                 environment[local.index()] = range;
                 record_range(&mut summaries.locals[local.index()], range);
             }
@@ -1224,17 +1221,14 @@ fn analyze_range_block(
                     record_range(&mut summaries.observations[callee.index()][index], range);
                 }
                 for (result_index, result) in results.iter().enumerate() {
-                    let range = context.function.locals[result.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant)
-                        .or_else(|| {
-                            context
-                                .callee_results
-                                .get(callee.index())
-                                .and_then(|ranges| ranges.get(result_index))
-                                .copied()
-                                .flatten()
-                        });
+                    let range = declared_local_range(context.function, *result).or_else(|| {
+                        context
+                            .callee_results
+                            .get(callee.index())
+                            .and_then(|ranges| ranges.get(result_index))
+                            .copied()
+                            .flatten()
+                    });
                     environment[result.index()] = range;
                     record_range(&mut summaries.locals[result.index()], range);
                 }
@@ -1244,9 +1238,7 @@ fn analyze_range_block(
                         .is_writable_reference()
                     {
                         if let Some(local) = argument_local(argument) {
-                            let range = context.function.locals[local.index()]
-                                .integer_range
-                                .and_then(integer_range_from_invariant);
+                            let range = declared_local_range(context.function, local);
                             environment[local.index()] = range;
                             record_range(&mut summaries.locals[local.index()], range);
                         }
@@ -1258,27 +1250,19 @@ fn analyze_range_block(
                 else_block,
                 ..
             } => {
-                let mut then_environment = environment.to_vec();
-                let mut else_environment = environment.to_vec();
-                analyze_range_block(context, then_block, &mut then_environment, summaries);
-                analyze_range_block(context, else_block, &mut else_environment, summaries);
-                join_range_environments(environment, &then_environment, &else_environment);
+                let mutated = range_mutations(&[then_block, else_block], context.program);
+                let incoming = selected_ranges(environment, &mutated);
+                analyze_range_block(context, then_block, environment, summaries);
+                let then_ranges = selected_ranges(environment, &mutated);
+                restore_ranges(environment, &mutated, &incoming);
+                analyze_range_block(context, else_block, environment, summaries);
+                join_selected_ranges(environment, &mutated, &then_ranges);
             }
             StatementKind::Loop { body } => {
-                let mut mutated = Vec::new();
-                collect_range_mutations(body, context.program, &mut mutated);
-                let mut body_environment = environment.to_vec();
-                for local in &mutated {
-                    body_environment[local.index()] = context.function.locals[local.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant);
-                }
-                analyze_range_block(context, body, &mut body_environment, summaries);
-                for local in mutated {
-                    environment[local.index()] = context.function.locals[local.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant);
-                }
+                let mutated = range_mutations(&[body], context.program);
+                restore_declared_ranges(context.function, environment, &mutated);
+                analyze_range_block(context, body, environment, summaries);
+                restore_declared_ranges(context.function, environment, &mutated);
             }
             StatementKind::Return { values } => {
                 for (index, value) in values.iter().enumerate() {
@@ -1476,17 +1460,54 @@ fn record_range(summary: &mut RangeSummary, range: Option<IntegerRange>) {
     }
 }
 
-fn join_range_environments(
-    destination: &mut [Option<IntegerRange>],
-    lhs: &[Option<IntegerRange>],
-    rhs: &[Option<IntegerRange>],
+fn selected_ranges(
+    environment: &[Option<IntegerRange>],
+    locals: &[LocalId],
+) -> Vec<Option<IntegerRange>> {
+    locals
+        .iter()
+        .map(|local| environment[local.index()])
+        .collect()
+}
+
+fn restore_ranges(
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+    ranges: &[Option<IntegerRange>],
 ) {
-    for (index, destination) in destination.iter_mut().enumerate() {
-        *destination = match (lhs[index], rhs[index]) {
+    for (&local, &range) in locals.iter().zip(ranges) {
+        environment[local.index()] = range;
+    }
+}
+
+fn join_selected_ranges(
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+    lhs: &[Option<IntegerRange>],
+) {
+    for (&local, &lhs) in locals.iter().zip(lhs) {
+        let rhs = environment[local.index()];
+        environment[local.index()] = match (lhs, rhs) {
             (Some(lhs), Some(rhs)) => lhs.join(rhs),
             _ => None,
         };
     }
+}
+
+fn restore_declared_ranges(
+    function: &Function,
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+) {
+    for &local in locals {
+        environment[local.index()] = declared_local_range(function, local);
+    }
+}
+
+fn declared_local_range(function: &Function, local: LocalId) -> Option<IntegerRange> {
+    function.locals[local.index()]
+        .integer_range
+        .and_then(integer_range_from_invariant)
 }
 
 fn argument_local(argument: &CallArgument) -> Option<LocalId> {
@@ -1505,7 +1526,7 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
         match &statement.kind {
             StatementKind::Assign { destination, .. } => {
                 if let PlaceBase::Local(local) = destination.base {
-                    insert_range_mutation(mutated, local);
+                    mutated.push(local);
                 }
             }
             StatementKind::Call {
@@ -1514,7 +1535,7 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
                 args,
             } => {
                 for local in results {
-                    insert_range_mutation(mutated, *local);
+                    mutated.push(*local);
                 }
                 for (index, argument) in args.iter().enumerate() {
                     if program.functions[function.index()].params[index]
@@ -1522,7 +1543,7 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
                         .is_writable_reference()
                     {
                         if let Some(local) = argument_local(argument) {
-                            insert_range_mutation(mutated, local);
+                            mutated.push(local);
                         }
                     }
                 }
@@ -1541,10 +1562,14 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
     }
 }
 
-fn insert_range_mutation(mutated: &mut Vec<LocalId>, local: LocalId) {
-    if !mutated.contains(&local) {
-        mutated.push(local);
+fn range_mutations(blocks: &[&Block], program: &Program) -> Vec<LocalId> {
+    let mut mutated = Vec::new();
+    for block in blocks {
+        collect_range_mutations(block, program, &mut mutated);
     }
+    mutated.sort_unstable();
+    mutated.dedup();
+    mutated
 }
 
 fn scan_block(
@@ -1558,7 +1583,7 @@ fn scan_block(
         match &statement.kind {
             StatementKind::Assign { destination, value } => {
                 scan_place(destination, Access::Write, effects);
-                scan_rvalue(program, function, value, effects);
+                scan_rvalue(&program.types, &function.locals, value, effects);
             }
             StatementKind::Call { function, args, .. } => {
                 for argument in args {
@@ -1698,8 +1723,8 @@ fn scan_block(
 }
 
 fn scan_rvalue(
-    program: &Program,
-    function: &crate::Function,
+    types: &[Type],
+    locals: &[crate::Local],
     value: &Rvalue,
     effects: &mut FunctionEffects,
 ) {
@@ -1713,7 +1738,7 @@ fn scan_rvalue(
             scan_value(*rhs, effects);
             if matches!(op, crate::BinaryOp::Divide | crate::BinaryOp::Remainder)
                 && matches!(
-                    value_scalar_type(program, function, *lhs),
+                    value_scalar_type(types, locals, *lhs),
                     Some(ScalarType::I32 | ScalarType::I64)
                 )
             {
@@ -1920,6 +1945,15 @@ pub(crate) fn call_argument_may_fail(argument: &CallArgument) -> bool {
     effects.may_fail
 }
 
+/// Whether evaluating an rvalue can encounter a runtime safety failure.
+/// Memory reads are not observable effects in MIR, so this is also the
+/// criterion used to discard an otherwise-unused rvalue assignment.
+pub(crate) fn rvalue_may_fail(types: &[Type], locals: &[crate::Local], value: &Rvalue) -> bool {
+    let mut effects = FunctionEffects::default();
+    scan_rvalue(types, locals, value, &mut effects);
+    effects.may_fail
+}
+
 fn scan_buffer_ref(buffer: crate::BufferRef, effects: &mut FunctionEffects) {
     if let crate::BufferRef::ArrayElement {
         selector, bounds, ..
@@ -2108,16 +2142,12 @@ fn mark_dynamic_bounds(bounds: BoundsMode, effects: &mut FunctionEffects) {
     }
 }
 
-fn value_scalar_type(
-    program: &Program,
-    function: &crate::Function,
-    value: Value,
-) -> Option<ScalarType> {
+fn value_scalar_type(types: &[Type], locals: &[crate::Local], value: Value) -> Option<ScalarType> {
     match value {
         Value::Constant(value) => Some(value.ty()),
         Value::Local(local) => {
-            let ty = function.locals.get(local.index())?.ty;
-            match program.types.get(ty.index())? {
+            let ty = locals.get(local.index())?.ty;
+            match types.get(ty.index())? {
                 crate::Type::Scalar(scalar) => Some(*scalar),
                 _ => None,
             }
@@ -2950,6 +2980,72 @@ mod tests {
             ranges.local(LocalId::new(1)),
             IntegerRange::new(ScalarType::I32, 1, 65)
         );
+    }
+
+    #[test]
+    fn integer_ranges_preserve_unmodified_branch_and_loop_state() {
+        let i32_ty = TypeId::new(0);
+        let local = || Local {
+            integer_range: None,
+            name: None,
+            ty: i32_ty,
+        };
+        let assign = |local, value| {
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(local)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(value))),
+            })
+        };
+        let copy = |destination, source| {
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(destination)),
+                value: Rvalue::Use(Value::Local(LocalId::new(source))),
+            })
+        };
+
+        let mut process = function("process", process_function_params(i32_ty), Block::default());
+        process.kind = FunctionKind::Process;
+        process.locals = vec![local(), local(), local(), local(), local(), local()];
+        process.body.statements.extend([
+            assign(0, 10),
+            assign(1, 1),
+            statement(StatementKind::If {
+                condition: Value::Constant(ScalarValue::Bool(true)),
+                then_block: Block {
+                    statements: vec![assign(1, 3)],
+                },
+                else_block: Block::default(),
+            }),
+            copy(2, 1),
+            statement(StatementKind::Loop {
+                body: Block {
+                    statements: vec![assign(3, 8)],
+                },
+            }),
+            copy(4, 0),
+            copy(5, 3),
+        ]);
+
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types.push(Type::Scalar(ScalarType::I32));
+        program.functions = vec![init, process];
+
+        let ranges = analyze_integer_ranges(&program, FunctionId::new(1));
+        assert_eq!(
+            ranges.local(LocalId::new(2)),
+            IntegerRange::new(ScalarType::I32, 1, 3)
+        );
+        assert_eq!(
+            ranges.local(LocalId::new(4)),
+            IntegerRange::new(ScalarType::I32, 10, 10)
+        );
+        assert_eq!(ranges.local(LocalId::new(5)), None);
     }
 
     #[test]

@@ -329,7 +329,8 @@ impl<'a> FunctionLowerer<'a> {
                         args,
                     } = expr
                     {
-                        if !self.lower_buffer_write_call(name, args, (*loc).into(), block)?
+                        if !self.lower_data_write_unsafe_call(name, args, (*loc).into(), block)?
+                            && !self.lower_buffer_write_call(name, args, (*loc).into(), block)?
                             && self
                                 .lower_buffer_read_call(name, args, (*loc).into(), block)?
                                 .is_none()

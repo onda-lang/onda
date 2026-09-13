@@ -539,7 +539,7 @@ sample:
 
     #[test]
     fn indexed_struct_array_member_writes_reject_invalid_field_shapes() {
-        assert_analyze_error_contains(
+        for source in [
             r#"
 struct Cell:
   pair: (f32, i32)
@@ -555,8 +555,24 @@ block:
   sample:
     out1 = 0.0
 "#,
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+init:
+  cells: Cell[1]
+  index: i32 = 0
+
+sample:
+  cells[0].pair[index] = 1.0
+  out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
             "tuple field index must be a compile-time integer constant",
         );
+        }
 
         assert_analyze_error_contains(
             r#"
@@ -568,7 +584,34 @@ sample:
   cells[0].value[0] = 1.0
   out1 = 0.0
 "#,
-            "is not a array/buffer symbol",
+            "field 'value' of struct 'Cell' is not indexable",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+sample:
+  cells: Cell[1]
+  cells[0].pair[1] = 0.5
+  out1 = 0.0
+"#,
+            "cannot assign F64 to I32",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+init:
+  cells: Cell[1]
+
+sample:
+  out1 = cells[0].pair[2]
+"#,
+            "tuple field index 2 is out of bounds",
         );
 
         assert_analyze_error_contains(
@@ -594,26 +637,191 @@ sample:
     }
 
     #[test]
-    fn write_unsafe_rejects_aggregate_arrays_during_analysis() {
+    fn indexed_struct_array_tuple_reads_use_typed_components() {
+        let source = r#"
+struct Cell:
+  pair: (f32, i32)
+
+const Component = 1
+
+def read(cells: Cell[1]) -> i32:
+  return cells[0].pair[Component]
+
+init:
+  cells: Cell[1] = [Cell((0.25, 7))]
+  initial: i32 = cells[0].pair[Component]
+
+event inspect(payload: Cell[1]):
+  observed: i32 = payload[0].pair[1]
+
+task inspect_task():
+  observed: i32 = cells[0].pair[1]
+  yield
+
+block:
+  blocked: i32 = cells[0].pair[1]
+  await inspect_task()
+  sample:
+    local: Cell[1] = [Cell((0.5, 9))]
+    persistent: i32 = cells[0].pair[1]
+    runtime: i32 = local[0].pair[Component]
+    out1 = f32(initial + blocked + read(cells) + persistent + runtime)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("tuple components should retain their types in every array storage form");
+        lower_program_to_optimized_mir(&typed)
+            .expect("inline tuple-field reads should lower to valid MIR");
+    }
+
+    #[test]
+    fn indexed_struct_array_fields_preserve_nested_aggregate_elements() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct Node:
+  leaves: Leaf[2]
+
+init:
+  nodes: Node[1] = Node([Leaf(1.0), Leaf(2.0)])
+
+sample:
+  leaf = nodes[0].leaves[1]
+  out1 = leaf.value
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("indexed aggregate fields should retain their nominal element type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed aggregate fields should lower through their canonical leaf views");
+    }
+
+    #[test]
+    fn write_unsafe_supports_exact_aggregate_replacement() {
+        let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+struct Bank:
+  cells: Cell[2]
+
+def replace_first(cells: Cell[], replacement: Cell):
+  cells.write_unsafe(0, replacement)
+
+init:
+  cells: Cell[2]
+  bank = Bank()
+  replacement = Cell(0.25, (0.5, 7), [0.75, 1.0])
+  current = Cell()
+
+sample:
+  replace_first(cells[:], replacement)
+  write_unsafe(cells, 1, read_unsafe(cells, 0))
+  write_unsafe(bank.cells, 0, replacement)
+  current = read_unsafe(cells, 1)
+  selected = cells[0]
+  nested = bank.cells[0]
+  out1 = selected.value + selected.pair[0] + selected.taps[0] + nested.value + current.value
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("write_unsafe should accept exact nominal aggregate replacement");
+        lower_program_to_optimized_mir(&typed)
+            .expect("unsafe aggregate replacement should lower through ordinary data copies");
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+struct Other:
+  value: f32
+
+init:
+  cells: Cell[1]
+
+sample:
+  write_unsafe(cells, 0, Other())
+  out1 = 0.0
+"#,
+            "write_unsafe replacement expects 'Cell', got 'Other'",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+event replace(cells: Cell[]):
+  write_unsafe(cells, 0, Cell())
+
+sample:
+  out1 = 0.0
+"#,
+            "write_unsafe storage 'cells' is read-only",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+struct Bank:
+  cells: Cell[1]
+
+event replace(bank: Bank):
+  write_unsafe(bank.cells, 0, Cell())
+
+sample:
+  out1 = 0.0
+"#,
+            "cannot write through read-only payload parameter 'bank'",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+
+init:
+  voices: Voice[1] = Voice()
+
+sample:
+  write_unsafe(voices, 0, Voice())
+  out1 = 0.0
+"#,
+            "write_unsafe does not support resource array 'voices'",
+        );
+    }
+
+    #[test]
+    fn aggregate_write_unsafe_is_available_in_every_executable_scope() {
         let source = r#"
 struct Cell:
   value: f32
 
-init:
-  cells: Cell[2]
+event replace_event(value: f32):
+  write_unsafe(cells, 2, Cell(value))
 
-sample:
-  write_unsafe(cells, 0, 1.0)
-  out1 = 0.0
+task replace_task():
+  write_unsafe(cells, 3, Cell(4.0))
+  yield
+
+init:
+  cells: Cell[4]
+  write_unsafe(cells, 0, Cell(1.0))
+
+block:
+  write_unsafe(cells, 1, Cell(2.0))
+  await replace_task()
+  sample:
+    out1 = cells[0].value + cells[1].value + cells[2].value + cells[3].value
 "#;
-        let errors = analyze(parse_program(source).expect("source should parse"))
-            .expect_err("write_unsafe must reject aggregate assignment");
-        assert!(
-            errors.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("write_unsafe does not support aggregate array 'cells'")),
-            "{errors:?}"
-        );
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("aggregate unchecked writes should share executable-scope semantics");
+        lower_program_to_optimized_mir(&typed)
+            .expect("aggregate unchecked writes should lower in every executable scope");
     }
 
     #[test]

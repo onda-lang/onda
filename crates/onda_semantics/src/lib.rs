@@ -521,9 +521,9 @@ pub struct TypedFunction {
     pub params: Vec<String>,
     pub param_defaults: Vec<Option<Expr>>,
     pub param_kinds: Vec<TypedFnParam>,
-    /// Data parameters that semantic analysis proved are not
-    /// mutated directly or through calls. MIR uses this to choose the slice
-    /// access contract instead of rediscovering mutability from source AST.
+    /// Data parameters that semantic analysis proved are not mutated directly
+    /// or through calls. MIR uses this to choose their reference/view access
+    /// contract instead of rediscovering mutability from source AST.
     pub readonly_data_params: HashSet<String>,
     /// Integer range contracts for concrete flattened reference parameters.
     /// The function boundary supplies the binding identity that source names

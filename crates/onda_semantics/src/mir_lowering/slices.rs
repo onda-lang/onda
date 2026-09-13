@@ -299,7 +299,6 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        let length = self.snapshot(length, block, location);
         let (start, slice_len) =
             self.normalize_slice_selection(length.value, start, end, block, location)?;
         Ok(self.emit_slice_temp(
@@ -310,7 +309,7 @@ impl<'a> FunctionLowerer<'a> {
             Rvalue::MakeSlice {
                 source,
                 start,
-                len: Value::Local(slice_len),
+                len: slice_len,
                 bounds: BoundsMode::Unchecked,
                 access,
             },
@@ -325,7 +324,21 @@ impl<'a> FunctionLowerer<'a> {
         end: Option<&Expr>,
         block: &mut MirBlock,
         location: SourceLoc,
-    ) -> Result<(Value, LocalId), MirLoweringError> {
+    ) -> Result<(Value, Value), MirLoweringError> {
+        if start.is_none() && end.is_none() {
+            return Ok((Value::Constant(ScalarValue::I32(0)), length));
+        }
+
+        let length = self
+            .snapshot(
+                LoweredValue {
+                    value: length,
+                    ty: PrimitiveType::I32,
+                },
+                block,
+                location,
+            )
+            .value;
         let start = self.normalize_slice_bound(start, length, false, block, location)?;
         let end = self.normalize_slice_bound(end, length, true, block, location)?;
         let difference = self.emit_temp(
@@ -357,7 +370,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             location,
         );
-        Ok((start, slice_len))
+        Ok((start, Value::Local(slice_len)))
     }
 
     pub(super) fn slice_base(
@@ -804,27 +817,54 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         if let Some(binding) = self.bindings.get(name).cloned() {
-            let Binding::Slice(local, element, access, _) = binding else {
-                return Err(self.error(
-                    format!("slice alias '{name}' conflicts with an existing non-slice binding"),
+            if let Binding::Slice(local, element, access, _) = binding {
+                if element != slice.element || access != slice.access {
+                    return Err(self.error(
+                        format!("slice alias '{name}' changed element type or access mode"),
+                        location,
+                    ));
+                }
+                self.push_statement(
+                    block,
+                    StatementKind::Assign {
+                        destination: Place::local(local),
+                        value: Rvalue::Use(slice.value),
+                    },
                     location,
-                ));
-            };
-            if element != slice.element || access != slice.access {
-                return Err(self.error(
-                    format!("slice alias '{name}' changed element type or access mode"),
-                    location,
-                ));
+                );
+                return Ok(());
             }
-            self.push_statement(
-                block,
-                StatementKind::Assign {
-                    destination: Place::local(local),
-                    value: Rvalue::Use(slice.value),
-                },
+            if matches!(binding, Binding::Array(..) | Binding::ArrayParameter(..)) {
+                let destination = self.lower_named_slice(
+                    name,
+                    SliceSelection::default(),
+                    Some(onda_mir::AccessMode::ReadWrite),
+                    block,
+                    location,
+                )?;
+                if destination.element != slice.element {
+                    return Err(self.error(
+                        format!("array assignment '{name}' changed element type"),
+                        location,
+                    ));
+                }
+                self.push_statement(
+                    block,
+                    StatementKind::SliceCopy {
+                        copies: vec![onda_mir::SliceCopy {
+                            destination: destination.value,
+                            source: slice.value,
+                        }],
+                        preflight: onda_mir::SliceCopyPreflight::Required,
+                    },
+                    location,
+                );
+                return Ok(());
+            }
+            return Err(self.error(
+                format!("slice alias '{name}' conflicts with an existing non-slice binding"),
                 location,
-            );
-            return Ok(());
+            ));
         }
         let Value::Local(local) = slice.value else {
             unreachable!("slice construction always produces a local")

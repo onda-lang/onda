@@ -542,6 +542,27 @@ sample {
 }
 "#;
 
+const STDLIB_REAL_TRANSFORM_ROUNDTRIP_EXAMPLE: &str = r#"
+import std/fft
+outs 4
+init:
+  transform = std::fft<8>::RealTransform<f64>()
+  input: f64[8] = [0.25, -0.5, 0.75, 1.0, -1.25, 0.125, 0.5, -0.25]
+  spectrum_real: f64[5]
+  spectrum_imag: f64[5]
+  output: f64[8]
+  transform.forward(input)
+  for i in 0..5:
+    spectrum_real[i] = transform.real(i)
+    spectrum_imag[i] = transform.imag(i)
+  transform.inverse(spectrum_real, spectrum_imag, output)
+sample:
+  out1 = f32(output[0])
+  out2 = f32(output[1])
+  out3 = f32(output[6])
+  out4 = f32(output[7])
+"#;
+
 const STDLIB_REALFFT_NAMESPACED_PROC_EXAMPLE: &str = r#"
 import std/fft
 import std/osc
@@ -801,6 +822,7 @@ outs { out1 }
 init {
   conv = std::convolution<16384, 8200>::ZeroLatencyConvolver<f32>()
   conv.set_offset(137)
+  conv.set_channel(1)
   ir: f32[8200]
   ir[0] = 0.75
   ir[127] = -0.5

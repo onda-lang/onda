@@ -3,6 +3,47 @@ use super::*;
 /// All fixed-data operations use the canonical leaf plan. Scalars stay scalar
 /// references; tensor extents remain array references, never expanded arguments.
 impl FunctionLowerer<'_> {
+    pub(super) fn lower_data_write_unsafe_call(
+        &mut self,
+        name: &str,
+        args: &[onda_frontend::CallArg],
+        location: SourceLoc,
+        block: &mut MirBlock,
+    ) -> Result<bool, MirLoweringError> {
+        if name != WRITE_UNSAFE_FN {
+            return Ok(false);
+        }
+        let [storage, index, value] = args else {
+            return Ok(false);
+        };
+        let Expr::Var { name: base, .. } = &storage.expr else {
+            return Ok(false);
+        };
+        let Some(struct_name) = self.struct_array_element_type(base) else {
+            return Ok(false);
+        };
+
+        // Resolve the unchecked destination before evaluating the replacement,
+        // then use the ordinary aggregate copy path for snapshot semantics.
+        let selection = crate::indexed_read_expr(
+            base,
+            index.expr.clone(),
+            IndexAccess::Unchecked,
+            location.into(),
+        );
+        let destination = self.fresh_data_name();
+        if !self.lower_struct_array_element_alias(&destination, &selection, block, location)? {
+            return Err(self.error(
+                format!("write_unsafe could not resolve data array '{base}'"),
+                location,
+            ));
+        }
+        let data = DataType::Struct(struct_name);
+        let source = self.lower_data_expr(&value.expr, &data, block)?;
+        self.copy_data(&destination, &source, &data, block, location)?;
+        Ok(true)
+    }
+
     /// Resolve an indexed field through the same captured element view used by
     /// aggregate arguments. Returned arrays have no flattened source binding.
     pub(super) fn lower_indexed_data_field(
@@ -22,14 +63,30 @@ impl FunctionLowerer<'_> {
             else {
                 return Err(self.error("malformed indexed data array field", expression.loc()));
             };
-            let selection = crate::indexed_read_expr(base, index, IndexAccess::Clamp, *loc);
+            let selection =
+                crate::indexed_read_expr(base.as_str(), index, IndexAccess::Clamp, *loc);
             let alias = self.fresh_data_name();
-            if !self.lower_struct_array_element_alias(
-                &alias,
-                &selection,
-                block,
-                expression.loc(),
-            )? {
+            let is_primitive_array_field = self
+                .struct_array_element_type(&base)
+                .and_then(|struct_name| {
+                    crate::resolve_struct_field_decl(&struct_name, &field, self.structs)
+                })
+                .is_some_and(|field| {
+                    matches!(field.ty, TypedFieldType::Array(_))
+                        && field.array_elem_struct.is_none()
+                });
+            let lowered = if is_primitive_array_field {
+                self.lower_struct_array_field_alias(
+                    &alias,
+                    &selection,
+                    &field,
+                    block,
+                    expression.loc(),
+                )?
+            } else {
+                self.lower_struct_array_element_alias(&alias, &selection, block, expression.loc())?
+            };
+            if !lowered {
                 return Ok(None);
             }
             return Ok(Some(Expr::Index {
@@ -330,11 +387,20 @@ impl FunctionLowerer<'_> {
     }
 
     pub(super) fn data_type_of(&self, expr: &Expr) -> Option<DataType> {
+        if let Expr::UserCall { name, args, .. } = expr {
+            if name == crate::proc_state_rewrite::STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+                let (base, _, field, _) = crate::array_structs::extract_safi_args(args)?;
+                let struct_name = self.struct_array_element_type(&base)?;
+                return crate::resolve_indexed_struct_field_data_type(
+                    &struct_name,
+                    &field,
+                    self.structs,
+                );
+            }
+        }
         if let Some(selection) = indexed_read_source(expr) {
-            if let Some(Binding::StructArrayParameter { struct_name, .. }) =
-                self.bindings.get(selection.base)
-            {
-                return Some(DataType::Struct(struct_name.clone()));
+            if let Some(struct_name) = self.struct_array_element_type(selection.base) {
+                return Some(DataType::Struct(struct_name));
             }
             if let Some(DataType::Array {
                 element: ArrayElemType::Struct(name),
@@ -431,6 +497,35 @@ impl FunctionLowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    fn struct_array_element_type(&self, name: &str) -> Option<String> {
+        let struct_name = match self.bindings.get(name) {
+            Some(
+                Binding::StructArrayParameter { struct_name, .. }
+                | Binding::StructArrayStorage { struct_name, .. },
+            ) => Some(struct_name.clone()),
+            _ => self
+                .runtime_globals
+                .and_then(|globals| globals.array_struct_roots.get(name))
+                .map(|(struct_name, _)| struct_name.clone())
+                .or_else(|| {
+                    let DataType::Array {
+                        element: ArrayElemType::Struct(struct_name),
+                        ..
+                    } = self.data_type_of(&Expr::var(name))?
+                    else {
+                        return None;
+                    };
+                    Some(struct_name)
+                }),
+        }?;
+        let initializer = format!("{struct_name}{}", crate::PROC_INIT_FN_SUFFIX);
+        (!self
+            .functions
+            .iter()
+            .any(|function| function.name == initializer))
+        .then_some(struct_name)
     }
 
     fn field_data_type(field: &TypedStructField) -> Option<DataType> {
@@ -570,6 +665,9 @@ impl FunctionLowerer<'_> {
     ) -> Result<String, MirLoweringError> {
         if let Expr::Var { name, .. } = expr {
             return Ok(name.clone());
+        }
+        if let Some(selection) = self.lower_indexed_data_field(expr, block)? {
+            return self.lower_data_expr(&selection, data, block);
         }
         let name = self.fresh_data_name();
         if self.lower_struct_array_element_alias(&name, expr, block, expr.loc())? {
@@ -798,8 +896,20 @@ impl FunctionLowerer<'_> {
         let target = Self::data_leaf_name(root, &field.name);
         if let Some(data) = Self::field_data_type(field) {
             if let Some(expr) = expr {
-                let source = self.lower_data_expr(expr, &data, block)?;
-                self.copy_data(&target, &source, &data, block, loc)?;
+                if Self::data_expr_selects_storage(expr)
+                    || matches!(
+                        data,
+                        DataType::Array {
+                            element: ArrayElemType::Primitive(_),
+                            ..
+                        }
+                    )
+                {
+                    let source = self.lower_data_expr(expr, &data, block)?;
+                    self.copy_data(&target, &source, &data, block, loc)?;
+                } else {
+                    self.initialize_data_expr(&target, expr, &data, block)?;
+                }
             } else if let DataType::Struct(name) = data {
                 self.initialize_data_struct(&target, &name, &[], block, loc)?;
             } else if let DataType::Array {
@@ -926,7 +1036,6 @@ impl FunctionLowerer<'_> {
         }
         self.prepare_data_array_view(target, block, expr.loc())?;
         for (index, value) in values.iter().enumerate() {
-            let source = self.lower_data_expr(value, &data, block)?;
             let element = self.fresh_data_name();
             let selection = Expr::Index {
                 loc: expr.loc().into(),
@@ -934,7 +1043,12 @@ impl FunctionLowerer<'_> {
                 index: Box::new(Expr::int(index as i64)),
             };
             self.lower_struct_array_element_alias(&element, &selection, block, expr.loc())?;
-            self.copy_data(&element, &source, &data, block, expr.loc())?;
+            if Self::data_expr_selects_storage(value) {
+                let source = self.lower_data_expr(value, &data, block)?;
+                self.copy_data(&element, &source, &data, block, expr.loc())?;
+            } else {
+                self.initialize_data_expr(&element, value, &data, block)?;
+            }
         }
         Ok(())
     }
@@ -972,6 +1086,41 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), MirLoweringError> {
         let data = DataType::Struct(struct_name.to_owned());
         self.prepare_data_array_view(target, block, loc)?;
+        let shapes = self.data_shapes(&data, loc)?;
+        if shapes
+            .iter()
+            .all(|shape| matches!(shape, StructFieldShape::Scalar { .. }))
+        {
+            // SoA scalar leaves are contiguous. Capture the complete source
+            // value before writing, then fill each destination leaf directly.
+            let mut values = Vec::with_capacity(shapes.len());
+            for shape in shapes {
+                let StructFieldShape::Scalar { name, .. } = shape else {
+                    unreachable!()
+                };
+                let value = self.lower_expr(
+                    &Expr::var(Self::data_leaf_name(source, &name)).with_loc(loc),
+                    block,
+                )?;
+                values.push((name, value));
+            }
+            for (name, value) in values {
+                let destination = self.lower_slice_expression(
+                    &Expr::var(Self::data_leaf_name(target, &name)).with_loc(loc),
+                    Some(onda_mir::AccessMode::ReadWrite),
+                    block,
+                )?;
+                self.push_statement(
+                    block,
+                    StatementKind::SliceFill {
+                        destination: destination.value,
+                        value: value.value,
+                    },
+                    loc,
+                );
+            }
+            return Ok(());
+        }
         let index_name = self.fresh_data_name();
         let index = self.new_local(Some(index_name.clone()), PrimitiveType::I32);
         if let Value::Constant(ScalarValue::I32(len)) = length {

@@ -394,7 +394,7 @@ fn lower_user_functions_to_mir(
 pub fn lower_program_to_optimized_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::OptimizedProgram, Vec<MirLoweringError>> {
-    let mut raw = lower_program_to_raw_mir(program)?;
+    let mut raw = lower_program_to_mir(program, true)?;
     storage::plan_fixed_scratch(&mut raw)?;
     // SAFETY: MIR lowering owns the proof for every unchecked access and
     // storage invariant it emits. Array extents come from semantic types,
@@ -410,8 +410,16 @@ pub fn lower_program_to_optimized_mir(
     Ok(optimized)
 }
 
+#[cfg(test)]
 fn lower_program_to_raw_mir(
     program: &TypedProgram,
+) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
+    lower_program_to_mir(program, false)
+}
+
+fn lower_program_to_mir(
+    program: &TypedProgram,
+    prune_before_range_analysis: bool,
 ) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
     let mut errors = mir_program_boundary_errors(program);
     let config = onda_mir::CompileConfig::from_usize(
@@ -530,11 +538,13 @@ fn lower_program_to_raw_mir(
         &function_indices,
         &function_ids,
     )?;
-    // Processor lowering intentionally begins with uniform flattened ABIs.
-    // Prune unused leaves before whole-program range propagation and initial
-    // validation so every subsequent compiler stage sees only live state.
     param_arrays::clamp_parameter_arrays(&mut mir);
-    onda_mir::prune_unused_function_parameters(&mut mir);
+    if prune_before_range_analysis {
+        // Processor lowering intentionally begins with uniform flattened ABIs.
+        // Prune unused leaves before whole-program range propagation so every
+        // subsequent production compiler stage sees only live state.
+        onda_mir::prune_dead_values_and_parameters(&mut mir);
+    }
     propagate_integer_storage_ranges(&mut mir);
     normalize_mir_source_paths(&mut mir);
     Ok(mir)

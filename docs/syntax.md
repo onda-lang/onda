@@ -1334,7 +1334,9 @@ still apply. Target selectors are evaluated exactly once, from left to right, be
 value. Assigning the field itself uses the ordinary scalar, tuple, fixed-array, or struct
 replacement rules. If the field is an array or tuple, an index after the field selects one of its
 elements. For example, `voices[i].taps[j] = 0.5` selects voice `i`, then element `j` of that voice's
-`taps` field.
+`taps` field. Fixed-array fields accept runtime numeric selectors. Tuple fields are heterogeneous,
+so their selector must be a compile-time integer constant; the selected component keeps its own
+declared type.
 
 Accepted forms:
 
@@ -2815,7 +2817,7 @@ the concrete argument shape and the field access in the body.
 ### Unchecked Indexed Access
 
 `read_unsafe(values, index)` / `values.read_unsafe(index)` and
-`write_unsafe(values, index, value)` / `values.write_unsafe(index, value)` provide unchecked scalar
+`write_unsafe(values, index, value)` / `values.write_unsafe(index, value)` provide unchecked indexed
 access across the language; they are not limited to external buffers. Supported primitive storage
 includes fixed arrays, slices, named input/parameter/output arrays, the uniform dynamic views `ins`,
 `params`/`kins`, `outs`, and `kouts`, selected buffers, and fixed buffer collections. Ordinary
@@ -2842,9 +2844,11 @@ sample:
 The result has the same alias/reference semantics as `cells[index]` or `voices[index]`; only selector
 normalization is omitted. Struct fields and processor calls, fields, events, and named arguments
 therefore continue to operate on the selected element. An aggregate result is only valid when
-introducing an alias or passing a reference argument; it cannot be used as a scalar value.
-Aggregate assignment is not a language operation, so `write_unsafe` remains limited to primitive
-storage. An invalid unchecked
+introducing an alias, passing a reference argument, or supplying an aggregate replacement; it
+cannot be used as a scalar value.
+For arrays and slices of data structs, `write_unsafe(cells, index, replacement)` replaces the
+selected element using the ordinary exact-type and snapshot rules for aggregate assignment.
+Processor elements remain resources and cannot be replaced. An invalid unchecked
 aggregate selector has undefined memory-unsafe behavior and may trap, crash, corrupt state, or—for
 a processor array—dispatch through an arbitrary state. There is no defined fallback behavior.
 

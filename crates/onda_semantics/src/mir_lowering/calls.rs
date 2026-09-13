@@ -623,28 +623,11 @@ impl<'a> FunctionLowerer<'a> {
                             bounds: BoundsMode::Unchecked,
                         }
                     } else {
-                        let MirType::Slice { element, access } =
-                            self.types[self.locals[slice.index()].ty.index()]
-                        else {
-                            unreachable!("array leaf is a descriptor")
-                        };
-                        CallArgument::Value(
-                            self.emit_slice_temp(
-                                block,
-                                None,
-                                source_scalar_type(element),
-                                access,
-                                Rvalue::MakeSlice {
-                                    source: onda_mir::SliceSource::Place(Place::local(slice)),
-                                    start: index,
-                                    len: Value::Constant(ScalarValue::I32(field.width as i32)),
-                                    bounds: BoundsMode::Unchecked,
-                                    access,
-                                },
-                                location,
-                            )
-                            .value,
-                        )
+                        CallArgument::SliceWindow {
+                            slice: Value::Local(slice),
+                            start: index,
+                            bounds: BoundsMode::Unchecked,
+                        }
                     });
                 }
             }
@@ -1346,7 +1329,7 @@ impl<'a> FunctionLowerer<'a> {
                     let value = self.coerce(value, param_ty, block, expression.loc())?;
                     call_args.push(CallArgument::Value(value.value));
                 }
-                TypedFnParam::Array { elem_ty, .. } => {
+                TypedFnParam::Array { elem_ty, len } => {
                     let PreparedCallArgument::Array(slice) = prepared else {
                         return Err(self.error(
                             format!(
@@ -1365,7 +1348,15 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     }
-                    call_args.push(CallArgument::Value(slice.value));
+                    call_args.push(if len.is_some() {
+                        CallArgument::SliceWindow {
+                            slice: slice.value,
+                            start: Value::Constant(ScalarValue::I32(0)),
+                            bounds: BoundsMode::Unchecked,
+                        }
+                    } else {
+                        CallArgument::Value(slice.value)
+                    });
                 }
                 TypedFnParam::Tuple { elem_tys } => {
                     let PreparedCallArgument::Tuple(values) = prepared else {

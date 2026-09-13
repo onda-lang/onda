@@ -442,21 +442,38 @@ impl<'a> FunctionLowerer<'a> {
                     } else {
                         onda_mir::AccessMode::ReadWrite
                     };
-                    let type_id = intern_slice_type(self.types, *elem_ty, access);
-                    self.params.push(onda_mir::FunctionParam {
-                        name: name.clone(),
-                        ty: type_id,
-                        mode: onda_mir::PassingMode::Value,
-                        integer_range: None,
-                    });
-                    slice_parameters.push((
-                        name.clone(),
-                        ParameterId::new(next_parameter_id),
-                        *elem_ty,
-                        access,
-                        len.map(|len| self.data_extent(len, function_location(self.function)))
-                            .transpose()?,
-                    ));
+                    let parameter = ParameterId::new(next_parameter_id);
+                    if let Some(len) = len
+                        .map(|len| self.data_extent(len, function_location(self.function)))
+                        .transpose()?
+                    {
+                        self.params.push(onda_mir::FunctionParam {
+                            name: name.clone(),
+                            ty: intern_array_type(self.types, *elem_ty, len),
+                            mode: match access {
+                                onda_mir::AccessMode::ReadOnly => {
+                                    onda_mir::PassingMode::ReadOnlyReference
+                                }
+                                onda_mir::AccessMode::ReadWrite => {
+                                    onda_mir::PassingMode::ReadWriteReference
+                                }
+                            },
+                            integer_range: None,
+                        });
+                        self.bindings.insert(
+                            name.clone(),
+                            Binding::ArrayParameter(parameter, *elem_ty, len),
+                        );
+                    } else {
+                        let type_id = intern_slice_type(self.types, *elem_ty, access);
+                        self.params.push(onda_mir::FunctionParam {
+                            name: name.clone(),
+                            ty: type_id,
+                            mode: onda_mir::PassingMode::Value,
+                            integer_range: None,
+                        });
+                        slice_parameters.push((name.clone(), parameter, *elem_ty, access, None));
+                    }
                     next_parameter_id += 1;
                 }
                 TypedFnParam::Tuple { elem_tys } => {
@@ -586,27 +603,19 @@ impl<'a> FunctionLowerer<'a> {
                                 element,
                                 len,
                             } => {
-                                let access = if mode == onda_mir::PassingMode::ReadOnlyReference {
-                                    onda_mir::AccessMode::ReadOnly
-                                } else {
-                                    onda_mir::AccessMode::ReadWrite
-                                };
-                                let type_id = intern_slice_type(self.types, element, access);
+                                let type_id = intern_array_type(self.types, element, len);
                                 let parameter = ParameterId::new(next_parameter_id);
                                 let parameter_name = format!("{name}.{field_name}");
                                 self.params.push(onda_mir::FunctionParam {
                                     name: parameter_name.clone(),
                                     ty: type_id,
-                                    mode: onda_mir::PassingMode::Value,
+                                    mode,
                                     integer_range: None,
                                 });
-                                slice_parameters.push((
+                                self.bindings.insert(
                                     parameter_name,
-                                    parameter,
-                                    element,
-                                    access,
-                                    Some(len),
-                                ));
+                                    Binding::ArrayParameter(parameter, element, len),
+                                );
                                 fields.push(StructFieldReference::Array {
                                     name: field_name,
                                     parameter,
@@ -990,10 +999,17 @@ impl<'a> FunctionLowerer<'a> {
         for embedded in embedded_struct_array_parameters {
             let mut fields = Vec::with_capacity(embedded.fields.len());
             for field in embedded.fields {
-                let MirType::Slice { access, .. } =
-                    self.types[self.params[field.parameter.index()].ty.index()]
-                else {
-                    unreachable!("aggregate tensor parameters use slice descriptors")
+                let parameter = &self.params[field.parameter.index()];
+                let access = match self.types[parameter.ty.index()] {
+                    MirType::Array { .. } => {
+                        if parameter.mode == onda_mir::PassingMode::ReadOnlyReference {
+                            onda_mir::AccessMode::ReadOnly
+                        } else {
+                            onda_mir::AccessMode::ReadWrite
+                        }
+                    }
+                    MirType::Slice { access, .. } => access,
+                    _ => unreachable!("aggregate tensor parameter is not array storage"),
                 };
                 let slice = self.emit_slice_temp(
                     &mut body,

@@ -218,7 +218,7 @@ impl FunctionLowerer<'_> {
                 }
             };
             let leaf_start = scale(self, start, block);
-            let leaf_len = scale(self, Value::Local(len), block);
+            let leaf_len = scale(self, len, block);
             let slice = self.emit_slice_temp(
                 block,
                 None,
@@ -246,7 +246,13 @@ impl FunctionLowerer<'_> {
             name.to_owned(),
             Binding::StructArrayParameter {
                 struct_name,
-                length: StructArrayLength::Local(len),
+                length: match len {
+                    Value::Local(local) => StructArrayLength::Local(local),
+                    Value::Constant(ScalarValue::I32(len)) => StructArrayLength::Fixed(
+                        u32::try_from(len).expect("struct slice lengths are non-negative"),
+                    ),
+                    _ => unreachable!("struct slice lengths are i32 values"),
+                },
                 fields,
             },
         );

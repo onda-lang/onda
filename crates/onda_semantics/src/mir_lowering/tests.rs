@@ -1773,12 +1773,10 @@ sample 2:
         "2x interpolation stays static around one explicit sample oversampling loop"
     );
     assert!(
-        mir.state
+        process
+            .locals
             .iter()
-            .filter(
-                |slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch
-                    && matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })
-            )
+            .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
             .count()
             >= 2
     );
@@ -1873,9 +1871,10 @@ sample:
         1,
         "fixed processor oversampling should remain one explicit MIR loop"
     );
-    assert!(mir.state.iter().any(|slot| slot.persistence
-        == onda_mir::StatePersistence::InstanceScratch
-        && matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
+    assert!(step
+        .locals
+        .iter()
+        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. })));
     let dump = format_program(&mir);
     assert!(dump.contains("self.__onda_os_down_out__out1__stage0__a0"));
     assert_eq!(
@@ -2146,9 +2145,6 @@ block:
     assert!(pre_if < process_loop && process_loop < post_if);
 
     let dump = format_program(&mir);
-    assert!(dump.contains("load @p0"));
-    assert!(dump.contains("load @p1"));
-    assert!(dump.contains("load @p2"));
     assert!(dump.contains("bit_and"));
     assert!(dump.contains("process_frame"));
     assert!(dump.contains("i32(1)"));
@@ -2810,20 +2806,58 @@ sample:
         .iter()
         .find(|function| function.name == "local_total")
         .expect("missing local_total function");
-    assert!(function
-        .locals
-        .iter()
-        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { .. })));
-    let scratch = mir
+    assert_eq!(
+        function
+            .locals
+            .iter()
+            .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
+            .count(),
+        2
+    );
+    assert!(mir
         .state
         .iter()
         .filter(|slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch)
-        .collect::<Vec<_>>();
-    assert_eq!(scratch.len(), 2);
-    assert!(scratch
-        .iter()
-        .all(|slot| matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
+        .all(|slot| !matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
     assert!(format_program(&mir).contains("slice_copy"));
+}
+
+#[test]
+fn fixed_array_storage_keeps_only_small_arrays_local() {
+    let source = r#"
+def first():
+  small: f32[16]
+  large: f32[17]
+  return small[0] + large[0]
+
+outs:
+  out1
+
+sample:
+  out1 = first()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("local arrays should lower");
+    validate(&mir).expect("local-array MIR should validate");
+
+    let function = mir
+        .functions
+        .iter()
+        .find(|function| function.name == "first")
+        .expect("missing first function");
+    assert!(function
+        .locals
+        .iter()
+        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 16, .. })));
+    assert!(function
+        .locals
+        .iter()
+        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { len: 17, .. })));
+    assert!(mir.state.iter().any(|slot| {
+        slot.persistence == onda_mir::StatePersistence::InstanceScratch
+            && matches!(mir.types[slot.ty.index()], MirType::Array { len: 17, .. })
+    }));
 }
 
 #[test]
@@ -3368,21 +3402,13 @@ sample:
             .collect::<Vec<_>>(),
         ["holder.leaves.value", "holder.leaves.bins"]
     );
-    assert!(inspect
-        .params
-        .iter()
-        .all(|param| param.mode == onda_mir::PassingMode::Value
-            && matches!(
-                mir.types[param.ty.index()],
-                MirType::Slice {
-                    access: onda_mir::AccessMode::ReadWrite,
-                    ..
-                }
-            )));
+    assert!(inspect.params.iter().all(|param| param.mode
+        == onda_mir::PassingMode::ReadWriteReference
+        && matches!(mir.types[param.ty.index()], MirType::Array { .. })));
 
     let dump = format_program(&mir);
     assert!(dump.contains("make_slice @p"));
-    assert!(!dump.contains("slice_window"));
+    assert!(dump.contains("slice_window"));
     assert!(dump.contains("load_slice"));
     assert!(dump.contains("store_slice"));
 }
@@ -3439,16 +3465,14 @@ sample:
         .params
         .iter()
         .all(|param| match mir.types[param.ty.index()] {
-            MirType::Slice {
-                access: onda_mir::AccessMode::ReadOnly,
-                ..
-            } => param.mode == onda_mir::PassingMode::Value,
-            MirType::Scalar(_) => param.mode == onda_mir::PassingMode::ReadOnlyReference,
+            MirType::Array { .. } | MirType::Scalar(_) => {
+                param.mode == onda_mir::PassingMode::ReadOnlyReference
+            }
             _ => false,
         }));
 
     let dump = format_program(&mir);
-    assert!(!dump.contains("slice_window"));
+    assert!(dump.contains("slice_window"));
     assert!(dump.contains("place @state"));
     assert!(dump.contains("make_slice @state"));
 }
@@ -3494,7 +3518,7 @@ sample:
 
     let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
     assert!(process.contains("load @state"), "{process}");
-    assert!(!process.contains("slice_window"), "{process}");
+    assert!(process.contains("slice_window"), "{process}");
     assert!(
         process.contains("slice_element") && process.contains("] unchecked"),
         "{process}"
@@ -3506,6 +3530,92 @@ sample:
     assert!(
         !process.contains("intrinsic range_clamp("),
         "unsafe aggregate selectors must not be normalized:\n{process}"
+    );
+}
+
+#[test]
+fn unsafe_struct_array_writes_reuse_snapshot_safe_aggregate_copies() {
+    let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+def replace_first(cells: Cell[], replacement: Cell):
+  cells.write_unsafe(0, replacement)
+
+init:
+  cells: Cell[2] = [
+    Cell(0.0, (0.0, 0), [0.0, 0.0]),
+    Cell(0.25, (0.5, 7), [0.75, 1.0])
+  ]
+  cursor: i32 = 0
+
+sample:
+  replacement = cells[1]
+  replace_first(cells[:], replacement)
+  write_unsafe(cells, cursor, read_unsafe(cells, 1))
+  selected = cells[0]
+  out1 = selected.value + selected.pair[0] + selected.taps[0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe aggregate replacement should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe aggregate replacement should lower");
+    validate(&mir).expect("unsafe aggregate-replacement MIR should validate");
+
+    let formatted = format_program(&mir);
+    let process = formatted_function(&formatted, "onda_process");
+    let replace = formatted_function(&formatted, "replace_first");
+    assert!(process.contains("slice_copy"), "{process}");
+    assert!(process.contains("] unchecked"), "{process}");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "unsafe aggregate selectors must not be normalized:\n{process}"
+    );
+    let has_dynamic_length = replace
+        .lines()
+        .next()
+        .is_some_and(|header| header.contains("@p0 \"cells.len\""));
+    assert!(
+        !has_dynamic_length || !replace.contains("load @p0"),
+        "unchecked dynamic-array access must not load an unused length:\n{replace}"
+    );
+}
+
+#[test]
+fn struct_array_field_reads_clamp_each_selector_independently() {
+    let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+init:
+  cells: Cell[2] = [
+    Cell(0.0, (0.0, 0), [1.0, 2.0]),
+    Cell(0.0, (0.0, 0), [3.0, 4.0])
+  ]
+
+sample:
+  out1 = cells[0].taps[99]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed fixed-array field read should analyze");
+    let mir = lower_test_program(&typed).expect("indexed fixed-array field read should lower");
+    validate(&mir).expect("indexed fixed-array field read MIR should validate");
+
+    let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
+    assert!(
+        process.contains("len=i32(2) bounds=unchecked") && process.contains("[i32(99)] clamp"),
+        "the inner selector must clamp within the selected field view:\n{process}"
+    );
+    assert!(
+        !process.contains("load @state"),
+        "the inner selector must not spill into the next struct element:\n{process}"
+    );
+    assert!(
+        !process.contains(".value") && !process.contains(".pair"),
+        "a field read should materialize only its requested SoA leaf:\n{process}"
     );
 }
 

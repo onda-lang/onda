@@ -1804,6 +1804,27 @@ fn stdlib_realfft_matches_full_complex_reference() {
 }
 
 #[test]
+fn stdlib_real_transform_roundtrips_non_windowed_blocks() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REAL_TRANSFORM_ROUNDTRIP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 0.25, 1e-5);
+        assert_near(output[base + 1], -0.5, 1e-5);
+        assert_near(output[base + 2], 0.5, 1e-5);
+        assert_near(output[base + 3], -0.25, 1e-5);
+    }
+}
+
+#[test]
 
 fn stdlib_realfft_namespaced_proc_compile_and_run() {
     let frames = 128;

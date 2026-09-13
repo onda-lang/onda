@@ -18,6 +18,8 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const MAX_IMPULSE_FRAMES: usize = 480_000;
+const STEADY_STATE_WARMUP_BLOCKS: usize = 200;
+const STEADY_STATE_BLOCKS: usize = 4_096;
 
 const SPIKE_SOURCE: &str = r#"
 import std/convolution
@@ -31,6 +33,8 @@ buffers:
 init:
   left = std::convolution<FFTSize, MaxImpulseFrames>::ZeroLatencyConvolver()
   right = std::convolution<FFTSize, MaxImpulseFrames>::ZeroLatencyConvolver()
+  left.set_channel(0)
+  right.set_channel(1)
   loaded = false
 
 block:
@@ -59,6 +63,8 @@ buffers:
 init:
   left = Convolution::ZeroLatencyConvolver()
   right = Convolution::ZeroLatencyConvolver()
+  left.set_channel(0)
+  right.set_channel(1)
 
 task load_impulse():
   frames = min(impulse.len(), MaxImpulseFrames)
@@ -98,8 +104,8 @@ block:
   await load_impulse()
 
   sample:
-    out1 = left(0.0) + 1.0
-    out2 = right(0.0) + 1.0
+    out1 = left(0.25) + 1.0
+    out2 = right(-0.125) + 1.0
 "#;
 
 #[derive(Clone, Copy)]
@@ -107,6 +113,8 @@ struct LoadingSummary {
     blocks: usize,
     peak_us: f64,
     total_us: f64,
+    steady_state_us_per_block: f64,
+    steady_state_peak_us: f64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -147,6 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "audio_block_deadline_us={:.3}\n",
             "set_impulse: blocks=1 peak_us={:.3} total_us={:.3}\n",
             "task_load: blocks={} peak_us={:.3} total_us={:.3}\n",
+            "task_steady_state: mean_us={:.3} peak_us={:.3}\n",
             "peak_reduction={:.2}x total_cost_ratio={:.2}x ready_after_ms={:.3}"
         ),
         impulse_frames,
@@ -158,6 +167,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         task_summary.blocks,
         task_summary.peak_us,
         task_summary.total_us,
+        task_summary.steady_state_us_per_block,
+        task_summary.steady_state_peak_us,
         spike_summary.peak_us / task_summary.peak_us,
         task_summary.total_us / spike_summary.total_us,
         task_summary.blocks as f64 * block_size as f64 * 1_000.0 / SAMPLE_RATE as f64,
@@ -196,8 +207,20 @@ fn measure(
 ) -> Result<LoadingSummary, Box<dyn Error>> {
     let mut peaks = Vec::with_capacity(repetitions);
     let mut totals = Vec::with_capacity(repetitions);
+    let mut steady_state_means = Vec::with_capacity(repetitions);
+    let mut steady_state_peaks = Vec::with_capacity(repetitions);
     let mut measured_blocks = None;
-    let mut impulse = vec![0.0_f32; impulse_frames * 2];
+    let mut impulse = (0..impulse_frames * 2)
+        .map(|index| {
+            let channel_frame = index % impulse_frames;
+            let polarity = if channel_frame.is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            };
+            polarity * (-6.0 * channel_frame as f32 / impulse_frames as f32).exp()
+        })
+        .collect::<Vec<_>>();
     let mut left_output = vec![0.0_f32; block_size];
     let mut right_output = vec![0.0_f32; block_size];
 
@@ -276,13 +299,43 @@ fn measure(
         }
         peaks.push(peak_us);
         totals.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+
+        for _ in 0..STEADY_STATE_WARMUP_BLOCKS {
+            process_checked(
+                &mut instance,
+                block_size,
+                onda_runtime::ExecutionOutput::none(),
+            )
+            .map_err(|error| format!("steady-state warmup failed: {error:?}"))?;
+        }
+        let mut steady_state_peak_us = 0.0_f64;
+        let steady_state_started = Instant::now();
+        for _ in 0..STEADY_STATE_BLOCKS {
+            let block_started = Instant::now();
+            process_checked(
+                &mut instance,
+                block_size,
+                onda_runtime::ExecutionOutput::none(),
+            )
+            .map_err(|error| format!("steady-state processing failed: {error:?}"))?;
+            steady_state_peak_us =
+                steady_state_peak_us.max(block_started.elapsed().as_secs_f64() * 1_000_000.0);
+        }
+        steady_state_means.push(
+            steady_state_started.elapsed().as_secs_f64() * 1_000_000.0 / STEADY_STATE_BLOCKS as f64,
+        );
+        steady_state_peaks.push(steady_state_peak_us);
     }
 
     peaks.sort_by(f64::total_cmp);
     totals.sort_by(f64::total_cmp);
+    steady_state_means.sort_by(f64::total_cmp);
+    steady_state_peaks.sort_by(f64::total_cmp);
     Ok(LoadingSummary {
         blocks: measured_blocks.unwrap_or_default(),
         peak_us: peaks[repetitions / 2],
         total_us: totals[repetitions / 2],
+        steady_state_us_per_block: steady_state_means[repetitions / 2],
+        steady_state_peak_us: steady_state_peaks[repetitions / 2],
     })
 }

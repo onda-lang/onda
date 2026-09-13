@@ -64,8 +64,7 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
     outs<T> 1
 
     init:
-      fwd = std::fft<FFTSize>::FFT<T>()
-      inv = std::fft<FFTSize>::FFT<T>()
+      fft = std::fft<FFTSize>::RealTransform<T>()
       rng = std::random::Rng<f32>()
 
       pending: T[HopSize]
@@ -164,12 +163,12 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       reset_counters()
 
     def transform_impulse_partition(part: i32):
-      fwd.forward_real(block_time)
+      fft.forward(block_time)
 
       for i in 0..SpectrumBins:
         slot = partition_slot(part, i)
-        impulse_real[slot] = fwd.real(i)
-        impulse_imag[slot] = fwd.imag(i)
+        impulse_real[slot] = fft.real(i)
+        impulse_imag[slot] = fft.imag(i)
         input_real[slot] = 0.0
         input_imag[slot] = 0.0
 
@@ -221,23 +220,18 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
           for i in 0..HopSize:
             block_time[i] = pending[i]
 
-          fwd.forward_real(block_time)
+          fft.forward(block_time)
 
           for i in 0..SpectrumBins:
             slot = partition_slot(input_position, i)
-            input_real[slot] = fwd.real(i)
-            input_imag[slot] = fwd.imag(i)
+            input_real[slot] = fft.real(i)
+            input_imag[slot] = fft.imag(i)
 
           # Partition zero depends on the just-computed FFT, so it is the only
           # partition that cannot be spread into the preceding hop.
           accumulate_partition(0, input_position)
 
-          for i in 0..SpectrumBins:
-            inv.set_bin(i, spectrum_real[i], spectrum_imag[i])
-          for i in 1..HopSize:
-            inv.set_bin(FFTSize - i, spectrum_real[i], -spectrum_imag[i])
-          inv.inverse()
-          inv.store_real(time_domain)
+          fft.inverse(spectrum_real, spectrum_imag, time_domain)
 
           for i in 0..HopSize:
             output[i] = time_domain[i] + overlap[i]
@@ -355,17 +349,32 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       else:
         offset = value
 
-      head.set_offset(offset + (MidFFTSize >> 3))
-      mid.set_offset(offset + (LargeFFTSize >> 3))
-      large.set_offset(offset + (FFTSize >> 3))
-      final.set_offset(offset)
+      # Put each tier one quarter-hop into its own period. Because every larger
+      # hop is a multiple of every smaller one, these distinct residues keep
+      # their FFT boundaries from landing on the same sample.
+      head.set_offset(offset + (HeadFFTSize >> 3))
+      mid.set_offset(offset + (MidFFTSize >> 3))
+      large.set_offset(offset + (LargeFFTSize >> 3))
+      final.set_offset(offset + (FFTSize >> 3))
 
     def stage_length(value_count: i32, start: i32, end: i32) -> i32:
       return max(min(value_count, end) - start, 0)
 
+    def channel_offset(channel: i32) -> i32:
+      phase = (i64(channel) * i64(BS)) % i64(HopSize)
+      if phase < 0:
+        phase += i64(HopSize)
+      return i32(phase)
+
     events:
       set_offset(value: i32 = -1):
         apply_offset(value)
+
+      # Assign a stable scheduling phase to parallel channel instances. Tiers
+      # whose hop exceeds the host block are separated by whole callbacks;
+      # smaller tiers already occur at least once per callback.
+      set_channel(channel: i32):
+        apply_offset(channel_offset(channel))
 
       set_impulse(values: T[]):
         td.set_impulse(values[:DirectTaps])

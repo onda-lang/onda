@@ -1,8 +1,8 @@
 use super::*;
 
 impl FunctionLowerer<'_> {
-    /// Scalar leaves are references; tensor leaves are descriptors. Their
-    /// physical stride never changes the nominal source-level fixed shape.
+    /// Scalar leaves are direct references; fixed tensor leaves are windows
+    /// into their source storage.
     pub(super) fn struct_reference_arguments(
         &mut self,
         root: &str,
@@ -36,7 +36,11 @@ impl FunctionLowerer<'_> {
                         block,
                         loc,
                     )?;
-                    Ok(CallArgument::Value(slice.value))
+                    Ok(CallArgument::SliceWindow {
+                        slice: slice.value,
+                        start: Value::Constant(ScalarValue::I32(0)),
+                        bounds: BoundsMode::Unchecked,
+                    })
                 }
             })
             .collect()

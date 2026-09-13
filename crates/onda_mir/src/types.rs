@@ -47,6 +47,16 @@ impl ScalarType {
     pub const fn is_numeric(self) -> bool {
         !matches!(self, Self::Bool)
     }
+
+    /// Logical storage width used by fixed MIR aggregates. This is independent
+    /// of target ABI layout and pointer width.
+    pub const fn logical_byte_width(self) -> u64 {
+        match self {
+            Self::F32 | Self::I32 => 4,
+            Self::F64 | Self::I64 => 8,
+            Self::Bool => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]

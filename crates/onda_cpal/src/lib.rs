@@ -197,6 +197,7 @@ pub struct StreamErrorState {
 struct StreamErrorStateInner {
     output_failed: AtomicBool,
     input_failed: AtomicBool,
+    output_underrun_frames: AtomicUsize,
 }
 
 impl StreamErrorState {
@@ -208,6 +209,10 @@ impl StreamErrorState {
         } else {
             None
         }
+    }
+
+    pub fn output_underrun_frames(&self) -> usize {
+        self.inner.output_underrun_frames.load(Ordering::Relaxed)
     }
 }
 
@@ -260,6 +265,10 @@ impl SampleProducer {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity
+    }
 }
 
 impl SampleConsumer {
@@ -269,6 +278,10 @@ impl SampleConsumer {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity
     }
 
     pub fn pop_slice_aligned(&self, output: &mut [f32], alignment: usize) -> usize {
@@ -379,12 +392,20 @@ fn build_output_stream<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
+    let callback_errors = errors.clone();
     device
         .build_output_stream(
             config,
             move |data: &mut [T], _| {
                 configure_current_thread_fp_mode();
-                write_output_data(data, device_channels, source_channels, &sample_queue.inner);
+                let missing =
+                    write_output_data(data, device_channels, source_channels, &sample_queue.inner);
+                if missing != 0 {
+                    callback_errors
+                        .inner
+                        .output_underrun_frames
+                        .fetch_add(missing, Ordering::Relaxed);
+                }
             },
             move |_err| {
                 errors.inner.output_failed.store(true, Ordering::Release);
@@ -426,29 +447,28 @@ fn write_output_data<T>(
     device_channels: usize,
     source_channels: usize,
     sample_queue: &SampleRing,
-) where
+) -> usize
+where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     data.fill(T::from_sample(0.0));
     if device_channels == 0 || source_channels == 0 {
-        return;
+        return 0;
     }
     let frames = data.len() / device_channels;
-    sample_queue.consume(
-        frames.saturating_mul(source_channels),
-        source_channels,
-        |index, value| {
-            let frame = index / source_channels;
-            let source_channel = index % source_channels;
-            if source_channels == 1 {
-                for sample in &mut data[frame * device_channels..(frame + 1) * device_channels] {
-                    *sample = T::from_sample(value);
-                }
-            } else if source_channel < device_channels {
-                data[frame * device_channels + source_channel] = T::from_sample(value);
+    let requested = frames.saturating_mul(source_channels);
+    let consumed = sample_queue.consume(requested, source_channels, |index, value| {
+        let frame = index / source_channels;
+        let source_channel = index % source_channels;
+        if source_channels == 1 {
+            for sample in &mut data[frame * device_channels..(frame + 1) * device_channels] {
+                *sample = T::from_sample(value);
             }
-        },
-    );
+        } else if source_channel < device_channels {
+            data[frame * device_channels + source_channel] = T::from_sample(value);
+        }
+    });
+    (requested - consumed) / source_channels
 }
 
 fn write_input_data<T>(
@@ -609,7 +629,7 @@ mod tests {
         assert_eq!(producer.push_slice(&[1.0, 10.0, 2.0, 20.0]), 4);
 
         let mut mono = [0.0_f32; 2];
-        write_output_data(&mut mono, 1, 2, &consumer.inner);
+        assert_eq!(write_output_data(&mut mono, 1, 2, &consumer.inner), 0);
 
         assert_eq!(mono, [1.0, 2.0]);
         assert!(consumer.is_empty());
@@ -621,10 +641,20 @@ mod tests {
         assert_eq!(producer.push_slice(&[1.0, 10.0, 2.0]), 3);
 
         let mut stereo = [99.0_f32; 4];
-        write_output_data(&mut stereo, 2, 2, &consumer.inner);
+        assert_eq!(write_output_data(&mut stereo, 2, 2, &consumer.inner), 1);
 
         assert_eq!(stereo, [1.0, 10.0, 0.0, 0.0]);
         assert_eq!(consumer.len(), 1);
+    }
+
+    #[test]
+    fn output_callback_reports_missing_frames() {
+        let (producer, consumer) = sample_ring(8);
+        assert_eq!(producer.push_slice(&[1.0, 10.0]), 2);
+
+        let mut stereo = [99.0_f32; 6];
+        assert_eq!(write_output_data(&mut stereo, 2, 2, &consumer.inner), 2);
+        assert_eq!(stereo, [1.0, 10.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

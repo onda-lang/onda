@@ -204,6 +204,7 @@ enum InitProjection {
 struct LocalInitialization {
     covered: HashSet<Vec<InitProjection>>,
     process_frame: bool,
+    full_slice_backing: Option<crate::LocalId>,
 }
 
 #[derive(Debug, Clone)]
@@ -2154,6 +2155,7 @@ impl Validator<'_> {
     ) {
         match &statement.kind {
             StatementKind::Assign { destination, value } => {
+                let full_slice_backing = self.full_local_array_slice(function, value, state);
                 self.assignment_read_rvalue(function_id, function, value, statement.source, state);
                 self.assignment_write_place(
                     function_id,
@@ -2163,6 +2165,17 @@ impl Validator<'_> {
                     statement.source,
                     state,
                 );
+                if let Place {
+                    base: PlaceBase::Local(local),
+                    projections,
+                } = destination
+                {
+                    if projections.is_empty() {
+                        if let Some(initialization) = state.locals.get_mut(local.index()) {
+                            initialization.full_slice_backing = full_slice_backing;
+                        }
+                    }
+                }
             }
             StatementKind::Call {
                 results,
@@ -2481,6 +2494,7 @@ impl Validator<'_> {
                         state,
                     );
                 }
+                self.assignment_write_full_slice(function, *destination, state);
             }
             StatementKind::SliceCopy { copies, .. } => {
                 for crate::SliceCopy {
@@ -2497,6 +2511,9 @@ impl Validator<'_> {
                             state,
                         );
                     }
+                }
+                for copy in copies {
+                    self.assignment_write_full_slice(function, copy.destination, state);
                 }
             }
             StatementKind::If { .. }
@@ -2807,6 +2824,7 @@ impl Validator<'_> {
         let Some(initialization) = state.locals.get_mut(local.index()) else {
             return;
         };
+        initialization.full_slice_backing = None;
         if place.projections.is_empty() {
             initialization.covered.clear();
             initialization.covered.insert(Vec::new());
@@ -2840,9 +2858,67 @@ impl Validator<'_> {
             return;
         };
         let _ = function;
+        initialization.full_slice_backing = None;
         initialization.covered.clear();
         initialization.covered.insert(Vec::new());
         initialization.process_frame = process_frame;
+    }
+
+    fn full_local_array_slice(
+        &self,
+        function: &Function,
+        value: &Rvalue,
+        state: &AssignmentState,
+    ) -> Option<crate::LocalId> {
+        if let Rvalue::Use(Value::Local(source)) = value {
+            return state
+                .locals
+                .get(source.index())
+                .and_then(|initialization| initialization.full_slice_backing);
+        }
+        let Rvalue::MakeSlice {
+            source:
+                SliceSource::Place(Place {
+                    base: PlaceBase::Local(backing),
+                    projections,
+                }),
+            start: Value::Constant(crate::ScalarValue::I32(0)),
+            len: Value::Constant(crate::ScalarValue::I32(slice_len)),
+            ..
+        } = value
+        else {
+            return None;
+        };
+        if !projections.is_empty() {
+            return None;
+        }
+        let Type::Array { len, .. } = self
+            .program
+            .types
+            .get(function.locals.get(backing.index())?.ty.index())?
+        else {
+            return None;
+        };
+        (*slice_len >= 0 && *slice_len as u32 == *len).then_some(*backing)
+    }
+
+    fn assignment_write_full_slice(
+        &self,
+        function: &Function,
+        slice: Value,
+        state: &mut AssignmentState,
+    ) {
+        let Value::Local(slice) = slice else {
+            return;
+        };
+        let Some(backing) = state
+            .locals
+            .get(slice.index())
+            .and_then(|initialization| initialization.full_slice_backing)
+        else {
+            return;
+        };
+        self.assignment_write_local(function, backing, false, state);
     }
 
     fn assignment_invalidate_read_write_argument(

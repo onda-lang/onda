@@ -121,6 +121,90 @@ fn result_references_require_producer_proof_and_initialize_caller_storage() {
 }
 
 #[test]
+fn full_local_slice_writes_initialize_the_backing_array() {
+    let mut program = empty_program();
+    program.types.extend([
+        Type::Scalar(ScalarType::F32),
+        Type::Array {
+            element: test_type(0),
+            len: 4,
+        },
+        Type::Slice {
+            element: ScalarType::F32,
+            access: AccessMode::ReadWrite,
+        },
+    ]);
+    program.functions[1].locals.extend([
+        Local {
+            name: Some("backing".to_owned()),
+            ty: test_type(1),
+            integer_range: None,
+        },
+        Local {
+            name: Some("view".to_owned()),
+            ty: test_type(2),
+            integer_range: None,
+        },
+        Local {
+            name: Some("value".to_owned()),
+            ty: test_type(0),
+            integer_range: None,
+        },
+    ]);
+    program.functions[1].body.statements.extend([
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::MakeSlice {
+                    source: SliceSource::Place(Place::local(LocalId::new(0))),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len: Value::Constant(ScalarValue::I32(4)),
+                    bounds: crate::BoundsMode::Checked,
+                    access: AccessMode::ReadWrite,
+                },
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::SliceFill {
+                destination: Value::Local(LocalId::new(1)),
+                value: Value::Constant(ScalarValue::F32(1.0)),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(2)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: vec![Projection::Index {
+                        index: Value::Constant(ScalarValue::I32(3)),
+                        bounds: crate::BoundsMode::Checked,
+                    }],
+                }),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+    ]);
+
+    super::validate(&program).expect("a full-slice fill initializes every array element");
+
+    let StatementKind::Assign {
+        value: Rvalue::MakeSlice { len, .. },
+        ..
+    } = &mut program.functions[1].body.statements[0].kind
+    else {
+        unreachable!()
+    };
+    *len = Value::Constant(ScalarValue::I32(2));
+    let errors = super::validate(&program).expect_err("a partial fill leaves later elements unset");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("backing")
+            && error.message.contains("before it is definitely assigned")
+    }));
+}
+
+#[test]
 fn delegate_fixed_arrays_require_primitive_elements() {
     let mut program = empty_program();
     program.structs.push(StructType {

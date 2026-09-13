@@ -41,7 +41,7 @@ const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
 const PRINT_NOTIFICATION_CAPACITY: usize = 32;
 const MIDI_INPUT_CAPACITY: usize = 256;
 const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
-const MAX_RENDER_AHEAD_BLOCKS: usize = 2;
+const RENDER_AHEAD_BLOCKS: usize = 4;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -527,7 +527,11 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
     wait_for_prefill(
         &sample_consumer,
-        startup.output_channels * launch.block_frames,
+        render_ahead_samples(
+            launch.block_frames,
+            startup.output_channels,
+            sample_consumer.capacity(),
+        ),
         &stop_flag,
         &render_error,
     )?;
@@ -714,6 +718,7 @@ fn wait_for_playback_completion(
     mut midi_input: Option<&mut midi::MidiInputManager>,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
+    let mut reported_underrun = false;
     loop {
         if run_termination_requested() {
             stop_flag.store(true, Ordering::Release);
@@ -736,6 +741,15 @@ fn wait_for_playback_completion(
         }
         if let Some(err) = error_state.message() {
             return Err(err);
+        }
+        if !reported_underrun {
+            let missing_frames = error_state.output_underrun_frames();
+            if missing_frames != 0 {
+                eprintln!(
+                    "audio output underrun: render queue exhausted; inserted {missing_frames} silent frames"
+                );
+                reported_underrun = true;
+            }
         }
         if let Some(input) = midi_input.as_deref_mut() {
             input.poll();
@@ -1224,10 +1238,11 @@ fn spawn_run_render_thread(
                 continue;
             }
 
-            let render_ahead_samples = launch
-                .block_frames
-                .saturating_mul(render_output_channels)
-                .saturating_mul(MAX_RENDER_AHEAD_BLOCKS);
+            let render_ahead_samples = render_ahead_samples(
+                launch.block_frames,
+                render_output_channels,
+                sample_queue.capacity(),
+            );
             if sample_queue.len() >= render_ahead_samples {
                 thread::sleep(Duration::from_millis(1));
                 continue;
@@ -1559,6 +1574,16 @@ fn wait_for_prefill(
         thread::sleep(Duration::from_millis(1));
     }
     Ok(())
+}
+
+fn render_ahead_samples(block_frames: usize, channels: usize, capacity: usize) -> usize {
+    if channels == 0 {
+        return 0;
+    }
+    let requested = block_frames
+        .saturating_mul(channels)
+        .saturating_mul(RENDER_AHEAD_BLOCKS);
+    requested.min(capacity - capacity % channels)
 }
 
 fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
@@ -2413,9 +2438,10 @@ fn run_device_lists_json(
 #[cfg(test)]
 mod tests {
     use super::{
-        run_control_response, run_device_lists_json, write_pending_delegate_batch,
-        write_pending_output_batches, write_pending_print_batches, DelegateSubscriptionGuard,
-        MidiTimeline, PlaybackControlCommand, PlaybackControlRequest, RunOutputBatch, ScopeRing,
+        render_ahead_samples, run_control_response, run_device_lists_json,
+        write_pending_delegate_batch, write_pending_output_batches, write_pending_print_batches,
+        DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
+        RunOutputBatch, ScopeRing,
     };
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
@@ -2424,6 +2450,14 @@ mod tests {
     use serde_json::Value;
     use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn render_ahead_is_bounded_by_frame_aligned_queue_capacity() {
+        assert_eq!(render_ahead_samples(256, 2, 8192), 2048);
+        assert_eq!(render_ahead_samples(256, 16, 8192), 8192);
+        assert_eq!(render_ahead_samples(256, 3, 1024), 1023);
+        assert_eq!(render_ahead_samples(256, 0, 1024), 0);
+    }
 
     #[test]
     fn midi_timeline_preserves_timestamp_spacing_within_a_block() {

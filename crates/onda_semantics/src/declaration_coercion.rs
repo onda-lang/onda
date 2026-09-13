@@ -354,6 +354,42 @@ pub(crate) fn resolve_flattened_struct_array_leaf_type(
     None
 }
 
+pub(crate) fn resolve_indexed_struct_field_scalar_type(
+    struct_name: &str,
+    field_name: &str,
+    index: &Expr,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<PrimitiveType> {
+    let field = resolve_struct_field_decl(struct_name, field_name, struct_defs)?;
+    match &field.ty {
+        TypedFieldType::Array(_) => field.array_elem_ty,
+        TypedFieldType::Tuple(types) => {
+            let Expr::Int { value, .. } = index else {
+                return None;
+            };
+            usize::try_from(*value)
+                .ok()
+                .and_then(|index| types.get(index).copied())
+        }
+        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
+    }
+}
+
+pub(crate) fn resolve_indexed_struct_field_data_type(
+    struct_name: &str,
+    field_name: &str,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> Option<DataType> {
+    let field = resolve_struct_field_decl(struct_name, field_name, struct_defs)?;
+    match field.ty {
+        TypedFieldType::Array(_) => field
+            .array_elem_struct
+            .as_ref()
+            .map(|name| DataType::Struct(name.clone())),
+        TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) | TypedFieldType::Struct => None,
+    }
+}
+
 pub(crate) fn is_builtin_array_like_receiver_with_resolver<'a, F>(
     base: &str,
     declared_symbols: &DeclaredSymbolMap,

@@ -1112,16 +1112,53 @@ fn validate_expr_node<'a>(
                     );
                     return;
                 };
-                if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-                    push_expr_error(
+                validate_expr(&index, env, errors);
+                require_expr_numeric_type(
+                    &index,
+                    infer_call_argument_scalar_type(&index, env),
+                    "struct-array index",
+                    errors,
+                );
+                match &field_decl.ty {
+                    TypedFieldType::Array(_) => {
+                        validate_expr(&field_index, env, errors);
+                        require_expr_numeric_type(
+                            &field_index,
+                            infer_call_argument_scalar_type(&field_index, env),
+                            "struct field index",
+                            errors,
+                        );
+                    }
+                    TypedFieldType::Tuple(types) => {
+                        validate_expr(&field_index, env, errors);
+                        let Expr::Int { value, .. } = field_index else {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                "tuple field index must be a compile-time integer constant",
+                            );
+                            return;
+                        };
+                        if usize::try_from(value)
+                            .ok()
+                            .is_none_or(|index| index >= types.len())
+                        {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!(
+                                    "tuple field index {value} is out of bounds for '{base}[...].{field}' with {} elements",
+                                    types.len()
+                                ),
+                            );
+                        }
+                    }
+                    TypedFieldType::Scalar(_) | TypedFieldType::Struct => push_expr_error(
                         errors,
                         expr,
-                        format!("field '{field}' of struct '{struct_name}' is not an array"),
-                    );
-                    return;
+                        format!("field '{field}' of struct '{struct_name}' is not indexable"),
+                    ),
                 }
-                validate_expr(&index, env, errors);
-                validate_expr(&field_index, env, errors);
                 return;
             }
             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
@@ -2072,6 +2109,13 @@ pub(crate) fn infer_fixed_initializer_type(expr: &Expr, env: ExprEnv<'_>) -> Opt
 }
 
 pub(crate) fn infer_fixed_data_type(expr: &Expr, env: ExprEnv<'_>) -> Option<DataType> {
+    if let Expr::UserCall { name, args, .. } = expr {
+        if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+            let (base, _, field, _) = crate::array_structs::extract_safi_args(args)?;
+            let struct_name = array_data_struct_element_type(&base, env)?;
+            return resolve_indexed_struct_field_data_type(&struct_name, &field, env.struct_defs);
+        }
+    }
     match expr {
         Expr::ArrayCtor { spec, .. } => {
             return Some(DataType::Array {
@@ -2189,6 +2233,13 @@ pub(crate) fn validate_primitive_array_values(
     }
 }
 
+pub(crate) fn infer_data_value_type(expr: &Expr, env: ExprEnv<'_>) -> Option<DataType> {
+    infer_fixed_data_type(expr, env).or_else(|| {
+        let source = indexed_read_source(expr)?;
+        array_data_struct_element_type(source.base, env).map(DataType::Struct)
+    })
+}
+
 pub(crate) fn reject_empty_slice_backing_literal(
     expression: &Expr,
     errors: &mut Vec<Diagnostic>,
@@ -2302,7 +2353,7 @@ pub(crate) fn validate_fixed_data_expr(
                     );
                 }
                 for value in values {
-                    let actual = infer_fixed_data_type(value, env);
+                    let actual = infer_data_value_type(value, env);
                     if !is_copy && array_source.is_none() && actual.as_ref() != Some(&expected) {
                         push_expr_error(
                             errors,
@@ -2320,9 +2371,9 @@ pub(crate) fn validate_fixed_data_expr(
         Expr::ArrayLiteral { values, .. } => {
             let nominal = values
                 .first()
-                .and_then(|value| infer_fixed_data_type(value, env));
+                .and_then(|value| infer_data_value_type(value, env));
             for value in values {
-                let actual = infer_fixed_data_type(value, env);
+                let actual = infer_data_value_type(value, env);
                 if let Some(expected @ DataType::Struct(_)) = nominal.as_ref() {
                     if actual.as_ref() != Some(expected) {
                         push_expr_error(
@@ -2352,6 +2403,17 @@ pub(crate) fn validate_fixed_data_expr(
         }
         Expr::Index { index, .. } if infer_fixed_data_type(expr, env).is_some() => {
             validate_expr(index, env, errors)
+        }
+        Expr::UserCall { name, .. }
+            if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL
+                && infer_fixed_data_type(expr, env).is_some() =>
+        {
+            validate_expr(expr, env, errors)
+        }
+        Expr::UserCall { name, args, .. }
+            if name == READ_UNSAFE_FN && infer_data_value_type(expr, env).is_some() =>
+        {
+            validate_unsafe_index_call(name, args, env, expr.loc(), true, errors)
         }
         Expr::UserCall {
             name,
@@ -2431,7 +2493,7 @@ pub(crate) fn validate_fixed_data_expr(
                             }),
                             _ => unreachable!(),
                         };
-                        let actual = infer_fixed_data_type(arg, env);
+                        let actual = infer_data_value_type(arg, env);
                         if actual != expected {
                             let mismatch = expected.as_ref().map_or_else(
                                 || "has an unresolved declared data type".to_owned(),
@@ -3309,16 +3371,20 @@ fn validate_unsafe_index_call(
                 ),
             );
         }
-        if is_write && !shape.writable {
-            push_loc_error(
-                errors,
-                first.expr.loc().or(loc),
-                if shape.is_aggregate {
-                    format!("write_unsafe does not support aggregate array '{base}'")
-                } else {
-                    format!("write_unsafe storage '{base}' is read-only")
-                },
-            );
+        if is_write {
+            if matches!(shape.element, UnsafeStorageElement::Resource) {
+                push_loc_error(
+                    errors,
+                    first.expr.loc().or(loc),
+                    format!("write_unsafe does not support resource array '{base}'"),
+                );
+            } else if !shape.writable {
+                push_loc_error(
+                    errors,
+                    first.expr.loc().or(loc),
+                    format!("write_unsafe storage '{base}' is read-only"),
+                );
+            }
         }
         if !is_write && !shape.readable {
             push_loc_error(
@@ -3327,7 +3393,7 @@ fn validate_unsafe_index_call(
                 format!("read_unsafe storage '{base}' is write-only"),
             );
         }
-        if !is_write && shape.is_aggregate && !allow_aggregate_read {
+        if !is_write && shape.element.is_aggregate() && !allow_aggregate_read {
             push_loc_error(
                 errors,
                 loc,
@@ -3346,16 +3412,37 @@ fn validate_unsafe_index_call(
             );
         }
         if is_write {
-            if let Some((value, expected_ty)) = args.get(1 + shape.index_count).zip(shape.elem_ty) {
-                let actual_ty = infer_call_argument_scalar_type(&value.expr, env);
-                require_expr_assignable_type(
-                    &value.expr,
-                    actual_ty,
-                    expected_ty,
-                    "'write_unsafe' value",
-                    errors,
-                );
+            if let Some(value) = args.get(1 + shape.index_count) {
+                match &shape.element {
+                    UnsafeStorageElement::Data(struct_name) => validate_expected_data(
+                        &value.expr,
+                        &DataType::Struct(struct_name.clone()),
+                        "write_unsafe replacement",
+                        env,
+                        value.expr.loc(),
+                        errors,
+                    ),
+                    UnsafeStorageElement::Primitive(Some(expected_ty)) => {
+                        let actual_ty = infer_call_argument_scalar_type(&value.expr, env);
+                        require_expr_assignable_type(
+                            &value.expr,
+                            actual_ty,
+                            *expected_ty,
+                            "'write_unsafe' value",
+                            errors,
+                        );
+                    }
+                    UnsafeStorageElement::Primitive(None) | UnsafeStorageElement::Resource => {}
+                }
             }
+        }
+        let validated_data_value =
+            is_write && matches!(shape.element, UnsafeStorageElement::Data(_));
+        for (index, argument) in args.iter().enumerate().skip(1) {
+            if validated_data_value && index == 1 + shape.index_count {
+                continue;
+            }
+            validate_expr(&argument.expr, env, errors);
         }
     } else {
         push_loc_error(
@@ -3365,50 +3452,53 @@ fn validate_unsafe_index_call(
                 "'{name}' first argument must be a collection, aggregate array, or buffer reference"
             ),
         );
-    }
-    for argument in args.iter().skip(1) {
-        validate_expr(&argument.expr, env, errors);
+        for argument in args.iter().skip(1) {
+            validate_expr(&argument.expr, env, errors);
+        }
     }
 }
 
-fn validate_aggregate_unsafe_reference_arg(
-    expr: &Expr,
-    env: ExprEnv<'_>,
-    errors: &mut Vec<Diagnostic>,
-) -> bool {
-    let Expr::UserCall { name, args, .. } = expr else {
-        return false;
-    };
-    if name != READ_UNSAFE_FN {
-        return false;
-    }
-    let Some(Expr::Var { name: base, .. }) = args.first().map(|arg| &arg.expr) else {
-        return false;
-    };
-    if !unsafe_storage_shape(base, env).is_some_and(|shape| shape.is_aggregate) {
-        return false;
-    }
-    validate_unsafe_index_call(name, args, env, expr.loc(), true, errors);
-    true
-}
-
-#[derive(Clone, Copy)]
 struct UnsafeStorageShape {
     index_count: usize,
-    elem_ty: Option<PrimitiveType>,
+    element: UnsafeStorageElement,
     readable: bool,
     writable: bool,
-    is_aggregate: bool,
+}
+
+enum UnsafeStorageElement {
+    Primitive(Option<PrimitiveType>),
+    Data(String),
+    Resource,
+}
+
+impl UnsafeStorageElement {
+    fn is_aggregate(&self) -> bool {
+        !matches!(self, Self::Primitive(_))
+    }
 }
 
 fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageShape> {
     if let Some(alias) = env.local_array_aliases.get(base) {
+        let data_struct = (!env.proc_array_roots.contains_key(base))
+            .then(|| {
+                alias
+                    .elem_struct
+                    .as_ref()
+                    .filter(|name| {
+                        env.struct_defs.contains_key(*name) && !is_processor_struct_name(name, env)
+                    })
+                    .cloned()
+            })
+            .flatten();
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: alias.elem_struct.is_none().then_some(alias.elem_ty),
+            element: match data_struct {
+                Some(name) => UnsafeStorageElement::Data(name),
+                None if alias.elem_struct.is_some() => UnsafeStorageElement::Resource,
+                None => UnsafeStorageElement::Primitive(Some(alias.elem_ty)),
+            },
             readable: alias.elem_struct.is_some() || !env.output_arrays.contains(base),
-            writable: alias.elem_struct.is_none() && alias.writable,
-            is_aggregate: alias.elem_struct.is_some(),
+            writable: alias.writable,
         });
     }
     if env.local_aliases.contains_key(base) {
@@ -3426,30 +3516,36 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
         return Some(UnsafeStorageShape {
             index_count: 1 + usize::from(*is_array) + usize::from(has_channel),
-            elem_ty: Some(*elem_ty),
+            element: UnsafeStorageElement::Primitive(Some(*elem_ty)),
             readable: true,
             writable: true,
-            is_aggregate: false,
         });
     }
 
     if unsafe_aggregate_array(base, env) {
+        let data_struct = (!env.proc_array_roots.contains_key(base))
+            .then(|| array_data_struct_element_type(base, env))
+            .flatten()
+            .filter(|name| !is_processor_struct_name(name, env));
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: None,
+            writable: data_struct.is_some(),
+            element: data_struct
+                .map(UnsafeStorageElement::Data)
+                .unwrap_or(UnsafeStorageElement::Resource),
             readable: true,
-            writable: false,
-            is_aggregate: true,
         });
     }
 
     if env.array_vars.contains_key(base) {
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: declared_symbol_scalar_type(env.declared_symbols, base),
+            element: UnsafeStorageElement::Primitive(declared_symbol_scalar_type(
+                env.declared_symbols,
+                base,
+            )),
             readable: !env.output_arrays.contains(base),
             writable: !env.input_names.contains(base) && !env.param_names.contains(base),
-            is_aggregate: false,
         });
     }
 
@@ -3473,11 +3569,36 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
     };
     port.map(|port| UnsafeStorageShape {
         index_count: 1,
-        elem_ty: Some(port.elem_ty),
+        element: UnsafeStorageElement::Primitive(Some(port.elem_ty)),
         readable,
         writable,
-        is_aggregate: false,
     })
+}
+
+fn validate_aggregate_unsafe_reference_arg(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Expr::UserCall { name, args, .. } = expr else {
+        return false;
+    };
+    if name != READ_UNSAFE_FN {
+        return false;
+    }
+    let Some(Expr::Var { name: base, .. }) = args.first().map(|arg| &arg.expr) else {
+        return false;
+    };
+    if !unsafe_storage_shape(base, env).is_some_and(|shape| shape.element.is_aggregate()) {
+        return false;
+    }
+    validate_unsafe_index_call(name, args, env, expr.loc(), true, errors);
+    true
+}
+
+fn is_processor_struct_name(name: &str, env: ExprEnv<'_>) -> bool {
+    env.fn_signatures
+        .contains_key(&format!("{name}{PROC_INIT_FN_SUFFIX}"))
 }
 
 fn unsafe_aggregate_array(base: &str, env: ExprEnv<'_>) -> bool {
@@ -3520,10 +3641,9 @@ fn unsafe_selected_buffer_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeSt
         || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
     Some(UnsafeStorageShape {
         index_count: 1 + usize::from(has_channel),
-        elem_ty: Some(*elem_ty),
+        element: UnsafeStorageElement::Primitive(Some(*elem_ty)),
         readable: true,
         writable: true,
-        is_aggregate: false,
     })
 }
 

@@ -224,3 +224,7 @@
   - Extend bounds proofs from fixed storage to relational dynamic slice and external-buffer facts,
     such as an index derived from the same descriptor's `.len()`. Explicit `read_unsafe` and
     `write_unsafe` are available when the programmer can establish such a proof today.
+  - Extend loop range analysis with relational induction, divisibility, and derived-index facts so
+    nested kernels such as FFT butterflies can prove `start + k` and
+    `start + k + stage / 2` remain in bounds. Ordinary indexing should then optimize to unchecked
+    accesses and SIMD without requiring library-authored `read_unsafe` or `write_unsafe` calls.

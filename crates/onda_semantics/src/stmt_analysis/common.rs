@@ -76,7 +76,7 @@ pub(crate) fn validate_data_element_replacement(
             target_loc,
         ));
     }
-    let actual = infer_fixed_data_type(expr, env);
+    let actual = infer_data_value_type(expr, env);
     if actual.as_ref() != Some(&data) {
         errors.push(Diagnostic::semantic_span(
             format!(
@@ -113,7 +113,7 @@ pub(crate) fn validate_fixed_data_binding_replacement(
             target_loc,
         ));
     }
-    let actual = infer_fixed_data_type(expr, env);
+    let actual = infer_data_value_type(expr, env);
     if actual.as_ref() != Some(&expected) {
         errors.push(Diagnostic::semantic_span(
             format!(

@@ -51,6 +51,33 @@ sample:
 }
 
 #[test]
+fn unchecked_struct_array_replacement_copies_every_leaf() {
+    let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+init:
+  cells: Cell[2] = [
+    Cell(0.0, (0.0, 0), [0.0, 0.0]),
+    Cell(1.0, (2.0, 3), [4.0, 5.0])
+  ]
+
+sample:
+  write_unsafe(cells, 0, read_unsafe(cells, 1))
+  selected = cells[0]
+  out1 = selected.value + selected.pair[0] + f32(selected.pair[1]) + selected.taps[0] + selected.taps[1]
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        assert_eq!(
+            run_native_outputs_with_opt_level(source, 4, level)[0],
+            [15.0; 4]
+        );
+    }
+}
+
+#[test]
 fn sequential_owned_locals_reuse_scratch_without_aliasing() {
     let source = r#"
 sample:
@@ -700,8 +727,8 @@ block:
 }
 
 #[test]
-fn struct_tensor_arguments_preserve_stride_through_mutable_and_readonly_helpers() {
-    let (_, mut mir) = source_program(
+fn struct_tensor_arguments_use_fixed_references_through_mutable_and_readonly_helpers() {
+    let (_, mir) = source_program(
         r#"
 struct Frame:
   samples: f32[2]
@@ -710,14 +737,9 @@ def read(frame: Frame):
 def update(frame: Frame):
   frame.samples[1] = frame.samples[1] + 10.0
   return read(frame)
-def bridge(values: f32[]):
-  values[0] = values[0]
-  frame = Frame()
-  return update(frame)
-buffers:
-  stereo: f32[2]
 sample:
-  out1 = bridge(stereo[1, :2])
+  frame = Frame()
+  out1 = update(frame)
 "#,
         1,
     );
@@ -728,30 +750,25 @@ sample:
         .unwrap();
     assert!(matches!(
         mir.types[mir.functions[update].params[0].ty.index()],
-        onda_mir::Type::Slice { .. }
+        onda_mir::Type::Array { len: 2, .. }
     ));
-    let bridge = mir
+    assert_eq!(
+        mir.functions[update].params[0].mode,
+        onda_mir::PassingMode::ReadWriteReference
+    );
+    let read = mir
         .functions
-        .iter_mut()
-        .find(|function| function.name == "bridge")
-        .unwrap();
-    let values = bridge
-        .locals
         .iter()
-        .position(|local| local.name.as_deref() == Some("values"))
+        .position(|function| function.name == "read")
         .unwrap();
-    let call = bridge
-        .body
-        .statements
-        .iter_mut()
-        .find_map(|statement| match &mut statement.kind {
-            StatementKind::Call { function, args, .. } if function.index() == update => Some(args),
-            _ => None,
-        })
-        .unwrap();
-    // Supply an external strided tensor using the aggregate leaf ABI. This
-    // exercises descriptor forwarding independently of owned contiguous layout.
-    call[0] = CallArgument::Value(Value::Local(onda_mir::LocalId::new(values as u32)));
+    assert!(matches!(
+        mir.types[mir.functions[read].params[0].ty.index()],
+        onda_mir::Type::Array { len: 2, .. }
+    ));
+    assert_eq!(
+        mir.functions[read].params[0].mode,
+        onda_mir::PassingMode::ReadOnlyReference
+    );
     for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
@@ -763,7 +780,6 @@ sample:
         .unwrap();
         let params = native.default_param_bytes();
         let mut state = native.initialize_state(&params).unwrap();
-        let mut values = [1.0_f32, 2.0, 3.0, 4.0];
         let mut output = [0.0_f32];
         native
             .test_process_checked(
@@ -774,14 +790,13 @@ sample:
                 onda_mir::PROCESS_FULL_BLOCK as u32,
                 &[],
                 &[output.as_mut_ptr().cast()],
-                &[values.as_mut_ptr().cast()],
-                &[2],
-                &[2],
-                &[48_000.0],
+                &[],
+                &[],
+                &[],
+                &[],
             )
             .unwrap();
-        assert_eq!(values, [1.0, 2.0, 3.0, 14.0]);
-        assert_eq!(output, [16.0]);
+        assert_eq!(output, [10.0]);
     }
 }
 

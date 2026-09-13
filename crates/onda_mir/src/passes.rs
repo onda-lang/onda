@@ -150,6 +150,34 @@ fn canonicalize_program(program: &mut crate::Program, stats: &mut PassStats) {
     }
 }
 
+/// Removes unused non-failing value computations and the function parameters
+/// that become unreferenced as a result. This producer-side cleanup is safe
+/// before validation and reaches a fixed point across call-argument preparation.
+pub fn prune_dead_values_and_parameters(program: &mut crate::Program) -> PassStats {
+    let mut total = PassStats::default();
+    loop {
+        let mut round = PassStats::default();
+        prune_dead_values_and_parameters_round(program, &mut round);
+        let changed = round.removed_dead_assignments != 0
+            || round.removed_locals != 0
+            || round.removed_function_parameters != 0;
+        total.merge(round);
+        if !changed {
+            return total;
+        }
+    }
+}
+
+fn prune_dead_values_and_parameters_round(program: &mut crate::Program, stats: &mut PassStats) {
+    let types = &program.types;
+    for function in &mut program.functions {
+        remove_dead_pure_locals(types, function, stats);
+    }
+    stats.removed_function_parameters = stats
+        .removed_function_parameters
+        .saturating_add(parameter_pruning::prune(program));
+}
+
 /// Runs backend-neutral MIR cleanup to a fixed point while retaining the
 /// structured, non-SSA representation.
 pub fn optimize(
@@ -189,9 +217,7 @@ pub fn optimize(
         // cleanup share one validation boundary instead of validating the
         // same intermediate program twice.
         canonicalize_program(&mut raw, &mut stats);
-        for function in &mut raw.functions {
-            remove_dead_pure_locals(function, &mut stats);
-        }
+        prune_dead_values_and_parameters_round(&mut raw, &mut stats);
         // Cleanup can remove assignments that widened a whole-function range
         // or expose constant indices. Prove bounds afterward in every round so
         // those opportunities are not permanently missed.
@@ -201,7 +227,6 @@ pub fn optimize(
         // Earlier cleanup can remove the final use of a parameter. Pruning it
         // here can in turn expose dead argument preparation in callers, which
         // the next round will remove.
-        stats.removed_function_parameters = parameter_pruning::prune(&mut raw);
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
@@ -1818,10 +1843,10 @@ fn fold_f64_maximum(lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-fn remove_dead_pure_locals(function: &mut Function, stats: &mut PassStats) {
+fn remove_dead_pure_locals(types: &[crate::Type], function: &mut Function, stats: &mut PassStats) {
     let mut reads = vec![0_u32; function.locals.len()];
     collect_block_reads(&function.body, &mut reads);
-    remove_dead_assignments(&mut function.body, &reads, stats);
+    remove_dead_assignments(types, &function.locals, &mut function.body, &reads, stats);
 
     let mut referenced = HashSet::new();
     collect_block_local_references(&function.body, &mut referenced);
@@ -1839,7 +1864,13 @@ fn remove_dead_pure_locals(function: &mut Function, stats: &mut PassStats) {
     rewrite_block_locals(&mut function.body, &mapping);
 }
 
-fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassStats) {
+fn remove_dead_assignments(
+    types: &[crate::Type],
+    locals: &[crate::Local],
+    block: &mut Block,
+    reads: &[u32],
+    stats: &mut PassStats,
+) {
     for statement in &mut block.statements {
         match &mut statement.kind {
             StatementKind::If {
@@ -1847,10 +1878,12 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
                 else_block,
                 ..
             } => {
-                remove_dead_assignments(then_block, reads, stats);
-                remove_dead_assignments(else_block, reads, stats);
+                remove_dead_assignments(types, locals, then_block, reads, stats);
+                remove_dead_assignments(types, locals, else_block, reads, stats);
             }
-            StatementKind::Loop { body } => remove_dead_assignments(body, reads, stats),
+            StatementKind::Loop { body } => {
+                remove_dead_assignments(types, locals, body, reads, stats)
+            }
             _ => {}
         }
     }
@@ -1867,7 +1900,7 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
         };
         let remove = projections.is_empty()
             && reads.get(local.index()) == Some(&0)
-            && rvalue_is_discardable(value);
+            && rvalue_is_discardable(types, locals, value);
         if remove {
             stats.removed_dead_assignments = stats.removed_dead_assignments.saturating_add(1);
         }
@@ -1875,16 +1908,8 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
     });
 }
 
-fn rvalue_is_discardable(value: &Rvalue) -> bool {
-    match value {
-        Rvalue::Use(_)
-        | Rvalue::Unary { .. }
-        | Rvalue::Compare { .. }
-        | Rvalue::Cast { .. }
-        | Rvalue::Intrinsic { .. } => true,
-        Rvalue::Binary { op, .. } => !matches!(op, BinaryOp::Divide | BinaryOp::Remainder),
-        _ => false,
-    }
+fn rvalue_is_discardable(types: &[crate::Type], locals: &[crate::Local], value: &Rvalue) -> bool {
+    !crate::analysis::rvalue_may_fail(types, locals, value)
 }
 
 fn collect_block_reads(block: &Block, reads: &mut [u32]) {
@@ -3774,6 +3799,66 @@ mod tests {
     }
 
     #[test]
+    fn dead_value_pruning_scales_with_live_descriptors() {
+        let mut program = empty_program();
+        let array_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Array {
+            element: TypeId::new(0),
+            len: 1,
+        });
+        let slice_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Slice {
+            element: ScalarType::I32,
+            access: AccessMode::ReadOnly,
+        });
+
+        let mut helper = function("descriptor_user", FunctionKind::User);
+        for index in 0..128_u32 {
+            helper.params.push(crate::FunctionParam {
+                name: format!("values_{index}"),
+                ty: array_ty,
+                mode: PassingMode::ReadOnlyReference,
+                integer_range: None,
+            });
+            helper.locals.push(Local {
+                name: None,
+                ty: slice_ty,
+                integer_range: None,
+            });
+            helper.body.statements.push(Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(index)),
+                    value: Rvalue::MakeSlice {
+                        source: SliceSource::Place(Place {
+                            base: PlaceBase::Parameter(crate::ParameterId::new(index)),
+                            projections: Vec::new(),
+                        }),
+                        start: Value::Constant(ScalarValue::I32(0)),
+                        len: Value::Constant(ScalarValue::I32(1)),
+                        bounds: if index == 127 {
+                            BoundsMode::Checked
+                        } else {
+                            BoundsMode::Unchecked
+                        },
+                        access: AccessMode::ReadOnly,
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            });
+        }
+        program.functions.push(helper);
+
+        let stats = super::prune_dead_values_and_parameters(&mut program);
+        assert_eq!(stats.removed_dead_assignments, 127);
+        assert_eq!(stats.removed_locals, 127);
+        assert_eq!(stats.removed_function_parameters, 127);
+        assert_eq!(program.functions[2].params.len(), 1);
+        assert_eq!(program.functions[2].locals.len(), 1);
+        assert_eq!(program.functions[2].body.statements.len(), 1);
+        crate::validate_owned(program).expect("pruned descriptor function remains valid");
+    }
+
+    #[test]
     fn parameter_pruning_participates_in_the_optimization_fixed_point() {
         let mut program = empty_program();
         let mut helper = function("conditionally_uses_value", FunctionKind::User);
@@ -3887,7 +3972,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_propagation_collapses_long_dead_chains_before_the_fixed_point() {
+    fn copy_propagation_eliminates_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 
         let mut program = empty_program();
@@ -3926,8 +4011,8 @@ mod tests {
             stats.iterations <= 4,
             "copy chains should not require one cleanup round per link"
         );
-        assert_eq!(optimized.functions[1].locals.len(), 1);
-        assert_eq!(optimized.functions[1].body.statements.len(), 1);
+        assert!(optimized.functions[1].locals.is_empty());
+        assert!(optimized.functions[1].body.statements.is_empty());
 
         let fixed_point = optimized.as_program().clone();
         let (second, second_stats) = super::optimize(optimized.into_validated())

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use onda_frontend::ast::{BinaryOp, CallArg, Expr, Span, Stmt};
+use onda_frontend::ast::{CallArg, Expr, Span, Stmt};
 use onda_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
@@ -831,10 +831,48 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 return false;
             };
 
-            let stride = match target_field.ty {
-                TypedFieldType::Array(len) => len,
-                TypedFieldType::Scalar(_) => 1,
-                TypedFieldType::Tuple(ref elems) => elems.len(),
+            match &target_field.ty {
+                // Keep the structured form so lowering clamps the outer
+                // element and inner fixed-array selector independently.
+                TypedFieldType::Array(_) => return true,
+                TypedFieldType::Tuple(types) => {
+                    let Expr::Int { value, .. } = fidx else {
+                        errors.push(Diagnostic::semantic_span(
+                            "tuple field index must be a compile-time integer constant",
+                            loc,
+                        ));
+                        return false;
+                    };
+                    let Some(component) = usize::try_from(value)
+                        .ok()
+                        .filter(|component| *component < types.len())
+                    else {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "tuple field index {value} is out of bounds for {base}[...].{field} with {} elements",
+                                types.len()
+                            ),
+                            loc,
+                        ));
+                        return false;
+                    };
+                    *expr = Expr::Index {
+                        loc,
+                        base: format!("{base}.{field}.__{component}"),
+                        index: Box::new(idx),
+                    };
+                    return false;
+                }
+                TypedFieldType::Scalar(_) => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "field '{field}' of struct '{}' is not indexable",
+                            root_info.struct_name
+                        ),
+                        loc,
+                    ));
+                    return false;
+                }
                 TypedFieldType::Struct => {
                     errors.push(Diagnostic::semantic_span(
                         format!(
@@ -845,37 +883,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     ));
                     return false;
                 }
-            };
-
-            let flat_base = format!("{base}.{field}");
-            // Compute flattened index: idx * stride + fidx
-            let flat_index = if stride == 1 {
-                // For scalar fields: just use idx (fidx should be 0 or the only index)
-                Expr::Binary {
-                    loc: Span::ZERO,
-                    op: BinaryOp::Add,
-                    lhs: Box::new(idx),
-                    rhs: Box::new(fidx),
-                }
-            } else {
-                Expr::Binary {
-                    loc: Span::ZERO,
-                    op: BinaryOp::Add,
-                    lhs: Box::new(Expr::Binary {
-                        loc: Span::ZERO,
-                        op: BinaryOp::Mul,
-                        lhs: Box::new(idx),
-                        rhs: Box::new(Expr::int(stride as i64)),
-                    }),
-                    rhs: Box::new(fidx),
-                }
-            };
-
-            *expr = Expr::Index {
-                loc,
-                base: flat_base,
-                index: Box::new(flat_index),
-            };
+            }
         }
         _ => return true,
     }

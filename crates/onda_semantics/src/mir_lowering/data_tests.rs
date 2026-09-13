@@ -57,6 +57,64 @@ sample:
 }
 
 #[test]
+fn full_span_arguments_lower_directly() {
+    let program = compile(
+        r#"
+struct Note:
+  gain = 1.0
+  bins: f32[2]
+def evaluate(notes: Note[], weights: f32[]):
+  note = notes[0]
+  return note.gain * weights[0] + note.bins[0]
+init:
+  notes: Note[4]
+  weights: f32[4]
+sample:
+  out1 = evaluate(notes, weights)
+"#,
+    );
+    let process = program
+        .functions
+        .iter()
+        .find(|function| function.kind == onda_mir::FunctionKind::Process)
+        .expect("missing process function");
+    fn collect_slices(block: &MirBlock, slices: &mut Vec<(Value, Value)>) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign {
+                    value: Rvalue::MakeSlice { start, len, .. },
+                    ..
+                } => slices.push((*start, *len)),
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    collect_slices(then_block, slices);
+                    collect_slices(else_block, slices);
+                }
+                StatementKind::Loop { body } => collect_slices(body, slices),
+                _ => {}
+            }
+        }
+    }
+
+    let mut slices = Vec::new();
+    collect_slices(&process.body, &mut slices);
+    let mut spans = slices
+        .into_iter()
+        .map(|(start, len)| match (start, len) {
+            (Value::Constant(ScalarValue::I32(start)), Value::Constant(ScalarValue::I32(len))) => {
+                (start, len)
+            }
+            span => panic!("full-span argument was normalized through locals: {span:?}"),
+        })
+        .collect::<Vec<_>>();
+    spans.sort_unstable();
+    assert_eq!(spans, vec![(0, 4), (0, 4), (0, 8)]);
+}
+
+#[test]
 fn persistent_views_reject_expired_init_locals_and_pinning() {
     for binding in ["saved = temporary", "saved: Note[] = temporary[:]"] {
         let (declaration, read) = if binding.contains("[]") {
@@ -370,6 +428,83 @@ sample:
         !scratch_arrays.contains(&4096) && !scratch_arrays.contains(&12288),
         "fresh persistent initialization should not retain a full-size temporary: {scratch_arrays:?}"
     );
+}
+
+#[test]
+fn processor_declarations_construct_directly_in_planned_state() {
+    let program = compile(
+        r#"
+proc Voice:
+  init:
+    phase = 0.0
+    history: f32[128]
+  sample:
+    phase += 0.01
+    out1 = phase + history[0]
+
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+    );
+    let init = &program.functions[program.entry_points.init.index()];
+    assert!(init.locals.iter().all(|local| !local
+        .name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("__onda_data_"))));
+    assert!(program
+        .state
+        .iter()
+        .all(|slot| !slot.name.contains(".__onda_data_") && !slot.name.contains(".__onda_data")));
+}
+
+#[test]
+fn scalar_only_struct_array_broadcast_uses_leaf_fills() {
+    fn counts(block: &MirBlock) -> (usize, usize) {
+        block.statements.iter().fold((0, 0), |totals, statement| {
+            let nested = match &statement.kind {
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    let then_counts = counts(then_block);
+                    let else_counts = counts(else_block);
+                    (then_counts.0 + else_counts.0, then_counts.1 + else_counts.1)
+                }
+                StatementKind::Loop { body } => {
+                    let body = counts(body);
+                    (body.0 + 1, body.1)
+                }
+                _ => (0, 0),
+            };
+            (
+                totals.0 + nested.0,
+                totals.1
+                    + nested.1
+                    + usize::from(matches!(statement.kind, StatementKind::SliceFill { .. })),
+            )
+        })
+    }
+
+    let program = compile(
+        r#"
+struct Pair:
+  left = 1.0
+  right = 2.0
+init:
+  pairs: Pair[4096]
+sample:
+  out1 = pairs[0].left + pairs[4095].right
+"#,
+    );
+    let init = &program.functions[program.entry_points.init.index()];
+    assert_eq!(counts(&init.body), (0, 2));
+    assert!(init.locals.iter().all(|local| !matches!(
+        program.types[local.ty.index()],
+        MirType::Array { len: 4096, .. }
+    )));
 }
 
 #[test]
@@ -1314,20 +1449,17 @@ sample:
     };
     let small = compile(&source(4));
     let large = compile(&source(4096));
-    assert_eq!(small.state.len(), large.state.len());
     assert_eq!(small.functions.len(), large.functions.len());
-    assert_eq!(
-        small
+    let descriptor_count = |program: &onda_mir::Program| {
+        program
             .functions
             .iter()
-            .map(|function| function.locals.len())
-            .collect::<Vec<_>>(),
-        large
-            .functions
-            .iter()
-            .map(|function| function.locals.len())
-            .collect::<Vec<_>>()
-    );
+            .flat_map(|function| &function.locals)
+            .filter(|local| matches!(program.types[local.ty.index()], MirType::Slice { .. }))
+            .count()
+    };
+    assert!(descriptor_count(&small) > 0);
+    assert_eq!(descriptor_count(&small), descriptor_count(&large));
 }
 
 #[test]

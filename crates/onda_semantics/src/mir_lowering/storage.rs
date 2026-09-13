@@ -22,18 +22,23 @@ struct ReusableSlot {
     available_after: usize,
 }
 
-/// Fixed invocation arrays live in prepared instance scratch. Acyclic calls
-/// permit one frame per function. Compatible array slots are reused after all
-/// dependent values and views are dead; simultaneously live data remains disjoint.
+/// Small fixed arrays are deliberately left as entry-block locals: native
+/// backends can scalar-replace them, while moving them into instance state
+/// makes every element access observable memory traffic. Larger arrays live in
+/// prepared instance scratch so real-time stack use remains bounded.
+///
 /// Block/task-carried storage is already explicit state before this pass.
+/// Acyclic calls therefore permit one scratch frame per function. Compatible
+/// slots are reused after all dependent values and views are dead;
+/// simultaneously live data remains disjoint.
+const MAX_LOCAL_FIXED_ARRAY_BYTES: u64 = 64;
+
 pub(super) fn plan_fixed_scratch(
     program: &mut onda_mir::Program,
 ) -> Result<(), Vec<MirLoweringError>> {
     for (function_id, function) in program.functions.iter_mut().enumerate() {
         let mut slots = HashMap::new();
         let referenced = onda_mir::referenced_locals(&function.body);
-        let mut addressed = HashSet::new();
-        collect_slice_backing_locals(&function.body, &mut addressed);
         let mut lifetimes = vec![StorageLifetime::default(); function.locals.len()];
         let mut dependencies = Vec::new();
         collect_storage_lifetimes(
@@ -50,39 +55,28 @@ pub(super) fn plan_fixed_scratch(
             .enumerate()
             .filter_map(|(index, local)| {
                 let id = LocalId::new(index as u32);
-                let is_array = matches!(
-                    program.types.get(local.ty.index()),
-                    Some(MirType::Array { .. })
-                );
                 (referenced.contains(&id)
-                    && (is_array
-                        || matches!(
-                            program.types.get(local.ty.index()),
-                            Some(MirType::Scalar(_))
-                        ) && addressed.contains(&id)))
-                .then_some((id, local, is_array, lifetimes[index]))
+                    && fixed_array_bytes(&program.types, local.ty)
+                        .is_some_and(|bytes| bytes > MAX_LOCAL_FIXED_ARRAY_BYTES))
+                .then_some((id, local, lifetimes[index]))
             })
             .collect::<Vec<_>>();
         candidates
-            .sort_by_key(|(id, _, _, lifetime)| (lifetime.first.unwrap_or(usize::MAX), id.index()));
+            .sort_by_key(|(id, _, lifetime)| (lifetime.first.unwrap_or(usize::MAX), id.index()));
 
         let mut reusable = Vec::<ReusableSlot>::new();
-        for (local_id, local, is_array, lifetime) in candidates {
-            let state = if is_array {
-                reusable
-                    .iter_mut()
-                    .find(|slot| {
-                        slot.ty == local.ty
-                            && slot.integer_range == local.integer_range
-                            && slot.available_after < lifetime.first.unwrap_or(0)
-                    })
-                    .map(|slot| {
-                        slot.available_after = lifetime.last;
-                        slot.state
-                    })
-            } else {
-                None
-            };
+        for (local_id, local, lifetime) in candidates {
+            let state = reusable
+                .iter_mut()
+                .find(|slot| {
+                    slot.ty == local.ty
+                        && slot.integer_range == local.integer_range
+                        && slot.available_after < lifetime.first.unwrap_or(0)
+                })
+                .map(|slot| {
+                    slot.available_after = lifetime.last;
+                    slot.state
+                });
             let state = match state {
                 Some(state) => state,
                 None => {
@@ -105,14 +99,12 @@ pub(super) fn plan_fixed_scratch(
                         pinned: false,
                         integer_range: local.integer_range,
                     });
-                    if is_array {
-                        reusable.push(ReusableSlot {
-                            state,
-                            ty: local.ty,
-                            integer_range: local.integer_range,
-                            available_after: lifetime.last,
-                        });
-                    }
+                    reusable.push(ReusableSlot {
+                        state,
+                        ty: local.ty,
+                        integer_range: local.integer_range,
+                        available_after: lifetime.last,
+                    });
                     state
                 }
             };
@@ -123,6 +115,16 @@ pub(super) fn plan_fixed_scratch(
         }
     }
     Ok(())
+}
+
+fn fixed_array_bytes(types: &[MirType], ty: TypeId) -> Option<u64> {
+    let MirType::Array { element, len } = types.get(ty.index())? else {
+        return None;
+    };
+    let MirType::Scalar(element) = types.get(element.index())? else {
+        return None;
+    };
+    u64::from(*len).checked_mul(element.logical_byte_width())
 }
 
 fn collect_storage_lifetimes(
@@ -220,37 +222,6 @@ fn extend_backing_lifetimes(
         }
         if !changed {
             break;
-        }
-    }
-}
-
-fn collect_slice_backing_locals(block: &MirBlock, locals: &mut HashSet<LocalId>) {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign {
-                value:
-                    Rvalue::MakeSlice {
-                        source:
-                            onda_mir::SliceSource::Place(Place {
-                                base: PlaceBase::Local(local),
-                                ..
-                            }),
-                        ..
-                    },
-                ..
-            } => {
-                locals.insert(*local);
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_slice_backing_locals(then_block, locals);
-                collect_slice_backing_locals(else_block, locals);
-            }
-            StatementKind::Loop { body } => collect_slice_backing_locals(body, locals),
-            _ => {}
         }
     }
 }

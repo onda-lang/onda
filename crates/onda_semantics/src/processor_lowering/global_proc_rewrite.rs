@@ -986,6 +986,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         if array_slot.is_none() {
                             let mut ctor_stmt = stmt.clone();
                             if let Stmt::Assign {
+                                is_typed_decl,
                                 expr:
                                     Expr::UserCall {
                                         type_args, args, ..
@@ -993,6 +994,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 ..
                             } = &mut ctor_stmt
                             {
+                                // This generated statement declares the
+                                // processor's already-planned aggregate state.
+                                // Preserve that ownership fact so MIR lowering
+                                // constructs directly in the final storage.
+                                *is_typed_decl = true;
                                 type_args.clear();
                                 args.clear();
                             }

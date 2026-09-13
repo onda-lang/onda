@@ -73,6 +73,40 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
+        self.lower_struct_array_element_alias_impl(
+            alias,
+            expression,
+            None,
+            block,
+            statement_location,
+        )
+    }
+
+    pub(super) fn lower_struct_array_field_alias(
+        &mut self,
+        alias: &str,
+        expression: &Expr,
+        field: &str,
+        block: &mut MirBlock,
+        statement_location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
+        self.lower_struct_array_element_alias_impl(
+            alias,
+            expression,
+            Some(field),
+            block,
+            statement_location,
+        )
+    }
+
+    fn lower_struct_array_element_alias_impl(
+        &mut self,
+        alias: &str,
+        expression: &Expr,
+        only_field: Option<&str>,
+        block: &mut MirBlock,
+        statement_location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
         let Some(source) = indexed_read_source(expression) else {
             return Ok(false);
         };
@@ -109,7 +143,11 @@ impl<'a> FunctionLowerer<'a> {
                 fields,
             }) = self.bindings.get(base).cloned()
             {
-                let length = self.struct_array_length_value(length, block, expression.loc());
+                let length = if source.access == IndexAccess::Clamp {
+                    self.struct_array_length_value(length, block, expression.loc())
+                } else {
+                    Value::Constant(ScalarValue::I32(0))
+                };
                 (struct_name, length, Some(fields), None)
             } else if let Some(Binding::ProcArrayParameter {
                 proc_name,
@@ -118,16 +156,21 @@ impl<'a> FunctionLowerer<'a> {
                 ..
             }) = self.bindings.get(base).cloned()
             {
-                let length = self.emit_temp(
-                    block,
-                    PrimitiveType::I32,
-                    Rvalue::Load(Place {
-                        base: PlaceBase::Parameter(length),
-                        projections: Vec::new(),
-                    }),
-                    expression.loc(),
-                );
-                (proc_name, length.value, Some(fields), None)
+                let length = if source.access == IndexAccess::Clamp {
+                    self.emit_temp(
+                        block,
+                        PrimitiveType::I32,
+                        Rvalue::Load(Place {
+                            base: PlaceBase::Parameter(length),
+                            projections: Vec::new(),
+                        }),
+                        expression.loc(),
+                    )
+                    .value
+                } else {
+                    Value::Constant(ScalarValue::I32(0))
+                };
+                (proc_name, length, Some(fields), None)
             } else if let Some(Binding::StructArrayStorage { struct_name, len }) =
                 self.bindings.get(base).cloned()
             {
@@ -178,12 +221,17 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         let shapes = self.struct_field_shapes(&struct_name, expression.loc())?;
+        let mut selected_field = false;
         for shape in shapes {
             let scalar = matches!(shape, StructFieldShape::Scalar { .. });
             let (field_name, element, width) = match shape {
                 StructFieldShape::Scalar { name, ty } => (name, ty, 1),
                 StructFieldShape::Array { name, element, len } => (name, element, len),
             };
+            if only_field.is_some_and(|only| only != field_name) {
+                continue;
+            }
+            selected_field = true;
             let slice = if let Some(fields) = &parameter_fields {
                 let (_, local, actual_element) = fields
                     .iter()
@@ -271,6 +319,16 @@ impl<'a> FunctionLowerer<'a> {
                     Binding::Slice(window, element, access, Some(width)),
                 );
             }
+        }
+
+        if let Some(field) = only_field {
+            if !selected_field {
+                return Err(self.error(
+                    format!("struct-array element has no canonical field '{field}'"),
+                    expression.loc(),
+                ));
+            }
+            return Ok(true);
         }
 
         if let Some(declarations) = self.structs.get(&struct_name).cloned() {

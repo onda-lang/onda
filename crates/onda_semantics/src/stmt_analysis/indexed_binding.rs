@@ -78,27 +78,20 @@ pub(crate) fn indexed_assignment_element_type(
                 .get(root)
                 .map(|info| (info.proc_name.as_str(), true))
         })?;
-    let field = if let Some(field) = resolve_struct_field_decl(struct_name, field_path, struct_defs)
-    {
-        field
-    } else {
+    if !indexes_struct_element {
+        return resolve_indexed_struct_field_scalar_type(
+            struct_name,
+            field_path,
+            index,
+            struct_defs,
+        );
+    }
+    let Some(field) = resolve_struct_field_decl(struct_name, field_path, struct_defs) else {
         return resolve_flattened_struct_array_leaf_type(struct_name, field_path, struct_defs);
     };
-    if indexes_struct_element {
-        return match field.ty {
-            TypedFieldType::Scalar(ty) => Some(ty),
-            TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
-        };
-    }
-    match &field.ty {
-        TypedFieldType::Array(_) => field.array_elem_ty,
-        TypedFieldType::Tuple(types) => match index {
-            Expr::Int { value, .. } => usize::try_from(*value)
-                .ok()
-                .and_then(|index| types.get(index).copied()),
-            _ => None,
-        },
-        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
+    match field.ty {
+        TypedFieldType::Scalar(ty) => Some(ty),
+        TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
     }
 }
 
@@ -112,6 +105,9 @@ pub(crate) fn validate_struct_array_member_assignment(
     target_loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
+    if validate_indexed_struct_field_assignment(target, value, env, target_loc, errors) {
+        return true;
+    }
     let AssignTarget::IndexedMember {
         base,
         index,
@@ -154,6 +150,7 @@ pub(crate) fn validate_struct_array_member_assignment(
                 validate_expected_data(
                     value,
                     &DataType::Struct(element.clone()),
+                    "indexed field replacement",
                     env,
                     target_loc,
                     errors,
@@ -171,34 +168,12 @@ pub(crate) fn validate_struct_array_member_assignment(
             }
         }
         (Some(field_index), TypedFieldType::Tuple(types)) => {
-            validate_expr(field_index, env, errors);
-            let Expr::Int { value: raw, .. } = field_index else {
-                errors.push(Diagnostic::semantic_span(
-                    "tuple field index must be a compile-time integer constant",
-                    field_index.loc(),
-                ));
-                return true;
-            };
-            let Some(expected) = usize::try_from(*raw)
-                .ok()
-                .and_then(|index| types.get(index))
-                .copied()
-            else {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "tuple field index {raw} is out of bounds for '{base}[...].{field}' with {} elements",
-                        types.len()
-                    ),
-                    field_index.loc(),
-                ));
-                return true;
-            };
-            validate_expr(value, env, errors);
-            require_expr_assignable_type(
+            validate_tuple_field_element_assignment(
+                field_index,
                 value,
-                infer_call_argument_scalar_type(value, env),
-                expected,
-                &format!("assignment to '{base}[...].{field}[{raw}]'"),
+                types,
+                &format!("{base}[...].{field}"),
+                env,
                 errors,
             );
         }
@@ -219,6 +194,7 @@ pub(crate) fn validate_struct_array_member_assignment(
             validate_expected_data(
                 value,
                 &DataType::Array { element, len: *len },
+                "indexed field replacement",
                 env,
                 target_loc,
                 errors,
@@ -229,6 +205,7 @@ pub(crate) fn validate_struct_array_member_assignment(
                 validate_expected_data(
                     value,
                     &DataType::Struct(name.clone()),
+                    "indexed field replacement",
                     env,
                     target_loc,
                     errors,
@@ -259,6 +236,89 @@ pub(crate) fn validate_struct_array_member_assignment(
     true
 }
 
+fn validate_indexed_struct_field_assignment(
+    target: &AssignTarget,
+    value: &Expr,
+    env: ExprEnv<'_>,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let AssignTarget::Index { base, index } = target else {
+        return false;
+    };
+    let Some((root, field)) = split_root_field_path(base) else {
+        return false;
+    };
+    let Some(struct_name) = env
+        .struct_instances
+        .get(root)
+        .or_else(|| env.param_structs.get(root))
+    else {
+        return false;
+    };
+    let Some(field_decl) = resolve_struct_field_decl(struct_name, field, env.struct_defs) else {
+        errors.push(Diagnostic::semantic_span(
+            format!("struct '{struct_name}' has no field '{field}'"),
+            target_loc,
+        ));
+        return true;
+    };
+    match &field_decl.ty {
+        TypedFieldType::Tuple(types) => {
+            validate_tuple_field_element_assignment(index, value, types, field, env, errors);
+            true
+        }
+        TypedFieldType::Scalar(_) | TypedFieldType::Struct => {
+            errors.push(Diagnostic::semantic_span(
+                format!("field '{field}' of struct '{struct_name}' is not indexable"),
+                target_loc,
+            ));
+            true
+        }
+        TypedFieldType::Array(_) => false,
+    }
+}
+
+fn validate_tuple_field_element_assignment(
+    index: &Expr,
+    value: &Expr,
+    types: &[PrimitiveType],
+    field: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    validate_expr(index, env, errors);
+    let Expr::Int { value: raw, .. } = index else {
+        errors.push(Diagnostic::semantic_span(
+            "tuple field index must be a compile-time integer constant",
+            index.loc(),
+        ));
+        return;
+    };
+    let Some(expected) = usize::try_from(*raw)
+        .ok()
+        .and_then(|index| types.get(index))
+        .copied()
+    else {
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "tuple field index {raw} is out of bounds for '{field}' with {} elements",
+                types.len()
+            ),
+            index.loc(),
+        ));
+        return;
+    };
+    validate_expr(value, env, errors);
+    require_expr_assignable_type(
+        value,
+        infer_call_argument_scalar_type(value, env),
+        expected,
+        &format!("assignment to '{field}[{raw}]'"),
+        errors,
+    );
+}
+
 fn validate_numeric_selector(
     selector: &Expr,
     context: &str,
@@ -274,18 +334,19 @@ fn validate_numeric_selector(
     );
 }
 
-fn validate_expected_data(
+pub(crate) fn validate_expected_data(
     value: &Expr,
     expected: &DataType,
+    context: &str,
     env: ExprEnv<'_>,
     target_loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let actual = infer_fixed_data_type(value, env);
+    let actual = infer_data_value_type(value, env);
     if actual.as_ref() != Some(expected) {
         errors.push(Diagnostic::semantic_span(
             format!(
-                "indexed field replacement {}",
+                "{context} {}",
                 data_type_mismatch(expected, actual.as_ref())
             ),
             target_loc,

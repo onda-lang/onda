@@ -3715,36 +3715,32 @@ pub fn analyze_with_options_and_inputs(
     let def_global_outputs = HashSet::<String>::new();
     let def_global_params = HashSet::<String>::new();
     let mut def_scalar_local_types = HashMap::<String, LocalAliasTypes>::new();
+    let def_function_symbols = declared_symbols
+        .iter()
+        .filter_map(|(name, info)| match info {
+            DeclaredSymbolInfo::FunctionReturn { .. } => Some((name.clone(), info.clone())),
+            _ => None,
+        })
+        .collect::<DeclaredSymbolMap>();
     for def in defs.iter_mut().filter(|def| {
         !runtime_def_names.contains(&def.name)
             && (reachable_def_names.contains(&def.name)
                 || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs))
     }) {
         let def_error_start = errors.len();
-        let def_param_names = def
+        let fn_known = def
             .params
             .iter()
             .map(|p| p.name.clone())
             .collect::<HashSet<_>>();
         let mut def_io_surface_names = io_surface_names.clone();
         let mut def_io_surface_array_names = io_surface_array_names.clone();
-        for param in &def_param_names {
+        for param in &fn_known {
             def_io_surface_names.remove(param);
             def_io_surface_array_names.remove(param);
         }
-        let fn_known = def
-            .params
-            .iter()
-            .map(|p| p.name.clone())
-            .collect::<HashSet<_>>();
         let mut def_state_scalars = HashMap::<String, PrimitiveType>::new();
-        let mut def_declared_symbols = declared_symbols
-            .iter()
-            .filter_map(|(name, info)| match info {
-                DeclaredSymbolInfo::FunctionReturn { .. } => Some((name.clone(), info.clone())),
-                _ => None,
-            })
-            .collect::<DeclaredSymbolMap>();
+        let mut def_declared_symbols = def_function_symbols.clone();
         let fn_sig = fn_signatures.get(&def.name);
         // Def parameters are function-local and should be visible for local
         // type inference even though top-level runtime symbols are not.

@@ -45,7 +45,6 @@ block:
 
 Take a look at the `examples/` folder for more usage examples.
 
-
 ## Precompiled releases
 
 [GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages
@@ -292,9 +291,9 @@ interface layouts. See the native raw-object example for a complete link command
 
 ## Editor support
 
-### VSCode
+### VS Code
 
-The VSCode extension lives in the standalone [`onda-lang/onda-vscode`](https://github.com/onda-lang/onda-vscode) repository.
+The VS Code extension lives in the standalone [`onda-lang/onda-vscode`](https://github.com/onda-lang/onda-vscode) repository.
 It provides:
 - `.onda` and `.on` language registration
 - builtin LSP through `onda lsp`

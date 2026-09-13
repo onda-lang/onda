@@ -269,69 +269,57 @@ impl CallTypeEnv {
     /// through a branch. Numeric scalars and tuple elements use the same join
     /// rule as return inference and MIR branch lowering.
     pub(crate) fn intersect_with(&mut self, other: &Self) {
-        let common_bindings = self
-            .binding_names()
-            .intersection(&other.binding_names())
-            .cloned()
-            .collect::<HashSet<_>>();
-        self.scalar_types = self
-            .scalar_types
-            .iter()
-            .filter_map(|(name, lhs)| {
-                let rhs = other.scalar_types.get(name)?;
-                merge_inferred_return_types(*lhs, *rhs).map(|ty| (name.clone(), ty))
-            })
-            .collect();
-        self.struct_instances
-            .retain(|name, ty| other.struct_instances.get(name) == Some(ty));
-        self.array_types
-            .retain(|name, ty| other.array_types.get(name) == Some(ty));
-        let common_buffer_types = self
-            .buffer_types
-            .iter()
-            .filter_map(|(name, ty)| {
-                (other.buffer_types.get(name) == Some(ty)
-                    && self.buffer_array_lens.get(name) == other.buffer_array_lens.get(name))
-                .then_some(name.clone())
-            })
-            .collect::<HashSet<_>>();
-        self.buffer_types
-            .retain(|name, _| common_buffer_types.contains(name));
-        self.buffer_array_lens
-            .retain(|name, _| common_buffer_types.contains(name));
-        self.tuple_elem_types = self
-            .tuple_elem_types
-            .iter()
-            .filter_map(|(name, lhs)| {
-                let rhs = other.tuple_elem_types.get(name)?;
-                if lhs.len() != rhs.len() {
-                    return None;
-                }
-                lhs.iter()
-                    .zip(rhs)
-                    .map(|(lhs, rhs)| merge_inferred_return_types(*lhs, *rhs))
-                    .collect::<Option<Vec<_>>>()
-                    .map(|types| (name.clone(), types))
-            })
-            .collect();
+        let mut common_bindings = std::mem::take(&mut self.unresolved_bindings);
+        common_bindings.retain(|name| other.has_binding(name));
+        let mut retain_or_mark_unresolved = |name: &str, resolved: bool| {
+            if !resolved && other.has_binding(name) {
+                common_bindings.insert(name.to_owned());
+            }
+            resolved
+        };
 
-        self.unresolved_bindings = common_bindings
-            .into_iter()
-            .filter(|name| !self.has_concrete_binding(name))
-            .collect();
-    }
+        self.scalar_types.retain(|name, lhs| {
+            let merged = other
+                .scalar_types
+                .get(name)
+                .and_then(|rhs| merge_inferred_return_types(*lhs, *rhs));
+            if let Some(merged) = merged {
+                *lhs = merged;
+            }
+            retain_or_mark_unresolved(name, merged.is_some())
+        });
+        self.struct_instances.retain(|name, ty| {
+            retain_or_mark_unresolved(name, other.struct_instances.get(name) == Some(ty))
+        });
+        self.array_types.retain(|name, ty| {
+            retain_or_mark_unresolved(name, other.array_types.get(name) == Some(ty))
+        });
+        self.buffer_types.retain(|name, ty| {
+            let resolved = other.buffer_types.get(name) == Some(ty)
+                && self.buffer_array_lens.get(name) == other.buffer_array_lens.get(name);
+            retain_or_mark_unresolved(name, resolved)
+        });
+        self.buffer_array_lens.retain(|name, _| {
+            retain_or_mark_unresolved(name, self.buffer_types.contains_key(name))
+        });
+        self.tuple_elem_types.retain(|name, lhs| {
+            let Some(rhs) = other.tuple_elem_types.get(name) else {
+                return retain_or_mark_unresolved(name, false);
+            };
+            if lhs.len() != rhs.len() {
+                return retain_or_mark_unresolved(name, false);
+            }
+            for (lhs, rhs) in lhs.iter_mut().zip(rhs) {
+                let Some(merged) = merge_inferred_return_types(*lhs, *rhs) else {
+                    return retain_or_mark_unresolved(name, false);
+                };
+                *lhs = merged;
+            }
+            true
+        });
 
-    fn binding_names(&self) -> HashSet<String> {
-        self.unresolved_bindings
-            .iter()
-            .chain(self.scalar_types.keys())
-            .chain(self.struct_instances.keys())
-            .chain(self.array_types.keys())
-            .chain(self.buffer_types.keys())
-            .chain(self.buffer_array_lens.keys())
-            .chain(self.tuple_elem_types.keys())
-            .cloned()
-            .collect()
+        common_bindings.retain(|name| !self.has_concrete_binding(name));
+        self.unresolved_bindings = common_bindings;
     }
 
     fn has_concrete_binding(&self, name: &str) -> bool {
@@ -628,6 +616,20 @@ pub(crate) fn infer_scalar_expr_type(
                                 return Some(elem_ty);
                             }
                         }
+                    }
+                    if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+                        let (base, _, field, field_index) =
+                            crate::array_structs::extract_safi_args(args)?;
+                        let array_ty = infer_array_symbol_type(&base, env, context)?;
+                        let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
+                            return None;
+                        };
+                        return resolve_indexed_struct_field_scalar_type(
+                            &struct_name,
+                            &field,
+                            &field_index,
+                            context.struct_defs,
+                        );
                     }
                     if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
                         let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;

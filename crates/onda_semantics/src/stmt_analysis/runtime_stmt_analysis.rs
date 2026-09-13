@@ -1191,7 +1191,7 @@ fn analyze_flow_assignment(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             let aggregate_target_ty = indexed_assignment_element_type(
                 target,
-                struct_instances,
+                &visible_struct_instances,
                 state_array_struct_roots,
                 local_array_aliases,
                 proc_array_roots,
@@ -1670,6 +1670,23 @@ fn analyze_flow_assignment(
                         return;
                     }
                 }
+            }
+            if !is_typed_decl
+                && decl_ty.is_none()
+                && generic_decl_ty.is_none()
+                && matches!(
+                    infer_data_value_type(expr, scope_expr_env!()),
+                    Some(DataType::Struct(_))
+                )
+                && validate_fixed_data_binding_replacement(
+                    name,
+                    expr,
+                    scope_expr_env!(),
+                    target_loc,
+                    errors,
+                )
+            {
+                return;
             }
             let fixed_data = infer_data_initializer_type(expr, decl_ty.as_ref(), scope_expr_env!());
             // A literal captures new contents in the destination's element context.
