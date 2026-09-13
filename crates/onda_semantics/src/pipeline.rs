@@ -3197,6 +3197,8 @@ pub fn analyze_with_options_and_inputs(
         &events,
         &mut fn_signatures,
         &function_env_seed,
+        &runtime_function_env,
+        &runtime_def_names,
         &struct_defs,
         &mut errors,
     );

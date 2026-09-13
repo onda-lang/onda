@@ -1587,6 +1587,29 @@ sample:
 }
 
 #[test]
+fn message_payloads_copy_into_existing_owner_storage() {
+    compile(
+        r#"
+struct Note:
+  value = 1.0
+init:
+  saved: Note
+  source: Note
+delegate changed(note: Note)
+when changed(note):
+  saved = note
+  saved.value = 2.0
+event configure(note: Note):
+  saved = note
+  saved.value = 3.0
+sample:
+  changed(source)
+  out1 = saved.value
+"#,
+    );
+}
+
+#[test]
 fn nominal_event_payloads_borrow_canonical_fixed_tensors() {
     compile(
         r#"

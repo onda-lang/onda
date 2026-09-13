@@ -318,7 +318,9 @@ pub(super) fn update_readonly_data_param_signatures(
     defs: &[FunctionDef],
     events: &[EventDef],
     signatures: &mut HashMap<String, FnSignature>,
-    seed: &CallTypeEnv,
+    lexical_seed: &CallTypeEnv,
+    owner_seed: &CallTypeEnv,
+    runtime_def_names: &HashSet<String>,
     structs: &HashMap<String, Vec<TypedStructField>>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -373,6 +375,7 @@ pub(super) fn update_readonly_data_param_signatures(
         let mut changed = false;
         for def in defs {
             let signature = &signatures[&def.name];
+            let seed = def_call_type_env(def, runtime_def_names, lexical_seed, owner_seed);
             let mut env = ReferenceEnv::for_parameters(seed, signature, &candidates[&def.name]);
             let mut analysis = PermissionAnalysis {
                 signatures,
@@ -416,7 +419,7 @@ pub(super) fn update_readonly_data_param_signatures(
     for event in events {
         let signature = FnSignature::from_event_params(&event.params);
         let candidates = signature.params.iter().cloned().collect();
-        let mut env = ReferenceEnv::for_parameters(seed, &signature, &candidates);
+        let mut env = ReferenceEnv::for_parameters(owner_seed, &signature, &candidates);
         let mut analysis = PermissionAnalysis {
             signatures,
             readonly: &readonly,
