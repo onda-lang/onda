@@ -1,0 +1,211 @@
+import std/fft
+import std/lookup
+import std/random
+
+namespace PaulStretch<N = 8192, Overlap = 4>:
+  assert(N > 1 && (N & (N - 1)) == 0)
+  assert(Overlap > 1 && N % Overlap == 0)
+
+  const BinCount = (N >> 1) + 1
+  const SynthesisHop = N / Overlap
+
+  struct TimeFrame:
+    samples: f32[N]
+
+  struct MagnitudeFrame:
+    magnitudes: f32[BinCount]
+
+  struct StereoSpectrum:
+    real_l: f32[BinCount]
+    imag_l: f32[BinCount]
+    real_r: f32[BinCount]
+    imag_r: f32[BinCount]
+
+  # Reads one analysis frame from an independently moving source playhead.
+  # The frame request is synchronous; stretch only controls source advancement.
+  proc Reader:
+    buffers:
+      source: f32[]
+
+    init:
+      frame: TimeFrame
+      playhead = 0.0
+
+    delegate ready(frame: TimeFrame)
+
+    event seek(position: f32):
+      playhead = clamp(position, 0.0, 1.0) * f32(source.len() - 1)
+
+    event read(stretch: f32):
+      source_frames = source.len()
+      source_step = source.samplerate() / SR
+
+      if source.bound():
+        for i in 0..N:
+          position = playhead + f32(i) * source_step
+          frame.samples[i] = std::lookup::readCW(source, 0, position)
+
+        analysis_hop = f32(SynthesisHop) * source_step / max(stretch, 1.0)
+        playhead = wrap(playhead + analysis_hop, 0.0, f32(source_frames))
+      else:
+        frame.samples[:] = 0.0
+
+      ready(frame)
+
+  # Converts a time-domain frame into the slowly varying information that
+  # PaulStretch preserves: its windowed spectral magnitudes.
+  proc Analyzer:
+    init:
+      transform = std::fft<N>::STFT()
+      output: MagnitudeFrame
+
+    delegate ready(frame: MagnitudeFrame)
+
+    event analyze(frame: TimeFrame):
+      transform.forward_real(frame.samples)
+      for k in 0..BinCount:
+        output.magnitudes[k] = transform.magnitude(k)
+      ready(output)
+
+  # Replaces phase while retaining a smoothed spectral envelope. Independent
+  # stereo phase offsets turn the stretched result into a diffuse sound field.
+  proc PhaseRandomizer:
+    init:
+      rng = std::random::Rng()
+      previous: f32[BinCount]
+      output: StereoSpectrum
+      initialized = false
+
+    delegate ready(frame: StereoSpectrum)
+
+    event reset():
+      rng.seed(1)
+      previous[:] = 0.0
+      initialized = false
+
+    event process(frame: MagnitudeFrame, blur: f32, width: f32):
+      smoothing = clamp(blur, 0.0, 1.0) * 0.82
+      stereo_width = clamp(width, 0.0, 1.0)
+
+      output.real_l[:] = 0.0
+      output.imag_l[:] = 0.0
+      output.real_r[:] = 0.0
+      output.imag_r[:] = 0.0
+
+      for k in 1..(BinCount - 1):
+        magnitude = frame.magnitudes[k]
+        if initialized:
+          magnitude = magnitude + (previous[k] - magnitude) * smoothing
+        previous[k] = magnitude
+
+        center_phase = rng.range(-PI, PI)
+        side_phase = rng.range(-PI, PI) * stereo_width
+        phase_l = center_phase + side_phase
+        phase_r = center_phase - side_phase
+        output.real_l[k] = cos(phase_l) * magnitude
+        output.imag_l[k] = sin(phase_l) * magnitude
+        output.real_r[k] = cos(phase_r) * magnitude
+        output.imag_r[k] = sin(phase_r) * magnitude
+
+      # Suppress DC and Nyquist rather than imposing a fixed positive phase.
+      previous[0] = frame.magnitudes[0]
+      previous[BinCount - 1] = frame.magnitudes[BinCount - 1]
+      initialized = true
+      ready(output)
+
+  # Inverse transforms arrive as events. The sample body only drains the
+  # normalized overlap-add ring, independently of how the spectrum was made.
+  proc Synthesis:
+    init:
+      transform_l = std::fft<N>::RealTransform()
+      transform_r = std::fft<N>::RealTransform()
+      time_l: f32[N]
+      time_r: f32[N]
+      output_l: f32[N]
+      output_r: f32[N]
+      normalization: f32[N]
+      cursor = 0 {N, wrap}
+      submitted_frames = 0
+
+    event reset():
+      transform_l.clear()
+      transform_r.clear()
+      time_l[:] = 0.0
+      time_r[:] = 0.0
+      output_l[:] = 0.0
+      output_r[:] = 0.0
+      normalization[:] = 0.0
+      cursor = 0
+      submitted_frames = 0
+
+    event submit(frame: StereoSpectrum):
+      transform_l.inverse(frame.real_l, frame.imag_l, time_l)
+      transform_r.inverse(frame.real_r, frame.imag_r, time_r)
+
+      for i in 0..N:
+        destination = (cursor + i) % N
+        window = f32(std::fft<N>::Hann[i])
+        output_l[destination] += time_l[i] * window
+        output_r[destination] += time_r[i] * window
+        normalization[destination] += window * window
+
+      if submitted_frames < Overlap:
+        submitted_frames += 1
+
+    sample:
+      left = 0.0
+      right = 0.0
+      weight = normalization[cursor]
+      if submitted_frames >= Overlap && weight > 0.000001:
+        left = output_l[cursor] / weight
+        right = output_r[cursor] / weight
+
+      output_l[cursor] = 0.0
+      output_r[cursor] = 0.0
+      normalization[cursor] = 0.0
+      cursor += 1
+      out1 = left
+      out2 = right
+
+  proc Engine:
+    buffers:
+      source: f32[]
+
+    params:
+      stretch = 12.0
+      position = 0.0 {0.0, 1.0}
+      blur = 0.35
+      width = 0.8
+
+    init:
+      reader = Reader(source = source)
+      analyzer = Analyzer()
+      randomizer = PhaseRandomizer()
+      synthesis = Synthesis()
+      until_frame = 0 {SynthesisHop, wrap}
+      previous_position = -1.0
+
+    event restart():
+      reader.seek(position)
+      randomizer.reset()
+      synthesis.reset()
+      until_frame = 0
+      previous_position = position
+
+    when reader.ready(frame):
+      analyzer.analyze(frame)
+
+    when analyzer.ready(frame):
+      randomizer.process(frame, blur, width)
+
+    when randomizer.ready(frame):
+      synthesis.submit(frame)
+
+    sample:
+      if until_frame == 0:
+        if position != previous_position:
+          reader.seek(position)
+          previous_position = position
+        reader.read(stretch)
+      until_frame += 1
+      out1, out2 = synthesis()

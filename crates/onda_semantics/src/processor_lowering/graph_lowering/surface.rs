@@ -83,6 +83,7 @@ pub(super) fn build_graph_proc_surfaces(
                     events: HashMap::new(),
                     delegates: HashMap::new(),
                     buffers: Vec::new(),
+                    steppable: true,
                     has_block: false,
                     sample_oversample_factor: 1,
                 },

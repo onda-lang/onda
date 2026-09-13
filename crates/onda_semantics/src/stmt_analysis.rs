@@ -39,12 +39,7 @@ pub(crate) struct ScopeFlowState {
 
 impl ScopeFlowState {
     pub(crate) fn shadow_binding(&mut self, root: &str) {
-        let keep = |name: &String| {
-            name != root
-                && !name
-                    .strip_prefix(root)
-                    .is_some_and(|suffix| suffix.starts_with(['.', '[']))
-        };
+        let keep = |name: &String| !path_is_within_root(name, root);
         self.known_scalars.retain(keep);
         self.local_aliases.retain(|name, _| keep(name));
         self.integer_ranges.retain(|name, _| keep(name));

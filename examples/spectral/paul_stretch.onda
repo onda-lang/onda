@@ -1,0 +1,22 @@
+import processors/paul_stretch
+
+buffers:
+  source: f32[]
+
+params:
+  stretch = 12.0 {1.0, 64.0, log, "x"}
+  position = 0.0 {0.0, 1.0, unit = "%"}
+  blur = 0.35 {0.0, 1.0}
+  width = 0.8 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
+
+init:
+  stretcher = PaulStretch::Engine(source = source)
+
+event restart():
+  stretcher.restart()
+
+sample:
+  left, right = stretcher(stretch = stretch, position = position, blur = blur, width = width)
+  out1 = tanh(left * level)
+  out2 = tanh(right * level)

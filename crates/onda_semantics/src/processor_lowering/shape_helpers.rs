@@ -2875,22 +2875,39 @@ pub(super) fn compute_proc_shape(
     init_st.known_scalars.extend(reserved.iter().cloned());
     analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);
     let init_flow = init_st.flow_state();
-    let init_bindings = persistent_init_bindings(
+    let mut init_bindings = persistent_init_bindings(
         &proc.init,
         &init_st,
         &proc.init.pinned_roots.iter().cloned().collect(),
         errors,
     );
     let mut state = convert_init_state_to_proc_fields(&init_st);
+    for root in &proc.init.compiler_scratch_roots {
+        init_bindings.shadow_binding(root);
+        state.remove_root(root);
+    }
 
     // Non-init scopes: unified runtime analysis via register_scope_state + runtime stmt analysis.
     let mut proc_state_scalars = init_st.state_scalars;
     let mut proc_declared_symbols = init_st.declared_symbols;
     let mut proc_state_arrays = init_st.state_arrays;
     let mut proc_state_array_struct_roots = init_st.state_array_struct_roots;
-    let proc_struct_instances = init_st.struct_instances;
+    let mut proc_struct_instances = init_st.struct_instances;
     let init_st_type_args = init_st.struct_instance_type_args;
     let mut proc_state_tuples = init_st.state_tuples;
+
+    let is_compiler_scratch = |name: &String| {
+        proc.init
+            .compiler_scratch_roots
+            .iter()
+            .any(|root| path_is_within_root(name, root))
+    };
+    proc_state_scalars.retain(|name, _| !is_compiler_scratch(name));
+    proc_declared_symbols.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_arrays.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_array_struct_roots.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_tuples.retain(|name, _| !is_compiler_scratch(name));
+    proc_struct_instances.retain(|name, _| !is_compiler_scratch(name));
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
 
     for (root, info) in proc_state_array_struct_roots.clone() {

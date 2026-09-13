@@ -53,6 +53,55 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
+fn selected_buffer_parameter_metadata_requires_an_assigned_selector() {
+    let mut program = empty_program();
+    let span_ty = TypeId::new(program.types.len() as u32);
+    program.types.push(Type::BufferSpan {
+        element: ScalarType::F32,
+        channels: BufferChannels::Mono,
+        access: AccessMode::ReadOnly,
+        len: 2,
+    });
+    let mut inspect = function("inspect", FunctionKind::User);
+    inspect.params.push(FunctionParam {
+        name: "buffers".to_owned(),
+        ty: span_ty,
+        mode: PassingMode::Value,
+        integer_range: None,
+    });
+    inspect.locals.extend([
+        Local {
+            name: Some("selector".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        },
+        Local {
+            name: Some("length".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        },
+    ]);
+    inspect.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place::local(LocalId::new(1)),
+            value: Rvalue::BufferParamLen(crate::BufferParamRef::ArrayElement {
+                span: crate::ParameterId::new(0),
+                selector: Value::Local(LocalId::new(0)),
+                bounds: crate::BoundsMode::Clamp,
+            }),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(inspect);
+
+    let errors = super::validate(&program).expect_err("selector must be definitely assigned");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("selector")
+            && error.message.contains("before it is definitely assigned")
+    }));
+}
+
+#[test]
 fn result_references_require_producer_proof_and_initialize_caller_storage() {
     let mut program = empty_program();
     let mut producer = function("produce", FunctionKind::User);

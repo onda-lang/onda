@@ -152,6 +152,8 @@ pub fn is_reserved_word(name: &str) -> bool {
 
 mod expr_stmt;
 use expr_stmt::*;
+mod place_parsing;
+use place_parsing::*;
 
 mod block_parsing;
 use block_parsing::*;

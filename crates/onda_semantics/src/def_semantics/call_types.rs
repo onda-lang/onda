@@ -577,6 +577,13 @@ pub(crate) fn infer_scalar_expr_type(
                         .and_then(|index| tuple_elems.get(index).copied())
                 }
                 Expr::UserCall { name, args, .. } => {
+                    if let Some(result) = name
+                        .strip_prefix(crate::internal_names::PROC_INDEX_CALL_SENTINEL)
+                        .and_then(|suffix| suffix.strip_prefix('.'))
+                        .and_then(builtin_instance_method_return_type)
+                    {
+                        return Some(result);
+                    }
                     if let Some(base) = parse_array_len_instance_base(name) {
                         if infer_array_symbol_type(base, env, context).is_some()
                             || env.buffer_types.contains_key(base)

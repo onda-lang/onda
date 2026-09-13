@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 use onda_frontend::{BuiltinFn, Diagnostic, Expr, PrimitiveType};
 
 use crate::builtins::{
-    builtin_constant_type, builtin_name, is_builtin_buffer_write_function_name, is_float_type,
-    is_internal_buffer_2d_fn, parse_array_len_instance_base, parse_buffer_bound_instance_base,
-    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, ARRAY_LEN_METHOD,
-    BUFFER_BOUND_METHOD, BUFFER_CHANS_METHOD, BUFFER_SAMPLERATE_METHOD,
+    builtin_constant_type, builtin_instance_method_return_type, builtin_name,
+    is_builtin_buffer_write_function_name, is_float_type, is_internal_buffer_2d_fn,
+    parse_array_len_instance_base, parse_buffer_bound_instance_base,
+    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base,
 };
 use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
@@ -616,14 +616,8 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         .strip_prefix(PROC_INDEX_CALL_SENTINEL)
                         .and_then(|suffix| suffix.strip_prefix('.'))
                     {
-                        if matches!(method, ARRAY_LEN_METHOD | BUFFER_CHANS_METHOD) {
-                            return Some(PrimitiveType::I32);
-                        }
-                        if method == BUFFER_BOUND_METHOD {
-                            return Some(PrimitiveType::Bool);
-                        }
-                        if method == BUFFER_SAMPLERATE_METHOD {
-                            return Some(PrimitiveType::F32);
+                        if let Some(ty) = builtin_instance_method_return_type(method) {
+                            return Some(ty);
                         }
                     }
                     if let Some(ty) = declared_symbol_scalar_type(declared_symbols, name) {

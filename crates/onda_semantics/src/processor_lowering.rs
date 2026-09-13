@@ -1280,14 +1280,10 @@ fn build_proc_lowering_env(
         let proc_diag = DiagCtx::new(proc.loc);
         match proc.outs_timing {
             OutputTiming::Sample => {
-                if !proc.has_sample_block {
+                if proc.has_block_block && !proc.has_sample_block {
                     errors.push(
                         proc_diag
-                            .semantic(
-                                format!("processor '{}' must declare sample block", proc.name),
-                                0,
-                                0,
-                            )
+                            .semantic(format!("audio-rate processor '{}' block must contain a nested sample section", proc.name), 0, 0)
                             .compiler_only(),
                     );
                 }
@@ -1368,17 +1364,6 @@ fn build_proc_lowering_env(
                 });
             }
         }
-        if shape.outs.is_empty() {
-            push_semantic(
-                proc_diag,
-                errors,
-                format!(
-                    "processor '{}' must declare outs/kouts block, assign to outN in sample, or assign to koutN in block",
-                    proc.name
-                ),
-            );
-            continue;
-        }
         let params = shape
             .param_specs
             .iter()
@@ -1399,6 +1384,7 @@ fn build_proc_lowering_env(
                 events: expand_proc_event_specs(proc, &shape.param_specs, options, errors),
                 delegates: expand_proc_delegate_specs(proc, options, errors),
                 buffers: shape.buffer_specs.clone(),
+                steppable: proc.has_sample_block || proc.has_block_block,
                 has_block: proc.has_block_block,
                 sample_oversample_factor: proc_sample_oversample_factors
                     .get(&proc.name)

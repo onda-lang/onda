@@ -825,6 +825,7 @@ fn analyze_assign_init(
                 && !st.local_array_aliases.contains_key(base)
                 && !is_declared_data_array_symbol(&st.declared_symbols, base)
                 && !has_declared_buffer_symbol_info(&st.declared_symbols, base)
+                && !is_proc_array_member_base(base, &st.nested_proc_arrays)
                 && aggregate_target_ty.is_none()
             {
                 target_error!(format!(

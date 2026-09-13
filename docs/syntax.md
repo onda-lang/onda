@@ -472,10 +472,11 @@ On the first sample these statements store `0.01`, `7`, `0.5`, `2.0`, and `1`
 respectively.
 
 Arithmetic compound operators are `+=`, `-=`, `*=`, `/=`, and `%=`. Integer
-bindings additionally support `&=`, `|=`, `^=`, `<<=`, and `>>=`. Compound
-assignment currently works only with a variable or field path. Indexed and
-slice targets require an ordinary assignment such as
-`values[i] = values[i] + amount`.
+bindings additionally support `&=`, `|=`, `^=`, `<<=`, and `>>=`. Every writable
+scalar place supports the matching compound operators, including array elements,
+slice elements, buffer coordinates, and arbitrarily nested struct/array paths such
+as `state.phase[voice()].settings.gains[channel()] += amount`. Place selectors are
+evaluated exactly once, from left to right, before the right-hand side.
 
 Integer locals, state, and scalar struct fields may carry a finite storage domain:
 
@@ -1341,30 +1342,30 @@ sample:
 ```
 
 The same target resolution applies in every executable scope, including `init`, block, `sample`,
-event, task, proc, and def bodies. The usual storage permissions and rate-specific output rules
-still apply. Target selectors are evaluated exactly once, from left to right, before the assigned
-value. Assigning the field itself uses the ordinary scalar, tuple, fixed-array, or struct
+event, task, proc, and def bodies. Assignment targets may continue through any combination of
+named fields and fixed-array indices after the first struct-array selection, for example
+`state.phases[i].settings.bands[j].gain += amount`. The usual storage permissions and
+rate-specific output rules still apply. Target selectors are evaluated exactly once, from left to
+right, before the assigned value. Assigning the field itself uses the ordinary scalar, tuple, fixed-array, or struct
 replacement rules. If the field is an array or tuple, an index after the field selects one of its
 elements. For example, `voices[i].taps[j] = 0.5` selects voice `i`, then element `j` of that voice's
 `taps` field. Fixed-array fields accept runtime numeric selectors. Tuple fields are heterogeneous,
 so their selector must be a compile-time integer constant; the selected component keeps its own
 declared type.
 
-Accepted forms:
+Common forms:
 
 - `named.path[idx].field`
 - `named.path[idx].field[element_idx]`
+- `named.path[idx].field.other[element_idx]`
+- `named.path[idx].field[element_idx].other[leaf_idx]`
 
 The path before `[idx]` can cross ordinary named struct fields, as in
 `current.notes[0].velocity`. The index is what crosses the struct-array boundary; spelling
 `current.notes.velocity[0]` is not the source-level structural model.
 
-Deeper inline chains are rejected:
-
-- `base[idx].field.other`
-- `base[idx].field[fidx].other`
-
-Use an intermediate alias for deeper access:
+Expression reads still use one inline field-access dot. Use an intermediate alias
+when reading a deeper path:
 
 ```onda
 sample:
@@ -1577,9 +1578,12 @@ proc Gain:
 ```
 
 A proc uses the same `const`, `ins`, `params`, `buffers`, `outs`, `kouts`,
-`init`, `sample`, and `block` forms as the top level. A proc normally has
-one execution body: `sample`, `block`, or `graph`. Proc events, delegates,
-and tasks are introduced after ordinary construction and calls are clear.
+`init`, `sample`, and `block` forms as the top level. A processing proc has a
+`sample`, `block`, or `graph` section. A proc may instead omit all three and
+serve through its state, resources, events, delegates, tasks, and helper defs.
+Such an event-only proc can be constructed and receive messages, but cannot be
+stepped with `instance(...)`. Any declared audio outputs start at their implicit
+zero value.
 
 ### Proc Inputs, Params, Outputs, and Buffers
 
@@ -1672,6 +1676,8 @@ Rules:
 - For `kouts` procs, use `kout1` or named control outputs.
 - A sample-rate proc step may be called only from sample-rate code. A block-rate `kouts` proc step
   may be called only from block code (or from a task, which advances at block rate).
+- A proc with no `sample`, `block`, or `graph` section cannot be stepped, even if it declares
+  outputs. It remains usable through its events and delegates.
 - Calling a child steps it. Reading `g.out1` or `g.kout1` without `()` returns that child's most
   recently produced output and does not step it.
 

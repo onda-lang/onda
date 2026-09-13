@@ -1341,6 +1341,7 @@ fn analyze_flow_assignment(
                         || is_declared_data_array_symbol(declared_symbols, field)
                 })
                 && !has_declared_buffer_symbol_info(declared_symbols, base)
+                && !is_proc_array_member_base(base, proc_array_roots)
                 && aggregate_target_ty.is_none()
             {
                 target_error!(format!(

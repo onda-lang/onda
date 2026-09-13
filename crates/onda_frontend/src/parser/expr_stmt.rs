@@ -5,58 +5,74 @@ pub(super) fn parse_stmt_list_pair(
 ) -> Result<Vec<Stmt>, Vec<Diagnostic>> {
     let mut stmts = Vec::new();
     for stmt_pair in stmt_list_pair.into_inner() {
-        stmts.push(parse_stmt(stmt_pair)?);
+        stmts.extend(parse_stmt_expanded(stmt_pair)?);
     }
     Ok(stmts)
 }
 
+struct ParsedInitStatements {
+    body: Vec<Stmt>,
+    pinned_roots: Vec<String>,
+    compiler_scratch_roots: Vec<String>,
+}
+
 fn parse_init_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,
-) -> Result<(Vec<Stmt>, Vec<String>), Vec<Diagnostic>> {
+) -> Result<ParsedInitStatements, Vec<Diagnostic>> {
     let mut stmts = Vec::new();
     let mut pinned_roots = Vec::new();
+    let mut compiler_scratch_roots = Vec::new();
     let mut assigned_roots = HashSet::new();
     for stmt_pair in stmt_list_pair.into_inner() {
         let pinned = stmt_pair.as_rule() == Rule::pinned_assign_stmt;
-        let stmt = if pinned {
-            parse_pinned_assign_stmt(stmt_pair)?
+        let parsed = if pinned {
+            vec![parse_pinned_assign_stmt(stmt_pair)?]
         } else {
-            parse_stmt(stmt_pair)?
+            parse_stmt_expanded(stmt_pair)?
         };
-        if let Stmt::Assign { target, .. } = &stmt {
-            match target {
-                AssignTarget::Var(root) => {
-                    if pinned {
-                        if !assigned_roots.insert(root.clone()) {
-                            return Err(vec![syntax_at_loc(
-                                stmt.loc().as_ref(),
-                                format!(
-                                    "'pin' requires a fresh state binding; '{root}' was already assigned"
-                                ),
-                            )]);
+        for stmt in parsed {
+            if let Stmt::Assign { target, .. } = &stmt {
+                match target {
+                    AssignTarget::Var(root) => {
+                        if is_internal_place_name(root) {
+                            compiler_scratch_roots.push(root.clone());
                         }
-                        pinned_roots.push(root.clone());
-                    } else {
-                        assigned_roots.insert(root.clone());
+                        if pinned {
+                            if !assigned_roots.insert(root.clone()) {
+                                return Err(vec![syntax_at_loc(
+                                    stmt.loc().as_ref(),
+                                    format!(
+                                        "'pin' requires a fresh state binding; '{root}' was already assigned"
+                                    ),
+                                )]);
+                            }
+                            pinned_roots.push(root.clone());
+                        } else {
+                            assigned_roots.insert(root.clone());
+                        }
                     }
+                    AssignTarget::Tuple(roots) => {
+                        debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
+                        assigned_roots.extend(
+                            roots
+                                .iter()
+                                .filter_map(TupleAssignTarget::binding)
+                                .map(str::to_owned),
+                        );
+                    }
+                    AssignTarget::Index { .. }
+                    | AssignTarget::IndexedMember { .. }
+                    | AssignTarget::Slice { .. } => {}
                 }
-                AssignTarget::Tuple(roots) => {
-                    debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
-                    assigned_roots.extend(
-                        roots
-                            .iter()
-                            .filter_map(TupleAssignTarget::binding)
-                            .map(str::to_owned),
-                    );
-                }
-                AssignTarget::Index { .. }
-                | AssignTarget::IndexedMember { .. }
-                | AssignTarget::Slice { .. } => {}
             }
+            stmts.push(stmt);
         }
-        stmts.push(stmt);
     }
-    Ok((stmts, pinned_roots))
+    Ok(ParsedInitStatements {
+        body: stmts,
+        pinned_roots,
+        compiler_scratch_roots,
+    })
 }
 
 pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, Vec<Diagnostic>> {
@@ -70,13 +86,17 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
                 default_ty = Some(parse_init_default_decl_type(child)?);
             }
             Rule::stmt_list => {
-                let (body, pinned_roots) = parse_init_stmt_list_pair(child)?;
+                let ParsedInitStatements {
+                    body,
+                    pinned_roots,
+                    compiler_scratch_roots,
+                } = parse_init_stmt_list_pair(child)?;
                 return Ok(InitBlock {
                     loc,
                     default_ty,
                     default_ty_loc,
                     pinned_roots,
-                    compiler_scratch_roots: Vec::new(),
+                    compiler_scratch_roots,
                     body,
                 });
             }
@@ -178,11 +198,11 @@ pub(super) fn parse_block_exec_block(
                 continue;
             }
 
-            let stmt = parse_stmt(item)?;
+            let statements = parse_stmt_expanded(item)?;
             if nested_sample.is_some() {
-                post.push(stmt);
+                post.extend(statements);
             } else {
-                pre.push(stmt);
+                pre.extend(statements);
             }
         }
     }
@@ -710,61 +730,10 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 )]),
             }
         }
-        Rule::compound_assign_stmt => {
-            let mut compound_inner = kind_pair.into_inner();
-            let Some(target_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment target",
-                )]);
-            };
-            let Some(op_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment operator",
-                )]);
-            };
-            let Some(rhs_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment expression",
-                )]);
-            };
-            let op = match op_pair.as_str() {
-                "+=" => BinaryOp::Add,
-                "-=" => BinaryOp::Sub,
-                "*=" => BinaryOp::Mul,
-                "/=" => BinaryOp::Div,
-                "%=" => BinaryOp::Mod,
-                "&=" => BinaryOp::BitAnd,
-                "|=" => BinaryOp::BitOr,
-                "^=" => BinaryOp::BitXor,
-                "<<=" => BinaryOp::ShiftLeft,
-                ">>=" => BinaryOp::ShiftRight,
-                other => {
-                    return Err(vec![syntax_at_pair(
-                        &op_pair,
-                        format!("unknown compound assignment operator '{other}'"),
-                    )]);
-                }
-            };
-            let target_name = target_pair.as_str().to_owned();
-            Ok(Stmt::Assign {
-                loc,
-                target_loc: stmt_loc_from_pair(&target_pair),
-                target: AssignTarget::Var(target_name.clone()),
-                decl_ty: None,
-                generic_decl_ty: None,
-                is_typed_decl: false,
-                typed_decl_ty_loc: Span::ZERO,
-                expr: Expr::Binary {
-                    loc,
-                    op,
-                    lhs: Box::new(Expr::var(target_name)),
-                    rhs: Box::new(parse_expr(rhs_pair)?),
-                },
-            })
-        }
+        Rule::compound_assign_stmt => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "internal parser error: compound assignment requires place expansion",
+        )]),
         Rule::inferred_ranged_assign_stmt => {
             let mut ranged_inner = kind_pair.into_inner();
             let Some(name_pair) = ranged_inner.next() else {
@@ -1180,7 +1149,7 @@ pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Di
             continue;
         }
         for stmt_pair in child.into_inner() {
-            stmts.push(parse_stmt(stmt_pair)?);
+            stmts.extend(parse_stmt_expanded(stmt_pair)?);
         }
     }
     Ok(stmts)

@@ -2248,13 +2248,15 @@ impl<'a> FunctionLowerer<'a> {
             .and_then(|suffix| suffix.strip_prefix('.'))
         {
             let operation = match method {
-                crate::builtins::ARRAY_LEN_METHOD => Some((PrimitiveType::I32, 0_u8)),
-                crate::builtins::BUFFER_CHANS_METHOD => Some((PrimitiveType::I32, 1_u8)),
-                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some((PrimitiveType::F32, 2_u8)),
-                crate::builtins::BUFFER_BOUND_METHOD => Some((PrimitiveType::Bool, 3_u8)),
+                crate::builtins::ARRAY_LEN_METHOD => Some(0_u8),
+                crate::builtins::BUFFER_CHANS_METHOD => Some(1_u8),
+                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some(2_u8),
+                crate::builtins::BUFFER_BOUND_METHOD => Some(3_u8),
                 _ => None,
             };
-            if let Some((ty, operation)) = operation {
+            if let Some(operation) = operation {
+                let ty = crate::builtins::builtin_instance_method_return_type(method)
+                    .expect("buffer metadata operation has a scalar return type");
                 let base = args
                     .iter()
                     .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))

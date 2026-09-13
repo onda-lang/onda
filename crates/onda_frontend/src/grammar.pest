@@ -204,10 +204,13 @@ binding_range_item = { binding_range_named_count | binding_range_named_range | b
 binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ NEWLINE* ~ "}" }
 typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
-compound_assign_stmt = { path_ident ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
+compound_assign_stmt = { writable_place ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
 inferred_ranged_assign_stmt = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ NEWLINE* ~ binding_range }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
-assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
+assign_target = _{ slice_target | indexed_member_target | deep_place_target | index_target | tuple_target | path_ident }
+writable_place = _{ deep_place_target | index_target | path_ident }
+deep_place_target = { (namespace_ref | path_ident) ~ index_group ~ (place_field | index_group)+ }
+place_field = { "." ~ ident ~ !"::" }
 tuple_target = { parenthesized_tuple_target | tuple_target_items }
 parenthesized_tuple_target = _{ "(" ~ NEWLINE* ~ tuple_target_items ~ NEWLINE* ~ ")" }
 tuple_target_items = _{ ident ~ (comma_sep ~ ident)+ }

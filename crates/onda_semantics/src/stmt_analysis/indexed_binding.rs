@@ -47,6 +47,13 @@ pub(crate) fn flatten_indexed_member_target(target: &AssignTarget) -> Cow<'_, As
     }
 }
 
+pub(crate) fn is_proc_array_member_base(
+    base: &str,
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+) -> bool {
+    split_root_field_path(base).is_some_and(|(root, _)| proc_array_roots.contains_key(root))
+}
+
 pub(crate) fn indexed_assignment_element_type(
     target: &AssignTarget,
     struct_instances: &HashMap<String, String>,

@@ -11,6 +11,7 @@ fn representative_checked_in_onda_examples_analyze_and_lower() {
         "plugins/effects/tempo_ping_pong.onda",
         "plugins/instruments/fm_bells.onda",
         "soundscapes/glass_garden.onda",
+        "spectral/paul_stretch.onda",
         "spectral/spectral_freeze.onda",
         "projects/wavetable_garden/code/main.onda",
     ];

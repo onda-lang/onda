@@ -860,8 +860,18 @@ pub(super) fn expand_proc_call_args(
     call_args: &[CallArg],
     api: &ProcApi,
     call_display_name: &str,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<CallArg> {
+    if !api.steppable {
+        push_semantic(
+            diag,
+            errors,
+            format!(
+                "processor '{call_display_name}' cannot be stepped because it has no sample, block, or graph section"
+            ),
+        );
+    }
     let param_names = api.ins.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
     let param_defaults = api
         .ins
@@ -923,6 +933,36 @@ pub(super) fn expand_proc_call_args(
         }
     }
     expanded
+}
+
+pub(crate) enum ProcParamFieldRead<'a> {
+    NotParam,
+    Readable(&'a ProcParamSlotSpec),
+    Rejected,
+}
+
+pub(crate) fn resolve_readable_proc_param_field<'a>(
+    api: &'a ProcApi,
+    proc_name: &str,
+    field: &str,
+    receiver: &str,
+    diag: DiagCtx,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcParamFieldRead<'a> {
+    let Some(parameter) = api.params.get(field) else {
+        return ProcParamFieldRead::NotParam;
+    };
+    if parameter.private {
+        push_semantic(
+            diag,
+            errors,
+            format!(
+                "processor '{proc_name}' param '{field}' is private and cannot be read through '{receiver}.{field}'"
+            ),
+        );
+        return ProcParamFieldRead::Rejected;
+    }
+    ProcParamFieldRead::Readable(parameter)
 }
 
 pub(super) fn expand_proc_buffer_call_args(
@@ -1042,9 +1082,11 @@ pub(super) fn build_dynamic_proc_array_dispatch_args(
     array_base: &str,
     index_expr: &Expr,
     access: IndexAccess,
+    diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<CallArg> {
-    let expanded_inputs = expand_proc_call_args(args, api, &format!("{array_base}[...]"), errors);
+    let expanded_inputs =
+        expand_proc_call_args(args, api, &format!("{array_base}[...]"), diag, errors);
     let dynamic_buffers =
         dynamic_proc_array_buffer_call_args(slot_instances, api, array_base, index_expr, errors);
     let mut rewritten =
@@ -2754,6 +2796,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 &array_base,
                                 &index_expr,
                                 access,
+                                diag,
                                 errors,
                             );
                             *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
@@ -2777,7 +2820,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         name: None,
                         expr: proc_instance_self_expr(name, proc_array_slots),
                     });
-                    let expanded_args = expand_proc_call_args(args, api, name, errors);
+                    let expanded_args = expand_proc_call_args(args, api, name, diag, errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, name, errors);

@@ -1801,6 +1801,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                             &array_base,
                             &index_expr,
                             access,
+                            expr_diag,
                             errors,
                         );
                         *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
@@ -1878,15 +1879,25 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     else {
                         return;
                     };
-                    if proc_param_field_is_private(&api, &field_name) {
-                        push_semantic(
-                            expr_diag,
-                            errors,
-                            format!(
-                                "processor '{proc_name}' param '{field_name}' is private and cannot be read through '{array_base}.{field_name}'"
-                            ),
-                        );
-                        return;
+                    match resolve_readable_proc_param_field(
+                        &api,
+                        &proc_name,
+                        &field_name,
+                        &array_base,
+                        expr_diag,
+                        errors,
+                    ) {
+                        ProcParamFieldRead::Readable(param) => {
+                            *expr = indexed_read_expr(
+                                format!("{array_base}.{}", param.name),
+                                index_expr,
+                                access,
+                                expr_loc.into(),
+                            );
+                            return;
+                        }
+                        ProcParamFieldRead::Rejected => return,
+                        ProcParamFieldRead::NotParam => {}
                     }
                     let Some(out_idx) = resolve_proc_output_field_index(
                         &api,
@@ -1904,6 +1915,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         &array_base,
                         &index_expr,
                         access,
+                        expr_diag,
                         errors,
                     );
                     *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
@@ -1928,19 +1940,20 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     );
                     return;
                 };
-                if let Some(param_slot) = api.params.get(&field_name) {
-                    if param_slot.private {
-                        push_semantic(
-                            expr_diag,
-                            errors,
-                            format!(
-                                "processor '{proc_name}' param '{field_name}' is private and cannot be read through '{proc_var}.{field_name}'"
-                            ),
-                        );
+                match resolve_readable_proc_param_field(
+                    api,
+                    &proc_name,
+                    &field_name,
+                    &proc_var,
+                    expr_diag,
+                    errors,
+                ) {
+                    ProcParamFieldRead::Readable(param) => {
+                        *expr = Expr::var(format!("{proc_var}.{}", param.name));
                         return;
                     }
-                    *expr = Expr::var(format!("{proc_var}.{}", param_slot.name));
-                    return;
+                    ProcParamFieldRead::Rejected => return,
+                    ProcParamFieldRead::NotParam => {}
                 }
                 let Some(out_idx) = resolve_proc_output_field_index(
                     api,
@@ -1956,7 +1969,8 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     name: None,
                     expr: proc_instance_self_expr(&proc_var, proc_array_slots),
                 });
-                let expanded_args = expand_proc_call_args(args, api, proc_var.as_str(), errors);
+                let expanded_args =
+                    expand_proc_call_args(args, api, proc_var.as_str(), expr_diag, errors);
                 rewritten.extend(expanded_args);
                 let expanded_buffers =
                     expand_proc_buffer_call_args(instance, api, proc_var.as_str(), errors);
@@ -1995,7 +2009,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     name: None,
                     expr: proc_instance_self_expr(name, proc_array_slots),
                 });
-                let expanded_args = expand_proc_call_args(args, api, name, errors);
+                let expanded_args = expand_proc_call_args(args, api, name, expr_diag, errors);
                 rewritten.extend(expanded_args);
                 let expanded_buffers = expand_proc_buffer_call_args(instance, api, name, errors);
                 rewritten.extend(expanded_buffers);

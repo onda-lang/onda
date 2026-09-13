@@ -29,6 +29,102 @@ sample:
 }
 
 #[test]
+fn optimized_indexed_buffer_parameter_metadata_uses_the_selected_slot() {
+    let source = r#"
+def selected_len(buffers, selector: i32) -> i32:
+  return buffers[selector].len()
+
+buffers:
+  bank: f32[] {2}
+
+sample:
+  out1 = f32(selected_len(bank, 1))
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut selected = [1.0_f32, 2.0, 3.0];
+    bind_buffer(
+        &mut instance,
+        1,
+        selected.as_mut_ptr().cast::<u8>(),
+        selected.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind selected buffer");
+
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+}
+
+#[test]
+fn buffer_collection_compound_assignment_evaluates_each_coordinate_once() {
+    let source = r#"
+buffers:
+  source: f32[2] {2}
+
+proc Worker:
+  buffers:
+    bank: f32[2] {2}
+
+  outs 1
+
+  init:
+    calls = 0
+
+  def select_buffer():
+    calls += 1
+    return 1
+
+  def select_channel():
+    calls += 1
+    return 1
+
+  def select_frame():
+    calls += 1
+    return 2
+
+  sample:
+    bank[select_buffer()][select_channel(), select_frame()] += 2.0
+    out1 = f32(calls) + bank[1][1, 2]
+
+init:
+  worker = Worker(bank = source)
+
+sample:
+  out1 = worker()
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buffer = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        1,
+        buffer.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind selected buffer");
+
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 35.0, 1e-6);
+    assert_near(buffer[5], 32.0, 1e-6);
+}
+
+#[test]
 fn ranged_integer_params_normalize_raw_host_values_at_process_entry() {
     let source = r#"
 params:

@@ -216,6 +216,15 @@ pub fn is_builtin_instance_method_name(name: &str) -> bool {
     BUILTIN_INSTANCE_METHOD_NAMES.contains(&name)
 }
 
+pub(crate) fn builtin_instance_method_return_type(name: &str) -> Option<PrimitiveType> {
+    match name {
+        ARRAY_LEN_METHOD | BUFFER_CHANS_METHOD => Some(PrimitiveType::I32),
+        BUFFER_BOUND_METHOD => Some(PrimitiveType::Bool),
+        BUFFER_SAMPLERATE_METHOD => Some(PrimitiveType::F32),
+        _ => None,
+    }
+}
+
 fn split_instance_method_path(name: &str) -> Option<(&str, &str)> {
     let (base, method) = name.rsplit_once('.')?;
     if base.is_empty() || method.is_empty() {

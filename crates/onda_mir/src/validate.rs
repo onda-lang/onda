@@ -2271,18 +2271,14 @@ impl Validator<'_> {
                             statement.source,
                             state,
                         ),
-                        CallArgument::BufferParam(parameter) => {
-                            if let crate::BufferParamRef::ArrayElement { selector, .. } = parameter
-                            {
-                                self.assignment_read_value(
-                                    function_id,
-                                    function,
-                                    *selector,
-                                    statement.source,
-                                    state,
-                                );
-                            }
-                        }
+                        CallArgument::BufferParam(parameter) => self
+                            .assignment_read_buffer_param_ref(
+                                function_id,
+                                function,
+                                *parameter,
+                                statement.source,
+                                state,
+                            ),
                         CallArgument::BufferSpan(_) => {}
                     }
                 }
@@ -2453,11 +2449,19 @@ impl Validator<'_> {
                 self.assignment_read_value(function_id, function, *value, statement.source, state);
             }
             StatementKind::BufferParamStore {
+                parameter,
                 channel,
                 index,
                 value,
                 ..
             } => {
+                self.assignment_read_buffer_param_ref(
+                    function_id,
+                    function,
+                    *parameter,
+                    statement.source,
+                    state,
+                );
                 self.assignment_read_optional_value(
                     function_id,
                     function,
@@ -2586,7 +2590,19 @@ impl Validator<'_> {
                 self.assignment_read_optional_value(function_id, function, *channel, source, state);
                 self.assignment_read_value(function_id, function, *index, source, state);
             }
-            Rvalue::BufferParamLoad { channel, index, .. } => {
+            Rvalue::BufferParamLoad {
+                parameter,
+                channel,
+                index,
+                ..
+            } => {
+                self.assignment_read_buffer_param_ref(
+                    function_id,
+                    function,
+                    *parameter,
+                    source,
+                    state,
+                );
                 self.assignment_read_optional_value(function_id, function, *channel, source, state);
                 self.assignment_read_value(function_id, function, *index, source, state);
             }
@@ -2596,10 +2612,18 @@ impl Validator<'_> {
             | Rvalue::BufferIsBound(buffer) => {
                 self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
             }
-            Rvalue::BufferParamLen(_)
-            | Rvalue::BufferParamChannels(_)
-            | Rvalue::BufferParamSampleRate(_)
-            | Rvalue::BufferParamIsBound(_) => {}
+            Rvalue::BufferParamLen(parameter)
+            | Rvalue::BufferParamChannels(parameter)
+            | Rvalue::BufferParamSampleRate(parameter)
+            | Rvalue::BufferParamIsBound(parameter) => {
+                self.assignment_read_buffer_param_ref(
+                    function_id,
+                    function,
+                    *parameter,
+                    source,
+                    state,
+                );
+            }
             Rvalue::ConstDataLoad { index, .. } => {
                 self.assignment_read_value(function_id, function, *index, source, state)
             }
@@ -2640,7 +2664,14 @@ impl Validator<'_> {
                             state,
                         );
                     }
-                    SliceSource::BufferParam { channel, .. } => {
+                    SliceSource::BufferParam { parameter, channel } => {
+                        self.assignment_read_buffer_param_ref(
+                            function_id,
+                            function,
+                            *parameter,
+                            source,
+                            state,
+                        );
                         self.assignment_read_optional_value(
                             function_id,
                             function,
@@ -2687,6 +2718,19 @@ impl Validator<'_> {
         state: &AssignmentState,
     ) {
         if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
+            self.assignment_read_value(function_id, function, selector, source, state);
+        }
+    }
+
+    fn assignment_read_buffer_param_ref(
+        &mut self,
+        function_id: FunctionId,
+        function: &Function,
+        parameter: crate::BufferParamRef,
+        source: SourceSpan,
+        state: &AssignmentState,
+    ) {
+        if let crate::BufferParamRef::ArrayElement { selector, .. } = parameter {
             self.assignment_read_value(function_id, function, selector, source, state);
         }
     }

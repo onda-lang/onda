@@ -28,6 +28,7 @@ pub(crate) struct ProcApi {
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) delegates: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
+    pub(crate) steppable: bool,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
 }
@@ -138,6 +139,16 @@ impl ProcStateFields {
 
     pub(crate) fn has_any(&self, name: &str) -> bool {
         self.scalars.contains_key(name) || self.has_non_scalar(name)
+    }
+
+    pub(crate) fn remove_root(&mut self, root: &str) {
+        let keep = |name: &String| !path_is_within_root(name, root);
+        self.scalars.retain(|name, _| keep(name));
+        self.tuples.retain(|name, _| keep(name));
+        self.data.retain(|name, _| keep(name));
+        self.nested_procs.retain(|name, _| keep(name));
+        self.nested_proc_arrays.retain(|name, _| keep(name));
+        self.struct_instances.retain(|name, _| keep(name));
     }
 }
 

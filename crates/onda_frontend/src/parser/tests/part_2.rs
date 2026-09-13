@@ -1114,7 +1114,7 @@ sample {
             assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
             assert!(matches!(field_index.as_ref(), Expr::Var { name, .. } if name == "j"));
         }
-        _ => panic!("expected indexed field-element assignment target"),
+        _ => panic!("expected indexed assignment target"),
     }
 }
 

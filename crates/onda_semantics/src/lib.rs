@@ -33,6 +33,13 @@ pub(crate) fn path_or_ancestor_is_declared(path: &str, roots: &HashSet<String>) 
     }
 }
 
+pub(crate) fn path_is_within_root(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with(['.', '[']))
+}
+
 fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
     let ty = match &param.ty {
         EventParamType::Tuple(types) => FnParamType::Tuple(types.clone()),

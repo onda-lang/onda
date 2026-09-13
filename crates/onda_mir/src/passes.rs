@@ -2037,10 +2037,12 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => collect_buffer_ref_read(*buffer, reads),
-        Rvalue::BufferParamLen(_)
-        | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_)
-        | Rvalue::BufferParamIsBound(_) => {}
+        Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamChannels(parameter)
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
+            collect_buffer_param_ref_read(*parameter, reads);
+        }
     }
 }
 
@@ -2802,6 +2804,26 @@ mod tests {
         process.params = process_function_params(TypeId::new(0));
         program.functions = vec![function("init", FunctionKind::Init), process];
         program
+    }
+
+    #[test]
+    fn selected_buffer_parameter_metadata_keeps_its_selector_live() {
+        let selector = LocalId::new(2);
+        let parameter = crate::BufferParamRef::ArrayElement {
+            span: crate::ParameterId::new(0),
+            selector: Value::Local(selector),
+            bounds: BoundsMode::Clamp,
+        };
+        for value in [
+            Rvalue::BufferParamLen(parameter),
+            Rvalue::BufferParamChannels(parameter),
+            Rvalue::BufferParamSampleRate(parameter),
+            Rvalue::BufferParamIsBound(parameter),
+        ] {
+            let mut reads = vec![0; 3];
+            collect_rvalue_reads(&value, &mut reads);
+            assert_eq!(reads, [0, 0, 1]);
+        }
     }
 
     #[test]

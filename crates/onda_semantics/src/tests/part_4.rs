@@ -3291,3 +3291,155 @@ graph {
         lower_program_to_optimized_mir(&typed)
             .expect("long expression should lower to optimized MIR");
     }
+
+    #[test]
+    fn event_only_processors_can_be_constructed_and_receive_events() {
+        let source = r#"
+proc Receiver:
+  init:
+    received = 0
+
+  event push(value: i32):
+    received += value
+
+init:
+  receiver = Receiver()
+
+events:
+  push(value: i32):
+    receiver.push(value)
+
+sample:
+  out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("event-only proc should parse"))
+            .expect("event-only proc should analyze without an execution body");
+        lower_program_to_optimized_mir(&typed)
+            .expect("event-only proc events should lower to optimized MIR");
+    }
+
+    #[test]
+    fn event_only_processors_cannot_be_stepped() {
+        let source = r#"
+proc Receiver:
+  event push(value: i32):
+    observed = value
+
+init:
+  receiver = Receiver()
+
+sample:
+  receiver()
+  out1 = 0.0
+"#;
+        let diagnostics = analyze(parse_program(source).expect("event-only proc should parse"))
+            .expect_err("event-only proc stepping must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.message.contains(
+                    "processor 'receiver' cannot be stepped because it has no sample, block, or graph section",
+                )
+            })
+            .expect("missing event-only stepping diagnostic");
+        assert_ne!(diagnostic.line, 0, "diagnostic must identify the call site");
+    }
+
+    #[test]
+    fn indexed_buffer_parameter_metadata_infers_exact_scalar_types() {
+        let source = r#"
+def selected_len(buffers, selector: i32) -> i32:
+  return buffers[selector].len()
+
+def selected_channels(buffers, selector: i32) -> i32:
+  return buffers[selector].chans()
+
+def selected_rate(buffers, selector: i32) -> f32:
+  return buffers[selector].samplerate()
+
+def selected_bound(buffers, selector: i32) -> bool:
+  return buffers[selector].bound()
+
+buffers:
+  bank: f32[] {2}
+
+sample:
+  selector = 1
+  length: i32 = selected_len(bank, selector)
+  channels: i32 = selected_channels(bank, selector)
+  rate: f32 = selected_rate(bank, selector)
+  if selected_bound(bank, selector):
+    out1 = f32(length + channels) + rate
+  else:
+    out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("buffer metadata source should parse"))
+            .expect("indexed buffer metadata return types should be inferred exactly");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed buffer metadata should lower to optimized MIR");
+    }
+
+    #[test]
+    fn outputless_processors_with_sample_sections_can_be_stepped() {
+        let source = r#"
+proc Tick:
+  init:
+    count = 0
+
+  sample:
+    count += 1
+
+init:
+  tick = Tick()
+
+sample:
+  tick()
+  out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("outputless proc should parse"))
+            .expect("a sample section should make an outputless proc steppable");
+        lower_program_to_optimized_mir(&typed)
+            .expect("outputless proc stepping should lower to optimized MIR");
+    }
+
+    #[test]
+    fn deep_init_place_temporaries_do_not_become_persistent_state() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct State:
+  leaves: Leaf[1]
+
+proc Reader:
+  init:
+    state: State
+    state.leaves[0].value = 1.0
+
+  outs 1
+
+  sample:
+    leaf = state.leaves[0]
+    out1 = leaf.value
+
+init:
+  reader = Reader()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(source).expect("deep init place should parse"))
+            .expect("deep init place should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("deep init place should lower to optimized MIR");
+        assert!(
+            mir.state
+                .iter()
+                .all(|state| !state.name.contains("__onda_place_")),
+            "place temporaries must not leak into persistent state: {:?}",
+            mir.state
+                .iter()
+                .map(|state| state.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
