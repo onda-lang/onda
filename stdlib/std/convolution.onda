@@ -104,8 +104,6 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
       input_imag[:] = 0.0
 
     def reset_counters():
-      # Match HISSTools: a negative offset requests a fresh scheduling phase,
-      # while an explicit offset is retained and reduced modulo the hop size.
       if offset < 0:
         pending_count = rng.next_u31() % HopSize
       else:
@@ -370,9 +368,7 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       set_offset(value: i32 = -1):
         apply_offset(value)
 
-      # Assign a stable scheduling phase to parallel channel instances. Tiers
-      # whose hop exceeds the host block are separated by whole callbacks;
-      # smaller tiers already occur at least once per callback.
+      # Assign a stable scheduling phase to parallel channel instances.
       set_channel(channel: i32):
         apply_offset(channel_offset(channel))
 

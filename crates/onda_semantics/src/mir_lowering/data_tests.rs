@@ -1314,6 +1314,81 @@ sample:
 }
 
 #[test]
+fn struct_slice_copy_accepts_bare_named_views_in_executable_scopes() {
+    compile(
+        r#"
+struct Note:
+  value = 0.0
+
+def copy(destination: Note[], source: Note[]):
+  destination[:] = source
+
+init:
+  init_source: Note[2] = Note(value = 1.0)
+  init_view = init_source[:1]
+  init_destination: Note[2]
+  init_destination[:] = init_view
+
+sample:
+  source: Note[2] = Note(value = 2.0)
+  view = source[:1]
+  destination: Note[2]
+  destination[:] = view
+  copy(destination[:], view)
+  first = destination[0]
+  out1 = first.value
+"#,
+    );
+}
+
+#[test]
+fn invalid_bare_struct_slice_sources_keep_specific_diagnostics() {
+    let source = r#"
+struct Note:
+  value = 0.0
+sample:
+  destination: Note[2]
+  destination[:] = missing
+  out1 = 0.0
+"#;
+    let parsed = onda_frontend::parse_program(source).expect("data source parses");
+    let errors = crate::analyze(parsed).expect_err("unknown source must be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("unknown symbol 'missing'")),
+        "{errors:?}"
+    );
+
+    let wrong_type = r#"
+struct Note:
+  value = 0.0
+struct Other:
+  value = 0.0
+sample:
+  destination: Note[2]
+  source: Other[2]
+  view = source[:]
+  destination[:] = view
+  out1 = 0.0
+"#;
+    let parsed = onda_frontend::parse_program(wrong_type).expect("data source parses");
+    let errors = crate::analyze(parsed).expect_err("wrong view type must be rejected");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("expects 'Note', got 'Other'")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| !error.message.contains("unknown symbol")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn data_permissions_track_branch_origins_and_independent_copies() {
     let mir = compile(
         r#"

@@ -895,17 +895,24 @@ pub(crate) fn validate_struct_slice_assignment(
     errors: &mut Vec<Diagnostic>,
 ) {
     let fixed = infer_fixed_data_type(expr, env.expr_env);
+    let resolved_view = if fixed.is_none() {
+        infer_data_like(errors)
+    } else {
+        None
+    };
     let actual = match &fixed {
         Some(DataType::Struct(name))
         | Some(DataType::Array {
             element: ArrayElemType::Struct(name),
             ..
-        }) => Some(name.clone()),
-        _ => infer_data_like(errors).and_then(|info| info.elem_struct),
+        }) => Some(name.as_str()),
+        _ => resolved_view
+            .as_ref()
+            .and_then(|info| info.elem_struct.as_deref()),
     };
-    if actual.as_deref() != Some(expected) {
+    if actual != Some(expected) {
         let expected = DataType::Struct(expected.to_owned());
-        let actual = actual.map(DataType::Struct);
+        let actual = actual.map(|name| DataType::Struct(name.to_owned()));
         errors.push(Diagnostic::semantic_span(
             format!(
                 "struct slice assignment {}",
@@ -916,7 +923,9 @@ pub(crate) fn validate_struct_slice_assignment(
     }
     if fixed.is_some() {
         validate_fixed_data_expr(expr, env.expr_env, errors);
-    } else {
+    } else if resolved_view.is_none() || !matches!(expr, Expr::Var { .. }) {
+        // Resolved bare views have no scalar expression to validate. Slices
+        // still pass through expression validation for their authored bounds.
         validate_expr(expr, env.expr_env, errors);
     }
 }
