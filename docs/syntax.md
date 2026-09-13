@@ -2153,7 +2153,7 @@ neutral outputs. For a top-level task those are the program outputs; for a proc
 task only that proc becomes neutral and its parent continues normally. If the
 task completes, execution continues after `await` in the same logical block. A
 task is reset explicitly with `prepare.reset()` from the owner's `init`, event,
-or block-pre scope.
+block-pre, sample, or block-post scope.
 
 The containing block is not a coroutine. Its block-pre control flow starts from
 the beginning on each activation, so statements and conditions before an
@@ -2211,8 +2211,9 @@ fail-closed behavior as a runtime failure outside a task.
 
 Tasks are private to their owner and share that owner's declaration namespace.
 They cannot be used with a `graph` block. `await` is valid only in structured
-block-pre control flow; task reset is valid only in owner `init`, event, and
-block-pre code. Neither operation is a first-class callable value.
+block-pre control flow; task reset is valid throughout the owner's executable
+code, but not inside tasks or defs. Neither operation is a first-class callable
+value.
 
 ## 13. Graphs
 

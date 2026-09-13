@@ -46,7 +46,10 @@ impl TaskControlContext {
     }
 
     fn allows_reset(self) -> bool {
-        matches!(self, Self::Init | Self::Event | Self::BlockPre)
+        matches!(
+            self,
+            Self::Init | Self::Event | Self::BlockPre | Self::Sample | Self::BlockPost
+        )
     }
 }
 
@@ -150,9 +153,7 @@ fn validate_task_control_stmts(
                 if let Some(name) = reset_task_name(expr, task_names) {
                     if !context.allows_reset() {
                         errors.push(Diagnostic::semantic_span(
-                            format!(
-                                "task '{name}' can only be reset from init, event, or block-pre code"
-                            ),
+                            format!("task '{name}' can only be reset from owner executable code"),
                             *loc,
                         ));
                     }
@@ -3178,6 +3179,22 @@ fn lower_top_level_tasks(
                     &unavailable,
                     TaskResumeResult::RuntimeField,
                 );
+                if let Some(sample) = &mut exec.sample {
+                    rewrite_task_controls(
+                        &mut sample.body,
+                        &task_names,
+                        &buffer_names,
+                        &unavailable,
+                        TaskResumeResult::RuntimeField,
+                    );
+                }
+                rewrite_task_controls(
+                    &mut exec.post,
+                    &task_names,
+                    &buffer_names,
+                    &unavailable,
+                    TaskResumeResult::RuntimeField,
+                );
                 propagate_task_abort_through_loops(&mut exec.pre);
                 let mut body = vec![assign_var(TASK_AVAILABLE_FIELD, Expr::bool(true))];
                 body.append(&mut exec.pre);
@@ -3200,6 +3217,13 @@ fn lower_top_level_tasks(
                 }];
             }
             Block::Sample(sample) => {
+                rewrite_task_controls(
+                    &mut sample.body,
+                    &task_names,
+                    &buffer_names,
+                    &unavailable,
+                    TaskResumeResult::RuntimeField,
+                );
                 let original = std::mem::take(&mut sample.body);
                 sample.body = vec![Stmt::If {
                     loc: Default::default(),
@@ -3799,6 +3823,20 @@ pub(crate) fn lower_tasks(
         );
         rewrite_task_controls(
             &mut proc.block_pre,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+            TaskResumeResult::Returned,
+        );
+        rewrite_task_controls(
+            &mut proc.sample,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+            TaskResumeResult::Returned,
+        );
+        rewrite_task_controls(
+            &mut proc.block_post,
             &task_names,
             &buffer_names,
             &unavailable,

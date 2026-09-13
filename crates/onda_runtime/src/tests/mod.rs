@@ -1114,6 +1114,116 @@ block:
 }
 
 #[test]
+fn top_level_task_can_reset_from_sample() {
+    const BLOCK_SIZE: usize = 1;
+    let mut instance = compile_test_instance(
+        r#"
+init:
+  pin progress: i32 = 0
+  pin reset_once = false
+
+task prepare():
+  progress += 1
+  yield
+  progress += 1
+
+block:
+  await prepare()
+
+  sample:
+    out1 = f32(progress)
+    if !reset_once:
+      prepare.reset()
+      reset_once = true
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial task should yield");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial task should complete before its sample reset");
+    assert_eq!(output, [2.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("sample reset should restart the task");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("restarted task should complete");
+    assert_eq!(output, [4.0]);
+}
+
+#[test]
+fn proc_task_can_reset_from_block_post() {
+    const BLOCK_SIZE: usize = 1;
+    let mut instance = compile_test_instance(
+        r#"
+proc Worker:
+  init:
+    pin progress: i32 = 0
+    pin reset_once = false
+
+  task prepare():
+    progress += 1
+    yield
+    progress += 1
+
+  block:
+    await prepare()
+
+    sample:
+      out1 = f32(progress)
+
+    if !reset_once:
+      prepare.reset()
+      reset_once = true
+
+init:
+  worker = Worker()
+
+sample:
+  out1 = worker()
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial proc task should yield");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial proc task should complete before its block-post reset");
+    assert_eq!(output, [2.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("block-post reset should restart the proc task");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("restarted proc task should complete");
+    assert_eq!(output, [4.0]);
+}
+
+#[test]
 fn task_reset_reinitializes_retained_frame_storage_on_restart() {
     const BLOCK_SIZE: usize = 1;
     let mut instance = compile_test_instance(

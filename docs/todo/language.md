@@ -151,6 +151,24 @@
     authored indices prove insufficient. Any design must keep lexical source ownership stable and
     avoid adding hidden per-instance strings or callbacks to generated execution.
 
+- Task follow-ups
+  - Evaluate task `reset()` inside defs and task bodies. Ordinary top-level defs would need explicit
+    owner runtime context, and task-control effects would need to propagate transitively through
+    callable and synchronous event/delegate paths. Define active self-reset semantics before
+    exposing this: either reject every direct and indirect path by which a running task can reset
+    itself, or make reset terminate the current activation and restart it deterministically on the
+    next advance. Resetting another owner-local task may be admitted independently if it does not
+    weaken the rule that tasks cannot invoke one another.
+  - Reconsider broadened, explicitly advanced tasks only when a concrete use case is substantially
+    clearer than an ordinary stateful struct. A possible `task.step() -> bool` would advance until
+    the next `yield` or completion without aborting the owner or producing neutral outputs; repeated
+    calls could deliberately cross multiple yield boundaries. Specify legal init/event/block/sample
+    call sites, call-rate effects, interaction with `await` and `reset()`, runtime failures, and
+    partial-state publication. In particular, sample-rate stepping cannot allow a task to smuggle
+    its currently legal block-rate processor calls into sample code. Prefer fixed-budget struct
+    state machines for incremental FFT and other recurring realtime DSP unless coroutine syntax
+    demonstrates a compelling broader benefit.
+
 - Musical scheduling / pattern follow-ups
   - Evaluate a small sample-accurate scheduling layer on top of events:
     - host-triggered events can carry target sample offsets inside the next block

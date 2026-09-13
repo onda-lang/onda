@@ -70,7 +70,7 @@ fn task_dispatch_is_balanced() {
 #[test]
 fn accepts_well_placed_task_controls() {
     let errors = validate(
-            "proc P:\n  tasks:\n    load():\n      yield\n      return\n  event restart():\n    load.reset()\n  block:\n    await load()\n    sample:\n      out1 = 0.0\n",
+            "proc P:\n  tasks:\n    load():\n      yield\n      return\n  event restart():\n    load.reset()\n  block:\n    await load()\n    sample:\n      load.reset()\n      out1 = 0.0\n    load.reset()\n",
         );
     assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
 }
@@ -78,7 +78,7 @@ fn accepts_well_placed_task_controls() {
 #[test]
 fn accepts_well_placed_top_level_task_controls() {
     let errors = validate(
-            "task load():\n  yield\n  return\nevent restart():\n  load.reset()\nblock:\n  await load()\n  sample:\n    out1 = 0.0\n",
+            "task load():\n  yield\n  return\nevent restart():\n  load.reset()\nblock:\n  await load()\n  sample:\n    load.reset()\n    out1 = 0.0\n  load.reset()\n",
         );
     assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
 }
@@ -271,8 +271,8 @@ fn rejects_invalid_task_control_placement_and_targets() {
                 "tasks cannot return a value",
             ),
             (
-                "proc P:\n  task load():\n    return\n  sample:\n    load.reset()\n    out1 = 0.0\n",
-                "can only be reset from init, event, or block-pre",
+                "proc P:\n  task load():\n    load.reset()\n  sample:\n    out1 = 0.0\n",
+                "can only be reset from owner executable code",
             ),
         ];
 
@@ -282,6 +282,56 @@ fn rejects_invalid_task_control_placement_and_targets() {
             errors.iter().any(|error| error.message.contains(expected)),
             "missing '{expected}' in {errors:?}"
         );
+    }
+}
+
+#[test]
+fn lowers_task_reset_from_sample_and_block_post() {
+    let sources = [
+        r#"
+task load():
+  yield
+
+block:
+  await load()
+  sample:
+    load.reset()
+    out1 = 0.0
+  load.reset()
+"#,
+        r#"
+task load():
+  yield
+
+sample:
+  load.reset()
+  out1 = 0.0
+"#,
+        r#"
+proc P:
+  task load():
+    yield
+
+  block:
+    await load()
+    sample:
+      load.reset()
+      out1 = 0.0
+    load.reset()
+
+init:
+  p = P()
+
+sample:
+  out1 = p()
+"#,
+    ];
+
+    for source in sources {
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task reset should analyze throughout owner executable code");
+        lower_program_to_optimized_mir(&typed)
+            .expect("task reset should lower throughout owner executable code");
     }
 }
 
