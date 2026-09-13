@@ -332,6 +332,44 @@ test("preserves event values only while the argument shape matches", () => {
   assert.equal(resetForDefault.args[0].value, 2);
 });
 
+test("distinguishes IEEE-special event defaults when preserving values", () => {
+  const scalarEvent = (defaultValue) => ({
+    name: "scalar",
+    schema: { params: [{
+      name: "value",
+      ty: { kind: "scalar", encoding: "f64" },
+      default: defaultValue,
+    }] },
+  });
+  const [positiveZero] = mergeSchemaEvents([scalarEvent("0")], []);
+  positiveZero.args[0].value = 1;
+  const [negativeZero] = mergeSchemaEvents(
+    [scalarEvent("0x8000000000000000")],
+    [positiveZero],
+  );
+
+  const aggregateEvent = (defaultValue) => ({
+    name: "aggregate",
+    schema: { params: [{
+      name: "values",
+      ty: { kind: "array", element: { kind: "scalar", encoding: "f64" }, len: 1 },
+      default: [defaultValue],
+    }] },
+  });
+  const [notANumber] = mergeSchemaEvents(
+    [aggregateEvent("0x7ff8000000000000")],
+    [],
+  );
+  notANumber.args[0].value = [1];
+  const [infinity] = mergeSchemaEvents(
+    [aggregateEvent("0x7ff0000000000000")],
+    [notANumber],
+  );
+
+  assert.ok(Object.is(negativeZero.args[0].value, -0));
+  assert.equal(infinity.args[0].value[0], Infinity);
+});
+
 test("allows browser playback while buffers are unbound", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;

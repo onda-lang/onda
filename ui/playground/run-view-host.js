@@ -456,7 +456,22 @@ function eventArgShapeMatches(left, right) {
 }
 
 function eventDefaultsMatch(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left)) {
+    return Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => eventDefaultsMatch(value, right[index]));
+  }
+  if (Array.isArray(right)
+      || left === null || right === null
+      || typeof left !== "object" || typeof right !== "object") {
+    return false;
+  }
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) =>
+      Object.hasOwn(right, key) && eventDefaultsMatch(left[key], right[key]));
 }
 
 function payloadTypeName(ty) {
