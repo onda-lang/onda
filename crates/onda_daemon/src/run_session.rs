@@ -10,7 +10,7 @@ use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
     format_decoded_print_occurrences, init_with_output, prepare_unchecked_process,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index, DelegateBatch,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked, DelegateBatch,
     ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
     DELEGATE_RECORD_HEADER_SIZE,
 };
@@ -962,15 +962,21 @@ impl RunSession {
             self.delegate_collection_enabled,
         );
         let mut prints = Self::next_print_batch(&mut self.print_storage, self.print_used);
-        let result = trigger_event_by_index(
-            &mut self.instance,
-            index,
-            payload,
-            ExecutionOutput {
-                delegate_batch: batch.as_mut(),
-                print_batch: prints.as_mut(),
-            },
-        );
+        // SAFETY: the event index and payload come from this session's validated plan, while
+        // build/rebuild prepares stable buffer bindings before the instance becomes active.
+        // The generated entry still performs mandatory payload and workspace preflight.
+        let result = unsafe {
+            trigger_event_by_index_unchecked(
+                &mut self.instance,
+                index,
+                payload,
+                ExecutionOutput {
+                    delegate_batch: batch.as_mut(),
+                    print_batch: prints.as_mut(),
+                },
+            )
+        }
+        .and_then(check_execution_status);
         let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
             (batch.used_bytes, batch.record_count, batch.overflow_count)
         });
