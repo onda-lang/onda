@@ -131,7 +131,9 @@ Non-crate directories of note:
     — focused construction domains kept behind one lowering transaction.
   - `mir_lowering/{data,data_slices,references,reference_joins,storage,retained_storage}.rs` — canonical data
     construction/copying, nominal slices, scalar/tensor reference arguments, branch-selected
-    references, prepared fixed scratch, and pointer-free block selection reconstruction.
+    references, prepared fixed scratch, and pointer-free block selection reconstruction. Fixed
+    scalar arrays of at most 256 bytes preferentially remain local within a conservative 64 KiB
+    maximum across each active call path; overflow uses lifetime-reused instance scratch.
     Struct helper tensors use strided slice descriptors;
     fixed-data returns use caller-owned result storage.
   - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process

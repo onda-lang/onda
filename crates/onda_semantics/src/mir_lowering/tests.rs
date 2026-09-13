@@ -2826,8 +2826,8 @@ sample:
 fn fixed_array_storage_keeps_only_small_arrays_local() {
     let source = r#"
 def first():
-  small: f32[16]
-  large: f32[17]
+  small: f32[64]
+  large: f32[65]
   return small[0] + large[0]
 
 outs:
@@ -2849,14 +2849,14 @@ sample:
     assert!(function
         .locals
         .iter()
-        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 16, .. })));
+        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 64, .. })));
     assert!(function
         .locals
         .iter()
-        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { len: 17, .. })));
+        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { len: 65, .. })));
     assert!(mir.state.iter().any(|slot| {
         slot.persistence == onda_mir::StatePersistence::InstanceScratch
-            && matches!(mir.types[slot.ty.index()], MirType::Array { len: 17, .. })
+            && matches!(mir.types[slot.ty.index()], MirType::Array { len: 65, .. })
     }));
 }
 

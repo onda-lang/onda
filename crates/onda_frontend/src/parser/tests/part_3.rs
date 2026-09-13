@@ -923,6 +923,7 @@ fn processor_keywords_require_an_identifier_boundary() {
 fn numeric_literal_overflow_is_a_syntax_error() {
     let cases = [
         "999999999999999999999999999999999999999999".to_owned(),
+        "-9223372036854775809".to_owned(),
         format!("{}.", "9".repeat(400)),
     ];
 
@@ -935,6 +936,14 @@ fn numeric_literal_overflow_is_a_syntax_error() {
                 .any(|error| error.message.contains("literal is out of range")),
             "unexpected diagnostics for {literal:?}: {errors:#?}"
         );
+    }
+}
+
+#[test]
+fn minimum_i64_literal_parses_with_or_without_prefix_whitespace() {
+    for literal in ["-9223372036854775808", "- 9223372036854775808"] {
+        let source = format!("sample:\n  value: i64 = {literal}\n  out1 = f32(value)\n");
+        parse_program(&source).unwrap_or_else(|errors| panic!("{literal}: {errors:#?}"));
     }
 }
 

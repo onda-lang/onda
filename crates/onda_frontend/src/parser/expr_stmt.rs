@@ -1368,20 +1368,36 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
 pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
     let loc = stmt_loc_from_pair(&pair);
     match pair.as_rule() {
-        Rule::number => {
-            let text = pair.as_str();
-            if text.contains('.') {
-                Expr::number(
-                    text.parse::<f64>()
-                        .expect("pest number rule produced invalid float literal"),
-                )
-                .with_loc(loc)
+        Rule::number | Rule::signed_number => {
+            let signed = pair.as_rule() == Rule::signed_number;
+            let number = if signed {
+                pair.into_inner()
+                    .next()
+                    .expect("signed_number rule must contain a number")
             } else {
-                Expr::int(
+                pair
+            };
+            let text = number.as_str();
+            if text.contains('.') {
+                let value = text
+                    .parse::<f64>()
+                    .expect("validated pest number rule produced invalid float literal");
+                Expr::number(if signed { -value } else { value }).with_loc(loc)
+            } else {
+                let value = if signed {
+                    let magnitude = text
+                        .parse::<u64>()
+                        .expect("validated pest number rule produced invalid integer literal");
+                    if magnitude == (i64::MAX as u64) + 1 {
+                        i64::MIN
+                    } else {
+                        -(magnitude as i64)
+                    }
+                } else {
                     text.parse::<i64>()
-                        .expect("pest number rule produced invalid int literal"),
-                )
-                .with_loc(loc)
+                        .expect("validated pest number rule produced invalid integer literal")
+                };
+                Expr::int(value).with_loc(loc)
             }
         }
         Rule::bool_lit => Expr::bool(pair.as_str() == "true").with_loc(loc),
