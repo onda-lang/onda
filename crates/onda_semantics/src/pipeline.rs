@@ -1101,7 +1101,7 @@ pub fn analyze_with_options_and_inputs(
         compiler_owned_proc_fields,
         mut top_level_delegates,
     } = desugar_materialized_processors(program, options, &const_array_infos, &mut errors);
-    normalize_indexed_member_assignments(&mut program);
+    let transient_init_views = normalize_indexed_member_assignments(&mut program);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
@@ -4558,6 +4558,7 @@ pub fn analyze_with_options_and_inputs(
                 .local_array_aliases
                 .keys()
                 .chain(init_bindings.local_struct_aliases.keys())
+                .filter(|name| !path_or_ancestor_is_declared(name, &transient_init_views))
                 .cloned()
                 .collect(),
             struct_roots: struct_instances,

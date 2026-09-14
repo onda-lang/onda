@@ -57,6 +57,82 @@ sample:
 }
 
 #[test]
+fn init_indexed_member_write_views_are_not_retained() {
+    let program = compile(
+        r#"
+struct Cell:
+  value = 0.0
+  taps: f32[2]
+init:
+  cells: Cell[2]
+  cells[0].value = 0.1
+  cells[0].value = 0.2
+  cells[0].value = 0.3
+  cells[1].taps[1] = 0.4
+sample:
+  out1 = 0.0
+"#,
+    );
+    assert!(program
+        .state
+        .iter()
+        .all(|slot| !slot.name.starts_with("__onda_init.selection")));
+
+    fn contains_slice(block: &MirBlock) -> bool {
+        block
+            .statements
+            .iter()
+            .any(|statement| match &statement.kind {
+                StatementKind::Assign {
+                    value: Rvalue::MakeSlice { .. },
+                    ..
+                } => true,
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => contains_slice(then_block) || contains_slice(else_block),
+                StatementKind::Loop { body } => contains_slice(body),
+                _ => false,
+            })
+    }
+    let process = program
+        .functions
+        .iter()
+        .find(|function| function.kind == onda_mir::FunctionKind::Process)
+        .expect("missing process function");
+    assert!(!contains_slice(&process.body));
+}
+
+#[test]
+fn proc_init_indexed_member_write_views_are_not_retained() {
+    let program = compile(
+        r#"
+struct Cell:
+  value = 0.0
+  taps: f32[2]
+proc Voice:
+  init:
+    cells: Cell[2]
+    view: Cell[] = cells[:]
+    index: i32 = 1
+    cells[1].value = 0.25
+    view[index].taps[1] = 0.5
+  sample:
+    out1 = 0.0
+init:
+  voice = Voice()
+sample:
+  out1 = voice()
+"#,
+    );
+    assert!(program
+        .state
+        .iter()
+        .all(|slot| !slot.name.contains("selection")));
+}
+
+#[test]
 fn full_span_arguments_lower_directly() {
     let program = compile(
         r#"
