@@ -490,6 +490,14 @@ pub struct Function {
     pub source: SourceSpan,
 }
 
+/// Maximum positional ABI slots exposed by one function.
+///
+/// Together with the local limit, this keeps every MIR producer and backend's
+/// work proportional and prevents impractically large target call frames.
+pub const MAX_FUNCTION_PARAMETER_COUNT: usize = 1024;
+/// Maximum local-storage descriptors declared by one function.
+pub const MAX_FUNCTION_LOCAL_COUNT: usize = 32 * 1024;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum FunctionKind {

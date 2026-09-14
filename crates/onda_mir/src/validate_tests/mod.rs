@@ -53,6 +53,42 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
+fn rejects_impractically_large_function_abi_and_local_tables() {
+    let mut program = empty_program();
+    let mut oversized = function("oversized", FunctionKind::User);
+    oversized.params = vec![
+        FunctionParam {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::Value,
+            integer_range: None,
+        };
+        crate::MAX_FUNCTION_PARAMETER_COUNT + 1
+    ];
+    oversized.locals = vec![
+        Local {
+            name: None,
+            ty: TypeId::new(0),
+            integer_range: None,
+        };
+        crate::MAX_FUNCTION_LOCAL_COUNT + 1
+    ];
+    program.functions.push(oversized);
+
+    let errors = super::validate(&program).expect_err("oversized function must be rejected");
+    let parameter_limit = crate::MAX_FUNCTION_PARAMETER_COUNT.to_string();
+    let local_limit = crate::MAX_FUNCTION_LOCAL_COUNT.to_string();
+    assert!(errors.iter().any(|error| {
+        error.message.contains(&format!(
+            "parameters, exceeding the limit of {parameter_limit}"
+        ))
+    }));
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains(&format!("locals, exceeding the limit of {local_limit}"))));
+}
+
+#[test]
 fn selected_buffer_parameter_metadata_requires_an_assigned_selector() {
     let mut program = empty_program();
     let span_ty = TypeId::new(program.types.len() as u32);

@@ -1180,6 +1180,9 @@ Supported features:
   definitions are rejected without exhausting compiler resources.
 - Resolved aggregate layouts may contain at most 65,536 expanded shape nodes across a program.
   Fixed array lengths remain tensor dimensions and do not increase this count.
+- One aggregate may lower to at most 512 canonical primitive leaf tensors. Array extents remain
+  within a tensor and do not increase this count. A lowered function may contain at most 1,024
+  positional parameters and 32,768 locals, including compiler-generated aggregate components.
 
 Field declarations have three forms:
 

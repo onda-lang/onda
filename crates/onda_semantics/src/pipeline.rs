@@ -765,6 +765,7 @@ fn aggregate_layout_error_diagnostic(
     let (struct_name, field_path): (Option<&str>, Option<&str>) = match &error {
         AggregateLayoutError::DuplicateStruct { struct_name }
         | AggregateLayoutError::LayoutsTooLarge { struct_name, .. }
+        | AggregateLayoutError::LayoutTooWide { struct_name, .. }
         | AggregateLayoutError::NestingTooDeep { struct_name, .. } => (Some(struct_name), None),
         AggregateLayoutError::DuplicateField {
             struct_name,

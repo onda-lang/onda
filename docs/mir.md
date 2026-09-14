@@ -265,8 +265,8 @@ arity, structured loop control, reachable fallthrough from result-bearing functi
 definite assignment, process-frame dominance, finite ordered numeric interface ranges containing
 their defaults, interface-name uniqueness, explicit one-to-one control mirrors, complete checked
 slice/window contracts, fixed-array and aggregate signed-i32 size limits, recursive aggregate
-rejection, constant-data element-count and logical-byte-size limits, and acyclic realtime call
-graphs.
+rejection, function parameter/local resource limits, constant-data element-count and
+logical-byte-size limits, and acyclic realtime call graphs.
 
 `ValidatedProgram` retains proof of these backend-neutral invariants. It does not promise that a
 particular backend implements every valid capability; target legalization remains a separate,

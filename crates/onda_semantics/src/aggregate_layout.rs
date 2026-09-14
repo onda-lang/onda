@@ -10,6 +10,11 @@ pub(crate) const MAX_AGGREGATE_NESTING: usize = 256;
 /// Bounds the recursive shapes materialized across the program. Fixed array
 /// extents remain tensor axes and therefore do not increase this count.
 pub(crate) const MAX_AGGREGATE_LAYOUT_NODES: usize = 1 << 16;
+/// Bounds the canonical storage and ABI slots produced by any one aggregate.
+/// Array extents remain inside one tensor slot; only distinct leaf tensors
+/// count toward this limit. Half of the function ABI budget lets a maximum-
+/// width aggregate be both an input and a result of one helper.
+pub(crate) const MAX_AGGREGATE_LAYOUT_LEAVES: usize = onda_mir::MAX_FUNCTION_PARAMETER_COUNT / 2;
 
 /// Deterministic program-local identity for a resolved aggregate layout.
 ///
@@ -251,6 +256,11 @@ pub enum AggregateLayoutError {
         count: usize,
         maximum: usize,
     },
+    LayoutTooWide {
+        struct_name: String,
+        count: usize,
+        maximum: usize,
+    },
     DuplicateField {
         struct_name: String,
         field_name: String,
@@ -296,6 +306,14 @@ impl fmt::Display for AggregateLayoutError {
             } => write!(
                 f,
                 "aggregate layouts exceed the limit of {maximum} expanded shape nodes while planning '{struct_name}' ({count} required)"
+            ),
+            Self::LayoutTooWide {
+                struct_name,
+                count,
+                maximum,
+            } => write!(
+                f,
+                "aggregate '{struct_name}' lowers to {count} canonical leaf tensors, exceeding the limit of {maximum}"
             ),
             Self::DuplicateField {
                 struct_name,
@@ -444,30 +462,41 @@ pub(crate) fn validate_aggregate_structure(
     }
 
     let mut shape_nodes = vec![0usize; structs.len()];
+    let mut leaf_tensors = vec![0usize; structs.len()];
     let mut total_nodes = 0usize;
     for &current in topological.iter().rev() {
-        let mut count = 1usize;
+        let mut node_count = 1usize;
+        let mut leaf_count = 0usize;
         for field in aggregate_fields(&structs[current]) {
-            let field_count = match &field.ty {
-                TypedFieldType::Scalar(_) => 1,
-                TypedFieldType::Tuple(elements) => 1usize.saturating_add(elements.len()),
-                TypedFieldType::Struct => field
-                    .struct_name
-                    .as_deref()
-                    .and_then(|name| indices.get(name))
-                    .map_or(1, |index| shape_nodes[*index]),
-                TypedFieldType::Array(_) => 1usize.saturating_add(
-                    field
-                        .array_elem_struct
-                        .as_deref()
-                        .and_then(|name| indices.get(name))
-                        .map_or(1, |index| shape_nodes[*index]),
-                ),
+            let nested_metrics = |name: Option<&str>| {
+                name.and_then(|name| indices.get(name))
+                    .map_or((1, 1), |index| (shape_nodes[*index], leaf_tensors[*index]))
             };
-            count = count.saturating_add(field_count);
+            let (field_nodes, field_leaves) = match &field.ty {
+                TypedFieldType::Scalar(_) => (1, 1),
+                TypedFieldType::Tuple(elements) => {
+                    (1usize.saturating_add(elements.len()), elements.len())
+                }
+                TypedFieldType::Struct => nested_metrics(field.struct_name.as_deref()),
+                TypedFieldType::Array(_) => {
+                    let (element_nodes, element_leaves) =
+                        nested_metrics(field.array_elem_struct.as_deref());
+                    (1usize.saturating_add(element_nodes), element_leaves)
+                }
+            };
+            node_count = node_count.saturating_add(field_nodes);
+            leaf_count = leaf_count.saturating_add(field_leaves);
         }
-        shape_nodes[current] = count;
-        total_nodes = total_nodes.saturating_add(count);
+        if leaf_count > MAX_AGGREGATE_LAYOUT_LEAVES {
+            return Err(AggregateLayoutError::LayoutTooWide {
+                struct_name: structs[current].name.clone(),
+                count: leaf_count,
+                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
+            });
+        }
+        shape_nodes[current] = node_count;
+        leaf_tensors[current] = leaf_count;
+        total_nodes = total_nodes.saturating_add(node_count);
         if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
             return Err(AggregateLayoutError::LayoutsTooLarge {
                 struct_name: structs[current].name.clone(),
@@ -993,6 +1022,57 @@ mod tests {
             }) if depth == MAX_AGGREGATE_NESTING + 1
         ));
         assert!(validate_aggregate_structure(&structs[1..]).is_ok());
+    }
+
+    #[test]
+    fn rejects_wide_layout_before_materializing_canonical_leaves() {
+        let mut structs = vec![TypedStruct {
+            name: "S0".to_owned(),
+            fields: vec![scalar_field("value", PrimitiveType::F32)],
+        }];
+        let mut leaves = 1usize;
+        for level in 1.. {
+            let nested = format!("S{}", level - 1);
+            structs.push(TypedStruct {
+                name: format!("S{level}"),
+                fields: vec![
+                    struct_field("left", &nested),
+                    struct_field("right", &nested),
+                ],
+            });
+            leaves *= 2;
+            if leaves > MAX_AGGREGATE_LAYOUT_LEAVES {
+                break;
+            }
+        }
+
+        assert!(validate_aggregate_structure(&structs[..structs.len() - 1]).is_ok());
+        assert!(matches!(
+            validate_aggregate_structure(&structs),
+            Err(AggregateLayoutError::LayoutTooWide {
+                count,
+                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
+                ..
+            }) if count == leaves
+        ));
+    }
+
+    #[test]
+    fn array_extents_remain_one_canonical_leaf_tensor() {
+        let leaf = TypedStruct {
+            name: "Leaf".to_owned(),
+            fields: vec![scalar_field("value", PrimitiveType::F32)],
+        };
+        let extent = MAX_AGGREGATE_LAYOUT_LEAVES * 4;
+        let batch = TypedStruct {
+            name: "Batch".to_owned(),
+            fields: vec![struct_array_field("items", "Leaf", extent)],
+        };
+
+        let layouts = AggregateLayoutTable::build(&[leaf, batch]).unwrap();
+        let batch = layouts.layout_for_struct("Batch").unwrap();
+        assert_eq!(batch.leaves.len(), 1);
+        assert_eq!(batch.scalar_width, extent);
     }
 
     #[test]

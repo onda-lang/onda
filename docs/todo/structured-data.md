@@ -458,6 +458,9 @@ safe; a chain of value-returning helpers need not materialize a copy at every re
 must respect leaf layout and store domains before being replaced with bulk memory operations.
 An unreached branch performs no aggregate initialization or copying. Report checked target
 layout limits and maximum planned live storage; do not substitute huge stack frames for planning.
+The portable limits are 512 canonical primitive leaf tensors per aggregate, 1,024 positional
+parameters per lowered function, and 32,768 lowered locals per function. Tensor extents do not
+consume leaf slots because they remain fixed-array dimensions rather than expanded ABI entries.
 
 Sample-rate construction, copying, and returns are legal. Their execution cost belongs to the
 programmer; optional size/storage reports can expose costs without forbidding ordinary code.

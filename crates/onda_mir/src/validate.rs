@@ -1125,6 +1125,28 @@ impl Validator<'_> {
     }
 
     fn validate_function(&mut self, id: FunctionId, function: &Function) {
+        if function.params.len() > crate::MAX_FUNCTION_PARAMETER_COUNT {
+            self.function_error(
+                id,
+                function.source,
+                format!(
+                    "function declares {} parameters, exceeding the limit of {}",
+                    function.params.len(),
+                    crate::MAX_FUNCTION_PARAMETER_COUNT
+                ),
+            );
+        }
+        if function.locals.len() > crate::MAX_FUNCTION_LOCAL_COUNT {
+            self.function_error(
+                id,
+                function.source,
+                format!(
+                    "function declares {} locals, exceeding the limit of {}",
+                    function.locals.len(),
+                    crate::MAX_FUNCTION_LOCAL_COUNT
+                ),
+            );
+        }
         if let Some(file) = function.source.file {
             if file.index() >= self.program.source_files.len() {
                 self.function_error(
