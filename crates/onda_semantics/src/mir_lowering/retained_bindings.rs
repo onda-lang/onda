@@ -10,15 +10,26 @@ pub(super) struct RetainedBindings {
     pub restore: MirBlock,
 }
 
+pub(super) struct InitRetentionContext<'a> {
+    pub state: &'a mut Vec<onda_mir::StateSlot>,
+    pub types: &'a [MirType],
+    pub source_files: &'a [onda_mir::SourceFile],
+    pub layouts: &'a AggregateLayoutTable,
+}
+
 pub(super) fn retain_init_bindings(
     init: &mut onda_mir::Function,
     mut bindings: HashMap<String, Binding>,
     views: &HashMap<String, SourceLoc>,
     local_names: &HashSet<String>,
-    state: &mut Vec<onda_mir::StateSlot>,
-    types: &[MirType],
-    layouts: &AggregateLayoutTable,
+    context: InitRetentionContext<'_>,
 ) -> Result<RetainedBindings, MirLoweringError> {
+    let InitRetentionContext {
+        state,
+        types,
+        source_files,
+        layouts,
+    } = context;
     let mut forbidden = HashSet::new();
     for (name, binding) in &mut bindings {
         if has_matching_root(name, |root| local_names.contains(root)) {
@@ -33,6 +44,7 @@ pub(super) fn retain_init_bindings(
         types,
         &mut forbidden,
         false,
+        source_files,
     )?;
     forbidden.retain(|local| {
         !matches!(
@@ -53,6 +65,7 @@ pub(super) fn retain_init_bindings(
         types,
         &mut retained,
         true,
+        source_files,
     )?;
     if !retained.is_disjoint(&forbidden) {
         let mut roots = views.iter().collect::<Vec<_>>();
@@ -76,6 +89,7 @@ pub(super) fn retain_init_bindings(
                 types,
                 &mut candidate,
                 true,
+                source_files,
             )?;
             if !candidate.is_disjoint(&forbidden) {
                 return Err(MirLoweringError::new(
@@ -102,6 +116,7 @@ pub(super) fn retain_init_bindings(
         &extents,
         state,
         types,
+        source_files,
         "init",
         init.source,
     )?;

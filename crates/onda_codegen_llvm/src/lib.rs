@@ -594,7 +594,6 @@ pub struct DeclaredBufferArray {
 #[derive(Debug, Clone)]
 pub struct DeclaredMessage {
     payload_plan: onda_processor_abi::payload::PayloadPlan,
-    schema: onda_processor_abi::payload::PayloadSchema,
     name: String,
     params: Vec<DeclaredEventParam>,
     payload_bytes: Option<usize>,

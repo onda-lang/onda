@@ -492,9 +492,12 @@ fn lower_program_to_mir(
             bindings,
             &init_views,
             &program.init_local_data_names,
-            &mut mir.state,
-            &mir.types,
-            &program.aggregate_layouts,
+            retained_bindings::InitRetentionContext {
+                state: &mut mir.state,
+                types: &mir.types,
+                source_files: &mir.source_files,
+                layouts: &program.aggregate_layouts,
+            },
         )
         .map_err(|error| vec![error])?,
     );
@@ -526,8 +529,14 @@ fn lower_program_to_mir(
     )
     .map_err(|error| vec![error])?;
 
-    retained_storage::retain_block_storage(&mut process, block_region, &mut mir.state, &mir.types)
-        .map_err(|error| vec![error])?;
+    retained_storage::retain_block_storage(
+        &mut process,
+        block_region,
+        &mut mir.state,
+        &mir.types,
+        &mir.source_files,
+    )
+    .map_err(|error| vec![error])?;
 
     mir.functions[0] = init;
     mir.functions[1] = process;

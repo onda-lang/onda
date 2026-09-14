@@ -21,6 +21,7 @@ pub(super) fn retain_block_storage(
     region: BlockRegion,
     state: &mut Vec<onda_mir::StateSlot>,
     types: &[MirType],
+    source_files: &[onda_mir::SourceFile],
 ) -> Result<(), MirLoweringError> {
     let continuation = MirBlock {
         statements: function.body.statements[region.statement + 1..].to_vec(),
@@ -61,6 +62,7 @@ pub(super) fn retain_block_storage(
         &extents,
         state,
         types,
+        source_files,
         "block",
         function.source,
     )?;
@@ -101,6 +103,7 @@ pub(super) fn retain_storage(
     extents: &[ViewExtent],
     state: &mut Vec<onda_mir::StateSlot>,
     types: &[MirType],
+    source_files: &[onda_mir::SourceFile],
     scope: &str,
     source: SourceSpan,
 ) -> Result<(MirBlock, HashMap<LocalId, onda_mir::StateId>), MirLoweringError> {
@@ -109,12 +112,20 @@ pub(super) fn retain_storage(
         .filter(|extent| !extent.tensors.is_empty())
         .map(|extent| extent.length)
         .collect::<HashSet<_>>();
-    extend_storage_dependencies(declarations, locals, types, &mut retained, true)?;
+    extend_storage_dependencies(
+        declarations,
+        locals,
+        types,
+        &mut retained,
+        true,
+        source_files,
+    )?;
     let mut planner = Planner {
         locals,
         state,
         types,
         retained: &retained,
+        source_files,
         scope,
         owned: HashMap::new(),
     };
@@ -140,76 +151,107 @@ pub(super) fn extend_storage_dependencies(
     types: &[MirType],
     retained: &mut HashSet<LocalId>,
     validate_origins: bool,
+    source_files: &[onda_mir::SourceFile],
 ) -> Result<(), MirLoweringError> {
+    let collector = DependencyCollector {
+        locals,
+        types,
+        validate_origins,
+        source_files,
+    };
     loop {
         let before = retained.len();
-        collect_dependencies(block, locals, types, retained, validate_origins)?;
+        collector.collect(block, retained)?;
         if before == retained.len() {
             return Ok(());
         }
     }
 }
 
-fn collect_dependencies(
-    block: &MirBlock,
-    locals: &[onda_mir::Local],
-    types: &[MirType],
-    retained: &mut HashSet<LocalId>,
+struct DependencyCollector<'a> {
+    locals: &'a [onda_mir::Local],
+    types: &'a [MirType],
     validate_origins: bool,
-) -> Result<(), MirLoweringError> {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign { destination, value }
-                if matches!(destination.base, PlaceBase::Local(local) if retained.contains(&local)
-                    && matches!(types[locals[local.index()].ty.index()], MirType::Slice { .. })) =>
-            {
-                let source = match value {
-                    Rvalue::MakeSlice {
-                        source: onda_mir::SliceSource::Place(place),
-                        ..
-                    }
-                    | Rvalue::Load(place) => Some(place.base),
-                    Rvalue::Use(Value::Local(local)) => Some(PlaceBase::Local(*local)),
-                    Rvalue::MakeSlice {
-                        source: onda_mir::SliceSource::ConstData(_),
-                        ..
-                    } => None,
-                    _ if validate_origins => return Err(escape_error()),
-                    _ => None,
-                };
-                match source {
-                    Some(PlaceBase::Local(local)) => {
-                        retained.insert(local);
-                    }
-                    Some(PlaceBase::Parameter(_) | PlaceBase::EventParam(_)) => {
-                        if validate_origins {
-                            return Err(escape_error());
-                        }
-                    }
-                    Some(PlaceBase::State(_) | PlaceBase::Param(_)) | None => {}
-                }
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_dependencies(then_block, locals, types, retained, validate_origins)?;
-                collect_dependencies(else_block, locals, types, retained, validate_origins)?;
-            }
-            StatementKind::Loop { body } => {
-                collect_dependencies(body, locals, types, retained, validate_origins)?
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+    source_files: &'a [onda_mir::SourceFile],
 }
 
-fn escape_error() -> MirLoweringError {
+impl DependencyCollector<'_> {
+    fn collect(
+        &self,
+        block: &MirBlock,
+        retained: &mut HashSet<LocalId>,
+    ) -> Result<(), MirLoweringError> {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign { destination, value }
+                    if matches!(destination.base, PlaceBase::Local(local) if retained.contains(&local)
+                        && matches!(self.types[self.locals[local.index()].ty.index()], MirType::Slice { .. })) =>
+                {
+                    let source = match value {
+                        Rvalue::MakeSlice {
+                            source: onda_mir::SliceSource::Place(place),
+                            ..
+                        }
+                        | Rvalue::Load(place) => Some(place.base),
+                        Rvalue::Use(Value::Local(local)) => Some(PlaceBase::Local(*local)),
+                        Rvalue::MakeSlice {
+                            source: onda_mir::SliceSource::ConstData(_),
+                            ..
+                        } => None,
+                        _ if self.validate_origins => {
+                            return Err(escape_error(statement.source, self.source_files));
+                        }
+                        _ => None,
+                    };
+                    match source {
+                        Some(PlaceBase::Local(local)) => {
+                            retained.insert(local);
+                        }
+                        Some(PlaceBase::Parameter(_) | PlaceBase::EventParam(_)) => {
+                            if self.validate_origins {
+                                return Err(escape_error(statement.source, self.source_files));
+                            }
+                        }
+                        Some(PlaceBase::State(_) | PlaceBase::Param(_)) | None => {}
+                    }
+                }
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    self.collect(then_block, retained)?;
+                    self.collect(else_block, retained)?;
+                }
+                StatementKind::Loop { body } => self.collect(body, retained)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn escape_error(source: SourceSpan, source_files: &[onda_mir::SourceFile]) -> MirLoweringError {
     MirLoweringError::new(
         "block-carried data view borrows storage that cannot survive a process boundary",
-        SourceLoc::ZERO,
+        source_location(source, source_files),
+    )
+}
+
+fn source_location(source: SourceSpan, source_files: &[onda_mir::SourceFile]) -> SourceLoc {
+    if source.is_unknown() {
+        return SourceLoc::ZERO;
+    }
+    SourceLoc::new(
+        source
+            .file
+            .and_then(|file| source_files.get(file.index()))
+            .map(|file| file.path.clone()),
+        source.line as usize,
+        source.column as usize,
+        source.end_line as usize,
+        source.end_column as usize,
+        Vec::new(),
     )
 }
 
@@ -219,6 +261,7 @@ struct Planner<'a> {
     state: &'a mut Vec<onda_mir::StateSlot>,
     types: &'a [MirType],
     retained: &'a HashSet<LocalId>,
+    source_files: &'a [onda_mir::SourceFile],
     owned: HashMap<LocalId, onda_mir::StateId>,
 }
 
@@ -439,7 +482,7 @@ impl Planner<'_> {
                             }
                         }
                         Rvalue::Use(_) | Rvalue::Load(_) => {}
-                        _ => return Err(escape_error()),
+                        _ => return Err(escape_error(source, self.source_files)),
                     }
                     captured.statements.push(statement);
                     captured.statements.extend(coordinates.statements);

@@ -444,7 +444,6 @@ mod tests {
         let event = crate::DeclaredEvent {
             payload_plan: onda_processor_abi::payload::PayloadPlan::new(&Default::default())
                 .unwrap(),
-            schema: Default::default(),
             name: "curve".to_owned(),
             params: vec![
                 crate::DeclaredEventParam {

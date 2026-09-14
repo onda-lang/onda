@@ -359,7 +359,7 @@ fn build_events(
 ) -> Result<Vec<DeclaredEvent>, MirMetadataError> {
     let mut events = Vec::with_capacity(program.interface.events.len());
     for (event_index, event) in program.interface.events.iter().enumerate() {
-        let (params, computed_fixed_size, payload_min_bytes) = build_payload_descriptor(
+        let payload = build_payload_descriptor(
             program,
             "event",
             &event.name,
@@ -370,20 +370,18 @@ fn build_events(
                 .map(|param| (param.name.as_str(), param.ty, param.default.as_ref())),
         )?;
 
-        if fixed_sizes[event_index] != computed_fixed_size {
+        if fixed_sizes[event_index] != payload.fixed_wire_size {
             return Err(MirMetadataError::new(format!(
                 "MIR event '{}' layout reports {:?} fixed bytes; descriptor shape requires {:?}",
-                event.name, fixed_sizes[event_index], computed_fixed_size
+                event.name, fixed_sizes[event_index], payload.fixed_wire_size
             )));
         }
         events.push(DeclaredEvent {
-            payload_plan: onda_processor_abi::payload::PayloadPlan::new(&event.schema)
-                .map_err(|error| MirMetadataError::new(error.to_string()))?,
-            schema: event.schema.clone(),
+            payload_plan: payload.plan,
             name: event.name.clone(),
-            params,
+            params: payload.params,
             payload_bytes: fixed_sizes[event_index],
-            payload_min_bytes,
+            payload_min_bytes: payload.minimum_wire_size,
         });
     }
     Ok(events)
@@ -395,7 +393,7 @@ fn build_delegates(program: &Program) -> Result<Vec<DeclaredDelegate>, MirMetada
         .delegates
         .iter()
         .map(|delegate| {
-            let (params, payload_bytes, payload_min_bytes) = build_payload_descriptor(
+            let payload = build_payload_descriptor(
                 program,
                 "delegate",
                 &delegate.name,
@@ -406,16 +404,21 @@ fn build_delegates(program: &Program) -> Result<Vec<DeclaredDelegate>, MirMetada
                     .map(|param| (param.name.as_str(), param.ty, None)),
             )?;
             Ok(DeclaredDelegate {
-                payload_plan: onda_processor_abi::payload::PayloadPlan::new(&delegate.schema)
-                    .map_err(|error| MirMetadataError::new(error.to_string()))?,
-                schema: delegate.schema.clone(),
+                payload_plan: payload.plan,
                 name: delegate.name.clone(),
-                params,
-                payload_bytes,
-                payload_min_bytes,
+                params: payload.params,
+                payload_bytes: payload.fixed_wire_size,
+                payload_min_bytes: payload.minimum_wire_size,
             })
         })
         .collect()
+}
+
+struct BuiltPayloadDescriptor {
+    plan: onda_processor_abi::payload::PayloadPlan,
+    params: Vec<DeclaredEventParam>,
+    fixed_wire_size: Option<usize>,
+    minimum_wire_size: usize,
 }
 
 fn build_payload_descriptor<'a>(
@@ -430,12 +433,18 @@ fn build_payload_descriptor<'a>(
             Option<&'a onda_mir::ConstantValue>,
         ),
     >,
-) -> Result<(Vec<DeclaredEventParam>, Option<usize>, usize), MirMetadataError> {
+) -> Result<BuiltPayloadDescriptor, MirMetadataError> {
     let plan = onda_processor_abi::payload::PayloadPlan::new(schema)
         .map_err(|error| MirMetadataError::new(error.to_string()))?;
     let mut prefixes = vec![false; plan.abi_parameter_count()];
+    let mut dynamic_lengths = vec![false; plan.abi_parameter_count()];
     for tensor in plan.tensors() {
         prefixes[tensor.parameter] = tensor.length_prefix;
+    }
+    for parameter in plan.parameters() {
+        if let Some(index) = parameter.length_parameter {
+            dynamic_lengths[index] = true;
+        }
     }
     let mut descriptors = Vec::new();
     let mut minimum_wire_offset = 0usize;
@@ -535,15 +544,16 @@ fn build_payload_descriptor<'a>(
                 )));
             }
         }
-        if plan
-            .parameters()
-            .iter()
-            .any(|group| group.length_parameter == Some(index))
-        {
+        if dynamic_lengths.get(index).copied().unwrap_or(false) {
             fixed_size = None;
         }
     }
-    Ok((descriptors, fixed_size, minimum_wire_offset))
+    Ok(BuiltPayloadDescriptor {
+        plan,
+        params: descriptors,
+        fixed_wire_size: fixed_size,
+        minimum_wire_size: minimum_wire_offset,
+    })
 }
 
 fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataError> {

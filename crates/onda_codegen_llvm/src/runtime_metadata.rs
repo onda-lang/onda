@@ -221,7 +221,7 @@ impl crate::DeclaredMessage {
     }
 
     pub fn schema(&self) -> &onda_processor_abi::payload::PayloadSchema {
-        &self.schema
+        self.payload_plan.schema()
     }
     pub fn name(&self) -> &str {
         &self.name

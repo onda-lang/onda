@@ -1843,41 +1843,32 @@ impl onda_processor_abi::payload::PayloadSource for RunEventValue {
         output: &mut [u8],
     ) -> Result<(), onda_processor_abi::payload::PayloadError> {
         use onda_processor_abi::payload::{PayloadError, ScalarEncoding};
-        if encoding == ScalarEncoding::Bool {
-            let boolean = match self {
-                Self::Bool(value) => *value,
-                Self::Number(0.0) | Self::I64(0) => false,
-                Self::Number(1.0) | Self::I64(1) => true,
-                _ => return Err(PayloadError::InvalidValue),
-            };
-            output[0] = u8::from(boolean);
-            return Ok(());
-        }
-        let number = match self {
-            Self::Number(value) => *value,
-            Self::I64(value) => *value as f64,
-            _ => return Err(PayloadError::InvalidValue),
-        };
-        match encoding {
-            ScalarEncoding::F32 => output.copy_from_slice(&(number as f32).to_le_bytes()),
-            ScalarEncoding::F64 => output.copy_from_slice(&number.to_le_bytes()),
-            ScalarEncoding::I32 => {
+        match (encoding, self) {
+            (ScalarEncoding::Bool, Self::Bool(value)) => {
+                output[0] = u8::from(*value);
+            }
+            (ScalarEncoding::F32, Self::Number(value)) => {
+                output.copy_from_slice(&(*value as f32).to_le_bytes());
+            }
+            (ScalarEncoding::F64, Self::Number(value)) => {
+                output.copy_from_slice(&value.to_le_bytes());
+            }
+            (ScalarEncoding::I32, Self::Number(value)) => {
+                let number = *value;
                 if number.fract() != 0.0 || number < i32::MIN as f64 || number > i32::MAX as f64 {
                     return Err(PayloadError::InvalidValue);
                 }
                 output.copy_from_slice(&(number as i32).to_le_bytes());
             }
-            ScalarEncoding::I64 => {
-                let value = match self {
-                    Self::I64(value) => *value,
-                    _ if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 => {
-                        number as i64
-                    }
-                    _ => return Err(PayloadError::InvalidValue),
-                };
+            (ScalarEncoding::I64, Self::I64(value)) => {
                 output.copy_from_slice(&value.to_le_bytes());
             }
-            ScalarEncoding::Bool => unreachable!(),
+            (ScalarEncoding::I64, Self::Number(value))
+                if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0 =>
+            {
+                output.copy_from_slice(&(*value as i64).to_le_bytes());
+            }
+            _ => return Err(PayloadError::InvalidValue),
         }
         Ok(())
     }
@@ -2130,6 +2121,30 @@ sample:
             unreachable!()
         };
         assert!(negative_zero.is_sign_negative());
+    }
+
+    #[test]
+    fn event_scalar_values_must_match_their_schema_encoding() {
+        use onda_processor_abi::payload::{PayloadError, PayloadSource, ScalarEncoding};
+
+        let mut bytes = [0; 8];
+        assert_eq!(
+            RunEventValue::I64(2).write_scalar(ScalarEncoding::F32, &mut bytes[..4]),
+            Err(PayloadError::InvalidValue)
+        );
+        assert_eq!(
+            RunEventValue::Number(1.0).write_scalar(ScalarEncoding::Bool, &mut bytes[..1]),
+            Err(PayloadError::InvalidValue)
+        );
+        RunEventValue::Number(2.0)
+            .write_scalar(ScalarEncoding::F32, &mut bytes[..4])
+            .unwrap();
+        RunEventValue::Bool(true)
+            .write_scalar(ScalarEncoding::Bool, &mut bytes[..1])
+            .unwrap();
+        RunEventValue::Number(9_007_199_254_740_991.0)
+            .write_scalar(ScalarEncoding::I64, &mut bytes)
+            .unwrap();
     }
 }
 

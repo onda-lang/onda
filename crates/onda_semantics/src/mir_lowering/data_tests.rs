@@ -460,7 +460,7 @@ block:
     out1 = values[0]
 "#,
     );
-    let source = onda_frontend::parse_program(
+    let source = onda_frontend::parse_program_with_path(
         r#"
 buffers:
   input: f32
@@ -469,13 +469,18 @@ block:
   sample:
     out1 = view[0]
 "#,
+        std::path::Path::new("external_view_location.onda"),
     )
     .unwrap();
     let typed = crate::analyze(source).unwrap();
     let errors = lower_program_to_optimized_mir(&typed).unwrap_err();
-    assert!(errors
+    let error = errors
         .iter()
-        .any(|error| error.message.contains("cannot survive a process boundary")));
+        .find(|error| error.message.contains("cannot survive a process boundary"))
+        .expect("external view escape should be diagnosed");
+    assert_eq!(error.location.line, 5);
+    assert_eq!(error.location.column, 10);
+    assert!(error.location.file().is_some());
 }
 
 #[test]
