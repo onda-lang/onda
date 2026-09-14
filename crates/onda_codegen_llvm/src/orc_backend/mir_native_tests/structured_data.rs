@@ -1823,3 +1823,54 @@ fn branch_aliases_and_explicit_aggregate_arguments_preserve_writes() {
         assert_eq!(output[1], [26.0; 8]);
     }
 }
+
+#[test]
+fn branch_joined_struct_slices_use_the_selected_length() {
+    let source = r#"
+struct Note:
+  value: f32
+def selected_length(choose_short: bool) -> i32:
+  short: Note[2]
+  long: Note[3]
+  if choose_short:
+    selected = short[:]
+  else:
+    selected = long[:]
+  return selected.len()
+sample:
+  out1 = f32(selected_length(false))
+  out2 = f32(selected_length(true))
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let output = run_native_outputs_with_opt_level(source, 4, level);
+        assert_eq!(output[0], [3.0; 4]);
+        assert_eq!(output[1], [2.0; 4]);
+    }
+}
+
+#[test]
+fn branch_exclusive_struct_scratch_preserves_selected_contents() {
+    let source = r#"
+struct Note:
+  value: f32
+def selected_value(choose_left: bool) -> f32:
+  if choose_left:
+    left: Note[4096]
+    left[0].value = 11.0
+    selected = left[:]
+  else:
+    right: Note[4096]
+    right[0].value = 17.0
+    selected = right[:]
+  chosen = selected[0]
+  return chosen.value
+sample:
+  out1 = selected_value(false)
+  out2 = selected_value(true)
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let output = run_native_outputs_with_opt_level(source, 4, level);
+        assert_eq!(output[0], [17.0; 4]);
+        assert_eq!(output[1], [11.0; 4]);
+    }
+}

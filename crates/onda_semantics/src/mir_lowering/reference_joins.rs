@@ -108,7 +108,6 @@ impl FunctionLowerer<'_> {
             (StructArrayLength::Fixed(a), StructArrayLength::Fixed(b)) if a == b => {
                 StructArrayLength::Fixed(*a)
             }
-            (StructArrayLength::Fixed(_), _) | (_, StructArrayLength::Fixed(_)) => return Ok(None),
             _ => {
                 let local = self.new_local(None, PrimitiveType::I32);
                 for (block, length) in [

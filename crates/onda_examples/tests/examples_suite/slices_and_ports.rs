@@ -1055,6 +1055,42 @@ sample:
 }
 
 #[test]
+fn deep_plain_assignment_places_evaluate_selectors_before_the_value() {
+    let src = r#"
+struct Counter:
+  value: i32 = 0
+
+struct Leaf:
+  gain: f32 = 0.0
+
+struct Middle:
+  leaves: Leaf[2]
+
+struct Root:
+  middles: Middle[2]
+
+def next(counter: Counter) -> i32:
+  result = counter.value
+  counter.value += 1
+  return result
+
+sample:
+  counter = Counter()
+  roots: Root[2]
+  roots[next(counter)].middles[next(counter)].leaves[next(counter)].gain = f32(next(counter) + 10)
+  root = roots[0]
+  middle = root.middles[1]
+  leaf = middle.leaves[1]
+  out1 = leaf.gain + f32(counter.value)
+"#;
+
+    let (mut instance, _, _) = compile_instance(src, 1);
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 17.0, 1e-6);
+}
+
+#[test]
 fn indexed_proc_fields_and_mutating_rhs_preserve_compound_place_selection() {
     let src = r#"
 proc Voice:

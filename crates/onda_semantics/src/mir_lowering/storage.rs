@@ -19,7 +19,113 @@ struct ReusableSlot {
     state: onda_mir::StateId,
     ty: TypeId,
     integer_range: Option<onda_mir::IntegerRangeInvariant>,
-    available_after: usize,
+    occupants: Vec<SlotOccupant>,
+}
+
+struct SlotOccupant {
+    local: LocalId,
+    last: usize,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BranchSide {
+    Then,
+    Else,
+}
+
+#[derive(Clone, Copy)]
+struct BranchArm {
+    branch: usize,
+    side: BranchSide,
+}
+
+struct StorageAnalysis {
+    position: usize,
+    lifetimes: Vec<StorageLifetime>,
+    branch_constraints: Vec<Option<Vec<BranchArm>>>,
+    dependencies: Vec<(LocalId, LocalId)>,
+    direct_references: HashSet<LocalId>,
+    branch_path: Vec<BranchArm>,
+    next_branch: usize,
+}
+
+impl StorageAnalysis {
+    fn new(local_count: usize) -> Self {
+        Self {
+            position: 0,
+            lifetimes: vec![StorageLifetime::default(); local_count],
+            branch_constraints: vec![None; local_count],
+            dependencies: Vec::new(),
+            direct_references: HashSet::new(),
+            branch_path: Vec::new(),
+            next_branch: 0,
+        }
+    }
+
+    fn collect(&mut self, block: &MirBlock) {
+        for statement in &block.statements {
+            let current = self.position;
+            self.position += 1;
+            self.direct_references.clear();
+            onda_mir::collect_direct_local_references(statement, &mut self.direct_references);
+            for &local in &self.direct_references {
+                if let Some(lifetime) = self.lifetimes.get_mut(local.index()) {
+                    lifetime.record(current);
+                }
+                if let Some(constraints) = self.branch_constraints.get_mut(local.index()) {
+                    record_branch_constraints(constraints, &self.branch_path);
+                }
+            }
+            match &statement.kind {
+                StatementKind::Assign {
+                    destination:
+                        Place {
+                            base: PlaceBase::Local(destination),
+                            projections,
+                        },
+                    value,
+                } if projections.is_empty() => {
+                    let source = match value {
+                        Rvalue::Use(Value::Local(source)) => Some(*source),
+                        Rvalue::MakeSlice {
+                            source:
+                                onda_mir::SliceSource::Place(Place {
+                                    base: PlaceBase::Local(source),
+                                    ..
+                                }),
+                            ..
+                        } => Some(*source),
+                        _ => None,
+                    };
+                    if let Some(source) = source {
+                        self.dependencies.push((source, *destination));
+                    }
+                }
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    let branch = self.next_branch;
+                    self.next_branch += 1;
+                    self.branch_path.push(BranchArm {
+                        branch,
+                        side: BranchSide::Then,
+                    });
+                    self.collect(then_block);
+                    self.branch_path.pop();
+                    self.branch_path.push(BranchArm {
+                        branch,
+                        side: BranchSide::Else,
+                    });
+                    self.collect(else_block);
+                    self.branch_path.pop();
+                }
+                StatementKind::Loop { body } => self.collect(body),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Small fixed arrays are preferentially left as entry-block locals: native
@@ -42,16 +148,9 @@ pub(super) fn plan_fixed_scratch(
     for (function_id, function) in program.functions.iter_mut().enumerate() {
         let mut slots = HashMap::new();
         let referenced = onda_mir::referenced_locals(&function.body);
-        let mut lifetimes = vec![StorageLifetime::default(); function.locals.len()];
-        let mut dependencies = Vec::new();
-        collect_storage_lifetimes(
-            &function.body,
-            &mut 0,
-            &mut lifetimes,
-            &mut dependencies,
-            &mut HashSet::new(),
-        );
-        extend_backing_lifetimes(&mut lifetimes, &dependencies);
+        let mut analysis = StorageAnalysis::new(function.locals.len());
+        analysis.collect(&function.body);
+        extend_backing_lifetimes(&mut analysis.lifetimes, &analysis.dependencies);
         let mut candidates = function
             .locals
             .iter()
@@ -61,7 +160,7 @@ pub(super) fn plan_fixed_scratch(
                 (referenced.contains(&id) && promoted[function_id].contains(&id)).then_some((
                     id,
                     local,
-                    lifetimes[index],
+                    analysis.lifetimes[index],
                 ))
             })
             .collect::<Vec<_>>();
@@ -70,17 +169,29 @@ pub(super) fn plan_fixed_scratch(
 
         let mut reusable = Vec::<ReusableSlot>::new();
         for (local_id, local, lifetime) in candidates {
-            let state = reusable
-                .iter_mut()
-                .find(|slot| {
-                    slot.ty == local.ty
-                        && slot.integer_range == local.integer_range
-                        && slot.available_after < lifetime.first.unwrap_or(0)
-                })
-                .map(|slot| {
-                    slot.available_after = lifetime.last;
-                    slot.state
-                });
+            let first = lifetime.first.unwrap_or(usize::MAX);
+            let mut state = None;
+            for slot in &mut reusable {
+                if slot.ty != local.ty || slot.integer_range != local.integer_range {
+                    continue;
+                }
+                slot.occupants.retain(|occupant| occupant.last >= first);
+                // Overlapping intervals may still share when every remaining
+                // occupant is confined to the opposing arm of one branch.
+                if slot.occupants.iter().all(|occupant| {
+                    branch_exclusive(
+                        analysis.branch_constraints[local_id.index()].as_deref(),
+                        analysis.branch_constraints[occupant.local.index()].as_deref(),
+                    )
+                }) {
+                    slot.occupants.push(SlotOccupant {
+                        local: local_id,
+                        last: lifetime.last,
+                    });
+                    state = Some(slot.state);
+                    break;
+                }
+            }
             let state = match state {
                 Some(state) => state,
                 None => {
@@ -107,7 +218,10 @@ pub(super) fn plan_fixed_scratch(
                         state,
                         ty: local.ty,
                         integer_range: local.integer_range,
-                        available_after: lifetime.last,
+                        occupants: vec![SlotOccupant {
+                            local: local_id,
+                            last: lifetime.last,
+                        }],
                     });
                     state
                 }
@@ -252,80 +366,40 @@ fn fixed_array_bytes(types: &[MirType], ty: TypeId) -> Option<u64> {
     u64::from(*len).checked_mul(element.logical_byte_width())
 }
 
-fn collect_storage_lifetimes(
-    block: &MirBlock,
-    position: &mut usize,
-    lifetimes: &mut [StorageLifetime],
-    dependencies: &mut Vec<(LocalId, LocalId)>,
-    direct_references: &mut HashSet<LocalId>,
-) {
-    for statement in &block.statements {
-        let current = *position;
-        *position += 1;
-        direct_references.clear();
-        onda_mir::collect_direct_local_references(statement, direct_references);
-        for &local in direct_references.iter() {
-            if let Some(lifetime) = lifetimes.get_mut(local.index()) {
-                lifetime.record(current);
+fn record_branch_constraints(constraints: &mut Option<Vec<BranchArm>>, branch_path: &[BranchArm]) {
+    // The intersection describes arms containing every direct reference to
+    // this local. Anything referenced outside an arm cannot use that arm as
+    // an exclusivity proof. Descriptor uses may extend the backing lifetime,
+    // but the descriptor can only acquire this origin at one of these direct
+    // reference sites, so opposing origins still cannot coexist.
+    if let Some(constraints) = constraints {
+        constraints.retain(|constraint| {
+            branch_path
+                .iter()
+                .any(|arm| arm.branch == constraint.branch && arm.side == constraint.side)
+        });
+    } else {
+        *constraints = Some(branch_path.to_vec());
+    }
+}
+
+fn branch_exclusive(a: Option<&[BranchArm]>, b: Option<&[BranchArm]>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return false;
+    };
+    let (mut a_index, mut b_index) = (0, 0);
+    while let (Some(a), Some(b)) = (a.get(a_index), b.get(b_index)) {
+        match a.branch.cmp(&b.branch) {
+            std::cmp::Ordering::Less => a_index += 1,
+            std::cmp::Ordering::Greater => b_index += 1,
+            std::cmp::Ordering::Equal if a.side != b.side => return true,
+            std::cmp::Ordering::Equal => {
+                a_index += 1;
+                b_index += 1;
             }
-        }
-        match &statement.kind {
-            StatementKind::Assign {
-                destination:
-                    Place {
-                        base: PlaceBase::Local(destination),
-                        projections,
-                    },
-                value,
-            } if projections.is_empty() => {
-                let source = match value {
-                    Rvalue::Use(Value::Local(source)) => Some(*source),
-                    Rvalue::MakeSlice {
-                        source:
-                            onda_mir::SliceSource::Place(Place {
-                                base: PlaceBase::Local(source),
-                                ..
-                            }),
-                        ..
-                    } => Some(*source),
-                    _ => None,
-                };
-                if let Some(source) = source {
-                    dependencies.push((source, *destination));
-                }
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_storage_lifetimes(
-                    then_block,
-                    position,
-                    lifetimes,
-                    dependencies,
-                    direct_references,
-                );
-                collect_storage_lifetimes(
-                    else_block,
-                    position,
-                    lifetimes,
-                    dependencies,
-                    direct_references,
-                );
-            }
-            StatementKind::Loop { body } => {
-                collect_storage_lifetimes(
-                    body,
-                    position,
-                    lifetimes,
-                    dependencies,
-                    direct_references,
-                );
-            }
-            _ => {}
         }
     }
+    false
 }
 
 fn extend_backing_lifetimes(

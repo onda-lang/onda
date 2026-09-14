@@ -666,6 +666,25 @@ sample:
 }
 
 #[test]
+fn branch_joined_struct_views_preserve_the_selected_length() {
+    compile(
+        r#"
+struct Note:
+  value: f32
+event inspect(payload: Note[]):
+  local: Note[2]
+  if payload.len() == 0:
+    selected = local[:]
+  else:
+    selected = payload
+  print("length", selected.len())
+sample:
+  out1 = 0.0
+"#,
+    );
+}
+
+#[test]
 fn named_returned_storage_supports_nested_selections() {
     compile(
         r#"
@@ -1122,6 +1141,82 @@ sample:
         3,
         "one callee slot and two live caller slots"
     );
+}
+
+#[test]
+fn branch_exclusive_view_backing_reuses_prepared_instance_scratch() {
+    let exclusive = compile(
+        r#"
+params:
+  choose: bool = false
+sample:
+  if choose:
+    left: f32[4096]
+    left[:] = 1.0
+    selected = left[:]
+  else:
+    right: f32[4096]
+    right[:] = 2.0
+    selected = right[:]
+  out1 = selected[0]
+"#,
+    );
+    assert_eq!(scratch_array_count(&exclusive, 4096), 1);
+
+    let structured = compile(
+        r#"
+struct Note:
+  value: f32
+params:
+  choose: bool = false
+sample:
+  if choose:
+    left: Note[4096]
+    selected = left[:]
+  else:
+    right: Note[4096]
+    selected = right[:]
+  out1 = selected[0].value
+"#,
+    );
+    assert_eq!(scratch_array_count(&structured, 4096), 1);
+
+    let nested = compile(
+        r#"
+params:
+  first: bool = false
+  second: bool = false
+sample:
+  if first:
+    a: f32[4096]
+    selected = a[:]
+  else:
+    if second:
+      b: f32[4096]
+      selected = b[:]
+    else:
+      c: f32[4096]
+      selected = c[:]
+  out1 = selected[0]
+"#,
+    );
+    assert_eq!(scratch_array_count(&nested, 4096), 1);
+
+    let simultaneous = compile(
+        r#"
+params:
+  choose: bool = false
+sample:
+  left: f32[4096]
+  right: f32[4096]
+  if choose:
+    selected = left[:]
+  else:
+    selected = right[:]
+  out1 = selected[0] + left[1] + right[1]
+"#,
+    );
+    assert_eq!(scratch_array_count(&simultaneous, 4096), 2);
 }
 
 #[test]
