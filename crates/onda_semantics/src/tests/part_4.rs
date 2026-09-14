@@ -3059,6 +3059,27 @@ sample:
     }
 
     #[test]
+    fn deferred_generic_aggregate_cycles_use_canonical_validation() {
+        let source = r#"
+struct Node<T>:
+  next: Node<T>
+
+sample:
+  node: Node<f32>
+  out1 = 0.0
+"#;
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("recursive specialized aggregates must be rejected");
+        let recursive = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("recursive aggregate layout cycle"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(recursive.len(), 1, "{diagnostics:#?}");
+        assert_eq!((recursive[0].line, recursive[0].column), (2, 1));
+    }
+
+    #[test]
     fn aggregate_field_layout_diagnostics_point_to_the_field_type() {
         let source = "struct Container:\n  value: Missing\n\nsample:\n  out1 = 0.0\n";
         let diagnostics = analyze(parse_program(source).expect("source should parse"))

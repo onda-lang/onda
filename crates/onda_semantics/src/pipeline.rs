@@ -830,21 +830,15 @@ fn materialize_deferred_generic_structs(
     methods: &mut Vec<(String, FunctionDef)>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let mut new_names = Vec::new();
     for (raw, typed) in specializer.materialize(functions, options, errors) {
         methods.extend(
             lift_struct_methods(&raw, errors)
                 .into_iter()
                 .map(|method| (raw.name.clone(), method)),
         );
-        new_names.push(typed.name.clone());
         struct_defs.insert(typed.name.clone(), typed.fields.clone());
         raw_structs.push(raw);
         typed_structs.push(typed);
-    }
-    for name in new_names {
-        let context = format!("deferred generic struct '{name}'");
-        let _ = validate_data_struct_layout(&name, struct_defs, &context, errors);
     }
     for function in functions {
         normalize_struct_constructor_ranges_in_list(&mut function.body, struct_defs);
@@ -2185,16 +2179,7 @@ pub fn analyze_with_options_and_inputs(
         errors.push(aggregate_layout_error_diagnostic(error, &struct_defs_raw));
         return Err(errors);
     }
-
-    for (struct_name, fields) in &struct_defs {
-        for field in fields {
-            if let Some(elem_struct) = &field.array_elem_struct {
-                let context = format!("field '{}.{}' array element", struct_name, field.name);
-                let _ =
-                    validate_data_struct_layout(elem_struct, &struct_defs, &context, &mut errors);
-            }
-        }
-    }
+    let validated_struct_count = typed_structs.len();
 
     normalize_struct_constructor_ranges_in_list(&mut init, &struct_defs);
     normalize_struct_constructor_ranges_in_list(&mut block_pre, &struct_defs);
@@ -3128,6 +3113,11 @@ pub fn analyze_with_options_and_inputs(
         );
     }
 
+    if typed_structs.len() != validated_struct_count {
+        if let Err(error) = validate_aggregate_structure(&typed_structs) {
+            errors.push(aggregate_layout_error_diagnostic(error, &struct_defs_raw));
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -3709,9 +3699,27 @@ pub fn analyze_with_options_and_inputs(
         &mut errors,
     );
     let mut def_struct_defs = struct_defs.clone();
-    for (name, fields) in &synthesized_struct_defs {
+    let mut synth_names = synthesized_struct_defs.keys().cloned().collect::<Vec<_>>();
+    synth_names.sort();
+    for name in synth_names {
+        let fields = &synthesized_struct_defs[&name];
         def_struct_defs.insert(name.clone(), fields.clone());
+        typed_structs.push(TypedStruct {
+            name,
+            fields: fields.clone(),
+        });
     }
+    let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
+        Ok(layouts) => layouts,
+        Err(layout_errors) => {
+            errors.extend(
+                layout_errors
+                    .into_iter()
+                    .map(|error| aggregate_layout_error_diagnostic(error, &struct_defs_raw)),
+            );
+            AggregateLayoutTable::default()
+        }
+    };
 
     let def_global_inputs = HashSet::<String>::new();
     let def_global_outputs = HashSet::<String>::new();
@@ -4250,28 +4258,6 @@ pub fn analyze_with_options_and_inputs(
         typed_nested_proc_arrays.sort_by(|lhs, rhs| {
             (&lhs.owner_struct, &lhs.field_name).cmp(&(&rhs.owner_struct, &rhs.field_name))
         });
-
-        let mut synth_names = synthesized_struct_defs.keys().cloned().collect::<Vec<_>>();
-        synth_names.sort();
-        for name in synth_names {
-            if let Some(fields) = synthesized_struct_defs.get(&name) {
-                typed_structs.push(TypedStruct {
-                    name,
-                    fields: fields.clone(),
-                });
-            }
-        }
-        let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
-            Ok(layouts) => layouts,
-            Err(layout_errors) => {
-                errors.extend(
-                    layout_errors
-                        .into_iter()
-                        .map(|error| aggregate_layout_error_diagnostic(error, &struct_defs_raw)),
-                );
-                AggregateLayoutTable::default()
-            }
-        };
 
         aggregate_layouts.populate_message_defaults(
             typed_events

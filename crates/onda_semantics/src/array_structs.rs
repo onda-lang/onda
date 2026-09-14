@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use onda_frontend::ast::{CallArg, Expr, Span, Stmt};
 use onda_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 
+use crate::aggregate_layout::MAX_AGGREGATE_NESTING;
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::proc_state_rewrite::{
     PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
@@ -14,69 +15,47 @@ use crate::{
     LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
 
-pub(crate) fn validate_data_struct_layout(
+fn enter_struct_layout<'a>(
     struct_name: &str,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) -> bool {
-    let mut stack = Vec::<String>::new();
-    validate_data_struct_layout_inner(struct_name, struct_defs, context, errors, &mut stack)
-}
-
-fn validate_data_struct_layout_inner(
-    struct_name: &str,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
-) -> bool {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
+) -> Option<&'a [TypedStructField]> {
+    if let Some(start) = stack.iter().position(|name| name == struct_name) {
+        let mut cycle = stack[start..].to_vec();
+        cycle.push(struct_name.to_owned());
         push_semantic(
             DiagCtx::default(),
             errors,
-            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
+            format!(
+                "{context} contains recursive aggregate layout cycle: {}",
+                cycle.join(" -> ")
+            ),
         );
-        return false;
+        return None;
     }
-    let fields = struct_defs.get(struct_name).cloned();
-    let Some(fields) = fields else {
+    let depth = stack.len() + 1;
+    if depth > MAX_AGGREGATE_NESTING {
+        push_semantic(
+            DiagCtx::default(),
+            errors,
+            format!(
+                "{context} aggregate nesting ending at '{struct_name}' reaches depth {depth}, exceeding the limit of {MAX_AGGREGATE_NESTING}"
+            ),
+        );
+        return None;
+    }
+    let Some(fields) = struct_defs.get(struct_name) else {
         push_semantic(
             DiagCtx::default(),
             errors,
             format!("{context} references unknown struct '{struct_name}'"),
         );
-        return false;
+        return None;
     };
-
     stack.push(struct_name.to_owned());
-    for field in &fields {
-        let nested = match field.ty {
-            TypedFieldType::Struct => field.struct_name.as_ref(),
-            TypedFieldType::Array(_) => field.array_elem_struct.as_ref(),
-            TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => None,
-        };
-        if let Some(nested) = nested {
-            let nested_context = format!("{context} nested field '{}.{}'", struct_name, field.name);
-            if !validate_data_struct_layout_inner(
-                nested,
-                struct_defs,
-                &nested_context,
-                errors,
-                stack,
-            ) {
-                stack.pop();
-                return false;
-            }
-        }
-    }
-    stack.pop();
-    true
+    Some(fields)
 }
 
 pub(crate) fn register_data_struct_root(
@@ -91,9 +70,6 @@ pub(crate) fn register_data_struct_root(
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if !validate_data_struct_layout(struct_name, struct_defs, context, errors) {
-        return false;
-    }
     let mut stack = Vec::<String>::new();
     register_data_struct_root_inner(
         base,
@@ -124,25 +100,7 @@ fn register_data_struct_root_inner(
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
 ) -> bool {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
-        );
-        return false;
-    }
-    let Some(fields) = struct_defs.get(struct_name).cloned() else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context} references unknown struct '{struct_name}'"),
-        );
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
     state_array_struct_roots
@@ -162,17 +120,15 @@ fn register_data_struct_root_inner(
             elem_ty: PrimitiveType::F32,
         },
     );
-
-    stack.push(struct_name.to_owned());
     for field in fields {
         let flat = format!("{base}.{}", field.name);
-        match field.ty {
+        match &field.ty {
             TypedFieldType::Scalar(prim) => {
                 insert_declared_symbol(
                     state_scalars,
                     declared_symbols,
                     flat.clone(),
-                    DeclaredSymbolInfo::DataArray { elem_ty: prim },
+                    DeclaredSymbolInfo::DataArray { elem_ty: *prim },
                 );
                 state_arrays.entry(flat).or_insert(len);
             }
@@ -199,7 +155,7 @@ fn register_data_struct_root_inner(
                     return false;
                 }
             }
-            TypedFieldType::Tuple(ref elem_tys) => {
+            TypedFieldType::Tuple(elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
                     insert_declared_symbol(
@@ -212,7 +168,7 @@ fn register_data_struct_root_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let Some(nested_len) = len.checked_mul(field_len) else {
+                let Some(nested_len) = len.checked_mul(*field_len) else {
                     push_semantic(
                         DiagCtx::default(),
                         errors,
@@ -272,9 +228,7 @@ pub(crate) fn add_struct_element_alias_bindings(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if !validate_data_struct_layout(struct_name, struct_defs, context, errors) {
-        return false;
-    }
+    let mut stack = Vec::new();
     add_struct_element_alias_bindings_inner(
         alias_name,
         struct_name,
@@ -285,6 +239,7 @@ pub(crate) fn add_struct_element_alias_bindings(
         local_array_aliases,
         context,
         errors,
+        &mut stack,
     )
 }
 
@@ -299,13 +254,9 @@ fn add_struct_element_alias_bindings_inner(
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
+    stack: &mut Vec<String>,
 ) -> bool {
-    let Some(fields) = struct_defs.get(struct_name) else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context} references unknown struct '{struct_name}'"),
-        );
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
     for field in fields {
@@ -343,7 +294,9 @@ fn add_struct_element_alias_bindings_inner(
                     local_array_aliases,
                     context,
                     errors,
+                    stack,
                 ) {
+                    stack.pop();
                     return false;
                 }
             }
@@ -378,9 +331,10 @@ fn add_struct_element_alias_bindings_inner(
                             "{context} field '{flat}' flattened length exceeds addressable size"
                         ),
                     );
+                    stack.pop();
                     return false;
                 };
-                let elem_struct = field.array_elem_struct.clone();
+                let elem_struct = field.array_elem_struct.as_deref();
                 local_array_aliases.insert(
                     flat.clone(),
                     LocalArrayAliasInfo {
@@ -388,14 +342,14 @@ fn add_struct_element_alias_bindings_inner(
                         len,
                         static_len: Some(len),
                         elem_ty: field.array_elem_ty.unwrap_or(PrimitiveType::F32),
-                        elem_struct: elem_struct.clone(),
+                        elem_struct: elem_struct.map(ToOwned::to_owned),
                         writable: true,
                     },
                 );
                 if let Some(nested) = elem_struct {
                     if !add_struct_element_alias_bindings_inner(
                         &flat,
-                        &nested,
+                        nested,
                         Some(len),
                         struct_defs,
                         known_scalars,
@@ -403,13 +357,16 @@ fn add_struct_element_alias_bindings_inner(
                         local_array_aliases,
                         context,
                         errors,
+                        stack,
                     ) {
+                        stack.pop();
                         return false;
                     }
                 }
             }
         }
     }
+    stack.pop();
     true
 }
 
@@ -423,14 +380,7 @@ pub(crate) fn register_struct_array_param_bindings(
     struct_array_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if !validate_data_struct_layout(
-        struct_name,
-        struct_defs,
-        &format!("function parameter '{base}'"),
-        errors,
-    ) {
-        return false;
-    }
+    let context = format!("function parameter '{base}'");
     let mut unused_scalars = HashMap::<String, PrimitiveType>::new();
     let mut stack = Vec::<String>::new();
     register_struct_array_param_bindings_inner(
@@ -443,6 +393,7 @@ pub(crate) fn register_struct_array_param_bindings(
         local_array_aliases,
         struct_array_roots,
         &mut unused_scalars,
+        &context,
         errors,
         &mut stack,
     )
@@ -459,30 +410,11 @@ fn register_struct_array_param_bindings_inner(
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     struct_array_roots: &mut HashMap<String, ArrayStructRootInfo>,
     unused_scalars: &mut HashMap<String, PrimitiveType>,
+    context: &str,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
 ) -> bool {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!(
-                "function parameter '{base}' contains recursive array[Struct, N] cycle: {cycle}"
-            ),
-        );
-        return false;
-    }
-    let Some(fields) = struct_defs.get(struct_name).cloned() else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("function parameter '{base}' references unknown struct '{struct_name}'"),
-        );
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
 
@@ -511,11 +443,9 @@ fn register_struct_array_param_bindings_inner(
             elem_ty: PrimitiveType::F32,
         },
     );
-
-    stack.push(struct_name.to_owned());
-    for field in &fields {
+    for field in fields {
         let flat = format!("{base}.{}", field.name);
-        match field.ty {
+        match &field.ty {
             TypedFieldType::Scalar(prim) => {
                 local_array_aliases
                     .entry(flat.clone())
@@ -523,7 +453,7 @@ fn register_struct_array_param_bindings_inner(
                         proven_len: None,
                         len: len_factor.max(1),
                         static_len: static_len_factor,
-                        elem_ty: prim,
+                        elem_ty: *prim,
                         elem_struct: None,
                         writable: true,
                     });
@@ -531,7 +461,7 @@ fn register_struct_array_param_bindings_inner(
                     unused_scalars,
                     declared_symbols,
                     flat,
-                    DeclaredSymbolInfo::DataArray { elem_ty: prim },
+                    DeclaredSymbolInfo::DataArray { elem_ty: *prim },
                 );
             }
             TypedFieldType::Struct => {
@@ -548,6 +478,7 @@ fn register_struct_array_param_bindings_inner(
                     local_array_aliases,
                     struct_array_roots,
                     unused_scalars,
+                    context,
                     errors,
                     stack,
                 ) {
@@ -555,7 +486,7 @@ fn register_struct_array_param_bindings_inner(
                     return false;
                 }
             }
-            TypedFieldType::Tuple(ref elem_tys) => {
+            TypedFieldType::Tuple(elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
                     local_array_aliases
@@ -577,7 +508,7 @@ fn register_struct_array_param_bindings_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let Some(nested_factor) = len_factor.checked_mul(field_len) else {
+                let Some(nested_factor) = len_factor.checked_mul(*field_len) else {
                     push_semantic(
                         DiagCtx::default(),
                         errors,
@@ -591,7 +522,7 @@ fn register_struct_array_param_bindings_inner(
                 };
                 let nested_factor = nested_factor.max(1);
                 let nested_static_len =
-                    static_len_factor.and_then(|len| len.checked_mul(field_len));
+                    static_len_factor.and_then(|len| len.checked_mul(*field_len));
                 if let Some(elem_struct) = &field.array_elem_struct {
                     if !register_struct_array_param_bindings_inner(
                         &flat,
@@ -603,6 +534,7 @@ fn register_struct_array_param_bindings_inner(
                         local_array_aliases,
                         struct_array_roots,
                         unused_scalars,
+                        context,
                         errors,
                         stack,
                     ) {
