@@ -1947,7 +1947,29 @@ fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgE
     nominal.or_else(|| infer_call_argument_scalar_type(value, env).map(CallArrayArgElem::Primitive))
 }
 
-fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+fn struct_field_array_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    let (root, field) = split_simple_field_path(name)?;
+    let struct_name = env
+        .struct_instances
+        .get(root)
+        .or_else(|| env.param_structs.get(root))?;
+    let declaration = resolve_struct_field_decl(struct_name, field, env.struct_defs)?;
+    let TypedFieldType::Array(len) = &declaration.ty else {
+        return None;
+    };
+    Some(CallArrayArgInfo {
+        elem: declaration
+            .array_elem_struct
+            .clone()
+            .map(CallArrayArgElem::Nominal)
+            .unwrap_or(CallArrayArgElem::Primitive(
+                declaration.array_elem_ty.unwrap_or(PrimitiveType::F32),
+            )),
+        len: Some(*len),
+    })
+}
+
+fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     let lexical_root = name.split('.').next().unwrap_or(name);
     if env.locals.contains(lexical_root) {
         return None;
@@ -2010,22 +2032,27 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
     })
 }
 
-pub(crate) fn array_data_struct_element_type(name: &str, env: ExprEnv<'_>) -> Option<String> {
-    if let Some(struct_name) = env
-        .struct_array_roots
-        .get(name)
-        .map(|root| root.struct_name.clone())
+fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    struct_field_array_info(name, env)
+        .or_else(|| direct_array_symbol_info(name, env))
         .or_else(|| {
-            env.local_array_aliases
-                .get(name)
-                .and_then(|alias| alias.elem_struct.clone())
+            // Proc state rewriting names owned storage `self.field`, while its
+            // semantic metadata remains keyed by the source-level field name.
+            let (root, field) = split_simple_field_path(name)?;
+            let typed_receiver = env
+                .param_structs
+                .get(root)
+                .or_else(|| env.struct_instances.get(root))
+                .is_some_and(|name| env.struct_defs.contains_key(name));
+            if root == "self" && !typed_receiver {
+                direct_array_symbol_info(field, env)
+            } else {
+                None
+            }
         })
-    {
-        return env
-            .struct_defs
-            .contains_key(&struct_name)
-            .then_some(struct_name);
-    }
+}
+
+pub(crate) fn array_data_struct_element_type(name: &str, env: ExprEnv<'_>) -> Option<String> {
     let CallArrayArgElem::Nominal(struct_name) = call_array_symbol_info(name, env)?.elem else {
         return None;
     };

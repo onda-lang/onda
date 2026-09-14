@@ -3388,6 +3388,98 @@ block:
 }
 
 #[test]
+fn replaces_struct_array_elements_through_qualified_owner_storage() {
+    let source = r#"
+struct Cell:
+  value: f32 = 0.0
+
+struct Shelf:
+  cells: Cell[2]
+
+struct Bank:
+  shelf: Shelf
+
+  def replace(self, replacement: Cell):
+    self.shelf.cells[0] = replacement
+
+proc Writer:
+  init:
+    cells: Cell[4]
+    cells[0] = Cell(value = 1.0)
+
+  block:
+    cells[1] = Cell(value = 2.0)
+
+    sample:
+      cells[2] = Cell(value = 3.0)
+      out1 = cells[0].value + cells[1].value + cells[2].value + cells[3].value
+
+  event replace(replacement: Cell):
+    cells[3] = replacement
+
+init:
+  bank = Bank()
+  writer = Writer()
+
+sample:
+  bank.replace(Cell(value = 5.0))
+  writer.replace(bank.shelf.cells[0])
+  out1 = writer()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("qualified element replacements should analyze");
+    let mir = lower_test_program(&typed).expect("qualified element replacements should lower");
+    validate(&mir).expect("qualified element replacement MIR should validate");
+}
+
+#[test]
+fn discarded_aggregate_results_receive_caller_owned_storage() {
+    let source = r#"
+struct Cell:
+  value: f32 = 0.0
+
+def replace_and_return(target: Cell) -> Cell:
+  target = Cell(value = 4.0)
+  return target
+
+def replace_array_and_return(target: f32[2]) -> f32[2]:
+  target[0] = 5.0
+  return target
+
+init:
+  cell = Cell()
+  values: f32[2]
+
+sample:
+  replace_and_return(cell)
+  replace_array_and_return(values)
+  out1 = cell.value + values[0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("discarded aggregate results should analyze");
+    let mir = lower_test_program(&typed).expect("discarded aggregate results should lower");
+    validate(&mir).expect("discarded aggregate result MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    for callee in ["replace_and_return", "replace_array_and_return"] {
+        let function = mir
+            .functions
+            .iter()
+            .position(|function| function.name == callee)
+            .unwrap_or_else(|| panic!("missing '{callee}' function"));
+        assert!(
+            process.contains(&format!("call @fn{function}")),
+            "discarding the result must preserve the effectful call to '{callee}':\n{dump}"
+        );
+    }
+    assert!(
+        process.matches("__onda_data_").count() >= 2,
+        "discarded fixed results should use static caller-owned storage:\n{dump}"
+    );
+}
+
+#[test]
 fn lowers_canonical_nested_struct_array_views_across_state_calls_and_aliases() {
     let source = r#"
 outs:

@@ -2052,11 +2052,22 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
+        let discarded_result_storage = if result_storage.is_none() {
+            if let Some(data) = data_result.as_ref() {
+                let storage = self.fresh_data_name();
+                self.allocate_data(&storage, data, location)?;
+                Some(storage)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let result_storage = result_storage.or(discarded_result_storage.as_deref());
+
         let mut pending_data_copy = None;
         if let Some(data) = data_result.as_ref() {
-            let destination = result_storage.ok_or_else(|| {
-                self.error("aggregate function result requires data storage", location)
-            })?;
+            let destination = result_storage.expect("aggregate result storage prepared above");
             let result_args = match self.data_result_arguments(destination, data, location)? {
                 Some(args) => args,
                 None => {
