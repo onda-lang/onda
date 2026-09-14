@@ -1,4 +1,5 @@
 use super::*;
+use crate::expr_analysis::has_scalar_value_binding;
 
 pub(crate) struct ProcResolutionCtx<'a> {
     pub owner_proc_name: &'a str,
@@ -730,9 +731,14 @@ fn analyze_assign_init(
                 struct_defs,
             );
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, &st.local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                    "{kind} '{lexical_root}' is scalar and cannot be indexed"
                 ));
                 validate_expr(index, scope_expr_env!(ScopeKind::Init), errors);
                 validate_expr(expr, scope_expr_env!(scope), errors);
@@ -890,9 +896,14 @@ fn analyze_assign_init(
             end,
         } => {
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, &st.local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                    "{kind} '{lexical_root}' is scalar and cannot be sliced"
                 ));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(ScopeKind::Init), errors);
@@ -1440,6 +1451,21 @@ fn analyze_assign_init(
             }
 
             if let Some((base, field)) = split_field_path(name, errors) {
+                if has_scalar_value_binding(base, locals, &st.local_aliases) {
+                    let kind = if locals.contains(base) {
+                        "loop variable"
+                    } else {
+                        "value binding"
+                    };
+                    target_error!(format!(
+                        "{kind} '{base}' is scalar and has no field '{field}'"
+                    ));
+                    return;
+                }
+                if st.tuple_vars.contains_key(base) {
+                    target_error!(format!("tuple binding '{base}' has no field '{field}'"));
+                    return;
+                }
                 analyze_struct_field_init_assign(
                     base,
                     field,

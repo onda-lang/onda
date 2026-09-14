@@ -1,4 +1,5 @@
 use super::*;
+use crate::expr_analysis::has_scalar_value_binding;
 
 pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
@@ -454,6 +455,9 @@ pub(crate) fn analyze_runtime_events(
         let mut event_local_data_aliases = event_array_alias_seed.clone();
         for param in &event.params {
             event_bindings.shadow_binding(&param.name);
+            shadow_rooted_entries(&mut event_structs, &param.name);
+            shadow_rooted_entries(&mut event_roots, &param.name);
+            shadow_rooted_entries(&mut event_symbols, &param.name);
             match param.ty {
                 TypedEventParamType::Tuple(ref types) => {
                     scalar_event_params.insert(param.name.clone());
@@ -1198,9 +1202,14 @@ fn analyze_flow_assignment(
                 struct_defs,
             );
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                    "{kind} '{lexical_root}' is scalar and cannot be indexed"
                 ));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
@@ -1407,9 +1416,14 @@ fn analyze_flow_assignment(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                    "{kind} '{lexical_root}' is scalar and cannot be sliced"
                 ));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
@@ -2168,6 +2182,21 @@ fn analyze_flow_assignment(
             }
 
             if let Some((base, field)) = split_field_path(name, errors) {
+                if has_scalar_value_binding(base, locals, local_aliases) {
+                    let kind = if locals.contains(base) {
+                        "loop variable"
+                    } else {
+                        "value binding"
+                    };
+                    target_error!(format!(
+                        "{kind} '{base}' is scalar and has no field '{field}'"
+                    ));
+                    return;
+                }
+                if tuple_vars.contains_key(base) {
+                    target_error!(format!("tuple binding '{base}' has no field '{field}'"));
+                    return;
+                }
                 if let Some(struct_name) = struct_instances.get(base) {
                     let Some(field_decl) =
                         resolve_struct_field_decl(struct_name, field, struct_defs)

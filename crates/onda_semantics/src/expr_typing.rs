@@ -13,6 +13,7 @@ use crate::decl_symbols::{
     DeclaredSymbolMap,
 };
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
+use crate::expr_analysis::has_scalar_value_binding;
 use crate::internal_names::PROC_INDEX_CALL_SENTINEL;
 use crate::{
     is_builtin_array_like_receiver_with_resolver, resolve_flattened_struct_array_leaf_type,
@@ -348,11 +349,8 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     }
                     if let Some((base, field)) = split_field_path(name, errors) {
                         let flat = format!("{base}.{field}");
-                        if let Some(ty) = state_scalars.get(&flat).copied() {
-                            return Some(ty);
-                        }
-                        if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &flat) {
-                            return Some(ty);
+                        if has_scalar_value_binding(base, locals, local_aliases) {
+                            return None;
                         }
                         if let Some(struct_name) = struct_instances.get(base) {
                             if let Some(field_decl) =
@@ -367,13 +365,22 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 });
                             }
                         }
+                        if let Some(ty) = local_aliases.get(&flat).copied() {
+                            return Some(ty);
+                        }
+                        if let Some(ty) = state_scalars.get(&flat).copied() {
+                            return Some(ty);
+                        }
+                        if let Some(ty) = declared_symbol_scalar_type(declared_symbols, &flat) {
+                            return Some(ty);
+                        }
                         if let Some(ty) = declared_symbol_scalar_type(declared_symbols, field) {
                             return Some(ty);
                         }
                         None
-                    } else if let Some(ty) = state_scalars.get(name).copied() {
-                        Some(ty)
                     } else if let Some(ty) = local_aliases.get(name).copied() {
+                        Some(ty)
+                    } else if let Some(ty) = state_scalars.get(name).copied() {
                         Some(ty)
                     } else if input_names.contains(name)
                         || output_names.contains(name)
@@ -388,14 +395,20 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     }
                 }
                 Expr::Index { base, index, .. } => {
-                    if locals.contains(base.split('.').next().unwrap_or(base)) {
+                    let lexical_root = base.split('.').next().unwrap_or(base);
+                    if has_scalar_value_binding(lexical_root, locals, local_aliases) {
                         return None;
                     }
+                    if let Some(alias) = local_array_aliases.get(base) {
+                        if alias.elem_struct.is_none() {
+                            return Some(alias.elem_ty);
+                        }
+                    }
                     if let Expr::Int { value, .. } = index.as_ref() {
-                        if let Some(ty) = state_scalars
-                            .get(&format!("{base}.__{value}"))
+                        if let Some(ty) = local_aliases
+                            .get(&format!("{base}[{value}]"))
+                            .or_else(|| state_scalars.get(&format!("{base}.__{value}")))
                             .or_else(|| state_scalars.get(&format!("{base}[{value}]")))
-                            .or_else(|| local_aliases.get(&format!("{base}[{value}]")))
                             .copied()
                         {
                             return Some(ty);
@@ -421,11 +434,6 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             .find_map(|n| declared_symbol_scalar_type(declared_symbols, n))
                             .unwrap_or(PrimitiveType::F32);
                         return Some(ty);
-                    }
-                    if let Some(alias) = local_array_aliases.get(base) {
-                        if alias.elem_struct.is_none() {
-                            return Some(alias.elem_ty);
-                        }
                     }
                     if let Some((root, field)) = split_field_path(base, errors) {
                         if let Some(struct_name) = struct_instances.get(root) {
@@ -620,6 +628,12 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             return Some(ty);
                         }
                     }
+                    if let Some((receiver, _)) = name.rsplit_once('.') {
+                        let root = receiver.split('.').next().unwrap_or(receiver);
+                        if has_scalar_value_binding(root, locals, local_aliases) {
+                            return None;
+                        }
+                    }
                     if let Some(ty) = declared_symbol_scalar_type(declared_symbols, name) {
                         return Some(ty);
                     }
@@ -634,30 +648,41 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         }
                     }
                     if let Some(base) = parse_array_len_instance_base(name) {
-                        if is_data_receiver_symbol_for_builtin(
-                            base,
-                            declared_symbols,
-                            local_array_aliases,
-                            struct_instances,
-                            struct_defs,
-                            proc_array_roots,
-                        ) || is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        let root = base.split('.').next().unwrap_or(base);
+                        if !has_scalar_value_binding(root, locals, local_aliases)
+                            && (is_data_receiver_symbol_for_builtin(
+                                base,
+                                declared_symbols,
+                                local_array_aliases,
+                                struct_instances,
+                                struct_defs,
+                                proc_array_roots,
+                            ) || is_buffer_receiver_symbol_for_builtin(base, declared_symbols))
                         {
                             return Some(PrimitiveType::I32);
                         }
                     }
                     if let Some(base) = parse_buffer_chans_instance_base(name) {
-                        if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
+                        let root = base.split('.').next().unwrap_or(base);
+                        if !has_scalar_value_binding(root, locals, local_aliases)
+                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        {
                             return Some(PrimitiveType::I32);
                         }
                     }
                     if let Some(base) = parse_buffer_bound_instance_base(name) {
-                        if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
+                        let root = base.split('.').next().unwrap_or(base);
+                        if !has_scalar_value_binding(root, locals, local_aliases)
+                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        {
                             return Some(PrimitiveType::Bool);
                         }
                     }
                     if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-                        if is_buffer_receiver_symbol_for_builtin(base, declared_symbols) {
+                        let root = base.split('.').next().unwrap_or(base);
+                        if !has_scalar_value_binding(root, locals, local_aliases)
+                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        {
                             return Some(PrimitiveType::F32);
                         }
                     }
@@ -833,9 +858,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
             merged_struct_instances = {
                 let mut merged = struct_instances.clone();
                 for (name, struct_name) in param_structs {
-                    merged
-                        .entry(name.clone())
-                        .or_insert_with(|| struct_name.clone());
+                    merged.insert(name.clone(), struct_name.clone());
                 }
                 merged
             };

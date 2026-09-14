@@ -248,21 +248,14 @@ impl CallTypeEnv {
     }
 
     pub(crate) fn shadow_binding(&mut self, name: &str) {
-        let child_prefix = format!("{name}.");
         self.unresolved_bindings
-            .retain(|binding| binding != name && !binding.starts_with(&child_prefix));
-        self.scalar_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.struct_instances
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.array_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.buffer_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.buffer_array_lens
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.tuple_elem_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+            .retain(|binding| !crate::path_is_within_root(binding, name));
+        crate::shadow_rooted_entries(&mut self.scalar_types, name);
+        crate::shadow_rooted_entries(&mut self.struct_instances, name);
+        crate::shadow_rooted_entries(&mut self.array_types, name);
+        crate::shadow_rooted_entries(&mut self.buffer_types, name);
+        crate::shadow_rooted_entries(&mut self.buffer_array_lens, name);
+        crate::shadow_rooted_entries(&mut self.tuple_elem_types, name);
     }
 
     /// Retains facts with a representable common type and shape on every path

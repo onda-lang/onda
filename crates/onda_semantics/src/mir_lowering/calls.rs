@@ -65,7 +65,7 @@ impl<'a> FunctionLowerer<'a> {
                 element,
             )),
             _ => self
-                .runtime_globals
+                .runtime_globals_for_unbound(name)
                 .and_then(|globals| globals.buffers.get(name).copied())
                 .map(|(buffer, element)| {
                     (
@@ -137,7 +137,7 @@ impl<'a> FunctionLowerer<'a> {
                     _ => None,
                 };
                 let interface_array = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.buffer_arrays.get(base).copied());
                 if parameter_array.is_none() && interface_array.is_none() {
                     return Ok(false);
@@ -227,7 +227,7 @@ impl<'a> FunctionLowerer<'a> {
             Some(Binding::StructParameter { struct_name, .. })
             | Some(Binding::StructView { struct_name }) => Some(struct_name.as_str()),
             _ => self
-                .runtime_globals
+                .runtime_globals_for_unbound(root)
                 .and_then(|globals| globals.struct_roots.get(root))
                 .map(String::as_str),
         }
@@ -717,7 +717,7 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
 
-        let Some(globals) = self.runtime_globals else {
+        let Some(globals) = self.runtime_globals_for_unbound(root) else {
             return Err(self.error(
                 format!("call to '{callee_name}' cannot resolve proc-array argument '{root}'"),
                 expression.loc(),
@@ -912,7 +912,7 @@ impl<'a> FunctionLowerer<'a> {
                     || matches!(
                         expression,
                         Expr::Index { base, .. }
-                            if self.runtime_globals.is_some_and(|globals| globals.buffer_arrays.contains_key(base))
+                            if self.runtime_globals_for_unbound(base).is_some_and(|globals| globals.buffer_arrays.contains_key(base))
                                 || matches!(self.bindings.get(base), Some(Binding::BufferParameterArray(..)))
                     )
                     || matches!(
@@ -1950,7 +1950,7 @@ impl<'a> FunctionLowerer<'a> {
                             )?;
                             call_args.push(CallArgument::Value(value));
                         }
-                    } else if let Some(globals) = self.runtime_globals {
+                    } else if let Some(globals) = self.runtime_globals_for_unbound(root) {
                         let (actual_struct, len) = globals
                             .array_struct_roots
                             .get(root)
@@ -2460,7 +2460,7 @@ impl<'a> FunctionLowerer<'a> {
                 .get(base)
                 .map(|(_, _, len)| *len)
                 .or_else(|| {
-                    self.runtime_globals.and_then(|globals| {
+                    self.runtime_globals_for_unbound(base).and_then(|globals| {
                         globals
                             .state_arrays
                             .get(base)
@@ -2611,7 +2611,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         let buffer_array = if selected_buffer.is_none() {
-            self.runtime_globals
+            self.runtime_globals_for_unbound(&base)
                 .and_then(|globals| globals.buffer_arrays.get(&base).copied())
         } else {
             None
@@ -2634,12 +2634,14 @@ impl<'a> FunctionLowerer<'a> {
                     | Binding::EventArrayParameter(..)
             )
         ) || self.const_arrays.contains_key(&base)
-            || self.runtime_globals.is_some_and(|globals| {
-                globals.state_arrays.contains_key(&base)
-                    || globals.input_arrays.contains_key(&base)
-                    || globals.output_arrays.contains_key(&base)
-                    || globals.param_arrays.contains_key(&base)
-            });
+            || self
+                .runtime_globals_for_unbound(&base)
+                .is_some_and(|globals| {
+                    globals.state_arrays.contains_key(&base)
+                        || globals.input_arrays.contains_key(&base)
+                        || globals.output_arrays.contains_key(&base)
+                        || globals.param_arrays.contains_key(&base)
+                });
         let has_channel = if unsafe_access {
             !plain_indexed && operands.len() == usize::from(has_selector) + 2
         } else {
@@ -2974,7 +2976,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         let buffer_array = if selected_buffer.is_none() {
-            self.runtime_globals
+            self.runtime_globals_for_unbound(&base)
                 .and_then(|globals| globals.buffer_arrays.get(&base).copied())
         } else {
             None
@@ -2996,11 +2998,13 @@ impl<'a> FunctionLowerer<'a> {
                     | Binding::Slice(..)
                     | Binding::EventArrayParameter(..)
             )
-        ) || self.runtime_globals.is_some_and(|globals| {
-            globals.state_arrays.contains_key(&base)
-                || globals.output_arrays.contains_key(&base)
-                || globals.control_output_arrays.contains_key(&base)
-        });
+        ) || self
+            .runtime_globals_for_unbound(&base)
+            .is_some_and(|globals| {
+                globals.state_arrays.contains_key(&base)
+                    || globals.output_arrays.contains_key(&base)
+                    || globals.control_output_arrays.contains_key(&base)
+            });
         let has_channel = if unsafe_access {
             !plain_indexed && operands.len() == usize::from(has_selector) + 3
         } else {

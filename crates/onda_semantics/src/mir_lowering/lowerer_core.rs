@@ -1,6 +1,28 @@
 use super::*;
+use crate::path_is_within_root;
 
 impl<'a> FunctionLowerer<'a> {
+    /// Runtime metadata is a fallback namespace. Exact bindings always win;
+    /// dotted paths may only fall through roots whose bindings deliberately
+    /// model aggregate storage through separately registered leaf symbols.
+    pub(super) fn runtime_globals_for_unbound(&self, name: &str) -> Option<&'a RuntimeGlobals> {
+        if self.bindings.contains_key(name) {
+            return None;
+        }
+        let root = name.split('.').next().unwrap_or(name);
+        if root != name
+            && self.bindings.get(root).is_some_and(|binding| {
+                !matches!(
+                    binding,
+                    Binding::StructView { .. } | Binding::StructArrayStorage { .. }
+                )
+            })
+        {
+            return None;
+        }
+        self.runtime_globals
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         function: &'a TypedFunction,
@@ -107,6 +129,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn bind_event_params(&mut self, event: &TypedEvent) -> Result<(), MirLoweringError> {
+        for param in &event.params {
+            self.bindings
+                .retain(|name, _| !path_is_within_root(name, &param.name));
+        }
         let flattened = messages::message_params(&event.params, self.aggregate_layouts)?;
         for (index, param) in flattened.iter().enumerate() {
             let id = onda_mir::EventParamId::new(index as u32);

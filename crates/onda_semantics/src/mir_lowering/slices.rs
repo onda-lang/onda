@@ -65,10 +65,12 @@ impl<'a> FunctionLowerer<'a> {
                             | Binding::BufferParameter(_, _)
                     )
                 ) || self.const_arrays.contains_key(name)
-                    || self.runtime_globals.is_some_and(|globals| {
-                        globals.state_arrays.contains_key(name)
-                            || globals.buffers.contains_key(name)
-                    })
+                    || self
+                        .runtime_globals_for_unbound(name)
+                        .is_some_and(|globals| {
+                            globals.state_arrays.contains_key(name)
+                                || globals.buffers.contains_key(name)
+                        })
             }
             _ => false,
         }
@@ -578,7 +580,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        let global_array = self.runtime_globals.and_then(|globals| {
+        let global_array = self.runtime_globals_for_unbound(base).and_then(|globals| {
             globals
                 .param_arrays
                 .get(base)
@@ -1187,16 +1189,19 @@ impl<'a> FunctionLowerer<'a> {
             );
             return Ok(());
         }
-        if self.runtime_globals.is_some_and(|globals| {
-            globals.input_arrays.contains_key(base) || globals.param_arrays.contains_key(base)
-        }) {
+        if self
+            .runtime_globals_for_unbound(base)
+            .is_some_and(|globals| {
+                globals.input_arrays.contains_key(base) || globals.param_arrays.contains_key(base)
+            })
+        {
             return Err(self.error(
                 format!("interface array '{base}' is read-only"),
                 statement_location,
             ));
         }
         let state_array = self
-            .runtime_globals
+            .runtime_globals_for_unbound(base)
             .and_then(|globals| globals.state_arrays.get(base).copied());
         if let Some((state, ty, _)) = state_array {
             let value = self.single_global_value(base, values, statement_location)?;

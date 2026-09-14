@@ -129,6 +129,38 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) proc_event_names: &'a HashSet<String>,
 }
 
+impl<'a> ExprEnv<'a> {
+    pub(crate) fn has_scalar_binding(self, root: &str) -> bool {
+        has_scalar_value_binding(root, self.locals, self.local_aliases)
+    }
+
+    /// A scalar or tuple binding owns its entire lexical root. Outer data and
+    /// resource metadata must never be consulted through that root.
+    pub(crate) fn has_value_binding(self, root: &str) -> bool {
+        self.has_scalar_binding(root) || self.tuple_vars.contains_key(root)
+    }
+
+    /// Resolve a struct only after applying lexical binding precedence. Local
+    /// arrays likewise shadow an outer struct with the same root.
+    pub(crate) fn struct_name(self, root: &str) -> Option<&'a str> {
+        if self.has_value_binding(root) || self.local_array_aliases.contains_key(root) {
+            return None;
+        }
+        self.param_structs
+            .get(root)
+            .or_else(|| self.struct_instances.get(root))
+            .map(String::as_str)
+    }
+}
+
+pub(crate) fn has_scalar_value_binding(
+    root: &str,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+) -> bool {
+    locals.contains(root) || local_aliases.contains_key(root)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ScopeExprInputs<'a> {
     pub(crate) locals: &'a HashSet<String>,

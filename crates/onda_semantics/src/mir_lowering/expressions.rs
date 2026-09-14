@@ -394,7 +394,7 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        if let Some(globals) = self.runtime_globals {
+        if let Some(globals) = self.runtime_globals_for_unbound(name) {
             if globals.state_tuples.contains_key(name) {
                 return Err(self.error(
                     format!("tuple state '{name}' used where a scalar value is required"),
@@ -1016,7 +1016,7 @@ impl<'a> FunctionLowerer<'a> {
                     let base = match self.bindings.get(&alias) {
                         Some(Binding::Local(local, _)) => PlaceBase::Local(*local),
                         _ => self
-                            .runtime_globals
+                            .runtime_globals_for_unbound(&alias)
                             .and_then(|globals| globals.states.get(&alias))
                             .map(|(state, _)| PlaceBase::State(*state))
                             .ok_or_else(|| {

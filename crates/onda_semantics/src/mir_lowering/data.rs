@@ -323,7 +323,10 @@ impl FunctionLowerer<'_> {
                 .get(&source)
                 .cloned()
                 .or_else(|| {
-                    let (state, ty) = self.runtime_globals?.states.get(&source)?;
+                    let (state, ty) = self
+                        .runtime_globals_for_unbound(&source)?
+                        .states
+                        .get(&source)?;
                     Some(Binding::PlaceAlias(
                         Place {
                             base: PlaceBase::State(*state),
@@ -472,7 +475,7 @@ impl FunctionLowerer<'_> {
                     }
                     _ => {}
                 }
-                if let Some(globals) = self.runtime_globals {
+                if let Some(globals) = self.runtime_globals_for_unbound(name) {
                     if let Some((struct_name, len)) = globals.array_struct_roots.get(name) {
                         return Some(DataType::Array {
                             element: ArrayElemType::Struct(struct_name.clone()),
@@ -507,7 +510,7 @@ impl FunctionLowerer<'_> {
                 | Binding::StructArrayStorage { struct_name, .. },
             ) => Some(struct_name.clone()),
             _ => self
-                .runtime_globals
+                .runtime_globals_for_unbound(name)
                 .and_then(|globals| globals.array_struct_roots.get(name))
                 .map(|(struct_name, _)| struct_name.clone())
                 .or_else(|| {

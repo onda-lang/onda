@@ -39,15 +39,15 @@ pub(crate) struct ScopeFlowState {
 
 impl ScopeFlowState {
     pub(crate) fn shadow_binding(&mut self, root: &str) {
-        let keep = |name: &String| !path_is_within_root(name, root);
-        self.known_scalars.retain(keep);
-        self.local_aliases.retain(|name, _| keep(name));
-        self.integer_ranges.retain(|name, _| keep(name));
-        self.local_array_aliases.retain(|name, _| keep(name));
-        self.local_buffer_aliases.retain(|name, _| keep(name));
-        self.local_proc_aliases.retain(|name, _| keep(name));
-        self.local_struct_aliases.retain(|name, _| keep(name));
-        self.tuple_vars.retain(|name, _| keep(name));
+        self.known_scalars
+            .retain(|name| !path_is_within_root(name, root));
+        shadow_rooted_entries(&mut self.local_aliases, root);
+        shadow_rooted_entries(&mut self.integer_ranges, root);
+        shadow_rooted_entries(&mut self.local_array_aliases, root);
+        shadow_rooted_entries(&mut self.local_buffer_aliases, root);
+        shadow_rooted_entries(&mut self.local_proc_aliases, root);
+        shadow_rooted_entries(&mut self.local_struct_aliases, root);
+        shadow_rooted_entries(&mut self.tuple_vars, root);
     }
     /// Carry lexical bindings into the next executable region without replacing
     /// that region's independently constructed interface/permission seeds.

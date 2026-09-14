@@ -137,6 +137,7 @@ pub(super) fn infer_stmt_calls(
             merge_array_bindings(array_bindings, &else_arrays);
         }
         Stmt::For {
+            var,
             start,
             end,
             step,
@@ -178,14 +179,22 @@ pub(super) fn infer_stmt_calls(
                     errors,
                 );
             }
+            let mut loop_structs = struct_instances.clone();
+            let mut loop_struct_arrays = struct_array_roots.clone();
+            let mut loop_proc_arrays = proc_array_roots.clone();
             let mut loop_arrays = array_bindings.clone();
             let mut loop_buffers = buffer_bindings.clone();
+            crate::shadow_rooted_entries(&mut loop_structs, var);
+            crate::shadow_rooted_entries(&mut loop_struct_arrays, var);
+            crate::shadow_rooted_entries(&mut loop_proc_arrays, var);
+            crate::shadow_rooted_entries(&mut loop_arrays, var);
+            crate::shadow_rooted_entries(&mut loop_buffers, var);
             for nested in body {
                 infer_stmt_calls(
                     nested,
-                    struct_instances,
-                    struct_array_roots,
-                    proc_array_roots,
+                    &loop_structs,
+                    &loop_struct_arrays,
+                    &loop_proc_arrays,
                     &mut loop_arrays,
                     &mut loop_buffers,
                     fn_signatures,

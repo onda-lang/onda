@@ -394,10 +394,7 @@ fn validate_expr_node<'a>(
             if is_builtin_constant_name(name) {
                 return;
             }
-            // `locals` contains lexical loop binders. Resolve them before any
-            // outer aggregate/resource namespace so a loop index fully
-            // shadows a same-named array, buffer, or struct.
-            if env.locals.contains(name) {
+            if !name.contains('.') && env.has_value_binding(name) {
                 return;
             }
             if let Some(name) = block_audio_input_name(name, env) {
@@ -405,26 +402,35 @@ fn validate_expr_node<'a>(
                 return;
             }
             if let Some((root, field)) = name.split_once('.') {
-                if env.locals.contains(root) {
+                if env.has_value_binding(root) {
+                    if env.tuple_vars.contains_key(root) {
+                        push_expr_error(
+                            errors,
+                            expr,
+                            format!("tuple binding '{root}' has no field '{field}'"),
+                        );
+                        return;
+                    }
+                    let kind = if env.locals.contains(root) {
+                        "loop variable"
+                    } else {
+                        "value binding"
+                    };
                     push_expr_error(
                         errors,
                         expr,
-                        format!("loop variable '{root}' is scalar and has no field '{field}'"),
+                        format!("{kind} '{root}' is scalar and has no field '{field}'"),
                     );
                     return;
                 }
             }
             if let Some((base, field)) = split_field_path(name, errors) {
-                if let Some((struct_name, owner_kind)) = env
-                    .param_structs
-                    .get(base)
-                    .map(|s| (s.as_str(), "parameter"))
-                    .or_else(|| {
-                        env.struct_instances
-                            .get(base)
-                            .map(|s| (s.as_str(), "instance"))
-                    })
-                {
+                if let Some(struct_name) = env.struct_name(base) {
+                    let owner_kind = if env.param_structs.contains_key(base) {
+                        "parameter"
+                    } else {
+                        "instance"
+                    };
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
                         push_expr_error(
                             errors,
@@ -514,7 +520,7 @@ fn validate_expr_node<'a>(
                 return;
             }
 
-            if env.param_structs.contains_key(name) {
+            if env.struct_name(name).is_some() && env.param_structs.contains_key(name) {
                 if name == "self" {
                     return;
                 }
@@ -525,7 +531,7 @@ fn validate_expr_node<'a>(
                 );
                 return;
             }
-            if env.struct_instances.contains_key(name) {
+            if env.struct_name(name).is_some() {
                 push_expr_error(
                     errors,
                     expr,
@@ -592,16 +598,13 @@ fn validate_expr_node<'a>(
         Expr::Index { base, index, .. } => {
             let flattened_struct_array_leaf =
                 split_simple_field_path(base).and_then(|(root, field)| {
-                    env.param_structs
-                        .get(root)
-                        .or_else(|| env.struct_instances.get(root))
-                        .and_then(|struct_name| {
-                            resolve_flattened_struct_array_leaf_type(
-                                struct_name,
-                                field,
-                                env.struct_defs,
-                            )
-                        })
+                    env.struct_name(root).and_then(|struct_name| {
+                        resolve_flattened_struct_array_leaf_type(
+                            struct_name,
+                            field,
+                            env.struct_defs,
+                        )
+                    })
                 });
             let lowered_state_field = split_simple_field_path(base)
                 .map(|(_, field)| field)
@@ -613,11 +616,25 @@ fn validate_expr_node<'a>(
                 || lowered_state_field.is_some()
                 || flattened_struct_array_leaf.is_some();
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if env.locals.contains(lexical_root) {
+            if env.has_scalar_binding(lexical_root) {
+                let kind = if env.locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 push_expr_error(
                     errors,
                     expr,
-                    format!("loop variable '{lexical_root}' is scalar and cannot be indexed"),
+                    format!("{kind} '{lexical_root}' is scalar and cannot be indexed"),
+                );
+                children.push(index);
+                return;
+            }
+            if lexical_root != base && env.tuple_vars.contains_key(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("tuple binding '{lexical_root}' has no fields"),
                 );
                 children.push(index);
                 return;
@@ -633,16 +650,12 @@ fn validate_expr_node<'a>(
             // direct field path through the containing struct.
             if !base_is_registered_array {
                 if let Some((root, field)) = split_field_path(base, errors) {
-                    if let Some((struct_name, owner_kind)) = env
-                        .param_structs
-                        .get(root)
-                        .map(|s| (s.as_str(), "parameter"))
-                        .or_else(|| {
-                            env.struct_instances
-                                .get(root)
-                                .map(|s| (s.as_str(), "instance"))
-                        })
-                    {
+                    if let Some(struct_name) = env.struct_name(root) {
+                        let owner_kind = if env.param_structs.contains_key(root) {
+                            "parameter"
+                        } else {
+                            "instance"
+                        };
                         let Some(_fields) = env.struct_defs.get(struct_name) else {
                             push_expr_error(
                                 errors,
@@ -850,11 +863,27 @@ fn validate_expr_node<'a>(
             ..
         } => {
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if env.locals.contains(lexical_root) {
+            if env.has_scalar_binding(lexical_root) {
+                let kind = if env.locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 push_expr_error(
                     errors,
                     expr,
-                    format!("loop variable '{lexical_root}' is scalar and cannot be sliced"),
+                    format!("{kind} '{lexical_root}' is scalar and cannot be sliced"),
+                );
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    children.push(coordinate);
+                }
+                return;
+            }
+            if env.tuple_vars.contains_key(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("tuple binding '{lexical_root}' cannot be sliced"),
                 );
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     children.push(coordinate);
@@ -869,16 +898,12 @@ fn validate_expr_node<'a>(
                 return;
             }
             if let Some((root, field)) = split_field_path(base, errors) {
-                if let Some((struct_name, owner_kind)) = env
-                    .param_structs
-                    .get(root)
-                    .map(|s| (s.as_str(), "parameter"))
-                    .or_else(|| {
-                        env.struct_instances
-                            .get(root)
-                            .map(|s| (s.as_str(), "instance"))
-                    })
-                {
+                if let Some(struct_name) = env.struct_name(root) {
+                    let owner_kind = if env.param_structs.contains_key(root) {
+                        "parameter"
+                    } else {
+                        "instance"
+                    };
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
                         push_expr_error(
                             errors,
@@ -1186,7 +1211,7 @@ fn validate_expr_node<'a>(
                 }
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if is_builtin_len_receiver(base, env) {
-                        validate_data_len_builtin_call(name, base, args, env, expr.loc(), errors);
+                        validate_data_len_builtin_call(name, args, expr.loc(), errors);
                         return;
                     }
                 }
@@ -1340,9 +1365,9 @@ fn validate_expr_node<'a>(
                             continue;
                         }
                         if let Some(FnParamType::Struct(expected)) = param_ty {
-                            if let Some(DataType::Struct(actual)) = infer_fixed_data_type(arg, env)
-                            {
-                                if env.struct_defs.contains_key(expected) && &actual != expected {
+                            let actual = infer_fixed_data_type(arg, env);
+                            if let Some(DataType::Struct(actual)) = actual.as_ref() {
+                                if env.struct_defs.contains_key(expected) && actual != expected {
                                     push_expr_error(
                                         errors,
                                         arg,
@@ -1352,6 +1377,26 @@ fn validate_expr_node<'a>(
                                     );
                                 }
                                 validate_fixed_data_expr(arg, env, errors);
+                                continue;
+                            }
+                            if env.struct_defs.contains_key(expected) {
+                                if !is_internal_proc_helper_call(name)
+                                    || !matches!(arg, Expr::Index { .. } | Expr::Var { .. })
+                                {
+                                    push_expr_error(
+                                        errors,
+                                        arg,
+                                        format!(
+                                            "function '{display_name}' argument '{}' {}",
+                                            sig.params[idx],
+                                            data_type_mismatch(
+                                                &DataType::Struct(expected.clone()),
+                                                actual.as_ref(),
+                                            )
+                                        ),
+                                    );
+                                    children.push(arg);
+                                }
                                 continue;
                             }
                         }
@@ -1426,33 +1471,6 @@ fn validate_expr_node<'a>(
                             ) {
                                 continue;
                             }
-                            continue;
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if (env.struct_instances.contains_key(v)
-                                || env.param_structs.contains_key(v))
-                                && matches!(param_ty, Some(FnParamType::Struct(_)))
-                            {
-                                continue;
-                            }
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if v == "self" && matches!(param_ty, Some(FnParamType::Struct(_))) {
-                                continue;
-                            }
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if (env.struct_instances.contains_key(v)
-                                || env.param_structs.contains_key(v))
-                                && is_internal_proc_helper_call(name)
-                            {
-                                continue;
-                            }
-                        }
-                        if matches!(param_ty, Some(FnParamType::Struct(_)))
-                            && is_internal_proc_helper_call(name)
-                            && matches!(arg, Expr::Index { .. } | Expr::Var { .. })
-                        {
                             continue;
                         }
                         if let Some(FnParamType::Tuple(expected)) = param_ty {
@@ -1726,48 +1744,32 @@ fn is_struct_array_root(declared_symbols: &DeclaredSymbolMap, name: &str) -> boo
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    env.array_vars.contains_key(base)
-        || env.local_array_aliases.contains_key(base)
-        || has_declared_buffer_symbol_info(env.declared_symbols, base)
-        || is_builtin_array_like_receiver_with_resolver(
-            base,
-            env.declared_symbols,
-            env.struct_defs,
-            env.proc_array_roots,
-            |root| {
-                env.param_structs
-                    .get(root)
-                    .or_else(|| env.struct_instances.get(root))
-                    .map(String::as_str)
-            },
-        )
+    let root = base.split('.').next().unwrap_or(base);
+    !env.has_value_binding(root)
+        && (call_array_symbol_info(base, env).is_some()
+            || has_declared_buffer_symbol_info(env.declared_symbols, base))
 }
 
 fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    has_declared_buffer_symbol_info(env.declared_symbols, base)
+    let root = base.split('.').next().unwrap_or(base);
+    !env.has_value_binding(root) && has_declared_buffer_symbol_info(env.declared_symbols, base)
 }
 
 fn is_by_ref_call_arg_var(name: &str, env: ExprEnv<'_>) -> bool {
-    env.struct_instances.contains_key(name)
-        || env.param_structs.contains_key(name)
-        || env.array_vars.contains_key(name)
+    let root = name.split('.').next().unwrap_or(name);
+    if env.has_value_binding(root) {
+        return false;
+    }
+    env.struct_name(name).is_some()
+        || call_array_symbol_info(name, env).is_some()
         || protected_proc_view_arg_name(name, env).is_some()
-        || env.output_arrays.contains(name)
         || has_declared_buffer_symbol_info(env.declared_symbols, name)
-        || is_declared_struct_array_root_symbol(env.declared_symbols, name)
-        || env.proc_array_roots.contains_key(name)
 }
 
 fn is_by_ref_call_arg_expr(expr: &Expr, env: ExprEnv<'_>) -> bool {
     match expr {
         Expr::Var { name, .. } => is_by_ref_call_arg_var(name, env),
-        Expr::Slice { base, .. } => {
-            env.array_vars.contains_key(base)
-                || protected_proc_view_arg_name(base, env).is_some()
-                || env.output_arrays.contains(base)
-                || has_declared_buffer_symbol_info(env.declared_symbols, base)
-                || is_declared_struct_array_root_symbol(env.declared_symbols, base)
-        }
+        Expr::Slice { base, .. } => is_by_ref_call_arg_var(base, env),
         _ => false,
     }
 }
@@ -1806,19 +1808,16 @@ pub(crate) fn infer_call_argument_tuple_types(
             })
             .collect(),
         Expr::Var { name, .. } => {
-            let lexical_root = name.split('.').next().unwrap_or(name);
-            if env.locals.contains(lexical_root) {
-                return None;
-            }
             if let Some(types) = tracked_local_tuple_types(name, env.tuple_vars, env.local_aliases)
             {
                 return Some(types);
             }
+            let lexical_root = name.split('.').next().unwrap_or(name);
+            if env.has_value_binding(lexical_root) {
+                return None;
+            }
             let (root, field) = split_simple_field_path(name)?;
-            let struct_name = env
-                .struct_instances
-                .get(root)
-                .or_else(|| env.param_structs.get(root))?;
+            let struct_name = env.struct_name(root)?;
             match &resolve_struct_field_decl(struct_name, field, env.struct_defs)?.ty {
                 TypedFieldType::Tuple(types) => Some(types.clone()),
                 TypedFieldType::Scalar(_) | TypedFieldType::Struct | TypedFieldType::Array(_) => {
@@ -1917,11 +1916,9 @@ enum CallArrayArgElem {
 
 fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgElem> {
     let nominal = match value {
-        Expr::Var { name, .. } if !env.locals.contains(name) => env
-            .struct_instances
-            .get(name)
-            .or_else(|| env.param_structs.get(name))
-            .cloned()
+        Expr::Var { name, .. } => env
+            .struct_name(name)
+            .map(str::to_owned)
             .map(CallArrayArgElem::Nominal),
         Expr::Index { base, .. } => {
             call_array_symbol_info(base, env).and_then(|info| match info.elem {
@@ -1949,10 +1946,7 @@ fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgE
 
 fn struct_field_array_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     let (root, field) = split_simple_field_path(name)?;
-    let struct_name = env
-        .struct_instances
-        .get(root)
-        .or_else(|| env.param_structs.get(root))?;
+    let struct_name = env.struct_name(root)?;
     let declaration = resolve_struct_field_decl(struct_name, field, env.struct_defs)?;
     let TypedFieldType::Array(len) = &declaration.ty else {
         return None;
@@ -1971,7 +1965,21 @@ fn struct_field_array_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgI
 
 fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     let lexical_root = name.split('.').next().unwrap_or(name);
-    if env.locals.contains(lexical_root) {
+    if env.has_value_binding(lexical_root) {
+        return None;
+    }
+    if let Some(alias) = env.local_array_aliases.get(name) {
+        let elem = alias
+            .elem_struct
+            .clone()
+            .map(CallArrayArgElem::Nominal)
+            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
+        return Some(CallArrayArgInfo {
+            elem,
+            len: alias.static_len,
+        });
+    }
+    if env.struct_name(name).is_some() {
         return None;
     }
     if let Some(proc_array) = env.proc_array_roots.get(name) {
@@ -2001,17 +2009,6 @@ fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArg
                 .or_else(|| env.array_vars.get(name).copied()),
         });
     }
-    if let Some(alias) = env.local_array_aliases.get(name) {
-        let elem = alias
-            .elem_struct
-            .clone()
-            .map(CallArrayArgElem::Nominal)
-            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
-        return Some(CallArrayArgInfo {
-            elem,
-            len: alias.static_len,
-        });
-    }
     if !env.array_vars.contains_key(name)
         && !env.output_arrays.contains(name)
         && !is_declared_struct_array_root_symbol(env.declared_symbols, name)
@@ -2021,9 +2018,8 @@ fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArg
     let elem = declared_symbol_scalar_type(env.declared_symbols, name)
         .map(CallArrayArgElem::Primitive)
         .or_else(|| {
-            env.struct_instances
-                .get(name)
-                .cloned()
+            env.struct_name(name)
+                .map(str::to_owned)
                 .map(CallArrayArgElem::Nominal)
         })?;
     Some(CallArrayArgInfo {
@@ -2040,9 +2036,7 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
             // semantic metadata remains keyed by the source-level field name.
             let (root, field) = split_simple_field_path(name)?;
             let typed_receiver = env
-                .param_structs
-                .get(root)
-                .or_else(|| env.struct_instances.get(root))
+                .struct_name(root)
                 .is_some_and(|name| env.struct_defs.contains_key(name));
             if root == "self" && !typed_receiver {
                 direct_array_symbol_info(field, env)
@@ -2171,20 +2165,14 @@ pub(crate) fn infer_fixed_data_type(expr: &Expr, env: ExprEnv<'_>) -> Option<Dat
             }
         }
         Expr::Var { name, .. } => {
-            if let Some(name) = env
-                .struct_instances
-                .get(name)
-                .or_else(|| env.param_structs.get(name))
-            {
-                return Some(DataType::Struct(name.clone()));
+            if let Some(struct_name) = env.struct_name(name) {
+                return Some(DataType::Struct(struct_name.to_owned()));
             }
             if let Some((root, path)) = name.split_once('.') {
-                if let Some(root) = env
-                    .struct_instances
-                    .get(root)
-                    .or_else(|| env.param_structs.get(root))
-                {
-                    if let Some(field) = resolve_struct_field_decl(root, path, env.struct_defs) {
+                if let Some(struct_name) = env.struct_name(root) {
+                    if let Some(field) =
+                        resolve_struct_field_decl(struct_name, path, env.struct_defs)
+                    {
                         match field.ty {
                             TypedFieldType::Struct => {
                                 return field.struct_name.clone().map(DataType::Struct)
@@ -2783,9 +2771,7 @@ fn reject_immutable_array_call_arg(
 
 fn validate_data_len_builtin_call(
     name: &str,
-    base: &str,
     args: &[CallArg],
-    env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2808,93 +2794,6 @@ fn validate_data_len_builtin_call(
                 format!("builtin method '{}' does not support named arguments", name),
             );
         }
-    }
-
-    let before = errors.len();
-    let is_data_symbol = env.array_vars.contains_key(base)
-        || env.local_array_aliases.contains_key(base)
-        || has_declared_buffer_symbol_info(env.declared_symbols, base)
-        || is_builtin_array_like_receiver_with_resolver(
-            base,
-            env.declared_symbols,
-            env.struct_defs,
-            env.proc_array_roots,
-            |root| {
-                env.param_structs
-                    .get(root)
-                    .or_else(|| env.struct_instances.get(root))
-                    .map(String::as_str)
-            },
-        )
-        || if let Some((root, field)) = split_field_path(base, errors) {
-            let struct_name = env
-                .param_structs
-                .get(root)
-                .or_else(|| env.struct_instances.get(root));
-            if let Some(struct_name) = struct_name {
-                if let Some(field_decl) =
-                    resolve_struct_field_decl(struct_name, field, env.struct_defs)
-                {
-                    match field_decl.ty {
-                        TypedFieldType::Array(_) => true,
-                        TypedFieldType::Struct => {
-                            push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "builtin method '{}' requires a array symbol, but '{}.{}' is a nested struct",
-                                name, root, field
-                            ),
-                        );
-                            false
-                        }
-                        TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {
-                            push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
-                                name, root, field
-                            ),
-                        );
-                            false
-                        }
-                    }
-                } else {
-                    if env.struct_defs.contains_key(struct_name) {
-                        push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "struct instance '{}' (type '{}') has no field '{}'",
-                                root, struct_name, field
-                            ),
-                        );
-                    } else {
-                        push_loc_error(
-                            errors,
-                            loc,
-                            format!("unknown struct type '{}'", struct_name),
-                        );
-                    }
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-    if !is_data_symbol && errors.len() == before {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin method '{}' requires a array or buffer symbol receiver, got '{}'",
-                name, base
-            ),
-        );
     }
 }
 
@@ -2927,16 +2826,7 @@ fn validate_buffer_metadata_builtin_call(
             );
         }
     }
-    if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin method '{}' requires a buffer symbol receiver, got '{}'",
-                name, base
-            ),
-        );
-    } else if is_declared_buffer_array_info(env.declared_symbols, base) {
+    if is_declared_buffer_array_info(env.declared_symbols, base) {
         push_loc_error(
             errors,
             loc,
@@ -3634,11 +3524,7 @@ fn unsafe_aggregate_array(base: &str, env: ExprEnv<'_>) -> bool {
     }
 
     let field = if let Some((root, field)) = base.split_once('.') {
-        let Some(struct_name) = env
-            .struct_instances
-            .get(root)
-            .or_else(|| env.param_structs.get(root))
-        else {
+        let Some(struct_name) = env.struct_name(root) else {
             return false;
         };
         resolve_struct_field_decl(struct_name, field, env.struct_defs)

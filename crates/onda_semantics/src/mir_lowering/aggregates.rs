@@ -123,7 +123,7 @@ impl<'a> FunctionLowerer<'a> {
                     | Binding::ProcArrayParameter { .. }
             )
         ) || self
-            .runtime_globals
+            .runtime_globals_for_unbound(base)
             .is_some_and(|globals| globals.array_struct_roots.contains_key(base));
         if !has_direct_source {
             return self.lower_nested_proc_element_alias(
@@ -182,7 +182,7 @@ impl<'a> FunctionLowerer<'a> {
                 )
             } else {
                 let Some((struct_name, len)) = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.array_struct_roots.get(base).cloned())
                 else {
                     return Ok(false);
@@ -885,12 +885,9 @@ impl<'a> FunctionLowerer<'a> {
         value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let Some(globals) = self.runtime_globals else {
+        let Some(globals) = self.runtime_globals_for_unbound(name) else {
             return Ok(false);
         };
-        if self.bindings.contains_key(name) {
-            return Ok(false);
-        }
         if let Some(components) = globals.state_tuples.get(name).cloned() {
             if values.len() != components.len() {
                 return Err(self.error(

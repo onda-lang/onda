@@ -40,6 +40,10 @@ pub(crate) fn path_is_within_root(path: &str, root: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with(['.', '[']))
 }
 
+pub(crate) fn shadow_rooted_entries<T>(bindings: &mut HashMap<String, T>, root: &str) {
+    bindings.retain(|name, _| !path_is_within_root(name, root));
+}
+
 fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
     let ty = match &param.ty {
         EventParamType::Tuple(types) => FnParamType::Tuple(types.clone()),

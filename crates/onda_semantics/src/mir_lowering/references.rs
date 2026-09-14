@@ -81,9 +81,15 @@ impl FunctionLowerer<'_> {
                 },
                 *element,
             ),
-            _ => {
+            Some(_) => {
+                return Err(self.error(
+                    format!("binding '{name}' is not scalar reference storage"),
+                    loc,
+                ));
+            }
+            None => {
                 let Some((state, ty)) = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(name)
                     .and_then(|globals| globals.states.get(name))
                     .copied()
                 else {

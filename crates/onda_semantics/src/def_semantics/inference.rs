@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use super::call_types::const_positive_usize_for_call_type;
 
 use onda_frontend::{
-    AssignTarget, BufferChannels, BufferElemType, CallArg, DiagCtx, Diagnostic, Expr, FnParamType,
-    FunctionDef, PrimitiveType, Stmt,
+    ArrayElemType, AssignTarget, BufferChannels, BufferElemType, CallArg, DiagCtx, Diagnostic,
+    Expr, FnParamType, FunctionDef, PrimitiveType, Stmt,
 };
 
 mod return_inference;
@@ -19,8 +19,8 @@ use crate::builtins::{
 };
 use crate::{
     push_semantic, resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context,
-    AnalysisOptions, FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedFieldType,
-    TypedFnParam, TypedStructField,
+    AnalysisOptions, DataType, FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedEvent,
+    TypedEventParamType, TypedFieldType, TypedFnParam, TypedStructField,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,16 +71,12 @@ pub(crate) struct InferredProcArrayParam {
     pub(crate) len: usize,
 }
 
-fn remove_shadowed_root<T>(roots: &mut HashMap<String, T>, name: &str) {
-    let child_prefix = format!("{name}.");
-    roots.retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-}
-
 pub(crate) fn infer_def_param_kinds(
     defs: &[FunctionDef],
     init: &[Stmt],
     block_stmts: &[Stmt],
     sample: &[Stmt],
+    events: &[TypedEvent],
     struct_instances: &HashMap<String, String>,
     struct_array_roots: &HashMap<String, String>,
     proc_array_roots: &HashMap<String, InferredProcArrayParam>,
@@ -185,6 +181,64 @@ pub(crate) fn infer_def_param_kinds(
             &mut kinds,
             errors,
         );
+    }
+    for event in events {
+        let mut event_struct_instances = struct_instances.clone();
+        let mut event_struct_array_roots = struct_array_roots.clone();
+        let mut event_proc_array_roots = proc_array_roots.clone();
+        let mut event_array_bindings = array_bindings.clone();
+        let mut event_buffer_bindings = buffer_bindings.clone();
+        for param in &event.params {
+            for roots in [&mut event_struct_instances, &mut event_struct_array_roots] {
+                crate::shadow_rooted_entries(roots, &param.name);
+            }
+            crate::shadow_rooted_entries(&mut event_proc_array_roots, &param.name);
+            crate::shadow_rooted_entries(&mut event_array_bindings, &param.name);
+            crate::shadow_rooted_entries(&mut event_buffer_bindings, &param.name);
+            match &param.ty {
+                TypedEventParamType::StructSlice { name } => {
+                    event_struct_array_roots.insert(param.name.clone(), name.clone());
+                }
+                TypedEventParamType::Data(DataType::Struct(name)) => {
+                    event_struct_instances.insert(param.name.clone(), name.clone());
+                }
+                TypedEventParamType::Data(DataType::Array {
+                    element: ArrayElemType::Struct(name),
+                    ..
+                }) => {
+                    event_struct_array_roots.insert(param.name.clone(), name.clone());
+                }
+                TypedEventParamType::Data(DataType::Array {
+                    element: ArrayElemType::Primitive(elem_ty),
+                    len,
+                })
+                | TypedEventParamType::Array { elem: elem_ty, len } => {
+                    event_array_bindings.insert(
+                        param.name.clone(),
+                        InferredArrayParam {
+                            elem_ty: *elem_ty,
+                            len: *len,
+                        },
+                    );
+                }
+                TypedEventParamType::Tuple(_)
+                | TypedEventParamType::Scalar(_)
+                | TypedEventParamType::Slice { .. } => {}
+            }
+        }
+        for stmt in &event.body {
+            infer_stmt_calls(
+                stmt,
+                &event_struct_instances,
+                &event_struct_array_roots,
+                &event_proc_array_roots,
+                &mut event_array_bindings,
+                &mut event_buffer_bindings,
+                fn_signatures,
+                &mut kinds,
+                errors,
+            );
+        }
     }
 
     // Propagate inferred def parameter kinds through def-to-def calls.
@@ -314,8 +368,8 @@ pub(crate) fn infer_def_param_kinds(
             let mut merged_struct_array_roots = struct_array_roots.clone();
             let mut merged_proc_array_roots = proc_array_roots.clone();
             for param in &def.params {
-                remove_shadowed_root(&mut merged_struct_array_roots, &param.name);
-                remove_shadowed_root(&mut merged_proc_array_roots, &param.name);
+                crate::shadow_rooted_entries(&mut merged_struct_array_roots, &param.name);
+                crate::shadow_rooted_entries(&mut merged_proc_array_roots, &param.name);
             }
             merged_struct_array_roots.extend(local_struct_array_roots);
             merged_proc_array_roots.extend(local_proc_array_roots);
@@ -422,6 +476,12 @@ pub(crate) fn infer_def_param_kinds(
                 typed.push(TypedFnParam::Tuple {
                     elem_tys: elem_tys.clone(),
                 });
+                continue;
+            }
+            if let Some(FnParamType::Primitive(ty)) =
+                def.params.get(idx).and_then(|p| p.ty.as_ref())
+            {
+                typed.push(TypedFnParam::Scalar { ty: Some(*ty) });
                 continue;
             }
             // Handle explicitly typed array params (e.g. `f32[]`, `f32[4]`)

@@ -150,7 +150,10 @@ impl FunctionLowerer<'_> {
         };
         let loc = expr.loc();
         let struct_name = match self.bindings.get(base) {
-            Some(Binding::StructArrayParameter { struct_name, .. }) => struct_name.clone(),
+            Some(
+                Binding::StructArrayParameter { struct_name, .. }
+                | Binding::StructArrayStorage { struct_name, .. },
+            ) => struct_name.clone(),
             _ => match self.data_type_of(&Expr::var(base)) {
                 Some(DataType::Array {
                     element: ArrayElemType::Struct(name),
@@ -162,29 +165,21 @@ impl FunctionLowerer<'_> {
         self.prepare_data_array_view(base, block, loc)?;
         let (length, source_fields) = match self.bindings.get(base).cloned() {
             Some(Binding::StructArrayParameter { length, fields, .. }) => (length, fields),
-            _ => {
+            Some(Binding::StructArrayStorage { len, .. }) => (
+                StructArrayLength::Fixed(len),
+                self.lower_struct_array_storage_fields(base, &struct_name, block, loc)?,
+            ),
+            Some(_) => return Ok(false),
+            None => {
                 let len = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.array_struct_roots.get(base))
                     .map(|(_, len)| *len)
                     .ok_or_else(|| self.error("struct slice has no storage origin", loc))?;
-                let mut fields = Vec::new();
-                for shape in self.struct_field_shapes(&struct_name, loc)? {
-                    let (path, element) = match shape {
-                        StructFieldShape::Scalar { name, ty } => (name, ty),
-                        StructFieldShape::Array { name, element, .. } => (name, element),
-                    };
-                    let slice = self.lower_slice_expression(
-                        &Expr::var(format!("{base}.{path}")),
-                        None,
-                        block,
-                    )?;
-                    let Value::Local(local) = slice.value else {
-                        unreachable!()
-                    };
-                    fields.push((path, local, element));
-                }
-                (StructArrayLength::Fixed(len), fields)
+                (
+                    StructArrayLength::Fixed(len),
+                    self.lower_struct_array_storage_fields(base, &struct_name, block, loc)?,
+                )
             }
         };
         let length = self.struct_array_length_value(length, block, loc);
@@ -257,5 +252,28 @@ impl FunctionLowerer<'_> {
             },
         );
         Ok(true)
+    }
+
+    fn lower_struct_array_storage_fields(
+        &mut self,
+        base: &str,
+        struct_name: &str,
+        block: &mut MirBlock,
+        loc: SourceLoc,
+    ) -> Result<Vec<(String, LocalId, PrimitiveType)>, MirLoweringError> {
+        let mut fields = Vec::new();
+        for shape in self.struct_field_shapes(struct_name, loc)? {
+            let (path, element) = match shape {
+                StructFieldShape::Scalar { name, ty } => (name, ty),
+                StructFieldShape::Array { name, element, .. } => (name, element),
+            };
+            let slice =
+                self.lower_slice_expression(&Expr::var(format!("{base}.{path}")), None, block)?;
+            let Value::Local(local) = slice.value else {
+                unreachable!()
+            };
+            fields.push((path, local, element));
+        }
+        Ok(fields)
     }
 }

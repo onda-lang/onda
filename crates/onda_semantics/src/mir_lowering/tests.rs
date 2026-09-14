@@ -321,6 +321,49 @@ sample:
 }
 
 #[test]
+fn scalar_function_and_event_parameters_shadow_aggregate_namespaces() {
+    let source = r#"
+struct Box:
+  value: i32 = 7
+
+def identity(value) -> f32:
+  return value
+
+init:
+  box = Box()
+  observed = 0.0
+
+event set(box: i32):
+  observed = identity(box)
+
+sample:
+  for box in 0..1:
+    out1 = identity(box) + observed
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("scalar parameters should own their lexical roots");
+    let identity = typed
+        .defs
+        .iter()
+        .find(|function| function.name.starts_with("identity"))
+        .expect("identity should be retained");
+    assert!(
+        matches!(
+            identity.param_kinds.first(),
+            Some(TypedFnParam::Scalar { .. })
+        ),
+        "the scalar parameter must not inherit aggregate metadata: {identity:?}"
+    );
+    let mir = lower_test_program(&typed).expect("shadowed scalar parameters should lower");
+    let dump = format_program(&mir);
+    let event = formatted_function(&dump, "onda_event::set");
+    assert!(
+        event.contains("load @event_param0"),
+        "the event must forward its payload parameter:\n{event}"
+    );
+}
+
+#[test]
 fn underscore_for_variables_and_loop_sugar_lower_normally() {
     let source = r#"
 outs:
@@ -3354,7 +3397,8 @@ def seed():
   def_cells[0].value = 1.0
   def_cells[0].taps[1] = 1.5
   def_cells[0].pair = (2.0, 3)
-  return def_cells[0].value + def_cells[0].taps[1]
+  def_slice: Cell[] = def_cells[0:1]
+  return def_slice[0].value + def_cells[0].taps[1]
 
 task worker():
   task_cells: Cell[2]

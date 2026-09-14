@@ -21,6 +21,112 @@ sample:
     }
 
     #[test]
+    fn loop_index_cannot_fall_through_to_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+def read(box: Box) -> f32:
+  return box.value
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    out1 = read(box)
+"#;
+        assert_analyze_error_contains(
+            source,
+            "function 'read' argument 'box' expects 'Box', got a non-data value",
+        );
+    }
+
+    #[test]
+    fn loop_index_cannot_reveal_same_named_struct_fields_to_builtins() {
+        let source = r#"
+struct Box:
+  values: f32[2]
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    out1 = f32(box.values.len())
+"#;
+        let program = parse_program(source).expect("loop shadowing source should parse");
+        analyze(program).expect_err("the scalar loop binding must hide outer struct fields");
+    }
+
+    #[test]
+    fn loop_index_cannot_write_through_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    box.value = 1.0
+"#;
+        assert_analyze_error_contains(
+            source,
+            "loop variable 'box' is scalar and has no field 'value'",
+        );
+    }
+
+    #[test]
+    fn init_loop_index_cannot_write_through_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+init:
+  box = Box()
+  for box in 0..1:
+    box.value = 1.0
+
+sample:
+  out1 = 0.0
+"#;
+        assert_analyze_error_contains(
+            source,
+            "loop variable 'box' is scalar and has no field 'value'",
+        );
+    }
+
+    #[test]
+    fn event_scalar_cannot_fall_through_to_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+def read(box: Box) -> f32:
+  return box.value
+
+init:
+  box = Box()
+  observed = 0.0
+
+event inspect(box: i32):
+  observed = read(box)
+
+sample:
+  out1 = observed
+"#;
+        assert_analyze_error_contains(
+            source,
+            "function 'read' argument 'box' expects 'Box', got a non-data value",
+        );
+    }
+
+    #[test]
     fn repeated_generic_scalar_constraints_choose_one_widened_type() {
         let src = r#"
 outs:
