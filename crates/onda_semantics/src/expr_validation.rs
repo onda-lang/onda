@@ -1747,12 +1747,13 @@ fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
     let root = base.split('.').next().unwrap_or(base);
     !env.has_value_binding(root)
         && (call_array_symbol_info(base, env).is_some()
-            || has_declared_buffer_symbol_info(env.declared_symbols, base))
+            || (!env.resource_receiver_is_shadowed(base)
+                && has_declared_buffer_symbol_info(env.declared_symbols, base)))
 }
 
 fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    let root = base.split('.').next().unwrap_or(base);
-    !env.has_value_binding(root) && has_declared_buffer_symbol_info(env.declared_symbols, base)
+    !env.resource_receiver_is_shadowed(base)
+        && has_declared_buffer_symbol_info(env.declared_symbols, base)
 }
 
 fn is_by_ref_call_arg_var(name: &str, env: ExprEnv<'_>) -> bool {

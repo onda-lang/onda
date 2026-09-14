@@ -2822,10 +2822,76 @@ struct FunctionLowerer<'a> {
     results: Vec<TypeId>,
     locals: Vec<onda_mir::Local>,
     bindings: HashMap<String, Binding>,
+    /// Lexical introductions that may construct directly in their final
+    /// storage. Later assignments must preserve value/snapshot semantics by
+    /// materializing their right-hand side before replacing that storage.
+    data_initialization_sites: HashSet<(String, SourceLoc)>,
     next_data_id: usize,
     nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
     event_struct_slices: Vec<(String, String)>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
+}
+
+fn data_initialization_sites(function: &TypedFunction) -> HashSet<(String, SourceLoc)> {
+    fn visit(
+        statements: &[Stmt],
+        possibly_bound: &mut HashSet<String>,
+        repeated: bool,
+        sites: &mut HashSet<(String, SourceLoc)>,
+        seen_sites: &mut HashSet<(String, SourceLoc)>,
+    ) {
+        for statement in statements {
+            match statement {
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if !name.contains('.') => {
+                    let site = (name.clone(), statement.assign_target_loc());
+                    let unique_site = seen_sites.insert(site.clone());
+                    if possibly_bound.insert(name.clone()) && !repeated && unique_site {
+                        sites.insert(site);
+                    } else if !unique_site {
+                        // Compiler-generated statements may share a zero source
+                        // location. An ambiguous key is never safe to optimize.
+                        sites.remove(&site);
+                    }
+                }
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    let mut then_bound = possibly_bound.clone();
+                    let mut else_bound = possibly_bound.clone();
+                    visit(then_branch, &mut then_bound, repeated, sites, seen_sites);
+                    visit(else_branch, &mut else_bound, repeated, sites, seen_sites);
+                    // A later assignment is only a fresh initialization if no
+                    // path reaching it could already have assigned the name.
+                    possibly_bound.extend(then_bound);
+                    possibly_bound.extend(else_bound);
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    let mut body_bound = possibly_bound.clone();
+                    visit(body, &mut body_bound, true, sites, seen_sites);
+                    // Even a maybe-empty loop can precede the next statement;
+                    // retain its possible writes to keep replacements safe.
+                    possibly_bound.extend(body_bound);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut bound = function.params.iter().cloned().collect::<HashSet<_>>();
+    let mut sites = HashSet::new();
+    visit(
+        &function.body,
+        &mut bound,
+        false,
+        &mut sites,
+        &mut HashSet::new(),
+    );
+    sites
 }
 
 fn function_location(function: &TypedFunction) -> SourceLoc {

@@ -13,7 +13,7 @@ use crate::decl_symbols::{
     DeclaredSymbolMap,
 };
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
-use crate::expr_analysis::has_scalar_value_binding;
+use crate::expr_analysis::{has_lexical_root_binding, has_scalar_value_binding};
 use crate::internal_names::PROC_INDEX_CALL_SENTINEL;
 use crate::{
     is_builtin_array_like_receiver_with_resolver, resolve_flattened_struct_array_leaf_type,
@@ -657,31 +657,52 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 struct_instances,
                                 struct_defs,
                                 proc_array_roots,
-                            ) || is_buffer_receiver_symbol_for_builtin(base, declared_symbols))
+                            ) || (!has_lexical_root_binding(
+                                base,
+                                locals,
+                                local_aliases,
+                                local_array_aliases,
+                                struct_instances,
+                            ) && is_buffer_receiver_symbol_for_builtin(
+                                base,
+                                declared_symbols,
+                            )))
                         {
                             return Some(PrimitiveType::I32);
                         }
                     }
                     if let Some(base) = parse_buffer_chans_instance_base(name) {
-                        let root = base.split('.').next().unwrap_or(base);
-                        if !has_scalar_value_binding(root, locals, local_aliases)
-                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        if !has_lexical_root_binding(
+                            base,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            struct_instances,
+                        ) && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                         {
                             return Some(PrimitiveType::I32);
                         }
                     }
                     if let Some(base) = parse_buffer_bound_instance_base(name) {
-                        let root = base.split('.').next().unwrap_or(base);
-                        if !has_scalar_value_binding(root, locals, local_aliases)
-                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        if !has_lexical_root_binding(
+                            base,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            struct_instances,
+                        ) && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                         {
                             return Some(PrimitiveType::Bool);
                         }
                     }
                     if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-                        let root = base.split('.').next().unwrap_or(base);
-                        if !has_scalar_value_binding(root, locals, local_aliases)
-                            && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
+                        if !has_lexical_root_binding(
+                            base,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            struct_instances,
+                        ) && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                         {
                             return Some(PrimitiveType::F32);
                         }

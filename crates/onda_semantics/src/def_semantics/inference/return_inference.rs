@@ -597,7 +597,7 @@ pub(crate) fn validate_def_return_types(
             env_seed,
             full_return_types,
             struct_defs,
-            false,
+            true,
         );
         for observed in &observed_returns {
             validate_return_observation(display_name, observed, &expected, errors);

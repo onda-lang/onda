@@ -1622,6 +1622,73 @@ sample:
     }
 
     #[test]
+    fn aggregate_binding_shadows_same_named_buffer_metadata() {
+        let cases = [
+            (
+                "array",
+                r#"
+buffers:
+  values: buffer<f32>
+
+def inspect(values: f32[]) -> i32:
+  return values.chans()
+
+sample:
+  out1 = 0.0
+"#,
+            ),
+            (
+                "tuple",
+                r#"
+buffers:
+  values: buffer<f32>
+
+def inspect(values: (f32, f32)) -> i32:
+  return values.chans()
+
+sample:
+  out1 = 0.0
+"#,
+            ),
+            (
+                "struct",
+                r#"
+struct Pair:
+  left: f32
+  right: f32
+
+buffers:
+  values: buffer<f32>
+
+def inspect(values: Pair) -> i32:
+  return values.chans()
+
+sample:
+  out1 = 0.0
+"#,
+            ),
+        ];
+
+        for (kind, src) in cases {
+            let program = parse_program(src).expect("parse should succeed");
+            let errors = analyze(program)
+                .expect_err("aggregate values have no buffer metadata methods");
+            assert!(
+                errors.iter().any(|diagnostic| diagnostic
+                    .message
+                    .contains("unknown function 'values.chans'")),
+                "missing {kind} method-resolution diagnostic: {errors:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .all(|diagnostic| !diagnostic.message.contains("cannot assign F32 to I32")),
+                "outer buffer metadata must not type a shadowing {kind}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn block_without_nested_sample_reports_only_block_specific_error() {
         let src = "outs { out1 }\nblock { x = 0.0 }\n";
         let program = parse_program(src).expect("parse should succeed");

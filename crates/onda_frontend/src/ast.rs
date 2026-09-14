@@ -1338,7 +1338,7 @@ thread_local! {
         RefCell::new(SourceContextInterner::default());
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct SourceLoc {
     pub line: usize,
     pub column: usize,

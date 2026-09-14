@@ -43,6 +43,7 @@ impl<'a> FunctionLowerer<'a> {
         source_files: &'a mut Vec<SourceFile>,
         log_sites: &'a mut Vec<onda_mir::LogSite>,
     ) -> Self {
+        let data_initialization_sites = data_initialization_sites(function);
         Self {
             function,
             functions,
@@ -73,6 +74,7 @@ impl<'a> FunctionLowerer<'a> {
             results: Vec::new(),
             locals: Vec::new(),
             bindings: HashMap::new(),
+            data_initialization_sites,
             next_data_id: 0,
             nested_proc_aliases: HashMap::new(),
             event_slice_parameters: Vec::new(),

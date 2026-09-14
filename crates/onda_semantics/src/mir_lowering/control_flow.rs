@@ -142,9 +142,39 @@ impl<'a> FunctionLowerer<'a> {
                         });
                         if let Some(data) = data {
                             let existing = self.data_type_of(&Expr::var(name));
-                            if existing.is_none()
-                                && (*is_typed_decl || generic_decl_ty.is_some())
-                                && matches!(
+                            let introduces_binding = self
+                                .data_initialization_sites
+                                .contains(&(name.clone(), statement.assign_target_loc()));
+                            let structured = matches!(
+                                data,
+                                DataType::Struct(_)
+                                    | DataType::Array {
+                                        element: ArrayElemType::Struct(_),
+                                        ..
+                                    }
+                            );
+                            let selects_storage = Self::data_expr_selects_storage(expr);
+
+                            if introduces_binding && structured {
+                                // An untyped selection introduces a view. A
+                                // typed declaration owns independent storage.
+                                if selects_storage && !(*is_typed_decl || generic_decl_ty.is_some())
+                                {
+                                    let source = self.lower_data_expr(expr, &data, block)?;
+                                    self.bind_data_alias(
+                                        name,
+                                        &source,
+                                        &data,
+                                        block,
+                                        (*loc).into(),
+                                    )?;
+                                    continue;
+                                }
+
+                                if existing.is_none() {
+                                    self.allocate_data(name, &data, (*loc).into())?;
+                                }
+                                if matches!(
                                     (&data, expr),
                                     (
                                         DataType::Array {
@@ -156,31 +186,19 @@ impl<'a> FunctionLowerer<'a> {
                                             ..
                                         }
                                     )
-                                )
-                            {
-                                self.allocate_data(name, &data, (*loc).into())?;
-                                continue;
-                            }
-                            if existing.is_some()
-                                && (*is_typed_decl || generic_decl_ty.is_some())
-                                && matches!(
-                                    data,
-                                    DataType::Struct(_)
-                                        | DataType::Array {
-                                            element: ArrayElemType::Struct(_),
-                                            ..
-                                        }
-                                )
-                                && !Self::data_expr_selects_storage(expr)
-                            {
-                                self.initialize_data_expr(name, expr, &data, block)?;
-                                continue;
+                                ) {
+                                    continue;
+                                }
+                                if !selects_storage {
+                                    self.initialize_data_expr(name, expr, &data, block)?;
+                                    continue;
+                                }
                             }
                             let source = self.lower_data_expr(expr, &data, block)?;
                             if existing.is_some() {
                                 self.copy_data(name, &source, &data, block, (*loc).into())?;
                             } else if (*is_typed_decl || generic_decl_ty.is_some())
-                                && Self::data_expr_selects_storage(expr)
+                                && selects_storage
                             {
                                 self.allocate_data(name, &data, (*loc).into())?;
                                 self.copy_data(name, &source, &data, block, (*loc).into())?;

@@ -140,6 +140,21 @@ impl<'a> ExprEnv<'a> {
         self.has_scalar_binding(root) || self.tuple_vars.contains_key(root)
     }
 
+    /// Resource metadata is a fallback namespace. A local binding at the
+    /// receiver root shadows a bare outer resource, while a struct receiver
+    /// may legitimately own a dotted resource such as `self.buffer`.
+    pub(crate) fn resource_receiver_is_shadowed(self, base: &str) -> bool {
+        let root = base.split('.').next().unwrap_or(base);
+        has_lexical_root_binding(
+            base,
+            self.locals,
+            self.local_aliases,
+            self.local_array_aliases,
+            self.struct_instances,
+        ) || self.tuple_vars.contains_key(root)
+            || (base == root && self.param_structs.contains_key(root))
+    }
+
     /// Resolve a struct only after applying lexical binding precedence. Local
     /// arrays likewise shadow an outer struct with the same root.
     pub(crate) fn struct_name(self, root: &str) -> Option<&'a str> {
@@ -159,6 +174,23 @@ pub(crate) fn has_scalar_value_binding(
     local_aliases: &LocalAliasTypes,
 ) -> bool {
     locals.contains(root) || local_aliases.contains_key(root)
+}
+
+pub(crate) fn has_lexical_root_binding(
+    base: &str,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    struct_instances: &HashMap<String, String>,
+) -> bool {
+    let root = base.split('.').next().unwrap_or(base);
+    has_scalar_value_binding(root, locals, local_aliases)
+        || local_array_aliases.contains_key(root)
+        || (base == root && struct_instances.contains_key(root))
+        || local_aliases.keys().any(|name| {
+            name.strip_prefix(root)
+                .is_some_and(|suffix| suffix.starts_with('.') || suffix.starts_with('['))
+        })
 }
 
 #[derive(Clone, Copy)]

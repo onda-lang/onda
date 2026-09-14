@@ -507,6 +507,56 @@ sample:
 }
 
 #[test]
+fn fresh_untyped_init_data_is_initialized_in_its_persistent_storage() {
+    let program = compile(
+        r#"
+struct Spectrum:
+  gain: f32 = 0.5
+  real: f32[65536]
+  imaginary: f32[65536]
+
+def duplicate(value: Spectrum) -> Spectrum:
+  return value
+
+init:
+  source = Spectrum()
+  result = duplicate(source)
+sample:
+  out1 = result.gain + result.real[0]
+"#,
+    );
+    assert_eq!(
+        scratch_array_count(&program, 65536),
+        0,
+        "fresh constructor and call results should use their planned persistent storage"
+    );
+}
+
+#[test]
+fn structured_data_replacement_retains_snapshot_storage() {
+    let program = compile(
+        r#"
+struct Spectrum:
+  real: f32[65536]
+
+def duplicate(value: Spectrum) -> Spectrum:
+  return value
+
+init:
+  value = Spectrum()
+  value = duplicate(value)
+sample:
+  out1 = value.real[0]
+"#,
+    );
+    assert_eq!(
+        scratch_array_count(&program, 65536),
+        1,
+        "a replacement whose source aliases its destination needs snapshot storage"
+    );
+}
+
+#[test]
 fn processor_declarations_construct_directly_in_planned_state() {
     let program = compile(
         r#"

@@ -376,10 +376,22 @@ impl FunctionLowerer<'_> {
                 ) => PlaceBase::Parameter(*parameter),
                 Some(_) => return Ok(None),
                 None => {
-                    return Err(self.error(
-                        format!("data result field '{field}' has no storage binding"),
-                        loc,
-                    ))
+                    let globals = self.runtime_globals_for_unbound(&field).ok_or_else(|| {
+                        self.error(
+                            format!("data result field '{field}' has no storage binding"),
+                            loc,
+                        )
+                    })?;
+                    if let Some((state, _)) = globals.states.get(&field) {
+                        PlaceBase::State(*state)
+                    } else if let Some((state, _, _)) = globals.state_arrays.get(&field) {
+                        PlaceBase::State(*state)
+                    } else {
+                        return Err(self.error(
+                            format!("data result field '{field}' has no storage binding"),
+                            loc,
+                        ));
+                    }
                 }
             };
             args.push(CallArgument::Place(Place {
