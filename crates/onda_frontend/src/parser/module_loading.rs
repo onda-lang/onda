@@ -342,6 +342,68 @@ struct ParseLocContext {
     line_offset: usize,
     trace: Vec<String>,
     source_line_map: Vec<usize>,
+    line_index: LineIndex,
+}
+
+impl ParseLocContext {
+    fn new(
+        source: &str,
+        file_path: &Path,
+        line_offset: usize,
+        trace: &[String],
+        source_line_map: &[usize],
+    ) -> Self {
+        Self {
+            file: display_path(file_path),
+            line_offset,
+            trace: trace.to_vec(),
+            source_line_map: source_line_map.to_vec(),
+            line_index: LineIndex::new(source),
+        }
+    }
+}
+
+/// Pest's `Position::line_col` scans the source prefix for every span. Keep
+/// line starts and only the non-ASCII column adjustments for this parse.
+#[derive(Debug, Clone)]
+struct LineIndex {
+    line_starts: Vec<usize>,
+    multibyte_ends: Vec<(usize, usize)>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut line_starts = vec![0];
+        let mut multibyte_ends = Vec::new();
+        let mut extra_bytes = 0;
+        for (offset, ch) in source.char_indices() {
+            if ch == '\n' {
+                line_starts.push(offset + 1);
+            }
+            if ch.len_utf8() > 1 {
+                extra_bytes += ch.len_utf8() - 1;
+                multibyte_ends.push((offset + ch.len_utf8(), extra_bytes));
+            }
+        }
+        Self {
+            line_starts,
+            multibyte_ends,
+        }
+    }
+
+    fn line_col(&self, offset: usize) -> (usize, usize) {
+        let line = self.line_starts.partition_point(|&start| start <= offset);
+        let start = self.line_starts[line - 1];
+        let extra_before = |offset| {
+            self.multibyte_ends
+                .partition_point(|&(end, _)| end <= offset)
+                .checked_sub(1)
+                .and_then(|index| self.multibyte_ends.get(index))
+                .map_or(0, |&(_, extra)| extra)
+        };
+        let column = offset - start - (extra_before(offset) - extra_before(start)) + 1;
+        (line, column)
+    }
 }
 
 thread_local! {
@@ -655,7 +717,9 @@ fn parse_program_preprocessed(
     allow_main_entry: bool,
     state: &mut LoadState,
 ) -> Result<Program, Vec<Diagnostic>> {
-    with_parse_loc_context(file_path, line_offset, trace, source_line_map, || {
+    let loc_context =
+        ParseLocContext::new(preprocessed, file_path, line_offset, trace, source_line_map);
+    with_parse_loc_context(loc_context, || {
         let mut parsed = OndaParser::parse(Rule::program, preprocessed)
             .map_err(|err| vec![diag_from_pest_error(err)])?;
         let program_pair = parsed
@@ -1722,13 +1786,7 @@ fn append_diagnostics_trace(mut diags: Vec<Diagnostic>, trace_entry: String) -> 
     diags
 }
 
-fn with_parse_loc_context<T>(
-    file_path: &Path,
-    line_offset: usize,
-    trace: &[String],
-    source_line_map: &[usize],
-    f: impl FnOnce() -> T,
-) -> T {
+fn with_parse_loc_context<T>(context: ParseLocContext, f: impl FnOnce() -> T) -> T {
     struct ParseLocContextGuard;
 
     impl Drop for ParseLocContextGuard {
@@ -1739,12 +1797,6 @@ fn with_parse_loc_context<T>(
         }
     }
 
-    let context = ParseLocContext {
-        file: display_path(file_path),
-        line_offset,
-        trace: trace.to_vec(),
-        source_line_map: source_line_map.to_vec(),
-    };
     PARSE_LOC_CONTEXT_STACK.with(|stack| stack.borrow_mut().push(context));
     let _guard = ParseLocContextGuard;
     f()
@@ -1757,8 +1809,8 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
             return Span::ZERO;
         };
         let span = pair.as_span();
-        let (line, column) = span.start_pos().line_col();
-        let (end_line, end_column) = span.end_pos().line_col();
+        let (line, column) = current.line_index.line_col(span.start());
+        let (end_line, end_column) = current.line_index.line_col(span.end());
         let mapped_line = current
             .source_line_map
             .get(line.saturating_sub(1))
@@ -1821,9 +1873,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn indexed_locations_match_pest_for_utf8_and_line_endings() {
+        for source in [
+            "",
+            "first\nsecond\n",
+            "first\r\nsecond\r\n",
+            "first\rsecond",
+            "α🙂\r\nβ café\n",
+        ] {
+            let index = LineIndex::new(source);
+            for offset in source
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(source.len()))
+            {
+                let expected = pest::Position::new(source, offset).unwrap().line_col();
+                assert_eq!(index.line_col(offset), expected, "{source:?} at {offset}");
+            }
+        }
+    }
+
+    #[test]
     fn parse_loc_context_stack_is_cleared_after_panic() {
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            with_parse_loc_context(Path::new("<memory>"), 0, &[], &[1], || panic!("boom"));
+            let context = ParseLocContext::new("", Path::new("<memory>"), 0, &[], &[1]);
+            with_parse_loc_context(context, || panic!("boom"));
         }));
 
         PARSE_LOC_CONTEXT_STACK.with(|stack| {

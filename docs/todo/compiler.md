@@ -63,6 +63,11 @@ while moving avoidable work earlier in the pipeline.
 
 ## Measurement
 
+- Profile semantic analysis of long typed slice-view chains (`view0: f32[] = values[:]`, then
+  `viewN: f32[] = viewN-1[:]`). After indexed source locations removed the parser bottleneck, a
+  6,000-link debug compile still takes about 21 seconds while parse/constant inspection takes about
+  1.8 seconds. Find and remove repeated whole-chain work without changing captured bounds,
+  permissions, or lifetime checks; keep this generated program as a scaling benchmark.
 - Add phase-level timing for parse/load, semantic analysis, processor rewriting, MIR construction,
   parameter pruning, range propagation, validation, MIR optimization, backend IR construction,
   backend optimization, and JIT linking.
