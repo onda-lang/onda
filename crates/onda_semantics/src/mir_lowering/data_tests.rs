@@ -1836,6 +1836,52 @@ sample:
 }
 
 #[test]
+fn first_event_assignment_replaces_existing_struct_and_struct_array_state() {
+    let program = compile(
+        r#"
+struct Patch:
+  gain = 0.5
+init:
+  patch = Patch()
+  patches: Patch[2]
+event configure(next: Patch, values: Patch[2]):
+  patch = next
+  patches = values
+  patch.gain = patch.gain + 0.1
+sample:
+  out1 = patch.gain + patches[1].gain
+"#,
+    );
+    let gain = program
+        .state
+        .iter()
+        .position(|slot| slot.name == "patch.gain")
+        .expect("missing persistent patch gain");
+    let event = program
+        .functions
+        .iter()
+        .find(|function| matches!(function.kind, onda_mir::FunctionKind::Event(_)))
+        .expect("missing configure handler");
+    assert!(event.body.statements.iter().any(|statement| {
+        matches!(
+            &statement.kind,
+            StatementKind::Assign {
+                destination: Place {
+                    base: PlaceBase::State(state),
+                    ..
+                },
+                ..
+            } if state.index() == gain
+        )
+    }));
+    assert!(event
+        .body
+        .statements
+        .iter()
+        .any(|statement| matches!(&statement.kind, StatementKind::SliceCopy { .. })));
+}
+
+#[test]
 fn nominal_event_payloads_borrow_canonical_fixed_tensors() {
     compile(
         r#"

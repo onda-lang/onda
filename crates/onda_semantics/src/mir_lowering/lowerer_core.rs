@@ -1146,6 +1146,19 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.bind_event_struct_slices(&mut body)?;
         self.bind_runtime_embedded_struct_arrays(&mut body)?;
+        // A first assignment is only an introduction when no binding owns the
+        // name on entry. Runtime state is planned before init, but becomes an
+        // existing owner for every function lowered after init.
+        let initialized_state = self
+            .runtime_globals
+            .filter(|globals| globals.retained_init.is_some());
+        self.data_initialization_sites.retain(|(name, _)| {
+            !self.bindings.contains_key(name)
+                && !initialized_state.is_some_and(|globals| {
+                    globals.struct_roots.contains_key(name)
+                        || globals.array_struct_roots.contains_key(name)
+                })
+        });
         if let Some(meta) = self.proc_step_oversample_meta.cloned() {
             let factor = self
                 .oversample_factors
