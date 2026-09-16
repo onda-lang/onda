@@ -5,6 +5,23 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.5]
+
+### Changed
+
+- The browser playground now compiles and starts the loaded patch as soon as the compiler is ready,
+  including after importing a project. Cmd/Ctrl+S now applies the current source through the same
+  compile-and-run path as Cmd/Ctrl+Enter.
+
+### Fixed
+
+- Run metadata and structured event JSON now retain declaration order across parameters, buffers,
+  events, arguments, and nested struct fields in the egui, native webview, and browser hosts.
+- Recompiling after reordering or otherwise changing a structured event payload now invalidates
+  preserved values and JSON drafts instead of retaining the previous payload shape and field order.
+- Structured event JSON editors in the shared web run view now use its monospace font stack and no
+  longer show the browser-native focus outline.
+
 ## [0.8.4]
 
 ### Added
@@ -754,6 +771,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.5]: https://github.com/onda-lang/onda/compare/0.8.4...0.8.5
+[0.8.4]: https://github.com/onda-lang/onda/compare/0.8.3...0.8.4
 [0.8.3]: https://github.com/onda-lang/onda/compare/0.8.2...0.8.3
 [0.8.2]: https://github.com/onda-lang/onda/compare/0.8.1...0.8.2
 [0.8.1]: https://github.com/onda-lang/onda/compare/0.8.0...0.8.1

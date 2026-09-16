@@ -75,13 +75,12 @@ mod tests {
     use super::{event_value_from_json, event_value_to_json};
     use onda_daemon::RunEventValue;
     use serde_json::{json, Value};
-    use std::collections::BTreeMap;
 
     #[test]
-    fn event_values_round_trip_losslessly_through_json() {
-        let value = RunEventValue::Struct(BTreeMap::from([
+    fn event_values_round_trip_losslessly_and_preserve_field_order() {
+        let value = RunEventValue::Struct(vec![
             (
-                "floats".to_owned(),
+                "zeta".to_owned(),
                 RunEventValue::Array(vec![
                     RunEventValue::Number(f64::NAN),
                     RunEventValue::Number(f64::INFINITY),
@@ -90,16 +89,23 @@ mod tests {
                     RunEventValue::Number(0.25),
                 ]),
             ),
-            ("wide".to_owned(), RunEventValue::I64(9_007_199_254_740_993)),
-        ]));
+            (
+                "alpha".to_owned(),
+                RunEventValue::I64(9_007_199_254_740_993),
+            ),
+        ]);
 
         let encoded = event_value_to_json(&value);
         assert_eq!(
             encoded,
             json!({
-                "floats": ["NaN", "Infinity", "-Infinity", -0.0, 0.25],
-                "wide": "9007199254740993",
+                "zeta": ["NaN", "Infinity", "-Infinity", -0.0, 0.25],
+                "alpha": "9007199254740993",
             })
+        );
+        assert_eq!(
+            encoded.to_string(),
+            r#"{"zeta":["NaN","Infinity","-Infinity",-0.0,0.25],"alpha":"9007199254740993"}"#
         );
 
         let RunEventValue::Struct(decoded) =
@@ -107,7 +113,9 @@ mod tests {
         else {
             panic!("expected a struct value");
         };
-        let RunEventValue::Array(floats) = &decoded["floats"] else {
+        assert_eq!(decoded[0].0, "zeta");
+        assert_eq!(decoded[1].0, "alpha");
+        let RunEventValue::Array(floats) = &decoded[0].1 else {
             panic!("expected a float array");
         };
         let numbers = floats
@@ -122,7 +130,7 @@ mod tests {
         assert_eq!(numbers[2], f64::NEG_INFINITY);
         assert_eq!(numbers[3].to_bits(), (-0.0_f64).to_bits());
         assert_eq!(numbers[4], 0.25);
-        assert_eq!(decoded["wide"], RunEventValue::I64(9_007_199_254_740_993));
+        assert_eq!(decoded[1].1, RunEventValue::I64(9_007_199_254_740_993));
     }
 
     #[test]

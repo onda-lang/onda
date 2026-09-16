@@ -312,6 +312,31 @@ test("the browser smoke check follows the project-only share contract", async ()
   assert.match(playground, /hasDownloadProjectButton: Boolean\(downloadProjectButton\)/);
 });
 
+test("the browser editor starts loaded projects as soon as the compiler is ready", async () => {
+  const playground = await readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8");
+
+  assert.match(
+    playground,
+    /if \(initialProjectError\)[\s\S]*?else \{[\s\S]*?setStatus\("Ready", "ready"\);\s+await runProject\(\);/,
+  );
+  assert.match(
+    playground,
+    /async function openProjectFile[\s\S]*?setStatus\("Project loaded", "ready"\);\s+await runProject\(\);/,
+  );
+});
+
+test("the browser editor applies source with the save or run shortcut", async () => {
+  const [playground, runView] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+  ]);
+
+  const saveOrRun = /event\.key === "Enter" \|\| event\.key\.toLowerCase\(\) === "s"/;
+  assert.match(playground, saveOrRun);
+  assert.match(runView, saveOrRun);
+  assert.match(playground, /const modSaveHandled = !sampleRateEl\.dispatchEvent\(saveEvent\)/);
+});
+
 test("both native hosts preserve runtime options across unload", async () => {
   const [egui, webview] = await Promise.all([
     readFile(resolve(repoRoot, "crates/onda_egui/src/lib.rs"), "utf8"),

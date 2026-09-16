@@ -156,6 +156,11 @@ try {
     "structured defaults preserve nested values and exact i64 strings");
   check(getComputedStyle(structured).resize === "none",
     "structured event editors do not show a manual resize handle");
+  check(getComputedStyle(structured).fontFamily.includes("monospace"),
+    "structured event editors use the shared monospace font stack");
+  structured.focus();
+  check(getComputedStyle(structured).outlineStyle === "none",
+    "structured event editors suppress the browser-native focus outline");
   check(structured.rows === structured.value.split("\n").length,
     "structured event editors size to their formatted payload");
   edit(structured, JSON.stringify({ values: Array.from({ length: 30 }, (_, index) => index) }, null, 2));

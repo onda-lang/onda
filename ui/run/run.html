@@ -634,6 +634,11 @@
         box-sizing: border-box;
         width: 100%;
         resize: none;
+        font-family: var(--mono-font);
+      }
+
+      .event-structured-arg > textarea:focus {
+        outline: none;
       }
 
       .event-array-arg {
@@ -1836,7 +1841,7 @@
           || event.altKey
           || (!event.ctrlKey && !event.metaKey)
         ) return;
-        const run = event.key === "Enter";
+        const run = event.key === "Enter" || event.key.toLowerCase() === "s";
         const stop = event.key === "." || event.code === "Period";
         if (!run && !stop) return;
         event.preventDefault();

@@ -390,6 +390,78 @@ mod tests {
     }
 
     #[test]
+    fn run_metadata_preserves_declaration_order() {
+        let dir = mk_temp_dir("run_declaration_order");
+        let main = dir.join("main.onda");
+
+        write_file(
+            &main,
+            "struct Patch:\n  zeta: f32\n  alpha: i32\nparams:\n  zeta = 1.0\n  alpha = 2.0\nbuffers:\n  zeta_buffer: buffer<f32>\n  alpha_buffer: buffer<f32>\ninit:\n  observed = 0.0\nevents:\n  zeta_event(zeta: f32, alpha: bool):\n    observed = zeta\n  alpha_event(patch: Patch):\n    observed = patch.zeta\nsample:\n  out1 = zeta + alpha + observed\n",
+        );
+
+        let mut session = DaemonSession::default();
+        session
+            .start_run(&main)
+            .expect("ordered run metadata should compile and start");
+        let run = session.run(&main).expect("active run");
+
+        assert_eq!(
+            run.param_info()
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha"]
+        );
+        assert_eq!(
+            run.buffer_info()
+                .iter()
+                .map(|buffer| buffer.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta_buffer", "alpha_buffer"]
+        );
+        let events = run.event_info();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta_event", "alpha_event"]
+        );
+        assert_eq!(
+            events[0]
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha"]
+        );
+        let RunEventValue::Struct(fields) = &events[1].params[0].value else {
+            panic!("expected a structured event default");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha"]
+        );
+        let onda_processor_abi::payload::PayloadType::Struct { fields, .. } =
+            &events[1].params[0].shape
+        else {
+            panic!("expected a structured event shape");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zeta", "alpha"]
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn run_collects_initialization_process_and_event_prints() {
         let dir = mk_temp_dir("run_prints");
         let main = dir.join("main.onda");

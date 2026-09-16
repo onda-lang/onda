@@ -113,6 +113,7 @@ pub struct RunEventParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
+    pub shape: onda_processor_abi::payload::PayloadType,
     pub value: RunEventValue,
 }
 
@@ -185,7 +186,7 @@ pub enum RunEventValue {
     Number(f64),
     I64(i64),
     Array(Vec<RunEventValue>),
-    Struct(std::collections::BTreeMap<String, RunEventValue>),
+    Struct(Vec<(String, RunEventValue)>),
 }
 
 impl RunEventValue {
@@ -624,6 +625,7 @@ impl RunSession {
                             index: param_index,
                             name: param.name.clone(),
                             type_repr: param.ty.to_string(),
+                            shape: param.ty.clone(),
                             value: default_run_event_value(&param.ty, param.default.as_ref()),
                         })
                         .collect(),
@@ -1833,7 +1835,16 @@ impl onda_processor_abi::payload::PayloadSource for RunEventValue {
     fn member(&self, index: usize, name: Option<&str>) -> Option<&Self> {
         match (self, name) {
             (Self::Array(values), None) => values.get(index),
-            (Self::Struct(fields), Some(name)) => fields.get(name),
+            (Self::Struct(fields), Some(name)) => fields
+                .get(index)
+                .filter(|(field_name, _)| field_name == name)
+                .map(|(_, value)| value)
+                .or_else(|| {
+                    fields
+                        .iter()
+                        .find(|(field_name, _)| field_name == name)
+                        .map(|(_, value)| value)
+                }),
             _ => None,
         }
     }

@@ -50,11 +50,12 @@ macOS/Linux:
 bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
 ```
 
-Open `http://127.0.0.1:8787/`. Edit the source and select **Play** in the shared run view (or press
-Cmd/Ctrl+Enter). This compiles changed project files and starts a fresh AudioWorklet; unchanged
-projects reuse their compiled artifact. Ctrl+Period stops
-execution. Both shortcuts work anywhere on the page, including inside the run view. Cmd/Ctrl+click
-navigates to project definitions and opens standard-library definitions
+Open `http://127.0.0.1:8787/`. The loaded patch starts as soon as the compiler is ready. After
+stopping, select **Play** in the shared run view (or press Cmd/Ctrl+S or Cmd/Ctrl+Enter) to start it
+again. This compiles changed project files and starts a fresh AudioWorklet; unchanged projects reuse
+their compiled artifact. Ctrl+Period stops execution. All shortcuts work anywhere on the page, including
+inside the run view. Cmd/Ctrl+click navigates to project definitions and opens standard-library
+definitions
 in read-only tabs. Each compact tab has a close control: project tabs delete the browser-project file,
 while standard-library tabs are merely dismissed. Definition navigation continues to work inside open
 standard-library tabs. Browser autoplay rules may require another click on the page before output becomes

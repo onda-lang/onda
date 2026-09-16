@@ -154,6 +154,7 @@ fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: RunThemeMode) -> bool
 struct EventArgSignature {
     name: Option<String>,
     type_repr: String,
+    shape: Option<Value>,
     default: Option<Value>,
 }
 
@@ -3140,6 +3141,7 @@ fn event_arg_signature(args: &[Value]) -> Vec<EventArgSignature> {
         .map(|arg| EventArgSignature {
             name: arg_name(arg).map(str::to_owned),
             type_repr: arg_type(arg).to_owned(),
+            shape: arg.get("shape").cloned(),
             default: arg.get("default").cloned(),
         })
         .collect()
@@ -3444,7 +3446,7 @@ mod tests {
     }
 
     #[test]
-    fn event_input_signatures_track_argument_types_and_defaults() {
+    fn event_input_signatures_track_argument_types_defaults_and_shapes() {
         let scalar = serde_json::json!([{
             "name": "samples",
             "type": "f32",
@@ -3460,6 +3462,32 @@ mod tests {
             "type": "f32",
             "default": 2.0,
         }]);
+        let declared_shape = serde_json::json!([{
+            "name": "patch",
+            "type": "Patch",
+            "shape": {
+                "kind": "struct",
+                "name": "Patch",
+                "fields": [
+                    { "name": "zeta", "ty": { "kind": "scalar", "encoding": "f32" } },
+                    { "name": "alpha", "ty": { "kind": "scalar", "encoding": "i32" } },
+                ],
+            },
+            "default": { "zeta": 0.0, "alpha": 0 },
+        }]);
+        let reordered_shape = serde_json::json!([{
+            "name": "patch",
+            "type": "Patch",
+            "shape": {
+                "kind": "struct",
+                "name": "Patch",
+                "fields": [
+                    { "name": "alpha", "ty": { "kind": "scalar", "encoding": "i32" } },
+                    { "name": "zeta", "ty": { "kind": "scalar", "encoding": "f32" } },
+                ],
+            },
+            "default": { "zeta": 0.0, "alpha": 0 },
+        }]);
 
         assert_ne!(
             event_arg_signature(scalar.as_array().expect("scalar args")),
@@ -3468,6 +3496,10 @@ mod tests {
         assert_ne!(
             event_arg_signature(scalar.as_array().expect("scalar args")),
             event_arg_signature(changed_default.as_array().expect("changed-default args"))
+        );
+        assert_ne!(
+            event_arg_signature(declared_shape.as_array().expect("declared-shape args")),
+            event_arg_signature(reordered_shape.as_array().expect("reordered-shape args"))
         );
     }
 

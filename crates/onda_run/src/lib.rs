@@ -1574,6 +1574,7 @@ fn run_event_param_json(param: &RunEventParamInfo) -> Value {
         "index": param.index,
         "name": param.name,
         "type": param.type_repr,
+        "shape": param.shape,
         "default": event_value_to_json(&param.value),
         "value": event_value_to_json(&param.value),
     })
@@ -2737,6 +2738,7 @@ fn events_are_compatible_for_preservation(old_event: &Value, new_event: &Value) 
         && old_args.iter().zip(new_args).all(|(old_arg, new_arg)| {
             old_arg.get("name") == new_arg.get("name")
                 && old_arg.get("type") == new_arg.get("type")
+                && old_arg.get("shape") == new_arg.get("shape")
                 && old_arg.get("default") == new_arg.get("default")
         })
 }
@@ -2937,6 +2939,11 @@ mod tests {
                     index,
                     name: (*name).to_owned(),
                     type_repr: (*type_repr).to_owned(),
+                    shape: serde_json::from_value(json!({
+                        "kind": "scalar",
+                        "encoding": type_repr,
+                    }))
+                    .expect("host-event scalar shape should deserialize"),
                     value: RunEventValue::Number(0.0),
                 })
                 .collect(),
@@ -3955,6 +3962,35 @@ mod tests {
                 ],
             )
         ));
+
+        let scalar = |encoding| json!({ "kind": "scalar", "encoding": encoding });
+        let struct_arg = |fields: Vec<Value>| {
+            json!({
+                "name": "patch",
+                "type": "Patch",
+                "shape": { "kind": "struct", "name": "Patch", "fields": fields },
+                "default": { "zeta": 0.0, "alpha": 0.0 },
+                "value": { "zeta": 0.0, "alpha": 0.0 },
+            })
+        };
+        let field = |name: &str, encoding| json!({ "name": name, "ty": scalar(encoding) });
+        let declared = run_event(
+            "configure",
+            vec![struct_arg(vec![
+                field("zeta", "f32"),
+                field("alpha", "i32"),
+            ])],
+        );
+        let reordered = run_event(
+            "configure",
+            vec![struct_arg(vec![
+                field("alpha", "i32"),
+                field("zeta", "f32"),
+            ])],
+        );
+        assert!(!events_are_compatible_for_preservation(
+            &declared, &reordered
+        ));
     }
 
     fn run_event(name: &str, args: Vec<Value>) -> Value {
@@ -3968,6 +4004,7 @@ mod tests {
         json!({
             "name": name,
             "type": ty,
+            "shape": ty,
             "default": default,
             "value": default,
         })

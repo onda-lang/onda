@@ -224,7 +224,7 @@ function applyEditorFontSize(fontSize) {
 
 function handlePlaygroundShortcut(event) {
   if (event.isComposing || event.altKey || (!event.ctrlKey && !event.metaKey)) return;
-  const run = event.key === "Enter";
+  const run = event.key === "Enter" || event.key.toLowerCase() === "s";
   const stop = event.key === "." || event.code === "Period";
   if (!run && !stop) return;
   event.preventDefault();
@@ -387,6 +387,14 @@ async function smokeEditorBindings() {
     cancelable: true,
   });
   const modEnterHandled = !sampleRateEl.dispatchEvent(runEvent);
+  const saveEvent = new KeyboardEvent("keydown", {
+    key: "s",
+    code: "KeyS",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  const modSaveHandled = !sampleRateEl.dispatchEvent(saveEvent);
 
   const definitionModeEvent = new KeyboardEvent("keydown", {
     key: "Control",
@@ -620,8 +628,16 @@ async function smokeEditorBindings() {
     bubbles: true,
     cancelable: true,
   });
+  const runViewSaveEvent = new runViewWindow.KeyboardEvent("keydown", {
+    key: "s",
+    code: "KeyS",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
   const runViewShortcutsHandled = !runViewDocument.body.dispatchEvent(runViewRunEvent)
-    && !runViewDocument.body.dispatchEvent(runViewStopEvent);
+    && !runViewDocument.body.dispatchEvent(runViewStopEvent)
+    && !runViewDocument.body.dispatchEvent(runViewSaveEvent);
 
   const project = projectEditor.project();
   const encodedSession = await encodeSharedSession(project);
@@ -635,6 +651,7 @@ async function smokeEditorBindings() {
     tabKeptFocus,
     completionIconsHandled,
     modEnterHandled,
+    modSaveHandled,
     definitionCursorHandled,
     modClickHandled: localDefinitionHandled,
     stdlibDefinitionHandled,
@@ -874,8 +891,8 @@ async function loadToolchain() {
     setErrorStatus();
   } else {
     setStatus("Ready", "ready");
+    await runProject();
   }
-  if (smokeMode) await runProject();
 }
 
 function smokeBufferFile() {
@@ -988,6 +1005,7 @@ async function openProjectFile(file) {
     url.hash = "";
     history.replaceState(null, "", url);
     setStatus("Project loaded", "ready");
+    await runProject();
   } catch (error) {
     runView.setError(error);
     setErrorStatus();
