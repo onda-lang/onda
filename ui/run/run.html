@@ -567,6 +567,28 @@
         min-width: 0;
       }
 
+      summary.event-arg-heading {
+        list-style: none;
+      }
+
+      summary.event-arg-heading::-webkit-details-marker {
+        display: none;
+      }
+
+      summary.event-arg-heading::before {
+        content: "▾";
+        flex: 0 0 auto;
+        align-self: center;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1;
+        transition: transform 120ms ease;
+      }
+
+      details:not([open]) summary.event-arg-heading::before {
+        transform: rotate(-90deg);
+      }
+
       .event-arg-name {
         overflow: hidden;
         color: var(--text);
@@ -611,7 +633,6 @@
       .event-structured-arg > textarea {
         box-sizing: border-box;
         width: 100%;
-        min-height: 7rem;
         resize: vertical;
       }
 
@@ -2211,6 +2232,15 @@
       const FLOAT_CONTROL_TARGET_STEPS = 2000;
       const FLOAT_CONTROL_MIN_STEP = 0.0001;
       const FLOAT_CONTROL_MAX_STEP = 0.1;
+      const EVENT_STRUCTURED_MIN_VISIBLE_LINES = 4;
+      const EVENT_STRUCTURED_MAX_VISIBLE_LINES = 20;
+
+      function structuredEventVisibleLines(value) {
+        return Math.max(
+          EVENT_STRUCTURED_MIN_VISIBLE_LINES,
+          Math.min(EVENT_STRUCTURED_MAX_VISIBLE_LINES, value.split("\n").length),
+        );
+      }
 
       function scalarStepForParam(param) {
         // Keep this host policy aligned with onda_egui::scalar_step.
@@ -2973,9 +3003,11 @@
                 const input = document.createElement("textarea");
                 input.className = "param-number";
                 input.value = JSON.stringify(arg.value, null, 2);
+                input.rows = structuredEventVisibleLines(input.value);
                 input.disabled = !state.connected;
                 input.setAttribute("aria-label", arg.name + " JSON value");
                 input.addEventListener("input", () => {
+                  input.rows = structuredEventVisibleLines(input.value);
                   try {
                     arg.value = JSON.parse(input.value);
                     input.setCustomValidity("");

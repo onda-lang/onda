@@ -21,6 +21,8 @@ const FLOAT_CONTROL_TARGET_STEPS: f64 = 2_000.0;
 const FLOAT_CONTROL_MIN_STEP: f64 = 0.0001;
 const FLOAT_CONTROL_MAX_STEP: f64 = 0.1;
 const EVENT_ARRAY_VISIBLE_LIMIT: usize = 16;
+const EVENT_STRUCTURED_MIN_VISIBLE_LINES: usize = 4;
+const EVENT_STRUCTURED_MAX_VISIBLE_LINES: usize = 20;
 const EVENT_ARRAY_CELL_WIDTH: f32 = 147.0;
 const EVENT_ARRAY_CELL_GAP: f32 = 7.0;
 const RUN_SAMPLE_RATE_CHOICES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
@@ -1827,15 +1829,36 @@ fn render_event_arg_editor(
         )
         .id_salt("structured-event-argument")
         .default_open(true)
-        .show(ui, |ui| {
+        .show_unindented(ui, |ui| {
+            let visible_lines = structured_event_visible_lines(draft);
+            let viewport_height =
+                ui.text_style_height(&egui::TextStyle::Monospace) * visible_lines as f32;
+            let editor_visuals = ui.visuals().widgets.inactive;
             let changed = ui
                 .add_enabled_ui(connected, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(draft)
-                            .code_editor()
-                            .desired_width(f32::INFINITY),
-                    )
-                    .changed()
+                    egui::Frame::default()
+                        .fill(ui.visuals().extreme_bg_color)
+                        .stroke(editor_visuals.bg_stroke)
+                        .corner_radius(editor_visuals.corner_radius)
+                        .inner_margin(egui::Margin::symmetric(4, 2))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .min_scrolled_height(viewport_height)
+                                .max_height(viewport_height)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(draft)
+                                            .code_editor()
+                                            .frame(false)
+                                            .margin(egui::Margin::ZERO)
+                                            .desired_rows(visible_lines)
+                                            .desired_width(f32::INFINITY),
+                                    )
+                                    .changed()
+                                })
+                                .inner
+                        })
+                        .inner
                 })
                 .inner;
             match serde_json::from_str::<Value>(draft) {
@@ -1868,6 +1891,13 @@ fn render_event_arg_editor(
             render_event_scalar_editor(ui, ty, value, connected, 112.0)
         });
     });
+}
+
+fn structured_event_visible_lines(draft: &str) -> usize {
+    draft.lines().count().clamp(
+        EVENT_STRUCTURED_MIN_VISIBLE_LINES,
+        EVENT_STRUCTURED_MAX_VISIBLE_LINES,
+    )
 }
 
 fn render_event_array_editor(
@@ -3154,9 +3184,9 @@ mod tests {
         computer_key_offset, computer_key_press_blocked, control_decimals, event_arg_signature,
         event_array_grid_columns, event_array_len, event_array_scalar_type, format_run_status,
         log_entry_context, param_grid_columns, prepared_param_domain,
-        render_compact_param_value_editor, scalar_drag_speed, scalar_step, KnobDragState,
-        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale,
-        PARAM_LAYOUT_STORAGE_KEY,
+        render_compact_param_value_editor, scalar_drag_speed, scalar_step,
+        structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain, ParamLayout,
+        ParamScalarType, ParamScale, PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -3447,6 +3477,13 @@ mod tests {
         assert_eq!(event_array_grid_columns(455.0), 3);
         assert_eq!(event_array_grid_columns(300.0), 1);
         assert_eq!(event_array_grid_columns(120.0), 1);
+    }
+
+    #[test]
+    fn structured_event_editors_show_between_four_and_twenty_lines() {
+        assert_eq!(structured_event_visible_lines("{}"), 4);
+        assert_eq!(structured_event_visible_lines("1\n2\n3\n4\n5"), 5);
+        assert_eq!(structured_event_visible_lines(&"line\n".repeat(24)), 20);
     }
 
     #[test]

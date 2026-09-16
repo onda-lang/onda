@@ -146,11 +146,18 @@ try {
   const structuredGroup = document.querySelector(".event-structured-arg");
   check(structuredGroup && structuredGroup.open,
     "structured event arguments are expanded by default");
-  structuredGroup.querySelector("summary").click();
+  const structuredHeading = structuredGroup.querySelector("summary");
+  check(getComputedStyle(structuredHeading, "::before").content.includes("▾"),
+    "structured event headings show a disclosure arrow");
+  structuredHeading.click();
   check(!structuredGroup.open, "structured event arguments can be collapsed");
   const structured = document.querySelector("#events textarea");
   check(JSON.parse(structured.value).notes[0].id === "9007199254740993",
     "structured defaults preserve nested values and exact i64 strings");
+  check(structured.rows === structured.value.split("\n").length,
+    "structured event editors size to their formatted payload");
+  edit(structured, JSON.stringify({ values: Array.from({ length: 30 }, (_, index) => index) }, null, 2));
+  check(structured.rows === 20, "structured event editors show at most 20 lines");
   edit(structured, '{"notes":');
   send({ events: structuredEvents, logText: "update" });
   check(document.querySelector("#events textarea") === structured && structured.value === '{"notes":'
