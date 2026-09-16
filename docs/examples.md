@@ -17,20 +17,9 @@ to stop scheduling new notes while existing voices and effect tails decay natura
 exposes a no-argument `bang()` event that immediately triggers and advances the next sequencer
 state. Live-input processing and any additional instrument events remain available.
 
-## A listening path
-
-| Example | Listen for | Onda idea |
-| --- | --- | --- |
-| [Saw/filter/saturator]({{ '/playground/?example=basic/saw_filter_saturator.onda' | relative_url }}) | Wide subtractive motion and clean drive | Stdlib processors plus local oversampling |
-| [FM bells]({{ '/playground/?example=instruments/fm_bells.onda' | relative_url }}) | Independent amplitude and FM-index decays | Proc arrays, events, and voice panning |
-| [Formant percussion]({{ '/playground/?example=instruments/formant_percussion.onda' | relative_url }}) | Pitched clicks opening into vowel resonances | Parallel resonators and reusable reverb |
-| [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A recorded phrase dissolving into moving grains | Circular recording and independent playheads |
-| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | Frequency bands arriving at different times | Per-bin FFT history and resynthesis |
-| [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | Stepped rungler melodies tipping into insects and bass | Clocked bit feedback and audio-rate modulation |
-
 ## Instruments
 
-| Example | What it makes |
+| Example | Description |
 | --- | --- |
 | [Additive synth]({{ '/playground/?example=instruments/additive_synth.onda' | relative_url }}) | Eight sine partials with independent level, ratio, detune, pan, and mute controls |
 | [Acid bassline]({{ '/playground/?example=instruments/acid_bassline.onda' | relative_url }}) | A resonant 16-step bass line with accents and slides |
@@ -49,7 +38,7 @@ so opening either patch with `onda run` reveals the bottom piano and MIDI Input 
 computer keyboard is active by default; in the browser, choose **Connect MIDI device…** for hardware
 MIDI or play the on-screen keys.
 
-| Example | Host interaction |
+| Example | Description |
 | --- | --- |
 | [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
 | [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
@@ -63,7 +52,7 @@ events are hidden but inactive in standalone hosts; a DAW supplies them through 
 
 ## Effects
 
-| Example | What it does |
+| Example | Description |
 | --- | --- |
 | [Stereo chorus]({{ '/playground/?example=effects/stereo_chorus.onda' | relative_url }}) | Fractional-delay ensemble motion |
 | [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
@@ -80,21 +69,23 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 
 ## Soundscapes and experimental systems
 
-| Example | What it makes | Main idea |
-| --- | --- | --- |
-| [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument | BLEP oscillators, clocked shift register, selectable signals |
-| [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud | Cubic lookup, Hann windows, randomized playheads |
-| [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air | Seeded scheduling and polyphonic decays |
-| [Deep-space drone]({{ '/playground/?example=soundscapes/deep_space_drone.onda' | relative_url }}) | A slowly changing low-frequency chord | Layering, filtering, and long echoes |
-| [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade | Event allocation and proc arrays |
-| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A recurrent nonlinear digital ecosystem | Parameterized topology and oversampled recurrence |
-| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays | Resonant feedback and waveshaping |
-| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud | Filtered excitation and damped regeneration |
-| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Burst-driven unstable resonances | Multi-rate modulation, irregular triggers, and damping |
+| Example | Description |
+| --- | --- |
+| [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument |
+| [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
+| [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air |
+| [Deep-space drone]({{ '/playground/?example=soundscapes/deep_space_drone.onda' | relative_url }}) | A slowly changing low-frequency chord |
+| [Aurora Pad]({{ '/playground/?example=soundscapes/aurora_pad.onda' | relative_url }}) | A minor chord spread across a gently detuned stereo field and a slowly opening filter |
+| [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |
+| [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade |
+| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A recurrent nonlinear digital ecosystem |
+| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays |
+| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud |
+| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Burst-driven unstable resonances |
 
 ## Advanced DSP and graph syntax
 
-| Example | What it demonstrates |
+| Example | Description |
 | --- | --- |
 | [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | A 1024-point streaming FFT, per-bin delay frames, spectral feedback, and stereo IFFT resynthesis |
 | [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Phase-coherent spectral capture, smear, transpose, and overlap-add resynthesis |
@@ -106,7 +97,7 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 
 Use `.ondaproject` when data is part of a patch's identity:
 
-| Project | Data carried with the patch |
+| Project | Description |
 | --- | --- |
 | [Wavetable Garden](https://github.com/onda-lang/onda/blob/main/examples/projects/wavetable_garden/wavetable-garden.ondaproject) | Four inline wavetables and a local oscillator module |
 | [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
