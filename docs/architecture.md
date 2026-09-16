@@ -198,8 +198,11 @@ Non-crate directories of note:
 
 ### `onda_processor_abi`
 
-- `onda_processor_abi/src/lib.rs` — serializable/deserializable processor descriptor owned
+- `crates/onda_processor_abi/src/lib.rs` — serializable/deserializable processor descriptor owned
   outside every compiler/backend crate.
+- `crates/onda_processor_abi/src/payload.rs`, `payload/` — compiler-free recursive message schemas,
+  canonical tensor planning, checked wire preparation, and reusable host encoders/decoders shared
+  by native and WebAssembly integrations.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
 - `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
@@ -350,13 +353,18 @@ Non-crate directories of note:
   each logical process block; top-level ranged inputs are clamped once per sample; ranged proc
   parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
   range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
-  index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
-  element bytes). Source delegates lower to direct synchronous subscription calls. Top-level
+  index dispatch. Events and delegates use one recursive message schema: wire data is packed
+  little-endian in parameter and depth-first field order, with one contiguous tensor per primitive
+  leaf; a runtime slice contributes one `i32` logical length followed by its leaf tensors. Event
+  entry points preflight the complete wire payload into aligned workspace before handler execution.
+  Source delegates lower to direct synchronous subscription calls. Top-level
   delegate publication and authored printing remain explicit observable MIR effects as
   `PublishDelegate` and `PublishLog`. Init, process, and input-event entries accept one optional
-  `ExecutionOutput` containing independent caller-owned delegate and print batches, reset supplied
-  counters and one shared output sequence per call, and append complete packed records without
-  allocation. Hosts merge the two batches by sequence before delivery. Generated failure
+  `ExecutionOutput` containing independent caller-owned delegate and print batches. Init and process
+  entries reset supplied counters and one shared output sequence on entry; an event entry resets
+  them only after successful input preflight, so rejected input preserves existing records. Entries
+  append complete packed records without allocation. Hosts merge the two batches by sequence before
+  delivery. Generated failure
   clears incomplete delegates while retaining diagnostic print records. Native and Binaryen
   backends share the same logical layouts. Web Audio transports raw print records out of the audio
   callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches

@@ -2,7 +2,7 @@
 
 ## Language follow-ups
 
-- Structured-data implementation cleanups
+- Structured-data follow-ups
   - Revisit implicit struct-method receivers. The intended source model omits `self` from method
     declarations, makes fields and sibling methods available by bare name like proc-local state,
     and keeps `self.member` only as an explicit escape hatch when a lexical binding shadows an
@@ -21,6 +21,15 @@
     preserving instance identity, lifecycle hooks, active slots, buffers, events, delegates, and
     oversampling rather than copying state or adding an owner-specific lowering path. Proc-local
     defs remain the direct way to operate on such arrays in the meantime.
+  - Design structured host params and proc constructor controls as one extension of the existing
+    bounded aggregate model. Reuse the canonical data layout, defaults, validation, descriptor
+    metadata, and graph endpoint types instead of introducing a separate control-value
+    representation.
+  - Evaluate borrowed aggregate returns only with explicit, statically checkable lifetime and
+    escape rules. Ordinary aggregate returns should remain independent values.
+  - Evaluate reference fields and exclusive references only as part of a coherent lifetime and
+    aliasing model. Struct fields currently own fixed data, and ordinary aggregate aliases remain
+    writable and non-exclusive.
 
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
@@ -33,7 +42,8 @@
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
   - Evaluate inferred array return types for const defs, such as `-> f32[]` and `-> []`, where each call site validates the returned compile-time array element type and inferred length.
   - Consider local/proc-local const arrays if they prove useful.
-  - Consider const structs or structural compile-time values if stdlib/table generation starts needing them.
+  - Consider const structs or structural compile-time values, including structured `const def`
+    parameters and results, if stdlib/table generation starts needing them.
   - Improve forward-reference and cycle diagnostics if the strict lexical model becomes annoying.
   - Preserve the numeric-literal specialization invariant as this code evolves:
     the AST may use `f64`/`i64` as its widest supported internal literal representation, but an
@@ -50,6 +60,7 @@
     edges. Design one concise routing vocabulary that can express:
     - sample-rate inputs, outputs, proc endpoints, expressions, and delayed feedback
     - block-rate params, proc params, proc `kouts`, and top-level `kouts`
+    - aggregate audio and control endpoints with explicit rate and shape compatibility
     - forwarding events into procs and proc arrays
     - forwarding or subscribing to child delegates, including whole proc arrays and their indices
     - pure `def` transforms at compatible sample or block rates
@@ -235,6 +246,8 @@
     selector exactly once.
 
 - Array and slice follow-ups
+  - Evaluate arrays of arrays, arrays of tuples, and aggregate tuple elements as one coherent
+    nesting extension, with fixed layout and ordinary aggregate copy/alias semantics.
   - Preserve the statically provable length of constant-bound slices so an exact-length slice can
     satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.

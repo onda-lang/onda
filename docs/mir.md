@@ -533,12 +533,13 @@ embedded frontend Wasm, checks the producer/backend schema versions, keeps the t
 inside the package, and exposes asynchronous source/project APIs, a browser worker, and the
 `onda-wasm` build-time CLI. The low-level packages remain independently testable backend boundaries.
 
-The current-schema backend consumes explicit control-mirror state, checked `make_slice`, fixed-array and
-slice reference windows, and serialized function attributes. It covers scalar and fixed-array
-storage, tuples and multi-value returns, primitive slices, dynamic-slice events, buffers, flattened
-data structs, recursive processor arrays, structured control flow, constant data, oversampling, and
-segmented audio. Address-taken scalar locals are legalized through per-function scratch slots around
-reference calls, so shared state promotion remains portable. Contiguous slice fill uses WebAssembly
+The current-schema backend consumes explicit control-mirror state, checked `make_slice`, fixed-array
+and slice reference windows, and serialized function attributes. It covers scalar and fixed-array
+storage, tuples and multi-value returns, primitive and data-struct slices, recursive structured
+event/delegate messages, buffers, flattened data structs, recursive processor arrays, structured
+control flow, constant data, oversampling, and segmented audio. Address-taken scalar locals are
+legalized through per-function scratch slots around reference calls, so shared state promotion
+remains portable. Contiguous slice fill uses WebAssembly
 SIMD with a scalar tail, while same-representation contiguous slice copy uses bulk-memory
 `memory.copy` and therefore retains memmove overlap semantics. Strided cases keep the scalar,
 direction-aware implementation. Binaryen validates and optimizes the emitted module.

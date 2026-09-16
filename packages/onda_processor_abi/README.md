@@ -27,6 +27,48 @@ validate artifacts without installing the compiler or duplicating the ABI schema
 The detailed TypeScript records mirror `onda_processor_abi::ProcessorDescriptor`; both packages
 validate the same checked-in conformance fixture.
 
+## Structured event payloads
+
+Every event and delegate descriptor carries a recursive `schema`. `PayloadPlan` validates that
+schema once and encodes or decodes logical values without exposing the flattened executable
+parameters. Top-level parameters may be supplied by position or name; nominal structs are objects
+with exactly their declared fields, and tuples, fixed arrays, and slices are sequences. An omitted
+top-level parameter is legal only when its schema declares a default.
+
+```js
+import {
+  PayloadPlan,
+  writeEventInput,
+} from "@onda-lang/processor-abi";
+
+const event = artifact.metadata.metadata.events.find(({ name }) => name === "note_on");
+const plan = new PayloadPlan(event.schema);
+const payload = plan.encode({
+  note: { frequency: 440, velocity: 0.8 },
+});
+const workspaceBytes = plan.requiredWorkspace(payload);
+
+// Addresses come from the host's wasm32 linear-memory allocator. Workspace must be 8-byte aligned.
+new Uint8Array(memory.buffer, payloadAddress, payload.byteLength).set(payload);
+writeEventInput(
+  memory,
+  inputAddress,
+  payloadAddress,
+  payload.byteLength,
+  workspaceAddress,
+  workspaceBytes,
+);
+// Pass inputAddress as the first argument to instance.exports[event.export](...).
+```
+
+Wire payloads are packed little-endian in canonical structure-of-arrays leaf order. Use
+`sizes(lengths)` when only dynamic slice lengths are known, or `requiredWorkspace(payload)` to
+preflight encoded bytes. Allocate payload, workspace, and the 16-byte `EventInput` descriptor before
+realtime dispatch, and keep their memory regions disjoint from one another and processor storage.
+`PayloadPlan.encode()` itself allocates and therefore belongs on a host/control thread, as does
+decoding published delegate records. An event result of `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`)
+means preflight failed without handler or output mutation.
+
 ## Delegate batches
 
 The package exports `DELEGATE_RECORD_HEADER_SIZE_BYTES`, `DELEGATE_BATCH_SIZE_BYTES`,

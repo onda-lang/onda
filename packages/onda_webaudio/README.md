@@ -84,8 +84,6 @@ for an array.
 
 Controlled `i64` domains use the descriptor's exact binary64 integer range. Full-width unranged
 `i64` values continue to use `bigint` when written directly.
-Event `i64` values accept bigint, safe integers, or decimal integer strings and reject values
-outside the signed 64-bit range.
 
 The artifact must be compiled for exactly `audioContext.sampleRate`; the adapter rejects a mismatch
 before registering the node so sample-rate-derived language semantics cannot silently drift. A Web
@@ -96,6 +94,41 @@ processor ABI in a non-Web-Audio host.
 Call `processor.close()` when the adapter is no longer used. Closing is idempotent and terminal: it
 rejects pending requests, removes listeners, and makes subsequent operations fail immediately. The
 wrapped `AudioWorkletNode` and `AudioContext` remain caller-owned.
+
+## Events
+
+`trigger(nameOrIndex, values?)` accepts event parameters as an ordered array or an object keyed by
+parameter name. Nominal structs are objects containing exactly their declared fields; tuples, fixed
+arrays, and runtime slices are sequences. The adapter validates and encodes the complete logical
+value on the main thread before transferring its packed bytes to the worklet.
+
+For this Onda declaration:
+
+```onda
+struct Note:
+  frequency = 440.0
+  velocity = 1.0
+
+init:
+  current_note: Note
+
+event note_on(note: Note):
+  current_note = note
+```
+
+the corresponding host call is:
+
+```js
+await processor.trigger("note_on", {
+  note: { frequency: 523.25, velocity: 0.7 },
+});
+```
+
+Fixed arrays must have their declared length. Slice lengths may vary up to the configured event
+payload capacity. `i64` leaves accept `bigint`, exact safe integers, or decimal integer strings and
+reject values outside the signed 64-bit range. Missing top-level arguments use declared defaults;
+structs and struct arrays have no event defaults and must be supplied in full. Input rejected during
+worklet preflight leaves processor state usable and rejects the returned promise.
 
 ## Prints
 

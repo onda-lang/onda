@@ -72,7 +72,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Serialized-MIR consumers must accept schema version 7. Raw processor hosts must accept artifact
   and ABI version 6, supply the event input descriptor and aligned workspace, and handle input
-  rejection separately from generated execution failure.
+  rejection separately from generated execution failure. Raw and hosted payload encoders must use
+  the recursive schema's packed little-endian structure-of-arrays layout rather than target-native
+  flattened parameter assumptions. Checked hosted C event dispatch now reports malformed input or
+  insufficient workspace as `ONDA_EXECUTION_INPUT_REJECTED` (`2`), not as a legacy negative API
+  error.
 
 ## [0.8.3]
 
