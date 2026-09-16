@@ -154,6 +154,8 @@ try {
   const structured = document.querySelector("#events textarea");
   check(JSON.parse(structured.value).notes[0].id === "9007199254740993",
     "structured defaults preserve nested values and exact i64 strings");
+  check(getComputedStyle(structured).resize === "none",
+    "structured event editors do not show a manual resize handle");
   check(structured.rows === structured.value.split("\n").length,
     "structured event editors size to their formatted payload");
   edit(structured, JSON.stringify({ values: Array.from({ length: 30 }, (_, index) => index) }, null, 2));
