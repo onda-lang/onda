@@ -1313,8 +1313,8 @@ sample:
             &metadata_i32,
             &metadata_f32,
         )
-        .expect_err("dynamic event slice byte extent must fit i32");
-    assert!(error.message.contains("byte extent exceeds i32"));
+        .expect_err("oversized dynamic event slices must be rejected");
+    assert!(error.message.contains("event input rejected"));
 }
 
 #[test]

@@ -359,8 +359,8 @@ fn event_payload_mismatch_returns_runtime_error() {
         .expect_err("payload mismatch should return runtime error");
 
     assert!(
-        err.message.contains("expects"),
-        "expected payload-size error, got '{}'",
+        err.message.contains("event input rejected"),
+        "expected event-input rejection, got '{}'",
         err.message
     );
 }
