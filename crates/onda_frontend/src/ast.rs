@@ -313,6 +313,9 @@ impl<'a> IntoIterator for &'a mut BufferBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockExec {
     pub loc: Span,
+    /// Compiler-generated roots that are live only within one block entry-point
+    /// activation and must not participate in portable snapshots.
+    pub compiler_scratch_roots: Vec<String>,
     pub pre: Vec<Stmt>,
     pub sample: Option<SampleBlock>,
     pub post: Vec<Stmt>,
@@ -616,6 +619,8 @@ pub struct ProcessorDef {
     pub has_graph_block: bool,
     pub sample_oversample_factor: Option<Expr>,
     pub init: InitBlock,
+    /// Scratch roots introduced while parsing `block_pre` or `block_post`.
+    pub block_compiler_scratch_roots: Vec<String>,
     pub block_pre: Vec<Stmt>,
     pub sample: Vec<Stmt>,
     pub block_post: Vec<Stmt>,

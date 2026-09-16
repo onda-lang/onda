@@ -1180,6 +1180,7 @@ pub(super) fn parse_proc_block(
 
     let mut block_pre = Vec::new();
     let mut block_post = Vec::new();
+    let mut block_compiler_scratch_roots = Vec::new();
     let mut has_block_block = false;
     if let Some(exec) = block_exec {
         has_block_block = true;
@@ -1189,6 +1190,7 @@ pub(super) fn parse_proc_block(
                 "proc sample block cannot be declared both directly and inside block section",
             )]);
         }
+        block_compiler_scratch_roots = exec.compiler_scratch_roots;
         block_pre = exec.pre;
         block_post = exec.post;
         sample = exec.sample;
@@ -1245,6 +1247,7 @@ pub(super) fn parse_proc_block(
             compiler_scratch_roots: Vec::new(),
             body: Vec::new(),
         }),
+        block_compiler_scratch_roots,
         block_pre,
         sample: sample_body,
         block_post,

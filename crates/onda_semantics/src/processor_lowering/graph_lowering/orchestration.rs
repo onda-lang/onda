@@ -191,6 +191,7 @@ fn lower_top_level_graph_block(
     } else {
         program.blocks.push(Block::Block(BlockExec {
             loc: graph.loc,
+            compiler_scratch_roots: Vec::new(),
             pre: lowered.block_pre,
             sample: Some(sample_block),
             post: Vec::new(),

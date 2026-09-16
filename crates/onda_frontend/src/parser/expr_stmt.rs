@@ -16,6 +16,16 @@ struct ParsedInitStatements {
     compiler_scratch_roots: Vec<String>,
 }
 
+fn compiler_scratch_root(stmt: &Stmt) -> Option<&str> {
+    match stmt {
+        Stmt::Assign {
+            target: AssignTarget::Var(root),
+            ..
+        } if is_internal_place_name(root) => Some(root),
+        _ => None,
+    }
+}
+
 fn parse_init_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,
 ) -> Result<ParsedInitStatements, Vec<Diagnostic>> {
@@ -31,12 +41,12 @@ fn parse_init_stmt_list_pair(
             parse_stmt_expanded(stmt_pair)?
         };
         for stmt in parsed {
+            if let Some(root) = compiler_scratch_root(&stmt) {
+                compiler_scratch_roots.push(root.to_owned());
+            }
             if let Stmt::Assign { target, .. } = &stmt {
                 match target {
                     AssignTarget::Var(root) => {
-                        if is_internal_place_name(root) {
-                            compiler_scratch_roots.push(root.clone());
-                        }
                         if pinned {
                             if !assigned_roots.insert(root.clone()) {
                                 return Err(vec![syntax_at_loc(
@@ -179,6 +189,7 @@ pub(super) fn parse_block_exec_block(
     let loc = stmt_loc_from_pair(&block_pair);
     let mut pre = Vec::new();
     let mut post = Vec::new();
+    let mut compiler_scratch_roots = Vec::new();
     let mut nested_sample: Option<SampleBlock> = None;
 
     for child in block_pair.into_inner() {
@@ -199,6 +210,12 @@ pub(super) fn parse_block_exec_block(
             }
 
             let statements = parse_stmt_expanded(item)?;
+            compiler_scratch_roots.extend(
+                statements
+                    .iter()
+                    .filter_map(compiler_scratch_root)
+                    .map(str::to_owned),
+            );
             if nested_sample.is_some() {
                 post.extend(statements);
             } else {
@@ -209,6 +226,7 @@ pub(super) fn parse_block_exec_block(
 
     Ok(BlockExec {
         loc,
+        compiler_scratch_roots,
         pre,
         sample: nested_sample,
         post,

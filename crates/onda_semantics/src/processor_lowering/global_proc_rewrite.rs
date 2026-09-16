@@ -1294,6 +1294,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     sample_idx,
                     Block::Block(BlockExec {
                         loc: Default::default(),
+                        compiler_scratch_roots: Vec::new(),
                         pre: injected_block_pre,
                         sample: Some(sample_body),
                         post: injected_block_post,
@@ -1445,6 +1446,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     sample_idx,
                     Block::Block(BlockExec {
                         loc: sample_body.loc,
+                        compiler_scratch_roots: Vec::new(),
                         pre: Vec::new(),
                         sample: Some(sample_body),
                         post: Vec::new(),

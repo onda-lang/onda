@@ -3153,6 +3153,7 @@ fn lower_top_level_tasks(
             insert_at,
             Block::Block(BlockExec {
                 loc: Default::default(),
+                compiler_scratch_roots: Vec::new(),
                 pre: Vec::new(),
                 sample: None,
                 post: Vec::new(),

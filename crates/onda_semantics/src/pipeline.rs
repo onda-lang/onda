@@ -1100,6 +1100,7 @@ pub fn analyze_with_options_and_inputs(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
+        compiler_scratch_proc_fields,
         mut top_level_delegates,
     } = desugar_materialized_processors(program, options, &const_array_infos, &mut errors);
     let transient_init_views = normalize_indexed_member_assignments(&mut program);
@@ -1113,7 +1114,7 @@ pub fn analyze_with_options_and_inputs(
         .flatten()
         .collect::<HashSet<_>>();
     let mut compiler_owned_state_roots = HashSet::new();
-    let compiler_scratch_state_roots = program
+    let mut compiler_scratch_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
             Block::Init(init) => Some(init.compiler_scratch_roots.iter().cloned()),
@@ -1122,12 +1123,19 @@ pub fn analyze_with_options_and_inputs(
         .into_iter()
         .flatten()
         .collect::<HashSet<_>>();
+    if let Some(Block::Block(block)) = program.block(BlockKind::Block) {
+        compiler_scratch_state_roots.extend(block.compiler_scratch_roots.iter().cloned());
+    }
     for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
         if let Some(fields) = pinned_proc_fields.get(&proc_instance.proc_name) {
             pinned_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
         }
         if let Some(fields) = compiler_owned_proc_fields.get(&proc_instance.proc_name) {
             compiler_owned_state_roots
+                .extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+        if let Some(fields) = compiler_scratch_proc_fields.get(&proc_instance.proc_name) {
+            compiler_scratch_state_roots
                 .extend(fields.iter().map(|field| format!("{instance}.{field}")));
         }
     }

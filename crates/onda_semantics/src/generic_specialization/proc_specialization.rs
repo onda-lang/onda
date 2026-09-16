@@ -593,6 +593,7 @@ pub(crate) fn specialize_generic_proc_template(
         has_graph_block: template.has_graph_block,
         sample_oversample_factor: template.sample_oversample_factor.clone(),
         init,
+        block_compiler_scratch_roots: template.block_compiler_scratch_roots.clone(),
         block_pre,
         sample,
         block_post,

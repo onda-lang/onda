@@ -3595,3 +3595,60 @@ sample:
                 .collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn block_place_temporaries_are_instance_scratch() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct State:
+  leaves: Leaf[4]
+
+proc Voice:
+  init:
+    state: State
+    index = 0 {4, wrap}
+
+  outs 1
+
+  block:
+    state.leaves[index].value += 0.1
+
+    sample:
+      out1 = state.leaves[index].value
+
+init:
+  voice = Voice()
+  state: State
+  index = 0 {4, wrap}
+
+block:
+  state.leaves[index].value += 0.2
+
+  sample:
+    out1 = voice() + state.leaves[index].value
+"#;
+        let typed = analyze(parse_program(source).expect("block place source should parse"))
+            .expect("block place source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("block place source should lower to optimized MIR");
+        let place_state = mir
+            .state
+            .iter()
+            .filter(|state| state.name.contains("__onda_place_"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            place_state.len(),
+            2,
+            "expected top-level and proc block scratch: {:?}",
+            mir.state
+                .iter()
+                .map(|state| state.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(place_state.iter().all(|state| {
+            state.persistence == onda_mir::StatePersistence::InstanceScratch
+                && !state.authored
+        }));
+    }

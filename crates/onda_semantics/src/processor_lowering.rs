@@ -351,6 +351,7 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
     pub(crate) pinned_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) compiler_scratch_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) top_level_delegates: Vec<DelegateDef>,
 }
 
@@ -362,6 +363,7 @@ fn collect_flattened_proc_field_metadata(
     visiting: &mut HashSet<String>,
     pinned_fields: &mut HashSet<String>,
     compiler_owned_fields: &mut HashSet<String>,
+    compiler_scratch_fields: &mut HashSet<String>,
 ) {
     if !visiting.insert(proc_name.to_owned()) {
         return;
@@ -370,6 +372,11 @@ fn collect_flattened_proc_field_metadata(
         pinned_fields.extend(
             proc.init
                 .pinned_roots
+                .iter()
+                .map(|root| format!("{prefix}{root}")),
+        );
+        compiler_scratch_fields.extend(
+            proc.block_compiler_scratch_roots
                 .iter()
                 .map(|root| format!("{prefix}{root}")),
         );
@@ -391,6 +398,7 @@ fn collect_flattened_proc_field_metadata(
                 visiting,
                 pinned_fields,
                 compiler_owned_fields,
+                compiler_scratch_fields,
             );
         }
     }
@@ -1550,6 +1558,7 @@ fn desugar_processors_impl(
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
             pinned_proc_fields: HashMap::new(),
             compiler_owned_proc_fields: HashMap::new(),
+            compiler_scratch_proc_fields: HashMap::new(),
             top_level_delegates: prepared_delegates.top_level,
         };
     };
@@ -1614,9 +1623,11 @@ fn desugar_processors_impl(
 
     let mut pinned_proc_fields = HashMap::new();
     let mut compiler_owned_proc_fields = HashMap::new();
+    let mut compiler_scratch_proc_fields = HashMap::new();
     for proc_name in &proc_order {
         let mut pinned_fields = HashSet::new();
         let mut compiler_owned_fields = HashSet::new();
+        let mut compiler_scratch_fields = HashSet::new();
         collect_flattened_proc_field_metadata(
             proc_name,
             "",
@@ -1625,9 +1636,11 @@ fn desugar_processors_impl(
             &mut HashSet::new(),
             &mut pinned_fields,
             &mut compiler_owned_fields,
+            &mut compiler_scratch_fields,
         );
         pinned_proc_fields.insert(proc_name.clone(), pinned_fields);
         compiler_owned_proc_fields.insert(proc_name.clone(), compiler_owned_fields);
+        compiler_scratch_proc_fields.insert(proc_name.clone(), compiler_scratch_fields);
     }
     ProcessorDesugarResult {
         program,
@@ -1640,6 +1653,7 @@ fn desugar_processors_impl(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
+        compiler_scratch_proc_fields,
         top_level_delegates: prepared_delegates.top_level,
     }
 }
