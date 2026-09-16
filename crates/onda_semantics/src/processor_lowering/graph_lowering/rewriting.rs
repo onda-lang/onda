@@ -1,5 +1,18 @@
 use super::*;
 
+fn indexed_graph_node_field_expr(
+    base: &str,
+    index: usize,
+    field: &str,
+    loc: Option<SourceLoc>,
+) -> Expr {
+    Expr::Index {
+        loc: loc.into(),
+        base: format!("{base}.{field}"),
+        index: Box::new(Expr::int(index as i64).with_loc(loc)),
+    }
+}
+
 pub(super) fn rewrite_graph_source_expr(
     expr: &Expr,
     owner: &GraphOwnerSurface,
@@ -230,32 +243,24 @@ pub(super) fn rewrite_graph_source_expr(
                                         loc: expr_loc.into(),
                                         values: slots
                                             .iter()
-                                            .map(|slot_name| Expr::UserCall {
-                                                loc: expr_loc.into(),
-                                                name: format!(
-                                                    "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
-                                                ),
-                                                type_args: Vec::new(),
-                                                args: vec![
-                                                    CallArg {
-                                                        name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                                                        expr: Expr::var(base.clone())
-                                                            .with_loc(expr_loc),
-                                                    },
-                                                    CallArg {
-                                                        name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                                                        expr: Expr::int(proc_idx as i64)
-                                                            .with_loc(proc_index.loc().cloned()),
-                                                    },
-                                                    CallArg {
-                                                        name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                                                        expr: Expr::var(slot_name.clone())
-                                                            .with_loc(expr_loc),
-                                                    },
-                                                ],
+                                            .map(|slot_name| {
+                                                indexed_graph_node_field_expr(
+                                                    &base, proc_idx, slot_name, expr_loc,
+                                                )
                                             })
                                             .collect(),
                                     };
+                                }
+                                if matches!(
+                                    surface.out_value_types.get(resolved_out),
+                                    Some(GraphValueType::Scalar(_))
+                                ) {
+                                    return indexed_graph_node_field_expr(
+                                        &base,
+                                        proc_idx,
+                                        resolved_out,
+                                        expr_loc,
+                                    );
                                 }
                             }
                         }
@@ -304,30 +309,9 @@ pub(super) fn rewrite_graph_source_expr(
                                         errors,
                                     ) {
                                         if let Some(slot_name) = slots.get(field_idx) {
-                                            return Expr::UserCall {
-                                                loc: expr_loc.into(),
-                                                name: format!(
-                                                    "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
-                                                ),
-                                                type_args: Vec::new(),
-                                                args: vec![
-                                                    CallArg {
-                                                        name: Some(PROC_INDEX_BASE_ARG.to_owned()),
-                                                        expr: Expr::var(base.clone())
-                                                            .with_loc(expr_loc),
-                                                    },
-                                                    CallArg {
-                                                        name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
-                                                        expr: Expr::int(proc_idx as i64)
-                                                            .with_loc(proc_index.loc().cloned()),
-                                                    },
-                                                    CallArg {
-                                                        name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
-                                                        expr: Expr::var(slot_name.clone())
-                                                            .with_loc(field_index.loc().cloned()),
-                                                    },
-                                                ],
-                                            };
+                                            return indexed_graph_node_field_expr(
+                                                &base, proc_idx, slot_name, expr_loc,
+                                            );
                                         }
                                         errors.push(Diagnostic::semantic_span(
                                             format!(
@@ -460,6 +444,7 @@ pub(super) fn rewrite_graph_source_expr(
             spec,
             init,
             initialize,
+            init_is_value,
             ..
         } => Expr::ArrayCtor {
             loc: expr_loc.into(),
@@ -492,6 +477,7 @@ pub(super) fn rewrite_graph_source_expr(
                     .collect()
             }),
             initialize: *initialize,
+            init_is_value: *init_is_value,
         },
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Tuple { .. } => {
             expr.clone()

@@ -1,128 +1,34 @@
 use super::*;
+use crate::expr_analysis::has_scalar_value_binding;
 
 pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
 }
 
-fn flow_scope_label(scope: ScopeKind) -> &'static str {
-    match scope {
-        ScopeKind::Block => "block",
-        ScopeKind::Sample => "sample",
-        ScopeKind::Init => "init",
-        ScopeKind::Def => "def",
-    }
-}
-
-fn wrong_rate_output_assignment_message(name: &str, scope: ScopeKind) -> String {
-    if scope == ScopeKind::Block {
+fn wrong_rate_output_assignment_message(name: &str, policy: ScopePolicy) -> String {
+    if policy.scope_kind() == ScopeKind::Block && !matches!(policy, ScopePolicy::Task) {
         format!(
             "audio output '{name}' can only be written in sample; move this assignment into the block's nested sample section"
         )
     } else {
         format!(
             "cannot assign to output symbol '{name}' in {}",
-            flow_scope_label(scope)
+            policy.diagnostic_label()
         )
     }
 }
 
-fn wrong_rate_output_array_assignment_message(name: &str, scope: ScopeKind) -> String {
-    if scope == ScopeKind::Block {
+fn wrong_rate_output_array_assignment_message(name: &str, policy: ScopePolicy) -> String {
+    if policy.scope_kind() == ScopeKind::Block && !matches!(policy, ScopePolicy::Task) {
         format!(
             "audio output array '{name}' can only be written in sample; move this assignment into the block's nested sample section"
         )
     } else {
         format!(
             "cannot assign to output array symbol '{name}' in {}",
-            flow_scope_label(scope)
+            policy.diagnostic_label()
         )
     }
-}
-
-fn indexed_aggregate_target_type(
-    base: &str,
-    index: &Expr,
-    struct_instances: &HashMap<String, String>,
-    struct_array_roots: &HashMap<String, ArrayStructRootInfo>,
-    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) -> Option<PrimitiveType> {
-    let (root, field) = split_root_field_path(base)?;
-    let (struct_name, indexes_struct_element) = struct_instances
-        .get(root)
-        .map(|struct_name| (struct_name.as_str(), false))
-        .or_else(|| {
-            struct_array_roots
-                .get(root)
-                .map(|info| (info.struct_name.as_str(), true))
-        })
-        .or_else(|| {
-            proc_array_roots
-                .get(root)
-                .map(|info| (info.proc_name.as_str(), true))
-        })?;
-    let field = resolve_struct_field_decl(struct_name, field, struct_defs)?;
-    if indexes_struct_element {
-        return match field.ty {
-            TypedFieldType::Scalar(ty) => Some(ty),
-            TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => None,
-        };
-    }
-    match &field.ty {
-        TypedFieldType::Array(_) => field.array_elem_ty,
-        TypedFieldType::Tuple(types) => match index {
-            Expr::Int { value, .. } => usize::try_from(*value)
-                .ok()
-                .and_then(|index| types.get(index).copied()),
-            _ => None,
-        },
-        TypedFieldType::Scalar(_) | TypedFieldType::Struct => None,
-    }
-}
-
-fn infer_flow_slice_alias_info(
-    base: &str,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_slice_alias_info(
-        base,
-        start,
-        end,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-        false,
-    )
-}
-
-fn infer_flow_data_like_info(
-    expr: &Expr,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    struct_instances: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<LocalArrayAliasInfo> {
-    infer_scope_data_like_info(
-        expr,
-        declared_symbols,
-        Some(state_arrays),
-        local_array_aliases,
-        struct_instances,
-        struct_defs,
-        errors,
-    )
 }
 
 pub(crate) struct FlowStmtAnalysisCtx<'a> {
@@ -141,6 +47,7 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub registered_state_tuples: &'a HashMap<String, SourceLoc>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
     pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
+    pub resolved_struct_locals: Option<&'a std::cell::RefCell<HashMap<String, String>>>,
     pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
 }
 
@@ -151,7 +58,7 @@ pub(crate) struct EventStmtPolicy<'a> {
     pub input_names: &'a HashSet<String>,
     pub output_names: &'a HashSet<String>,
     pub scalar_param_names: &'a HashSet<String>,
-    pub array_param_names: &'a HashSet<String>,
+    pub data_param_names: &'a HashSet<String>,
 }
 
 fn is_proc_event_stmt_call(
@@ -212,48 +119,38 @@ fn validate_event_assign_target_restrictions(
     local_proc_aliases: &HashMap<String, ProcArrayAliasInfo>,
     event_policy: EventStmtPolicy<'_>,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> bool {
     let (base, indexed) = match target {
         AssignTarget::Var(name) => (name.as_str(), false),
         AssignTarget::Index { base, .. } => (base.as_str(), true),
+        AssignTarget::IndexedMember { base, .. } => (base.as_str(), true),
         AssignTarget::Slice { base, .. } => (base.as_str(), true),
-        AssignTarget::Tuple(_) => return,
+        AssignTarget::Tuple(_) => return false,
     };
     let root = runtime_symbol_root(base);
 
     if event_policy.scalar_param_names.contains(root) {
-        errors.push(Diagnostic::semantic_span(
-            format!("cannot assign to immutable event parameter '{}'", root),
-            target_loc,
-        ));
-        return;
+        return true;
     }
-    if event_policy.array_param_names.contains(root) {
-        errors.push(Diagnostic::semantic_span(
-            format!(
-                "cannot assign to immutable event array parameter '{}'",
-                root
-            ),
-            target_loc,
-        ));
-        return;
+    if event_policy.data_param_names.contains(root) {
+        return true;
     }
     if event_policy.input_names.contains(root) {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign to input symbol '{}' in event handler", root),
             target_loc,
         ));
-        return;
+        return false;
     }
     if event_policy.output_names.contains(root) {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign to output symbol '{}' in event handler", root),
             target_loc,
         ));
-        return;
+        return false;
     }
     if indexed && has_declared_buffer_symbol_info(declared_symbols, base) {
-        return;
+        return false;
     }
     if event_policy.immutable_roots.contains(root) {
         errors.push(Diagnostic::semantic_span(
@@ -263,7 +160,7 @@ fn validate_event_assign_target_restrictions(
             ),
             target_loc,
         ));
-        return;
+        return false;
     }
 
     if indexed || base.contains('.') {
@@ -282,12 +179,14 @@ fn validate_event_assign_target_restrictions(
                 ),
                 target_loc,
             ));
+            return false;
         }
     }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_runtime_stmt_analysis_ctx<'a>(
+pub(super) fn build_runtime_stmt_analysis_ctx<'a>(
     common: ScopeAnalysisCtx<'a>,
     registration_mode: RuntimeRegistrationMode,
     declared_symbols: &'a DeclaredSymbolMap,
@@ -319,6 +218,7 @@ fn build_runtime_stmt_analysis_ctx<'a>(
         resolved_scalar_locals: None,
         resolved_array_locals: None,
         resolved_tuple_locals: None,
+        resolved_struct_locals: None,
     }
 }
 
@@ -348,6 +248,11 @@ fn build_flow_stmt_expr_env<'a>(
 }
 
 fn record_resolved_local_bindings(ctx: &FlowStmtAnalysisCtx<'_>, state: &FlowStmtAnalysisState) {
+    if let Some(resolved) = ctx.resolved_struct_locals {
+        resolved
+            .borrow_mut()
+            .extend(state.local_struct_aliases.clone());
+    }
     if let Some(resolved_scalar_locals) = ctx.resolved_scalar_locals {
         let mut resolved = resolved_scalar_locals.borrow_mut();
         for (name, ty) in &state.local_aliases {
@@ -391,6 +296,7 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     forbidden_assign_array_names: &HashSet<String>,
     event_policy: Option<EventStmtPolicy<'a>>,
     state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
+    inherited: Option<&ScopeFlowState>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut state_scalars = state_scalars.clone();
@@ -412,6 +318,9 @@ pub(crate) fn analyze_runtime_scope_stmts<'a>(
     );
     let mut state =
         build_runtime_stmt_analysis_state(known_scalars, local_aliases, local_array_aliases);
+    if let Some(inherited) = inherited {
+        state.inherit_bindings(inherited);
+    }
     analyze_runtime_stmts(stmts, locals, &mut state_scalars, &ctx, &mut state, errors);
 }
 
@@ -450,12 +359,12 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
     runtime_known_scalars: HashSet<String>,
     runtime_local_aliases: LocalAliasTypes,
     runtime_local_array_aliases: HashMap<String, LocalArrayAliasInfo>,
-    runtime_local_buffer_aliases: LocalBufferAliases,
+    preceding_scope: Option<&ScopeFlowState>,
     runtime_forbidden_assign_names: &HashSet<String>,
     runtime_forbidden_assign_array_names: &HashSet<String>,
     state_tuples: &mut HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
-) -> LocalBufferAliases {
+) -> ScopeFlowState {
     let stmts = stmts.into_iter().collect::<Vec<_>>();
     let registered_state_tuples = register_scope_state(
         stmts.iter().copied(),
@@ -471,7 +380,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         common.struct_defs,
         common.fn_return_types,
         registration_mode,
-        &runtime_local_buffer_aliases,
+        preceding_scope,
     );
     let ctx = build_runtime_stmt_analysis_ctx(
         common,
@@ -493,7 +402,9 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         runtime_local_aliases,
         runtime_local_array_aliases,
     );
-    state.local_buffer_aliases = runtime_local_buffer_aliases;
+    if let Some(previous) = preceding_scope {
+        state.inherit_bindings(previous);
+    }
     analyze_runtime_stmts(
         stmts,
         runtime_locals,
@@ -502,7 +413,7 @@ pub(crate) fn register_and_analyze_runtime_scope<'a>(
         &mut state,
         errors,
     );
-    state.local_buffer_aliases
+    state
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -523,6 +434,8 @@ pub(crate) fn analyze_runtime_events(
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     struct_instances: &HashMap<String, String>,
     common: ScopeAnalysisCtx<'_>,
+    inherited: Option<&ScopeFlowState>,
+    state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let empty_runtime_inputs = HashSet::<String>::new();
@@ -531,13 +444,82 @@ pub(crate) fn analyze_runtime_events(
     let empty_proc_array_roots = HashMap::<String, ProcNestedArrayState>::new();
 
     for event in typed_events {
+        let mut event_bindings = inherited.cloned().unwrap_or_default();
+        let mut event_structs = struct_instances.clone();
+        let mut event_roots = state_array_struct_roots.clone();
+        let mut event_symbols = declared_symbols.clone();
         let mut scalar_event_params = HashSet::<String>::new();
         let mut array_event_params = HashSet::<String>::new();
         let mut event_known_scalars = event_known_scalars_seed.clone();
         let mut event_local_aliases = LocalAliasTypes::new();
         let mut event_local_data_aliases = event_array_alias_seed.clone();
         for param in &event.params {
+            event_bindings.shadow_binding(&param.name);
+            shadow_rooted_entries(&mut event_structs, &param.name);
+            shadow_rooted_entries(&mut event_roots, &param.name);
+            shadow_rooted_entries(&mut event_symbols, &param.name);
             match param.ty {
+                TypedEventParamType::Tuple(ref types) => {
+                    scalar_event_params.insert(param.name.clone());
+                    event_known_scalars.insert(param.name.clone());
+                    set_tracked_tuple_types(
+                        &mut event_bindings.tuple_vars,
+                        &mut event_bindings.local_aliases,
+                        &param.name,
+                        types,
+                    );
+                }
+                TypedEventParamType::StructSlice { ref name } => {
+                    register_struct_array_param_bindings(
+                        &param.name,
+                        name,
+                        None,
+                        common.struct_defs,
+                        &mut event_symbols,
+                        &mut event_local_data_aliases,
+                        &mut event_roots,
+                        errors,
+                    );
+                    for (name, alias) in &mut event_local_data_aliases {
+                        if name == &param.name || name.starts_with(&format!("{}.", param.name)) {
+                            alias.writable = false;
+                        }
+                    }
+                    array_event_params.insert(param.name.clone());
+                }
+                TypedEventParamType::Data(ref data) => {
+                    match data {
+                        DataType::Struct(name) => {
+                            event_structs.insert(param.name.clone(), name.clone());
+                        }
+                        DataType::Array {
+                            element: ArrayElemType::Struct(name),
+                            len,
+                        } => {
+                            register_struct_array_param_bindings(
+                                &param.name,
+                                name,
+                                Some(*len),
+                                common.struct_defs,
+                                &mut event_symbols,
+                                &mut event_local_data_aliases,
+                                &mut event_roots,
+                                errors,
+                            );
+                            for (name, alias) in &mut event_local_data_aliases {
+                                if name == &param.name
+                                    || name.starts_with(&format!("{}.", param.name))
+                                {
+                                    alias.writable = false;
+                                }
+                            }
+                        }
+                        DataType::Array { .. } => {
+                            unreachable!("primitive arrays have a scalar element contract")
+                        }
+                    }
+                    array_event_params.insert(param.name.clone());
+                }
                 TypedEventParamType::Scalar(ty) => {
                     scalar_event_params.insert(param.name.clone());
                     event_known_scalars.insert(param.name.clone());
@@ -548,6 +530,7 @@ pub(crate) fn analyze_runtime_events(
                     event_local_data_aliases.insert(
                         param.name.clone(),
                         LocalArrayAliasInfo {
+                            proven_len: None,
                             len,
                             static_len: Some(len),
                             elem_ty: elem,
@@ -561,6 +544,7 @@ pub(crate) fn analyze_runtime_events(
                     event_local_data_aliases.insert(
                         param.name.clone(),
                         LocalArrayAliasInfo {
+                            proven_len: None,
                             len: 1,
                             static_len: None,
                             elem_ty: elem,
@@ -600,7 +584,7 @@ pub(crate) fn analyze_runtime_events(
             input_names: validation_input_names,
             output_names: validation_output_names,
             scalar_param_names: &scalar_event_params,
-            array_param_names: &array_event_params,
+            data_param_names: &array_event_params,
         };
         analyze_runtime_scope_stmts(
             event.body.iter(),
@@ -611,20 +595,21 @@ pub(crate) fn analyze_runtime_events(
             event_local_aliases,
             event_local_data_aliases,
             state_scalars,
-            declared_symbols,
+            &event_symbols,
             state_arrays,
-            state_array_struct_roots,
+            &event_roots,
             nested_proc_instances,
             if proc_array_roots.is_empty() {
                 &empty_proc_array_roots
             } else {
                 proc_array_roots
             },
-            struct_instances,
+            &event_structs,
             validation_output_names,
             common.output_array_names,
             Some(event_policy),
-            &HashMap::new(),
+            state_tuples,
+            Some(&event_bindings),
             errors,
         );
     }
@@ -668,6 +653,11 @@ pub(crate) fn analyze_flow_scope_stmts<'a>(
     state
         .tuple_vars
         .extend(ctx.state_tuples.iter().map(|(k, v)| (k.clone(), v.len())));
+    seed_struct_array_aliases(
+        &mut state.local_array_aliases,
+        ctx.state_array_struct_roots,
+        ctx.common.struct_defs,
+    );
     for stmt in stmts {
         analyze_flow_stmt(
             stmt,
@@ -750,7 +740,7 @@ fn analyze_flow_stmt(
                 ..
             } => {
                 if let Some(event_policy) = ctx.event_policy {
-                    validate_event_assign_target_restrictions(
+                    if validate_event_assign_target_restrictions(
                         target_loc.as_ref().into(),
                         target,
                         declared_symbols,
@@ -760,7 +750,9 @@ fn analyze_flow_stmt(
                         &state.local_proc_aliases,
                         event_policy,
                         errors,
-                    );
+                    ) {
+                        return;
+                    }
                 }
                 analyze_flow_assignment(
                     target_loc.as_ref().into(),
@@ -768,7 +760,7 @@ fn analyze_flow_stmt(
                     decl_ty,
                     generic_decl_ty,
                     *is_typed_decl,
-                    scope,
+                    common.policy,
                     expr,
                     &mut state.known_scalars,
                     &mut state.local_aliases,
@@ -856,11 +848,12 @@ fn analyze_flow_stmt(
                             expr,
                             &state.local_proc_aliases,
                         );
-                        analyze_stmt_expr(
-                            &expr,
-                            build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
-                            errors,
-                        );
+                        let env = build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope);
+                        if infer_fixed_data_type(&expr, env.expr_env).is_some() {
+                            validate_fixed_data_expr(&expr, env.expr_env, errors);
+                        } else {
+                            analyze_stmt_expr(&expr, env, errors);
+                        }
                     }
                 } else {
                     push_semantic(diag, errors, "return is only allowed inside def blocks");
@@ -1086,7 +1079,7 @@ fn analyze_flow_assignment(
     decl_ty: &Option<DeclType>,
     generic_decl_ty: &Option<String>,
     is_typed_decl: bool,
-    scope: ScopeKind,
+    policy: ScopePolicy,
     expr: &Expr,
     known_scalars: &mut HashSet<String>,
     local_aliases: &mut LocalAliasTypes,
@@ -1127,6 +1120,8 @@ fn analyze_flow_assignment(
     registered_state_tuples: &HashMap<String, SourceLoc>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let scope = policy.scope_kind();
+    let diagnostic_scope = policy.diagnostic_label();
     let array_vars = merged_data_vars(state_arrays, local_array_aliases);
     let empty_param_structs = HashMap::<String, String>::new();
     let mut visible_struct_instances = struct_instances.clone();
@@ -1156,6 +1151,7 @@ fn analyze_flow_assignment(
         struct_array_roots: state_array_struct_roots,
         proc_array_roots,
         proc_event_names,
+        diagnostic_scope,
     };
     let stmt_expr_env = |scope| {
         build_scope_stmt_expr_env_with_tuples(
@@ -1187,22 +1183,33 @@ fn analyze_flow_assignment(
             errors.push(Diagnostic::semantic_span($message, target_loc))
         };
     }
+    if validate_struct_array_member_assignment(target, expr, scope_expr_env!(), target_loc, errors)
+    {
+        return;
+    }
+    let target = flatten_indexed_member_target(target);
+    let target = target.as_ref();
     match target {
         AssignTarget::Index { base, index } => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            let aggregate_target_ty = indexed_aggregate_target_type(
-                base,
-                index,
-                struct_instances,
+            let aggregate_target_ty = indexed_assignment_element_type(
+                target,
+                &visible_struct_instances,
                 state_array_struct_roots,
+                local_array_aliases,
                 proc_array_roots,
                 struct_defs,
             );
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be indexed"
+                    "{kind} '{lexical_root}' is scalar and cannot be indexed"
                 ));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
@@ -1220,17 +1227,19 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(wrong_rate_output_array_assignment_message(base, scope));
+                target_error!(wrong_rate_output_array_assignment_message(base, policy));
                 validate_expr(index, scope_expr_env!(), errors);
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
             }
-            if state_array_struct_roots.contains_key(base) {
-                target_error!(
-                    format!(
-                        "indexed assignment target '{base}[...]' is array[Struct, N]; assign fields through an alias (for example 'x = {base}[i]; x.field = ...')"
-                    ),
-                );
+            if validate_data_element_replacement(
+                base,
+                index,
+                expr,
+                scope_expr_env!(),
+                target_loc,
+                errors,
+            ) {
                 return;
             }
             if let Some((root, field)) = split_root_field_path(base) {
@@ -1278,7 +1287,7 @@ fn analyze_flow_assignment(
                 );
                 if !output_index_allowed || scope_expr_env!().port_index_outs.is_none() {
                     if base == "outs" && scope == ScopeKind::Block {
-                        target_error!(wrong_rate_output_array_assignment_message("outs", scope));
+                        target_error!(wrong_rate_output_array_assignment_message("outs", policy,));
                     } else {
                         target_error!(
                             format!(
@@ -1332,8 +1341,16 @@ fn analyze_flow_assignment(
                 return;
             }
             if !state_arrays.contains_key(base)
+                && !array_vars.contains_key(base)
                 && !local_array_aliases.contains_key(base)
+                && !is_declared_data_array_symbol(declared_symbols, base)
+                && !split_root_field_path(base).is_some_and(|(_, field)| {
+                    state_arrays.contains_key(field)
+                        || array_vars.contains_key(field)
+                        || is_declared_data_array_symbol(declared_symbols, field)
+                })
                 && !has_declared_buffer_symbol_info(declared_symbols, base)
+                && !is_proc_array_member_base(base, proc_array_roots)
                 && aggregate_target_ty.is_none()
             {
                 target_error!(format!(
@@ -1399,9 +1416,14 @@ fn analyze_flow_assignment(
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if locals.contains(lexical_root) {
+            if has_scalar_value_binding(lexical_root, locals, local_aliases) {
+                let kind = if locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 target_error!(format!(
-                    "loop variable '{lexical_root}' is scalar and cannot be sliced"
+                    "{kind} '{lexical_root}' is scalar and cannot be sliced"
                 ));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
@@ -1432,7 +1454,7 @@ fn analyze_flow_assignment(
                 }
             }
             if forbidden_assign_array_names.contains(base) {
-                target_error!(wrong_rate_output_array_assignment_message(base, scope));
+                target_error!(wrong_rate_output_array_assignment_message(base, policy));
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     validate_expr(coordinate, scope_expr_env!(), errors);
                 }
@@ -1465,7 +1487,7 @@ fn analyze_flow_assignment(
                 validate_expr(&expr_for_validation, scope_expr_env!(), errors);
                 return;
             }
-            let Some(target_info) = infer_flow_slice_alias_info(
+            let Some(target_info) = resolve_executable_slice_alias_info(
                 base,
                 start.as_deref(),
                 end.as_deref(),
@@ -1522,9 +1544,30 @@ fn analyze_flow_assignment(
                 );
                 require_expr_numeric_type(end, end_ty, "slice end bound", errors);
             }
+            if let Some(expected) = &target_info.elem_struct {
+                validate_struct_slice_assignment(
+                    expr,
+                    expected,
+                    target_loc,
+                    stmt_expr_env(scope),
+                    |errors| {
+                        resolve_executable_data_like_info(
+                            expr,
+                            declared_symbols,
+                            state_arrays,
+                            local_array_aliases,
+                            struct_instances,
+                            struct_defs,
+                            errors,
+                        )
+                    },
+                    errors,
+                );
+                return;
+            }
             if is_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope)) {
                 validate_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope), errors);
-                if let Some(src_info) = infer_flow_data_like_info(
+                if let Some(src_info) = resolve_executable_data_like_info(
                     &expr_for_validation,
                     declared_symbols,
                     state_arrays,
@@ -1583,12 +1626,12 @@ fn analyze_flow_assignment(
                 return;
             }
             if forbidden_assign_names.contains(name) {
-                target_error!(wrong_rate_output_assignment_message(name, scope));
+                target_error!(wrong_rate_output_assignment_message(name, policy));
             }
             if forbidden_assign_array_names.contains(name) {
                 target_error!(format!(
                     "cannot assign to output array symbol '{name}' in {}",
-                    flow_scope_label(scope)
+                    diagnostic_scope
                 ));
                 validate_expr(expr, scope_expr_env!(), errors);
                 return;
@@ -1597,6 +1640,204 @@ fn analyze_flow_assignment(
                 target_error!(format!(
                     "buffer-reference alias '{name}' is immutable and cannot be rebound"
                 ));
+                return;
+            }
+            if let Some(DeclType::Slice(element)) = decl_ty {
+                if known_scalars.contains(name)
+                    || local_aliases.contains_key(name)
+                    || local_array_aliases.contains_key(name)
+                    || state_scalars.contains_key(name)
+                    || state_arrays.contains_key(name)
+                    || struct_instances.contains_key(name)
+                    || declared_symbols.contains_key(name)
+                {
+                    target_error!(format!(
+                        "slice declaration '{name}' must introduce a new name"
+                    ));
+                    return;
+                }
+                if let Some(alias) =
+                    typed_slice_alias_info(expr, element, scope_expr_env!(), errors)
+                {
+                    local_array_aliases.insert(name.clone(), alias);
+                }
+                return;
+            }
+            if decl_ty.is_none() && generic_decl_ty.is_none() && !is_typed_decl {
+                if let Expr::Var { name: source, .. } = expr {
+                    if let Some(alias) = local_array_aliases
+                        .get(source)
+                        .filter(|info| info.static_len.is_none())
+                        .cloned()
+                    {
+                        if known_scalars.contains(name)
+                            || local_aliases.contains_key(name)
+                            || local_array_aliases.contains_key(name)
+                            || state_scalars.contains_key(name)
+                            || state_arrays.contains_key(name)
+                            || struct_instances.contains_key(name)
+                            || declared_symbols.contains_key(name)
+                        {
+                            target_error!("slice binding cannot be rebound; use an explicit slice assignment to copy contents");
+                        } else {
+                            local_array_aliases.insert(name.clone(), alias);
+                        }
+                        return;
+                    }
+                }
+            }
+            if !is_typed_decl
+                && decl_ty.is_none()
+                && generic_decl_ty.is_none()
+                && matches!(
+                    infer_data_value_type(expr, scope_expr_env!()),
+                    Some(DataType::Struct(_))
+                )
+                && validate_fixed_data_binding_replacement(
+                    name,
+                    expr,
+                    scope_expr_env!(),
+                    target_loc,
+                    errors,
+                )
+            {
+                return;
+            }
+            let fixed_data = infer_data_initializer_type(expr, decl_ty.as_ref(), scope_expr_env!());
+            // A literal captures new contents in the destination's element context.
+            // Preserve the existing reference, including its write permission.
+            if validate_primitive_array_literal_replacement(
+                name,
+                expr,
+                is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                scope_expr_env!(),
+                target_loc,
+                errors,
+            ) {
+                return;
+            }
+            if let Some(DeclType::Array { elem, size }) = decl_ty {
+                let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(size)
+                else {
+                    target_error!(
+                        "fixed array declaration requires a positive, statically known length"
+                    );
+                    return;
+                };
+                let expected = DataType::Array {
+                    element: ArrayElemType::Primitive(*elem),
+                    len,
+                };
+                if fixed_data.as_ref() != Some(&expected) {
+                    target_error!(format!(
+                        "fixed array declaration for '{name}' {}",
+                        data_type_mismatch(&expected, fixed_data.as_ref())
+                    ));
+                    return;
+                }
+            }
+            if let Some(data) = fixed_data.filter(|data| {
+                (!matches!(expr, Expr::ArrayCtor { .. })
+                    || infer_fixed_data_type(&Expr::var(name), scope_expr_env!()).is_some())
+                    && (!matches!(expr, Expr::ArrayLiteral { .. })
+                        || matches!(
+                            data,
+                            DataType::Array {
+                                element: ArrayElemType::Struct(_),
+                                ..
+                            }
+                        ))
+            }) {
+                if matches!(decl_ty, Some(DeclType::Scalar(_) | DeclType::Tuple(_))) {
+                    target_error!(format!("data initializer for '{name}' is incompatible with its value type annotation"));
+                    return;
+                }
+                if let Some(declared) = generic_decl_ty {
+                    if data != DataType::Struct(declared.clone()) {
+                        target_error!(format!("data declaration '{name}' expects '{declared}'"));
+                        return;
+                    }
+                }
+                let existing = infer_fixed_data_type(&Expr::var(name), scope_expr_env!());
+                if let Some(existing) = existing {
+                    if is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some() {
+                        target_error!(format!(
+                            "data declaration '{name}' must introduce a new name"
+                        ));
+                    } else if existing != data {
+                        target_error!(format!(
+                            "data replacement for '{name}' {}",
+                            data_type_mismatch(&existing, Some(&data)),
+                        ));
+                    }
+                    if local_array_aliases
+                        .get(name)
+                        .is_some_and(|alias| !alias.writable)
+                    {
+                        target_error!(format!("cannot assign to immutable array alias '{name}'"));
+                    }
+                    validate_fixed_data_expr(expr, scope_expr_env!(), errors);
+                    return;
+                }
+                if known_scalars.contains(name)
+                    || local_aliases.contains_key(name)
+                    || local_array_aliases.contains_key(name)
+                    || state_scalars.contains_key(name)
+                    || input_names.contains(name)
+                    || output_names.contains(name)
+                    || param_names.contains(name)
+                {
+                    target_error!(format!(
+                        "data declaration '{name}' conflicts with an existing binding"
+                    ));
+                    return;
+                }
+                validate_fixed_data_expr(expr, scope_expr_env!(), errors);
+                match data {
+                    DataType::Struct(struct_name) => {
+                        if add_struct_element_alias_bindings(
+                            name,
+                            &struct_name,
+                            struct_defs,
+                            known_scalars,
+                            local_aliases,
+                            local_array_aliases,
+                            "data declaration",
+                            errors,
+                        ) {
+                            local_struct_aliases.insert(name.clone(), struct_name);
+                        }
+                    }
+                    DataType::Array { element, len } => {
+                        let writable = is_typed_decl
+                            || matches!(expr, Expr::UserCall { .. } | Expr::ArrayLiteral { .. })
+                            || resolve_executable_data_like_info(
+                                expr,
+                                declared_symbols,
+                                state_arrays,
+                                local_array_aliases,
+                                struct_instances,
+                                struct_defs,
+                                errors,
+                            )
+                            .is_some_and(|source| source.writable);
+                        let (elem_ty, elem_struct) = match element {
+                            ArrayElemType::Primitive(ty) => (ty, None),
+                            ArrayElemType::Struct(name) => (PrimitiveType::F32, Some(name)),
+                        };
+                        local_array_aliases.insert(
+                            name.clone(),
+                            LocalArrayAliasInfo {
+                                proven_len: None,
+                                len,
+                                static_len: Some(len),
+                                elem_ty,
+                                elem_struct,
+                                writable,
+                            },
+                        );
+                    }
+                }
                 return;
             }
             if let Some(alias) = buffer_reference_expr_info(expr, declared_symbols) {
@@ -1687,7 +1928,7 @@ fn analyze_flow_assignment(
                     }
                     let size_context = format!(
                         "typed array declaration size for symbol '{name}' in {}",
-                        flow_scope_label(scope)
+                        diagnostic_scope
                     );
                     let Some(size_value) = with_expr_diag_context(&spec.size, |_diag| {
                         eval_data_size_expr(&spec.size, options, &size_context, errors)
@@ -1699,6 +1940,7 @@ fn analyze_flow_assignment(
                             local_array_aliases.insert(
                                 name.clone(),
                                 LocalArrayAliasInfo {
+                                    proven_len: None,
                                     len: size_value,
                                     static_len: Some(size_value),
                                     elem_ty: *elem_ty,
@@ -1707,59 +1949,29 @@ fn analyze_flow_assignment(
                                 },
                             );
                             if let Some(values) = init {
-                                if values.len() != size_value {
-                                    with_expr_diag_context(expr, |expr_diag| {
-                                        push_semantic(
-                                            expr_diag,
-                                            errors,
-                                            format!(
-                                                "typed array declaration '{name}' initializer expects {size_value} elements, got {}",
-                                                values.len()
-                                            ),
-                                        );
-                                    });
-                                }
-                                for (idx, value) in values.iter().take(size_value).enumerate() {
-                                    validate_expr(value, scope_expr_env!(), errors);
-                                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                                        value,
-                                        state_scalars,
-                                        declared_symbols,
-                                        None,
-                                        local_aliases,
-                                        local_array_aliases,
-                                        locals,
-                                        input_names,
-                                        output_names,
-                                        param_names,
-                                        struct_instances,
-                                        struct_defs,
-                                        proc_array_roots,
-                                        errors,
-                                    );
-                                    require_expr_assignable_type(
-                                        value,
-                                        value_ty,
-                                        *elem_ty,
-                                        &format!(
-                                            "typed array initializer assignment to '{name}[{idx}]'"
-                                        ),
-                                        errors,
-                                    );
-                                }
+                                crate::expr_validation::validate_primitive_array_values(
+                                    values,
+                                    *elem_ty,
+                                    size_value,
+                                    expr,
+                                    scope_expr_env!(),
+                                    errors,
+                                );
                             }
                         }
                         ArrayElemType::Struct(struct_name) => {
-                            with_expr_diag_context(expr, |expr_diag| {
-                                push_semantic(
-                                    expr_diag,
-                                    errors,
-                                    format!(
-                                        "typed array declaration '{name}: {struct_name}[N]' is not yet supported in {}",
-                                        flow_scope_label(scope)
-                                    ),
-                                );
-                            });
+                            validate_fixed_data_expr(expr, scope_expr_env!(), errors);
+                            local_array_aliases.insert(
+                                name.clone(),
+                                LocalArrayAliasInfo {
+                                    proven_len: None,
+                                    len: size_value,
+                                    static_len: Some(size_value),
+                                    elem_ty: PrimitiveType::F32,
+                                    elem_struct: Some(struct_name.clone()),
+                                    writable: true,
+                                },
+                            );
                         }
                     }
                     return;
@@ -1853,6 +2065,7 @@ fn analyze_flow_assignment(
                 local_array_aliases.insert(
                     name.clone(),
                     LocalArrayAliasInfo {
+                        proven_len: None,
                         len: values.len(),
                         static_len: Some(values.len()),
                         elem_ty,
@@ -1907,7 +2120,7 @@ fn analyze_flow_assignment(
                     return;
                 }
                 validate_expr(expr, scope_expr_env!(), errors);
-                if let Some(alias) = infer_flow_slice_alias_info(
+                if let Some(alias) = resolve_executable_slice_alias_info(
                     base,
                     start.as_deref(),
                     end.as_deref(),
@@ -1969,11 +2182,25 @@ fn analyze_flow_assignment(
             }
 
             if let Some((base, field)) = split_field_path(name, errors) {
-                if let Some(struct_name) = struct_instances.get(base) {
-                    let Some(fields) = struct_defs.get(struct_name) else {
-                        return;
+                if has_scalar_value_binding(base, locals, local_aliases) {
+                    let kind = if locals.contains(base) {
+                        "loop variable"
+                    } else {
+                        "value binding"
                     };
-                    let Some(field_decl) = fields.iter().find(|f| f.name == field) else {
+                    target_error!(format!(
+                        "{kind} '{base}' is scalar and has no field '{field}'"
+                    ));
+                    return;
+                }
+                if tuple_vars.contains_key(base) {
+                    target_error!(format!("tuple binding '{base}' has no field '{field}'"));
+                    return;
+                }
+                if let Some(struct_name) = struct_instances.get(base) {
+                    let Some(field_decl) =
+                        resolve_struct_field_decl(struct_name, field, struct_defs)
+                    else {
                         target_error!(format!("struct '{}' has no field '{}'", struct_name, field));
                         return;
                     };
@@ -2011,7 +2238,7 @@ fn analyze_flow_assignment(
                                 expr,
                                 expr_ty,
                                 prim,
-                                &format!("{} assignment to '{flat}'", flow_scope_label(scope)),
+                                &format!("{diagnostic_scope} assignment to '{flat}'"),
                                 errors,
                             );
                         }
@@ -2174,14 +2401,45 @@ fn analyze_flow_assignment(
             if input_names.contains(name) || param_names.contains(name) {
                 target_error!(format!(
                     "cannot assign to immutable symbol '{name}' in {}",
-                    flow_scope_label(scope)
+                    diagnostic_scope
                 ),);
             }
-            if struct_instances.contains_key(name) {
+            if let Some(expected) = struct_instances.get(name) {
+                let expr_for_validation =
+                    rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
+                let actual = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
+                    &expr_for_validation,
+                    state_scalars,
+                    declared_symbols,
+                    None,
+                    local_aliases,
+                    local_array_aliases,
+                    locals,
+                    input_names,
+                    output_names,
+                    param_names,
+                    struct_instances,
+                    struct_defs,
+                    proc_array_roots,
+                    errors,
+                )
+                .map_or_else(|| "non-struct".to_owned(), |ty| ty.name().to_owned());
+                if policy == ScopePolicy::Event {
+                    if let Expr::Var { name: source, .. } = expr {
+                        if param_names.contains(source) {
+                            target_error!(format!(
+                                "cannot assign {actual} event parameter '{source}' to struct instance '{name}' of type '{expected}'; declare the parameter as '{source}: {expected}'",
+                            ));
+                            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                            return;
+                        }
+                    }
+                }
                 target_error!(format!(
-                    "struct instance '{name}' cannot be assigned in {}",
-                    flow_scope_label(scope)
-                ),);
+                    "cannot assign {actual} value to struct instance '{name}' of type '{expected}' in {diagnostic_scope}; whole-struct replacement requires another '{expected}' value",
+                ));
+                validate_expr(&expr_for_validation, scope_expr_env!(), errors);
+                return;
             }
             if matches!(expr, Expr::ArrayCtor { .. }) {
                 target_error!("array[...] construction is only allowed in init",);
@@ -2351,7 +2609,7 @@ fn analyze_flow_assignment(
                     expr,
                     expr_ty,
                     target_ty,
-                    &format!("{} assignment to '{name}'", flow_scope_label(scope)),
+                    &format!("{diagnostic_scope} assignment to '{name}'"),
                     errors,
                 );
                 if can_track_local {
@@ -2371,7 +2629,6 @@ fn analyze_flow_assignment(
         AssignTarget::Tuple(targets) => {
             let expr_for_validation =
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
-            validate_expr(&expr_for_validation, scope_expr_env!(), errors);
             let mut targets_ok = true;
             for target_name in targets.iter().filter_map(|target| target.binding()) {
                 targets_ok &= validate_block_bound_surface_var_name(
@@ -2381,55 +2638,19 @@ fn analyze_flow_assignment(
                     errors,
                 );
                 if forbidden_assign_names.contains(target_name) {
-                    target_error!(wrong_rate_output_assignment_message(target_name, scope));
+                    target_error!(wrong_rate_output_assignment_message(target_name, policy,));
                     targets_ok = false;
                 }
             }
-            let destructured_types = infer_tracked_tuple_types(
+            let destructured_types = analyze_tuple_destructuring_expr(
                 &expr_for_validation,
-                tuple_vars,
-                local_aliases,
-                Some(state_tuples),
-                struct_instances,
-                struct_defs,
+                targets.len(),
+                target_loc,
+                stmt_expr_env(scope),
+                state_tuples,
                 fn_return_types,
-                |value| {
-                    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                        value,
-                        state_scalars,
-                        declared_symbols,
-                        None,
-                        local_aliases,
-                        local_array_aliases,
-                        locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instances,
-                        struct_defs,
-                        proc_array_roots,
-                        errors,
-                    )
-                },
+                errors,
             );
-            // Validate destructuring arity against the RHS tuple length.
-            let rhs_arity = destructured_types
-                .as_ref()
-                .map(Vec::len)
-                .or_else(|| infer_tracked_tuple_arity(expr, tuple_vars, fn_return_types));
-            if let Some(expected) = rhs_arity {
-                if targets.len() != expected {
-                    errors.push(Diagnostic::semantic(
-                        format!(
-                            "tuple destructuring has {} targets but the right-hand side has {} elements",
-                            targets.len(),
-                            expected,
-                        ),
-                        0,
-                        0,
-                    ));
-                }
-            }
             if !targets_ok {
                 return;
             }
@@ -2453,5 +2674,6 @@ fn analyze_flow_assignment(
                     .or_insert(target_ty);
             }
         }
+        AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }
 }

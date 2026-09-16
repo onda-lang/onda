@@ -129,6 +129,13 @@ Non-crate directories of note:
   canonical segmented process schedule.
   - `mir_lowering/{lowerer_core,scheduling,control_flow,expressions,calls,aggregates,slices,values}.rs`
     — focused construction domains kept behind one lowering transaction.
+  - `mir_lowering/{data,data_slices,references,reference_joins,storage,retained_storage}.rs` — canonical data
+    construction/copying, nominal slices, scalar/tensor reference arguments, branch-selected
+    references, prepared fixed scratch, and pointer-free block selection reconstruction. Fixed
+    scalar arrays of at most 256 bytes preferentially remain local within a conservative 64 KiB
+    maximum across each active call path; overflow uses lifetime-reused instance scratch.
+    Struct helper tensors use strided slice descriptors;
+    fixed-data returns use caller-owned result storage.
   - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process
     snapshots persist across segments, init/event snapshots are invocation-local, and helpers
     receive read-only references to the calling boundary’s snapshot. Logical host array
@@ -146,7 +153,8 @@ Non-crate directories of note:
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
-- `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked bounds.
+- `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
+  bounds and proven-safe slice-copy overlap.
 - `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
   canonicalization, integer-range-based bounds proofs, pure-expression value numbering, bounded
   alias-safe scalar-state promotion, and cleanup.
@@ -190,8 +198,11 @@ Non-crate directories of note:
 
 ### `onda_processor_abi`
 
-- `onda_processor_abi/src/lib.rs` — serializable/deserializable processor descriptor owned
+- `crates/onda_processor_abi/src/lib.rs` — serializable/deserializable processor descriptor owned
   outside every compiler/backend crate.
+- `crates/onda_processor_abi/src/payload.rs`, `payload/` — compiler-free recursive message schemas,
+  canonical tensor planning, checked wire preparation, and reusable host encoders/decoders shared
+  by native and WebAssembly integrations.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
 - `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
@@ -342,13 +353,18 @@ Non-crate directories of note:
   each logical process block; top-level ranged inputs are clamped once per sample; ranged proc
   parameters are clamped once when stored and are not reclamped when read. Floating NaN maps to the
   range minimum at these generated clamp boundaries. Host-triggered events run synchronously via
-  index dispatch; slice events use a dynamic payload layout (`i32 len` followed by contiguous
-  element bytes). Source delegates lower to direct synchronous subscription calls. Top-level
+  index dispatch. Events and delegates use one recursive message schema: wire data is packed
+  little-endian in parameter and depth-first field order, with one contiguous tensor per primitive
+  leaf; a runtime slice contributes one `i32` logical length followed by its leaf tensors. Event
+  entry points preflight the complete wire payload into aligned workspace before handler execution.
+  Source delegates lower to direct synchronous subscription calls. Top-level
   delegate publication and authored printing remain explicit observable MIR effects as
   `PublishDelegate` and `PublishLog`. Init, process, and input-event entries accept one optional
-  `ExecutionOutput` containing independent caller-owned delegate and print batches, reset supplied
-  counters and one shared output sequence per call, and append complete packed records without
-  allocation. Hosts merge the two batches by sequence before delivery. Generated failure
+  `ExecutionOutput` containing independent caller-owned delegate and print batches. Init and process
+  entries reset supplied counters and one shared output sequence on entry; an event entry resets
+  them only after successful input preflight, so rejected input preserves existing records. Entries
+  append complete packed records without allocation. Hosts merge the two batches by sequence before
+  delivery. Generated failure
   clears incomplete delegates while retaining diagnostic print records. Native and Binaryen
   backends share the same logical layouts. Web Audio transports raw print records out of the audio
   callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches
@@ -440,3 +456,12 @@ Non-crate directories of note:
 - CI-oriented prebuilt bootstrap: `scripts/bootstrap-llvm.ps1` / `scripts/bootstrap-llvm.sh` (when `CI` is set) downloads release assets from `onda-lang/llvm-bootstrap` into `.deps/llvm/21.1.2`.
 - LLVM env-selection scripts: `scripts/use-llvm-env.ps1` / `scripts/use-llvm-env.sh` (source the bash one). Flavors: `auto`, `prebuilt`, `source-static`, `source-shared`, `source`.
 - `llvm-sys` line is `211.x` (compatible with LLVM 21.1.x C API). The ORC path is implemented through `llvm-sys`.
+
+Structured host messages share `onda_processor_abi::payload`, a compiler-free recursive schema and
+SoA tensor planner. Semantic aggregate layouts, MIR validation, native input preparation, and host
+value codecs use its canonical leaf order. The browser ABI package mirrors that contract, and
+backend parity tests exercise the same structured messages. Generated event entry points preflight
+all input before writing aligned workspace; synchronous internal forwarding borrows existing data.
+Logical host encoding/decoding and workspace provisioning happen outside realtime execution.
+Typed nominal structs retain only their directly declared fields; semantic passes recursively walk
+those references when they need leaf paths rather than storing duplicated dotted descendants.

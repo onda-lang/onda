@@ -15,10 +15,21 @@ pub(crate) struct FnSignature {
     pub(crate) param_types: Vec<Option<FnParamType>>,
     pub(crate) type_params: Vec<String>,
     pub(crate) return_type: Option<ReturnType>,
-    pub(crate) readonly_array_params: HashSet<String>,
+    pub(crate) readonly_data_params: HashSet<String>,
 }
 
 impl FnSignature {
+    pub(crate) fn resolve_returns(
+        signatures: &mut HashMap<String, Self>,
+        returns: &HashMap<String, ReturnType>,
+    ) {
+        for (name, return_type) in returns {
+            if let Some(signature) = signatures.get_mut(name) {
+                signature.return_type = Some(return_type.clone());
+            }
+        }
+    }
+
     pub(crate) fn from_def(def: &FunctionDef) -> Self {
         Self {
             display_name: None,
@@ -32,7 +43,12 @@ impl FnSignature {
             param_types: def.params.iter().map(|param| param.ty.clone()).collect(),
             type_params: def.type_params.clone(),
             return_type: None,
-            readonly_array_params: HashSet::new(),
+            readonly_data_params: def
+                .params
+                .iter()
+                .filter(|param| param.readonly)
+                .map(|param| param.name.clone())
+                .collect(),
         }
     }
 
@@ -41,13 +57,14 @@ impl FnSignature {
             .iter()
             .map(crate::event_param_as_fn_param)
             .collect::<Vec<_>>();
-        let readonly_array_params = params
+        let readonly_data_params = params
             .iter()
             .filter(|param| {
                 matches!(
                     param.ty,
                     Some(
-                        FnParamType::Array(_)
+                        FnParamType::Struct(_)
+                            | FnParamType::Array(_)
                             | FnParamType::ArrayGeneric(_)
                             | FnParamType::SizedArray { .. }
                     )
@@ -63,7 +80,7 @@ impl FnSignature {
             param_types: params.iter().map(|param| param.ty.clone()).collect(),
             type_params: Vec::new(),
             return_type: None,
-            readonly_array_params,
+            readonly_data_params,
         }
     }
 
@@ -101,6 +118,7 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
     pub(crate) allow_array_ctor: bool,
     pub(crate) scope: ScopeKind,
+    pub(crate) diagnostic_scope: &'static str,
     pub(crate) port_index_ins: Option<PortIndexInfo>,
     pub(crate) port_index_outs: Option<PortIndexInfo>,
     pub(crate) port_index_params: Option<PortIndexInfo>,
@@ -109,6 +127,70 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) proc_event_names: &'a HashSet<String>,
+}
+
+impl<'a> ExprEnv<'a> {
+    pub(crate) fn has_scalar_binding(self, root: &str) -> bool {
+        has_scalar_value_binding(root, self.locals, self.local_aliases)
+    }
+
+    /// A scalar or tuple binding owns its entire lexical root. Outer data and
+    /// resource metadata must never be consulted through that root.
+    pub(crate) fn has_value_binding(self, root: &str) -> bool {
+        self.has_scalar_binding(root) || self.tuple_vars.contains_key(root)
+    }
+
+    /// Resource metadata is a fallback namespace. A local binding at the
+    /// receiver root shadows a bare outer resource, while a struct receiver
+    /// may legitimately own a dotted resource such as `self.buffer`.
+    pub(crate) fn resource_receiver_is_shadowed(self, base: &str) -> bool {
+        let root = base.split('.').next().unwrap_or(base);
+        has_lexical_root_binding(
+            base,
+            self.locals,
+            self.local_aliases,
+            self.local_array_aliases,
+            self.struct_instances,
+        ) || self.tuple_vars.contains_key(root)
+            || (base == root && self.param_structs.contains_key(root))
+    }
+
+    /// Resolve a struct only after applying lexical binding precedence. Local
+    /// arrays likewise shadow an outer struct with the same root.
+    pub(crate) fn struct_name(self, root: &str) -> Option<&'a str> {
+        if self.has_value_binding(root) || self.local_array_aliases.contains_key(root) {
+            return None;
+        }
+        self.param_structs
+            .get(root)
+            .or_else(|| self.struct_instances.get(root))
+            .map(String::as_str)
+    }
+}
+
+pub(crate) fn has_scalar_value_binding(
+    root: &str,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+) -> bool {
+    locals.contains(root) || local_aliases.contains_key(root)
+}
+
+pub(crate) fn has_lexical_root_binding(
+    base: &str,
+    locals: &HashSet<String>,
+    local_aliases: &LocalAliasTypes,
+    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
+    struct_instances: &HashMap<String, String>,
+) -> bool {
+    let root = base.split('.').next().unwrap_or(base);
+    has_scalar_value_binding(root, locals, local_aliases)
+        || local_array_aliases.contains_key(root)
+        || (base == root && struct_instances.contains_key(root))
+        || local_aliases.keys().any(|name| {
+            name.strip_prefix(root)
+                .is_some_and(|suffix| suffix.starts_with('.') || suffix.starts_with('['))
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -137,6 +219,7 @@ pub(crate) struct ScopeExprInputs<'a> {
     pub(crate) struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub(crate) proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub(crate) proc_event_names: &'a HashSet<String>,
+    pub(crate) diagnostic_scope: &'static str,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -197,6 +280,7 @@ pub(crate) fn build_expr_env<'a>(
         fn_signatures,
         allow_array_ctor: false,
         scope,
+        diagnostic_scope: scope.label(),
         port_index_ins: None,
         port_index_outs: None,
         port_index_params: None,
@@ -245,5 +329,6 @@ pub(crate) fn build_scope_expr_env<'a>(
     env.struct_array_roots = inputs.struct_array_roots;
     env.proc_array_roots = inputs.proc_array_roots;
     env.proc_event_names = inputs.proc_event_names;
+    env.diagnostic_scope = inputs.diagnostic_scope;
     env
 }

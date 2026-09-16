@@ -1,11 +1,12 @@
+use crate::executable_data::*;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME;
 use crate::*;
 use onda_frontend::{
-    ArrayElemType, ArrayTypeSpec, BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType,
-    FnReturnType, LogicalOp, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN,
-    INTERNAL_TASK_YIELD_FN,
+    BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType, FnReturnType, LogicalOp,
+    TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 const TASK_FIELD_PREFIX: &str = "__onda_task_";
@@ -45,7 +46,10 @@ impl TaskControlContext {
     }
 
     fn allows_reset(self) -> bool {
-        matches!(self, Self::Init | Self::Event | Self::BlockPre)
+        matches!(
+            self,
+            Self::Init | Self::Event | Self::BlockPre | Self::Sample | Self::BlockPost
+        )
     }
 }
 
@@ -149,9 +153,7 @@ fn validate_task_control_stmts(
                 if let Some(name) = reset_task_name(expr, task_names) {
                     if !context.allows_reset() {
                         errors.push(Diagnostic::semantic_span(
-                            format!(
-                                "task '{name}' can only be reset from init, event, or block-pre code"
-                            ),
+                            format!("task '{name}' can only be reset from owner executable code"),
                             *loc,
                         ));
                     }
@@ -631,72 +633,6 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
     }
 }
 
-#[derive(Clone)]
-enum TaskLocalStorage {
-    Scalar(PrimitiveType),
-    Array {
-        spec: ArrayTypeSpec,
-        element: PrimitiveType,
-        len: usize,
-    },
-    Tuple(Vec<PrimitiveType>),
-}
-
-impl TaskLocalStorage {
-    fn tuple_zero_expr(types: &[PrimitiveType]) -> Expr {
-        Expr::Tuple {
-            loc: Default::default(),
-            values: types
-                .iter()
-                .copied()
-                .map(|ty| match ty {
-                    PrimitiveType::Bool => Expr::bool(false),
-                    _ => cast_expr_to_primitive(zero_expr(ty), ty),
-                })
-                .collect(),
-        }
-    }
-
-    fn storage_stmt(&self, name: String, initialize: bool) -> Stmt {
-        let (decl_ty, is_typed_decl, expr) = match self {
-            Self::Scalar(ty) => (Some(DeclType::Scalar(*ty)), true, zero_expr(*ty)),
-            Self::Array { spec, .. } => (
-                None,
-                true,
-                Expr::ArrayCtor {
-                    loc: Default::default(),
-                    spec: spec.clone(),
-                    init: None,
-                    initialize,
-                },
-            ),
-            Self::Tuple(types) => (
-                Some(DeclType::Tuple(types.clone())),
-                true,
-                Self::tuple_zero_expr(types),
-            ),
-        };
-        Stmt::Assign {
-            loc: Default::default(),
-            target_loc: Default::default(),
-            target: AssignTarget::Var(name),
-            decl_ty,
-            generic_decl_ty: None,
-            is_typed_decl,
-            typed_decl_ty_loc: Default::default(),
-            expr,
-        }
-    }
-
-    fn init_stmt(&self, name: String) -> Stmt {
-        self.storage_stmt(name, true)
-    }
-
-    fn declaration_stmt(&self, name: String) -> Stmt {
-        self.storage_stmt(name, false)
-    }
-}
-
 fn task_pc_field(task: &str) -> String {
     format!("{}_pc", task_symbol_stem(task))
 }
@@ -797,35 +733,6 @@ fn propagate_task_abort_through_loops(stmts: &mut Vec<Stmt>) {
     *stmts = rewritten;
 }
 
-fn assign_var(name: impl Into<String>, expr: Expr) -> Stmt {
-    Stmt::Assign {
-        loc: Default::default(),
-        target_loc: Default::default(),
-        target: AssignTarget::Var(name.into()),
-        decl_ty: None,
-        generic_decl_ty: None,
-        is_typed_decl: false,
-        typed_decl_ty_loc: Default::default(),
-        expr,
-    }
-}
-
-fn assign_index(name: impl Into<String>, index: usize, expr: Expr) -> Stmt {
-    Stmt::Assign {
-        loc: Default::default(),
-        target_loc: Default::default(),
-        target: AssignTarget::Index {
-            base: name.into(),
-            index: Expr::int(index as i64),
-        },
-        decl_ty: None,
-        generic_decl_ty: None,
-        is_typed_decl: false,
-        typed_decl_ty_loc: Default::default(),
-        expr,
-    }
-}
-
 fn assign_dynamic_index(name: impl Into<String>, index: impl Into<String>, expr: Expr) -> Stmt {
     Stmt::Assign {
         loc: Default::default(),
@@ -833,25 +740,6 @@ fn assign_dynamic_index(name: impl Into<String>, index: impl Into<String>, expr:
         target: AssignTarget::Index {
             base: name.into(),
             index: Expr::var(index),
-        },
-        decl_ty: None,
-        generic_decl_ty: None,
-        is_typed_decl: false,
-        typed_decl_ty_loc: Default::default(),
-        expr,
-    }
-}
-
-fn fill_array(name: impl Into<String>, expr: Expr) -> Stmt {
-    Stmt::Assign {
-        loc: Default::default(),
-        target_loc: Default::default(),
-        target: AssignTarget::Slice {
-            base: name.into(),
-            selector: None,
-            channel: None,
-            start: None,
-            end: None,
         },
         decl_ty: None,
         generic_decl_ty: None,
@@ -907,19 +795,6 @@ fn collect_neutral_outputs(
         .collect()
 }
 
-fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Expr) -> Stmt {
-    Stmt::Assign {
-        loc: Default::default(),
-        target_loc: Default::default(),
-        target: AssignTarget::Var(name.into()),
-        decl_ty: Some(DeclType::Scalar(ty)),
-        generic_decl_ty: None,
-        is_typed_decl: true,
-        typed_decl_ty_loc: Default::default(),
-        expr,
-    }
-}
-
 fn compare(op: CmpOp, lhs: Expr, rhs: Expr) -> Expr {
     Expr::Compare {
         loc: Default::default(),
@@ -952,6 +827,7 @@ fn user_call(name: impl Into<String>, args: Vec<Expr>) -> Expr {
 
 #[derive(Default)]
 struct TaskOwnerTypes {
+    init_bindings: ScopeFlowState,
     scalars: HashMap<String, PrimitiveType>,
     indexed: HashMap<String, PrimitiveType>,
     array_lens: HashMap<String, usize>,
@@ -1059,47 +935,23 @@ fn record_task_owner_decl_type(types: &mut TaskOwnerTypes, name: &str, ty: Optio
         None => {
             types.scalars.insert(name.to_owned(), PrimitiveType::F32);
         }
-        Some(DeclType::Generic(_) | DeclType::ArrayGeneric { .. }) => {}
+        Some(DeclType::Slice(_) | DeclType::Generic(_) | DeclType::ArrayGeneric { .. }) => {}
     }
 }
 
 fn infer_task_local_storage_type(
     expr: &Expr,
-    known: &HashMap<String, TaskLocalStorage>,
     owner_types: &TaskOwnerTypes,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
-    let local_aliases = known
-        .iter()
-        .filter_map(|(name, storage)| match storage {
-            TaskLocalStorage::Scalar(ty) => Some((name.clone(), *ty)),
-            TaskLocalStorage::Array { .. } | TaskLocalStorage::Tuple(_) => None,
-        })
-        .collect::<LocalAliasTypes>();
-    let local_array_aliases = known
-        .iter()
-        .filter_map(|(name, storage)| match storage {
-            TaskLocalStorage::Array { element, len, .. } => Some((
-                name.clone(),
-                LocalArrayAliasInfo {
-                    len: *len,
-                    static_len: Some(*len),
-                    elem_ty: *element,
-                    elem_struct: None,
-                    writable: true,
-                },
-            )),
-            TaskLocalStorage::Scalar(_) | TaskLocalStorage::Tuple(_) => None,
-        })
-        .collect::<HashMap<_, _>>();
     let mut inference_errors = Vec::new();
     let inferred = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
         &owner_types.scalars,
         &owner_types.declared_symbols,
         None,
-        &local_aliases,
-        &local_array_aliases,
+        &HashMap::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &owner_types.input_names,
         &owner_types.output_names,
@@ -1136,9 +988,8 @@ fn collect_task_owner_types(
             record_task_owner_decl_type(types, name, ty);
             return;
         }
-        let empty_locals = HashMap::new();
         let inferred = default
-            .and_then(|expr| infer_task_local_storage_type(expr, &empty_locals, types, struct_defs))
+            .and_then(|expr| infer_task_local_storage_type(expr, types, struct_defs))
             .unwrap_or(PrimitiveType::F32);
         types.scalars.insert(name.to_owned(), inferred);
     }
@@ -1295,6 +1146,7 @@ fn analyze_task_owner_init(
         local_array_aliases.insert(
             name.clone(),
             LocalArrayAliasInfo {
+                proven_len: None,
                 len: *len,
                 static_len: Some(*len),
                 elem_ty: *elem_ty,
@@ -1379,6 +1231,12 @@ fn analyze_task_owner_init(
         &mut scratch_errors,
     );
 
+    types.init_bindings = persistent_init_bindings(
+        &owner.init_body,
+        &init_state,
+        &HashSet::new(),
+        &mut scratch_errors,
+    );
     types.scalars = init_state.state_scalars;
     types.declared_symbols = init_state.declared_symbols;
     types.array_lens.extend(init_state.state_arrays);
@@ -1408,11 +1266,11 @@ fn register_task_owner_aggregate_storage(
         .map(|(base, struct_name)| (base.clone(), struct_name.clone()))
         .collect::<Vec<_>>();
     for (base, struct_name) in instances {
-        let Some(fields) = struct_defs.get(&struct_name) else {
+        if !struct_defs.contains_key(&struct_name) {
             continue;
-        };
-        for field in fields {
-            let flat = format!("{base}.{}", field.name);
+        }
+        visit_struct_field_paths(&struct_name, struct_defs, |path, field| {
+            let flat = format!("{base}.{path}");
             match &field.ty {
                 TypedFieldType::Scalar(ty) => {
                     types.scalars.entry(flat).or_insert(*ty);
@@ -1446,7 +1304,7 @@ fn register_task_owner_aggregate_storage(
                 }
                 TypedFieldType::Struct => {}
             }
-        }
+        });
     }
 }
 
@@ -1533,7 +1391,7 @@ fn task_proc_signature(
             [] => None,
         });
     }
-    let readonly_array_params = inputs
+    let readonly_data_params = inputs
         .iter()
         .filter(|input| input_arrays.contains_key(&input.name))
         .map(|input| input.name.clone())
@@ -1547,7 +1405,7 @@ fn task_proc_signature(
             param_types,
             type_params: Vec::new(),
             return_type: return_type.clone(),
-            readonly_array_params,
+            readonly_data_params,
         },
         return_type,
     )
@@ -1686,6 +1544,7 @@ fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) ->
                 }
             };
             Some(FnParamDecl {
+                readonly: false,
                 loc: decl.loc,
                 name: decl.name.clone(),
                 ty: Some(ty),
@@ -1759,6 +1618,14 @@ fn uniquify_task_bindings(
 
         fn assignment_name(&mut self, source_name: &str, declares: bool) -> String {
             if !declares {
+                let mut rewritten = source_name.to_owned();
+                rewrite_binding_path(&mut rewritten, &self.visible);
+                if rewritten != source_name {
+                    return rewritten;
+                }
+                if source_name.contains('.') {
+                    return source_name.to_owned();
+                }
                 if let Some(name) = self.visible.get(source_name) {
                     return name.clone();
                 }
@@ -1775,7 +1642,7 @@ fn uniquify_task_bindings(
             for stmt in stmts {
                 match stmt {
                     Stmt::Const { decl, .. } => {
-                        rewrite_task_expr(&mut decl.expr, &self.visible);
+                        rewrite_binding_expr(&mut decl.expr, &self.visible);
                     }
                     Stmt::Assign {
                         target,
@@ -1785,7 +1652,7 @@ fn uniquify_task_bindings(
                         expr,
                         ..
                     } => {
-                        rewrite_task_expr(expr, &self.visible);
+                        rewrite_binding_expr(expr, &self.visible);
                         match target {
                             AssignTarget::Var(name) => {
                                 let source_name = name.clone();
@@ -1804,17 +1671,19 @@ fn uniquify_task_bindings(
                                     *name = self.assignment_name(&source_name, false);
                                 }
                             }
-                            AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {
-                                rewrite_task_target(target, &self.visible);
+                            AssignTarget::Index { .. }
+                            | AssignTarget::IndexedMember { .. }
+                            | AssignTarget::Slice { .. } => {
+                                rewrite_binding_target(target, &self.visible);
                             }
                         }
                     }
                     Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                        rewrite_task_expr(expr, &self.visible);
+                        rewrite_binding_expr(expr, &self.visible);
                     }
                     Stmt::Print { values, .. } => {
                         for value in values {
-                            rewrite_task_expr(value, &self.visible);
+                            rewrite_binding_expr(value, &self.visible);
                         }
                     }
                     Stmt::If {
@@ -1823,7 +1692,7 @@ fn uniquify_task_bindings(
                         else_branch,
                         ..
                     } => {
-                        rewrite_task_expr(cond, &self.visible);
+                        rewrite_binding_expr(cond, &self.visible);
                         let outer_visible = self.visible.clone();
 
                         self.rewrite_list(then_branch);
@@ -1867,14 +1736,14 @@ fn uniquify_task_bindings(
                                     if then_name != canonical {
                                         let names =
                                             HashMap::from([(then_name.clone(), canonical.clone())]);
-                                        rewrite_task_stmts(then_branch, &names, &HashSet::new());
+                                        rewrite_binding_stmts(then_branch, &names, &HashSet::new());
                                         then_visible.insert(source.clone(), canonical.clone());
                                         self.source_names.remove(&then_name);
                                     }
                                     if else_name != canonical {
                                         let names =
                                             HashMap::from([(else_name.clone(), canonical.clone())]);
-                                        rewrite_task_stmts(else_branch, &names, &HashSet::new());
+                                        rewrite_binding_stmts(else_branch, &names, &HashSet::new());
                                         else_visible.insert(source.clone(), canonical.clone());
                                         self.source_names.remove(&else_name);
                                     }
@@ -1904,10 +1773,10 @@ fn uniquify_task_bindings(
                         body,
                         ..
                     } => {
-                        rewrite_task_expr(start, &self.visible);
-                        rewrite_task_expr(end, &self.visible);
+                        rewrite_binding_expr(start, &self.visible);
+                        rewrite_binding_expr(end, &self.visible);
                         if let Some(step) = step {
-                            rewrite_task_expr(step, &self.visible);
+                            rewrite_binding_expr(step, &self.visible);
                         }
                         let outer_visible = self.visible.clone();
                         let source_name = var.clone();
@@ -1917,7 +1786,7 @@ fn uniquify_task_bindings(
                         self.visible = outer_visible;
                     }
                     Stmt::While { cond, body, .. } => {
-                        rewrite_task_expr(cond, &self.visible);
+                        rewrite_binding_expr(cond, &self.visible);
                         let outer_visible = self.visible.clone();
                         self.rewrite_list(body);
                         self.visible = outer_visible;
@@ -1940,13 +1809,6 @@ fn uniquify_task_bindings(
     env.source_names
 }
 
-#[derive(Default)]
-struct TaskBindingStorageTypes {
-    scalars: HashMap<String, PrimitiveType>,
-    arrays: HashMap<String, LocalArrayAliasInfo>,
-    tuples: HashMap<String, Vec<PrimitiveType>>,
-}
-
 fn analyze_task_binding_storage(
     stmts: &[Stmt],
     owner_types: &TaskOwnerTypes,
@@ -1955,7 +1817,7 @@ fn analyze_task_binding_storage(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> TaskBindingStorageTypes {
+) -> DataBindingTypes {
     let mut fn_signatures = fn_signatures.clone();
     fn_signatures.extend(owner_types.proc_signatures.clone());
     fn_signatures
@@ -1998,6 +1860,7 @@ fn analyze_task_binding_storage(
     let resolved_scalars = std::cell::RefCell::new(HashMap::new());
     let resolved_arrays = std::cell::RefCell::new(HashMap::new());
     let resolved_tuples = std::cell::RefCell::new(HashMap::new());
+    let resolved_structs = std::cell::RefCell::new(HashMap::new());
     let ctx = FlowStmtAnalysisCtx {
         common,
         registration_mode: RuntimeRegistrationMode::None,
@@ -2015,9 +1878,11 @@ fn analyze_task_binding_storage(
         resolved_scalar_locals: Some(&resolved_scalars),
         resolved_array_locals: Some(&resolved_arrays),
         resolved_tuple_locals: Some(&resolved_tuples),
+        resolved_struct_locals: Some(&resolved_structs),
     };
     let mut state_scalars = owner_types.scalars.clone();
     let mut state = ScopeFlowState::new(HashSet::new(), HashMap::new(), HashMap::new());
+    state.inherit_bindings(&owner_types.init_bindings);
     analyze_flow_scope_stmts(
         stmts.iter(),
         &HashSet::new(),
@@ -2030,284 +1895,32 @@ fn analyze_task_binding_storage(
     );
     let mut scalars = resolved_scalars.into_inner();
     scalars.extend(state.local_aliases);
-    TaskBindingStorageTypes {
+    DataBindingTypes {
         scalars,
         arrays: resolved_arrays.into_inner(),
         tuples: resolved_tuples.into_inner(),
+        structs: resolved_structs.into_inner(),
     }
 }
 
 fn collect_task_locals(
     source_names: &HashMap<String, String>,
-    binding_types: &TaskBindingStorageTypes,
+    binding_types: &DataBindingTypes,
     live_across_yield: &HashSet<String>,
     task_name: &str,
     errors: &mut Vec<Diagnostic>,
-) -> HashMap<String, TaskLocalStorage> {
+) -> HashMap<String, BindingStorage> {
     let mut locals = HashMap::new();
     for (name, source_name) in source_names {
-        if let Some(ty) = binding_types.scalars.get(name) {
-            locals.insert(name.clone(), TaskLocalStorage::Scalar(*ty));
-        } else if let Some(info) = binding_types.arrays.get(name) {
-            if let Some(len) = info.static_len {
-                locals.insert(
-                    name.clone(),
-                    TaskLocalStorage::Array {
-                        spec: ArrayTypeSpec {
-                            elem: ArrayElemType::Primitive(info.elem_ty),
-                            size: Box::new(Expr::int(len as i64)),
-                        },
-                        element: info.elem_ty,
-                        len,
-                    },
-                );
-            } else if live_across_yield.contains(name) {
-                errors.push(Diagnostic::semantic(
-                    format!(
-                        "task local '{source_name}' is live across a yield in task '{task_name}' but has no fixed primitive, tuple, or fixed-array storage"
-                    ),
-                    0,
-                    0,
-                ));
-            }
-        } else if let Some(types) = binding_types.tuples.get(name) {
-            locals.insert(name.clone(), TaskLocalStorage::Tuple(types.clone()));
+        if let Some(storage) = binding_types.storage(name) {
+            locals.insert(name.clone(), storage);
         } else if live_across_yield.contains(name) {
             errors.push(Diagnostic::semantic(format!(
-                "task local '{source_name}' is live across a yield in task '{task_name}' but has no fixed primitive, tuple, or fixed-array storage"
+                "task local '{source_name}' is live across a yield in task '{task_name}' but has no fixed data storage or surviving view"
             ), 0, 0));
         }
     }
     locals
-}
-
-fn rewrite_task_expr(expr: &mut Expr, names: &HashMap<String, String>) {
-    match expr {
-        Expr::Var { name, .. } => {
-            if let Some(replacement) = names.get(name) {
-                *name = replacement.clone();
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            if let Some(replacement) = names.get(base) {
-                *base = replacement.clone();
-            }
-            rewrite_task_expr(index, names);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            if let Some(replacement) = names.get(base) {
-                *base = replacement.clone();
-            }
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_task_expr(coordinate, names);
-            }
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                rewrite_task_expr(value, names);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_task_expr(&mut spec.size, names);
-            if let Some(values) = init {
-                for value in values {
-                    rewrite_task_expr(value, names);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_task_expr(lhs, names);
-            rewrite_task_expr(rhs, names);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                rewrite_task_expr(arg, names);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            rewrite_task_callable_name(name, names);
-            for arg in args {
-                rewrite_task_expr(&mut arg.expr, names);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_task_expr(expr, names);
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
-fn rewrite_task_callable_name(name: &mut String, names: &HashMap<String, String>) {
-    let Some((receiver, member)) = name.rsplit_once('.') else {
-        return;
-    };
-    if let Some(replacement) = names.get(receiver) {
-        *name = format!("{replacement}.{member}");
-    }
-}
-
-fn rewrite_task_target(target: &mut AssignTarget, names: &HashMap<String, String>) {
-    match target {
-        AssignTarget::Var(name) => {
-            if let Some(replacement) = names.get(name) {
-                *name = replacement.clone();
-            }
-        }
-        AssignTarget::Index { base, index } => {
-            if let Some(replacement) = names.get(base) {
-                *base = replacement.clone();
-            }
-            rewrite_task_expr(index, names);
-        }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
-            if let Some(replacement) = names.get(base) {
-                *base = replacement.clone();
-            }
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_task_expr(coordinate, names);
-            }
-        }
-        AssignTarget::Tuple(values) => {
-            for name in values.iter_mut().filter_map(|target| target.binding_mut()) {
-                if let Some(replacement) = names.get(name) {
-                    *name = replacement.clone();
-                }
-            }
-        }
-    }
-}
-
-fn rewrite_task_stmts(
-    stmts: &mut [Stmt],
-    names: &HashMap<String, String>,
-    task_locals: &HashSet<String>,
-) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Const { decl, .. } => rewrite_task_expr(&mut decl.expr, names),
-            Stmt::Assign {
-                target,
-                decl_ty,
-                generic_decl_ty,
-                is_typed_decl,
-                expr,
-                ..
-            } => {
-                let declared_task_local =
-                    matches!(target, AssignTarget::Var(name) if task_locals.contains(name));
-                rewrite_task_target(target, names);
-                rewrite_task_expr(expr, names);
-                if declared_task_local {
-                    *decl_ty = None;
-                    *generic_decl_ty = None;
-                    *is_typed_decl = false;
-                }
-            }
-            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => rewrite_task_expr(expr, names),
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    rewrite_task_expr(value, names);
-                }
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                rewrite_task_expr(cond, names);
-                rewrite_task_stmts(then_branch, names, task_locals);
-                rewrite_task_stmts(else_branch, names, task_locals);
-            }
-            Stmt::For {
-                var,
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                if let Some(replacement) = names.get(var) {
-                    *var = replacement.clone();
-                }
-                rewrite_task_expr(start, names);
-                rewrite_task_expr(end, names);
-                if let Some(step) = step {
-                    rewrite_task_expr(step, names);
-                }
-                rewrite_task_stmts(body, names, task_locals);
-            }
-            Stmt::While { cond, body, .. } => {
-                rewrite_task_expr(cond, names);
-                rewrite_task_stmts(body, names, task_locals);
-            }
-            Stmt::Break { .. } | Stmt::Continue { .. } => {}
-        }
-    }
-}
-
-fn expand_task_array_initializers(
-    stmts: &mut Vec<Stmt>,
-    arrays: &HashMap<String, (PrimitiveType, usize)>,
-) {
-    let mut rewritten = Vec::with_capacity(stmts.len());
-    for mut stmt in std::mem::take(stmts) {
-        let expansion = match &stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(name),
-                expr: Expr::ArrayCtor { init, .. },
-                ..
-            } => arrays.get(name).map(|(element, _len)| {
-                if let Some(values) = init {
-                    values
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .map(|(index, value)| assign_index(name.clone(), index, value))
-                        .collect::<Vec<_>>()
-                } else {
-                    vec![fill_array(name.clone(), zero_expr(*element))]
-                }
-            }),
-            _ => None,
-        };
-        if let Some(expansion) = expansion {
-            rewritten.extend(expansion);
-            continue;
-        }
-
-        match &mut stmt {
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                expand_task_array_initializers(then_branch, arrays);
-                expand_task_array_initializers(else_branch, arrays);
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                expand_task_array_initializers(body, arrays);
-            }
-            _ => {}
-        }
-        rewritten.push(stmt);
-    }
-    *stmts = rewritten;
 }
 
 fn collect_for_frame_bindings(
@@ -2384,72 +1997,13 @@ struct TaskForFrameBinding {
     persistent: bool,
 }
 
-fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
-    match expr {
-        Expr::Var { name, .. } => {
-            uses.insert(name.clone());
+fn expand_task_views(views: &CapturedViews, blocks: &mut [TaskCfgBlock]) {
+    let mut next = 0;
+    for block in blocks {
+        views.expand_body_with_counter(&mut block.statements, &mut next);
+        if let TaskCfgTerminator::Branch { condition, .. } = &mut block.terminator {
+            views.expand_expression(condition, &mut block.statements, &mut next);
         }
-        Expr::Index { base, index, .. } => {
-            uses.insert(base.clone());
-            collect_expr_uses(index, uses);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            uses.insert(base.clone());
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_expr_uses(coordinate, uses);
-            }
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_expr_uses(value, uses);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_expr_uses(&spec.size, uses);
-            if let Some(values) = init {
-                for value in values {
-                    collect_expr_uses(value, uses);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_expr_uses(lhs, uses);
-            collect_expr_uses(rhs, uses);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_expr_uses(arg, uses);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            collect_callable_receiver_use(name, uses);
-            for arg in args {
-                collect_expr_uses(&arg.expr, uses);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_expr_uses(expr, uses)
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
-fn collect_callable_receiver_use(name: &str, uses: &mut HashSet<String>) {
-    let Some((receiver, _)) = name.rsplit_once('.') else {
-        return;
-    };
-    uses.insert(receiver.to_owned());
-    if let Some(root) = receiver.split('.').next() {
-        uses.insert(root.to_owned());
     }
 }
 
@@ -2462,23 +2016,17 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                 collect_expr_uses(expr, &mut uses);
                 match target {
                     AssignTarget::Var(name) => {
-                        defs.insert(name.clone());
-                    }
-                    AssignTarget::Index { base, index } => {
-                        uses.insert(base.clone());
-                        collect_expr_uses(index, &mut uses);
-                    }
-                    AssignTarget::Slice {
-                        base,
-                        selector,
-                        channel,
-                        start,
-                        end,
-                    } => {
-                        uses.insert(base.clone());
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            collect_expr_uses(coordinate, &mut uses);
+                        if let Some((root, _)) = name.split_once('.') {
+                            uses.insert(root.to_owned());
+                        } else {
+                            defs.insert(name.clone());
                         }
+                    }
+                    AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
+                        uses.insert(base.clone());
+                    }
+                    AssignTarget::Slice { base, .. } => {
+                        uses.insert(base.clone());
                     }
                     AssignTarget::Tuple(names) => defs.extend(
                         names
@@ -2487,6 +2035,7 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                             .map(str::to_owned),
                     ),
                 }
+                target.visit_selectors(|selector| collect_expr_uses(selector, &mut uses));
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 collect_expr_uses(expr, &mut uses)
@@ -2497,16 +2046,42 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                 }
             }
             Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, &mut uses),
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_expr_uses(cond, &mut uses);
+                for statements in [then_branch, else_branch] {
+                    uses.extend(
+                        block_uses_and_defs(&TaskCfgBlock {
+                            statements: statements.clone(),
+                            terminator: TaskCfgTerminator::Complete,
+                        })
+                        .0,
+                    );
+                }
+            }
             _ => {}
         }
     }
     if let TaskCfgTerminator::Branch { condition, .. } = &block.terminator {
         collect_expr_uses(condition, &mut uses);
     }
+    let roots = uses
+        .iter()
+        .filter_map(|name| name.split_once('.').map(|(root, _)| root.to_owned()))
+        .collect::<Vec<_>>();
+    uses.extend(roots);
     (uses, defs)
 }
 
-fn task_locals_live_across_yield(body: &[Stmt], task_locals: &HashSet<String>) -> HashSet<String> {
+fn task_locals_live_across_yield(
+    body: &[Stmt],
+    task_locals: &HashSet<String>,
+    views: &CapturedViews,
+) -> HashSet<String> {
     let mut cfg = TaskCfgBuilder {
         blocks: Vec::new(),
         for_frame_bindings: HashMap::new(),
@@ -2514,6 +2089,7 @@ fn task_locals_live_across_yield(body: &[Stmt], task_locals: &HashSet<String>) -
     };
     let complete = cfg.push(Vec::new(), TaskCfgTerminator::Complete);
     let _ = cfg.lower_list(body, complete, None);
+    expand_task_views(views, &mut cfg.blocks);
     let uses_defs = cfg
         .blocks
         .iter()
@@ -2947,6 +2523,7 @@ fn compile_task_resume_body(
     result: &str,
     declare_scratch: bool,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
+    views: &CapturedViews,
 ) -> Vec<Stmt> {
     let mut cfg = TaskCfgBuilder {
         blocks: Vec::new(),
@@ -2955,6 +2532,7 @@ fn compile_task_resume_body(
     };
     let complete = cfg.push(Vec::new(), TaskCfgTerminator::Complete);
     let entry = cfg.lower_list(body, complete, None);
+    expand_task_views(views, &mut cfg.blocks);
     let pc = task_pc_field(task_name);
     let mut execution = local_initializers;
     execution.push(if declare_scratch {
@@ -3069,7 +2647,10 @@ fn compile_task_resume(
     local_initializers: Vec<Stmt>,
     params: Vec<FnParamDecl>,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
+    views: &CapturedViews,
 ) -> FunctionDef {
+    let mut expanded = body.to_vec();
+    views.expand_body(&mut expanded);
     let mut function_body = if task_stmts_contain_yield(body) {
         compile_task_resume_body(
             task_name,
@@ -3079,11 +2660,12 @@ fn compile_task_resume(
             TASK_RESULT_LOCAL,
             true,
             for_frame_bindings,
+            views,
         )
     } else {
         compile_non_yield_task_resume_body(
             task_name,
-            body,
+            &expanded,
             local_initializers,
             TASK_RESULT_LOCAL,
             true,
@@ -3114,7 +2696,10 @@ fn compile_runtime_task_resume(
     mut local_initializers: Vec<Stmt>,
     params: Vec<FnParamDecl>,
     for_frame_bindings: &HashMap<String, TaskForFrameBinding>,
+    views: &CapturedViews,
 ) -> FunctionDef {
+    let mut expanded = body.to_vec();
+    views.expand_body(&mut expanded);
     let result = task_runtime_result_field(task_name);
     let function_body = if task_stmts_contain_yield(body) {
         local_initializers.insert(
@@ -3129,9 +2714,10 @@ fn compile_runtime_task_resume(
             &result,
             false,
             for_frame_bindings,
+            views,
         )
     } else {
-        compile_non_yield_task_resume_body(task_name, body, local_initializers, &result, false)
+        compile_non_yield_task_resume_body(task_name, &expanded, local_initializers, &result, false)
     };
 
     FunctionDef {
@@ -3289,6 +2875,7 @@ struct PreparedTask {
     reset_stmts: Vec<Stmt>,
     pinned_fields: Vec<String>,
     for_frame_bindings: HashMap<String, TaskForFrameBinding>,
+    views: CapturedViews,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3303,10 +2890,11 @@ fn prepare_task(
     errors: &mut Vec<Diagnostic>,
 ) -> PreparedTask {
     let mut body = task.body.clone();
-    let source_names = uniquify_task_bindings(&mut body, owner_roots);
+    let mut source_names = uniquify_task_bindings(&mut body, owner_roots);
     let task_binding_names = source_names.keys().cloned().collect::<HashSet<_>>();
-    let live_across_yield = task_locals_live_across_yield(&body, &task_binding_names);
-    let binding_types = analyze_task_binding_storage(
+    let original_live =
+        task_locals_live_across_yield(&body, &task_binding_names, &CapturedViews::default());
+    let mut binding_types = analyze_task_binding_storage(
         &body,
         owner_types,
         fn_signatures,
@@ -3315,6 +2903,25 @@ fn prepare_task(
         options,
         errors,
     );
+    let mut view_names = HashSet::new();
+    binding_types.retain_data_structs(struct_defs);
+    collect_view_names(&body, &binding_types, &mut view_names);
+    let mut views = CapturedViews::prepare(
+        &mut body,
+        &view_names,
+        &original_live,
+        &mut source_names,
+        &mut binding_types,
+        ViewScope {
+            prefix: &format!("{}_view", task_symbol_stem(&task.name)),
+            boundary: "yield",
+            declared_symbols: &owner_types.declared_symbols,
+            reserved: owner_roots,
+        },
+        errors,
+    );
+    let task_binding_names = source_names.keys().cloned().collect::<HashSet<_>>();
+    let live_across_yield = task_locals_live_across_yield(&body, &task_binding_names, &views);
     let locals = collect_task_locals(
         &source_names,
         &binding_types,
@@ -3333,18 +2940,8 @@ fn prepare_task(
             }
         })
         .collect::<HashMap<_, _>>();
-    rewrite_task_stmts(&mut body, &names, &task_local_names);
-    let task_arrays = locals
-        .iter()
-        .filter_map(|(name, storage)| {
-            let TaskLocalStorage::Array { element, len, .. } = storage else {
-                return None;
-            };
-            let lowered_name = names.get(name).cloned().unwrap_or_else(|| name.clone());
-            Some((lowered_name, (*element, *len)))
-        })
-        .collect::<HashMap<_, _>>();
-    expand_task_array_initializers(&mut body, &task_arrays);
+    rewrite_binding_stmts(&mut body, &names, &task_local_names);
+    views.rewrite_storage_names(&names);
 
     let mut init_stmts = vec![typed_assign(
         task_pc_field(&task.name),
@@ -3400,6 +2997,7 @@ fn prepare_task(
         reset_stmts,
         pinned_fields,
         for_frame_bindings,
+        views,
     }
 }
 
@@ -3487,6 +3085,7 @@ fn lower_top_level_tasks(
             prepared.resume_local_initializers,
             buffer_params.clone(),
             &for_frame_bindings,
+            &prepared.views,
         );
         runtime_def_names.insert(resume.name.clone());
         generated_defs.push(resume);
@@ -3554,6 +3153,7 @@ fn lower_top_level_tasks(
             insert_at,
             Block::Block(BlockExec {
                 loc: Default::default(),
+                compiler_scratch_roots: Vec::new(),
                 pre: Vec::new(),
                 sample: None,
                 post: Vec::new(),
@@ -3575,6 +3175,22 @@ fn lower_top_level_tasks(
             Block::Block(exec) => {
                 rewrite_task_controls(
                     &mut exec.pre,
+                    &task_names,
+                    &buffer_names,
+                    &unavailable,
+                    TaskResumeResult::RuntimeField,
+                );
+                if let Some(sample) = &mut exec.sample {
+                    rewrite_task_controls(
+                        &mut sample.body,
+                        &task_names,
+                        &buffer_names,
+                        &unavailable,
+                        TaskResumeResult::RuntimeField,
+                    );
+                }
+                rewrite_task_controls(
+                    &mut exec.post,
                     &task_names,
                     &buffer_names,
                     &unavailable,
@@ -3602,6 +3218,13 @@ fn lower_top_level_tasks(
                 }];
             }
             Block::Sample(sample) => {
+                rewrite_task_controls(
+                    &mut sample.body,
+                    &task_names,
+                    &buffer_names,
+                    &unavailable,
+                    TaskResumeResult::RuntimeField,
+                );
                 let original = std::mem::take(&mut sample.body);
                 sample.body = vec![Stmt::If {
                     loc: Default::default(),
@@ -3693,6 +3316,7 @@ fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
 struct TaskCallSemantics {
     overloads: HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     callable_symbols: HashSet<String>,
+    struct_method_symbols: HashSet<String>,
     signatures: HashMap<String, FnSignature>,
     return_types: HashMap<String, ReturnType>,
 }
@@ -3701,33 +3325,20 @@ fn desugar_task_callable_methods(
     defs: &mut [FunctionDef],
     env: &crate::def_semantics::CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
+    let return_types =
+        crate::proc_call_rewrite::infer_instance_method_return_types(defs, env, struct_defs);
     for def in defs {
-        let mut struct_instances = env.struct_instances.clone();
-        let mut struct_array_roots = HashMap::new();
-        for param in &def.params {
-            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                register_struct_instance_and_array_roots(
-                    &param.name,
-                    struct_name,
-                    struct_defs,
-                    &mut struct_instances,
-                    &mut struct_array_roots,
-                );
-            }
-        }
-        let current_ns = namespace_of_symbol(&def.name);
-        for stmt in &mut def.body {
-            crate::proc_call_rewrite::desugar_init_instance_method_calls(
-                stmt,
-                &mut struct_instances,
-                &mut struct_array_roots,
-                struct_defs,
-                &current_ns,
-                callable_symbols,
-            );
-        }
+        crate::proc_call_rewrite::desugar_function_instance_method_calls(
+            def,
+            env,
+            &return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
     }
 }
 
@@ -3809,10 +3420,24 @@ fn task_call_semantics(
         .map(|def| def.name.clone())
         .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
+    let struct_method_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Struct(def) => Some(def),
+            _ => None,
+        })
+        .flat_map(|def| {
+            def.methods
+                .iter()
+                .map(move |method| format!("{}.{}", def.name, method.name))
+        })
+        .collect::<HashSet<_>>();
     desugar_task_callable_methods(
         &mut defs,
         &crate::def_semantics::CallTypeEnv::default(),
         struct_defs,
+        &struct_method_symbols,
         &callable_symbols,
     );
     let (overloads, _) = crate::def_semantics::prepare_function_overloads(&mut defs);
@@ -3833,9 +3458,11 @@ fn task_call_semantics(
             FnSignature::from_event_params(&delegate.params),
         )
     }));
+    FnSignature::resolve_returns(&mut signatures, &return_types);
     TaskCallSemantics {
         overloads,
         callable_symbols,
+        struct_method_symbols,
         signatures,
         return_types,
     }
@@ -3871,7 +3498,13 @@ fn proc_task_call_semantics(
         .chain(local_defs.iter().map(|def| def.name.clone()))
         .chain(delegates.iter().map(|delegate| delegate.name.clone()))
         .collect::<HashSet<_>>();
-    desugar_task_callable_methods(&mut defs, env, struct_defs, &callable_symbols);
+    desugar_task_callable_methods(
+        &mut defs,
+        env,
+        struct_defs,
+        &global.struct_method_symbols,
+        &callable_symbols,
+    );
     let return_types = resolve_task_callable_return_types(
         &mut defs,
         &overloads,
@@ -3893,9 +3526,11 @@ fn proc_task_call_semantics(
     }));
     let mut return_types = return_types;
     return_types.retain(|name, _| !delegate_names.contains(name.as_str()));
+    FnSignature::resolve_returns(&mut signatures, &return_types);
     TaskCallSemantics {
         overloads,
         callable_symbols,
+        struct_method_symbols: global.struct_method_symbols.clone(),
         signatures,
         return_types,
     }
@@ -3910,6 +3545,17 @@ fn task_call_type_env(
     env.struct_instances
         .clone_from(&owner_types.struct_instances);
     env.tuple_elem_types.clone_from(&owner_types.tuples);
+    env.struct_instances
+        .extend(owner_types.init_bindings.local_struct_aliases.clone());
+    env.scalar_types
+        .extend(owner_types.init_bindings.local_aliases.clone());
+    for (name, info) in &owner_types.init_bindings.local_array_aliases {
+        let ty = match &info.elem_struct {
+            Some(name) => crate::def_semantics::CallArrayType::nominal(name, info.static_len),
+            None => crate::def_semantics::CallArrayType::primitive(info.elem_ty, info.static_len),
+        };
+        env.array_types.insert(name.clone(), ty);
+    }
     env.array_types
         .extend(owner_types.indexed.iter().map(|(name, ty)| {
             (
@@ -3979,33 +3625,38 @@ fn rewrite_task_overloads(
     semantics: &TaskCallSemantics,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) {
-    let mut struct_instances = env.struct_instances.clone();
-    let mut struct_array_roots = HashMap::new();
-    for stmt in &mut task.body {
-        crate::proc_call_rewrite::desugar_init_instance_method_calls(
-            stmt,
-            &mut struct_instances,
-            &mut struct_array_roots,
+    let mut ignored_errors = Vec::new();
+    // Overload selection can expose an aggregate receiver type, while resolving
+    // that receiver can expose another overload. Both rewrites are monotonic, so
+    // continue until no public overload call was replaced.
+    loop {
+        let mut env = env.clone();
+        crate::proc_call_rewrite::desugar_executable_instance_method_calls(
+            &mut task.body,
+            &mut env,
+            &semantics.return_types,
             struct_defs,
             "",
+            &semantics.struct_method_symbols,
             &semantics.callable_symbols,
         );
+        let resolved = crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+            &mut task.body,
+            &mut env,
+            crate::def_semantics::CallTypeContext {
+                return_types: &semantics.return_types,
+                struct_defs,
+            },
+            crate::def_semantics::OverloadOwnerContext {
+                defer_dependent_calls: true,
+            },
+            &semantics.overloads,
+            &mut ignored_errors,
+        );
+        if resolved == 0 {
+            break;
+        }
     }
-    let mut env = env.clone();
-    let mut ignored_errors = Vec::new();
-    crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
-        &mut task.body,
-        &mut env,
-        crate::def_semantics::CallTypeContext {
-            return_types: &semantics.return_types,
-            struct_defs,
-        },
-        crate::def_semantics::OverloadOwnerContext {
-            defer_dependent_calls: true,
-        },
-        &semantics.overloads,
-        &mut ignored_errors,
-    );
 }
 
 pub(crate) fn lower_tasks(
@@ -4141,6 +3792,7 @@ pub(crate) fn lower_tasks(
                 prepared.resume_local_initializers,
                 buffer_params.clone(),
                 &for_frame_bindings,
+                &prepared.views,
             ));
             generated_defs.push(FunctionDef {
                 loc: Default::default(),
@@ -4172,6 +3824,20 @@ pub(crate) fn lower_tasks(
         );
         rewrite_task_controls(
             &mut proc.block_pre,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+            TaskResumeResult::Returned,
+        );
+        rewrite_task_controls(
+            &mut proc.sample,
+            &task_names,
+            &buffer_names,
+            &unavailable,
+            TaskResumeResult::Returned,
+        );
+        rewrite_task_controls(
+            &mut proc.block_post,
             &task_names,
             &buffer_names,
             &unavailable,

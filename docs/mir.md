@@ -93,6 +93,12 @@ passes may promote or fold them without changing the semantic contract.
 - functions
 - init and process entry points
 
+MIR schema version 7 carries a recursive message schema alongside flattened event/delegate
+parameters. One scalar or primitive tensor represents each leaf, independent of array extent.
+Struct slices retain one explicit logical `i32` length followed by read-only leaf slices; fixed
+shapes remain checked contracts. Both backends use the compiler-free ABI payload planner for
+host layout, preparation, and publication. The processor ABI is version 6.
+
 Events name their handler function directly. Functions have one of four capability roles: init,
 process, event, or user function. Each function also carries backend-neutral origin and inline
 attributes. Compiler-generated hot glue therefore requests consistent treatment without a backend
@@ -165,19 +171,36 @@ every bound external buffer has positive dimensions, so backends implement exter
 without a redundant empty-range branch. Empty slices remain valid values, but indexed access to one
 fails because there is no element to clamp to.
 
+`normalize_index` applies those rules to a scalar index and a runtime logical length. Aggregate
+views use it before constructing their flattened leaf windows.
+
 `make_slice` applies its bounds mode to the complete `(start, len)` range. Clamp normalizes the start
 to `0..=source_len`, negative lengths to zero, and the length to the remaining range. `Checked`
 rejects an invalid component. Unchecked requires the producer to prove the complete range. Empty
 slices are valid, including a one-past-end empty view, but every indexed operation on an empty
 slice fails because there is no element to clamp to.
 
+A scalar place can supply a singleton slice. This lets branch-selected aggregate scalar fields
+retain storage identity using the same descriptor operations as array fields.
+
 `SliceElement` is only a scalar-reference argument. Fixed-array subreferences use `ArrayWindow` for
 a fixed-array place or `SliceWindow` for a slice descriptor. The required window length comes from
 the callee parameter. `SliceWindow` additionally requires unit stride; checked modes fail rather
 than reinterpret a non-contiguous descriptor.
+Source struct helpers use scalar references and slice descriptors for tensor leaves, so their
+fixed-array fields can remain strided. A fixed source shape becomes an explicit fixed-length view
+at helper entry. Bounds proofs use that stable descriptor length without treating its mutable
+contents as invariant. Owned fixed-data result references still use caller-provided fixed storage.
 
 Slice copy is memmove-safe for contiguous or equal-stride overlap. Overlapping unequal-stride views
 fail deterministically; MIR does not imply an unrepresented realtime scratch allocation.
+`SliceCopy` contains an ordered `copies` list of destination/source descriptor pairs. All overlap
+checks required by the group's `preflight` mode complete before its first write. A trusted producer
+may use `proven_unnecessary` only when every pair is disjoint or has equal source and destination
+strides; backends then omit those checks. Each pair copies the fitting prefix in list order and
+preserves the destination tail. This gives structured copies one failure boundary across their
+canonical leaves. Cross-pair snapshot semantics require the producer to prove that different leaves
+cannot alias or to capture their contents before the group.
 
 Math intrinsics express Onda semantics, not a target implementation. LLVM may map an intrinsic to
 LLVM IR or libm; WebAssembly may map it to a native instruction or an Onda-supplied math function.
@@ -241,8 +264,8 @@ arity, structured loop control, reachable fallthrough from result-bearing functi
 definite assignment, process-frame dominance, finite ordered numeric interface ranges containing
 their defaults, interface-name uniqueness, explicit one-to-one control mirrors, complete checked
 slice/window contracts, fixed-array and aggregate signed-i32 size limits, recursive aggregate
-rejection, constant-data element-count and logical-byte-size limits, and acyclic realtime call
-graphs.
+rejection, function parameter/local resource limits, constant-data element-count and
+logical-byte-size limits, and acyclic realtime call graphs.
 
 `ValidatedProgram` retains proof of these backend-neutral invariants. It does not promise that a
 particular backend implements every valid capability; target legalization remains a separate,
@@ -390,6 +413,8 @@ The lowering owns:
 - tuple parameters, returns, and locals as ordered scalar components, with destructuring and constant indexing resolved
 - data-struct state flattened into backend-neutral scalar, tuple-component, and fixed-array storage
 - data-struct parameters and methods as ordered scalar/fixed-array references, including nested struct forwarding
+- fixed data returns through caller-owned result references, runtime struct construction, independent
+  typed copies, content replacement, and branch-selected local aggregate views
 - arrays of data structs as structure-of-arrays storage, including constructor lists, broadcast construction,
   direct indexed field access, retained element aliases, and structure-of-slices function parameters
 - scalar slice-element references plus checked contiguous fixed-array windows into flattened storage
@@ -420,6 +445,33 @@ User functions accept resolved scalar, scalar-tuple, primitive-slice, buffer-ref
 data-struct, and data-struct-array parameters. Explicit generic scalar contracts are specialized in
 semantics, as are context-independent inferred `f64` calls; an unresolved scalar specialization
 fails explicitly instead of being guessed by MIR.
+
+Fixed data results use `result_reference` parameters in canonical leaf order. Each parameter names
+caller-owned scalar or fixed-array storage that the producer completely initializes on every
+successful return; it need not contain an initialized input value. This is a trusted producer
+contract, rejected by ordinary validation. It grants no exclusivity or `noalias` assumption.
+Calls retain independent result storage before replacing a possibly overlapping destination.
+
+Fixed invocation arrays and scalar backing needed by retained local descriptors use explicit
+`InstanceScratch` slots. Acyclic calls allow a separate prepared frame for each function, with
+distinct caller slots for simultaneously live results. This conservative plan introduces no
+callback allocations or runtime-sized stack frames. It does not yet reuse dead storage across
+call sites. Scalar replacement and ordinary MIR cleanup can remove unobservable operations.
+
+Top-level block-carried data instead occupies `Snapshot` slots. A continuation segment reconstructs
+its slice descriptors from retained storage roots, captured coordinates, and branch choices;
+authored initializers and selector expressions execute only in block-pre. Coordinates restored
+from snapshots are checked before address formation, and logical struct-slice lengths are derived
+from the restored leaf tensors. Neither persistent state nor snapshots contain native slice
+pointers. External-memory views cannot survive a process boundary.
+
+Persistent init selections use the same storage planner. Their scalar coordinates and temporary
+backing participate in initialization and snapshots; each runtime entry reconstructs descriptors
+against the current instance. Proc helpers and task continuations share symbolic selection
+planning before MIR lowering. Proc backing belongs to each instance, while task backing and
+coordinates use continuation fields. Ordinary data initialization and replacement also initialize
+those fields; there is no separate task aggregate-copy implementation. View metadata depends on
+leaf shape, not array extent.
 
 Tuples have no target ABI layout in MIR. A source parameter or return `(f32, i32)` becomes two
 ordered function parameter or result types. A direct call supplies or names two scalar values. This
@@ -481,12 +533,13 @@ embedded frontend Wasm, checks the producer/backend schema versions, keeps the t
 inside the package, and exposes asynchronous source/project APIs, a browser worker, and the
 `onda-wasm` build-time CLI. The low-level packages remain independently testable backend boundaries.
 
-The current-schema backend consumes explicit control-mirror state, checked `make_slice`, fixed-array and
-slice reference windows, and serialized function attributes. It covers scalar and fixed-array
-storage, tuples and multi-value returns, primitive slices, dynamic-slice events, buffers, flattened
-data structs, recursive processor arrays, structured control flow, constant data, oversampling, and
-segmented audio. Address-taken scalar locals are legalized through per-function scratch slots around
-reference calls, so shared state promotion remains portable. Contiguous slice fill uses WebAssembly
+The current-schema backend consumes explicit control-mirror state, checked `make_slice`, fixed-array
+and slice reference windows, and serialized function attributes. It covers scalar and fixed-array
+storage, tuples and multi-value returns, primitive and data-struct slices, recursive structured
+event/delegate messages, buffers, flattened data structs, recursive processor arrays, structured
+control flow, constant data, oversampling, and segmented audio. Address-taken scalar locals are
+legalized through per-function scratch slots around reference calls, so shared state promotion
+remains portable. Contiguous slice fill uses WebAssembly
 SIMD with a scalar tail, while same-representation contiguous slice copy uses bulk-memory
 `memory.copy` and therefore retains memmove overlap semantics. Strided cases keep the scalar,
 direction-aware implementation. Binaryen validates and optimizes the emitted module.

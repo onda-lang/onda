@@ -632,21 +632,18 @@ sample {
 }
 
 #[test]
-fn rejects_non_array_literal_typed_array_initializer_expression() {
+fn parses_typed_array_copy_expression() {
     let src = r#"
 outs { out1 }
 init {
-  a: f32[4] = 1.0
+  a: f32[4] = source
 }
 sample {
   out1 = 0.0
 }
 "#;
     let result = parse_program(src);
-    assert!(
-        result.is_err(),
-        "typed array declaration with non-array initializer should be rejected"
-    );
+    assert!(result.is_ok(), "fixed array declarations accept data expressions");
 }
 
 #[test]
@@ -806,6 +803,7 @@ fn parses_integer_binding_ranges_on_struct_fields() {
 struct Cursor:
   index: i32 = 0 {8, wrap}
   limit = 7 {0..=7}
+  implicit: i32 {8, wrap}
 "#,
     )
     .expect("integer struct field ranges should parse");
@@ -820,6 +818,7 @@ struct Cursor:
     let expected = [
         BuiltinFn::BindingCountWrap,
         BuiltinFn::BindingRangeInclusiveClamp,
+        BuiltinFn::BindingCountWrap,
     ];
     for (field, expected_func) in struct_def.fields.iter().zip(expected) {
         let Some(Expr::Call { func, args, .. }) = &field.default else {
@@ -829,6 +828,10 @@ struct Cursor:
         assert_eq!(args.len(), 3);
         assert_eq!(field.ty, FieldType::Scalar(PrimitiveType::I32));
     }
+    let Some(Expr::Call { args, .. }) = &struct_def.fields[2].default else {
+        panic!("expected the implicit field default to carry its range");
+    };
+    assert!(matches!(args[0], Expr::Int { value: 0, .. }));
 }
 
 #[test]
@@ -1063,11 +1066,12 @@ fn rejects_incomplete_and_duplicate_named_binding_ranges() {
 }
 
 #[test]
-fn parses_indexed_member_assignment_target_as_flat_index_target() {
+fn preserves_indexed_member_assignment_target_structure() {
     let src = r#"
 outs { out1 }
 sample {
   voices[i].freq = hz
+  voices[i].taps[j] = value
 }
 "#;
     let program = parse_program(src).expect("indexed member assignment should parse");
@@ -1083,9 +1087,32 @@ sample {
         panic!("expected assignment");
     };
     match target {
-        AssignTarget::Index { base, index } => {
-            assert_eq!(base, "voices.freq");
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: None,
+        } => {
+            assert_eq!(base, "voices");
+            assert_eq!(field, "freq");
             assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
+        }
+        _ => panic!("expected indexed assignment target"),
+    }
+    let Stmt::Assign { target, .. } = &sample[1] else {
+        panic!("expected assignment");
+    };
+    match target {
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index: Some(field_index),
+        } => {
+            assert_eq!(base, "voices");
+            assert_eq!(field, "taps");
+            assert!(matches!(index, Expr::Var { name, .. } if name == "i"));
+            assert!(matches!(field_index.as_ref(), Expr::Var { name, .. } if name == "j"));
         }
         _ => panic!("expected indexed assignment target"),
     }
@@ -1633,8 +1660,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name, type_args, ..
@@ -1675,8 +1702,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name,
@@ -1874,8 +1901,8 @@ init {
         panic!("expected assignment in init");
     };
     assert!(
-        !is_typed_decl,
-        "typed struct decl with explicit type args should desugar to constructor-typed assignment"
+        *is_typed_decl,
+        "typed struct syntax must remain a storage-creating declaration"
     );
     let Expr::UserCall {
         name,
@@ -2750,6 +2777,23 @@ sample:
 }
 
 #[test]
+fn parses_resolved_generic_struct_data_signatures() {
+    let src = r#"
+struct Box<T>:
+  value: T
+def transform(value: Box<f32>, values: Box<f32>[], fixed: Box<f32>[2]) -> Box<f32>[2]:
+  return fixed
+event update(values: Box<f32>[]):
+  transform(values[0], values, [values[0], values[0]])
+sample:
+  boxes: Box<f32>[2] = [Box<f32>(1.0), Box<f32>(2.0)]
+  view: Box<f32>[] = boxes[:]
+  out1 = 0.0
+"#;
+    parse_program(src).expect("resolved generic struct data signatures should parse");
+}
+
+#[test]
 fn parses_def_return_type_annotations() {
     let src = r#"
 def scalar(x: f32) -> f64:
@@ -3125,6 +3169,34 @@ sample:
 }
 
 #[test]
+fn parses_generic_tuple_struct_field_elements() {
+    let src = r#"
+struct Tagged<T>:
+  pair: (T, i32)
+
+sample:
+  out1 = 0.0
+"#;
+    let program = parse_program(src).expect("generic tuple field should parse");
+    let tagged = program
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            Block::Struct(strukt) if strukt.name == "Tagged" => Some(strukt),
+            _ => None,
+        })
+        .expect("Tagged struct");
+    assert!(matches!(
+        &tagged.fields[0].ty,
+        FieldType::Tuple(elements)
+            if elements == &[
+                ScalarTypeRef::Named("T".to_owned()),
+                ScalarTypeRef::Primitive(PrimitiveType::I32),
+            ]
+    ));
+}
+
+#[test]
 fn parses_namespace_qualified_generic_type_in_call_type_args() {
     let src = r#"
 namespace NS:
@@ -3476,7 +3548,7 @@ const def table() -> f32[4]:
     assert!(matches!(
         def.return_ty,
         Some(FnReturnType::Array {
-            elem: PrimitiveType::F32,
+            elem: FnReturnScalarType::Primitive(PrimitiveType::F32),
             size: Expr::Int { value: 4, .. },
         })
     ));
@@ -3975,4 +4047,3 @@ graph {
         other => panic!("expected graph proc-array param source sentinel call, got {other:?}"),
     }
 }
-

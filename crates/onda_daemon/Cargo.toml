@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+onda_processor_abi = { path = "../onda_processor_abi" }
 hound = "3.5.1"
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_frontend = { path = "../onda_frontend" }

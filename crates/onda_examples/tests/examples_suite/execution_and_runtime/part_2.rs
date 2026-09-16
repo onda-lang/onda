@@ -1131,6 +1131,8 @@ fn struct_method_local_int_inference_matches_def_for_bitwise_ops() {
 
 struct Bits<T>:
 
+  marker: T
+
   def run(self, n: i32):
 
     bits = 0
@@ -1176,6 +1178,8 @@ fn struct_method_untyped_numeric_calls_compile_and_run() {
     let src = r#"
 
 struct Math:
+
+  marker = 0.0
 
   def mix(self, x, y):
 
@@ -3995,4 +3999,3 @@ fn proc_array_dynamic_five_call_expression_preserves_left_to_right_eval_order() 
 
     assert_near(out_b[0], 67900.0, 1e-6);
 }
-

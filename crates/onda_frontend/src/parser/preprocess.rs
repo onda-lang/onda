@@ -6,6 +6,13 @@ struct PendingIndentBlock {
     indent: usize,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ContinuationDelimiter {
+    Parenthesis,
+    Bracket,
+    Brace,
+}
+
 pub(super) fn preprocess_indentation_blocks(
     source: &str,
 ) -> Result<(String, Vec<usize>), Vec<Diagnostic>> {
@@ -24,7 +31,10 @@ pub(super) fn preprocess_indentation_blocks(
     let mut line_map = Vec::<usize>::new();
     let mut indent_stack = vec![0usize];
     let mut pending: Option<PendingIndentBlock> = None;
-    let mut continuation_depth = 0usize;
+    let mut continuation_delimiters = Vec::new();
+    let mut continues_from_previous_line = false;
+    let mut logical_line = 1usize;
+    let mut logical_indent = 0usize;
     let mut last_source_line = 1usize;
 
     for (idx, raw_line) in source.lines().enumerate() {
@@ -40,6 +50,9 @@ pub(super) fn preprocess_indentation_blocks(
         }
 
         let indent_width = leading_indent_width(code_part);
+        let continues_statement = !continuation_delimiters.is_empty()
+            || continues_from_previous_line
+            || starts_angle_continuation(code_part);
 
         if let Some(pending_block) = pending.take() {
             if indent_width <= pending_block.indent {
@@ -50,7 +63,7 @@ pub(super) fn preprocess_indentation_blocks(
                 )]);
             }
             indent_stack.push(indent_width);
-        } else if continuation_depth == 0 && indent_stack.len() > 1 {
+        } else if !continues_statement && indent_stack.len() > 1 {
             while indent_stack.len() > 1 && indent_width < *indent_stack.last().unwrap_or(&0) {
                 indent_stack.pop();
                 push_mapped_line(&mut out, &mut line_map, "}", line_no);
@@ -63,10 +76,15 @@ pub(super) fn preprocess_indentation_blocks(
                 )]);
             }
         }
+        if !continues_statement {
+            logical_line = line_no;
+            logical_indent = indent_width;
+        }
 
-        let next_continuation_depth = apply_continuation_delta(continuation_depth, code_part);
+        apply_continuation_delimiters(&mut continuation_delimiters, code_part);
+        continues_from_previous_line = ends_angle_continuation(code_part);
         let trimmed_code = code_part.trim_end();
-        if next_continuation_depth == 0 && trimmed_code.ends_with(':') {
+        if continuation_delimiters.is_empty() && trimmed_code.ends_with(':') {
             let header = trimmed_code[..trimmed_code.len() - 1].trim_end();
             if header.is_empty() {
                 return Err(vec![Diagnostic::syntax(
@@ -78,14 +96,12 @@ pub(super) fn preprocess_indentation_blocks(
             let header_line = format!("{header} {{");
             push_mapped_line(&mut out, &mut line_map, &header_line, line_no);
             pending = Some(PendingIndentBlock {
-                line: line_no,
-                indent: indent_width,
+                line: logical_line,
+                indent: logical_indent,
             });
         } else {
             push_mapped_line(&mut out, &mut line_map, line, line_no);
         }
-
-        continuation_depth = next_continuation_depth;
     }
 
     if let Some(pending_block) = pending {
@@ -148,21 +164,50 @@ fn leading_indent_width(line: &str) -> usize {
     width
 }
 
-fn apply_continuation_delta(mut depth: usize, line: &str) -> usize {
-    let line_trimmed = line.trim_end();
+fn apply_continuation_delimiters(delimiters: &mut Vec<ContinuationDelimiter>, line: &str) {
     for (idx, ch) in unquoted_chars(line) {
         match ch {
-            '(' | '[' => depth = depth.saturating_add(1),
+            '(' => delimiters.push(ContinuationDelimiter::Parenthesis),
+            '[' => delimiters.push(ContinuationDelimiter::Bracket),
             '{' if is_continuation_opening_brace(line, idx) => {
-                depth = depth.saturating_add(1);
+                delimiters.push(ContinuationDelimiter::Brace);
             }
-            '<' if is_multiline_angle_open(line_trimmed, idx) => depth = depth.saturating_add(1),
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            '>' if is_multiline_angle_close(line_trimmed, idx) => depth = depth.saturating_sub(1),
+            ')' => close_continuation(delimiters, ContinuationDelimiter::Parenthesis),
+            ']' => close_continuation(delimiters, ContinuationDelimiter::Bracket),
+            '}' => close_continuation(delimiters, ContinuationDelimiter::Brace),
             _ => {}
         }
     }
-    depth
+}
+
+/// Angle brackets are also comparison and shift operators, so they cannot be
+/// balanced lexically like parentheses. The grammar already knows whether a
+/// newline belongs to a generic list. Here we only relax indentation across
+/// tokens that can border such a newline; invalid operator continuations still
+/// fail in the grammar without leaving persistent delimiter state behind.
+fn ends_angle_continuation(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    unquoted_chars(trimmed)
+        .filter(|(_, ch)| !ch.is_whitespace())
+        .last()
+        .is_some_and(|(index, ch)| {
+            index + ch.len_utf8() == trimmed.len() && matches!(ch, '<' | ',' | '=')
+        })
+}
+
+fn starts_angle_continuation(line: &str) -> bool {
+    unquoted_chars(line)
+        .find(|(_, ch)| !ch.is_whitespace())
+        .is_some_and(|(_, ch)| matches!(ch, '>' | ',' | '='))
+}
+
+fn close_continuation(
+    delimiters: &mut Vec<ContinuationDelimiter>,
+    expected: ContinuationDelimiter,
+) {
+    if delimiters.last() == Some(&expected) {
+        delimiters.pop();
+    }
 }
 
 fn is_continuation_opening_brace(line: &str, brace_idx: usize) -> bool {
@@ -195,13 +240,4 @@ fn contains_assignment_operator(text: &str) -> bool {
         }
     }
     false
-}
-
-fn is_multiline_angle_open(line_trimmed: &str, angle_idx: usize) -> bool {
-    line_trimmed[angle_idx + '<'.len_utf8()..].trim().is_empty()
-}
-
-fn is_multiline_angle_close(line_trimmed: &str, angle_idx: usize) -> bool {
-    line_trimmed[..angle_idx].trim().is_empty()
-        && !line_trimmed[angle_idx + '>'.len_utf8()..].starts_with('>')
 }

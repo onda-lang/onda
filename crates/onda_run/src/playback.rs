@@ -24,9 +24,9 @@ use serde_json::{json, Value};
 
 use crate::midi::{self, MidiMessage, TimedMidiMessage};
 use crate::{
-    available_audio_devices, classify_host_events, display_path, format_run_build_error,
-    format_single_diagnostic, run_buffer_json, run_event_json, run_event_value_json,
-    run_param_json, RunMidiCapabilities,
+    available_audio_devices, classify_host_events, display_path, event_value_from_json,
+    event_value_to_json, format_run_build_error, format_single_diagnostic, run_buffer_json,
+    run_event_json, run_param_json, RunMidiCapabilities,
 };
 
 mod buffer_worker;
@@ -41,7 +41,7 @@ const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
 const PRINT_NOTIFICATION_CAPACITY: usize = 32;
 const MIDI_INPUT_CAPACITY: usize = 256;
 const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
-const MAX_RENDER_AHEAD_BLOCKS: usize = 2;
+const RENDER_AHEAD_BLOCKS: usize = 4;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -94,6 +94,7 @@ type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 struct RenderThreadContext {
     sample_queue: SampleProducer,
     input_queue: SampleConsumer,
+    stream_errors: StreamErrorState,
     midi_rx: mpsc::Receiver<TimedMidiMessage>,
     midi_overflowed: Arc<AtomicBool>,
     midi_reset_requested: Arc<AtomicBool>,
@@ -382,6 +383,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         RenderThreadContext {
             sample_queue: sample_producer,
             input_queue: input_consumer,
+            stream_errors: error_state.clone(),
             midi_rx,
             midi_overflowed: Arc::clone(&midi_overflowed),
             midi_reset_requested: Arc::clone(&midi_reset_requested),
@@ -527,7 +529,11 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
     wait_for_prefill(
         &sample_consumer,
-        startup.output_channels * launch.block_frames,
+        render_ahead_samples(
+            launch.block_frames,
+            startup.output_channels,
+            sample_consumer.capacity(),
+        ),
         &stop_flag,
         &render_error,
     )?;
@@ -689,7 +695,7 @@ fn run_delegate_occurrence_json(occurrence: &RunDelegateOccurrence) -> Value {
     let values = occurrence
         .values
         .iter()
-        .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+        .map(|entry| (entry.name.clone(), event_value_to_json(&entry.value)))
         .collect::<serde_json::Map<_, _>>();
     json!({
         "sequence": occurrence.sequence,
@@ -714,6 +720,7 @@ fn wait_for_playback_completion(
     mut midi_input: Option<&mut midi::MidiInputManager>,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
+    let mut reported_underrun = false;
     loop {
         if run_termination_requested() {
             stop_flag.store(true, Ordering::Release);
@@ -737,6 +744,15 @@ fn wait_for_playback_completion(
         if let Some(err) = error_state.message() {
             return Err(err);
         }
+        if !reported_underrun {
+            let missing_frames = error_state.output_underrun_frames();
+            if missing_frames != 0 {
+                eprintln!(
+                    "audio output underrun: render queue exhausted; inserted {missing_frames} silent frames"
+                );
+                reported_underrun = true;
+            }
+        }
         if let Some(input) = midi_input.as_deref_mut() {
             input.poll();
         }
@@ -753,6 +769,7 @@ fn spawn_run_render_thread(
         let RenderThreadContext {
             sample_queue,
             input_queue,
+            stream_errors,
             midi_rx,
             midi_overflowed,
             midi_reset_requested,
@@ -926,6 +943,7 @@ fn spawn_run_render_thread(
                     };
                     match command {
                         PlaybackControlCommand::Pause { reply } => {
+                            stream_errors.set_output_expected(false);
                             play_requested = false;
                             playing = false;
                             cancel_pending_run_events(
@@ -936,6 +954,7 @@ fn spawn_run_render_thread(
                             let _ = reply.send(Ok(()));
                         }
                         PlaybackControlCommand::Play { reply } => {
+                            stream_errors.set_output_expected(false);
                             play_requested = true;
                             midi_timeline.reset();
                             flush_pending_param_updates(
@@ -1129,6 +1148,7 @@ fn spawn_run_render_thread(
                             buffer_worker.load(name, path, reply);
                         }
                         PlaybackControlCommand::ClearBuffer { name, reply } => {
+                            stream_errors.set_output_expected(false);
                             buffer_worker.invalidate(&name);
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -1177,6 +1197,7 @@ fn spawn_run_render_thread(
                 let result = if !buffer_worker.is_current(&loaded) {
                     Ok(BufferLoadStatus::Superseded)
                 } else {
+                    stream_errors.set_output_expected(false);
                     match &mut loaded.prepared {
                         Err(error) => Err(error.clone()),
                         Ok(prepared) => session
@@ -1211,6 +1232,7 @@ fn spawn_run_render_thread(
             }
 
             if !playing {
+                stream_errors.set_output_expected(false);
                 while midi_rx.try_recv().is_ok() {}
                 midi_overflowed.store(false, Ordering::Release);
                 midi_reset_requested.store(false, Ordering::Release);
@@ -1224,11 +1246,13 @@ fn spawn_run_render_thread(
                 continue;
             }
 
-            let render_ahead_samples = launch
-                .block_frames
-                .saturating_mul(render_output_channels)
-                .saturating_mul(MAX_RENDER_AHEAD_BLOCKS);
+            let render_ahead_samples = render_ahead_samples(
+                launch.block_frames,
+                render_output_channels,
+                sample_queue.capacity(),
+            );
             if sample_queue.len() >= render_ahead_samples {
+                stream_errors.set_output_expected(true);
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }
@@ -1483,7 +1507,7 @@ fn run_print_entry_json(entry: &RunPrintEntry) -> Value {
         "declaration": entry.declaration,
         "values": entry.values.iter().map(|value| json!({
             "type": value.type_repr,
-            "value": run_event_value_json(&value.value),
+            "value": event_value_to_json(&value.value),
         })).collect::<Vec<_>>(),
     })
 }
@@ -1561,6 +1585,16 @@ fn wait_for_prefill(
     Ok(())
 }
 
+fn render_ahead_samples(block_frames: usize, channels: usize, capacity: usize) -> usize {
+    if channels == 0 {
+        return 0;
+    }
+    let requested = block_frames
+        .saturating_mul(channels)
+        .saturating_mul(RENDER_AHEAD_BLOCKS);
+    requested.min(capacity - capacity % channels)
+}
+
 fn store_thread_error(slot: &Arc<Mutex<Option<String>>>, message: String) {
     if let Ok(mut slot) = slot.lock() {
         if slot.is_none() {
@@ -1625,29 +1659,6 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()
-}
-
-fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
-    match value {
-        Value::Bool(value) => Ok(RunEventValue::Bool(value)),
-        Value::Number(value) => value
-            .as_f64()
-            .map(RunEventValue::Number)
-            .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
-        Value::String(value) => value
-            .parse::<i64>()
-            .map(RunEventValue::I64)
-            .map_err(|_| "triggerEvent string values must be decimal i64 integers".to_owned()),
-        Value::Array(values) => values
-            .into_iter()
-            .map(run_event_value_from_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(RunEventValue::Array),
-        _ => Err(
-            "triggerEvent values must be numbers, decimal i64 strings, booleans, or arrays"
-                .to_owned(),
-        ),
-    }
 }
 
 struct RunControlServerContext {
@@ -2285,7 +2296,7 @@ fn run_control_response(
             let raw_values = request.values.unwrap_or_default();
             let values = raw_values
                 .into_iter()
-                .map(run_event_value_from_json)
+                .map(event_value_from_json)
                 .collect::<Result<Vec<_>, _>>()?;
             if request_id.is_none() {
                 control_tx
@@ -2409,9 +2420,10 @@ fn run_device_lists_json(
 #[cfg(test)]
 mod tests {
     use super::{
-        run_control_response, run_device_lists_json, write_pending_delegate_batch,
-        write_pending_output_batches, write_pending_print_batches, DelegateSubscriptionGuard,
-        MidiTimeline, PlaybackControlCommand, PlaybackControlRequest, RunOutputBatch, ScopeRing,
+        render_ahead_samples, run_control_response, run_device_lists_json,
+        write_pending_delegate_batch, write_pending_output_batches, write_pending_print_batches,
+        DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
+        RunOutputBatch, ScopeRing,
     };
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
@@ -2420,6 +2432,14 @@ mod tests {
     use serde_json::Value;
     use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn render_ahead_is_bounded_by_frame_aligned_queue_capacity() {
+        assert_eq!(render_ahead_samples(256, 2, 8192), 2048);
+        assert_eq!(render_ahead_samples(256, 16, 8192), 8192);
+        assert_eq!(render_ahead_samples(256, 3, 1024), 1023);
+        assert_eq!(render_ahead_samples(256, 0, 1024), 0);
+    }
 
     #[test]
     fn midi_timeline_preserves_timestamp_spacing_within_a_block() {

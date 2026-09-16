@@ -2,6 +2,35 @@
 
 ## Language follow-ups
 
+- Structured-data follow-ups
+  - Revisit implicit struct-method receivers. The intended source model omits `self` from method
+    declarations, makes fields and sibling methods available by bare name like proc-local state,
+    and keeps `self.member` only as an explicit escape hatch when a lexical binding shadows an
+    owner member. Calls remain receiver-based (`voice.tick(...)`); the receiver is compiler-owned
+    and should be introduced only when lowering the method, not inserted into the source-level AST.
+    Implement this through shared owner-aware name resolution and receiver capture for struct
+    methods and proc-local defs. Avoid a separate textual qualification pass or synthetic shadow
+    bindings that leak into typed events, MIR, or tooling.
+  - Measure and document default per-instance event, delegate, and print capacity costs before tuning
+    them; keep all rendering-thread storage bounded and provisioned before execution.
+  - Evaluate allowing top-level defs to borrow processor arrays owned by another processor, so a
+    field such as `voices: Voice[8]` can be passed through `voices: Voice[]`, `Voice[N]`, or an
+    untyped parameter just like a top-level processor array. This is specific to processor-valued
+    arrays; proc-owned arrays of ordinary structs already work. Any implementation should use one
+    canonical, allocation-free borrowed processor-array view across top-level and nested storage,
+    preserving instance identity, lifecycle hooks, active slots, buffers, events, delegates, and
+    oversampling rather than copying state or adding an owner-specific lowering path. Proc-local
+    defs remain the direct way to operate on such arrays in the meantime.
+  - Design structured host params and proc constructor controls as one extension of the existing
+    bounded aggregate model. Reuse the canonical data layout, defaults, validation, descriptor
+    metadata, and graph endpoint types instead of introducing a separate control-value
+    representation.
+  - Evaluate borrowed aggregate returns only with explicit, statically checkable lifetime and
+    escape rules. Ordinary aggregate returns should remain independent values.
+  - Evaluate reference fields and exclusive references only as part of a coherent lifetime and
+    aliasing model. Struct fields currently own fixed data, and ordinary aggregate aliases remain
+    writable and non-exclusive.
+
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
@@ -13,7 +42,8 @@
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
   - Evaluate inferred array return types for const defs, such as `-> f32[]` and `-> []`, where each call site validates the returned compile-time array element type and inferred length.
   - Consider local/proc-local const arrays if they prove useful.
-  - Consider const structs or structural compile-time values if stdlib/table generation starts needing them.
+  - Consider const structs or structural compile-time values, including structured `const def`
+    parameters and results, if stdlib/table generation starts needing them.
   - Improve forward-reference and cycle diagnostics if the strict lexical model becomes annoying.
   - Preserve the numeric-literal specialization invariant as this code evolves:
     the AST may use `f64`/`i64` as its widest supported internal literal representation, but an
@@ -26,8 +56,49 @@
   - Keep the textual `graph` block as the source-of-truth model for any future visual graph editor.
     Visual tooling should generate and round-trip ordinary Onda `init` + `graph` code rather than
     introducing a separate patcher runtime.
+  - Expand `graph` into a coherent declarative composition surface for more than sample-rate signal
+    edges. Design one concise routing vocabulary that can express:
+    - sample-rate inputs, outputs, proc endpoints, expressions, and delayed feedback
+    - block-rate params, proc params, proc `kouts`, and top-level `kouts`
+    - aggregate audio and control endpoints with explicit rate and shape compatibility
+    - forwarding events into procs and proc arrays
+    - forwarding or subscribing to child delegates, including whole proc arrays and their indices
+    - pure `def` transforms at compatible sample or block rates
+    - fanout, explicit fan-in/reduction, endpoint families, and destination bundles
+    - structured event/delegate payloads without flattening their nominal schemas
+    Keep authored rate crossings visible, preserve deterministic event/delegate order, and reject
+    ambiguous or stateful routes. Lower the expanded syntax onto the existing proc scheduling,
+    event, delegate/`when`, expression, and block/sample machinery so `graph` remains composition
+    syntax rather than a second execution model. Ordinary `sample`, `block`, `events`, and `when`
+    code should remain the imperative escape hatch for routing that needs state or control flow.
+  - Explore compact syntax for the expanded surface without committing each endpoint family to a
+    separate mini-language. Representative relationships that should become easy to spell include:
+    ```onda
+    graph:
+      @sample input * gain >> filter.in1
+      @block analyzer.kout1 >> meter.level
+      note_on >> voices.note_on
+      voices.finished >> voice_finished
+      @sample shape(filter.out1) >> out1
+    ```
+    The final syntax must distinguish event handlers, delegates, values, and pure functions from
+    their resolved declarations; the sketch only captures the desired readability.
   - Widen graph source expressions:
     support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
+  - Support calls to proven-pure runtime defs in graph source expressions. Reuse ordinary overload,
+    specialization, type, shape, and effect analysis; reject state, resource, event, delegate, and
+    other side-effecting call graphs rather than creating a second graph-only function model.
+  - Evaluate compile-time conditional graph topology driven by `config const`, ordinary const, and
+    namespace arguments. Only the selected edge topology should reach scheduling and cycle analysis;
+    this is static specialization, not runtime graph rewiring. Prune unreachable proc state where
+    doing so preserves initialization and metadata semantics.
+  - Evaluate explicit graph fan-in/reduction rather than silently weakening the one-writer rule:
+    - sum compatible scalar audio sources with deterministic typing
+    - reduce proc-array output families without hand-writing each slot
+    - keep non-summable values and mismatched shapes as errors
+    - preserve one canonical writer after graph expansion so scheduling and diagnostics stay simple
+  - Add block-rate graph routing for `kouts` and block-rate proc outputs. Make every sample/block rate
+    crossing explicit and deterministic instead of treating control values as audio streams.
   - Evaluate opt-in graph-edge coercions/broadcasting:
     endpoint-family expansion for proc arrays and broader numeric coercion rules.
     Example endpoint-family expansion:
@@ -64,8 +135,18 @@
   - Evaluate event routing syntax for graph-heavy programs:
     - forwarding top-level events to proc instances and proc arrays
     - fanout to destination sets
+    - deterministic multiplexing when several event sources target one handler
+    - structured payload compatibility using the ordinary event/delegate message model
     - clear rejection of ambiguous sample-accurate versus immediate event behavior
     - compatibility with ordinary explicit `events` blocks
+    - lower routing sugar onto the existing event/delegate machinery rather than introducing a
+      second callback model; explicit handlers and `when` remain the stateful routing surface
+  - Add static processor latency metadata and automatic graph delay compensation:
+    - declare latency in host-sample units and expose the resolved value to hosts and graph tools
+    - accumulate latency through proc composition, proc arrays, explicit delayed edges, and rate changes
+    - align converging audio paths without changing intentional feedback delays
+    - diagnose dynamic or otherwise non-provable latency declarations
+    - show inserted compensation edges in graph inspection output
   - Add graph introspection metadata for tools:
     - resolved node list
     - endpoint names, types, array shapes, and rates
@@ -89,6 +170,24 @@
     authored indices prove insufficient. Any design must keep lexical source ownership stable and
     avoid adding hidden per-instance strings or callbacks to generated execution.
 
+- Task follow-ups
+  - Evaluate task `reset()` inside defs and task bodies. Ordinary top-level defs would need explicit
+    owner runtime context, and task-control effects would need to propagate transitively through
+    callable and synchronous event/delegate paths. Define active self-reset semantics before
+    exposing this: either reject every direct and indirect path by which a running task can reset
+    itself, or make reset terminate the current activation and restart it deterministically on the
+    next advance. Resetting another owner-local task may be admitted independently if it does not
+    weaken the rule that tasks cannot invoke one another.
+  - Reconsider broadened, explicitly advanced tasks only when a concrete use case is substantially
+    clearer than an ordinary stateful struct. A possible `task.step() -> bool` would advance until
+    the next `yield` or completion without aborting the owner or producing neutral outputs; repeated
+    calls could deliberately cross multiple yield boundaries. Specify legal init/event/block/sample
+    call sites, call-rate effects, interaction with `await` and `reset()`, runtime failures, and
+    partial-state publication. In particular, sample-rate stepping cannot allow a task to smuggle
+    its currently legal block-rate processor calls into sample code. Prefer fixed-budget struct
+    state machines for incremental FFT and other recurring realtime DSP unless coroutine syntax
+    demonstrates a compelling broader benefit.
+
 - Musical scheduling / pattern follow-ups
   - Evaluate a small sample-accurate scheduling layer on top of events:
     - host-triggered events can carry target sample offsets inside the next block
@@ -105,6 +204,15 @@
 - Oversampling follow-ups
   - Consider user-exposed quality/performance modes.
   - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
+  - Evaluate per-instance graph rate specialization so one proc implementation can be instantiated at
+    different fixed rates without wrapper duplication, while retaining `sample N:` as the proc-local
+    spelling when the rate is intrinsic to the implementation.
+  - Add fixed-factor undersampled nodes for control and analysis work that should run every `N` host
+    samples. Define held-output behavior, event timing, block hooks, task scheduling, and startup state
+    explicitly rather than encoding undersampling as an implicit counter convention.
+  - Expose deliberate rate-crossing policies such as hold, linear, and sinc where their input type and
+    direction make sense. Account for filter latency and avoid inserting duplicate converters across
+    already-compatible rate domains.
 
 - Standard library follow-ups
   - Keep the built-in module inventory in sync as docs evolve across `README.md`,
@@ -138,12 +246,11 @@
     selector exactly once.
 
 - Array and slice follow-ups
+  - Evaluate arrays of arrays, arrays of tuples, and aggregate tuple elements as one coherent
+    nesting extension, with fixed layout and ordinary aggregate copy/alias semantics.
   - Preserve the statically provable length of constant-bound slices so an exact-length slice can
     satisfy a fixed-array parameter, such as `stereo_sum(gains[0:2])` for a parameter of type
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.
-  - Allow fixed-array declarations to copy-initialize from an exact-length fixed array or slice,
-    such as `stereo: f32[2] = gains[0:2]`. Define this as value-copy semantics, not aliasing, and
-    reuse the same compile-time shape proof as fixed-array arguments.
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
@@ -156,3 +263,7 @@
   - Extend bounds proofs from fixed storage to relational dynamic slice and external-buffer facts,
     such as an index derived from the same descriptor's `.len()`. Explicit `read_unsafe` and
     `write_unsafe` are available when the programmer can establish such a proof today.
+  - Extend loop range analysis with relational induction, divisibility, and derived-index facts so
+    nested kernels such as FFT butterflies can prove `start + k` and
+    `start + k + stage / 2` remain in bounds. Ordinary indexing should then optimize to unchecked
+    accesses and SIMD without requiring library-authored `read_unsafe` or `write_unsafe` calls.

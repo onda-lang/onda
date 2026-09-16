@@ -18,6 +18,8 @@ proc ConvolutionRoom:
   init:
     convolver_l = RoomConvolution::ZeroLatencyConvolver()
     convolver_r = RoomConvolution::ZeroLatencyConvolver()
+    convolver_l.set_channel(0)
+    convolver_r.set_channel(1)
     tone_l = std::filter::OnePole(cutoff = damping)
     tone_r = std::filter::OnePole(cutoff = damping)
 

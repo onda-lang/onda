@@ -1,4 +1,7 @@
 use super::*;
+use crate::executable_data::{
+    rewrite_binding_expr as replace_when_bindings_expr, rewrite_binding_path as replace_name,
+};
 use crate::internal_names::{
     METHOD_RECEIVER_ARG, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
@@ -71,13 +74,14 @@ fn when_handler_function(
     let mut params = Vec::new();
     let leading = if takes_index {
         params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: WHEN_INDEX_PARAM.to_owned(),
             ty: Some(FnParamType::Primitive(PrimitiveType::I32)),
             ty_loc: Default::default(),
             default: None,
         });
-        Some(Expr::var(WHEN_INDEX_PARAM))
+        Some(WHEN_INDEX_PARAM.to_owned())
     } else {
         None
     };
@@ -157,7 +161,7 @@ pub(super) fn delegate_owner_buffer_param_name(index: usize) -> String {
 fn validate_and_bind_when(
     when: &WhenDef,
     delegate: &DelegateDef,
-    leading_index: Option<Expr>,
+    leading_index: Option<String>,
     payload_params: &[onda_frontend::FnParamDecl],
     owner: &str,
     errors: &mut Vec<Diagnostic>,
@@ -187,7 +191,7 @@ fn validate_and_bind_when(
         }
     }
 
-    let mut replacements = HashMap::<String, Expr>::new();
+    let mut replacements = HashMap::<String, String>::new();
     let mut offset = 0;
     if let Some(index) = leading_index {
         let binding = &when.bindings[0];
@@ -198,7 +202,7 @@ fn validate_and_bind_when(
     }
     for (binding, param) in when.bindings[offset..].iter().zip(payload_params) {
         if binding.name != "_" {
-            replacements.insert(binding.name.clone(), Expr::var(param.name.clone()));
+            replacements.insert(binding.name.clone(), param.name.clone());
         }
     }
 
@@ -209,79 +213,9 @@ fn validate_and_bind_when(
     body
 }
 
-fn replace_name(name: &mut String, replacements: &HashMap<String, Expr>) {
-    let Some(Expr::Var {
-        name: replacement, ..
-    }) = replacements.get(name)
-    else {
-        return;
-    };
-    *name = replacement.clone();
-}
-
-fn replace_when_bindings_expr(expr: &mut Expr, replacements: &HashMap<String, Expr>) {
-    match expr {
-        Expr::Var { name, .. } => {
-            if let Some(replacement) = replacements.get(name) {
-                *expr = replacement.clone().with_loc(expr.loc());
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            replace_name(base, replacements);
-            replace_when_bindings_expr(index, replacements);
-        }
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            replace_name(base, replacements);
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                replace_when_bindings_expr(coordinate, replacements);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            replace_when_bindings_expr(&mut spec.size, replacements);
-            if let Some(values) = init {
-                for value in values {
-                    replace_when_bindings_expr(value, replacements);
-                }
-            }
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                replace_when_bindings_expr(arg, replacements);
-            }
-        }
-        Expr::UserCall { args, .. } => {
-            for arg in args {
-                replace_when_bindings_expr(&mut arg.expr, replacements);
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            replace_when_bindings_expr(lhs, replacements);
-            replace_when_bindings_expr(rhs, replacements);
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            replace_when_bindings_expr(expr, replacements)
-        }
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                replace_when_bindings_expr(value, replacements);
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
-    }
-}
-
 fn replace_when_bindings_stmt(
     stmt: &mut Stmt,
-    replacements: &HashMap<String, Expr>,
+    replacements: &HashMap<String, String>,
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
@@ -302,7 +236,7 @@ fn replace_when_bindings_stmt(
                     }
                     replace_name(name, replacements);
                 }
-                AssignTarget::Index { base, index } => {
+                AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
                             DiagCtx::new(*target_loc),
@@ -311,15 +245,8 @@ fn replace_when_bindings_stmt(
                         );
                     }
                     replace_name(base, replacements);
-                    replace_when_bindings_expr(index, replacements);
                 }
-                AssignTarget::Slice {
-                    base,
-                    selector,
-                    channel,
-                    start,
-                    end,
-                } => {
+                AssignTarget::Slice { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
                             DiagCtx::new(*target_loc),
@@ -328,9 +255,6 @@ fn replace_when_bindings_stmt(
                         );
                     }
                     replace_name(base, replacements);
-                    for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                        replace_when_bindings_expr(coordinate, replacements);
-                    }
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
@@ -345,6 +269,8 @@ fn replace_when_bindings_stmt(
                     }
                 }
             }
+            target
+                .visit_selectors_mut(|selector| replace_when_bindings_expr(selector, replacements));
             replace_when_bindings_expr(expr, replacements);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -561,24 +487,7 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
                     collect_source_calls_expr(&decl.expr, calls);
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. } => {
-                            collect_source_calls_expr(index, calls);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_source_calls_expr(coordinate, calls);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| collect_source_calls_expr(selector, calls));
                     collect_source_calls_expr(expr, calls);
                 }
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -675,24 +584,7 @@ fn collect_source_calls_with_aliases(
                     StatementFlow::Continues
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. } => {
-                            collect_expr(index, aliases, calls);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_expr(coordinate, aliases, calls);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| collect_expr(selector, aliases, calls));
                     collect_expr(expr, aliases, calls);
                     match target {
                         AssignTarget::Var(name) => {
@@ -708,7 +600,9 @@ fn collect_source_calls_with_aliases(
                                 aliases.remove(name);
                             }
                         }
-                        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                        AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
+                        | AssignTarget::Slice { .. } => {}
                     }
                     StatementFlow::Continues
                 }
@@ -879,24 +773,9 @@ fn validate_delegate_uses(
                     collect_delegate_value_uses_expr(&decl.expr, names, false, errors);
                 }
                 Stmt::Assign { target, expr, .. } => {
-                    match target {
-                        AssignTarget::Index { index, .. } => {
-                            collect_delegate_value_uses_expr(index, names, false, errors);
-                        }
-                        AssignTarget::Slice {
-                            selector,
-                            channel,
-                            start,
-                            end,
-                            ..
-                        } => {
-                            for coordinate in [selector, channel, start, end].into_iter().flatten()
-                            {
-                                collect_delegate_value_uses_expr(coordinate, names, false, errors);
-                            }
-                        }
-                        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    }
+                    target.visit_selectors(|selector| {
+                        collect_delegate_value_uses_expr(selector, names, false, errors)
+                    });
                     collect_delegate_value_uses_expr(expr, names, false, errors);
                 }
                 Stmt::Expr { expr, .. } => {
@@ -1790,51 +1669,6 @@ fn insert_member(
     }
 }
 
-#[derive(Clone)]
-struct ChildProcInstance {
-    proc_name: String,
-    is_array: bool,
-}
-
-fn child_proc_instances(
-    init: &[Stmt],
-    proc_names: &HashSet<String>,
-) -> HashMap<String, ChildProcInstance> {
-    let mut instances = HashMap::new();
-    for stmt in init {
-        let Stmt::Assign {
-            target: AssignTarget::Var(instance),
-            expr,
-            ..
-        } = stmt
-        else {
-            continue;
-        };
-        let resolved = match expr {
-            Expr::UserCall {
-                name: proc_name, ..
-            } if proc_names.contains(proc_name) => Some((proc_name.clone(), false)),
-            Expr::ArrayCtor { spec, .. } => match &spec.elem {
-                ArrayElemType::Struct(proc_name) if proc_names.contains(proc_name) => {
-                    Some((proc_name.clone(), true))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((proc_name, is_array)) = resolved {
-            instances.insert(
-                instance.clone(),
-                ChildProcInstance {
-                    proc_name,
-                    is_array,
-                },
-            );
-        }
-    }
-    instances
-}
-
 fn validate_qualified_delegate_calls(
     owner: &str,
     body: &[Stmt],
@@ -2123,7 +1957,7 @@ fn rewrite_source_overload_stmts(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
         stmts,
@@ -2137,7 +1971,7 @@ fn rewrite_source_overload_stmts(
         },
         overloads,
         &mut ignored_errors,
-    );
+    )
 }
 
 pub(super) fn rewrite_source_overload_function(
@@ -2146,7 +1980,7 @@ pub(super) fn rewrite_source_overload_function(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut ignored_errors = Vec::new();
     crate::def_semantics::rewrite_overloaded_calls_in_function(
         def,
@@ -2160,7 +1994,7 @@ pub(super) fn rewrite_source_overload_function(
         },
         overloads,
         &mut ignored_errors,
-    );
+    )
 }
 
 pub(super) fn source_overload_return_types(
@@ -2187,7 +2021,7 @@ fn rewrite_source_overload_event(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut env = state_env.clone();
     for param in &event.params {
         env.bind_function_param(&crate::event_param_as_fn_param(param), &[]);
@@ -2198,7 +2032,7 @@ fn rewrite_source_overload_event(
         overloads,
         return_types,
         struct_defs,
-    );
+    )
 }
 
 fn rewrite_source_overload_task(
@@ -2207,7 +2041,7 @@ fn rewrite_source_overload_task(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
-) {
+) -> usize {
     let mut env = state_env.clone();
     rewrite_source_overload_stmts(
         &mut task.body,
@@ -2215,7 +2049,7 @@ fn rewrite_source_overload_task(
         overloads,
         return_types,
         struct_defs,
-    );
+    )
 }
 
 fn rewrite_source_overload_when(
@@ -2376,6 +2210,44 @@ fn bind_proc_validation_surfaces(
     bind_validation_arrays(env, const_arrays);
 }
 
+fn rewrite_processor_source_overload_scopes(
+    proc: &mut ProcessorDef,
+    state_env: &mut crate::def_semantics::CallTypeEnv,
+    overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
+    return_types: &HashMap<String, ReturnType>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+) -> usize {
+    let mut resolved = rewrite_source_overload_stmts(
+        &mut proc.init.body,
+        state_env,
+        overloads,
+        return_types,
+        struct_defs,
+    );
+    for def in &mut proc.local_defs {
+        resolved +=
+            rewrite_source_overload_function(def, state_env, overloads, return_types, struct_defs);
+    }
+    for event in &mut proc.events {
+        resolved +=
+            rewrite_source_overload_event(event, state_env, overloads, return_types, struct_defs);
+    }
+    for task in &mut proc.tasks {
+        resolved +=
+            rewrite_source_overload_task(task, state_env, overloads, return_types, struct_defs);
+    }
+    for body in [
+        proc.block_pre.as_mut_slice(),
+        proc.sample.as_mut_slice(),
+        proc.block_post.as_mut_slice(),
+    ] {
+        let mut env = state_env.clone();
+        resolved +=
+            rewrite_source_overload_stmts(body, &mut env, overloads, return_types, struct_defs);
+    }
+    resolved
+}
+
 pub(super) fn resolve_processor_source_overloads(
     proc: &mut ProcessorDef,
     options: AnalysisOptions,
@@ -2383,6 +2255,8 @@ pub(super) fn resolve_processor_source_overloads(
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     top_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_method_symbols: &HashSet<String>,
+    callable_symbols: &HashSet<String>,
 ) {
     let mut state_env = crate::def_semantics::CallTypeEnv::default();
     bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
@@ -2414,26 +2288,29 @@ pub(super) fn resolve_processor_source_overloads(
         &state_env,
         struct_defs,
     ));
-    rewrite_source_overload_stmts(
-        &mut proc.init.body,
-        &mut state_env,
-        overloads,
-        &return_types,
-        struct_defs,
-    );
-    for event in &mut proc.events {
-        rewrite_source_overload_event(event, &state_env, overloads, &return_types, struct_defs);
-    }
-    for task in &mut proc.tasks {
-        rewrite_source_overload_task(task, &state_env, overloads, &return_types, struct_defs);
-    }
-    for body in [
-        proc.block_pre.as_mut_slice(),
-        proc.sample.as_mut_slice(),
-        proc.block_post.as_mut_slice(),
-    ] {
-        let mut env = state_env.clone();
-        rewrite_source_overload_stmts(body, &mut env, overloads, &return_types, struct_defs);
+    // Overload selection can expose aggregate receiver types, while resolving a
+    // receiver can expose another overload. Iterate until neither transformation
+    // reveals another call, using the same scope walkers on every pass.
+    loop {
+        crate::proc_call_rewrite::desugar_processor_instance_method_calls(
+            proc,
+            &return_types,
+            struct_defs,
+            struct_method_symbols,
+            callable_symbols,
+        );
+        let mut state_env = crate::def_semantics::CallTypeEnv::default();
+        bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+        if rewrite_processor_source_overload_scopes(
+            proc,
+            &mut state_env,
+            overloads,
+            &return_types,
+            struct_defs,
+        ) == 0
+        {
+            break;
+        }
     }
 }
 

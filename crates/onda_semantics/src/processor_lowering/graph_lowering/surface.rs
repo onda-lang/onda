@@ -83,6 +83,7 @@ pub(super) fn build_graph_proc_surfaces(
                     events: HashMap::new(),
                     delegates: HashMap::new(),
                     buffers: Vec::new(),
+                    steppable: true,
                     has_block: false,
                     sample_oversample_factor: 1,
                 },
@@ -267,6 +268,14 @@ fn value_type_from_decl_type(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<GraphValueType> {
     match ty {
+        Some(DeclType::Slice(_)) => {
+            push_semantic(
+                DiagCtx::default(),
+                errors,
+                "graph ports require fixed value shapes",
+            );
+            None
+        }
         None => Some(GraphValueType::Scalar(PrimitiveType::F32)),
         Some(DeclType::Scalar(ty)) => Some(GraphValueType::Scalar(*ty)),
         Some(DeclType::Generic(_)) => Some(GraphValueType::Scalar(PrimitiveType::F32)),

@@ -65,7 +65,7 @@ impl<'a> FunctionLowerer<'a> {
                 element,
             )),
             _ => self
-                .runtime_globals
+                .runtime_globals_for_unbound(name)
                 .and_then(|globals| globals.buffers.get(name).copied())
                 .map(|(buffer, element)| {
                     (
@@ -137,7 +137,7 @@ impl<'a> FunctionLowerer<'a> {
                     _ => None,
                 };
                 let interface_array = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.buffer_arrays.get(base).copied());
                 if parameter_array.is_none() && interface_array.is_none() {
                     return Ok(false);
@@ -225,9 +225,9 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn owner_struct_name(&self, root: &str) -> Option<&str> {
         match self.bindings.get(root) {
             Some(Binding::StructParameter { struct_name, .. })
-            | Some(Binding::StructArrayElementAlias { struct_name }) => Some(struct_name.as_str()),
+            | Some(Binding::StructView { struct_name }) => Some(struct_name.as_str()),
             _ => self
-                .runtime_globals
+                .runtime_globals_for_unbound(root)
                 .and_then(|globals| globals.struct_roots.get(root))
                 .map(String::as_str),
         }
@@ -259,205 +259,28 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn nested_proc_slot_call_arguments(
-        &self,
+        &mut self,
         owner: &str,
         slot: &str,
         shapes: &[StructFieldShape],
+        block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<Vec<CallArgument>, MirLoweringError> {
-        let physical_name = |field_name: &str| format!("{slot}__{field_name}");
-        if let Some(Binding::StructParameter { fields, .. }) = self.bindings.get(owner) {
-            return shapes
-                .iter()
-                .map(|shape| match shape {
-                    StructFieldShape::Scalar { name, ty } => {
-                        let physical = physical_name(name);
-                        let Some(StructFieldReference::Scalar {
-                            parameter,
-                            ty: actual,
-                            ..
-                        }) = fields.iter().find(|field| {
-                            matches!(
-                                field,
-                                StructFieldReference::Scalar { name, .. } if *name == physical
-                            )
-                        })
-                        else {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor slot '{owner}.{slot}' is missing scalar field '{physical}'"
-                                ),
-                                location,
-                            ));
-                        };
-                        if actual != ty {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor slot field '{owner}.{physical}' changed type"
-                                ),
-                                location,
-                            ));
-                        }
-                        Ok(CallArgument::Place(Place {
-                            base: PlaceBase::Parameter(*parameter),
-                            projections: Vec::new(),
-                        }))
-                    }
-                    StructFieldShape::Array { name, element, len } => {
-                        let physical = physical_name(name);
-                        let Some(StructFieldReference::Array {
-                            parameter,
-                            element: actual_element,
-                            len: actual_len,
-                            ..
-                        }) = fields.iter().find(|field| {
-                            matches!(
-                                field,
-                                StructFieldReference::Array { name, .. } if *name == physical
-                            )
-                        })
-                        else {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor slot '{owner}.{slot}' is missing array field '{physical}'"
-                                ),
-                                location,
-                            ));
-                        };
-                        if actual_element != element || actual_len != len {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor slot array field '{owner}.{physical}' changed shape"
-                                ),
-                                location,
-                            ));
-                        }
-                        Ok(CallArgument::Place(Place {
-                            base: PlaceBase::Parameter(*parameter),
-                            projections: Vec::new(),
-                        }))
-                    }
-                })
-                .collect();
-        }
-
-        if matches!(
-            self.bindings.get(owner),
-            Some(Binding::StructArrayElementAlias { .. })
-        ) {
-            return shapes
-                .iter()
-                .map(|shape| match shape {
-                    StructFieldShape::Scalar { name, ty } => {
-                        let physical = format!("{owner}.{}", physical_name(name));
-                        let Some(Binding::SliceElementAlias {
-                            slice,
-                            element,
-                            index,
-                        }) = self.bindings.get(&physical)
-                        else {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor element alias '{owner}' is missing scalar field '{physical}'"
-                                ),
-                                location,
-                            ));
-                        };
-                        if element != ty {
-                            return Err(self.error(
-                                format!("nested processor alias field '{physical}' changed type"),
-                                location,
-                            ));
-                        }
-                        Ok(CallArgument::SliceElement {
-                            slice: Value::Local(*slice),
-                            index: Value::Local(*index),
-                            bounds: BoundsMode::Unchecked,
-                        })
-                    }
-                    StructFieldShape::Array { name, element, .. } => {
-                        let physical = format!("{owner}.{}", physical_name(name));
-                        let Some(Binding::Slice(slice, actual, access)) =
-                            self.bindings.get(&physical)
-                        else {
-                            return Err(self.error(
-                                format!(
-                                    "nested processor element alias '{owner}' is missing array field '{physical}'"
-                                ),
-                                location,
-                            ));
-                        };
-                        if actual != element || *access != onda_mir::AccessMode::ReadWrite {
-                            return Err(self.error(
-                                format!("nested processor alias array '{physical}' changed type"),
-                                location,
-                            ));
-                        }
-                        Ok(CallArgument::SliceWindow {
-                            slice: Value::Local(*slice),
-                            start: Value::Constant(ScalarValue::I32(0)),
-                            bounds: BoundsMode::Unchecked,
-                        })
-                    }
-                })
-                .collect();
-        }
-
-        let Some(globals) = self.runtime_globals else {
-            return Err(self.error(
-                format!("cannot resolve nested processor slot '{owner}.{slot}'"),
-                location,
-            ));
-        };
-        shapes
+        let shapes = shapes
             .iter()
             .map(|shape| match shape {
-                StructFieldShape::Scalar { name, ty } => {
-                    let physical = format!("{owner}.{}", physical_name(name));
-                    let Some((state, actual)) = globals.states.get(&physical).copied() else {
-                        return Err(self.error(
-                            format!(
-                                "nested processor slot '{owner}.{slot}' has no scalar state field '{physical}'"
-                            ),
-                            location,
-                        ));
-                    };
-                    if actual != *ty {
-                        return Err(self.error(
-                            format!("nested processor state field '{physical}' changed type"),
-                            location,
-                        ));
-                    }
-                    Ok(CallArgument::Place(Place {
-                        base: PlaceBase::State(state),
-                        projections: Vec::new(),
-                    }))
-                }
-                StructFieldShape::Array { name, element, len } => {
-                    let physical = format!("{owner}.{}", physical_name(name));
-                    let Some((state, actual_element, actual_len)) =
-                        globals.state_arrays.get(&physical).copied()
-                    else {
-                        return Err(self.error(
-                            format!(
-                                "nested processor slot '{owner}.{slot}' has no array state field '{physical}'"
-                            ),
-                            location,
-                        ));
-                    };
-                    if actual_element != *element || actual_len != *len {
-                        return Err(self.error(
-                            format!("nested processor state array '{physical}' changed shape"),
-                            location,
-                        ));
-                    }
-                    Ok(CallArgument::Place(Place {
-                        base: PlaceBase::State(state),
-                        projections: Vec::new(),
-                    }))
-                }
+                StructFieldShape::Scalar { name, ty } => StructFieldShape::Scalar {
+                    name: format!("{slot}__{name}"),
+                    ty: *ty,
+                },
+                StructFieldShape::Array { name, element, len } => StructFieldShape::Array {
+                    name: format!("{slot}__{name}"),
+                    element: *element,
+                    len: *len,
+                },
             })
-            .collect()
+            .collect::<Vec<_>>();
+        self.struct_reference_arguments(owner, &shapes, None, block, location)
     }
 
     pub(super) fn lower_nested_proc_array_argument(
@@ -496,7 +319,9 @@ impl<'a> FunctionLowerer<'a> {
         let alternatives = array
             .slots
             .iter()
-            .map(|slot| self.nested_proc_slot_call_arguments(&owner, slot, &shapes, location))
+            .map(|slot| {
+                self.nested_proc_slot_call_arguments(&owner, slot, &shapes, block, location)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(LoweredIndexedStructArgument::Dispatch {
             index: normalized,
@@ -575,6 +400,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         };
 
+        self.prepare_data_array_view(base, block, expression.loc())?;
         let shapes = self.struct_field_shapes(expected_struct, expression.loc())?;
         let (actual_struct, length, static_length, parameter_fields, runtime_root) =
             if let Some(Binding::StructArrayParameter {
@@ -654,9 +480,9 @@ impl<'a> FunctionLowerer<'a> {
 
         let mut fields = Vec::with_capacity(shapes.len());
         for shape in shapes {
-            let (field_name, expected_element, width) = match shape {
-                StructFieldShape::Scalar { name, ty } => (name, ty, 1),
-                StructFieldShape::Array { name, element, len } => (name, element, len),
+            let (field_name, expected_element, width, is_array) = match shape {
+                StructFieldShape::Scalar { name, ty } => (name, ty, 1, false),
+                StructFieldShape::Array { name, element, len } => (name, element, len, true),
             };
             let field_base = if let Some(parameter_fields) = &parameter_fields {
                 let (_, slice, actual_element) = parameter_fields
@@ -714,7 +540,7 @@ impl<'a> FunctionLowerer<'a> {
                         expression.loc(),
                     ));
                 }
-                if width == 1 {
+                if !is_array {
                     LoweredStructArrayFieldBase::State(state)
                 } else {
                     let slice = self.emit_slice_temp(
@@ -743,6 +569,7 @@ impl<'a> FunctionLowerer<'a> {
             fields.push(LoweredStructArrayField {
                 base: field_base,
                 width,
+                is_array,
             });
         }
 
@@ -789,7 +616,7 @@ impl<'a> FunctionLowerer<'a> {
                         )
                         .value
                     };
-                    call_args.push(if field.width == 1 {
+                    call_args.push(if !field.is_array {
                         CallArgument::SliceElement {
                             slice: Value::Local(slice),
                             index,
@@ -890,7 +717,7 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
 
-        let Some(globals) = self.runtime_globals else {
+        let Some(globals) = self.runtime_globals_for_unbound(root) else {
             return Err(self.error(
                 format!("call to '{callee_name}' cannot resolve proc-array argument '{root}'"),
                 expression.loc(),
@@ -996,7 +823,7 @@ impl<'a> FunctionLowerer<'a> {
         callee_name: &str,
         param_name: &str,
         kind: &TypedFnParam,
-        readonly_array_params: &HashSet<String>,
+        readonly_data_params: &HashSet<String>,
         expression: &Expr,
         block: &mut MirBlock,
     ) -> Result<PreparedCallArgument, MirLoweringError> {
@@ -1004,12 +831,25 @@ impl<'a> FunctionLowerer<'a> {
             TypedFnParam::Scalar { .. } => Ok(PreparedCallArgument::Scalar(
                 self.lower_expr(expression, block)?,
             )),
-            TypedFnParam::Array { elem_ty } => {
-                let access = if readonly_array_params.contains(param_name) {
+            TypedFnParam::Array { elem_ty, .. } => {
+                let access = if readonly_data_params.contains(param_name) {
                     onda_mir::AccessMode::ReadOnly
                 } else {
                     onda_mir::AccessMode::ReadWrite
                 };
+                let prepared_data = if matches!(expression, Expr::UserCall { .. }) {
+                    if let Some(data @ DataType::Array { .. }) = self.data_type_of(expression) {
+                        Some(
+                            Expr::var(self.lower_data_expr(expression, &data, block)?)
+                                .with_loc(expression.loc()),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let expression = prepared_data.as_ref().unwrap_or(expression);
                 let slice = if let Some(slice) =
                     self.lower_array_value_slice(expression, *elem_ty, access, block)?
                 {
@@ -1033,6 +873,18 @@ impl<'a> FunctionLowerer<'a> {
                 self.lower_value_expr(expression, block)?,
             )),
             TypedFnParam::Struct { struct_name } => {
+                if matches!(expression, Expr::UserCall { .. })
+                    && self.data_type_of(expression).is_some()
+                {
+                    let source = self.lower_data_expr(
+                        expression,
+                        &DataType::Struct(struct_name.clone()),
+                        block,
+                    )?;
+                    return Ok(PreparedCallArgument::DirectReference(
+                        Expr::var(source).with_loc(expression.loc()),
+                    ));
+                }
                 // Nested aliases already carry their evaluated dispatch index.
                 // Do not reinterpret them as a fresh indexed access.
                 if let Expr::Var { name, .. } = expression {
@@ -1060,7 +912,7 @@ impl<'a> FunctionLowerer<'a> {
                     || matches!(
                         expression,
                         Expr::Index { base, .. }
-                            if self.runtime_globals.is_some_and(|globals| globals.buffer_arrays.contains_key(base))
+                            if self.runtime_globals_for_unbound(base).is_some_and(|globals| globals.buffer_arrays.contains_key(base))
                                 || matches!(self.bindings.get(base), Some(Binding::BufferParameterArray(..)))
                     )
                     || matches!(
@@ -1107,7 +959,26 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 Ok(PreparedCallArgument::DirectReference(expression.clone()))
             }
-            TypedFnParam::ProcArray { .. } | TypedFnParam::StructArray { .. } => {
+            TypedFnParam::StructArray { .. } => {
+                if let Some(data @ DataType::Array { .. }) = self.data_type_of(expression) {
+                    let root = self.lower_data_expr(expression, &data, block)?;
+                    self.prepare_data_array_view(&root, block, expression.loc())?;
+                    return Ok(PreparedCallArgument::DirectReference(
+                        Expr::var(root).with_loc(expression.loc()),
+                    ));
+                }
+                let root = self.fresh_data_name();
+                if self.lower_struct_slice_alias(&root, expression, block)? {
+                    return Ok(PreparedCallArgument::DirectReference(
+                        Expr::var(root).with_loc(expression.loc()),
+                    ));
+                }
+                Err(self.error(
+                    "struct-array argument requires data with the expected element type",
+                    expression.loc(),
+                ))
+            }
+            TypedFnParam::ProcArray { .. } => {
                 if !matches!(expression, Expr::Var { .. }) {
                     return Err(self.error(
                         format!(
@@ -1241,6 +1112,18 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<Vec<LoweredValue>>, MirLoweringError> {
+        self.lower_user_call_into(name, type_args, args, None, location, block)
+    }
+
+    pub(super) fn lower_user_call_into(
+        &mut self,
+        name: &str,
+        type_args: &[onda_frontend::CallTypeArg],
+        args: &[onda_frontend::CallArg],
+        result_storage: Option<&str>,
+        location: SourceLoc,
+        block: &mut MirBlock,
+    ) -> Result<Option<Vec<LoweredValue>>, MirLoweringError> {
         if !type_args.is_empty() {
             return Err(self.error(
                 format!("call to '{name}' still has unresolved type arguments"),
@@ -1316,11 +1199,16 @@ impl<'a> FunctionLowerer<'a> {
         }
         let param_kinds = callee.param_kinds.clone();
         let param_names = callee.params.clone();
-        let readonly_array_params = callee.readonly_array_params.clone();
+        let readonly_data_params = callee.readonly_data_params.clone();
         let returns_value = callee.returns_value;
+        let data_result = match &callee.return_ty {
+            ReturnType::Data(data) => Some(data.clone()),
+            _ => None,
+        };
         let result_types = match &callee.return_ty {
             ReturnType::Scalar(ty) => vec![*ty],
             ReturnType::Tuple(types) => types.clone(),
+            ReturnType::Data(_) => Vec::new(),
         };
 
         // Argument binding determines ABI order, but it must not determine
@@ -1360,7 +1248,7 @@ impl<'a> FunctionLowerer<'a> {
                 name,
                 &param_names[parameter_index],
                 &param_kinds[parameter_index],
-                &readonly_array_params,
+                &readonly_data_params,
                 &argument.expr,
                 block,
             )?;
@@ -1382,7 +1270,7 @@ impl<'a> FunctionLowerer<'a> {
                 name,
                 &param_names[parameter_index],
                 &param_kinds[parameter_index],
-                &readonly_array_params,
+                &readonly_data_params,
                 &ordered_args[parameter_index],
                 block,
             )?);
@@ -1441,7 +1329,7 @@ impl<'a> FunctionLowerer<'a> {
                     let value = self.coerce(value, param_ty, block, expression.loc())?;
                     call_args.push(CallArgument::Value(value.value));
                 }
-                TypedFnParam::Array { elem_ty } => {
+                TypedFnParam::Array { elem_ty, len } => {
                     let PreparedCallArgument::Array(slice) = prepared else {
                         return Err(self.error(
                             format!(
@@ -1460,7 +1348,15 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     }
-                    call_args.push(CallArgument::Value(slice.value));
+                    call_args.push(if len.is_some() {
+                        CallArgument::SliceWindow {
+                            slice: slice.value,
+                            start: Value::Constant(ScalarValue::I32(0)),
+                            bounds: BoundsMode::Unchecked,
+                        }
+                    } else {
+                        CallArgument::Value(slice.value)
+                    });
                 }
                 TypedFnParam::Tuple { elem_tys } => {
                     let PreparedCallArgument::Tuple(values) = prepared else {
@@ -1812,6 +1708,11 @@ impl<'a> FunctionLowerer<'a> {
                     )?;
                 }
                 TypedFnParam::Struct { struct_name } => {
+                    let access = if readonly_data_params.contains(param_name) {
+                        onda_mir::AccessMode::ReadOnly
+                    } else {
+                        onda_mir::AccessMode::ReadWrite
+                    };
                     let (prepared_expression, indexed_argument) = match prepared {
                         PreparedCallArgument::DirectReference(expression) => (expression, None),
                         PreparedCallArgument::IndexedStruct(argument) => {
@@ -1828,7 +1729,7 @@ impl<'a> FunctionLowerer<'a> {
                     };
                     let expression = &prepared_expression;
                     if let Expr::Var { name: root, .. } = expression {
-                        if let Some(alias) = self.nested_proc_aliases.get(root).cloned() {
+                        if let Some(mut alias) = self.nested_proc_aliases.get(root).cloned() {
                             if alias.struct_name != *struct_name {
                                 return Err(self.error(
                                     format!(
@@ -1845,6 +1746,14 @@ impl<'a> FunctionLowerer<'a> {
                                     ),
                                     expression.loc(),
                                 ));
+                            }
+                            for alternative in &mut alias.alternatives {
+                                self.restrict_reference_arguments(
+                                    alternative,
+                                    access,
+                                    block,
+                                    expression.loc(),
+                                )?;
                             }
                             let Some(first) = alias.alternatives.first() else {
                                 return Err(self.error(
@@ -1871,16 +1780,23 @@ impl<'a> FunctionLowerer<'a> {
                         match argument {
                             LoweredIndexedStructArgument::Direct(argument) => {
                                 indexed_struct_selection = Some(argument.index);
+                                let start = call_args.len();
                                 self.append_indexed_struct_call_arguments(
                                     argument,
                                     expression.loc(),
                                     block,
                                     &mut call_args,
                                 );
+                                self.restrict_reference_arguments(
+                                    &mut call_args[start..],
+                                    access,
+                                    block,
+                                    expression.loc(),
+                                )?;
                             }
                             LoweredIndexedStructArgument::Dispatch {
                                 index,
-                                alternatives,
+                                mut alternatives,
                             } => {
                                 if pending_dispatch.is_some() {
                                     return Err(self.error(
@@ -1889,6 +1805,14 @@ impl<'a> FunctionLowerer<'a> {
                                         ),
                                         expression.loc(),
                                     ));
+                                }
+                                for alternative in &mut alternatives {
+                                    self.restrict_reference_arguments(
+                                        alternative,
+                                        access,
+                                        block,
+                                        expression.loc(),
+                                    )?;
                                 }
                                 let Some(first) = alternatives.first() else {
                                     return Err(self.error(
@@ -1922,247 +1846,13 @@ impl<'a> FunctionLowerer<'a> {
                     };
                     let expected_fields =
                         self.struct_field_shapes(struct_name, expression.loc())?;
-                    if let Some(Binding::StructParameter {
-                        struct_name: actual_struct,
-                        fields,
-                    }) = self.bindings.get(root).cloned()
-                    {
-                        if actual_struct != *struct_name {
-                            return Err(self.error(
-                                format!(
-                                    "call to '{name}' struct parameter '{param_name}' expected '{struct_name}', got '{actual_struct}'"
-                                ),
-                                expression.loc(),
-                            ));
-                        }
-                        for expected in expected_fields {
-                            match expected {
-                                StructFieldShape::Scalar {
-                                    name: field_name,
-                                    ty: expected_ty,
-                                } => {
-                                    let Some(StructFieldReference::Scalar {
-                                        parameter,
-                                        ty: actual_ty,
-                                        ..
-                                    }) = fields.iter().find(|candidate| {
-                                        matches!(
-                                            candidate,
-                                            StructFieldReference::Scalar { name, .. }
-                                                if *name == field_name
-                                        )
-                                    })
-                                    else {
-                                        return Err(self.error(
-                                            format!(
-                                                "forwarded struct parameter '{root}' is missing scalar field '{field_name}'"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    };
-                                    if *actual_ty != expected_ty {
-                                        return Err(self.error(
-                                            format!(
-                                                "forwarded struct field '{root}.{field_name}' changed type"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::Place(Place {
-                                        base: PlaceBase::Parameter(*parameter),
-                                        projections: Vec::new(),
-                                    }));
-                                }
-                                StructFieldShape::Array {
-                                    name: field_name,
-                                    element: expected_element,
-                                    len: expected_len,
-                                } => {
-                                    let Some(StructFieldReference::Array {
-                                        parameter,
-                                        element,
-                                        len,
-                                        ..
-                                    }) = fields.iter().find(|candidate| {
-                                        matches!(
-                                            candidate,
-                                            StructFieldReference::Array { name, .. }
-                                                if *name == field_name
-                                        )
-                                    })
-                                    else {
-                                        return Err(self.error(
-                                            format!(
-                                                "forwarded struct parameter '{root}' is missing array field '{field_name}'"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    };
-                                    if *element != expected_element || *len != expected_len {
-                                        return Err(self.error(
-                                            format!(
-                                                "forwarded struct array field '{root}.{field_name}' changed type or length"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::Place(Place {
-                                        base: PlaceBase::Parameter(*parameter),
-                                        projections: Vec::new(),
-                                    }));
-                                }
-                            }
-                        }
-                    } else if let Some(Binding::StructArrayElementAlias {
-                        struct_name: actual_struct,
-                    }) = self.bindings.get(root).cloned()
-                    {
-                        if actual_struct != *struct_name {
-                            return Err(self.error(
-                                format!(
-                                    "call to '{name}' struct parameter '{param_name}' expected '{struct_name}', got '{actual_struct}'"
-                                ),
-                                expression.loc(),
-                            ));
-                        }
-                        for expected in expected_fields {
-                            match expected {
-                                StructFieldShape::Scalar {
-                                    name: field_name,
-                                    ty: expected_ty,
-                                } => {
-                                    let binding_name = format!("{root}.{field_name}");
-                                    let Some(Binding::SliceElementAlias {
-                                        slice,
-                                        element,
-                                        index,
-                                    }) = self.bindings.get(&binding_name).cloned()
-                                    else {
-                                        return Err(self.error(
-                                            format!(
-                                                "struct-array element alias '{root}' is missing scalar field '{field_name}'"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    };
-                                    if element != expected_ty {
-                                        return Err(self.error(
-                                            format!(
-                                                "struct-array element field '{binding_name}' changed type"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::SliceElement {
-                                        slice: Value::Local(slice),
-                                        index: Value::Local(index),
-                                        bounds: BoundsMode::Unchecked,
-                                    });
-                                }
-                                StructFieldShape::Array {
-                                    name: field_name,
-                                    element: expected_element,
-                                    ..
-                                } => {
-                                    let binding_name = format!("{root}.{field_name}");
-                                    let Some(Binding::Slice(slice, element, access)) =
-                                        self.bindings.get(&binding_name).cloned()
-                                    else {
-                                        return Err(self.error(
-                                            format!(
-                                                "struct-array element alias '{root}' is missing array field '{field_name}'"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    };
-                                    if element != expected_element
-                                        || access != onda_mir::AccessMode::ReadWrite
-                                    {
-                                        return Err(self.error(
-                                            format!(
-                                                "struct-array element array field '{binding_name}' changed type or access"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::SliceWindow {
-                                        slice: Value::Local(slice),
-                                        start: Value::Constant(ScalarValue::I32(0)),
-                                        bounds: BoundsMode::Unchecked,
-                                    });
-                                }
-                            }
-                        }
-                    } else if let Some(globals) = self.runtime_globals {
-                        for expected in expected_fields {
-                            match expected {
-                                StructFieldShape::Scalar {
-                                    name: field_name,
-                                    ty: expected_ty,
-                                } => {
-                                    let flat = format!("{root}.{field_name}");
-                                    let (state, actual_ty) = globals
-                                        .states
-                                        .get(&flat)
-                                        .copied()
-                                        .ok_or_else(|| {
-                                            self.error(
-                                                format!(
-                                                    "call to '{name}' struct argument '{root}' has no scalar state field '{flat}'"
-                                                ),
-                                                expression.loc(),
-                                            )
-                                        })?;
-                                    if actual_ty != expected_ty {
-                                        return Err(self.error(
-                                            format!("struct state field '{flat}' changed type"),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::Place(Place {
-                                        base: PlaceBase::State(state),
-                                        projections: Vec::new(),
-                                    }));
-                                }
-                                StructFieldShape::Array {
-                                    name: field_name,
-                                    element: expected_element,
-                                    len: expected_len,
-                                } => {
-                                    let flat = format!("{root}.{field_name}");
-                                    let (state, element, len) = globals
-                                        .state_arrays
-                                        .get(&flat)
-                                        .copied()
-                                        .ok_or_else(|| {
-                                            self.error(
-                                                format!(
-                                                    "call to '{name}' struct argument '{root}' has no array state field '{flat}'"
-                                                ),
-                                                expression.loc(),
-                                            )
-                                        })?;
-                                    if element != expected_element || len != expected_len {
-                                        return Err(self.error(
-                                            format!(
-                                                "struct array state field '{flat}' changed type or length"
-                                            ),
-                                            expression.loc(),
-                                        ));
-                                    }
-                                    call_args.push(CallArgument::Place(Place {
-                                        base: PlaceBase::State(state),
-                                        projections: Vec::new(),
-                                    }));
-                                }
-                            }
-                        }
-                    } else {
-                        return Err(self.error(
-                            format!("call to '{name}' cannot resolve struct argument '{root}'"),
-                            expression.loc(),
-                        ));
-                    }
+                    call_args.extend(self.struct_reference_arguments(
+                        root,
+                        &expected_fields,
+                        Some(access),
+                        block,
+                        expression.loc(),
+                    )?);
                 }
                 TypedFnParam::ProcArray { proc_name, len } => {
                     let PreparedCallArgument::DirectReference(prepared_expression) = prepared
@@ -2184,7 +1874,7 @@ impl<'a> FunctionLowerer<'a> {
                         &mut call_args,
                     )?;
                 }
-                TypedFnParam::StructArray { struct_name } => {
+                TypedFnParam::StructArray { struct_name, .. } => {
                     let PreparedCallArgument::DirectReference(prepared_expression) = prepared
                     else {
                         return Err(self.error(
@@ -2203,6 +1893,7 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     };
+                    self.prepare_data_array_view(root, block, expression.loc())?;
                     let shapes = self.struct_field_shapes(struct_name, expression.loc())?;
                     if let Some(Binding::StructArrayParameter {
                         struct_name: actual_struct,
@@ -2245,9 +1936,21 @@ impl<'a> FunctionLowerer<'a> {
                                     expression.loc(),
                                 ));
                             }
-                            call_args.push(CallArgument::Value(Value::Local(*local)));
+                            let access = if readonly_data_params.contains(param_name) {
+                                onda_mir::AccessMode::ReadOnly
+                            } else {
+                                onda_mir::AccessMode::ReadWrite
+                            };
+                            let value = self.restrict_slice_access(
+                                *local,
+                                *actual_element,
+                                access,
+                                block,
+                                expression.loc(),
+                            )?;
+                            call_args.push(CallArgument::Value(value));
                         }
-                    } else if let Some(globals) = self.runtime_globals {
+                    } else if let Some(globals) = self.runtime_globals_for_unbound(root) {
                         let (actual_struct, len) = globals
                             .array_struct_roots
                             .get(root)
@@ -2298,7 +2001,11 @@ impl<'a> FunctionLowerer<'a> {
                             let slice = self.lower_named_slice(
                                 &flat,
                                 SliceSelection::default(),
-                                Some(onda_mir::AccessMode::ReadWrite),
+                                Some(if readonly_data_params.contains(param_name) {
+                                    onda_mir::AccessMode::ReadOnly
+                                } else {
+                                    onda_mir::AccessMode::ReadWrite
+                                }),
                                 block,
                                 expression.loc(),
                             )?;
@@ -2323,6 +2030,8 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 ));
             }
+            let call_args =
+                self.message_publication_arguments(&param_kinds, call_args, block, location)?;
             self.push_statement(
                 block,
                 StatementKind::PublishDelegate {
@@ -2343,6 +2052,40 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
+        let discarded_result_storage = if result_storage.is_none() {
+            if let Some(data) = data_result.as_ref() {
+                let storage = self.fresh_data_name();
+                self.allocate_data(&storage, data, location)?;
+                Some(storage)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let result_storage = result_storage.or(discarded_result_storage.as_deref());
+
+        let mut pending_data_copy = None;
+        if let Some(data) = data_result.as_ref() {
+            let destination = result_storage.expect("aggregate result storage prepared above");
+            let result_args = match self.data_result_arguments(destination, data, location)? {
+                Some(args) => args,
+                None => {
+                    // Result references require fixed caller-owned storage. A
+                    // selected aggregate can be slice-backed, so evaluate into
+                    // one owned temporary and commit the complete value after
+                    // the call instead of weakening the MIR ABI contract.
+                    let temporary = self.fresh_data_name();
+                    self.allocate_data(&temporary, data, location)?;
+                    let args = self
+                        .data_result_arguments(&temporary, data, location)?
+                        .expect("fresh data storage accepts result references");
+                    pending_data_copy = Some((destination.to_owned(), temporary, data.clone()));
+                    args
+                }
+            };
+            call_args.extend(result_args);
+        }
         let result = if returns_value {
             let locals = result_types
                 .iter()
@@ -2390,6 +2133,9 @@ impl<'a> FunctionLowerer<'a> {
                     .collect(),
             )
         };
+        if let Some((destination, temporary, data)) = pending_data_copy {
+            self.copy_data(&destination, &temporary, &data, block, location)?;
+        }
         Ok(result)
     }
 
@@ -2533,13 +2279,15 @@ impl<'a> FunctionLowerer<'a> {
             .and_then(|suffix| suffix.strip_prefix('.'))
         {
             let operation = match method {
-                crate::builtins::ARRAY_LEN_METHOD => Some((PrimitiveType::I32, 0_u8)),
-                crate::builtins::BUFFER_CHANS_METHOD => Some((PrimitiveType::I32, 1_u8)),
-                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some((PrimitiveType::F32, 2_u8)),
-                crate::builtins::BUFFER_BOUND_METHOD => Some((PrimitiveType::Bool, 3_u8)),
+                crate::builtins::ARRAY_LEN_METHOD => Some(0_u8),
+                crate::builtins::BUFFER_CHANS_METHOD => Some(1_u8),
+                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some(2_u8),
+                crate::builtins::BUFFER_BOUND_METHOD => Some(3_u8),
                 _ => None,
             };
-            if let Some((ty, operation)) = operation {
+            if let Some(operation) = operation {
+                let ty = crate::builtins::builtin_instance_method_return_type(method)
+                    .expect("buffer metadata operation has a scalar return type");
                 let base = args
                     .iter()
                     .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
@@ -2597,6 +2345,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
         if let Some(base) = parse_array_len_instance_base(name) {
+            self.prepare_data_array_view(base, block, location)?;
             if let Some(Binding::StructArrayParameter { length, .. }) =
                 self.bindings.get(base).cloned()
             {
@@ -2680,7 +2429,7 @@ impl<'a> FunctionLowerer<'a> {
                     ty: PrimitiveType::I32,
                 }));
             }
-            if let Some(Binding::Slice(local, _, _)) = self.bindings.get(base).cloned() {
+            if let Some(Binding::Slice(local, _, _, _)) = self.bindings.get(base).cloned() {
                 if !args.is_empty() {
                     return Err(self.error(
                         format!("slice length call '{name}' unexpectedly has arguments"),
@@ -2711,7 +2460,7 @@ impl<'a> FunctionLowerer<'a> {
                 .get(base)
                 .map(|(_, _, len)| *len)
                 .or_else(|| {
-                    self.runtime_globals.and_then(|globals| {
+                    self.runtime_globals_for_unbound(base).and_then(|globals| {
                         globals
                             .state_arrays
                             .get(base)
@@ -2862,7 +2611,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         let buffer_array = if selected_buffer.is_none() {
-            self.runtime_globals
+            self.runtime_globals_for_unbound(&base)
                 .and_then(|globals| globals.buffer_arrays.get(&base).copied())
         } else {
             None
@@ -2885,12 +2634,14 @@ impl<'a> FunctionLowerer<'a> {
                     | Binding::EventArrayParameter(..)
             )
         ) || self.const_arrays.contains_key(&base)
-            || self.runtime_globals.is_some_and(|globals| {
-                globals.state_arrays.contains_key(&base)
-                    || globals.input_arrays.contains_key(&base)
-                    || globals.output_arrays.contains_key(&base)
-                    || globals.param_arrays.contains_key(&base)
-            });
+            || self
+                .runtime_globals_for_unbound(&base)
+                .is_some_and(|globals| {
+                    globals.state_arrays.contains_key(&base)
+                        || globals.input_arrays.contains_key(&base)
+                        || globals.output_arrays.contains_key(&base)
+                        || globals.param_arrays.contains_key(&base)
+                });
         let has_channel = if unsafe_access {
             !plain_indexed && operands.len() == usize::from(has_selector) + 2
         } else {
@@ -2944,7 +2695,7 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 )));
             }
-            if let Some(Binding::Slice(local, ty, _)) = self.bindings.get(&base).cloned() {
+            if let Some(Binding::Slice(local, ty, _, _)) = self.bindings.get(&base).cloned() {
                 return Ok(Some(self.emit_temp(
                     block,
                     ty,
@@ -3225,7 +2976,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         let buffer_array = if selected_buffer.is_none() {
-            self.runtime_globals
+            self.runtime_globals_for_unbound(&base)
                 .and_then(|globals| globals.buffer_arrays.get(&base).copied())
         } else {
             None
@@ -3247,11 +2998,13 @@ impl<'a> FunctionLowerer<'a> {
                     | Binding::Slice(..)
                     | Binding::EventArrayParameter(..)
             )
-        ) || self.runtime_globals.is_some_and(|globals| {
-            globals.state_arrays.contains_key(&base)
-                || globals.output_arrays.contains_key(&base)
-                || globals.control_output_arrays.contains_key(&base)
-        });
+        ) || self
+            .runtime_globals_for_unbound(&base)
+            .is_some_and(|globals| {
+                globals.state_arrays.contains_key(&base)
+                    || globals.output_arrays.contains_key(&base)
+                    || globals.control_output_arrays.contains_key(&base)
+            });
         let has_channel = if unsafe_access {
             !plain_indexed && operands.len() == usize::from(has_selector) + 3
         } else {
@@ -3319,7 +3072,7 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 return Ok(true);
             }
-            if let Some(Binding::Slice(local, ty, access)) = self.bindings.get(&base).cloned() {
+            if let Some(Binding::Slice(local, ty, access, _)) = self.bindings.get(&base).cloned() {
                 if access != onda_mir::AccessMode::ReadWrite {
                     return Err(self.error(format!("slice '{base}' is read-only"), location));
                 }

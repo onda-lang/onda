@@ -152,6 +152,8 @@ pub fn is_reserved_word(name: &str) -> bool {
 
 mod expr_stmt;
 use expr_stmt::*;
+mod place_parsing;
+use place_parsing::*;
 
 mod block_parsing;
 use block_parsing::*;
@@ -212,6 +214,51 @@ pub(super) fn syntax_at_pair(pair: &Pair<'_, Rule>, message: impl Into<String>) 
         Diagnostic::syntax(message, 0, 0)
     } else {
         Diagnostic::syntax_at(message, &loc)
+    }
+}
+
+fn validate_numeric_literals(pair: &Pair<'_, Rule>) -> Result<(), Vec<Diagnostic>> {
+    let mut errors = Vec::new();
+    let mut pending = vec![pair.clone()];
+    while let Some(pair) = pending.pop() {
+        if matches!(pair.as_rule(), Rule::number | Rule::signed_number) {
+            let signed = pair.as_rule() == Rule::signed_number;
+            let number = if signed {
+                pair.clone()
+                    .into_inner()
+                    .next()
+                    .expect("signed_number rule must contain a number")
+            } else {
+                pair.clone()
+            };
+            let text = number.as_str();
+            let valid = if text.contains('.') {
+                text.parse::<f64>().is_ok_and(f64::is_finite)
+            } else if signed {
+                text.parse::<u64>()
+                    .is_ok_and(|magnitude| magnitude <= (i64::MAX as u64) + 1)
+            } else {
+                text.parse::<i64>().is_ok()
+            };
+            if !valid {
+                let kind = if text.contains('.') {
+                    "floating-point"
+                } else {
+                    "integer"
+                };
+                errors.push(syntax_at_pair(
+                    &pair,
+                    format!("{kind} literal is out of range"),
+                ));
+            }
+        } else {
+            pending.extend(pair.into_inner());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 

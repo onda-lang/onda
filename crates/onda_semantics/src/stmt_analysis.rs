@@ -25,7 +25,7 @@ pub(crate) struct StmtExprAnalysisEnv<'a> {
     pub(crate) param_names: &'a HashSet<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct ScopeFlowState {
     pub(crate) known_scalars: HashSet<String>,
     pub(crate) local_aliases: LocalAliasTypes,
@@ -38,6 +38,42 @@ pub(crate) struct ScopeFlowState {
 }
 
 impl ScopeFlowState {
+    pub(crate) fn shadow_binding(&mut self, root: &str) {
+        self.known_scalars
+            .retain(|name| !path_is_within_root(name, root));
+        shadow_rooted_entries(&mut self.local_aliases, root);
+        shadow_rooted_entries(&mut self.integer_ranges, root);
+        shadow_rooted_entries(&mut self.local_array_aliases, root);
+        shadow_rooted_entries(&mut self.local_buffer_aliases, root);
+        shadow_rooted_entries(&mut self.local_proc_aliases, root);
+        shadow_rooted_entries(&mut self.local_struct_aliases, root);
+        shadow_rooted_entries(&mut self.tuple_vars, root);
+    }
+    /// Carry lexical bindings into the next executable region without replacing
+    /// that region's independently constructed interface/permission seeds.
+    pub(crate) fn inherit_bindings(&mut self, previous: &Self) {
+        fn inherit<T: Clone>(target: &mut HashMap<String, T>, source: &HashMap<String, T>) {
+            for (name, value) in source {
+                target.entry(name.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        self.known_scalars
+            .extend(previous.known_scalars.iter().cloned());
+        inherit(&mut self.local_aliases, &previous.local_aliases);
+        inherit(&mut self.integer_ranges, &previous.integer_ranges);
+        inherit(&mut self.local_array_aliases, &previous.local_array_aliases);
+        inherit(
+            &mut self.local_buffer_aliases,
+            &previous.local_buffer_aliases,
+        );
+        inherit(&mut self.local_proc_aliases, &previous.local_proc_aliases);
+        inherit(
+            &mut self.local_struct_aliases,
+            &previous.local_struct_aliases,
+        );
+        inherit(&mut self.tuple_vars, &previous.tuple_vars);
+    }
+
     pub(crate) fn from_parts(
         known_scalars: HashSet<String>,
         local_aliases: LocalAliasTypes,
@@ -268,6 +304,9 @@ pub(crate) fn merge_branch_scope_flow_state(
                 }
                 let mut info = then_info.clone();
                 info.len = then_info.len.max(else_info.len);
+                info.proven_len = then_info
+                    .proven_len
+                    .filter(|len| Some(*len) == else_info.proven_len);
                 info.writable = then_info.writable && else_info.writable;
                 local_array_aliases.insert(name.clone(), info);
                 true
@@ -805,6 +844,87 @@ pub(crate) fn clear_tuple_var_bindings<'a>(
     }
 }
 
+pub(crate) fn analyze_tuple_destructuring_expr(
+    expr: &Expr,
+    target_count: usize,
+    target_loc: SourceLoc,
+    env: StmtExprAnalysisEnv<'_>,
+    state_tuples: &HashMap<String, Vec<PrimitiveType>>,
+    fn_return_types: &HashMap<String, ReturnType>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<PrimitiveType>> {
+    validate_expr(expr, env.expr_env, errors);
+    let types = infer_tracked_tuple_types(
+        expr,
+        env.expr_env.tuple_vars,
+        env.local_aliases,
+        Some(state_tuples),
+        env.expr_env.struct_instances,
+        env.expr_env.struct_defs,
+        fn_return_types,
+        |value| infer_stmt_expr_type(value, env, errors),
+    );
+    let arity = types
+        .as_ref()
+        .map(Vec::len)
+        .or_else(|| infer_tracked_tuple_arity(expr, env.expr_env.tuple_vars, fn_return_types));
+    if let Some(arity) = arity {
+        if target_count != arity {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "tuple destructuring has {target_count} targets but the right-hand side has {arity} elements"
+                ),
+                target_loc,
+            ));
+        }
+    }
+    types
+}
+
+pub(crate) fn validate_struct_slice_assignment(
+    expr: &Expr,
+    expected: &str,
+    target_loc: SourceLoc,
+    env: StmtExprAnalysisEnv<'_>,
+    infer_data_like: impl FnOnce(&mut Vec<Diagnostic>) -> Option<LocalArrayAliasInfo>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let fixed = infer_fixed_data_type(expr, env.expr_env);
+    let resolved_view = if fixed.is_none() {
+        infer_data_like(errors)
+    } else {
+        None
+    };
+    let actual = match &fixed {
+        Some(DataType::Struct(name))
+        | Some(DataType::Array {
+            element: ArrayElemType::Struct(name),
+            ..
+        }) => Some(name.as_str()),
+        _ => resolved_view
+            .as_ref()
+            .and_then(|info| info.elem_struct.as_deref()),
+    };
+    if actual != Some(expected) {
+        let expected = DataType::Struct(expected.to_owned());
+        let actual = actual.map(|name| DataType::Struct(name.to_owned()));
+        errors.push(Diagnostic::semantic_span(
+            format!(
+                "struct slice assignment {}",
+                data_type_mismatch(&expected, actual.as_ref())
+            ),
+            target_loc,
+        ));
+    }
+    if fixed.is_some() {
+        validate_fixed_data_expr(expr, env.expr_env, errors);
+    } else if resolved_view.is_none() || !matches!(expr, Expr::Var { .. }) {
+        // Resolved bare views have no scalar expression to validate. Slices
+        // still pass through expression validation for their authored bounds.
+        validate_expr(expr, env.expr_env, errors);
+    }
+}
+
 pub(crate) fn validate_and_infer_stmt_expr_type(
     expr: &Expr,
     env: StmtExprAnalysisEnv<'_>,
@@ -975,6 +1095,10 @@ pub(crate) fn analyze_proc_event_arg_expr(
             return;
         }
     }
+    if infer_fixed_data_type(expr, env.expr_env).is_some() {
+        validate_fixed_data_expr(expr, env.expr_env, errors);
+        return;
+    }
     if is_data_like_value_expr(expr, env) {
         validate_data_like_value_expr(expr, env, errors);
         return;
@@ -1018,6 +1142,20 @@ pub(crate) fn validate_for_loop_step_expr(
             ));
         }
     }
+}
+
+pub(crate) fn prove_static_slice_len(
+    total_len: Option<usize>,
+    start: Option<&Expr>,
+    end: Option<&Expr>,
+) -> Option<usize> {
+    let total_len = total_len?;
+    for bound in [start, end].into_iter().flatten() {
+        i32::try_from(const_slice_bound_i64(bound)?).ok()?;
+    }
+    let start = normalize_static_slice_bound(start, total_len, false);
+    let end = normalize_static_slice_bound(end, total_len, true);
+    Some(end.saturating_sub(start))
 }
 
 pub(crate) fn infer_static_slice_len_hint(

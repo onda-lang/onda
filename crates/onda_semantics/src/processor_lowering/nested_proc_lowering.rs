@@ -1,6 +1,7 @@
 use super::*;
 use crate::proc_call_rewrite::{
-    expand_proc_output_tuple_assignments, lower_named_proc_param_calls_in_stmts,
+    can_resolve_proc_index_base, expand_proc_output_tuple_assignments,
+    lower_named_proc_param_calls_in_stmts,
 };
 
 pub(super) fn rewrite_nested_proc_calls_in_expr(
@@ -11,7 +12,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let expr_diag = DiagCtx::new(expr.loc());
+    let expr_loc = expr.loc();
+    let expr_diag = DiagCtx::new(expr_loc);
     match expr {
         Expr::Index { index, .. } => rewrite_nested_proc_calls_in_expr(
             index,
@@ -117,6 +119,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                 );
             }
             if *name == PROC_INDEX_CALL_SENTINEL {
+                if !can_resolve_proc_index_base(args, proc_array_slots) {
+                    return;
+                }
                 let Some(index_target) = resolve_proc_index_target_mut(
                     args,
                     proc_array_slots,
@@ -170,8 +175,13 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                                 Expr::var(resolved_slot.clone())
                             },
                         });
-                        let expanded_inputs =
-                            expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
+                        let expanded_inputs = expand_proc_call_args(
+                            args,
+                            api,
+                            resolved_slot.as_str(),
+                            expr_diag,
+                            errors,
+                        );
                         rewritten.extend(expanded_inputs);
                         let expanded_buffers = expand_proc_buffer_call_args(
                             instance,
@@ -233,6 +243,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             &array_base,
                             &index_expr,
                             access,
+                            expr_diag,
                             errors,
                         );
                         *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}0");
@@ -244,6 +255,9 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some(var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let var = if var_raw == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -306,6 +320,26 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                     else {
                         return;
                     };
+                    match resolve_readable_proc_param_field(
+                        &api,
+                        &proc_name,
+                        &field_name,
+                        &array_base,
+                        expr_diag,
+                        errors,
+                    ) {
+                        ProcParamFieldRead::Readable(param) => {
+                            *expr = indexed_read_expr(
+                                format!("{array_base}.{}", param.name),
+                                index_expr,
+                                access,
+                                expr_loc.into(),
+                            );
+                            return;
+                        }
+                        ProcParamFieldRead::Rejected => return,
+                        ProcParamFieldRead::NotParam => {}
+                    }
                     let Some(out_idx) = resolve_proc_output_field_index(
                         &api,
                         &field_name,
@@ -322,6 +356,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         &array_base,
                         &index_expr,
                         access,
+                        expr_diag,
                         errors,
                     );
                     *name = format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{out_idx}");
@@ -339,6 +374,21 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         );
                         return;
                     };
+                    match resolve_readable_proc_param_field(
+                        api,
+                        &proc_name,
+                        &field_name,
+                        &var,
+                        expr_diag,
+                        errors,
+                    ) {
+                        ProcParamFieldRead::Readable(param) => {
+                            *expr = Expr::var(format!("{var}.{}", param.name));
+                            return;
+                        }
+                        ProcParamFieldRead::Rejected => return,
+                        ProcParamFieldRead::NotParam => {}
+                    }
                     let Some(out_idx) = resolve_proc_output_field_index(
                         api,
                         &field_name,
@@ -363,7 +413,8 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                             expr: Expr::var("self"),
                         });
                     }
-                    let expanded_args = expand_proc_call_args(args, api, var.as_str(), errors);
+                    let expanded_args =
+                        expand_proc_call_args(args, api, var.as_str(), expr_diag, errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, var.as_str(), errors);
@@ -424,7 +475,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         expr: Expr::var("self"),
                     });
                 }
-                let expanded_args = expand_proc_call_args(args, api, name, errors);
+                let expanded_args = expand_proc_call_args(args, api, name, expr_diag, errors);
                 rewritten.extend(expanded_args);
                 let expanded_buffers =
                     expand_proc_buffer_call_args(instance, api, &nested_var, errors);
@@ -448,9 +499,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
             if let Some((base_raw, event_name)) = split_dot_path(name) {
                 let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
-                    if proc_index_base_name(args)
-                        .is_some_and(|base| !proc_array_slots.contains_key(base))
-                    {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
                     }
                     let Some(index_target) = resolve_proc_index_target_mut(
@@ -691,6 +740,9 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                     );
                 }
                 if *name == PROC_INDEX_CALL_SENTINEL {
+                    if !can_resolve_proc_index_base(args, proc_array_slots) {
+                        return;
+                    }
                     let Some(index_target) = resolve_proc_index_target_mut(
                         args,
                         proc_array_slots,
@@ -731,8 +783,13 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                                     Expr::var(resolved_slot.clone())
                                 },
                             });
-                            let expanded_args =
-                                expand_proc_call_args(args, api, resolved_slot.as_str(), errors);
+                            let expanded_args = expand_proc_call_args(
+                                args,
+                                api,
+                                resolved_slot.as_str(),
+                                diag,
+                                errors,
+                            );
                             rewritten.extend(expanded_args);
                             let expanded_buffers = expand_proc_buffer_call_args(
                                 instance,
@@ -780,6 +837,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                                 &array_base,
                                 &index_expr,
                                 access,
+                                diag,
                                 errors,
                             );
                             *name = format!("{proc_name}{PROC_STEP_FN_SUFFIX}");
@@ -814,7 +872,7 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
                             expr: Expr::var("self"),
                         });
                     }
-                    let expanded_args = expand_proc_call_args(args, api, &nested_var, errors);
+                    let expanded_args = expand_proc_call_args(args, api, &nested_var, diag, errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, &nested_var, errors);
@@ -853,6 +911,9 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
 
                     let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
                     let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
+                        if !can_resolve_proc_index_base(args, proc_array_slots) {
+                            return;
+                        }
                         let Some(index_target) = resolve_proc_index_target_mut(
                             args,
                             proc_array_slots,
@@ -1137,7 +1198,6 @@ pub(super) fn rewrite_owner_proc_stmt(
     mut stmt: Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_field_names: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -1162,7 +1222,6 @@ pub(super) fn rewrite_owner_proc_stmt(
         &stmt,
         owner_proc,
         field_names,
-        array_field_names,
         ins_names,
         field_array_slots,
         in_array_slots,
@@ -1175,7 +1234,6 @@ pub(super) fn rewrite_owner_proc_stmts(
     mut stmts: Vec<Stmt>,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_field_names: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -1206,7 +1264,6 @@ pub(super) fn rewrite_owner_proc_stmts(
                 stmt,
                 owner_proc,
                 field_names,
-                array_field_names,
                 ins_names,
                 field_array_slots,
                 in_array_slots,
@@ -1760,14 +1817,20 @@ pub(super) fn lower_callee_stmt_for_nested_wrapper(
             &stmt,
             owner_proc,
             &callee_shape.field_names,
-            &callee_shape.array_field_names,
             callee_ins_names,
             &mapped_field_array_slots,
             callee_in_array_slots,
             errors,
         )?;
         let mut lowered = lowered;
-        prefix_self_fields_in_stmt(&mut lowered, nested_path, &callee_shape.field_names);
+        // Explicit self paths still address the child even when a parameter
+        // shadows the corresponding implicit field name.
+        let explicit_fields = callee_shape
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect();
+        prefix_self_fields_in_stmt(&mut lowered, nested_path, &explicit_fields);
         Some(lowered)
     })
 }

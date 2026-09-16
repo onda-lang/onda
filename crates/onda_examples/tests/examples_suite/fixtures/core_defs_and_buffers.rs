@@ -68,6 +68,7 @@ sample {
 #[cfg(feature = "llvm-orc")]
 const RESERVED_METHOD_NAMES_EXAMPLE: &str = r#"
 struct Ops {
+  marker = 0.0
   def len(self) { return 1.25 }
   def chans(self) { return 0.25 }
 }
@@ -357,7 +358,7 @@ def read_delay(v, idx) {
   return v.delay[idx] * v.gain
 }
 init {
-  v = Voice(0.5)
+  v = Voice(gain = 0.5)
   v.delay[0.0] = 2.0
 }
 sample {
@@ -397,8 +398,8 @@ init {
   v = voices[0]
   v.taps[1] = 2.0
   voices[1].gain = 3.0
-  v = voices[1]
-  v.taps[1] = 4.0
+  second = voices[1]
+  second.taps[1] = 4.0
 }
 sample {
   out1 = read_mix(voices, idx)
@@ -710,6 +711,7 @@ sample {
 const STRUCT_METHOD_OVERLOAD_EXAMPLE: &str = r#"
 outs { out1 }
 struct V {
+  marker = 0.0
   def run(self, x) {
     return x
   }

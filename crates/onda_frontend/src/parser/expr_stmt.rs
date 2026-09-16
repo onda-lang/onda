@@ -5,56 +5,84 @@ pub(super) fn parse_stmt_list_pair(
 ) -> Result<Vec<Stmt>, Vec<Diagnostic>> {
     let mut stmts = Vec::new();
     for stmt_pair in stmt_list_pair.into_inner() {
-        stmts.push(parse_stmt(stmt_pair)?);
+        stmts.extend(parse_stmt_expanded(stmt_pair)?);
     }
     Ok(stmts)
 }
 
+struct ParsedInitStatements {
+    body: Vec<Stmt>,
+    pinned_roots: Vec<String>,
+    compiler_scratch_roots: Vec<String>,
+}
+
+fn compiler_scratch_root(stmt: &Stmt) -> Option<&str> {
+    match stmt {
+        Stmt::Assign {
+            target: AssignTarget::Var(root),
+            ..
+        } if is_internal_place_name(root) => Some(root),
+        _ => None,
+    }
+}
+
 fn parse_init_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,
-) -> Result<(Vec<Stmt>, Vec<String>), Vec<Diagnostic>> {
+) -> Result<ParsedInitStatements, Vec<Diagnostic>> {
     let mut stmts = Vec::new();
     let mut pinned_roots = Vec::new();
+    let mut compiler_scratch_roots = Vec::new();
     let mut assigned_roots = HashSet::new();
     for stmt_pair in stmt_list_pair.into_inner() {
         let pinned = stmt_pair.as_rule() == Rule::pinned_assign_stmt;
-        let stmt = if pinned {
-            parse_pinned_assign_stmt(stmt_pair)?
+        let parsed = if pinned {
+            vec![parse_pinned_assign_stmt(stmt_pair)?]
         } else {
-            parse_stmt(stmt_pair)?
+            parse_stmt_expanded(stmt_pair)?
         };
-        if let Stmt::Assign { target, .. } = &stmt {
-            match target {
-                AssignTarget::Var(root) => {
-                    if pinned {
-                        if !assigned_roots.insert(root.clone()) {
-                            return Err(vec![syntax_at_loc(
-                                stmt.loc().as_ref(),
-                                format!(
-                                    "'pin' requires a fresh state binding; '{root}' was already assigned"
-                                ),
-                            )]);
-                        }
-                        pinned_roots.push(root.clone());
-                    } else {
-                        assigned_roots.insert(root.clone());
-                    }
-                }
-                AssignTarget::Tuple(roots) => {
-                    debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
-                    assigned_roots.extend(
-                        roots
-                            .iter()
-                            .filter_map(TupleAssignTarget::binding)
-                            .map(str::to_owned),
-                    );
-                }
-                AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+        for stmt in parsed {
+            if let Some(root) = compiler_scratch_root(&stmt) {
+                compiler_scratch_roots.push(root.to_owned());
             }
+            if let Stmt::Assign { target, .. } = &stmt {
+                match target {
+                    AssignTarget::Var(root) => {
+                        if pinned {
+                            if !assigned_roots.insert(root.clone()) {
+                                return Err(vec![syntax_at_loc(
+                                    stmt.loc().as_ref(),
+                                    format!(
+                                        "'pin' requires a fresh state binding; '{root}' was already assigned"
+                                    ),
+                                )]);
+                            }
+                            pinned_roots.push(root.clone());
+                        } else {
+                            assigned_roots.insert(root.clone());
+                        }
+                    }
+                    AssignTarget::Tuple(roots) => {
+                        debug_assert!(!pinned, "pinned tuple targets are rejected by the grammar");
+                        assigned_roots.extend(
+                            roots
+                                .iter()
+                                .filter_map(TupleAssignTarget::binding)
+                                .map(str::to_owned),
+                        );
+                    }
+                    AssignTarget::Index { .. }
+                    | AssignTarget::IndexedMember { .. }
+                    | AssignTarget::Slice { .. } => {}
+                }
+            }
+            stmts.push(stmt);
         }
-        stmts.push(stmt);
     }
-    Ok((stmts, pinned_roots))
+    Ok(ParsedInitStatements {
+        body: stmts,
+        pinned_roots,
+        compiler_scratch_roots,
+    })
 }
 
 pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, Vec<Diagnostic>> {
@@ -68,13 +96,17 @@ pub(super) fn parse_exec_block(block_pair: Pair<'_, Rule>) -> Result<InitBlock, 
                 default_ty = Some(parse_init_default_decl_type(child)?);
             }
             Rule::stmt_list => {
-                let (body, pinned_roots) = parse_init_stmt_list_pair(child)?;
+                let ParsedInitStatements {
+                    body,
+                    pinned_roots,
+                    compiler_scratch_roots,
+                } = parse_init_stmt_list_pair(child)?;
                 return Ok(InitBlock {
                     loc,
                     default_ty,
                     default_ty_loc,
                     pinned_roots,
-                    compiler_scratch_roots: Vec::new(),
+                    compiler_scratch_roots,
                     body,
                 });
             }
@@ -157,6 +189,7 @@ pub(super) fn parse_block_exec_block(
     let loc = stmt_loc_from_pair(&block_pair);
     let mut pre = Vec::new();
     let mut post = Vec::new();
+    let mut compiler_scratch_roots = Vec::new();
     let mut nested_sample: Option<SampleBlock> = None;
 
     for child in block_pair.into_inner() {
@@ -176,17 +209,24 @@ pub(super) fn parse_block_exec_block(
                 continue;
             }
 
-            let stmt = parse_stmt(item)?;
+            let statements = parse_stmt_expanded(item)?;
+            compiler_scratch_roots.extend(
+                statements
+                    .iter()
+                    .filter_map(compiler_scratch_root)
+                    .map(str::to_owned),
+            );
             if nested_sample.is_some() {
-                post.push(stmt);
+                post.extend(statements);
             } else {
-                pre.push(stmt);
+                pre.extend(statements);
             }
         }
     }
 
     Ok(BlockExec {
         loc,
+        compiler_scratch_roots,
         pre,
         sample: nested_sample,
         post,
@@ -517,6 +557,35 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 )]);
             }
             match ty_pair.as_rule() {
+                Rule::fn_typed_array_param => {
+                    let Some(expr_pair) = expr_pair else {
+                        return Err(vec![syntax_at_loc(
+                            loc.as_ref(),
+                            "slice declaration requires an initializer",
+                        )]);
+                    };
+                    let element = ty_pair
+                        .into_inner()
+                        .next()
+                        .expect("slice grammar has an element type");
+                    let element = if element.as_rule() == Rule::type_name {
+                        ArrayElemType::Primitive(
+                            parse_primitive_type(element.as_str()).map_err(|d| vec![d])?,
+                        )
+                    } else {
+                        ArrayElemType::Struct(element.as_str().to_owned())
+                    };
+                    Ok(Stmt::Assign {
+                        loc,
+                        target_loc: stmt_loc_from_pair(&name_pair),
+                        target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                        decl_ty: Some(DeclType::Slice(element)),
+                        generic_decl_ty: None,
+                        is_typed_decl: true,
+                        typed_decl_ty_loc,
+                        expr: parse_expr(expr_pair)?,
+                    })
+                }
                 Rule::type_name => {
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![syntax_at_loc(
@@ -554,18 +623,32 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 }
                 Rule::array_type => {
                     let spec = parse_array_type_spec(ty_pair)?;
+                    let mut init_is_value = false;
                     let init = if let Some(expr_pair) = expr_pair {
                         let init_expr = parse_expr(expr_pair)?;
                         match init_expr {
                             Expr::ArrayLiteral { values, .. } => Some(values),
                             other => {
                                 if matches!(spec.elem, ArrayElemType::Struct(_)) {
+                                    init_is_value = true;
                                     Some(vec![other])
                                 } else {
-                                    return Err(vec![syntax_at_loc(
-                                        loc.as_ref(),
-                                        "array typed declaration initializer must be an array literal like [a, b, ...]",
-                                    )]);
+                                    let ArrayElemType::Primitive(elem) = spec.elem else {
+                                        unreachable!()
+                                    };
+                                    return Ok(Stmt::Assign {
+                                        loc,
+                                        target_loc: stmt_loc_from_pair(&name_pair),
+                                        target: AssignTarget::Var(name_pair.as_str().to_owned()),
+                                        decl_ty: Some(DeclType::Array {
+                                            elem,
+                                            size: *spec.size,
+                                        }),
+                                        generic_decl_ty: None,
+                                        is_typed_decl: true,
+                                        typed_decl_ty_loc,
+                                        expr: other,
+                                    });
                                 }
                             }
                         }
@@ -585,12 +668,17 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                             spec,
                             init,
                             initialize: true,
+                            init_is_value,
                         },
                     })
                 }
                 Rule::named_type => {
+                    let declared_type = ty_pair
+                        .as_str()
+                        .chars()
+                        .filter(|ch| !ch.is_whitespace())
+                        .collect::<String>();
                     let (decl_name, decl_type_args) = parse_named_type_ref(ty_pair)?;
-                    let missing_decl_type_args = decl_type_args.is_empty();
                     let mut expr = if let Some(expr_pair) = expr_pair {
                         parse_expr(expr_pair)?
                     } else {
@@ -613,7 +701,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 target: AssignTarget::Var(name_pair.as_str().to_owned()),
                                 decl_ty: None,
                                 generic_decl_ty: None,
-                                is_typed_decl: missing_decl_type_args,
+                                is_typed_decl: true,
                                 typed_decl_ty_loc,
                                 expr,
                             });
@@ -624,7 +712,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
-                        generic_decl_ty: Some(decl_name),
+                        generic_decl_ty: Some(declared_type),
                         is_typed_decl: true,
                         typed_decl_ty_loc,
                         expr,
@@ -660,61 +748,10 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 )]),
             }
         }
-        Rule::compound_assign_stmt => {
-            let mut compound_inner = kind_pair.into_inner();
-            let Some(target_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment target",
-                )]);
-            };
-            let Some(op_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment operator",
-                )]);
-            };
-            let Some(rhs_pair) = compound_inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing compound assignment expression",
-                )]);
-            };
-            let op = match op_pair.as_str() {
-                "+=" => BinaryOp::Add,
-                "-=" => BinaryOp::Sub,
-                "*=" => BinaryOp::Mul,
-                "/=" => BinaryOp::Div,
-                "%=" => BinaryOp::Mod,
-                "&=" => BinaryOp::BitAnd,
-                "|=" => BinaryOp::BitOr,
-                "^=" => BinaryOp::BitXor,
-                "<<=" => BinaryOp::ShiftLeft,
-                ">>=" => BinaryOp::ShiftRight,
-                other => {
-                    return Err(vec![syntax_at_pair(
-                        &op_pair,
-                        format!("unknown compound assignment operator '{other}'"),
-                    )]);
-                }
-            };
-            let target_name = target_pair.as_str().to_owned();
-            Ok(Stmt::Assign {
-                loc,
-                target_loc: stmt_loc_from_pair(&target_pair),
-                target: AssignTarget::Var(target_name.clone()),
-                decl_ty: None,
-                generic_decl_ty: None,
-                is_typed_decl: false,
-                typed_decl_ty_loc: Span::ZERO,
-                expr: Expr::Binary {
-                    loc,
-                    op,
-                    lhs: Box::new(Expr::var(target_name)),
-                    rhs: Box::new(parse_expr(rhs_pair)?),
-                },
-            })
-        }
+        Rule::compound_assign_stmt => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "internal parser error: compound assignment requires place expansion",
+        )]),
         Rule::inferred_ranged_assign_stmt => {
             let mut ranged_inner = kind_pair.into_inner();
             let Some(name_pair) = ranged_inner.next() else {
@@ -1130,19 +1167,23 @@ pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Di
             continue;
         }
         for stmt_pair in child.into_inner() {
-            stmts.push(parse_stmt(stmt_pair)?);
+            stmts.extend(parse_stmt_expanded(stmt_pair)?);
         }
     }
     Ok(stmts)
 }
 
 pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::expr && pair.as_rule() != Rule::graph_expr {
+    if !matches!(
+        pair.as_rule(),
+        Rule::expr | Rule::multiline_expr | Rule::graph_expr | Rule::multiline_graph_expr
+    ) {
         return Err(vec![syntax_at_pair(
             &pair,
             "internal parser error: expected expression pair",
         )]);
     }
+    validate_numeric_literals(&pair)?;
     Ok(parse_expr_inner(pair))
 }
 
@@ -1317,20 +1358,36 @@ pub(super) fn parse_expr_inner(pair: Pair<'_, Rule>) -> Expr {
 pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
     let loc = stmt_loc_from_pair(&pair);
     match pair.as_rule() {
-        Rule::number => {
-            let text = pair.as_str();
-            if text.contains('.') {
-                Expr::number(
-                    text.parse::<f64>()
-                        .expect("pest number rule produced invalid float literal"),
-                )
-                .with_loc(loc)
+        Rule::number | Rule::signed_number => {
+            let signed = pair.as_rule() == Rule::signed_number;
+            let number = if signed {
+                pair.into_inner()
+                    .next()
+                    .expect("signed_number rule must contain a number")
             } else {
-                Expr::int(
+                pair
+            };
+            let text = number.as_str();
+            if text.contains('.') {
+                let value = text
+                    .parse::<f64>()
+                    .expect("validated pest number rule produced invalid float literal");
+                Expr::number(if signed { -value } else { value }).with_loc(loc)
+            } else {
+                let value = if signed {
+                    let magnitude = text
+                        .parse::<u64>()
+                        .expect("validated pest number rule produced invalid integer literal");
+                    if magnitude == (i64::MAX as u64) + 1 {
+                        i64::MIN
+                    } else {
+                        -(magnitude as i64)
+                    }
+                } else {
                     text.parse::<i64>()
-                        .expect("pest number rule produced invalid int literal"),
-                )
-                .with_loc(loc)
+                        .expect("validated pest number rule produced invalid integer literal")
+                };
+                Expr::int(value).with_loc(loc)
             }
         }
         Rule::bool_lit => Expr::bool(pair.as_str() == "true").with_loc(loc),
@@ -1572,7 +1629,9 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .collect();
             Expr::Tuple { loc, values }
         }
-        Rule::expr | Rule::graph_expr => parse_expr_inner(pair),
+        Rule::expr | Rule::multiline_expr | Rule::graph_expr | Rule::multiline_graph_expr => {
+            parse_expr_inner(pair)
+        }
         _ => unreachable!("unexpected primary expression token"),
     }
 }

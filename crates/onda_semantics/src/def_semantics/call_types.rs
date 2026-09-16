@@ -248,90 +248,71 @@ impl CallTypeEnv {
     }
 
     pub(crate) fn shadow_binding(&mut self, name: &str) {
-        let child_prefix = format!("{name}.");
         self.unresolved_bindings
-            .retain(|binding| binding != name && !binding.starts_with(&child_prefix));
-        self.scalar_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.struct_instances
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.array_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.buffer_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.buffer_array_lens
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
-        self.tuple_elem_types
-            .retain(|binding, _| binding != name && !binding.starts_with(&child_prefix));
+            .retain(|binding| !crate::path_is_within_root(binding, name));
+        crate::shadow_rooted_entries(&mut self.scalar_types, name);
+        crate::shadow_rooted_entries(&mut self.struct_instances, name);
+        crate::shadow_rooted_entries(&mut self.array_types, name);
+        crate::shadow_rooted_entries(&mut self.buffer_types, name);
+        crate::shadow_rooted_entries(&mut self.buffer_array_lens, name);
+        crate::shadow_rooted_entries(&mut self.tuple_elem_types, name);
     }
 
     /// Retains facts with a representable common type and shape on every path
     /// through a branch. Numeric scalars and tuple elements use the same join
     /// rule as return inference and MIR branch lowering.
     pub(crate) fn intersect_with(&mut self, other: &Self) {
-        let common_bindings = self
-            .binding_names()
-            .intersection(&other.binding_names())
-            .cloned()
-            .collect::<HashSet<_>>();
-        self.scalar_types = self
-            .scalar_types
-            .iter()
-            .filter_map(|(name, lhs)| {
-                let rhs = other.scalar_types.get(name)?;
-                merge_inferred_return_types(*lhs, *rhs).map(|ty| (name.clone(), ty))
-            })
-            .collect();
-        self.struct_instances
-            .retain(|name, ty| other.struct_instances.get(name) == Some(ty));
-        self.array_types
-            .retain(|name, ty| other.array_types.get(name) == Some(ty));
-        let common_buffer_types = self
-            .buffer_types
-            .iter()
-            .filter_map(|(name, ty)| {
-                (other.buffer_types.get(name) == Some(ty)
-                    && self.buffer_array_lens.get(name) == other.buffer_array_lens.get(name))
-                .then_some(name.clone())
-            })
-            .collect::<HashSet<_>>();
-        self.buffer_types
-            .retain(|name, _| common_buffer_types.contains(name));
-        self.buffer_array_lens
-            .retain(|name, _| common_buffer_types.contains(name));
-        self.tuple_elem_types = self
-            .tuple_elem_types
-            .iter()
-            .filter_map(|(name, lhs)| {
-                let rhs = other.tuple_elem_types.get(name)?;
-                if lhs.len() != rhs.len() {
-                    return None;
-                }
-                lhs.iter()
-                    .zip(rhs)
-                    .map(|(lhs, rhs)| merge_inferred_return_types(*lhs, *rhs))
-                    .collect::<Option<Vec<_>>>()
-                    .map(|types| (name.clone(), types))
-            })
-            .collect();
+        let mut common_bindings = std::mem::take(&mut self.unresolved_bindings);
+        common_bindings.retain(|name| other.has_binding(name));
+        let mut retain_or_mark_unresolved = |name: &str, resolved: bool| {
+            if !resolved && other.has_binding(name) {
+                common_bindings.insert(name.to_owned());
+            }
+            resolved
+        };
 
-        self.unresolved_bindings = common_bindings
-            .into_iter()
-            .filter(|name| !self.has_concrete_binding(name))
-            .collect();
-    }
+        self.scalar_types.retain(|name, lhs| {
+            let merged = other
+                .scalar_types
+                .get(name)
+                .and_then(|rhs| merge_inferred_return_types(*lhs, *rhs));
+            if let Some(merged) = merged {
+                *lhs = merged;
+            }
+            retain_or_mark_unresolved(name, merged.is_some())
+        });
+        self.struct_instances.retain(|name, ty| {
+            retain_or_mark_unresolved(name, other.struct_instances.get(name) == Some(ty))
+        });
+        self.array_types.retain(|name, ty| {
+            retain_or_mark_unresolved(name, other.array_types.get(name) == Some(ty))
+        });
+        self.buffer_types.retain(|name, ty| {
+            let resolved = other.buffer_types.get(name) == Some(ty)
+                && self.buffer_array_lens.get(name) == other.buffer_array_lens.get(name);
+            retain_or_mark_unresolved(name, resolved)
+        });
+        self.buffer_array_lens.retain(|name, _| {
+            retain_or_mark_unresolved(name, self.buffer_types.contains_key(name))
+        });
+        self.tuple_elem_types.retain(|name, lhs| {
+            let Some(rhs) = other.tuple_elem_types.get(name) else {
+                return retain_or_mark_unresolved(name, false);
+            };
+            if lhs.len() != rhs.len() {
+                return retain_or_mark_unresolved(name, false);
+            }
+            for (lhs, rhs) in lhs.iter_mut().zip(rhs) {
+                let Some(merged) = merge_inferred_return_types(*lhs, *rhs) else {
+                    return retain_or_mark_unresolved(name, false);
+                };
+                *lhs = merged;
+            }
+            true
+        });
 
-    fn binding_names(&self) -> HashSet<String> {
-        self.unresolved_bindings
-            .iter()
-            .chain(self.scalar_types.keys())
-            .chain(self.struct_instances.keys())
-            .chain(self.array_types.keys())
-            .chain(self.buffer_types.keys())
-            .chain(self.buffer_array_lens.keys())
-            .chain(self.tuple_elem_types.keys())
-            .cloned()
-            .collect()
+        common_bindings.retain(|name| !self.has_concrete_binding(name));
+        self.unresolved_bindings = common_bindings;
     }
 
     fn has_concrete_binding(&self, name: &str) -> bool {
@@ -403,6 +384,39 @@ pub(crate) fn const_positive_usize_for_call_type(expr: &Expr) -> Option<usize> {
 pub(crate) struct CallTypeContext<'a> {
     pub(crate) return_types: &'a HashMap<String, ReturnType>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+}
+
+/// Resolves the concrete portion of an authored return annotation for early
+/// call-type inference. Nominal names are retained here; callers that require
+/// a fully declared data layout must validate them against their struct table.
+pub(crate) fn declared_call_return_type(def: &FunctionDef) -> Option<ReturnType> {
+    match def.return_ty.as_ref()? {
+        FnReturnType::Scalar(FnReturnScalarType::Primitive(ty)) => Some(ReturnType::Scalar(*ty)),
+        FnReturnType::Scalar(FnReturnScalarType::Named(name))
+            if !def.type_params.contains(name) =>
+        {
+            Some(ReturnType::Data(DataType::Struct(name.clone())))
+        }
+        FnReturnType::Array { elem, size } => Some(ReturnType::Data(DataType::Array {
+            element: match elem {
+                FnReturnScalarType::Primitive(ty) => ArrayElemType::Primitive(*ty),
+                FnReturnScalarType::Named(name) if !def.type_params.contains(name) => {
+                    ArrayElemType::Struct(name.clone())
+                }
+                FnReturnScalarType::Named(_) => return None,
+            },
+            len: const_positive_usize_for_call_type(size)?,
+        })),
+        FnReturnType::Tuple(elements) => elements
+            .iter()
+            .map(|element| match element {
+                FnReturnScalarType::Primitive(ty) => Some(*ty),
+                FnReturnScalarType::Named(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(ReturnType::Tuple),
+        FnReturnType::Scalar(FnReturnScalarType::Named(_)) => None,
+    }
 }
 
 /// Whether a source signature still contains a call-site-dependent type or
@@ -491,6 +505,10 @@ pub(crate) fn infer_struct_expr_type(
             }
         }
         Expr::UserCall { name, .. } if context.struct_defs.contains_key(name) => Some(name.clone()),
+        Expr::UserCall { name, .. } => match context.return_types.get(name) {
+            Some(ReturnType::Data(crate::DataType::Struct(name))) => Some(name.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -509,137 +527,171 @@ pub(crate) fn infer_scalar_expr_type(
     env: &CallTypeEnv,
     context: CallTypeContext<'_>,
 ) -> Option<PrimitiveType> {
-    match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { .. } => untyped_literal_type(expr),
-        Expr::Bool { .. } => Some(PrimitiveType::Bool),
-        Expr::Cast { to, .. } => Some(*to),
-        Expr::Var { name, .. } => {
-            if let Some(ty) = builtin_constant_type(name) {
-                return Some(ty);
+    expr.try_fold(
+        |node, children| match node {
+            Expr::Binary { .. } | Expr::UnaryBitNot { .. } | Expr::Call { .. } => {
+                node.children(children)
             }
-            if let Some(ty) = env.scalar_types.get(name).copied() {
-                return Some(ty);
-            }
-            match lookup_struct_field(name, env, context)?.ty {
-                TypedFieldType::Scalar(ty) => Some(ty),
-                TypedFieldType::Struct | TypedFieldType::Array(_) | TypedFieldType::Tuple(_) => {
-                    None
-                }
-            }
-        }
-        Expr::Index { base, index, .. } => {
-            if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
-                return Some(elem_ty);
-            }
-            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
-                return (!env.buffer_array_lens.contains_key(base)).then_some(*elem_ty);
-            }
-            let tuple_elems = infer_tuple_symbol_elem_types(base, env, context)?;
-            let Expr::Int { value, .. } = index.as_ref() else {
-                return None;
-            };
-            usize::try_from(*value)
-                .ok()
-                .and_then(|index| tuple_elems.get(index).copied())
-        }
-        Expr::UserCall { name, args, .. } => {
-            if let Some(base) = parse_array_len_instance_base(name) {
-                if infer_array_symbol_type(base, env, context).is_some()
-                    || env.buffer_types.contains_key(base)
-                {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_chans_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::I32);
-                }
-            }
-            if let Some(base) = parse_buffer_bound_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::Bool);
-                }
-            }
-            if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-                if env.buffer_types.contains_key(base) {
-                    return Some(PrimitiveType::F32);
-                }
-            }
-            if is_internal_buffer_2d_fn(name) {
-                if is_builtin_buffer_write_function_name(name) {
-                    return None;
-                }
-                if let Some(first) = args.first() {
-                    let base = match &first.expr {
-                        Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
-                        _ => return None,
-                    };
-                    if let Some((elem_ty, _)) = env.buffer_types.get(base) {
-                        return Some(*elem_ty);
+            _ => {}
+        },
+        |expr, children: &mut std::vec::Drain<'_, PrimitiveType>| {
+            (|| match expr {
+                Expr::Number { .. } => Some(PrimitiveType::F32),
+                Expr::Int { .. } => untyped_literal_type(expr),
+                Expr::Bool { .. } => Some(PrimitiveType::Bool),
+                Expr::Cast { to, .. } => Some(*to),
+                Expr::Var { name, .. } => {
+                    if let Some(ty) = builtin_constant_type(name) {
+                        return Some(ty);
                     }
+                    if let Some(ty) = env.scalar_types.get(name).copied() {
+                        return Some(ty);
+                    }
+                    match lookup_struct_field(name, env, context)?.ty {
+                        TypedFieldType::Scalar(ty) => Some(ty),
+                        TypedFieldType::Struct
+                        | TypedFieldType::Array(_)
+                        | TypedFieldType::Tuple(_) => None,
+                    }
+                }
+                Expr::Index { base, index, .. } => {
                     if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
                         return Some(elem_ty);
                     }
+                    if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                        return (!env.buffer_array_lens.contains_key(base)).then_some(*elem_ty);
+                    }
+                    let tuple_elems = infer_tuple_symbol_elem_types(base, env, context)?;
+                    let Expr::Int { value, .. } = index.as_ref() else {
+                        return None;
+                    };
+                    usize::try_from(*value)
+                        .ok()
+                        .and_then(|index| tuple_elems.get(index).copied())
                 }
-            }
-            if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
-                let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
-                let field_name = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
-                let array_ty = infer_array_symbol_type(base, env, context)?;
-                let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
-                    return None;
-                };
-                let field =
-                    resolve_struct_field_decl(&struct_name, field_name, context.struct_defs)?;
-                return match field.ty {
-                    TypedFieldType::Scalar(ty) => Some(ty),
-                    TypedFieldType::Struct
-                    | TypedFieldType::Array(_)
-                    | TypedFieldType::Tuple(_) => None,
-                };
-            }
-            context.return_types.get(name).and_then(ReturnType::scalar)
-        }
-        Expr::Binary { op, lhs, rhs, .. } => {
-            let lhs_ty = infer_scalar_expr_type(lhs, env, context)?;
-            let rhs_ty = infer_scalar_expr_type(rhs, env, context)?;
-            let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
-            match op {
-                BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor
-                | BinaryOp::ShiftLeft
-                | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
-                    (PrimitiveType::I64, PrimitiveType::I32)
-                    | (PrimitiveType::I32, PrimitiveType::I64)
-                    | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
-                    (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
-                    _ => None,
-                },
-                _ => merge_numeric_types_without_diagnostics(lhs_ty, rhs_ty),
-            }
-        }
-        Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
-            Some(PrimitiveType::Bool)
-        }
-        Expr::UnaryBitNot { expr, .. } => {
-            let ty = infer_scalar_expr_type(expr, env, context)?;
-            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
-        }
-        Expr::Call { func, args, .. } => {
-            let arg_types = args
-                .iter()
-                .map(|arg| infer_scalar_expr_type(arg, env, context))
-                .collect::<Option<Vec<_>>>()?;
-            let arg_types = adapt_numeric_argument_types(args, &arg_types);
-            intrinsic_result_type(*func, &arg_types)
-        }
-        Expr::ArrayLiteral { .. }
-        | Expr::Tuple { .. }
-        | Expr::Slice { .. }
-        | Expr::ArrayCtor { .. } => None,
-    }
+                Expr::UserCall { name, args, .. } => {
+                    if let Some(result) = name
+                        .strip_prefix(crate::internal_names::PROC_INDEX_CALL_SENTINEL)
+                        .and_then(|suffix| suffix.strip_prefix('.'))
+                        .and_then(builtin_instance_method_return_type)
+                    {
+                        return Some(result);
+                    }
+                    if let Some(base) = parse_array_len_instance_base(name) {
+                        if infer_array_symbol_type(base, env, context).is_some()
+                            || env.buffer_types.contains_key(base)
+                        {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_chans_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_bound_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::Bool);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_samplerate_instance_base(name) {
+                        if env.buffer_types.contains_key(base) {
+                            return Some(PrimitiveType::F32);
+                        }
+                    }
+                    if is_internal_buffer_2d_fn(name) {
+                        if is_builtin_buffer_write_function_name(name) {
+                            return None;
+                        }
+                        if let Some(first) = args.first() {
+                            let base = match &first.expr {
+                                Expr::Var { name: base, .. } | Expr::Index { base, .. } => base,
+                                _ => return None,
+                            };
+                            if let Some((elem_ty, _)) = env.buffer_types.get(base) {
+                                return Some(*elem_ty);
+                            }
+                            if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context)
+                            {
+                                return Some(elem_ty);
+                            }
+                        }
+                    }
+                    if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+                        let (base, _, field, field_index) =
+                            crate::array_structs::extract_safi_args(args)?;
+                        let array_ty = infer_array_symbol_type(&base, env, context)?;
+                        let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
+                            return None;
+                        };
+                        return resolve_indexed_struct_field_scalar_type(
+                            &struct_name,
+                            &field,
+                            &field_index,
+                            context.struct_defs,
+                        );
+                    }
+                    if name == &format!("{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}") {
+                        let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
+                        let field_name = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
+                        let array_ty = infer_array_symbol_type(base, env, context)?;
+                        let CallArrayElemType::Nominal(struct_name) = array_ty.elem else {
+                            return None;
+                        };
+                        let field = resolve_struct_field_decl(
+                            &struct_name,
+                            field_name,
+                            context.struct_defs,
+                        )?;
+                        return match field.ty {
+                            TypedFieldType::Scalar(ty) => Some(ty),
+                            TypedFieldType::Struct
+                            | TypedFieldType::Array(_)
+                            | TypedFieldType::Tuple(_) => None,
+                        };
+                    }
+                    context.return_types.get(name).and_then(ReturnType::scalar)
+                }
+                Expr::Binary { op, lhs, rhs, .. } => {
+                    let lhs_ty = children.next()?;
+                    let rhs_ty = children.next()?;
+                    let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
+                    match op {
+                        BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::ShiftLeft
+                        | BinaryOp::ShiftRight => match (lhs_ty, rhs_ty) {
+                            (PrimitiveType::I64, PrimitiveType::I32)
+                            | (PrimitiveType::I32, PrimitiveType::I64)
+                            | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
+                            (PrimitiveType::I32, PrimitiveType::I32) => Some(PrimitiveType::I32),
+                            _ => None,
+                        },
+                        _ => merge_numeric_types_without_diagnostics(lhs_ty, rhs_ty),
+                    }
+                }
+                Expr::Compare { .. } | Expr::Logical { .. } | Expr::UnaryNot { .. } => {
+                    Some(PrimitiveType::Bool)
+                }
+                Expr::UnaryBitNot { .. } => {
+                    let ty = children.next()?;
+                    matches!(ty, PrimitiveType::I32 | PrimitiveType::I64).then_some(ty)
+                }
+                Expr::Call { func, args, .. } => {
+                    let arg_types = children.collect::<Vec<_>>();
+                    let arg_types = adapt_numeric_argument_types(args, &arg_types);
+                    intrinsic_result_type(*func, &arg_types)
+                }
+                Expr::ArrayLiteral { .. }
+                | Expr::Tuple { .. }
+                | Expr::Slice { .. }
+                | Expr::ArrayCtor { .. } => None,
+            })()
+            .ok_or(())
+        },
+    )
+    .ok()
 }
 
 fn named_call_var_arg<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a str> {
@@ -742,6 +794,18 @@ pub(crate) fn infer_array_arg_type(
     context: CallTypeContext<'_>,
 ) -> Option<CallArrayType> {
     match expr {
+        Expr::UserCall { name, .. } => match context.return_types.get(name) {
+            Some(ReturnType::Data(crate::DataType::Array { element, len })) => {
+                Some(CallArrayType {
+                    elem: match element {
+                        ArrayElemType::Primitive(ty) => CallArrayElemType::Primitive(*ty),
+                        ArrayElemType::Struct(name) => CallArrayElemType::Nominal(name.clone()),
+                    },
+                    len: Some(*len),
+                })
+            }
+            _ => None,
+        },
         Expr::Var { name, .. } => infer_array_symbol_type(name, env, context),
         Expr::Slice { base, .. } => infer_array_symbol_type(base, env, context)
             .map(|mut ty| {
@@ -847,6 +911,21 @@ pub(crate) fn update_call_type_env_after_assign(
 
     if let Some(declared) = decl_ty {
         match declared {
+            DeclType::Slice(element) => {
+                let element = match element {
+                    ArrayElemType::Primitive(ty) => CallArrayElemType::Primitive(*ty),
+                    ArrayElemType::Struct(name) => CallArrayElemType::Nominal(name.clone()),
+                };
+                env.shadow_binding(name);
+                env.array_types.insert(
+                    name.clone(),
+                    CallArrayType {
+                        elem: element,
+                        len: None,
+                    },
+                );
+                return;
+            }
             DeclType::Scalar(ty) => {
                 env.shadow_binding(name);
                 env.scalar_types.insert(name.clone(), *ty);

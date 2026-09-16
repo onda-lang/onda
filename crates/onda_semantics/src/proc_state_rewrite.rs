@@ -28,6 +28,7 @@ pub(crate) struct ProcApi {
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) delegates: HashMap<String, ProcEventSpec>,
     pub(crate) buffers: Vec<ProcBufferSpec>,
+    pub(crate) steppable: bool,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
 }
@@ -90,8 +91,12 @@ pub(crate) struct ProcEventParamSpec {
     pub(crate) default: Option<Expr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProcEventParamTypeSpec {
+    StructSlice { name: String },
+    Tuple(Vec<PrimitiveType>),
+    Struct { name: String },
+    StructArray { name: String, len: usize },
     Scalar { ty: PrimitiveType },
     FixedArray { elem_ty: PrimitiveType, len: usize },
     Slice { elem_ty: PrimitiveType },
@@ -134,6 +139,16 @@ impl ProcStateFields {
 
     pub(crate) fn has_any(&self, name: &str) -> bool {
         self.scalars.contains_key(name) || self.has_non_scalar(name)
+    }
+
+    pub(crate) fn remove_root(&mut self, root: &str) {
+        let keep = |name: &String| !path_is_within_root(name, root);
+        self.scalars.retain(|name, _| keep(name));
+        self.tuples.retain(|name, _| keep(name));
+        self.data.retain(|name, _| keep(name));
+        self.nested_procs.retain(|name, _| keep(name));
+        self.nested_proc_arrays.retain(|name, _| keep(name));
+        self.struct_instances.retain(|name, _| keep(name));
     }
 }
 
@@ -185,6 +200,37 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
         }
     }
 
+    // Semantic struct leaves are addressable bindings, not separate owned
+    // fields. Proc layout expands each nominal owner exactly once.
+    for (name, root) in &st.state_array_struct_roots {
+        if !st.nested_proc_arrays.contains_key(name) {
+            psf.data
+                .entry(name.clone())
+                .or_insert_with(|| ArrayTypeSpec {
+                    elem: ArrayElemType::Struct(root.struct_name.clone()),
+                    size: Box::new(Expr::int(root.len as i64)),
+                });
+        }
+    }
+    let owners = st
+        .struct_instances
+        .keys()
+        .chain(st.state_array_struct_roots.keys())
+        .collect::<HashSet<_>>();
+    let is_leaf = |name: &String| {
+        let mut parent = name.as_str();
+        while let Some((prefix, _)) = parent.rsplit_once('.') {
+            if owners.contains(&prefix.to_owned()) {
+                return true;
+            }
+            parent = prefix;
+        }
+        false
+    };
+    psf.scalars.retain(|name, _| !is_leaf(name));
+    psf.tuples.retain(|name, _| !is_leaf(name));
+    psf.data.retain(|name, _| !is_leaf(name));
+
     // Nested procs and proc arrays
     psf.nested_procs = st.nested_procs.clone();
     psf.nested_proc_arrays = st.nested_proc_arrays.clone();
@@ -205,6 +251,7 @@ pub(crate) fn convert_init_state_to_proc_fields(st: &InitAnalysisState) -> ProcS
         );
     }
 
+    psf.struct_instances.retain(|name, _| !is_leaf(name));
     psf
 }
 
@@ -750,11 +797,26 @@ pub(crate) fn rewrite_proc_expr_symbols(
     }
 }
 
+fn qualify_proc_assignment_base(
+    base: &str,
+    field_names: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) -> String {
+    if field_names.contains(base) && is_plain_symbol(base) {
+        return format!("self.{base}");
+    }
+    if let Some((root, field)) = split_field_path(base, errors) {
+        if field_names.contains(root) && is_plain_symbol(root) {
+            return format!("self.{root}.{field}");
+        }
+    }
+    base.to_owned()
+}
+
 pub(crate) fn rewrite_proc_stmt_symbols(
     stmt: &Stmt,
     owner_proc: &str,
     field_names: &HashSet<String>,
-    array_fields: &HashSet<String>,
     ins_names: &HashSet<String>,
     field_array_slots: &HashMap<String, Vec<String>>,
     in_array_slots: &HashMap<String, Vec<String>>,
@@ -805,7 +867,35 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     in_array_slots,
                     errors,
                 );
-                match target {
+                let mut target_rewritten = target.clone();
+                target_rewritten.visit_selectors_mut(|selector| {
+                    rewrite_proc_expr_symbols(
+                        selector,
+                        owner_proc,
+                        field_names,
+                        field_array_slots,
+                        in_array_slots,
+                        errors,
+                    );
+                });
+                let proc_array_member = match &target_rewritten {
+                    AssignTarget::IndexedMember {
+                        base,
+                        index,
+                        field,
+                        field_index: None,
+                    } => {
+                        let base = format!("{base}.{field}");
+                        field_array_slots
+                            .contains_key(&base)
+                            .then(|| (base, index.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((base, index)) = proc_array_member {
+                    target_rewritten = AssignTarget::Index { base, index };
+                }
+                match &target_rewritten {
                     AssignTarget::Var(name) => {
                         if ins_names.contains(name) {
                             push_semantic(
@@ -825,10 +915,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             });
                         }
                         if field_names.contains(name) && is_plain_symbol(name) {
-                            if matches!(expr, Expr::ArrayCtor { .. }) && array_fields.contains(name)
-                            {
-                                return None;
-                            }
                             return Some(Stmt::Assign {
                                 loc: source_loc.into(),
                                 target_loc: Default::default(),
@@ -866,22 +952,13 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         })
                     }
                     AssignTarget::Index { base, index } => {
-                        let mut idx_rewritten = index.clone();
-                        rewrite_proc_expr_symbols(
-                            &mut idx_rewritten,
-                            owner_proc,
-                            field_names,
-                            field_array_slots,
-                            in_array_slots,
-                            errors,
-                        );
                         if let Some(slots) = in_array_slots.get(base) {
                             push_semantic(
                                 diag,
                                 errors,
                                 format!("cannot assign to processor input '{base}'"),
                             );
-                            if let Some(raw_idx) = try_constant_index_i64(&idx_rewritten) {
+                            if let Some(raw_idx) = try_constant_index_i64(index) {
                                 if let Some(slot_idx) = resolve_proc_constant_slot_index(
                                     raw_idx,
                                     slots.len(),
@@ -904,7 +981,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             }
                         }
                         if let Some(slots) = field_array_slots.get(base) {
-                            if let Some(raw_idx) = try_constant_index_i64(&idx_rewritten) {
+                            if let Some(raw_idx) = try_constant_index_i64(index) {
                                 let Some(slot_idx) = resolve_proc_constant_slot_index(
                                     raw_idx,
                                     slots.len(),
@@ -916,7 +993,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         target_loc: Default::default(),
                                         target: AssignTarget::Index {
                                             base: base.clone(),
-                                            index: idx_rewritten,
+                                            index: index.clone(),
                                         },
                                         decl_ty: decl_ty.clone(),
                                         generic_decl_ty: generic_decl_ty.clone(),
@@ -951,7 +1028,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             },
                                             CallArg {
                                                 name: None,
-                                                expr: idx_rewritten,
+                                                expr: index.clone(),
                                             },
                                             CallArg {
                                                 name: None,
@@ -962,23 +1039,13 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 });
                             }
                         }
-                        let target_base = if field_names.contains(base) && is_plain_symbol(base) {
-                            format!("self.{base}")
-                        } else if let Some((root, field)) = split_field_path(base, errors) {
-                            if field_names.contains(root) && is_plain_symbol(root) {
-                                format!("self.{root}.{field}")
-                            } else {
-                                base.clone()
-                            }
-                        } else {
-                            base.clone()
-                        };
+                        let target_base = qualify_proc_assignment_base(base, field_names, errors);
                         Some(Stmt::Assign {
                             loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Index {
                                 base: target_base,
-                                index: idx_rewritten,
+                                index: index.clone(),
                             },
                             decl_ty: None,
                             generic_decl_ty: None,
@@ -994,28 +1061,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         start,
                         end,
                     } => {
-                        let mut selector_rewritten = selector.clone();
-                        let mut channel_rewritten = channel.clone();
-                        let mut start_rewritten = start.clone();
-                        let mut end_rewritten = end.clone();
-                        for coordinate in [
-                            selector_rewritten.as_mut(),
-                            channel_rewritten.as_mut(),
-                            start_rewritten.as_mut(),
-                            end_rewritten.as_mut(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        {
-                            rewrite_proc_expr_symbols(
-                                coordinate,
-                                owner_proc,
-                                field_names,
-                                field_array_slots,
-                                in_array_slots,
-                                errors,
-                            );
-                        }
                         if in_array_slots.contains_key(base) {
                             push_semantic(
                                 diag,
@@ -1023,26 +1068,16 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 format!("cannot assign to processor input '{base}'"),
                             );
                         }
-                        let target_base = if field_names.contains(base) && is_plain_symbol(base) {
-                            format!("self.{base}")
-                        } else if let Some((root, field)) = split_field_path(base, errors) {
-                            if field_names.contains(root) && is_plain_symbol(root) {
-                                format!("self.{root}.{field}")
-                            } else {
-                                base.clone()
-                            }
-                        } else {
-                            base.clone()
-                        };
+                        let target_base = qualify_proc_assignment_base(base, field_names, errors);
                         Some(Stmt::Assign {
                             loc: source_loc.into(),
                             target_loc: Default::default(),
                             target: AssignTarget::Slice {
                                 base: target_base,
-                                selector: selector_rewritten,
-                                channel: channel_rewritten,
-                                start: start_rewritten,
-                                end: end_rewritten,
+                                selector: selector.clone(),
+                                channel: channel.clone(),
+                                start: start.clone(),
+                                end: end.clone(),
                             },
                             decl_ty: None,
                             generic_decl_ty: None,
@@ -1054,13 +1089,43 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                     AssignTarget::Tuple(_) => Some(Stmt::Assign {
                         loc: source_loc.into(),
                         target_loc: Default::default(),
-                        target: target.clone(),
+                        target: target_rewritten,
                         decl_ty: decl_ty.clone(),
                         generic_decl_ty: generic_decl_ty.clone(),
                         is_typed_decl: *is_typed_decl,
                         typed_decl_ty_loc: Default::default(),
                         expr: expr_rewritten,
                     }),
+                    AssignTarget::IndexedMember {
+                        base,
+                        index,
+                        field,
+                        field_index,
+                    } => {
+                        if in_array_slots.contains_key(base) {
+                            push_semantic(
+                                diag,
+                                errors,
+                                format!("cannot assign to processor input '{base}'"),
+                            );
+                        }
+                        let target_base = qualify_proc_assignment_base(base, field_names, errors);
+                        Some(Stmt::Assign {
+                            loc: source_loc.into(),
+                            target_loc: Default::default(),
+                            target: AssignTarget::IndexedMember {
+                                base: target_base,
+                                index: index.clone(),
+                                field: field.clone(),
+                                field_index: field_index.clone(),
+                            },
+                            decl_ty: None,
+                            generic_decl_ty: None,
+                            is_typed_decl: false,
+                            typed_decl_ty_loc: Default::default(),
+                            expr: expr_rewritten,
+                        })
+                    }
                 }
             }
             Stmt::Expr { expr, .. } => {
@@ -1115,7 +1180,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1130,7 +1194,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1192,7 +1255,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,
@@ -1233,7 +1295,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             s,
                             owner_proc,
                             field_names,
-                            array_fields,
                             ins_names,
                             field_array_slots,
                             in_array_slots,

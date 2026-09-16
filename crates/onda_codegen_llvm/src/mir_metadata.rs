@@ -7,7 +7,7 @@ use onda_mir::{
     ValueRange,
 };
 
-use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes};
+use crate::primitives::{append_scalar_value_bytes, primitive_type_bytes, ScalarByteOrder};
 use crate::runtime_metadata::ProgramMetadata;
 use crate::{
     DeclaredBuffer, DeclaredBufferChannels, DeclaredDelegate, DeclaredEvent, DeclaredEventParam,
@@ -294,7 +294,7 @@ fn build_io_descriptor(
     let shape = scalar_array_shape(program, ty, "runtime I/O")?;
     let control = range.is_some().then_some(control).flatten();
     let default_bytes = default
-        .map(|value| constant_bytes(program, value, ty))
+        .map(|value| constant_bytes(program, value, ty, ScalarByteOrder::Native))
         .transpose()?;
     let default_values = default
         .map(|value| constant_values(program, value, ty))
@@ -359,27 +359,29 @@ fn build_events(
 ) -> Result<Vec<DeclaredEvent>, MirMetadataError> {
     let mut events = Vec::with_capacity(program.interface.events.len());
     for (event_index, event) in program.interface.events.iter().enumerate() {
-        let (params, computed_fixed_size, payload_min_bytes) = build_payload_descriptor(
+        let payload = build_payload_descriptor(
             program,
             "event",
             &event.name,
+            &event.schema,
             event
                 .params
                 .iter()
                 .map(|param| (param.name.as_str(), param.ty, param.default.as_ref())),
         )?;
 
-        if fixed_sizes[event_index] != computed_fixed_size {
+        if fixed_sizes[event_index] != payload.fixed_wire_size {
             return Err(MirMetadataError::new(format!(
                 "MIR event '{}' layout reports {:?} fixed bytes; descriptor shape requires {:?}",
-                event.name, fixed_sizes[event_index], computed_fixed_size
+                event.name, fixed_sizes[event_index], payload.fixed_wire_size
             )));
         }
         events.push(DeclaredEvent {
+            payload_plan: payload.plan,
             name: event.name.clone(),
-            params,
+            params: payload.params,
             payload_bytes: fixed_sizes[event_index],
-            payload_min_bytes,
+            payload_min_bytes: payload.minimum_wire_size,
         });
     }
     Ok(events)
@@ -391,29 +393,39 @@ fn build_delegates(program: &Program) -> Result<Vec<DeclaredDelegate>, MirMetada
         .delegates
         .iter()
         .map(|delegate| {
-            let (params, payload_bytes, payload_min_bytes) = build_payload_descriptor(
+            let payload = build_payload_descriptor(
                 program,
                 "delegate",
                 &delegate.name,
+                &delegate.schema,
                 delegate
                     .params
                     .iter()
                     .map(|param| (param.name.as_str(), param.ty, None)),
             )?;
             Ok(DeclaredDelegate {
+                payload_plan: payload.plan,
                 name: delegate.name.clone(),
-                params,
-                payload_bytes,
-                payload_min_bytes,
+                params: payload.params,
+                payload_bytes: payload.fixed_wire_size,
+                payload_min_bytes: payload.minimum_wire_size,
             })
         })
         .collect()
+}
+
+struct BuiltPayloadDescriptor {
+    plan: onda_processor_abi::payload::PayloadPlan,
+    params: Vec<DeclaredEventParam>,
+    fixed_wire_size: Option<usize>,
+    minimum_wire_size: usize,
 }
 
 fn build_payload_descriptor<'a>(
     program: &Program,
     owner_kind: &str,
     owner_name: &str,
+    schema: &onda_processor_abi::payload::PayloadSchema,
     params: impl IntoIterator<
         Item = (
             &'a str,
@@ -421,11 +433,23 @@ fn build_payload_descriptor<'a>(
             Option<&'a onda_mir::ConstantValue>,
         ),
     >,
-) -> Result<(Vec<DeclaredEventParam>, Option<usize>, usize), MirMetadataError> {
+) -> Result<BuiltPayloadDescriptor, MirMetadataError> {
+    let plan = onda_processor_abi::payload::PayloadPlan::new(schema)
+        .map_err(|error| MirMetadataError::new(error.to_string()))?;
+    let mut prefixes = vec![false; plan.abi_parameter_count()];
+    let mut dynamic_lengths = vec![false; plan.abi_parameter_count()];
+    for tensor in plan.tensors() {
+        prefixes[tensor.parameter] = tensor.length_prefix;
+    }
+    for parameter in plan.parameters() {
+        if let Some(index) = parameter.length_parameter {
+            dynamic_lengths[index] = true;
+        }
+    }
     let mut descriptors = Vec::new();
     let mut minimum_wire_offset = 0usize;
     let mut fixed_size = Some(0usize);
-    for (name, ty, default) in params {
+    for (index, (name, ty, default)) in params.into_iter().enumerate() {
         match &program.types[ty.index()] {
             Type::Scalar(scalar) => {
                 let elem_ty = primitive_type(*scalar);
@@ -438,7 +462,9 @@ fn build_payload_descriptor<'a>(
                     is_slice: false,
                     byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
-                        .map(|value| constant_bytes(program, value, ty))
+                        .map(|value| {
+                            constant_bytes(program, value, ty, ScalarByteOrder::LittleEndian)
+                        })
                         .transpose()?,
                     default_values: default
                         .map(|value| constant_values(program, value, ty))
@@ -471,7 +497,9 @@ fn build_payload_descriptor<'a>(
                     is_slice: false,
                     byte_offset: fixed_size.map(|_| minimum_wire_offset),
                     default_bytes: default
-                        .map(|value| constant_bytes(program, value, ty))
+                        .map(|value| {
+                            constant_bytes(program, value, ty, ScalarByteOrder::LittleEndian)
+                        })
                         .transpose()?,
                     default_values: default
                         .map(|value| constant_values(program, value, ty))
@@ -501,7 +529,11 @@ fn build_payload_descriptor<'a>(
                 });
                 minimum_wire_offset = checked_add(
                     minimum_wire_offset,
-                    std::mem::size_of::<i32>(),
+                    if prefixes[index] {
+                        std::mem::size_of::<i32>()
+                    } else {
+                        0
+                    },
                     "payload slice length-prefix offset",
                 )?;
                 fixed_size = None;
@@ -512,8 +544,16 @@ fn build_payload_descriptor<'a>(
                 )));
             }
         }
+        if dynamic_lengths.get(index).copied().unwrap_or(false) {
+            fixed_size = None;
+        }
     }
-    Ok((descriptors, fixed_size, minimum_wire_offset))
+    Ok(BuiltPayloadDescriptor {
+        plan,
+        params: descriptors,
+        fixed_wire_size: fixed_size,
+        minimum_wire_size: minimum_wire_offset,
+    })
 }
 
 fn build_buffers(program: &Program) -> Result<Vec<DeclaredBuffer>, MirMetadataError> {
@@ -612,9 +652,10 @@ fn constant_bytes(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
+    byte_order: ScalarByteOrder,
 ) -> Result<Vec<u8>, MirMetadataError> {
     let mut bytes = Vec::new();
-    append_constant_bytes(program, value, ty, &mut bytes)?;
+    append_constant_bytes(program, value, ty, byte_order, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -661,18 +702,19 @@ fn append_constant_bytes(
     program: &Program,
     value: &ConstantValue,
     ty: onda_mir::TypeId,
+    byte_order: ScalarByteOrder,
     output: &mut Vec<u8>,
 ) -> Result<(), MirMetadataError> {
     match (program.types.get(ty.index()), value) {
         (Some(Type::Scalar(expected)), ConstantValue::Scalar(value)) if *expected == value.ty() => {
-            append_scalar_value_bytes(output, *value, primitive_type(*expected));
+            append_scalar_value_bytes(output, *value, primitive_type(*expected), byte_order);
             Ok(())
         }
         (Some(Type::Array { element, len }), ConstantValue::Aggregate(values))
             if values.len() == *len as usize =>
         {
             for value in values {
-                append_constant_bytes(program, value, *element, output)?;
+                append_constant_bytes(program, value, *element, byte_order, output)?;
             }
             Ok(())
         }
@@ -766,7 +808,7 @@ mod tests {
             FunctionKind::Event(onda_mir::EventId::new(1)),
             Vec::new(),
         );
-        Program {
+        let mut program = Program {
             schema_version: onda_mir::MIR_SCHEMA_VERSION,
             config: CompileConfig {
                 sample_rate: 48_000.0,
@@ -861,6 +903,7 @@ mod tests {
                 buffer_arrays: Vec::new(),
                 events: vec![
                     Event {
+                        schema: Default::default(),
                         name: "note".to_owned(),
                         params: vec![
                             EventParam {
@@ -880,6 +923,7 @@ mod tests {
                         handler: FunctionId::new(2),
                     },
                     Event {
+                        schema: Default::default(),
                         name: "curve".to_owned(),
                         params: vec![
                             EventParam {
@@ -943,7 +987,19 @@ mod tests {
                 init: FunctionId::new(0),
                 process: FunctionId::new(1),
             },
+        };
+        for index in 0..program.interface.events.len() {
+            let schema = program
+                .payload_schema(
+                    program.interface.events[index]
+                        .params
+                        .iter()
+                        .map(|p| (p.name.as_str(), p.ty, p.default.as_ref())),
+                )
+                .unwrap();
+            program.interface.events[index].schema = schema;
         }
+        program
     }
 
     #[test]

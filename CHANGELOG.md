@@ -5,6 +5,79 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.4]
+
+### Added
+
+- Added first-class value semantics for nominal structs and fixed primitive or struct arrays.
+  Constructors and runtime helpers can return independent aggregate values; typed declarations
+  create owned storage; assignment to existing aggregates copies contents without redirecting
+  aliases; and nested structs, tuples, fixed arrays, defaults, and ranged integer fields share the
+  same canonical layout.
+- Added typed primitive and struct slices with captured bounds and inferred read/write permission.
+  Fixed declarations can copy proven exact-length slices, overlapping copy and fill operations are
+  deterministic, and helper permissions follow aliases, branch joins, and transitive calls.
+- Added persistent aggregate storage and reconstructible views across top-level and processor init,
+  segmented block execution, snapshots, nested processor arrays, and suspended tasks. Snapshot data
+  contains no process-local slice pointers, and retained-view metadata remains independent of the
+  backing array length.
+- Added structured event and delegate payloads containing nominal structs, scalar tuples, fixed
+  arrays, and runtime-length struct slices. Recursive schemas preserve nested defaults and integer
+  domains across MIR, native and Wasm code generation, Rust and C hosts, JavaScript, Web Audio,
+  daemon transport, and the native run views.
+- Added collapsible structured-event JSON arguments to the egui, native webview, and browser run
+  editors, with fold state and in-progress JSON drafts preserved across host refreshes.
+- Added the musical Aurora Pad and Orbital FM soundscapes. Aurora Pad combines a processor-array
+  oscillator bank with returned coefficient structs and independent stereo filter memory; Orbital
+  FM atomically installs and publishes a nested live-editable synthesis patch.
+- Added value-returning complex arithmetic and polar construction, structured biquad coefficient
+  design and installation, structured complex FFT overloads, and reusable real-transform storage to
+  the standard library.
+- Added typed ranged struct fields without a redundant zero initializer, for example
+  `index: i32 {Capacity, wrap}`.
+
+### Changed
+
+- Advanced the MIR schema to version 7 and the processor artifact and ABI formats to version 6.
+  Raw event exports now receive an explicit payload/workspace descriptor; both backends preflight
+  the complete packed input before mutating handler state or execution output and leave instances
+  usable after rejected input.
+- Centralized structured storage, result-reference, invocation-scratch, tensor-layout, payload
+  preparation, and host-codec planning. Fixed extents remain compact tensor axes, grouped copies
+  validate overlap before writing, and native realtime dispatch performs no payload allocation.
+- Web Audio now encodes structured values before transferring payload bytes to the worklet. Native
+  Rust and C hosts reuse prepared encoders and can reserve larger dynamic-payload workspace outside
+  realtime execution.
+
+### Fixed
+
+- Fixed nested aggregate traversal and node layouts, including field separation, fixed-array axes,
+  ranged stores, result storage, and branch-selected aliases, without compilation memory growing
+  with the number of struct-array elements.
+- Fixed flattened nested processor arrays losing aggregate permissions or selecting incorrect
+  storage after processor lowering.
+- Fixed graph reads from proc-array scalar and fixed-array outputs stepping a node again instead of
+  reading its cached result, including output fan-out and indexed array slots.
+- Fixed the Binaryen backend rejecting scalar locals viewed through slices and kept ordinary,
+  reference, result, and slice access to address-taken locals coherent.
+- Fixed source formatting dropping user-authored top-level functions and emitting invalid explicit
+  loop-step syntax. Oversized numeric literals now produce syntax diagnostics.
+- Fixed JavaScript payload planning when schema names overlap object prototype properties.
+- Fixed artifact validation accepting contradictory recursive and flattened event defaults, while
+  comparing equivalent floating-point spellings according to their encoded scalar semantics.
+- Fixed JavaScript accepting hexadecimal, exponential, fractional, empty, or whitespace-padded
+  `i32` payload defaults that the Rust payload implementation rejects.
+
+### Migration notes
+
+- Serialized-MIR consumers must accept schema version 7. Raw processor hosts must accept artifact
+  and ABI version 6, supply the event input descriptor and aligned workspace, and handle input
+  rejection separately from generated execution failure. Raw and hosted payload encoders must use
+  the recursive schema's packed little-endian structure-of-arrays layout rather than target-native
+  flattened parameter assumptions. Checked hosted C event dispatch now reports malformed input or
+  insufficient workspace as `ONDA_EXECUTION_INPUT_REJECTED` (`2`), not as a legacy negative API
+  error.
+
 ## [0.8.3]
 
 ### Added

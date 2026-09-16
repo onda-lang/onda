@@ -1,0 +1,42 @@
+struct Note:
+  enabled: bool
+  gain: f64
+  bins: f32[2]
+  pair: (i32, i64)
+
+proc Worker:
+  init:
+    notes: Note[2]
+  delegate changed(next: Note[2], marker: (i32, f64))
+  event configure(next: Note[2], marker: (i32, f64) = (3, 5.0)):
+    notes = next
+    changed(notes, marker)
+  sample:
+    first = notes[0]
+    out1 = f32(first.gain)
+
+init:
+  source: Note[2] = [Note(gain = 4.0), Note(gain = 6.0)]
+  worker = Worker()
+  observed: f64 = 0.0
+
+delegate configured(next: Note[2], marker: (i32, f64))
+
+when worker.changed(next, marker):
+  configured(next, marker)
+
+when configured(next, marker):
+  first = next[0]
+  a, b = marker
+  observed = first.gain + f64(a) + b
+
+event configure():
+  worker.configure(source)
+
+event change(marker: (i32, f64)):
+  selected = source[0]
+  selected.gain += 1.0
+  worker.configure(source, marker)
+
+sample:
+  out1 = worker() + f32(observed)

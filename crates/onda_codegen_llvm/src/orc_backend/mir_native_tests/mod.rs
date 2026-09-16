@@ -1,5 +1,7 @@
 use super::*;
 
+mod structured_data;
+
 use onda_frontend::parse_program;
 use onda_semantics::{
     analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions, TypedProgram,
@@ -465,6 +467,25 @@ sample:
 }
 
 #[test]
+fn root_init_tuple_destructuring_persists_components() {
+    let source = r#"
+struct Holder:
+  pair: (i32, f64) = (7, 0.5)
+
+init:
+  holder = Holder()
+  first, second = holder.pair
+
+sample:
+  out1 = f32(first) + f32(second)
+"#;
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let outputs = run_native_outputs_with_opt_level(source, 4, level);
+        assert_eq!(outputs, [vec![7.5; 4]]);
+    }
+}
+
+#[test]
 fn for_induction_does_not_wrap_at_i32_endpoints() {
     let source = r#"
 const I32_MIN = -2147483647 - 1
@@ -592,6 +613,44 @@ sample:
             line.contains("load i32") && line.contains("%param_0") && line.contains("!range")
         }),
         "loads should retain inferred call-boundary ranges: {ir}"
+    );
+}
+
+#[test]
+fn llvm_does_not_treat_aliased_readonly_reference_ranges_as_invariant() {
+    let (_, mir) = source_program(
+        r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  box = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(box, box, values)
+"#,
+        1,
+    );
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O0,
+        },
+    )
+    .expect("aliased aggregate references should emit LLVM IR");
+
+    assert!(
+        ir.contains("index_clamped"),
+        "the aliased reference load must retain its index clamp: {ir}"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("load i32, ptr %1") && !line.contains("!range")),
+        "the aliased readonly load must not carry inferred !range metadata: {ir}"
     );
 }
 
@@ -1254,8 +1313,8 @@ sample:
             &metadata_i32,
             &metadata_f32,
         )
-        .expect_err("dynamic event slice byte extent must fit i32");
-    assert!(error.message.contains("byte extent exceeds i32"));
+        .expect_err("oversized dynamic event slices must be rejected");
+    assert!(error.message.contains("event input rejected"));
 }
 
 #[test]

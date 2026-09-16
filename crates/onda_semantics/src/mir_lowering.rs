@@ -8,10 +8,20 @@ mod aggregates;
 mod audio_outputs;
 mod calls;
 mod control_flow;
+mod data;
+mod data_slices;
+#[cfg(test)]
+mod data_tests;
 mod expressions;
 mod lowerer_core;
+mod messages;
+mod reference_joins;
+mod references;
+mod retained_bindings;
+mod retained_storage;
 mod scheduling;
 mod slices;
+mod storage;
 mod values;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,6 +41,7 @@ use onda_mir::{
     SourceSpan, Statement, StatementKind, Type as MirType, TypeId, UnaryOp, Value,
 };
 
+use crate::executable_data::declared_binding_locations;
 use crate::indexed_read_source;
 use crate::internal_names::{
     runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
@@ -42,8 +53,8 @@ use crate::{
     effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
     merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
     parse_buffer_bound_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base, resolve_call_args_at, zero_expr, AggregateLayoutTable,
-    AggregatePathComponent, AnalysisOptions, IndexAccess, ProcSincStageStateFields,
+    parse_buffer_samplerate_instance_base, resolve_call_args_at, AggregateLayoutTable,
+    AggregatePathComponent, AnalysisOptions, DataType, IndexAccess, ProcSincStageStateFields,
     ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
     TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
     TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedNestedProcArray,
@@ -92,6 +103,12 @@ impl fmt::Display for MirLoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.location.is_zero() {
             write!(f, "MIR lowering: {}", self.message)
+        } else if let Some(file) = self.location.file() {
+            write!(
+                f,
+                "MIR lowering at {file}:{}:{}: {}",
+                self.location.line, self.location.column, self.message
+            )
         } else {
             write!(
                 f,
@@ -377,11 +394,14 @@ fn lower_user_functions_to_mir(
 pub fn lower_program_to_optimized_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::OptimizedProgram, Vec<MirLoweringError>> {
-    let raw = lower_program_to_raw_mir(program)?;
+    let mut raw = lower_program_to_mir(program, true)?;
+    storage::plan_fixed_scratch(&mut raw)?;
     // SAFETY: MIR lowering owns the proof for every unchecked access and
     // storage invariant it emits. Array extents come from semantic types,
     // process frames are validator-tracked, and slice/buffer loops establish
-    // their bounds before emission. Pinned roots are introduced only by
+    // their bounds before emission. Canonical aggregate leaves use contiguous
+    // scalar storage, proving their grouped copies cannot have unequal-stride
+    // overlap. Pinned roots are introduced only by
     // declarations whose generated init_all branch overwrites the complete
     // flattened slot before the init entry can return successfully.
     let validated = unsafe { onda_mir::validate_owned_with_producer_proofs(raw) }
@@ -390,8 +410,16 @@ pub fn lower_program_to_optimized_mir(
     Ok(optimized)
 }
 
+#[cfg(test)]
 fn lower_program_to_raw_mir(
     program: &TypedProgram,
+) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
+    lower_program_to_mir(program, false)
+}
+
+fn lower_program_to_mir(
+    program: &TypedProgram,
+    prune_before_range_analysis: bool,
 ) -> Result<onda_mir::Program, Vec<MirLoweringError>> {
     let mut errors = mir_program_boundary_errors(program);
     let config = onda_mir::CompileConfig::from_usize(
@@ -425,9 +453,19 @@ fn lower_program_to_raw_mir(
     populate_runtime_interface_views(program, &mut globals)?;
     populate_constant_data(program, &mut mir, &mut globals)?;
 
-    lower_user_functions_to_mir(program, &mut mir, Some(&globals))?;
     let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
 
+    let init_locations = declared_binding_locations(&program.init);
+    let init_views = program
+        .init_view_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                init_locations.get(name).copied().unwrap_or(SourceLoc::ZERO),
+            )
+        })
+        .collect();
     let init_function = synthetic_runtime_function("onda_init", program.init.clone());
     let mut init_lowerer = FunctionLowerer::new_runtime(
         &init_function,
@@ -445,11 +483,29 @@ fn lower_program_to_raw_mir(
         &mut mir.log_sites,
     );
     init_lowerer.bind_init_all(crate::processor_lowering::TOP_LEVEL_INIT_ALL_NAME);
-    let mut init = init_lowerer.lower().map_err(|error| vec![error])?;
+    let (mut init, bindings) = init_lowerer
+        .lower_with_bindings()
+        .map_err(|error| vec![error])?;
+    globals.retained_init = Some(
+        retained_bindings::retain_init_bindings(
+            &mut init,
+            bindings,
+            &init_views,
+            &program.init_local_data_names,
+            retained_bindings::InitRetentionContext {
+                state: &mut mir.state,
+                types: &mir.types,
+                source_files: &mir.source_files,
+                layouts: &program.aggregate_layouts,
+            },
+        )
+        .map_err(|error| vec![error])?,
+    );
+    lower_user_functions_to_mir(program, &mut mir, Some(&globals))?;
     init.kind = onda_mir::FunctionKind::Init;
 
     let process_function = synthetic_runtime_function("onda_process", Vec::new());
-    let process = FunctionLowerer::new_runtime(
+    let (mut process, block_region) = FunctionLowerer::new_runtime(
         &process_function,
         &program.defs,
         &function_ids,
@@ -473,6 +529,15 @@ fn lower_program_to_raw_mir(
     )
     .map_err(|error| vec![error])?;
 
+    retained_storage::retain_block_storage(
+        &mut process,
+        block_region,
+        &mut mir.state,
+        &mir.types,
+        &mir.source_files,
+    )
+    .map_err(|error| vec![error])?;
+
     mir.functions[0] = init;
     mir.functions[1] = process;
     lower_events(
@@ -482,11 +547,13 @@ fn lower_program_to_raw_mir(
         &function_indices,
         &function_ids,
     )?;
-    // Processor lowering intentionally begins with uniform flattened ABIs.
-    // Prune unused leaves before whole-program range propagation and initial
-    // validation so every subsequent compiler stage sees only live state.
     param_arrays::clamp_parameter_arrays(&mut mir);
-    onda_mir::prune_unused_function_parameters(&mut mir);
+    if prune_before_range_analysis {
+        // Processor lowering intentionally begins with uniform flattened ABIs.
+        // Prune unused leaves before whole-program range propagation so every
+        // subsequent production compiler stage sees only live state.
+        onda_mir::prune_dead_values_and_parameters(&mut mir);
+    }
     propagate_integer_storage_ranges(&mut mir);
     normalize_mir_source_paths(&mut mir);
     Ok(mir)
@@ -800,6 +867,12 @@ fn mir_program_boundary_errors(program: &TypedProgram) -> Vec<MirLoweringError> 
     for event in &program.events {
         for param in &event.params {
             match (&param.ty, &param.default) {
+                (
+                    TypedEventParamType::Tuple(_)
+                    | TypedEventParamType::Data(_)
+                    | TypedEventParamType::StructSlice { .. },
+                    _,
+                ) => {}
                 (TypedEventParamType::Scalar(ty), Some(TypedEventParamDefault::Scalar(value)))
                     if mir_scalar(*value).ty() != scalar_type(*ty) =>
                 {
@@ -1480,36 +1553,6 @@ fn array_at_offset(
     arrays.iter().find(|(_, info)| info.offset == offset)
 }
 
-fn collect_runtime_struct_roots(
-    statements: &[Stmt],
-    layouts: &AggregateLayoutTable,
-    roots: &mut HashMap<String, String>,
-) {
-    for statement in statements {
-        match statement {
-            Stmt::Assign {
-                target: AssignTarget::Var(target),
-                expr: Expr::UserCall { name, .. },
-                ..
-            } if layouts.layout_for_struct(name).is_some() => {
-                roots.insert(target.clone(), name.clone());
-            }
-            Stmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_runtime_struct_roots(then_branch, layouts, roots);
-                collect_runtime_struct_roots(else_branch, layouts, roots);
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                collect_runtime_struct_roots(body, layouts, roots);
-            }
-            _ => {}
-        }
-    }
-}
-
 fn populate_state(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
@@ -1550,11 +1593,7 @@ fn populate_state(
     );
     globals.aggregate_layouts = program.aggregate_layouts.clone();
     globals.nested_proc_arrays = program.nested_proc_arrays.clone();
-    collect_runtime_struct_roots(
-        &program.init,
-        &globals.aggregate_layouts,
-        &mut globals.struct_roots,
-    );
+    globals.struct_roots = program.struct_roots.clone();
     for root in &program.array_struct_roots {
         let len = u32::try_from(root.len).map_err(|_| {
             vec![MirLoweringError::new(
@@ -1848,8 +1887,15 @@ fn populate_delegates(
 ) -> Result<(), Vec<MirLoweringError>> {
     for delegate in &program.delegates {
         let mut params = Vec::with_capacity(delegate.params.len());
-        for param in &delegate.params {
+        for param in messages::message_params(&delegate.params, &program.aggregate_layouts)
+            .map_err(|e| vec![e])?
+        {
             let ty = match param.ty {
+                TypedEventParamType::Tuple(_)
+                | TypedEventParamType::Data(_)
+                | TypedEventParamType::StructSlice { .. } => {
+                    unreachable!("message tensors are primitive")
+                }
                 TypedEventParamType::Scalar(ty) => intern_scalar_type(&mut mir.types, ty),
                 TypedEventParamType::Array { elem, len } => {
                     let len = u32::try_from(len).map_err(|_| {
@@ -1873,6 +1919,8 @@ fn populate_delegates(
             });
         }
         mir.interface.delegates.push(onda_mir::Delegate {
+            schema: messages::message_schema(&delegate.params, &program.aggregate_layouts)
+                .map_err(|e| vec![e])?,
             name: delegate.name.clone(),
             params,
         });
@@ -1891,8 +1939,15 @@ fn lower_events(
         let event_id = onda_mir::EventId::new(mir.interface.events.len() as u32);
         let handler = FunctionId::new(mir.functions.len() as u32);
         let mut params = Vec::with_capacity(event.params.len());
-        for param in &event.params {
+        for param in messages::message_params(&event.params, &program.aggregate_layouts)
+            .map_err(|e| vec![e])?
+        {
             let (type_id, default) = match &param.ty {
+                TypedEventParamType::Tuple(_)
+                | TypedEventParamType::Data(_)
+                | TypedEventParamType::StructSlice { .. } => {
+                    unreachable!("message tensors are primitive")
+                }
                 TypedEventParamType::Scalar(ty) => {
                     let default = match &param.default {
                         Some(TypedEventParamDefault::Scalar(value)) => Some(mir_constant(*value)),
@@ -1961,13 +2016,15 @@ fn lower_events(
             });
         }
         mir.interface.events.push(onda_mir::Event {
+            schema: messages::message_schema(&event.params, &program.aggregate_layouts)
+                .map_err(|e| vec![e])?,
             name: event.name.clone(),
             params,
             handler,
         });
 
         let function_name = format!("onda_event::{}", event.name);
-        let synthetic = synthetic_runtime_function(&function_name, event.body.clone());
+        let synthetic = synthetic_runtime_function(&function_name, messages::event_body(event));
         let mut lowerer = FunctionLowerer::new_runtime(
             &synthetic,
             &program.defs,
@@ -2036,7 +2093,7 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
         params: Vec::new(),
         param_defaults: Vec::new(),
         param_kinds: Vec::new(),
-        readonly_array_params: std::collections::HashSet::new(),
+        readonly_data_params: std::collections::HashSet::new(),
         integer_range_params: HashMap::new(),
         return_ty: ReturnType::Scalar(PrimitiveType::F32),
         returns_value: false,
@@ -2204,6 +2261,7 @@ struct FunctionKey {
 
 #[derive(Debug, Default)]
 struct RuntimeGlobals {
+    retained_init: Option<retained_bindings::RetainedBindings>,
     states: HashMap<String, (onda_mir::StateId, PrimitiveType)>,
     integer_ranges: HashMap<String, onda_mir::IntegerRangeInvariant>,
     state_tuples: HashMap<String, Vec<(onda_mir::StateId, PrimitiveType)>>,
@@ -2432,21 +2490,7 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
         match statement {
             Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign { target, expr, .. } => {
-                match target {
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                    AssignTarget::Index { index, .. } => collect_calls_in_expr(index, calls),
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            collect_calls_in_expr(coordinate, calls);
-                        }
-                    }
-                }
+                target.visit_selectors(|selector| collect_calls_in_expr(selector, calls));
                 collect_calls_in_expr(expr, calls);
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
@@ -2490,55 +2534,12 @@ fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCa
 }
 
 fn collect_calls_in_expr(expression: &Expr, calls: &mut Vec<DiscoveredCall>) {
-    match expression {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_calls_in_expr(value, calls);
-            }
-        }
-        Expr::Index { index, .. } => collect_calls_in_expr(index, calls),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_calls_in_expr(coordinate, calls);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_calls_in_expr(&spec.size, calls);
-            if let Some(values) = init {
-                for value in values {
-                    collect_calls_in_expr(value, calls);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_calls_in_expr(lhs, calls);
-            collect_calls_in_expr(rhs, calls);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_calls_in_expr(arg, calls);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
+    for expression in expression.walk() {
+        if let Expr::UserCall { name, args, .. } = expression {
             calls.push(DiscoveredCall {
                 name: name.clone(),
                 receiver: args.first().map(|arg| arg.expr.clone()),
             });
-            for arg in args {
-                collect_calls_in_expr(&arg.expr, calls);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_calls_in_expr(expr, calls)
         }
     }
 }
@@ -2547,6 +2548,12 @@ fn collect_calls_in_expr(expression: &Expr, calls: &mut Vec<DiscoveredCall>) {
 struct LoweredValue {
     value: Value,
     ty: PrimitiveType,
+}
+
+#[derive(Clone, Copy)]
+struct AssignmentIndex<'a> {
+    expr: &'a Expr,
+    value: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -2592,6 +2599,7 @@ enum LoweredStructArrayFieldBase {
 struct LoweredStructArrayField {
     base: LoweredStructArrayFieldBase,
     width: u32,
+    is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2709,12 +2717,14 @@ enum StructFieldReference {
 #[derive(Debug, Clone, Copy)]
 enum StructArrayLength {
     Dynamic(ParameterId),
+    Local(LocalId),
     Fixed(u32),
 }
 
 #[derive(Debug, Clone)]
 enum Binding {
     InitAll,
+    PlaceAlias(Place, PrimitiveType),
     ReferenceParameter(ParameterId, PrimitiveType),
     EventParameter(onda_mir::EventParamId, PrimitiveType),
     EventArrayParameter(onda_mir::EventParamId, PrimitiveType, u32),
@@ -2724,18 +2734,18 @@ enum Binding {
     Local(LocalId, PrimitiveType),
     Array(LocalId, PrimitiveType, u32),
     ArrayParameter(ParameterId, PrimitiveType, u32),
-    Slice(LocalId, PrimitiveType, onda_mir::AccessMode),
+    // A known extent denotes a fixed-data view; None denotes a slice contract.
+    Slice(LocalId, PrimitiveType, onda_mir::AccessMode, Option<u32>),
     Tuple(Vec<(LocalId, PrimitiveType)>),
     TupleReferenceParameter(Vec<(ParameterId, PrimitiveType)>),
-    TupleSliceElementAlias(Vec<(LocalId, PrimitiveType, LocalId)>),
+    TupleSliceElementAlias(Vec<(LocalId, PrimitiveType, Value)>),
     SliceElementAlias {
         slice: LocalId,
         element: PrimitiveType,
-        index: LocalId,
+        index: Value,
     },
     StructParameter {
         struct_name: String,
-        fields: Vec<StructFieldReference>,
     },
     StructArrayParameter {
         struct_name: String,
@@ -2749,8 +2759,12 @@ enum Binding {
         active: LocalId,
         fields: Vec<(String, LocalId, PrimitiveType)>,
     },
-    StructArrayElementAlias {
+    StructView {
         struct_name: String,
+    },
+    StructArrayStorage {
+        struct_name: String,
+        len: u32,
     },
 }
 
@@ -2817,8 +2831,76 @@ struct FunctionLowerer<'a> {
     results: Vec<TypeId>,
     locals: Vec<onda_mir::Local>,
     bindings: HashMap<String, Binding>,
+    /// Lexical introductions that may construct directly in their final
+    /// storage. Later assignments must preserve value/snapshot semantics by
+    /// materializing their right-hand side before replacing that storage.
+    data_initialization_sites: HashSet<(String, SourceLoc)>,
+    next_data_id: usize,
     nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
+    event_struct_slices: Vec<(String, String)>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
+}
+
+fn data_initialization_sites(function: &TypedFunction) -> HashSet<(String, SourceLoc)> {
+    fn visit(
+        statements: &[Stmt],
+        possibly_bound: &mut HashSet<String>,
+        repeated: bool,
+        sites: &mut HashSet<(String, SourceLoc)>,
+        seen_sites: &mut HashSet<(String, SourceLoc)>,
+    ) {
+        for statement in statements {
+            match statement {
+                Stmt::Assign {
+                    target: AssignTarget::Var(name),
+                    ..
+                } if !name.contains('.') => {
+                    let site = (name.clone(), statement.assign_target_loc());
+                    let unique_site = seen_sites.insert(site.clone());
+                    if possibly_bound.insert(name.clone()) && !repeated && unique_site {
+                        sites.insert(site);
+                    } else if !unique_site {
+                        // Compiler-generated statements may share a zero source
+                        // location. An ambiguous key is never safe to optimize.
+                        sites.remove(&site);
+                    }
+                }
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    let mut then_bound = possibly_bound.clone();
+                    let mut else_bound = possibly_bound.clone();
+                    visit(then_branch, &mut then_bound, repeated, sites, seen_sites);
+                    visit(else_branch, &mut else_bound, repeated, sites, seen_sites);
+                    // A later assignment is only a fresh initialization if no
+                    // path reaching it could already have assigned the name.
+                    possibly_bound.extend(then_bound);
+                    possibly_bound.extend(else_bound);
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    let mut body_bound = possibly_bound.clone();
+                    visit(body, &mut body_bound, true, sites, seen_sites);
+                    // Even a maybe-empty loop can precede the next statement;
+                    // retain its possible writes to keep replacements safe.
+                    possibly_bound.extend(body_bound);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut bound = function.params.iter().cloned().collect::<HashSet<_>>();
+    let mut sites = HashSet::new();
+    visit(
+        &function.body,
+        &mut bound,
+        false,
+        &mut sites,
+        &mut HashSet::new(),
+    );
+    sites
 }
 
 fn function_location(function: &TypedFunction) -> SourceLoc {
@@ -2840,6 +2922,16 @@ fn scalar_type(ty: PrimitiveType) -> ScalarType {
         PrimitiveType::I32 => ScalarType::I32,
         PrimitiveType::I64 => ScalarType::I64,
         PrimitiveType::Bool => ScalarType::Bool,
+    }
+}
+
+fn source_scalar_type(ty: ScalarType) -> PrimitiveType {
+    match ty {
+        ScalarType::F32 => PrimitiveType::F32,
+        ScalarType::F64 => PrimitiveType::F64,
+        ScalarType::I32 => PrimitiveType::I32,
+        ScalarType::I64 => PrimitiveType::I64,
+        ScalarType::Bool => PrimitiveType::Bool,
     }
 }
 

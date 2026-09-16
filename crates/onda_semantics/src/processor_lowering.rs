@@ -6,19 +6,23 @@ use onda_frontend::{EventParamDecl, LogicalOp};
 mod delegate_lowering;
 mod generated_blocks;
 mod generic_proc_rewrite;
+mod generic_struct_source_rewrite;
 mod global_proc_rewrite;
 mod graph_lowering;
 mod nested_paths;
 mod nested_proc_lowering;
 mod proc_local_defs;
+mod retained_data;
 mod shape_helpers;
 use delegate_lowering::*;
 use generated_blocks::*;
 pub(crate) use generated_blocks::{
     guard_pinned_initializers, is_pinned_initializer_marker, mark_pinned_initializers,
 };
-pub(crate) use generic_proc_rewrite::validate_generic_proc_template_forwarded_type_args;
-use generic_proc_rewrite::*;
+pub(crate) use generic_proc_rewrite::{
+    rewrite_and_materialize_generic_processors, validate_generic_proc_template_forwarded_type_args,
+};
+use generic_struct_source_rewrite::*;
 use global_proc_rewrite::*;
 pub(crate) use graph_lowering::*;
 pub(crate) use nested_paths::*;
@@ -104,7 +108,7 @@ pub(crate) fn prepare_processors_for_graph_inspection(
     inject_builtin_proc_init_events(program, errors);
 }
 
-fn coerce_scalar_event_default(
+pub(crate) fn coerce_scalar_event_default(
     default_expr: &Expr,
     ty: PrimitiveType,
     context: &str,
@@ -165,6 +169,36 @@ fn coerce_fixed_array_event_default(
     Some(coerced)
 }
 
+fn coerce_tuple_event_default(
+    expr: &Expr,
+    types: &[PrimitiveType],
+    context: &str,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<TypedConstValue>> {
+    let Expr::Tuple { values, .. } = expr else {
+        push_semantic(
+            DiagCtx::new(expr.loc()),
+            errors,
+            format!("{context} default must be a constant tuple"),
+        );
+        return None;
+    };
+    if values.len() != types.len() {
+        push_semantic(
+            DiagCtx::new(expr.loc()),
+            errors,
+            format!("{context} tuple default has the wrong number of components"),
+        );
+        return None;
+    }
+    values
+        .iter()
+        .zip(types)
+        .map(|(value, ty)| coerce_scalar_event_default(value, *ty, context, options, errors))
+        .collect()
+}
+
 fn coerce_typed_event_default(
     param: &EventParamDecl,
     typed_ty: &TypedEventParamType,
@@ -174,6 +208,10 @@ fn coerce_typed_event_default(
 ) -> Option<TypedEventParamDefault> {
     let default_expr = param.default.as_ref()?;
     match typed_ty {
+        TypedEventParamType::Tuple(types) => {
+            coerce_tuple_event_default(default_expr, types, context, options, errors)
+                .map(TypedEventParamDefault::Array)
+        }
         TypedEventParamType::Scalar(ty) => {
             coerce_scalar_event_default(default_expr, *ty, context, options, errors)
                 .map(TypedEventParamDefault::Scalar)
@@ -182,7 +220,15 @@ fn coerce_typed_event_default(
             coerce_fixed_array_event_default(default_expr, *elem, *len, context, options, errors)
                 .map(TypedEventParamDefault::Array)
         }
-        TypedEventParamType::Slice { .. } => {
+        TypedEventParamType::Data(_) => {
+            push_semantic(
+                DiagCtx::new(default_expr.loc()),
+                errors,
+                format!("{context} is a borrowed data parameter and cannot have a default"),
+            );
+            None
+        }
+        TypedEventParamType::StructSlice { .. } | TypedEventParamType::Slice { .. } => {
             push_semantic(
                 DiagCtx::new(default_expr.loc()),
                 errors,
@@ -202,6 +248,10 @@ fn validate_proc_event_default_expr(
 ) -> Option<Expr> {
     let default_expr = param.default.as_ref()?;
     match &param.ty {
+        EventParamType::Tuple(types) => {
+            coerce_tuple_event_default(default_expr, types, context, options, errors)?;
+            Some(default_expr.clone())
+        }
         EventParamType::Scalar(ty) => {
             coerce_scalar_event_default(default_expr, *ty, context, options, errors)?;
             Some(default_expr.clone())
@@ -254,7 +304,6 @@ struct ProcBaseShape {
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
-    array_field_names: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,7 +322,6 @@ pub(crate) struct ProcLoweringShape {
     pub(crate) state: ProcStateFields,
     pub(crate) fields: Vec<StructField>,
     pub(crate) field_names: HashSet<String>,
-    pub(crate) array_field_names: HashSet<String>,
     pub(crate) nested_fields: HashMap<String, HashSet<String>>,
 }
 
@@ -303,6 +351,7 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) top_level_proc_rewrite: TopLevelProcRewriteMeta,
     pub(crate) pinned_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
+    pub(crate) compiler_scratch_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) top_level_delegates: Vec<DelegateDef>,
 }
 
@@ -314,6 +363,7 @@ fn collect_flattened_proc_field_metadata(
     visiting: &mut HashSet<String>,
     pinned_fields: &mut HashSet<String>,
     compiler_owned_fields: &mut HashSet<String>,
+    compiler_scratch_fields: &mut HashSet<String>,
 ) {
     if !visiting.insert(proc_name.to_owned()) {
         return;
@@ -322,6 +372,11 @@ fn collect_flattened_proc_field_metadata(
         pinned_fields.extend(
             proc.init
                 .pinned_roots
+                .iter()
+                .map(|root| format!("{prefix}{root}")),
+        );
+        compiler_scratch_fields.extend(
+            proc.block_compiler_scratch_roots
                 .iter()
                 .map(|root| format!("{prefix}{root}")),
         );
@@ -343,6 +398,7 @@ fn collect_flattened_proc_field_metadata(
                 visiting,
                 pinned_fields,
                 compiler_owned_fields,
+                compiler_scratch_fields,
             );
         }
     }
@@ -447,7 +503,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
         param_types,
         type_params: Vec::new(),
         return_type: None,
-        readonly_array_params: HashSet::new(),
+        readonly_data_params: HashSet::new(),
     }
 }
 
@@ -455,6 +511,7 @@ pub(crate) fn coerce_typed_events(
     events: &[EventDef],
     allow_slices: bool,
     event_owner_desc: &str,
+    structs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedEvent> {
@@ -497,7 +554,11 @@ pub(crate) fn coerce_typed_events(
                 continue;
             }
             let typed = match &param.ty {
+                EventParamType::Tuple(types) => TypedEventParamType::Tuple(types.clone()),
                 EventParamType::Scalar(ty) => TypedEventParamType::Scalar(*ty),
+                EventParamType::GenericScalar { name } if structs.contains_key(name) => {
+                    TypedEventParamType::Data(DataType::Struct(name.clone()))
+                }
                 EventParamType::GenericScalar { name } => {
                     push_semantic(
                         param_diag,
@@ -523,6 +584,14 @@ pub(crate) fn coerce_typed_events(
                         );
                     }
                     TypedEventParamType::Array { elem: *elem, len }
+                }
+                EventParamType::GenericArray { elem, size } if structs.contains_key(elem) => {
+                    let context = format!("event '{}.{}' array size", event.name, param.name);
+                    let len = eval_data_size_expr(size, options, &context, errors).unwrap_or(1);
+                    TypedEventParamType::Data(DataType::Array {
+                        element: ArrayElemType::Struct(elem.clone()),
+                        len,
+                    })
                 }
                 EventParamType::GenericArray { elem, size } => {
                     push_semantic(
@@ -552,6 +621,9 @@ pub(crate) fn coerce_typed_events(
                         );
                     }
                     TypedEventParamType::Slice { elem: *elem }
+                }
+                EventParamType::GenericSlice { elem } if structs.contains_key(elem) => {
+                    TypedEventParamType::StructSlice { name: elem.clone() }
                 }
                 EventParamType::GenericSlice { elem } => {
                     push_semantic(
@@ -591,6 +663,7 @@ pub(crate) fn coerce_typed_events(
 
 pub(crate) fn coerce_typed_delegates(
     delegates: &[DelegateDef],
+    structs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<TypedDelegate> {
@@ -603,7 +676,7 @@ pub(crate) fn coerce_typed_delegates(
             body: Vec::new(),
         })
         .collect::<Vec<_>>();
-    coerce_typed_events(&adapters, true, "top-level", options, errors)
+    coerce_typed_events(&adapters, true, "top-level", structs, options, errors)
         .into_iter()
         .map(|event| TypedDelegate {
             name: event.name,
@@ -704,6 +777,12 @@ fn expand_proc_event_specs(
         for param in &event.params {
             let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
             match &param.ty {
+                EventParamType::Tuple(types) => params.push(ProcEventParamSpec {
+                    name: param.name.clone(),
+                    slots: Vec::new(),
+                    ty: ProcEventParamTypeSpec::Tuple(types.clone()),
+                    default: param.default.clone(),
+                }),
                 EventParamType::Scalar(ty) => params.push(ProcEventParamSpec {
                     name: param.name.clone(),
                     slots: vec![ProcEventParamSlotSpec {
@@ -723,24 +802,11 @@ fn expand_proc_event_specs(
                     ),
                 }),
                 EventParamType::GenericScalar { name } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic scalar type '{}'; generic event params must be specialized before processor lowering",
-                            proc.name, event.name, param.name, name
-                        ),
-                    );
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
-                        slots: vec![ProcEventParamSlotSpec {
-                            name: param.name.clone(),
-                            ty: PrimitiveType::F32,
-                        }],
-                        ty: ProcEventParamTypeSpec::Scalar {
-                            ty: PrimitiveType::F32,
-                        },
-                        default: None,
+                        slots: Vec::new(),
+                        ty: ProcEventParamTypeSpec::Struct { name: name.clone() },
+                        default: param.default.clone(),
                     });
                 }
                 EventParamType::Array { elem, size } => {
@@ -776,14 +842,6 @@ fn expand_proc_event_specs(
                     });
                 }
                 EventParamType::GenericArray { elem, size } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic array element type '{}'; generic event params must be specialized before processor lowering",
-                            proc.name, event.name, param.name, elem
-                        ),
-                    );
                     let context = format!(
                         "processor '{}.{}' event parameter '{}'",
                         proc.name, event.name, param.name
@@ -792,11 +850,11 @@ fn expand_proc_event_specs(
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        ty: ProcEventParamTypeSpec::FixedArray {
-                            elem_ty: PrimitiveType::F32,
+                        ty: ProcEventParamTypeSpec::StructArray {
+                            name: elem.clone(),
                             len,
                         },
-                        default: None,
+                        default: param.default.clone(),
                     });
                 }
                 EventParamType::Slice { elem } => {
@@ -817,20 +875,10 @@ fn expand_proc_event_specs(
                     });
                 }
                 EventParamType::GenericSlice { elem } => {
-                    push_semantic(
-                        param_diag,
-                        errors,
-                        format!(
-                            "processor '{}.{}' event parameter '{}' has unresolved generic slice type '{}[]'; generic event slices must be specialized before processor lowering",
-                            proc.name, event.name, param.name, elem
-                        ),
-                    );
                     params.push(ProcEventParamSpec {
                         name: param.name.clone(),
                         slots: Vec::new(),
-                        ty: ProcEventParamTypeSpec::Slice {
-                            elem_ty: PrimitiveType::F32,
-                        },
+                        ty: ProcEventParamTypeSpec::StructSlice { name: elem.clone() },
                         default: validate_proc_event_default_expr(
                             param,
                             None,
@@ -915,45 +963,75 @@ fn build_proc_lowering_env(
     }
     let mut generated_struct_specializations = HashMap::<String, StructDef>::new();
     if !generic_struct_templates.is_empty() {
+        let inference_facts = generic_inference_facts(
+            program
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Def(def) => Some(def),
+                    _ => None,
+                })
+                .chain(proc_defs.iter().flat_map(|proc| proc.local_defs.iter())),
+            raw_struct_defs_by_name.values(),
+        );
+        let finalizer_seed = GenericInferenceLocals::with_facts(inference_facts.clone());
         for proc in &mut proc_defs {
-            rewrite_generic_struct_ctor_stmt_list(
+            let proc_seed = generic_inference_seed_for_processor(proc, inference_facts.clone());
+            let runtime_seed = rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.init,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &proc_seed,
             );
-            rewrite_generic_struct_ctor_stmt_list(
+            let block_seed = rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.block_pre,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &runtime_seed,
             );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.block_post,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &block_seed,
             );
             rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.sample,
                 &generic_struct_templates,
                 &mut generated_struct_specializations,
                 errors,
+                &block_seed,
             );
             for event in &mut proc.events {
+                let event_seed = generic_inference_seed_for_event(event, &runtime_seed);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut event.body,
                     &generic_struct_templates,
                     &mut generated_struct_specializations,
                     errors,
+                    &event_seed,
+                );
+            }
+            for task in &mut proc.tasks {
+                rewrite_generic_struct_ctor_stmt_list(
+                    &mut task.body,
+                    &generic_struct_templates,
+                    &mut generated_struct_specializations,
+                    errors,
+                    &runtime_seed,
                 );
             }
             for def in &mut proc.local_defs {
+                let def_seed = generic_inference_seed_for_function(def, &runtime_seed);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut def.body,
                     &generic_struct_templates,
                     &mut generated_struct_specializations,
                     errors,
+                    &def_seed,
                 );
             }
         }
@@ -961,6 +1039,7 @@ fn build_proc_lowering_env(
             &generic_struct_templates,
             &mut generated_struct_specializations,
             errors,
+            &finalizer_seed,
         );
     }
     let mut struct_defs_by_name = raw_struct_defs_by_name;
@@ -986,58 +1065,60 @@ fn build_proc_lowering_env(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let mut callable_symbols_for_method_sugar = pre_desugar_defs
-        .iter()
-        .map(|d| d.name.clone())
-        .collect::<HashSet<_>>();
     for (struct_name, struct_def) in &struct_defs_by_name {
         for method in &struct_def.methods {
-            callable_symbols_for_method_sugar.insert(format!("{struct_name}.{}", method.name));
-        }
-    }
-    for proc in &mut proc_defs {
-        desugar_processor_instance_method_calls(
-            proc,
-            &typed_struct_defs,
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for (struct_name, struct_def) in &struct_defs_by_name {
-        for method in &struct_def.methods {
-            let mut desugared_method_body = method.body.clone();
-            let mut method_struct_instances = HashMap::<String, String>::new();
-            let mut method_struct_array_roots = HashMap::<String, String>::new();
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_and_array_roots(
-                    "self",
-                    struct_name,
-                    &typed_struct_defs,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                );
-            }
-            let method_ns = namespace_of_symbol(struct_name);
-            for stmt in &mut desugared_method_body {
-                desugar_init_instance_method_calls(
-                    stmt,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                    &typed_struct_defs,
-                    &method_ns,
-                    &callable_symbols_for_method_sugar,
-                );
+            let mut params = method.params.clone();
+            if let Some(self_param) = params.first_mut().filter(|param| param.name == "self") {
+                self_param.ty = Some(FnParamType::Struct(struct_name.clone()));
             }
             pre_desugar_defs.push(FunctionDef {
                 loc: method.loc,
                 is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
-                params: method.params.clone(),
+                params,
                 return_ty: method.return_ty.clone(),
                 return_ty_loc: method.return_ty_loc,
-                body: desugared_method_body,
+                body: method.body.clone(),
             });
         }
+    }
+    let callable_symbols_for_method_sugar = pre_desugar_defs
+        .iter()
+        .map(|def| def.name.clone())
+        .collect::<HashSet<_>>();
+    let struct_method_symbols = struct_defs_by_name
+        .iter()
+        .filter(|(name, _)| !proc_symbols.contains(*name))
+        .flat_map(|(name, def)| {
+            def.methods
+                .iter()
+                .map(move |method| format!("{name}.{}", method.name))
+        })
+        .collect::<HashSet<_>>();
+    let method_resolution_return_types = infer_instance_method_return_types(
+        &pre_desugar_defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &typed_struct_defs,
+    );
+    for def in &mut pre_desugar_defs {
+        desugar_function_instance_method_calls(
+            def,
+            &crate::def_semantics::CallTypeEnv::default(),
+            &method_resolution_return_types,
+            &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
+    }
+    for proc in &mut proc_defs {
+        desugar_processor_instance_method_calls(
+            proc,
+            &method_resolution_return_types,
+            &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
     }
     let (pre_desugar_overloads, _) =
         crate::def_semantics::prepare_function_overloads(&mut pre_desugar_defs);
@@ -1073,6 +1154,8 @@ fn build_proc_lowering_env(
             &pre_desugar_overloads,
             &top_return_types,
             &typed_struct_defs,
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
         );
     }
     for proc in &proc_defs {
@@ -1117,7 +1200,7 @@ fn build_proc_lowering_env(
             ));
         }
     }
-    let pre_desugar_fn_signatures = pre_desugar_defs
+    let mut pre_desugar_fn_signatures = pre_desugar_defs
         .iter()
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
         .collect::<HashMap<_, _>>();
@@ -1126,6 +1209,10 @@ fn build_proc_lowering_env(
         &pre_desugar_fn_signatures,
         &crate::def_semantics::CallTypeEnv::default(),
         &typed_struct_defs,
+    );
+    FnSignature::resolve_returns(
+        &mut pre_desugar_fn_signatures,
+        &pre_desugar_def_return_types,
     );
     for proc in &mut proc_defs {
         let sample_inferred = infer_numbered_io_from_sample(&proc.sample);
@@ -1201,14 +1288,10 @@ fn build_proc_lowering_env(
         let proc_diag = DiagCtx::new(proc.loc);
         match proc.outs_timing {
             OutputTiming::Sample => {
-                if !proc.has_sample_block {
+                if proc.has_block_block && !proc.has_sample_block {
                     errors.push(
                         proc_diag
-                            .semantic(
-                                format!("processor '{}' must declare sample block", proc.name),
-                                0,
-                                0,
-                            )
+                            .semantic(format!("audio-rate processor '{}' block must contain a nested sample section", proc.name), 0, 0)
                             .compiler_only(),
                     );
                 }
@@ -1289,17 +1372,6 @@ fn build_proc_lowering_env(
                 });
             }
         }
-        if shape.outs.is_empty() {
-            push_semantic(
-                proc_diag,
-                errors,
-                format!(
-                    "processor '{}' must declare outs/kouts block, assign to outN in sample, or assign to koutN in block",
-                    proc.name
-                ),
-            );
-            continue;
-        }
         let params = shape
             .param_specs
             .iter()
@@ -1320,6 +1392,7 @@ fn build_proc_lowering_env(
                 events: expand_proc_event_specs(proc, &shape.param_specs, options, errors),
                 delegates: expand_proc_delegate_specs(proc, options, errors),
                 buffers: shape.buffer_specs.clone(),
+                steppable: proc.has_sample_block || proc.has_block_block,
                 has_block: proc.has_block_block,
                 sample_oversample_factor: proc_sample_oversample_factors
                     .get(&proc.name)
@@ -1396,14 +1469,9 @@ fn build_proc_lowering_env(
     })
 }
 
-pub(crate) fn desugar_processors(
-    mut program: Program,
-    options: AnalysisOptions,
-    const_arrays: &HashMap<String, TypedArrayInfo>,
-    errors: &mut Vec<Diagnostic>,
-) -> ProcessorDesugarResult {
-    // Validate proc-local def type params BEFORE generic proc specialization
-    // (which clears proc.type_params on specialized copies).
+pub(crate) fn materialize_generic_processors(program: &mut Program, errors: &mut Vec<Diagnostic>) {
+    // Validate proc-local def type params before generic proc specialization,
+    // which clears proc.type_params on specialized copies.
     for block in &program.blocks {
         if let Block::Proc(proc) = block {
             for local_def in &proc.local_defs {
@@ -1419,7 +1487,7 @@ pub(crate) fn desugar_processors(
                     }
                 }
                 if !local_def.type_params.is_empty() {
-                    let mut seen = std::collections::HashSet::new();
+                    let mut seen = HashSet::new();
                     for tp in &local_def.type_params {
                         if !seen.insert(tp.clone()) {
                             errors.push(Diagnostic::semantic_span(
@@ -1435,8 +1503,20 @@ pub(crate) fn desugar_processors(
             }
         }
     }
+    rewrite_and_materialize_generic_processors(program, errors);
+}
 
-    rewrite_and_materialize_generic_processors(&mut program, errors);
+fn desugar_processors_impl(
+    mut program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    materialize_generics: bool,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    if materialize_generics {
+        materialize_generic_processors(&mut program, errors);
+    }
+    rewrite_source_task_and_when_generic_structs(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(&mut program, options, errors);
     validate_delegate_source_model(&program, options, const_arrays, errors);
@@ -1478,6 +1558,7 @@ pub(crate) fn desugar_processors(
             top_level_proc_rewrite: TopLevelProcRewriteMeta::default(),
             pinned_proc_fields: HashMap::new(),
             compiler_owned_proc_fields: HashMap::new(),
+            compiler_scratch_proc_fields: HashMap::new(),
             top_level_delegates: prepared_delegates.top_level,
         };
     };
@@ -1542,9 +1623,11 @@ pub(crate) fn desugar_processors(
 
     let mut pinned_proc_fields = HashMap::new();
     let mut compiler_owned_proc_fields = HashMap::new();
+    let mut compiler_scratch_proc_fields = HashMap::new();
     for proc_name in &proc_order {
         let mut pinned_fields = HashSet::new();
         let mut compiler_owned_fields = HashSet::new();
+        let mut compiler_scratch_fields = HashSet::new();
         collect_flattened_proc_field_metadata(
             proc_name,
             "",
@@ -1553,9 +1636,11 @@ pub(crate) fn desugar_processors(
             &mut HashSet::new(),
             &mut pinned_fields,
             &mut compiler_owned_fields,
+            &mut compiler_scratch_fields,
         );
         pinned_proc_fields.insert(proc_name.clone(), pinned_fields);
         compiler_owned_proc_fields.insert(proc_name.clone(), compiler_owned_fields);
+        compiler_scratch_proc_fields.insert(proc_name.clone(), compiler_scratch_fields);
     }
     ProcessorDesugarResult {
         program,
@@ -1568,8 +1653,28 @@ pub(crate) fn desugar_processors(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
+        compiler_scratch_proc_fields,
         top_level_delegates: prepared_delegates.top_level,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn desugar_processors(
+    program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    desugar_processors_impl(program, options, const_arrays, true, errors)
+}
+
+pub(crate) fn desugar_materialized_processors(
+    program: Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    errors: &mut Vec<Diagnostic>,
+) -> ProcessorDesugarResult {
+    desugar_processors_impl(program, options, const_arrays, false, errors)
 }
 
 #[cfg(test)]
@@ -2726,31 +2831,6 @@ graph:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("indexed proc-array output array graph should analyze");
-        let proc_out_tmp = typed.sample.iter().find_map(|stmt| match stmt {
-            Stmt::Assign {
-                target: AssignTarget::Var(tmp),
-                expr: Expr::UserCall { name, args, .. },
-                ..
-            } if name == "Voice.__onda_proc_call_out1"
-                && args.iter().any(|inner| {
-                    matches!(
-                        inner.expr,
-                        Expr::Index { ref base, ref index, .. }
-                            if base == "voices"
-                                && matches!(**index, Expr::Int { value: 0, .. })
-                    )
-                }) =>
-            {
-                Some(tmp.as_str())
-            }
-            _ => None,
-        });
-        let Some(proc_out_tmp) = proc_out_tmp else {
-            panic!(
-                "expected lowered sample to hoist proc-array output slot voices[0].pair[1]: {:?}",
-                typed.sample
-            );
-        };
         assert!(
             typed.sample.iter().any(|stmt| matches!(
                 stmt,
@@ -2760,10 +2840,12 @@ graph:
                 } if name == "Take.__onda_proc_step"
                     && args.iter().any(|arg| matches!(
                         arg.expr,
-                        Expr::Var { ref name, .. } if name == proc_out_tmp
+                        Expr::Index { ref base, ref index, .. }
+                            if base == "voices.pair[1]"
+                                && matches!(**index, Expr::Int { value: 0, .. })
                     ))
             )),
-            "expected lowered sample call to read hoisted proc-array output slot voices[0].pair[1]: {:?}",
+            "expected lowered sample call to read cached proc-array output slot voices[0].pair[1]: {:?}",
             typed.sample
         );
     }
@@ -2797,14 +2879,19 @@ graph:
                     stmt,
                     Stmt::Assign {
                         target: AssignTarget::Index { base, index },
-                        expr: Expr::UserCall { name, .. },
+                        expr: Expr::Index {
+                            base: source_base,
+                            index: source_index,
+                            ..
+                        },
                         ..
                     } if base == "out_st"
                         && matches!(
                             index,
                             Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. }
                         )
-                        && name.starts_with("Voice.__onda_proc_call_out")
+                        && (source_base == "voices.pair[0]" || source_base == "voices.pair[1]")
+                        && matches!(**source_index, Expr::Int { value: 0, .. })
                 ))
                 .count()
                 == 2,

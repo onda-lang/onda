@@ -986,6 +986,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         if array_slot.is_none() {
                             let mut ctor_stmt = stmt.clone();
                             if let Stmt::Assign {
+                                is_typed_decl,
                                 expr:
                                     Expr::UserCall {
                                         type_args, args, ..
@@ -993,6 +994,11 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 ..
                             } = &mut ctor_stmt
                             {
+                                // This generated statement declares the
+                                // processor's already-planned aggregate state.
+                                // Preserve that ownership fact so MIR lowering
+                                // constructs directly in the final storage.
+                                *is_typed_decl = true;
                                 type_args.clear();
                                 args.clear();
                             }
@@ -1288,6 +1294,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     sample_idx,
                     Block::Block(BlockExec {
                         loc: Default::default(),
+                        compiler_scratch_roots: Vec::new(),
                         pre: injected_block_pre,
                         sample: Some(sample_body),
                         post: injected_block_post,
@@ -1415,6 +1422,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         },
                         init: Some(vec![Expr::bool(false); len]),
                         initialize: true,
+                        init_is_value: false,
                     },
                 });
             }
@@ -1438,6 +1446,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     sample_idx,
                     Block::Block(BlockExec {
                         loc: sample_body.loc,
+                        compiler_scratch_roots: Vec::new(),
                         pre: Vec::new(),
                         sample: Some(sample_body),
                         post: Vec::new(),

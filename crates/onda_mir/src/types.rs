@@ -47,6 +47,16 @@ impl ScalarType {
     pub const fn is_numeric(self) -> bool {
         !matches!(self, Self::Bool)
     }
+
+    /// Logical storage width used by fixed MIR aggregates. This is independent
+    /// of target ABI layout and pointer width.
+    pub const fn logical_byte_width(self) -> u64 {
+        match self {
+            Self::F32 | Self::I32 => 4,
+            Self::F64 | Self::I64 => 8,
+            Self::Bool => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -314,6 +324,16 @@ impl<'a> ParamDomain<'a> {
         step: Option<f64>,
         step_count: Option<u32>,
     ) -> Option<Self> {
+        // Host formats commonly preserve the shortest decimal spelling of an
+        // f32 rather than its exact widened f64 bits. Normalize both forms to
+        // the storage type before validating and preparing the domain.
+        let storage_value = |value: f64| match scalar {
+            ScalarType::F32 => f64::from(value as f32),
+            _ => value,
+        };
+        let minimum = storage_value(minimum);
+        let maximum = storage_value(maximum);
+        let step = step.map(storage_value);
         if !matches!(
             scalar,
             ScalarType::F32 | ScalarType::F64 | ScalarType::I32 | ScalarType::I64
@@ -683,6 +703,32 @@ mod param_control_tests {
         assert_eq!(domain.normalized_to_plain(0.5), 0.5);
         assert_eq!(domain.plain_to_normalized(0.5), 0.5);
         assert_eq!(domain.constrain_plain(0.7), 0.75);
+
+        let f32_domain = ParamDomain::new(
+            ScalarType::F32,
+            0.0,
+            1.0,
+            ParamScale::Linear,
+            None,
+            None,
+            Some(0.1),
+            Some(10),
+        )
+        .expect("shortest f32 decimals form a valid decoded domain");
+        assert_eq!(f32_domain.step(), Some(f64::from(0.1_f32)));
+
+        let f32_range = ParamDomain::new(
+            ScalarType::F32,
+            0.0,
+            0.98,
+            ParamScale::Linear,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("shortest f32 range decimals form a valid decoded domain");
+        assert_eq!(f32_range.maximum(), f64::from(0.98_f32));
     }
 
     #[test]

@@ -464,6 +464,54 @@ sample:
 }
 
 #[test]
+fn indexed_member_assignments_evaluate_the_place_before_the_value() {
+    let mut instance = compile_test_instance(
+        r#"
+struct Cell:
+  taps: f32[2]
+
+struct Trace:
+  value: i32
+
+def outer(trace: Trace) -> i32:
+  trace.value = trace.value * 10 + 1
+  return 0
+
+def inner(trace: Trace) -> i32:
+  trace.value = trace.value * 10 + 2
+  return 1
+
+def replacement(trace: Trace) -> f32:
+  trace.value = trace.value * 10 + 3
+  return 0.5
+
+init:
+  cells: Cell[1]
+  trace = Trace()
+
+sample:
+  cells[outer(trace)].taps[inner(trace)] = replacement(trace)
+  out1 = f32(trace.value)
+"#,
+        1,
+        1,
+    );
+    let mut output = [0.0_f32; 1];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, 1, ExecutionOutput::none()).expect("program should process");
+    assert_eq!(output, [123.0]);
+}
+
+#[test]
 fn top_level_task_declarations_do_not_close_a_standalone_sample_gate() {
     let source = "task unused():\n  yield\nsample:\n  out1 = 1.0\n";
     let mut instance = compile_test_instance(source, 4, 1);
@@ -1063,6 +1111,116 @@ block:
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("fully initialized task should complete");
     assert_eq!(output, [2.0]);
+}
+
+#[test]
+fn top_level_task_can_reset_from_sample() {
+    const BLOCK_SIZE: usize = 1;
+    let mut instance = compile_test_instance(
+        r#"
+init:
+  pin progress: i32 = 0
+  pin reset_once = false
+
+task prepare():
+  progress += 1
+  yield
+  progress += 1
+
+block:
+  await prepare()
+
+  sample:
+    out1 = f32(progress)
+    if !reset_once:
+      prepare.reset()
+      reset_once = true
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial task should yield");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial task should complete before its sample reset");
+    assert_eq!(output, [2.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("sample reset should restart the task");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("restarted task should complete");
+    assert_eq!(output, [4.0]);
+}
+
+#[test]
+fn proc_task_can_reset_from_block_post() {
+    const BLOCK_SIZE: usize = 1;
+    let mut instance = compile_test_instance(
+        r#"
+proc Worker:
+  init:
+    pin progress: i32 = 0
+    pin reset_once = false
+
+  task prepare():
+    progress += 1
+    yield
+    progress += 1
+
+  block:
+    await prepare()
+
+    sample:
+      out1 = f32(progress)
+
+    if !reset_once:
+      prepare.reset()
+      reset_once = true
+
+init:
+  worker = Worker()
+
+sample:
+  out1 = worker()
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial proc task should yield");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("initial proc task should complete before its block-post reset");
+    assert_eq!(output, [2.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("block-post reset should restart the proc task");
+    assert_eq!(output, [0.0]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("restarted proc task should complete");
+    assert_eq!(output, [4.0]);
 }
 
 #[test]
@@ -2627,6 +2785,47 @@ block:
 }
 
 #[test]
+fn block_owned_arrays_and_views_resume_after_task_barriers() {
+    const BLOCK_SIZE: usize = 4;
+    let mut instance = compile_test_instance(
+        r#"
+struct Cell:
+  value: f32
+
+task prepare():
+  yield
+
+block:
+  values: f32[2] = [0.6, 0.8]
+  cells: Cell[2] = [Cell(value = 0.6), Cell(value = 0.8)]
+  selected = cells[1]
+  await prepare()
+
+  sample:
+    out1 = values[1] + selected.value
+"#,
+        BLOCK_SIZE,
+        1,
+    );
+    let mut output = [99.0_f32; BLOCK_SIZE];
+    unsafe {
+        bind_output(
+            &mut instance,
+            0,
+            output.as_mut_ptr().cast(),
+            std::mem::size_of_val(&output),
+        )
+        .expect("output should bind");
+    }
+
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    assert_eq!(output, [0.0; BLOCK_SIZE]);
+    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+        .expect("task should complete");
+    assert_eq!(output, [1.6; BLOCK_SIZE]);
+}
+
+#[test]
 fn task_return_inside_for_completes_without_undeclared_loop_state() {
     const BLOCK_SIZE: usize = 4;
     let sources = [
@@ -3144,4 +3343,125 @@ fn checked_buffer_bindings_reject_wrapping_element_counts() {
         validate_buffer_byte_extent(1024, 2, PrimitiveType::F32, "ok").unwrap(),
         8192
     );
+}
+
+#[test]
+fn rejected_event_capacity_preserves_instance_and_can_be_reserved_off_thread() {
+    let mut instance = compile_test_instance(
+        r#"
+init:
+  held: i32 = 0
+event update(values: i32[]):
+  held = values.len()
+sample:
+  out1 = f32(held)
+"#,
+        1,
+        1,
+    );
+    let event = instance.event_index("update").unwrap();
+    let mut output_storage = [0_u8; 32];
+    let mut print_batch = PrintBatch::from_storage(&mut output_storage);
+    print_batch.used_bytes = 7;
+    print_batch.record_count = 3;
+    print_batch.overflow_count = 5;
+    let status = trigger_event_by_index_with_status(
+        &mut instance,
+        event,
+        &[0; 3],
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+    let error = trigger_event_by_index(
+        &mut instance,
+        event,
+        &[0; 3],
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap_err();
+    assert!(error.message.contains("payload"));
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+
+    let count = instance.event_workspace_capacity() / 4 + 1;
+    let mut payload = vec![0; 4 + count * 4];
+    payload[..4].copy_from_slice(&(count as i32).to_le_bytes());
+    assert!(
+        trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).is_err()
+    );
+    assert!(instance.is_initialized());
+    let status = trigger_event_by_index_with_status(
+        &mut instance,
+        event,
+        &payload,
+        ExecutionOutput {
+            delegate_batch: None,
+            print_batch: Some(&mut print_batch),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+    let status = unsafe {
+        trigger_event_by_index_unchecked(
+            &mut instance,
+            event,
+            &payload,
+            ExecutionOutput {
+                delegate_batch: None,
+                print_batch: Some(&mut print_batch),
+            },
+        )
+    }
+    .unwrap();
+    assert_eq!(
+        status,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        (
+            print_batch.used_bytes,
+            print_batch.record_count,
+            print_batch.overflow_count,
+        ),
+        (7, 3, 5)
+    );
+    assert!(instance.is_initialized());
+    instance.reserve_event_workspace(payload.len()).unwrap();
+    trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).unwrap();
+    assert!(instance.is_initialized());
 }

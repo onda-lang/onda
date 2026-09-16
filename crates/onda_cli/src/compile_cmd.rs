@@ -17,7 +17,7 @@ use onda_semantics::{
 use crate::args::{default_metadata_output_path, default_object_output_path};
 use crate::diag_print::format_diagnostics;
 use crate::CompileEmit;
-use onda_lsp::formatting::{format_program, primitive_type_name};
+use onda_lsp::formatting::{format_graph_inspection_program, primitive_type_name};
 
 pub(crate) struct CompileRequest<'a> {
     pub input: &'a Path,
@@ -95,7 +95,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
             &compile_inputs,
         )
         .map_err(|diags| format_diagnostics("graph lowering failed", &diags))?;
-        print!("{}", format_program(&lowered));
+        print!("{}", format_graph_inspection_program(&lowered));
     }
     let typed = analyze_with_options_and_inputs(parsed, analysis_options, &compile_inputs)
         .map_err(|diags| format_diagnostics("semantic analysis failed", &diags))?;

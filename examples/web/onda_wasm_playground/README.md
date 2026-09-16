@@ -153,9 +153,11 @@ parameter defaults through the same update path, while the Events reset restores
 argument editors. Neither action clears physical processor state or reruns processor initialization.
 
 The generic event/control-output ABI accepts
-`{ type: "event", event: "event_name", values: { param: value } }`; scalar, fixed-array, and slice
-payloads are packed from compiler metadata and dispatched through the generated `onda_event_N`
-export. `{ type: "read-control-outputs" }` produces a
+`{ type: "event", event: "event_name", values: { param: value } }`. Values follow the event's
+recursive schema: nominal structs are objects containing exactly their declared fields, while
+tuples, fixed arrays, and runtime slices are sequences. Scalar and nested structured payloads are
+packed into the canonical little-endian wire layout and dispatched through the generated
+`onda_event_N` export. `{ type: "read-control-outputs" }` produces a
 `{ type: "control-outputs", values }` reply. ABI errors are returned as `onda-error` messages rather
 than terminating the processor. Portable packed state can be requested and restored through
 `snapshot` and `restore-snapshot`; restore starts from a fresh post-init physical image.

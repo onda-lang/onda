@@ -179,6 +179,10 @@ pub fn analyze_effects(program: &Program) -> EffectAnalysis {
                         reads: true,
                         writes: true,
                     },
+                    crate::PassingMode::ResultReference => ReferenceEffects {
+                        reads: false,
+                        writes: true,
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -565,8 +569,7 @@ fn collect_block_resource_writes(
                     output,
                 )?;
             }
-            StatementKind::SliceFill { destination, .. }
-            | StatementKind::SliceCopy { destination, .. } => {
+            StatementKind::SliceFill { destination, .. } => {
                 mark_value_resource_write(
                     *destination,
                     aliases,
@@ -574,6 +577,17 @@ fn collect_block_resource_writes(
                     "slice write",
                     output,
                 )?;
+            }
+            StatementKind::SliceCopy { copies, .. } => {
+                for copy in copies {
+                    mark_value_resource_write(
+                        copy.destination,
+                        aliases,
+                        unsupported_results,
+                        "slice write",
+                        output,
+                    )?;
+                }
             }
             StatementKind::Call {
                 function: callee,
@@ -962,10 +976,27 @@ pub fn analyze_integer_ranges(program: &Program, function: FunctionId) -> Functi
 /// Infers integer ranges across the complete statically resolved call graph.
 /// Declared parameter ranges remain storage contracts; ranges inferred from
 /// callers are value facts and are propagated only through value and readonly
-/// parameters. Recursive calls participate in the same constraints; an
-/// unresolved recursive argument therefore prevents an inferred contract
-/// instead of allowing an external call alone to over-specialize it.
+/// parameters. A readonly-reference fact is retained only when the callee's
+/// transitive writes cannot alias that argument. Recursive calls participate
+/// in the same constraints; an unresolved recursive argument therefore
+/// prevents an inferred contract instead of allowing an external call alone
+/// to over-specialize it.
 pub fn analyze_program_integer_ranges(program: &Program) -> ProgramRangeAnalysis {
+    let effects = analyze_effects(program);
+    analyze_program_integer_ranges_with_effects(program, &effects)
+}
+
+/// Equivalent to [`analyze_program_integer_ranges`], reusing an effect
+/// analysis computed for the same program.
+pub fn analyze_program_integer_ranges_with_effects(
+    program: &Program,
+    effects: &EffectAnalysis,
+) -> ProgramRangeAnalysis {
+    let reference_origins = program
+        .functions
+        .iter()
+        .map(|function| infer_local_reference_origins(program, function))
+        .collect::<Vec<_>>();
     let base_parameters = program
         .functions
         .iter()
@@ -993,6 +1024,8 @@ pub fn analyze_program_integer_ranges(program: &Program) -> ProgramRangeAnalysis
                     function,
                     &parameters[index],
                     &results,
+                    effects,
+                    &reference_origins[index],
                     &mut observations,
                 )
             })
@@ -1040,6 +1073,8 @@ fn analyze_function_integer_ranges(
     function: &crate::Function,
     parameters: &[Option<IntegerRange>],
     callee_results: &[Vec<Option<IntegerRange>>],
+    effects: &EffectAnalysis,
+    reference_origins: &[ReferenceOrigins],
     observations: &mut [Vec<RangeSummary>],
 ) -> FunctionRangeAnalysis {
     let mut environment = function
@@ -1060,6 +1095,8 @@ fn analyze_function_integer_ranges(
         function,
         parameters,
         callee_results,
+        effects,
+        reference_origins,
     };
     {
         let mut summaries = RangeAnalysisSummaries {
@@ -1084,12 +1121,213 @@ struct RangeAnalysisContext<'a> {
     function: &'a crate::Function,
     parameters: &'a [Option<IntegerRange>],
     callee_results: &'a [Vec<Option<IntegerRange>>],
+    effects: &'a EffectAnalysis,
+    reference_origins: &'a [ReferenceOrigins],
 }
 
 struct RangeAnalysisSummaries<'a> {
     locals: &'a mut [RangeSummary],
     results: &'a mut [RangeSummary],
     observations: &'a mut [Vec<RangeSummary>],
+}
+
+/// Ordinary MIR storage a local slice descriptor may reference. An empty,
+/// known set denotes buffer or constant-data storage, which cannot alias a
+/// scalar/aggregate `Place`; `unknown` is reserved for escaped call results or
+/// unsupported descriptor construction.
+#[derive(Clone, Default, PartialEq)]
+struct ReferenceOrigins {
+    places: Vec<Place>,
+    unknown: bool,
+}
+
+impl ReferenceOrigins {
+    fn from_place(place: Place) -> Self {
+        Self {
+            places: vec![place],
+            unknown: false,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            places: Vec::new(),
+            unknown: true,
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.unknown |= other.unknown;
+        for place in other.places {
+            if !self.places.contains(&place) {
+                self.places.push(place);
+            }
+        }
+    }
+
+    fn may_alias(&self, place: &Place) -> bool {
+        self.unknown
+            || self
+                .places
+                .iter()
+                .any(|candidate| places_may_alias(place, candidate))
+    }
+}
+
+fn infer_local_reference_origins(program: &Program, function: &Function) -> Vec<ReferenceOrigins> {
+    let mut origins = vec![ReferenceOrigins::default(); function.locals.len()];
+    if !function.locals.iter().any(|local| {
+        matches!(
+            program.types.get(local.ty.index()),
+            Some(Type::Slice { .. })
+        )
+    }) {
+        return origins;
+    }
+    loop {
+        let previous = origins.clone();
+        collect_reference_origins(program, function, &function.body, &previous, &mut origins);
+        if origins == previous {
+            return origins;
+        }
+    }
+}
+
+fn collect_reference_origins(
+    program: &Program,
+    function: &Function,
+    block: &Block,
+    previous: &[ReferenceOrigins],
+    origins: &mut [ReferenceOrigins],
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            StatementKind::Assign { destination, value }
+                if destination.projections.is_empty()
+                    && matches!(destination.base, PlaceBase::Local(_)) =>
+            {
+                let PlaceBase::Local(local) = destination.base else {
+                    unreachable!()
+                };
+                if local_is_slice(program, function, local) {
+                    origins[local.index()]
+                        .merge(rvalue_reference_origins(program, function, value, previous));
+                }
+            }
+            StatementKind::Call { results, .. } => {
+                for &local in results {
+                    if local_is_slice(program, function, local) {
+                        origins[local.index()].unknown = true;
+                    }
+                }
+            }
+            StatementKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_reference_origins(program, function, then_block, previous, origins);
+                collect_reference_origins(program, function, else_block, previous, origins);
+            }
+            StatementKind::Loop { body } => {
+                collect_reference_origins(program, function, body, previous, origins);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rvalue_reference_origins(
+    program: &Program,
+    function: &Function,
+    value: &Rvalue,
+    origins: &[ReferenceOrigins],
+) -> ReferenceOrigins {
+    match value {
+        Rvalue::Use(value) => value_reference_origins(program, function, *value, origins),
+        Rvalue::Load(place) => descriptor_place_origins(place, origins),
+        Rvalue::MakeSlice { source, .. } => match source {
+            SliceSource::Place(place) => {
+                if plain_place_is_slice(program, function, place) {
+                    descriptor_place_origins(place, origins)
+                } else {
+                    ReferenceOrigins::from_place(place.clone())
+                }
+            }
+            SliceSource::Buffer { .. }
+            | SliceSource::BufferParam { .. }
+            | SliceSource::ConstData(_) => ReferenceOrigins::default(),
+        },
+        _ => ReferenceOrigins::unknown(),
+    }
+}
+
+fn descriptor_place_origins(place: &Place, origins: &[ReferenceOrigins]) -> ReferenceOrigins {
+    match place.base {
+        PlaceBase::Local(local) => origins
+            .get(local.index())
+            .cloned()
+            .unwrap_or_else(ReferenceOrigins::unknown),
+        PlaceBase::Parameter(_) | PlaceBase::EventParam(_) => {
+            ReferenceOrigins::from_place(place.clone())
+        }
+        PlaceBase::State(_) | PlaceBase::Param(_) => ReferenceOrigins::unknown(),
+    }
+}
+
+fn value_reference_origins(
+    program: &Program,
+    function: &Function,
+    value: Value,
+    origins: &[ReferenceOrigins],
+) -> ReferenceOrigins {
+    match value {
+        Value::Local(local) if local_is_slice(program, function, local) => origins
+            .get(local.index())
+            .cloned()
+            .unwrap_or_else(ReferenceOrigins::unknown),
+        Value::Local(local)
+            if function
+                .locals
+                .get(local.index())
+                .and_then(|local| program.types.get(local.ty.index()))
+                .is_some_and(|ty| matches!(ty, Type::Buffer { .. } | Type::BufferSpan { .. })) =>
+        {
+            ReferenceOrigins::default()
+        }
+        Value::Local(_) => ReferenceOrigins::unknown(),
+        Value::Constant(_) => ReferenceOrigins::default(),
+    }
+}
+
+fn local_is_slice(program: &Program, function: &Function, local: LocalId) -> bool {
+    function
+        .locals
+        .get(local.index())
+        .and_then(|local| program.types.get(local.ty.index()))
+        .is_some_and(|ty| matches!(ty, Type::Slice { .. }))
+}
+
+fn plain_place_is_slice(program: &Program, function: &Function, place: &Place) -> bool {
+    if !place.projections.is_empty() {
+        return false;
+    }
+    let ty = match place.base {
+        PlaceBase::Local(local) => function.locals.get(local.index()).map(|local| local.ty),
+        PlaceBase::Parameter(parameter) => function
+            .params
+            .get(parameter.index())
+            .map(|parameter| parameter.ty),
+        PlaceBase::State(state) => program.state.get(state.index()).map(|state| state.ty),
+        PlaceBase::Param(param) => program
+            .interface
+            .params
+            .get(param.index())
+            .map(|param| param.ty),
+        PlaceBase::EventParam(_) => None,
+    };
+    ty.and_then(|ty| program.types.get(ty.index()))
+        .is_some_and(|ty| matches!(ty, Type::Slice { .. }))
 }
 
 fn call_argument_range(
@@ -1110,6 +1348,153 @@ fn call_argument_range(
         | CallArgument::Buffer(_)
         | CallArgument::BufferParam(_)
         | CallArgument::BufferSpan(_) => None,
+    }
+}
+
+fn reference_range_may_be_clobbered(
+    context: &RangeAnalysisContext<'_>,
+    callee: FunctionId,
+    argument: &CallArgument,
+    write_origins: &ReferenceOrigins,
+) -> bool {
+    let effects = context.effects.function(callee);
+    let CallArgument::Place(argument) = argument else {
+        return true;
+    };
+    write_origins.may_alias(argument)
+        || argument_may_alias_nonargument_writes(argument, effects.writes)
+}
+
+fn call_write_origins(
+    context: &RangeAnalysisContext<'_>,
+    callee: FunctionId,
+    args: &[CallArgument],
+) -> ReferenceOrigins {
+    let effects = context.effects.function(callee);
+    let mut origins = ReferenceOrigins::default();
+    for (index, argument) in args.iter().enumerate() {
+        if callee_parameter_may_write(context.program, callee, index, effects) {
+            origins.merge(call_argument_reference_origins(context, argument));
+        }
+    }
+    origins
+}
+
+fn callee_parameter_may_write(
+    program: &Program,
+    callee: FunctionId,
+    parameter_index: usize,
+    effects: &FunctionEffects,
+) -> bool {
+    if effects
+        .parameters
+        .get(parameter_index)
+        .is_some_and(|effects| effects.writes)
+    {
+        return true;
+    }
+
+    let Some(parameter) = program.functions[callee.index()]
+        .params
+        .get(parameter_index)
+    else {
+        return true;
+    };
+    matches!(
+        program.types.get(parameter.ty.index()),
+        Some(Type::Slice {
+            access: crate::AccessMode::ReadWrite,
+            ..
+        })
+    ) && effects.writes.intersects(MemoryRegionSet::INDIRECT)
+}
+
+fn call_argument_reference_origins(
+    context: &RangeAnalysisContext<'_>,
+    argument: &CallArgument,
+) -> ReferenceOrigins {
+    match argument {
+        CallArgument::Place(candidate)
+        | CallArgument::ArrayWindow {
+            array: candidate, ..
+        } => ReferenceOrigins::from_place(candidate.clone()),
+        CallArgument::Value(value)
+        | CallArgument::SliceElement { slice: value, .. }
+        | CallArgument::SliceWindow { slice: value, .. } => value_reference_origins(
+            context.program,
+            context.function,
+            *value,
+            context.reference_origins,
+        ),
+        CallArgument::Buffer(_) | CallArgument::BufferParam(_) | CallArgument::BufferSpan(_) => {
+            ReferenceOrigins::default()
+        }
+    }
+}
+
+fn slice_write_origins(
+    context: &RangeAnalysisContext<'_>,
+    statement: &StatementKind,
+) -> ReferenceOrigins {
+    let mut origins = ReferenceOrigins::default();
+    let mut add = |value| {
+        origins.merge(value_reference_origins(
+            context.program,
+            context.function,
+            value,
+            context.reference_origins,
+        ));
+    };
+    match statement {
+        StatementKind::SliceStore { slice, .. } => add(*slice),
+        StatementKind::SliceFill { destination, .. } => add(*destination),
+        StatementKind::SliceCopy { copies, .. } => {
+            for copy in copies {
+                add(copy.destination);
+            }
+        }
+        _ => {}
+    }
+    origins
+}
+
+fn places_may_alias(lhs: &Place, rhs: &Place) -> bool {
+    if lhs.base != rhs.base {
+        return match (lhs.base, rhs.base) {
+            (PlaceBase::Parameter(_), PlaceBase::Local(_))
+            | (PlaceBase::Local(_), PlaceBase::Parameter(_)) => false,
+            (PlaceBase::Parameter(_), _) | (_, PlaceBase::Parameter(_)) => true,
+            _ => false,
+        };
+    }
+
+    for (lhs, rhs) in lhs.projections.iter().zip(&rhs.projections) {
+        match (lhs, rhs) {
+            (Projection::Field(lhs), Projection::Field(rhs)) if lhs != rhs => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
+fn argument_may_alias_nonargument_writes(argument: &Place, writes: MemoryRegionSet) -> bool {
+    let indirect = writes.intersects(MemoryRegionSet::INDIRECT);
+    match argument.base {
+        // Callee code cannot otherwise reach storage owned by its caller.
+        // Writable arguments, including descriptor-backed references, were
+        // resolved explicitly by `call_write_origins` above.
+        PlaceBase::Local(_) => false,
+        PlaceBase::Parameter(_) => {
+            indirect
+                || writes.intersects(
+                    MemoryRegionSet::STATE
+                        .union(MemoryRegionSet::PARAMS)
+                        .union(MemoryRegionSet::EVENT_PAYLOAD),
+                )
+        }
+        PlaceBase::State(_) => indirect || writes.intersects(MemoryRegionSet::STATE),
+        PlaceBase::Param(_) => indirect || writes.intersects(MemoryRegionSet::PARAMS),
+        PlaceBase::EventParam(_) => indirect || writes.intersects(MemoryRegionSet::EVENT_PAYLOAD),
     }
 }
 
@@ -1168,12 +1553,9 @@ fn analyze_range_block(
                 let PlaceBase::Local(local) = destination.base else {
                     unreachable!()
                 };
-                let range = context.function.locals[local.index()]
-                    .integer_range
-                    .and_then(integer_range_from_invariant)
-                    .or_else(|| {
-                        range_of_rvalue(context.program, value, context.parameters, environment)
-                    });
+                let range = declared_local_range(context.function, local).or_else(|| {
+                    range_of_rvalue(context.program, value, context.parameters, environment)
+                });
                 environment[local.index()] = range;
                 record_range(&mut summaries.locals[local.index()], range);
             }
@@ -1182,6 +1564,7 @@ fn analyze_range_block(
                 function: callee,
                 args,
             } => {
+                let write_origins = call_write_origins(context, *callee, args);
                 // Arguments are evaluated before call results are assigned. In
                 // particular, `%x = call f(%x)` must observe `%x`'s incoming
                 // range at the callee boundary.
@@ -1201,69 +1584,75 @@ fn analyze_range_block(
                     {
                         continue;
                     }
-                    let range = call_argument_range(
-                        context.program,
-                        argument,
-                        context.parameters,
-                        environment,
-                    );
+                    let range = if parameter.mode == crate::PassingMode::ReadOnlyReference
+                        && reference_range_may_be_clobbered(
+                            context,
+                            *callee,
+                            argument,
+                            &write_origins,
+                        ) {
+                        None
+                    } else {
+                        call_argument_range(
+                            context.program,
+                            argument,
+                            context.parameters,
+                            environment,
+                        )
+                    };
                     record_range(&mut summaries.observations[callee.index()][index], range);
                 }
+                // Reference writes occur in the callee. Value results are
+                // assigned afterward and therefore supersede any clobber of
+                // the same destination local.
+                invalidate_reference_ranges(
+                    context.function,
+                    &write_origins,
+                    environment,
+                    summaries.locals,
+                );
                 for (result_index, result) in results.iter().enumerate() {
-                    let range = context.function.locals[result.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant)
-                        .or_else(|| {
-                            context
-                                .callee_results
-                                .get(callee.index())
-                                .and_then(|ranges| ranges.get(result_index))
-                                .copied()
-                                .flatten()
-                        });
+                    let range = declared_local_range(context.function, *result).or_else(|| {
+                        context
+                            .callee_results
+                            .get(callee.index())
+                            .and_then(|ranges| ranges.get(result_index))
+                            .copied()
+                            .flatten()
+                    });
                     environment[result.index()] = range;
                     record_range(&mut summaries.locals[result.index()], range);
                 }
-                for (index, argument) in args.iter().enumerate() {
-                    if context.program.functions[callee.index()].params[index].mode
-                        == crate::PassingMode::ReadWriteReference
-                    {
-                        if let Some(local) = argument_local(argument) {
-                            let range = context.function.locals[local.index()]
-                                .integer_range
-                                .and_then(integer_range_from_invariant);
-                            environment[local.index()] = range;
-                            record_range(&mut summaries.locals[local.index()], range);
-                        }
-                    }
-                }
+            }
+            statement @ (StatementKind::SliceStore { .. }
+            | StatementKind::SliceFill { .. }
+            | StatementKind::SliceCopy { .. }) => {
+                let origins = slice_write_origins(context, statement);
+                invalidate_reference_ranges(
+                    context.function,
+                    &origins,
+                    environment,
+                    summaries.locals,
+                );
             }
             StatementKind::If {
                 then_block,
                 else_block,
                 ..
             } => {
-                let mut then_environment = environment.to_vec();
-                let mut else_environment = environment.to_vec();
-                analyze_range_block(context, then_block, &mut then_environment, summaries);
-                analyze_range_block(context, else_block, &mut else_environment, summaries);
-                join_range_environments(environment, &then_environment, &else_environment);
+                let mutated = range_mutations(&[then_block, else_block], context);
+                let incoming = selected_ranges(environment, &mutated);
+                analyze_range_block(context, then_block, environment, summaries);
+                let then_ranges = selected_ranges(environment, &mutated);
+                restore_ranges(environment, &mutated, &incoming);
+                analyze_range_block(context, else_block, environment, summaries);
+                join_selected_ranges(environment, &mutated, &then_ranges);
             }
             StatementKind::Loop { body } => {
-                let mut mutated = Vec::new();
-                collect_range_mutations(body, context.program, &mut mutated);
-                let mut body_environment = environment.to_vec();
-                for local in &mutated {
-                    body_environment[local.index()] = context.function.locals[local.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant);
-                }
-                analyze_range_block(context, body, &mut body_environment, summaries);
-                for local in mutated {
-                    environment[local.index()] = context.function.locals[local.index()]
-                        .integer_range
-                        .and_then(integer_range_from_invariant);
-                }
+                let mutated = range_mutations(&[body], context);
+                restore_declared_ranges(context.function, environment, &mutated);
+                analyze_range_block(context, body, environment, summaries);
+                restore_declared_ranges(context.function, environment, &mutated);
             }
             StatementKind::Return { values } => {
                 for (index, value) in values.iter().enumerate() {
@@ -1358,7 +1747,8 @@ fn range_of_rvalue(
             0,
             i64::from(program.config.block_size.saturating_sub(1)),
         ),
-        Rvalue::BufferLen(_)
+        Rvalue::NormalizeIndex { .. }
+        | Rvalue::BufferLen(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferParamLen(_)
         | Rvalue::BufferParamChannels(_)
@@ -1460,36 +1850,97 @@ fn record_range(summary: &mut RangeSummary, range: Option<IntegerRange>) {
     }
 }
 
-fn join_range_environments(
-    destination: &mut [Option<IntegerRange>],
-    lhs: &[Option<IntegerRange>],
-    rhs: &[Option<IntegerRange>],
+fn selected_ranges(
+    environment: &[Option<IntegerRange>],
+    locals: &[LocalId],
+) -> Vec<Option<IntegerRange>> {
+    locals
+        .iter()
+        .map(|local| environment[local.index()])
+        .collect()
+}
+
+fn restore_ranges(
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+    ranges: &[Option<IntegerRange>],
 ) {
-    for (index, destination) in destination.iter_mut().enumerate() {
-        *destination = match (lhs[index], rhs[index]) {
+    for (&local, &range) in locals.iter().zip(ranges) {
+        environment[local.index()] = range;
+    }
+}
+
+fn join_selected_ranges(
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+    lhs: &[Option<IntegerRange>],
+) {
+    for (&local, &lhs) in locals.iter().zip(lhs) {
+        let rhs = environment[local.index()];
+        environment[local.index()] = match (lhs, rhs) {
             (Some(lhs), Some(rhs)) => lhs.join(rhs),
             _ => None,
         };
     }
 }
 
-fn argument_local(argument: &CallArgument) -> Option<LocalId> {
-    let place = match argument {
-        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => place,
-        _ => return None,
-    };
-    match place.base {
-        PlaceBase::Local(local) => Some(local),
-        _ => None,
+fn restore_declared_ranges(
+    function: &Function,
+    environment: &mut [Option<IntegerRange>],
+    locals: &[LocalId],
+) {
+    for &local in locals {
+        environment[local.index()] = declared_local_range(function, local);
     }
 }
 
-fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<LocalId>) {
+fn declared_local_range(function: &Function, local: LocalId) -> Option<IntegerRange> {
+    function.locals[local.index()]
+        .integer_range
+        .and_then(integer_range_from_invariant)
+}
+
+fn visit_clobbered_locals(
+    function: &Function,
+    origins: &ReferenceOrigins,
+    mut visit: impl FnMut(LocalId),
+) {
+    if origins.unknown {
+        for index in 0..function.locals.len() {
+            visit(LocalId::new(index as u32));
+        }
+        return;
+    }
+    for place in &origins.places {
+        if let PlaceBase::Local(local) = place.base {
+            visit(local);
+        }
+    }
+}
+
+fn invalidate_reference_ranges(
+    function: &Function,
+    origins: &ReferenceOrigins,
+    environment: &mut [Option<IntegerRange>],
+    summaries: &mut [RangeSummary],
+) {
+    visit_clobbered_locals(function, origins, |local| {
+        let range = declared_local_range(function, local);
+        environment[local.index()] = range;
+        record_range(&mut summaries[local.index()], range);
+    });
+}
+
+fn collect_range_mutations(
+    block: &Block,
+    context: &RangeAnalysisContext<'_>,
+    mutated: &mut Vec<LocalId>,
+) {
     for statement in &block.statements {
         match &statement.kind {
             StatementKind::Assign { destination, .. } => {
                 if let PlaceBase::Local(local) = destination.base {
-                    insert_range_mutation(mutated, local);
+                    mutated.push(local);
                 }
             }
             StatementKind::Call {
@@ -1498,36 +1949,39 @@ fn collect_range_mutations(block: &Block, program: &Program, mutated: &mut Vec<L
                 args,
             } => {
                 for local in results {
-                    insert_range_mutation(mutated, *local);
+                    mutated.push(*local);
                 }
-                for (index, argument) in args.iter().enumerate() {
-                    if program.functions[function.index()].params[index].mode
-                        == crate::PassingMode::ReadWriteReference
-                    {
-                        if let Some(local) = argument_local(argument) {
-                            insert_range_mutation(mutated, local);
-                        }
-                    }
-                }
+                let origins = call_write_origins(context, *function, args);
+                visit_clobbered_locals(context.function, &origins, |local| mutated.push(local));
+            }
+            statement @ (StatementKind::SliceStore { .. }
+            | StatementKind::SliceFill { .. }
+            | StatementKind::SliceCopy { .. }) => {
+                let origins = slice_write_origins(context, statement);
+                visit_clobbered_locals(context.function, &origins, |local| mutated.push(local));
             }
             StatementKind::If {
                 then_block,
                 else_block,
                 ..
             } => {
-                collect_range_mutations(then_block, program, mutated);
-                collect_range_mutations(else_block, program, mutated);
+                collect_range_mutations(then_block, context, mutated);
+                collect_range_mutations(else_block, context, mutated);
             }
-            StatementKind::Loop { body } => collect_range_mutations(body, program, mutated),
+            StatementKind::Loop { body } => collect_range_mutations(body, context, mutated),
             _ => {}
         }
     }
 }
 
-fn insert_range_mutation(mutated: &mut Vec<LocalId>, local: LocalId) {
-    if !mutated.contains(&local) {
-        mutated.push(local);
+fn range_mutations(blocks: &[&Block], context: &RangeAnalysisContext<'_>) -> Vec<LocalId> {
+    let mut mutated = Vec::new();
+    for block in blocks {
+        collect_range_mutations(block, context, &mut mutated);
     }
+    mutated.sort_unstable();
+    mutated.dedup();
+    mutated
 }
 
 fn scan_block(
@@ -1541,7 +1995,7 @@ fn scan_block(
         match &statement.kind {
             StatementKind::Assign { destination, value } => {
                 scan_place(destination, Access::Write, effects);
-                scan_rvalue(program, function, value, effects);
+                scan_rvalue(&program.types, &function.locals, value, effects);
             }
             StatementKind::Call { function, args, .. } => {
                 for argument in args {
@@ -1562,7 +2016,10 @@ fn scan_block(
                     .delegates
                     .get(delegate.index())
                     .is_some_and(|delegate| {
-                        delegate.params.iter().any(|param| {
+                        delegate.schema.params.iter().any(|param| matches!(&param.ty,
+                            onda_processor_abi::payload::PayloadType::Slice { element }
+                                if matches!(element.as_ref(), onda_processor_abi::payload::PayloadType::Struct { .. })
+                        )) || delegate.params.iter().any(|param| {
                             matches!(
                                 program.types.get(param.ty.index()),
                                 Some(Type::Array { .. })
@@ -1570,9 +2027,8 @@ fn scan_block(
                         })
                     })
                 {
-                    // Fixed-array publications accept evaluated slice values.
-                    // Backends verify their runtime length before copying the
-                    // descriptor's fixed element count.
+                    // Publications check fixed array lengths and the relationship
+                    // between a struct slice's logical length and leaf tensors.
                     effects.may_fail = true;
                 }
             }
@@ -1641,15 +2097,19 @@ fn scan_block(
                 effects.writes.insert(MemoryRegionSet::INDIRECT);
                 scan_value(*destination, effects);
             }
-            StatementKind::SliceCopy {
-                destination,
-                source,
-            } => {
-                effects.reads.insert(MemoryRegionSet::INDIRECT);
-                effects.writes.insert(MemoryRegionSet::INDIRECT);
-                scan_value(*destination, effects);
-                scan_value(*source, effects);
-                effects.may_fail = true;
+            StatementKind::SliceCopy { copies, preflight } => {
+                effects.may_fail |=
+                    !copies.is_empty() && *preflight == crate::SliceCopyPreflight::Required;
+                for crate::SliceCopy {
+                    destination,
+                    source,
+                } in copies
+                {
+                    effects.reads.insert(MemoryRegionSet::INDIRECT);
+                    effects.writes.insert(MemoryRegionSet::INDIRECT);
+                    scan_value(*destination, effects);
+                    scan_value(*source, effects);
+                }
             }
             StatementKind::If {
                 condition,
@@ -1675,8 +2135,8 @@ fn scan_block(
 }
 
 fn scan_rvalue(
-    program: &Program,
-    function: &crate::Function,
+    types: &[Type],
+    locals: &[crate::Local],
     value: &Rvalue,
     effects: &mut FunctionEffects,
 ) {
@@ -1690,7 +2150,7 @@ fn scan_rvalue(
             scan_value(*rhs, effects);
             if matches!(op, crate::BinaryOp::Divide | crate::BinaryOp::Remainder)
                 && matches!(
-                    value_scalar_type(program, function, *lhs),
+                    value_scalar_type(types, locals, *lhs),
                     Some(ScalarType::I32 | ScalarType::I64)
                 )
             {
@@ -1710,6 +2170,15 @@ fn scan_rvalue(
         Rvalue::ProcessFrame { offset } => {
             scan_value(*offset, effects);
             effects.may_fail = true;
+        }
+        Rvalue::NormalizeIndex {
+            index,
+            length,
+            bounds,
+        } => {
+            scan_value(*index, effects);
+            scan_value(*length, effects);
+            mark_dynamic_bounds(*bounds, effects);
         }
         Rvalue::InputLoad {
             element,
@@ -1781,9 +2250,19 @@ fn scan_rvalue(
             start,
             len,
             bounds,
-            ..
+            access,
         } => {
             scan_slice_source(source, effects);
+            // Descriptor stores no longer name their originating parameter.
+            // Preserve its writable contract when taking that address, including
+            // scalar leaves selected by aggregate branch joins.
+            if *access == crate::AccessMode::ReadWrite {
+                if let SliceSource::Place(place) = source {
+                    if matches!(place.base, PlaceBase::Parameter(_)) {
+                        scan_place(place, Access::Write, effects);
+                    }
+                }
+            }
             scan_value(*start, effects);
             scan_value(*len, effects);
             mark_checked_bounds(*bounds, effects);
@@ -1875,6 +2354,15 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
 pub(crate) fn call_argument_may_fail(argument: &CallArgument) -> bool {
     let mut effects = FunctionEffects::default();
     scan_call_argument(argument, &mut effects);
+    effects.may_fail
+}
+
+/// Whether evaluating an rvalue can encounter a runtime safety failure.
+/// Memory reads are not observable effects in MIR, so this is also the
+/// criterion used to discard an otherwise-unused rvalue assignment.
+pub(crate) fn rvalue_may_fail(types: &[Type], locals: &[crate::Local], value: &Rvalue) -> bool {
+    let mut effects = FunctionEffects::default();
+    scan_rvalue(types, locals, value, &mut effects);
     effects.may_fail
 }
 
@@ -2066,16 +2554,12 @@ fn mark_dynamic_bounds(bounds: BoundsMode, effects: &mut FunctionEffects) {
     }
 }
 
-fn value_scalar_type(
-    program: &Program,
-    function: &crate::Function,
-    value: Value,
-) -> Option<ScalarType> {
+fn value_scalar_type(types: &[Type], locals: &[crate::Local], value: Value) -> Option<ScalarType> {
     match value {
         Value::Constant(value) => Some(value.ty()),
         Value::Local(local) => {
-            let ty = function.locals.get(local.index())?.ty;
-            match program.types.get(ty.index())? {
+            let ty = locals.get(local.index())?.ty;
+            match types.get(ty.index())? {
                 crate::Type::Scalar(scalar) => Some(*scalar),
                 _ => None,
             }
@@ -2113,6 +2597,43 @@ mod tests {
             locals: Vec::new(),
             body,
             source: SourceSpan::UNKNOWN,
+        }
+    }
+
+    fn range_test_program(types: Vec<Type>, users: Vec<Function>) -> Program {
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut process = function(
+            "process",
+            process_function_params(TypeId::new(0)),
+            Block::default(),
+        );
+        process.kind = FunctionKind::Process;
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types = types;
+        program.functions = vec![init, process];
+        program.functions.extend(users);
+        program
+    }
+
+    fn test_local(ty: TypeId) -> Local {
+        Local {
+            integer_range: None,
+            name: None,
+            ty,
+        }
+    }
+
+    fn test_parameter(name: &str, ty: TypeId, mode: crate::PassingMode) -> crate::FunctionParam {
+        crate::FunctionParam {
+            integer_range: None,
+            name: name.to_owned(),
+            ty,
+            mode,
         }
     }
 
@@ -2374,6 +2895,7 @@ mod tests {
             })
             .collect();
         program.interface.events.push(crate::Event {
+            schema: Default::default(),
             name: "event".to_owned(),
             params: Vec::new(),
             handler: FunctionId::new(5),
@@ -2739,6 +3261,32 @@ mod tests {
                 },
             )
         };
+        let slice_copy = |name: &str, preflight| {
+            let mut function = function(name, Vec::new(), Block::default());
+            function.locals.extend([
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+                Local {
+                    integer_range: None,
+                    name: None,
+                    ty: slice_ty,
+                },
+            ]);
+            function
+                .body
+                .statements
+                .push(statement(StatementKind::SliceCopy {
+                    copies: vec![crate::SliceCopy {
+                        destination: Value::Local(LocalId::new(0)),
+                        source: Value::Local(LocalId::new(1)),
+                    }],
+                    preflight,
+                }));
+            function
+        };
 
         let mut program = Program::new(
             CompileConfig {
@@ -2768,6 +3316,11 @@ mod tests {
             clamped_slice,
             call("calls_float_divide", 0),
             call("calls_integer_divide", 1),
+            slice_copy("checked_slice_copy", crate::SliceCopyPreflight::Required),
+            slice_copy(
+                "proven_slice_copy",
+                crate::SliceCopyPreflight::ProvenUnnecessary,
+            ),
         ];
 
         let analysis = analyze_effects(&program);
@@ -2778,6 +3331,8 @@ mod tests {
         assert!(analysis.function(FunctionId::new(4)).may_fail);
         assert!(!analysis.function(FunctionId::new(5)).may_fail);
         assert!(analysis.function(FunctionId::new(6)).may_fail);
+        assert!(analysis.function(FunctionId::new(7)).may_fail);
+        assert!(!analysis.function(FunctionId::new(8)).may_fail);
     }
 
     #[test]
@@ -2874,6 +3429,72 @@ mod tests {
             ranges.local(LocalId::new(1)),
             IntegerRange::new(ScalarType::I32, 1, 65)
         );
+    }
+
+    #[test]
+    fn integer_ranges_preserve_unmodified_branch_and_loop_state() {
+        let i32_ty = TypeId::new(0);
+        let local = || Local {
+            integer_range: None,
+            name: None,
+            ty: i32_ty,
+        };
+        let assign = |local, value| {
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(local)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(value))),
+            })
+        };
+        let copy = |destination, source| {
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(destination)),
+                value: Rvalue::Use(Value::Local(LocalId::new(source))),
+            })
+        };
+
+        let mut process = function("process", process_function_params(i32_ty), Block::default());
+        process.kind = FunctionKind::Process;
+        process.locals = vec![local(), local(), local(), local(), local(), local()];
+        process.body.statements.extend([
+            assign(0, 10),
+            assign(1, 1),
+            statement(StatementKind::If {
+                condition: Value::Constant(ScalarValue::Bool(true)),
+                then_block: Block {
+                    statements: vec![assign(1, 3)],
+                },
+                else_block: Block::default(),
+            }),
+            copy(2, 1),
+            statement(StatementKind::Loop {
+                body: Block {
+                    statements: vec![assign(3, 8)],
+                },
+            }),
+            copy(4, 0),
+            copy(5, 3),
+        ]);
+
+        let mut init = function("init", Vec::new(), Block::default());
+        init.kind = FunctionKind::Init;
+        let mut program = Program::new(
+            CompileConfig::new(48_000.0, 64).expect("valid test config"),
+            FunctionId::new(0),
+            FunctionId::new(1),
+        );
+        program.types.push(Type::Scalar(ScalarType::I32));
+        program.functions = vec![init, process];
+
+        let ranges = analyze_integer_ranges(&program, FunctionId::new(1));
+        assert_eq!(
+            ranges.local(LocalId::new(2)),
+            IntegerRange::new(ScalarType::I32, 1, 3)
+        );
+        assert_eq!(
+            ranges.local(LocalId::new(4)),
+            IntegerRange::new(ScalarType::I32, 10, 10)
+        );
+        assert_eq!(ranges.local(LocalId::new(5)), None);
     }
 
     #[test]
@@ -3072,6 +3693,370 @@ mod tests {
                 .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
             None,
             "an unresolved recursive call must prevent external specialization"
+        );
+    }
+
+    #[test]
+    fn readonly_reference_ranges_require_disjoint_writable_arguments() {
+        let build = |aliases: bool| {
+            let i32_ty = TypeId::new(0);
+            let parameter = |name: &str, mode: crate::PassingMode| crate::FunctionParam {
+                integer_range: None,
+                name: name.to_owned(),
+                ty: i32_ty,
+                mode,
+            };
+            let local = || Local {
+                integer_range: None,
+                name: None,
+                ty: i32_ty,
+            };
+
+            let mut callee = function(
+                "callee",
+                vec![
+                    parameter("read", crate::PassingMode::ReadOnlyReference),
+                    parameter("write", crate::PassingMode::ReadWriteReference),
+                ],
+                Block::default(),
+            );
+            callee.locals.push(local());
+            callee.body.statements.extend([
+                statement(StatementKind::Assign {
+                    destination: Place {
+                        base: PlaceBase::Parameter(ParameterId::new(1)),
+                        projections: Vec::new(),
+                    },
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(100))),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Load(Place {
+                        base: PlaceBase::Parameter(ParameterId::new(0)),
+                        projections: Vec::new(),
+                    }),
+                }),
+            ]);
+
+            let mut caller = function("caller", Vec::new(), Block::default());
+            caller.locals.extend([local(), local()]);
+            caller.body.statements.extend([
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(1)),
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+                }),
+                statement(StatementKind::Call {
+                    results: Vec::new(),
+                    function: FunctionId::new(2),
+                    args: vec![
+                        CallArgument::Place(Place::local(LocalId::new(0))),
+                        CallArgument::Place(Place::local(LocalId::new(u32::from(!aliases)))),
+                    ],
+                }),
+            ]);
+
+            let mut init = function("init", Vec::new(), Block::default());
+            init.kind = FunctionKind::Init;
+            let mut process =
+                function("process", process_function_params(i32_ty), Block::default());
+            process.kind = FunctionKind::Process;
+            let mut program = Program::new(
+                CompileConfig::new(48_000.0, 64).expect("valid test config"),
+                FunctionId::new(0),
+                FunctionId::new(1),
+            );
+            program.types.push(Type::Scalar(ScalarType::I32));
+            program.functions = vec![init, process, callee, caller];
+            program
+        };
+
+        let aliased = analyze_program_integer_ranges(&build(true));
+        assert_eq!(
+            aliased
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            None,
+            "a writable alias must invalidate the readonly entry range"
+        );
+        assert_eq!(
+            aliased
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.local(LocalId::new(0))),
+            None,
+            "a load through the invalidated readonly reference must remain unknown"
+        );
+
+        let disjoint = analyze_program_integer_ranges(&build(false));
+        let zero = IntegerRange::new(ScalarType::I32, 0, 0);
+        assert_eq!(
+            disjoint
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            zero,
+            "a distinct writable local must not discard the readonly range"
+        );
+        assert_eq!(
+            disjoint
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.local(LocalId::new(0))),
+            zero
+        );
+    }
+
+    #[test]
+    fn dynamic_reference_writes_invalidate_only_aliased_caller_ranges() {
+        let build = |aliases: bool| {
+            let i32_ty = TypeId::new(0);
+            let slice_ty = TypeId::new(1);
+            let mut callee = function(
+                "callee",
+                vec![
+                    test_parameter("read", i32_ty, crate::PassingMode::ReadOnlyReference),
+                    test_parameter("write", i32_ty, crate::PassingMode::ReadWriteReference),
+                ],
+                Block::default(),
+            );
+            callee.locals.push(test_local(i32_ty));
+            callee.body.statements.extend([
+                statement(StatementKind::Assign {
+                    destination: Place {
+                        base: PlaceBase::Parameter(ParameterId::new(1)),
+                        projections: Vec::new(),
+                    },
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(100))),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Load(Place {
+                        base: PlaceBase::Parameter(ParameterId::new(0)),
+                        projections: Vec::new(),
+                    }),
+                }),
+            ]);
+
+            let mut caller = function("caller", Vec::new(), Block::default());
+            caller.locals.extend([
+                test_local(i32_ty),
+                test_local(i32_ty),
+                test_local(slice_ty),
+                test_local(i32_ty),
+            ]);
+            caller.body.statements.extend([
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(1)),
+                    value: Rvalue::Use(Value::Constant(ScalarValue::I32(1))),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(2)),
+                    value: Rvalue::MakeSlice {
+                        source: SliceSource::Place(Place::local(LocalId::new(u32::from(!aliases)))),
+                        start: Value::Constant(ScalarValue::I32(0)),
+                        len: Value::Constant(ScalarValue::I32(1)),
+                        bounds: BoundsMode::Unchecked,
+                        access: AccessMode::ReadWrite,
+                    },
+                }),
+                statement(StatementKind::Call {
+                    results: Vec::new(),
+                    function: FunctionId::new(2),
+                    args: vec![
+                        CallArgument::Place(Place::local(LocalId::new(0))),
+                        CallArgument::SliceElement {
+                            slice: Value::Local(LocalId::new(2)),
+                            index: Value::Constant(ScalarValue::I32(0)),
+                            bounds: BoundsMode::Unchecked,
+                        },
+                    ],
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(3)),
+                    value: Rvalue::Use(Value::Local(LocalId::new(0))),
+                }),
+            ]);
+
+            range_test_program(
+                vec![
+                    Type::Scalar(ScalarType::I32),
+                    Type::Slice {
+                        element: ScalarType::I32,
+                        access: AccessMode::ReadWrite,
+                    },
+                ],
+                vec![callee, caller],
+            )
+        };
+
+        let aliased = analyze_program_integer_ranges(&build(true));
+        assert_eq!(
+            aliased
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            None,
+            "a dynamic writable alias must invalidate the callee's readonly range"
+        );
+        assert_eq!(
+            aliased
+                .function(FunctionId::new(3))
+                .and_then(|ranges| ranges.local(LocalId::new(3))),
+            None,
+            "a dynamic writable alias must invalidate the caller's surviving fact"
+        );
+
+        let disjoint = analyze_program_integer_ranges(&build(false));
+        let zero = IntegerRange::new(ScalarType::I32, 0, 0);
+        assert_eq!(
+            disjoint
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.parameter(ParameterId::new(0))),
+            zero
+        );
+        assert_eq!(
+            disjoint
+                .function(FunctionId::new(3))
+                .and_then(|ranges| ranges.local(LocalId::new(3))),
+            zero,
+            "a descriptor backed by another local must preserve the fact"
+        );
+    }
+
+    #[test]
+    fn direct_slice_writes_invalidate_backing_local_ranges() {
+        let i32_ty = TypeId::new(0);
+        let slice_ty = TypeId::new(1);
+        let mut caller = function("caller", Vec::new(), Block::default());
+        caller
+            .locals
+            .extend([test_local(i32_ty), test_local(slice_ty), test_local(i32_ty)]);
+        caller.body.statements.extend([
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+            }),
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::MakeSlice {
+                    source: SliceSource::Place(Place::local(LocalId::new(0))),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len: Value::Constant(ScalarValue::I32(1)),
+                    bounds: BoundsMode::Unchecked,
+                    access: AccessMode::ReadWrite,
+                },
+            }),
+            statement(StatementKind::SliceStore {
+                slice: Value::Local(LocalId::new(1)),
+                index: Value::Constant(ScalarValue::I32(0)),
+                value: Value::Constant(ScalarValue::I32(100)),
+                bounds: BoundsMode::Unchecked,
+            }),
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(2)),
+                value: Rvalue::Use(Value::Local(LocalId::new(0))),
+            }),
+        ]);
+        let program = range_test_program(
+            vec![
+                Type::Scalar(ScalarType::I32),
+                Type::Slice {
+                    element: ScalarType::I32,
+                    access: AccessMode::ReadWrite,
+                },
+            ],
+            vec![caller],
+        );
+
+        assert_eq!(
+            analyze_program_integer_ranges(&program)
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.local(LocalId::new(2))),
+            None
+        );
+    }
+
+    #[test]
+    fn unrelated_indirect_writes_preserve_local_readonly_ranges() {
+        let i32_ty = TypeId::new(0);
+        let slice_ty = TypeId::new(1);
+        let mut callee = function(
+            "callee",
+            vec![test_parameter(
+                "read",
+                i32_ty,
+                crate::PassingMode::ReadOnlyReference,
+            )],
+            Block::default(),
+        );
+        callee
+            .locals
+            .extend([test_local(i32_ty), test_local(slice_ty), test_local(i32_ty)]);
+        callee.body.statements.extend([
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(7))),
+            }),
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::MakeSlice {
+                    source: SliceSource::Place(Place::local(LocalId::new(0))),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len: Value::Constant(ScalarValue::I32(1)),
+                    bounds: BoundsMode::Unchecked,
+                    access: AccessMode::ReadWrite,
+                },
+            }),
+            statement(StatementKind::SliceStore {
+                slice: Value::Local(LocalId::new(1)),
+                index: Value::Constant(ScalarValue::I32(0)),
+                value: Value::Constant(ScalarValue::I32(9)),
+                bounds: BoundsMode::Unchecked,
+            }),
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(2)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: Vec::new(),
+                }),
+            }),
+        ]);
+
+        let mut caller = function("caller", Vec::new(), Block::default());
+        caller.locals.push(test_local(i32_ty));
+        caller.body.statements.extend([
+            statement(StatementKind::Assign {
+                destination: Place::local(LocalId::new(0)),
+                value: Rvalue::Use(Value::Constant(ScalarValue::I32(0))),
+            }),
+            statement(StatementKind::Call {
+                results: Vec::new(),
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place::local(LocalId::new(0)))],
+            }),
+        ]);
+        let program = range_test_program(
+            vec![
+                Type::Scalar(ScalarType::I32),
+                Type::Slice {
+                    element: ScalarType::I32,
+                    access: AccessMode::ReadWrite,
+                },
+            ],
+            vec![callee, caller],
+        );
+        let zero = IntegerRange::new(ScalarType::I32, 0, 0);
+
+        assert_eq!(
+            analyze_program_integer_ranges(&program)
+                .function(FunctionId::new(2))
+                .and_then(|ranges| ranges.local(LocalId::new(2))),
+            zero,
+            "callee-local indirect writes cannot reach caller-owned local storage"
         );
     }
 }

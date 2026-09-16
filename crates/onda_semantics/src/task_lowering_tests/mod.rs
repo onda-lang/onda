@@ -70,7 +70,7 @@ fn task_dispatch_is_balanced() {
 #[test]
 fn accepts_well_placed_task_controls() {
     let errors = validate(
-            "proc P:\n  tasks:\n    load():\n      yield\n      return\n  event restart():\n    load.reset()\n  block:\n    await load()\n    sample:\n      out1 = 0.0\n",
+            "proc P:\n  tasks:\n    load():\n      yield\n      return\n  event restart():\n    load.reset()\n  block:\n    await load()\n    sample:\n      load.reset()\n      out1 = 0.0\n    load.reset()\n",
         );
     assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
 }
@@ -78,7 +78,7 @@ fn accepts_well_placed_task_controls() {
 #[test]
 fn accepts_well_placed_top_level_task_controls() {
     let errors = validate(
-            "task load():\n  yield\n  return\nevent restart():\n  load.reset()\nblock:\n  await load()\n  sample:\n    out1 = 0.0\n",
+            "task load():\n  yield\n  return\nevent restart():\n  load.reset()\nblock:\n  await load()\n  sample:\n    load.reset()\n    out1 = 0.0\n  load.reset()\n",
         );
     assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
 }
@@ -147,6 +147,56 @@ block:
 
     crate::analyze(onda_frontend::parse_program(source).expect("source should parse"))
         .expect("task locals should follow ordinary expression typing rules");
+}
+
+#[test]
+fn task_runtime_struct_locals_use_shared_method_resolution() {
+    let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+struct Factory:
+  seed: f32
+
+  def make(self, offset: i32) -> Cell:
+    return Cell(value = self.seed + f32(offset))
+
+  def make(self, offset: f32) -> Cell:
+    return Cell(value = self.seed + offset)
+
+def factory(value: i32) -> Factory:
+  return Factory(seed = f32(value))
+
+def factory(value: f32) -> Factory:
+  return Factory(seed = value)
+
+task prepare():
+  local = Cell()
+  local.set(0.5)
+  source = factory(1)
+  result = source.make(2)
+  result.set(local.read())
+  yield
+
+event restart():
+  prepare.reset()
+
+block:
+  await prepare()
+  sample:
+    out1 = 0.0
+"#;
+
+    let typed = crate::analyze(onda_frontend::parse_program(source).expect("source should parse"))
+        .expect("task runtime structs should use ordinary method receiver resolution");
+    crate::lower_program_to_optimized_mir(&typed)
+        .expect("task runtime receiver methods should lower to MIR");
 }
 
 #[test]
@@ -221,8 +271,8 @@ fn rejects_invalid_task_control_placement_and_targets() {
                 "tasks cannot return a value",
             ),
             (
-                "proc P:\n  task load():\n    return\n  sample:\n    load.reset()\n    out1 = 0.0\n",
-                "can only be reset from init, event, or block-pre",
+                "proc P:\n  task load():\n    load.reset()\n  sample:\n    out1 = 0.0\n",
+                "can only be reset from owner executable code",
             ),
         ];
 
@@ -232,6 +282,56 @@ fn rejects_invalid_task_control_placement_and_targets() {
             errors.iter().any(|error| error.message.contains(expected)),
             "missing '{expected}' in {errors:?}"
         );
+    }
+}
+
+#[test]
+fn lowers_task_reset_from_sample_and_block_post() {
+    let sources = [
+        r#"
+task load():
+  yield
+
+block:
+  await load()
+  sample:
+    load.reset()
+    out1 = 0.0
+  load.reset()
+"#,
+        r#"
+task load():
+  yield
+
+sample:
+  load.reset()
+  out1 = 0.0
+"#,
+        r#"
+proc P:
+  task load():
+    yield
+
+  block:
+    await load()
+    sample:
+      load.reset()
+      out1 = 0.0
+    load.reset()
+
+init:
+  p = P()
+
+sample:
+  out1 = p()
+"#,
+    ];
+
+    for source in sources {
+        let typed = analyze(parse_program(source).expect("task source should parse"))
+            .expect("task reset should analyze throughout owner executable code");
+        lower_program_to_optimized_mir(&typed)
+            .expect("task reset should lower throughout owner executable code");
     }
 }
 
@@ -890,7 +990,7 @@ sample:
 }
 
 #[test]
-fn task_rejects_reference_locals_that_cross_yield() {
+fn task_rejects_external_memory_views_that_cross_yield() {
     let source = r#"
 buffers:
   data: f32
@@ -912,7 +1012,7 @@ sample:
         .expect_err("a reference local cannot be stored in a task frame");
     assert!(
         errors.iter().any(|error| {
-            error.message.contains("window") && error.message.contains("live across a yield")
+            error.message.contains("window") && error.message.contains("external memory")
         }),
         "unexpected diagnostics: {errors:?}"
     );
@@ -972,15 +1072,19 @@ sample:
         1,
         "task initialization should remain one operation rather than one CFG node per element"
     );
-    let scratch_local = dump
-        .lines()
-        .find(|line| line.contains("\"scratch\"") && line.trim_start().starts_with("local "))
-        .and_then(|line| line.split_whitespace().nth(1))
-        .expect("scratch array MIR local");
+    let scratch = mir
+        .as_program()
+        .state
+        .iter()
+        .find(|slot| slot.name.ends_with(".scratch"))
+        .expect("task array uses prepared scratch storage");
     assert_eq!(
-        dump.matches(&format!("{scratch_local}[")).count(),
-        1,
-        "declaration-only scratch storage must not emit an unrolled zero store per element"
+        scratch.persistence,
+        onda_mir::StatePersistence::InstanceScratch
+    );
+    assert!(
+        dump.lines().filter(|line| line.contains("i32(0)")).count() < 32,
+        "scratch initialization must not expand one store per element"
     );
 }
 
@@ -1039,7 +1143,7 @@ sample:
     let mir = lower_program_to_optimized_mir(&typed).expect("array task should produce valid MIR");
     let dump = onda_mir::format_program(mir.as_program());
     assert!(dump.contains("i32(3)"));
-    assert!(dump.contains("i32(5)"));
+    assert!(dump.contains("i32(5)"), "{dump}");
 }
 
 #[test]
@@ -1622,6 +1726,8 @@ sample:
 fn task_frame_typing_uses_the_selected_method_overload() {
     let source = r#"
 struct Calculator:
+  marker = 0.0
+
   def value(self, x: i32) -> i32:
     return x + 1
   def value(self, x: f64) -> f64:

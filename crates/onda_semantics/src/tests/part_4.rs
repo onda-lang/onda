@@ -76,7 +76,7 @@ sample:
             r#"
 init:
   value: i64 = 0 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807 - 1)
+    range = -9223372036854775808..-9223372036854775808
   }
 
 sample:
@@ -107,8 +107,8 @@ sample:
 
         let source = r#"
 init:
-  value: i64 = -9223372036854775807 - 1 {
-    range = (-9223372036854775807 - 1)..(-9223372036854775807)
+  value: i64 = -9223372036854775808 {
+    range = -9223372036854775808..-9223372036854775807
   }
 
 sample:
@@ -339,6 +339,115 @@ sample:
     }
 
     #[test]
+    fn writable_aggregate_aliases_preserve_index_clamps_without_penalizing_disjoint_calls() {
+        fn selected_bounds(source: &str) -> onda_mir::BoundsMode {
+            fn find(
+                block: &onda_mir::Block,
+                values: onda_mir::ParameterId,
+            ) -> Option<onda_mir::BoundsMode> {
+                for statement in &block.statements {
+                    match &statement.kind {
+                        onda_mir::StatementKind::Assign {
+                            value: onda_mir::Rvalue::Load(place),
+                            ..
+                        } if place.base == onda_mir::PlaceBase::Parameter(values) => {
+                            if let Some(onda_mir::Projection::Index { bounds, .. }) =
+                                place.projections.last()
+                            {
+                                return Some(*bounds);
+                            }
+                        }
+                        onda_mir::StatementKind::If {
+                            then_block,
+                            else_block,
+                            ..
+                        } => {
+                            if let Some(bounds) =
+                                find(then_block, values).or_else(|| find(else_block, values))
+                            {
+                                return Some(bounds);
+                            }
+                        }
+                        onda_mir::StatementKind::Loop { body } => {
+                            if let Some(bounds) = find(body, values) {
+                                return Some(bounds);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+
+            let typed = analyze(parse_program(source).expect("source should parse"))
+                .expect("aggregate alias source should analyze");
+            let mir = lower_program_to_optimized_mir(&typed)
+                .expect("aggregate alias source should lower to optimized MIR");
+            let select = mir
+                .functions
+                .iter()
+                .find(|function| function.name == "select")
+                .expect("select helper should remain in MIR");
+            let values = select
+                .params
+                .iter()
+                .position(|parameter| parameter.name == "values")
+                .map(|index| onda_mir::ParameterId::new(index as u32))
+                .expect("select should retain its values parameter");
+            find(&select.body, values).expect("select should retain its indexed values load")
+        }
+
+        let aliased = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  box = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(box, box, values)
+"#;
+        assert_eq!(selected_bounds(aliased), onda_mir::BoundsMode::Clamp);
+
+        let indexed_alias = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  boxes: Box[2] = [Box(index = 0), Box(index = 0)]
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(boxes[0], boxes[0], values)
+"#;
+        assert_eq!(selected_bounds(indexed_alias), onda_mir::BoundsMode::Clamp);
+
+        let disjoint = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  read = Box(index = 0)
+  write = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(read, write, values)
+"#;
+        assert_eq!(
+            selected_bounds(disjoint),
+            onda_mir::BoundsMode::Unchecked
+        );
+    }
+
+    #[test]
     fn constant_for_indices_remove_bounds_normalization_across_surfaces() {
         let source = r#"
 const N = 4
@@ -538,26 +647,290 @@ sample:
     }
 
     #[test]
-    fn write_unsafe_rejects_aggregate_arrays_during_analysis() {
+    fn indexed_struct_array_member_writes_reject_invalid_field_shapes() {
+        for source in [
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+task invalid():
+  cells: Cell[1]
+  index: i32 = 0
+  cells[0].pair[index] = 1.0
+  yield
+
+block:
+  await invalid()
+  sample:
+    out1 = 0.0
+"#,
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+init:
+  cells: Cell[1]
+  index: i32 = 0
+
+sample:
+  cells[0].pair[index] = 1.0
+  out1 = 0.0
+"#,
+        ] {
+            assert_analyze_error_contains(
+                source,
+            "tuple field index must be a compile-time integer constant",
+        );
+        }
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+sample:
+  cells: Cell[1]
+  cells[0].value[0] = 1.0
+  out1 = 0.0
+"#,
+            "field 'value' of struct 'Cell' is not indexable",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+sample:
+  cells: Cell[1]
+  cells[0].pair[1] = 0.5
+  out1 = 0.0
+"#,
+            "cannot assign F64 to I32",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  pair: (f32, i32)
+
+init:
+  cells: Cell[1]
+
+sample:
+  out1 = cells[0].pair[2]
+"#,
+            "tuple field index 2 is out of bounds",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  taps: f32[2]
+
+proc Invalid:
+  sample:
+    cells: Cell[1]
+    replacement: f32[3] = [1.0, 2.0, 3.0]
+    cells[0].taps = replacement
+    out1 = 0.0
+
+init:
+  invalid = Invalid()
+
+sample:
+  out1 = invalid()
+"#,
+            "expects 'f32[2]', got 'f32[3]'",
+        );
+    }
+
+    #[test]
+    fn indexed_struct_array_tuple_reads_use_typed_components() {
+        let source = r#"
+struct Cell:
+  pair: (f32, i32)
+
+const Component = 1
+
+def read(cells: Cell[1]) -> i32:
+  return cells[0].pair[Component]
+
+init:
+  cells: Cell[1] = [Cell((0.25, 7))]
+  initial: i32 = cells[0].pair[Component]
+
+event inspect(payload: Cell[1]):
+  observed: i32 = payload[0].pair[1]
+
+task inspect_task():
+  observed: i32 = cells[0].pair[1]
+  yield
+
+block:
+  blocked: i32 = cells[0].pair[1]
+  await inspect_task()
+  sample:
+    local: Cell[1] = [Cell((0.5, 9))]
+    persistent: i32 = cells[0].pair[1]
+    runtime: i32 = local[0].pair[Component]
+    out1 = f32(initial + blocked + read(cells) + persistent + runtime)
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("tuple components should retain their types in every array storage form");
+        lower_program_to_optimized_mir(&typed)
+            .expect("inline tuple-field reads should lower to valid MIR");
+    }
+
+    #[test]
+    fn indexed_struct_array_fields_preserve_nested_aggregate_elements() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct Node:
+  leaves: Leaf[2]
+
+init:
+  nodes: Node[1] = Node([Leaf(1.0), Leaf(2.0)])
+
+sample:
+  leaf = nodes[0].leaves[1]
+  out1 = leaf.value
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("indexed aggregate fields should retain their nominal element type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed aggregate fields should lower through their canonical leaf views");
+    }
+
+    #[test]
+    fn write_unsafe_supports_exact_aggregate_replacement() {
+        let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+struct Bank:
+  cells: Cell[2]
+
+def replace_first(cells: Cell[], replacement: Cell):
+  cells.write_unsafe(0, replacement)
+
+init:
+  cells: Cell[2]
+  bank = Bank()
+  replacement = Cell(0.25, (0.5, 7), [0.75, 1.0])
+  current = Cell()
+
+sample:
+  replace_first(cells[:], replacement)
+  write_unsafe(cells, 1, read_unsafe(cells, 0))
+  write_unsafe(bank.cells, 0, replacement)
+  current = read_unsafe(cells, 1)
+  selected = cells[0]
+  nested = bank.cells[0]
+  out1 = selected.value + selected.pair[0] + selected.taps[0] + nested.value + current.value
+"#;
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("write_unsafe should accept exact nominal aggregate replacement");
+        lower_program_to_optimized_mir(&typed)
+            .expect("unsafe aggregate replacement should lower through ordinary data copies");
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+struct Other:
+  value: f32
+
+init:
+  cells: Cell[1]
+
+sample:
+  write_unsafe(cells, 0, Other())
+  out1 = 0.0
+"#,
+            "write_unsafe replacement expects 'Cell', got 'Other'",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+event replace(cells: Cell[]):
+  write_unsafe(cells, 0, Cell())
+
+sample:
+  out1 = 0.0
+"#,
+            "write_unsafe storage 'cells' is read-only",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+struct Cell:
+  value: f32
+
+struct Bank:
+  cells: Cell[1]
+
+event replace(bank: Bank):
+  write_unsafe(bank.cells, 0, Cell())
+
+sample:
+  out1 = 0.0
+"#,
+            "cannot write through read-only payload parameter 'bank'",
+        );
+
+        assert_analyze_error_contains(
+            r#"
+proc Voice:
+  sample:
+    out1 = 0.0
+
+init:
+  voices: Voice[1] = Voice()
+
+sample:
+  write_unsafe(voices, 0, Voice())
+  out1 = 0.0
+"#,
+            "write_unsafe does not support resource array 'voices'",
+        );
+    }
+
+    #[test]
+    fn aggregate_write_unsafe_is_available_in_every_executable_scope() {
         let source = r#"
 struct Cell:
   value: f32
 
-init:
-  cells: Cell[2]
+event replace_event(value: f32):
+  write_unsafe(cells, 2, Cell(value))
 
-sample:
-  write_unsafe(cells, 0, 1.0)
-  out1 = 0.0
+task replace_task():
+  write_unsafe(cells, 3, Cell(4.0))
+  yield
+
+init:
+  cells: Cell[4]
+  write_unsafe(cells, 0, Cell(1.0))
+
+block:
+  write_unsafe(cells, 1, Cell(2.0))
+  await replace_task()
+  sample:
+    out1 = cells[0].value + cells[1].value + cells[2].value + cells[3].value
 "#;
-        let errors = analyze(parse_program(source).expect("source should parse"))
-            .expect_err("write_unsafe must reject aggregate assignment");
-        assert!(
-            errors.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("write_unsafe does not support aggregate array 'cells'")),
-            "{errors:?}"
-        );
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("aggregate unchecked writes should share executable-scope semantics");
+        lower_program_to_optimized_mir(&typed)
+            .expect("aggregate unchecked writes should lower in every executable scope");
     }
 
     #[test]
@@ -2269,4 +2642,1013 @@ proc Main:
         assert_eq!(typed.outs, ["output"]);
         assert_eq!(typed.param_default("gain"), Some(0.5));
         assert!(typed.state_vars.iter().any(|name| name == "state"));
+    }
+
+    #[test]
+    fn struct_assignment_from_untyped_event_parameter_suggests_its_annotation() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+event configure(patch):
+  current = patch
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("an untyped event parameter must not replace a struct");
+        assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:#?}");
+        assert_eq!(
+            errors[0].message,
+            "cannot assign f32 event parameter 'patch' to struct instance 'current' of type 'Patch'; declare the parameter as 'patch: Patch'"
+        );
+        assert!(!errors[0].message.contains("sample"));
+    }
+
+    #[test]
+    fn struct_assignment_diagnostics_preserve_the_authored_task_context() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+init:
+  current: Patch
+
+task load():
+  current = f32(1.0)
+
+block:
+  await load()
+  sample:
+    out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("a scalar must not replace a struct");
+        assert!(errors.iter().any(|error| {
+            error.message
+                == "cannot assign f32 value to struct instance 'current' of type 'Patch' in task; whole-struct replacement requires another 'Patch' value"
+        }), "unexpected diagnostics: {errors:#?}");
+        assert!(errors.iter().all(|error| !error.message.contains("in block")));
+    }
+
+    #[test]
+    fn nominal_data_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  current: Patch
+
+event configure(envelope: Envelope):
+  current = envelope
+
+sample:
+  out1 = current.gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal struct types must not be interchangeable");
+        assert!(errors.iter().any(|error| {
+            error.message == "data replacement for 'current' expects 'Patch', got 'Envelope'"
+        }), "unexpected diagnostics: {errors:#?}");
+    }
+
+    #[test]
+    fn nominal_array_element_replacement_reports_expected_and_actual_types() {
+        let source = r#"
+struct Patch:
+  gain = 0.15
+
+struct Envelope:
+  attack = 0.01
+
+init:
+  patches: Patch[2] = Patch()
+  envelopes: Envelope[2] = Envelope()
+
+event configure():
+  patches[0] = envelopes[0]
+
+sample:
+  out1 = patches[0].gain
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("different nominal element types must not be interchangeable");
+        assert!(
+            errors.iter().any(|error| {
+                error.message
+                    == "element replacement for 'patches[...]' expects 'Patch', got 'Envelope'"
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn nested_proc_events_accept_struct_values_and_constructors() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event accept(item: Item):
+    captured = item.value
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Item):
+    child.accept(item)
+  event construct():
+    child.accept(Item(value = 3.0))
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Item):
+  parent.forward(item)
+event construct():
+  parent.construct()
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should accept nominal values and constructors");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested nominal event calls should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_can_read_struct_arrays_and_slices() {
+        let source = r#"
+struct Item:
+  value: f32
+
+proc Child:
+  init:
+    captured = 0.0
+  event fixed(items: Item[2]):
+    captured = items[0].value + items[1].value
+  event dynamic(items: Item[]):
+    captured = items[0].value + f32(items.len())
+  sample:
+    out1 = captured
+
+proc Parent:
+  init:
+    child = Child()
+  event fixed(items: Item[2]):
+    child.fixed(items)
+  event dynamic(items: Item[]):
+    child.dynamic(items)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event fixed(items: Item[2]):
+  parent.fixed(items)
+event dynamic(items: Item[]):
+  parent.dynamic(items)
+sample:
+  out1 = parent()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("nested proc events should read struct arrays and slices");
+        lower_program_to_optimized_mir(&typed)
+            .expect("nested structured-array event reads should lower to MIR");
+    }
+
+    #[test]
+    fn proc_event_tuple_elements_can_initialize_scalar_locals() {
+        let source = r#"
+proc Child:
+  init:
+    captured = 0.0
+  event accept(pair: (f32, i32)):
+    first: f32 = pair[0]
+    combined = first + f32(pair[1])
+    unused = pair[0]
+    captured = combined
+  sample:
+    out1 = captured
+
+init:
+  child = Child()
+event accept(pair: (f32, i32)):
+  child.accept(pair)
+sample:
+  out1 = child()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("tuple-derived proc-event locals should retain their bindings and types");
+        lower_program_to_optimized_mir(&typed)
+            .expect("tuple-derived proc-event locals should lower to MIR");
+    }
+
+    #[test]
+    fn nested_proc_events_reject_mismatched_nominal_payloads() {
+        let source = r#"
+struct Expected:
+  value: f32
+struct Actual:
+  value: f32
+
+proc Child:
+  event accept(item: Expected):
+    value = item.value
+  sample:
+    out1 = 0.0
+
+proc Parent:
+  init:
+    child = Child()
+  event forward(item: Actual):
+    child.accept(item)
+  sample:
+    out1 = child()
+
+init:
+  parent = Parent()
+event forward(item: Actual):
+  parent.forward(item)
+sample:
+  out1 = parent()
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("nested event payloads preserve nominal struct identity");
+        assert!(
+            errors.iter().any(|error| {
+                error.message.contains("Expected") && error.message.contains("Actual")
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn instance_methods_resolve_for_runtime_struct_bindings_in_every_top_level_scope() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+def make():
+  return Cell(value = 0.25)
+
+def use_local() -> f32:
+  local = Cell()
+  local.set(0.5)
+  return local.read()
+
+init:
+  state = Cell()
+  observed = 0.0
+
+block:
+  local = make()
+  local.set(local.read() + 0.25)
+
+event inspect(value: Cell):
+  observed = value.read()
+
+sample:
+  alias = state
+  alias.set(use_local())
+  result = make()
+  result.set(result.read() + observed)
+  out1 = state.read() + result.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("runtime struct receivers should resolve uniformly");
+        lower_program_to_optimized_mir(&typed)
+            .expect("runtime struct receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_runtime_struct_elements_and_slices() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+  def position(self) -> i32:
+    return i32(self.value)
+
+init:
+  cells: Cell[3] = Cell()
+
+sample:
+  element = cells[1]
+  element.set(0.25)
+  slice = cells[1:3]
+  slice[1].set(0.5)
+  cursor = Cell(value = 1.0)
+  values = [0.0, 0.0]
+  values[cursor.position():] = 0.75
+  out1 = cells[1].value + cells[2].value + values[1]
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("element and slice aliases should retain their receiver type");
+        lower_program_to_optimized_mir(&typed)
+            .expect("element and slice receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_method_resolution_joins_runtime_branch_types() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+sample:
+  if in1 > 0.0:
+    selected = Cell(value = 0.25)
+  else:
+    selected = Cell(value = 0.5)
+  out1 = selected.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("matching branch-local receiver types should join");
+        lower_program_to_optimized_mir(&typed)
+            .expect("joined branch receiver methods should lower to MIR");
+    }
+
+    #[test]
+fn instance_methods_resolve_for_proc_runtime_locals_and_event_payloads() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+  def set(self, value: f32):
+    self.value = value
+
+struct Factory:
+  seed: f32
+
+  def make(self, offset: i32) -> Cell:
+    return Cell(value = self.seed + f32(offset))
+
+  def make(self, offset: f32) -> Cell:
+    return Cell(value = self.seed + offset)
+
+def make():
+  return Cell(value = 0.25)
+
+def factory(value: i32) -> Factory:
+  return Factory(seed = f32(value))
+
+def factory(value: f32) -> Factory:
+  return Factory(seed = value)
+
+proc Voice:
+  init:
+    state = Cell()
+    observed = 0.0
+
+  def use_local() -> f32:
+    local = Cell()
+    local.set(0.5)
+    return local.read()
+
+  event inspect(value: Cell):
+    observed = value.read()
+
+  block:
+    local = make()
+    local.set(0.75)
+
+    sample:
+      alias = state
+      alias.set(use_local())
+      result = make()
+      result.set(result.read() + observed)
+      source = factory(1)
+      made = source.make(2)
+      out1 = alias.read() + result.read() + made.read()
+
+init:
+  voice = Voice()
+
+sample:
+  out1 = voice()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("proc executable scopes should share method receiver resolution");
+        lower_program_to_optimized_mir(&typed)
+            .expect("proc runtime receiver methods should lower to MIR");
+    }
+
+    #[test]
+    fn instance_methods_preserve_read_only_event_payload_permissions() {
+        let source = r#"
+struct Cell:
+  value: f32
+
+  def set(self, value: f32):
+    self.value = value
+
+event update(cell: Cell):
+  cell.set(0.25)
+
+sample:
+  out1 = 0.0
+"#;
+
+        let errors = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("event payload receiver methods must preserve read-only permissions");
+        assert!(
+            errors.iter().any(|error| error.message
+                == "cannot write through read-only payload parameter 'cell'"),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn instance_methods_follow_overloaded_aggregate_result_types() {
+        let source = r#"
+struct A:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct B:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Leaf:
+  value: f32
+
+  def read(self) -> f32:
+    return self.value
+
+struct Root:
+  value: f32
+
+  def descend(self, offset: i32) -> Leaf:
+    return Leaf(value = self.value + f32(offset))
+
+  def descend(self, offset: f32) -> Leaf:
+    return Leaf(value = self.value + offset)
+
+def make(value: i32) -> A:
+  return A(value = f32(value))
+
+def make(value: f32) -> B:
+  return B(value = value)
+
+def root(value: i32) -> Root:
+  return Root(value = f32(value))
+
+def root(value: f32) -> Root:
+  return Root(value = value)
+
+sample:
+  a = make(1)
+  b = make(2.0)
+  root_value = root(3)
+  leaf = root_value.descend(4)
+  out1 = a.read() + b.read() + leaf.read()
+"#;
+
+        let typed = analyze(parse_program(source).expect("source should parse"))
+            .expect("receiver types should follow the selected result overload");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded aggregate result methods should lower to MIR");
+    }
+
+    #[test]
+    fn recursive_aggregate_diagnostics_point_to_the_source_declaration() {
+        let source = "struct Recursive:\n  children: Recursive[2]\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("recursive aggregate layouts must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("recursive aggregate layout cycle"))
+            .expect("recursive aggregate diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (1, 1));
+    }
+
+    #[test]
+    fn empty_structs_are_rejected_at_the_declaration() {
+        for source in [
+            "struct Empty {}\n\nsample:\n  out1 = 0.0\n",
+            "struct Namespace:\n  def value(self) -> f32:\n    return 1.0\n\nsample:\n  out1 = 0.0\n",
+        ] {
+            let diagnostics = analyze(parse_program(source).expect("source should parse"))
+                .expect_err("a struct without data fields must be rejected");
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .message
+                        .contains("must declare at least one data field")
+                })
+                .expect("empty struct diagnostic should be present");
+
+            assert_eq!((diagnostic.line, diagnostic.column), (1, 1));
+        }
+    }
+
+    #[test]
+    fn deferred_generic_aggregate_cycles_use_canonical_validation() {
+        let source = r#"
+struct Node<T>:
+  next: Node<T>
+
+sample:
+  node: Node<f32>
+  out1 = 0.0
+"#;
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("recursive specialized aggregates must be rejected");
+        let recursive = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message.contains("recursive aggregate layout cycle"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(recursive.len(), 1, "{diagnostics:#?}");
+        assert_eq!((recursive[0].line, recursive[0].column), (2, 1));
+    }
+
+    #[test]
+    fn aggregate_field_layout_diagnostics_point_to_the_field_type() {
+        let source = "struct Container:\n  value: Missing\n\nsample:\n  out1 = 0.0\n";
+        let diagnostics = analyze(parse_program(source).expect("source should parse"))
+            .expect_err("unknown aggregate field types must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("references unknown struct 'Missing'"))
+            .expect("unknown aggregate field diagnostic should be present");
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 10));
+    }
+
+    #[test]
+    fn equivalent_struct_range_and_block_syntaxes_analyze_and_lower() {
+        const FIELD_FORMS: &[&str] = &[
+            "index = 0 {4, wrap}",
+            "index: i32 = 0 {4, wrap}",
+            "index: i32 {4, wrap}",
+            "index: i32 {count = 4, mode = wrap}",
+            "index: i64 {range = 0..=3, mode = wrap}",
+        ];
+
+        for field in FIELD_FORMS {
+            let indented = format!(
+                r#"
+struct Cell<T>:
+  value: T
+  {field}
+
+proc Reader<T>:
+  outs<T> 1
+  init:
+    cells: Cell<T>[4] = Cell<T>(value = T(0.25))
+  sample:
+    cells[0].index = 1
+    out1 = cells[0].value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#
+            );
+            let braced = format!(
+                r#"
+struct Cell<T> {{
+  value: T
+  {field}
+}}
+
+proc Reader<T> {{
+  outs<T> {{ out1 }}
+  init {{
+    cells: Cell<T>[4] = Cell<T>(value = T(0.25))
+  }}
+  sample {{
+    cells[0].index = 1
+    out1 = cells[0].value
+  }}
+}}
+
+init {{
+  reader = Reader<f32>()
+}}
+
+sample {{
+  out1 = reader()
+}}
+"#
+            );
+
+            for (style, source) in [("indented", indented), ("braced", braced)] {
+                let parsed = parse_program(&source).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should parse: {errors:#?}")
+                });
+                let typed = analyze(parsed).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should analyze: {errors:#?}")
+                });
+                lower_program_to_optimized_mir(&typed).unwrap_or_else(|errors| {
+                    panic!("{style} syntax with field {field:?} should lower: {errors:#?}")
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn documented_feature_combinations_analyze_and_lower() {
+        const PROGRAMS: &[(&str, &str)] = &[
+            (
+                "control flow, tuples, slices, and overloads",
+                r#"
+def summarize(values: f32[]) -> (f32, i32):
+  total = 0.0
+  count = 0
+  for i in 0..values.len():
+    if i == 1:
+      continue
+    total += values[i]
+    count += 1
+  return (total, count)
+
+def bias(value: f32, amount: f32 = 0.5) -> f32:
+  return value + amount
+
+def bias(value: f64, amount: f64 = 0.5) -> f64:
+  return value + amount
+
+sample:
+  values: f32[4] = [1.0, 2.0, 3.0, 4.0]
+  total, count = summarize(values[:])
+  if count == 3:
+    adjusted = bias(amount = 1.0, value = total)
+  else:
+    adjusted = 0.0
+  out1 = adjusted
+"#,
+            ),
+            (
+                "structured events and delegates",
+                r#"
+struct Note:
+  velocity: f32
+  key: i32 {128, wrap}
+
+struct Patch:
+  notes: Note[2]
+  metadata: (f32, i64)
+
+proc VoiceBank:
+  init:
+    current: Patch
+
+  delegate configured(patch: Patch)
+
+  event configure(patch: Patch):
+    current = patch
+    configured(current)
+
+  sample:
+    out1 = current.notes[0].velocity + f32(current.notes[1].key)
+
+init:
+  bank = VoiceBank()
+  observed: Patch
+
+when bank.configured(patch):
+  observed = patch
+
+event configure(patch: Patch):
+  bank.configure(patch)
+
+sample:
+  out1 = bank() + observed.metadata[0]
+"#,
+            ),
+            (
+                "task-owned aggregate views across yield",
+                r#"
+struct Entry:
+  value: f32
+  index: i32 {4, wrap}
+
+init:
+  entries: Entry[4]
+
+task prepare():
+  pending: Entry[2] = Entry(value = 0.25)
+  selected: Entry[] = pending[:]
+  selected[0].value = 0.75
+  yield
+  entries[:2] = selected
+
+block:
+  await prepare()
+
+  sample:
+    out1 = entries[0].value + f32(entries[1].index)
+"#,
+            ),
+            (
+                "braced graph with processor arrays and fanout",
+                r#"
+proc Gain {
+  ins { in1 }
+  params { gain = 1.0 }
+  outs { out1 }
+  sample { out1 = in1 * gain }
+}
+
+ins { in1, in2 }
+outs { out1, out2 }
+
+init {
+  gains: Gain[2] = Gain()
+}
+
+graph {
+  in1 >> gains[0].in1
+  in2 >> gains[1].in1
+  0.5 >> { gains[0].gain, gains[1].gain }
+  gains[0].out1 >>[1] out1
+  gains[1].out1 >> out2
+}
+"#,
+            ),
+        ];
+
+        for (description, source) in PROGRAMS {
+            let parsed = parse_program(source).unwrap_or_else(|errors| {
+                panic!("{description} should parse: {errors:#?}")
+            });
+            let typed = analyze(parsed).unwrap_or_else(|errors| {
+                panic!("{description} should analyze: {errors:#?}")
+            });
+            lower_program_to_optimized_mir(&typed).unwrap_or_else(|errors| {
+                panic!("{description} should lower to optimized MIR: {errors:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn long_flat_expression_chains_analyze_and_lower() {
+        let expression = std::iter::repeat_n("1.0", 2048)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!("sample:\n  out1 = {expression}\n");
+        let typed = analyze(parse_program(&source).expect("long expression should parse"))
+            .expect("long expression should analyze");
+        lower_program_to_optimized_mir(&typed)
+            .expect("long expression should lower to optimized MIR");
+    }
+
+    #[test]
+    fn event_only_processors_can_be_constructed_and_receive_events() {
+        let source = r#"
+proc Receiver:
+  init:
+    received = 0
+
+  event push(value: i32):
+    received += value
+
+init:
+  receiver = Receiver()
+
+events:
+  push(value: i32):
+    receiver.push(value)
+
+sample:
+  out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("event-only proc should parse"))
+            .expect("event-only proc should analyze without an execution body");
+        lower_program_to_optimized_mir(&typed)
+            .expect("event-only proc events should lower to optimized MIR");
+    }
+
+    #[test]
+    fn event_only_processors_cannot_be_stepped() {
+        let source = r#"
+proc Receiver:
+  event push(value: i32):
+    observed = value
+
+init:
+  receiver = Receiver()
+
+sample:
+  receiver()
+  out1 = 0.0
+"#;
+        let diagnostics = analyze(parse_program(source).expect("event-only proc should parse"))
+            .expect_err("event-only proc stepping must be rejected");
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.message.contains(
+                    "processor 'receiver' cannot be stepped because it has no sample, block, or graph section",
+                )
+            })
+            .expect("missing event-only stepping diagnostic");
+        assert_ne!(diagnostic.line, 0, "diagnostic must identify the call site");
+    }
+
+    #[test]
+    fn indexed_buffer_parameter_metadata_infers_exact_scalar_types() {
+        let source = r#"
+def selected_len(buffers, selector: i32) -> i32:
+  return buffers[selector].len()
+
+def selected_channels(buffers, selector: i32) -> i32:
+  return buffers[selector].chans()
+
+def selected_rate(buffers, selector: i32) -> f32:
+  return buffers[selector].samplerate()
+
+def selected_bound(buffers, selector: i32) -> bool:
+  return buffers[selector].bound()
+
+buffers:
+  bank: f32[] {2}
+
+sample:
+  selector = 1
+  length: i32 = selected_len(bank, selector)
+  channels: i32 = selected_channels(bank, selector)
+  rate: f32 = selected_rate(bank, selector)
+  if selected_bound(bank, selector):
+    out1 = f32(length + channels) + rate
+  else:
+    out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("buffer metadata source should parse"))
+            .expect("indexed buffer metadata return types should be inferred exactly");
+        lower_program_to_optimized_mir(&typed)
+            .expect("indexed buffer metadata should lower to optimized MIR");
+    }
+
+    #[test]
+    fn outputless_processors_with_sample_sections_can_be_stepped() {
+        let source = r#"
+proc Tick:
+  init:
+    count = 0
+
+  sample:
+    count += 1
+
+init:
+  tick = Tick()
+
+sample:
+  tick()
+  out1 = 0.0
+"#;
+        let typed = analyze(parse_program(source).expect("outputless proc should parse"))
+            .expect("a sample section should make an outputless proc steppable");
+        lower_program_to_optimized_mir(&typed)
+            .expect("outputless proc stepping should lower to optimized MIR");
+    }
+
+    #[test]
+    fn deep_init_place_temporaries_do_not_become_persistent_state() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct State:
+  leaves: Leaf[1]
+
+proc Reader:
+  init:
+    state: State
+    state.leaves[0].value = 1.0
+
+  outs 1
+
+  sample:
+    leaf = state.leaves[0]
+    out1 = leaf.value
+
+init:
+  reader = Reader()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(source).expect("deep init place should parse"))
+            .expect("deep init place should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("deep init place should lower to optimized MIR");
+        assert!(
+            mir.state
+                .iter()
+                .all(|state| !state.name.contains("__onda_place_")),
+            "place temporaries must not leak into persistent state: {:?}",
+            mir.state
+                .iter()
+                .map(|state| state.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn block_place_temporaries_are_instance_scratch() {
+        let source = r#"
+struct Leaf:
+  value: f32
+
+struct State:
+  leaves: Leaf[4]
+
+proc Voice:
+  init:
+    state: State
+    index = 0 {4, wrap}
+
+  outs 1
+
+  block:
+    state.leaves[index].value += 0.1
+
+    sample:
+      out1 = state.leaves[index].value
+
+init:
+  voice = Voice()
+  state: State
+  index = 0 {4, wrap}
+
+block:
+  state.leaves[index].value += 0.2
+
+  sample:
+    out1 = voice() + state.leaves[index].value
+"#;
+        let typed = analyze(parse_program(source).expect("block place source should parse"))
+            .expect("block place source should analyze");
+        let mir = lower_program_to_optimized_mir(&typed)
+            .expect("block place source should lower to optimized MIR");
+        let place_state = mir
+            .state
+            .iter()
+            .filter(|state| state.name.contains("__onda_place_"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            place_state.len(),
+            2,
+            "expected top-level and proc block scratch: {:?}",
+            mir.state
+                .iter()
+                .map(|state| state.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(place_state.iter().all(|state| {
+            state.persistence == onda_mir::StatePersistence::InstanceScratch
+                && !state.authored
+        }));
     }

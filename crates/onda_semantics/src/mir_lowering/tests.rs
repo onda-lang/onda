@@ -9,13 +9,25 @@ fn long_expression_compiles_on_a_worker_stack() {
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
         .spawn(|| {
-            let expression = std::iter::repeat_n("x", 1024)
+            let expression = std::iter::repeat_n("x", 15_000)
                 .collect::<Vec<_>>()
                 .join(" + ");
-            let parsed = parse_program(&format!(
-                "params:\n  x = 0.1\nsample:\n  out1 = {expression}\n"
-            ))
-            .unwrap();
+            for source in [
+                format!("def sum(x):\n  return {expression}\nsample:\n  out1 = sum(0.000001)\n"),
+                format!("params:\n  x = 0.000001\nsample:\n  out1 = {expression}\n"),
+            ] {
+                let parsed = parse_program(&source).unwrap();
+                let typed = analyze(parsed).unwrap();
+                lower_program_to_optimized_mir(&typed).unwrap();
+            }
+
+            let const_expression = std::iter::repeat_n("T(1.0)", 3_000)
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let source = format!(
+                "def deep<T>(x: T) -> T:\n  const c = {const_expression}\n  return x + c\n\nsample:\n  out1 = deep(0.0)\n"
+            );
+            let parsed = parse_program(&source).unwrap();
             let typed = analyze(parsed).unwrap();
             lower_program_to_optimized_mir(&typed).unwrap();
         })
@@ -305,6 +317,49 @@ sample:
     assert!(
         !event.contains("intrinsic range_clamp(") && !event.contains("load @param1"),
         "an event parameter must not inherit the same-named top-level parameter range:\n{event}"
+    );
+}
+
+#[test]
+fn scalar_function_and_event_parameters_shadow_aggregate_namespaces() {
+    let source = r#"
+struct Box:
+  value: i32 = 7
+
+def identity(value) -> f32:
+  return value
+
+init:
+  box = Box()
+  observed = 0.0
+
+event set(box: i32):
+  observed = identity(box)
+
+sample:
+  for box in 0..1:
+    out1 = identity(box) + observed
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("scalar parameters should own their lexical roots");
+    let identity = typed
+        .defs
+        .iter()
+        .find(|function| function.name.starts_with("identity"))
+        .expect("identity should be retained");
+    assert!(
+        matches!(
+            identity.param_kinds.first(),
+            Some(TypedFnParam::Scalar { .. })
+        ),
+        "the scalar parameter must not inherit aggregate metadata: {identity:?}"
+    );
+    let mir = lower_test_program(&typed).expect("shadowed scalar parameters should lower");
+    let dump = format_program(&mir);
+    let event = formatted_function(&dump, "onda_event::set");
+    assert!(
+        event.contains("load @event_param0"),
+        "the event must forward its payload parameter:\n{event}"
     );
 }
 
@@ -2143,9 +2198,6 @@ block:
     assert!(pre_if < process_loop && process_loop < post_if);
 
     let dump = format_program(&mir);
-    assert!(dump.contains("load @p0"));
-    assert!(dump.contains("load @p1"));
-    assert!(dump.contains("load @p2"));
     assert!(dump.contains("bit_and"));
     assert!(dump.contains("process_frame"));
     assert!(dump.contains("i32(1)"));
@@ -2614,8 +2666,6 @@ sample 2:
     let dump = format_program(&mir);
     assert_eq!(dump.matches("load_input ").count(), 2);
     assert_eq!(dump.matches("store_output ").count(), 2);
-    assert!(dump.contains("$oversample.input.pair.current"));
-    assert!(dump.contains("$oversample.output.pair_out.current"));
     assert!(dump.contains("$oversample.input.pair[0].stage0.a0"));
     assert!(dump.contains("$oversample.output.pair_out[1].stage0.a0"));
 }
@@ -2809,19 +2859,58 @@ sample:
         .iter()
         .find(|function| function.name == "local_total")
         .expect("missing local_total function");
-    let arrays = function
+    assert_eq!(
+        function
+            .locals
+            .iter()
+            .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
+            .count(),
+        2
+    );
+    assert!(mir
+        .state
+        .iter()
+        .filter(|slot| slot.persistence == onda_mir::StatePersistence::InstanceScratch)
+        .all(|slot| !matches!(mir.types[slot.ty.index()], MirType::Array { len: 2, .. })));
+    assert!(format_program(&mir).contains("slice_copy"));
+}
+
+#[test]
+fn fixed_array_storage_keeps_only_small_arrays_local() {
+    let source = r#"
+def first():
+  small: f32[64]
+  large: f32[65]
+  return small[0] + large[0]
+
+outs:
+  out1
+
+sample:
+  out1 = first()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    let mir = lower_test_program(&typed).expect("local arrays should lower");
+    validate(&mir).expect("local-array MIR should validate");
+
+    let function = mir
+        .functions
+        .iter()
+        .find(|function| function.name == "first")
+        .expect("missing first function");
+    assert!(function
         .locals
         .iter()
-        .filter(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 2, .. }))
-        .count();
-    assert_eq!(arrays, 2);
-
-    let dump = format_program(&mir);
-    assert!(dump.contains("\"inferred\": @"));
-    assert!(dump.contains("\"scratch\": @"));
-    assert!(dump.contains("load %"));
-    assert!(dump.contains("make_slice %"));
-    assert!(dump.contains("slice_copy"));
+        .any(|local| matches!(mir.types[local.ty.index()], MirType::Array { len: 64, .. })));
+    assert!(function
+        .locals
+        .iter()
+        .all(|local| !matches!(mir.types[local.ty.index()], MirType::Array { len: 65, .. })));
+    assert!(mir.state.iter().any(|slot| {
+        slot.persistence == onda_mir::StatePersistence::InstanceScratch
+            && matches!(mir.types[slot.ty.index()], MirType::Array { len: 65, .. })
+    }));
 }
 
 #[test]
@@ -2839,40 +2928,17 @@ sample:
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_raw_mir(&typed).expect("local array should lower");
-    validate(&mir).expect("local-array MIR should validate");
-
+    let mut mir = lower_program_to_raw_mir(&typed).expect("local array should lower");
+    super::storage::plan_fixed_scratch(&mut mir).expect("fixed scratch should be prepared");
+    validate(&mir).expect("prepared MIR should validate");
     let function = mir
         .functions
         .iter()
         .find(|function| function.name == "first")
-        .expect("missing first function");
-    let scratch = function
-        .locals
-        .iter()
-        .position(|local| local.name.as_deref() == Some("scratch"))
-        .map(|index| LocalId::new(index as u32))
-        .expect("missing scratch local");
-    let initialized_elements = function
-        .body
-        .statements
-        .iter()
-        .filter(|statement| {
-            matches!(
-                statement.kind,
-                StatementKind::Assign {
-                    destination: Place {
-                        base: PlaceBase::Local(local),
-                        ref projections,
-                    },
-                    value: Rvalue::Use(value),
-                } if local == scratch
-                    && projections.len() == 1
-                    && scalar_value_is_all_bits_zero(value)
-            )
-        })
-        .count();
-    assert_eq!(initialized_elements, 4);
+        .unwrap();
+    assert!(function.body.statements.iter().any(|statement| matches!(
+        statement.kind, StatementKind::SliceFill { value, .. } if scalar_value_is_all_bits_zero(value)
+    )), "every invocation must initialize its prepared backing storage");
 }
 
 #[test]
@@ -3203,6 +3269,261 @@ sample:
 }
 
 #[test]
+fn lowers_returned_structs_nested_inside_struct_array_literals() {
+    let source = r#"
+struct Item:
+  value: f32 = 0.0
+
+struct Bundle:
+  item: Item
+
+def make_item(value: f32) -> Item:
+  return Item(value = value)
+
+def make_bundle(value: f32) -> Bundle:
+  return Bundle(item = make_item(value))
+
+init:
+  source = Item(value = 1.0)
+  items: Item[3] = [source, make_item(2.0), Item(value = 3.0)]
+  bundles: Bundle[2] = [Bundle(item = make_item(4.0)), make_bundle(5.0)]
+
+sample:
+  out1 = items[0].value + items[1].value + items[2].value
+  left = bundles[0]
+  right = bundles[1]
+  out2 = left.item.value + right.item.value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("returned struct elements should analyze");
+    let mir = lower_test_program(&typed).expect("returned struct elements should lower");
+    validate(&mir).expect("returned struct element MIR should validate");
+}
+
+#[test]
+fn lowers_indexed_struct_array_field_writes_in_every_runtime_region() {
+    let source = r#"
+outs:
+  out1
+
+struct Cell:
+  value: f32
+  taps: f32[2]
+  pair: (f32, i32)
+
+init:
+  state: Cell[2]
+  state[0].value = 1.0
+  state[0].taps[1] = 1.5
+  state[0].pair = (2.0, 3)
+
+block:
+  block_cells: Cell[2]
+  block_cells[0].value = 2.0
+  block_cells[0].taps[1] = 2.5
+
+  sample:
+    sample_cells: Cell[2]
+    sample_cells[0].value = 3.0
+    sample_cells[0].taps = [3.5, 4.5]
+    sample_cells[0].pair = (4.0, 5)
+    state[1].value = sample_cells[0].value
+    out1 = state[0].value + state[1].value + block_cells[0].value
+
+  block_cells[1].value = 4.0
+
+events:
+  reset():
+    event_cells: Cell[2]
+    event_cells[0].value = 5.0
+    event_cells[0].taps[1] = 5.5
+    event_cells[0].pair = (6.0, 7)
+    state[0].value = event_cells[0].value
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every region");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("store_slice"));
+    assert!(!dump.contains("IndexedMember"));
+    assert!(!dump.contains("__onda_indexed_selector"));
+}
+
+#[test]
+fn lowers_deeply_nested_local_struct_array_field_writes() {
+    let source = r#"
+outs:
+  out1
+
+struct Leaf:
+  value: f64
+
+struct Branch:
+  leaves: Leaf[4]
+
+struct Trunk:
+  branch: Branch
+
+struct Tree:
+  trunk: Trunk
+
+sample:
+  tree: Tree
+  tree.trunk.branch.leaves[3].value = 0.75
+  out1 = f32(tree.trunk.branch.leaves[3].value)
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("deep indexed field write should analyze");
+    let mir = lower_test_program(&typed).expect("deep indexed field write should lower");
+    validate(&mir).expect("deep indexed field write MIR should validate");
+
+    let dump = format_program(&mir);
+    assert!(dump.contains("trunk.branch.leaves.value"));
+    assert!(dump.contains("f64(0.75)"));
+}
+
+#[test]
+fn lowers_local_struct_array_field_writes_in_defs_tasks_and_procs() {
+    let source = r#"
+struct Cell:
+  value: f32
+  taps: f32[2]
+  pair: (f32, i32)
+
+def seed():
+  def_cells: Cell[2]
+  def_cells[0].value = 1.0
+  def_cells[0].taps[1] = 1.5
+  def_cells[0].pair = (2.0, 3)
+  def_slice: Cell[] = def_cells[0:1]
+  return def_slice[0].value + def_cells[0].taps[1]
+
+task worker():
+  task_cells: Cell[2]
+  task_cells[0].value = 2.0
+  task_cells[0].taps[1] = 2.5
+  task_cells[0].pair = (3.0, 4)
+  yield
+
+proc Writer:
+  sample:
+    proc_cells: Cell[2]
+    proc_taps: f32[2] = [3.5, 4.5]
+    proc_cells[0].value = 3.0
+    proc_cells[0].taps = proc_taps
+    proc_cells[0].pair = (5.0, 6)
+    out1 = proc_cells[0].value + proc_cells[0].taps[1]
+
+init:
+  writer = Writer()
+
+block:
+  await worker()
+
+  sample:
+    out1 = seed() + writer()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed field writes should analyze in every owner");
+    let mir = lower_test_program(&typed).expect("indexed field writes should lower");
+    validate(&mir).expect("indexed field write MIR should validate");
+}
+
+#[test]
+fn replaces_struct_array_elements_through_qualified_owner_storage() {
+    let source = r#"
+struct Cell:
+  value: f32 = 0.0
+
+struct Shelf:
+  cells: Cell[2]
+
+struct Bank:
+  shelf: Shelf
+
+  def replace(self, replacement: Cell):
+    self.shelf.cells[0] = replacement
+
+proc Writer:
+  init:
+    cells: Cell[4]
+    cells[0] = Cell(value = 1.0)
+
+  block:
+    cells[1] = Cell(value = 2.0)
+
+    sample:
+      cells[2] = Cell(value = 3.0)
+      out1 = cells[0].value + cells[1].value + cells[2].value + cells[3].value
+
+  event replace(replacement: Cell):
+    cells[3] = replacement
+
+init:
+  bank = Bank()
+  writer = Writer()
+
+sample:
+  bank.replace(Cell(value = 5.0))
+  writer.replace(bank.shelf.cells[0])
+  out1 = writer()
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("qualified element replacements should analyze");
+    let mir = lower_test_program(&typed).expect("qualified element replacements should lower");
+    validate(&mir).expect("qualified element replacement MIR should validate");
+}
+
+#[test]
+fn discarded_aggregate_results_receive_caller_owned_storage() {
+    let source = r#"
+struct Cell:
+  value: f32 = 0.0
+
+def replace_and_return(target: Cell) -> Cell:
+  target = Cell(value = 4.0)
+  return target
+
+def replace_array_and_return(target: f32[2]) -> f32[2]:
+  target[0] = 5.0
+  return target
+
+init:
+  cell = Cell()
+  values: f32[2]
+
+sample:
+  replace_and_return(cell)
+  replace_array_and_return(values)
+  out1 = cell.value + values[0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("discarded aggregate results should analyze");
+    let mir = lower_test_program(&typed).expect("discarded aggregate results should lower");
+    validate(&mir).expect("discarded aggregate result MIR should validate");
+
+    let dump = format_program(&mir);
+    let process = formatted_function(&dump, "onda_process");
+    for callee in ["replace_and_return", "replace_array_and_return"] {
+        let function = mir
+            .functions
+            .iter()
+            .position(|function| function.name == callee)
+            .unwrap_or_else(|| panic!("missing '{callee}' function"));
+        assert!(
+            process.contains(&format!("call @fn{function}")),
+            "discarding the result must preserve the effectful call to '{callee}':\n{dump}"
+        );
+    }
+    assert!(
+        process.matches("__onda_data_").count() >= 2,
+        "discarded fixed results should use static caller-owned storage:\n{dump}"
+    );
+}
+
+#[test]
 fn lowers_canonical_nested_struct_array_views_across_state_calls_and_aliases() {
     let source = r#"
 outs:
@@ -3259,10 +3580,9 @@ sample:
             .collect::<Vec<_>>(),
         ["holder.leaves.value", "holder.leaves.bins"]
     );
-    assert!(inspect
-        .params
-        .iter()
-        .all(|param| param.mode == onda_mir::PassingMode::ReadWriteReference));
+    assert!(inspect.params.iter().all(|param| param.mode
+        == onda_mir::PassingMode::ReadWriteReference
+        && matches!(mir.types[param.ty.index()], MirType::Array { .. })));
 
     let dump = format_program(&mir);
     assert!(dump.contains("make_slice @p"));
@@ -3322,7 +3642,12 @@ sample:
     assert!(read_cell
         .params
         .iter()
-        .all(|param| param.mode == onda_mir::PassingMode::ReadWriteReference));
+        .all(|param| match mir.types[param.ty.index()] {
+            MirType::Array { .. } | MirType::Scalar(_) => {
+                param.mode == onda_mir::PassingMode::ReadOnlyReference
+            }
+            _ => false,
+        }));
 
     let dump = format_program(&mir);
     assert!(dump.contains("slice_window"));
@@ -3373,12 +3698,102 @@ sample:
     assert!(process.contains("load @state"), "{process}");
     assert!(process.contains("slice_window"), "{process}");
     assert!(
-        process.contains("place @state3[") && process.contains("] unchecked"),
+        process.contains("slice_element") && process.contains("] unchecked"),
         "{process}"
+    );
+    assert!(
+        !process.contains("slice_copy"),
+        "aggregate arguments must retain references:\n{process}"
     );
     assert!(
         !process.contains("intrinsic range_clamp("),
         "unsafe aggregate selectors must not be normalized:\n{process}"
+    );
+}
+
+#[test]
+fn unsafe_struct_array_writes_reuse_snapshot_safe_aggregate_copies() {
+    let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+def replace_first(cells: Cell[], replacement: Cell):
+  cells.write_unsafe(0, replacement)
+
+init:
+  cells: Cell[2] = [
+    Cell(0.0, (0.0, 0), [0.0, 0.0]),
+    Cell(0.25, (0.5, 7), [0.75, 1.0])
+  ]
+  cursor: i32 = 0
+
+sample:
+  replacement = cells[1]
+  replace_first(cells[:], replacement)
+  write_unsafe(cells, cursor, read_unsafe(cells, 1))
+  selected = cells[0]
+  out1 = selected.value + selected.pair[0] + selected.taps[0]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("unsafe aggregate replacement should analyze");
+    let mir = lower_test_program(&typed).expect("unsafe aggregate replacement should lower");
+    validate(&mir).expect("unsafe aggregate-replacement MIR should validate");
+
+    let formatted = format_program(&mir);
+    let process = formatted_function(&formatted, "onda_process");
+    let replace = formatted_function(&formatted, "replace_first");
+    assert!(process.contains("slice_copy"), "{process}");
+    assert!(process.contains("] unchecked"), "{process}");
+    assert!(
+        !process.contains("intrinsic range_clamp("),
+        "unsafe aggregate selectors must not be normalized:\n{process}"
+    );
+    let has_dynamic_length = replace
+        .lines()
+        .next()
+        .is_some_and(|header| header.contains("@p0 \"cells.len\""));
+    assert!(
+        !has_dynamic_length || !replace.contains("load @p0"),
+        "unchecked dynamic-array access must not load an unused length:\n{replace}"
+    );
+}
+
+#[test]
+fn struct_array_field_reads_clamp_each_selector_independently() {
+    let source = r#"
+struct Cell:
+  value: f32
+  pair: (f32, i32)
+  taps: f32[2]
+
+init:
+  cells: Cell[2] = [
+    Cell(0.0, (0.0, 0), [1.0, 2.0]),
+    Cell(0.0, (0.0, 0), [3.0, 4.0])
+  ]
+
+sample:
+  out1 = cells[0].taps[99]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("indexed fixed-array field read should analyze");
+    let mir = lower_test_program(&typed).expect("indexed fixed-array field read should lower");
+    validate(&mir).expect("indexed fixed-array field read MIR should validate");
+
+    let process = formatted_function(&format_program(&mir), "onda_process").to_owned();
+    assert!(
+        process.contains("len=i32(2) bounds=unchecked") && process.contains("[i32(99)] clamp"),
+        "the inner selector must clamp within the selected field view:\n{process}"
+    );
+    assert!(
+        !process.contains("load @state"),
+        "the inner selector must not spill into the next struct element:\n{process}"
+    );
+    assert!(
+        !process.contains(".value") && !process.contains(".pair"),
+        "a field read should materialize only its requested SoA leaf:\n{process}"
     );
 }
 

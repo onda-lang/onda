@@ -98,6 +98,7 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 | --- | --- |
 | [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | A 1024-point streaming FFT, per-bin delay frames, spectral feedback, and stereo IFFT resynthesis |
 | [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Phase-coherent spectral capture, smear, transpose, and overlap-add resynthesis |
+| [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | A host-bound recording with normalized scrubbing, stretched through an event/delegate chain carrying structured time, magnitude, and complex-spectrum frames |
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
 

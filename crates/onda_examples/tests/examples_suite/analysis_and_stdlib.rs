@@ -1,5 +1,37 @@
 use super::*;
 
+#[test]
+fn representative_checked_in_onda_examples_analyze_and_lower() {
+    const EXAMPLES: &[&str] = &[
+        "basic/polyphonic_saw.onda",
+        "buffers/sample_player.onda",
+        "effects/schroeder_reverb.onda",
+        "feedback/cybernetic_feedback_graph.onda",
+        "instruments/drum_machine.onda",
+        "plugins/effects/tempo_ping_pong.onda",
+        "plugins/instruments/fm_bells.onda",
+        "soundscapes/glass_garden.onda",
+        "spectral/paul_stretch.onda",
+        "spectral/spectral_freeze.onda",
+        "projects/wavetable_garden/code/main.onda",
+    ];
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+
+    for relative in EXAMPLES {
+        let path = root.join(relative);
+        let parsed = parse_program_file(&path)
+            .unwrap_or_else(|errors| panic!("{} should parse: {errors:#?}", path.display()));
+        let typed = analyze(parsed)
+            .unwrap_or_else(|errors| panic!("{} should analyze: {errors:#?}", path.display()));
+        onda_semantics::lower_program_to_optimized_mir(&typed).unwrap_or_else(|errors| {
+            panic!(
+                "{} should lower to optimized MIR: {errors:#?}",
+                path.display()
+            )
+        });
+    }
+}
+
 // ---- Phase 0: Namespace Const Fixes — Integration tests ----
 
 #[test]
@@ -826,6 +858,8 @@ fn namespace_param_return_without_i32_cast_infers_i32() {
 namespace Outer<S = SR>:
 
   struct Buf:
+
+    marker: i32 = 0
 
     def capacity(self):
 
@@ -1801,6 +1835,27 @@ fn stdlib_realfft_matches_full_complex_reference() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[frames - 1], 0.0, 2e-4);
+}
+
+#[test]
+fn stdlib_real_transform_roundtrips_non_windowed_blocks() {
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_REAL_TRANSFORM_ROUNDTRIP_EXAMPLE, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for frame in 0..frames {
+        let base = frame * out_channels;
+        assert_near(output[base], 0.25, 1e-5);
+        assert_near(output[base + 1], -0.5, 1e-5);
+        assert_near(output[base + 2], 0.5, 1e-5);
+        assert_near(output[base + 3], -0.25, 1e-5);
+    }
 }
 
 #[test]
@@ -3854,13 +3909,15 @@ outs 2
 
 init:
   reverb = std::reverb::Schroeder<2048, 1024>::Reverb()
+  impulse = 1.0
 
 sample:
-  reverb(0.0, 0.0)
+  reverb(impulse, impulse)
+  impulse = 0.0
   out1 = f32(std::reverb::Schroeder<2048, 1024>::CombLines) + reverb.out1
   out2 = f32(std::reverb::Schroeder<2048, 1024>::AllpassLines) + reverb.out2
 "#;
-    let frames = 4;
+    let frames = 1_400;
     let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
 
     assert_eq!(in_channels, 0);
@@ -3869,8 +3926,188 @@ sample:
     let mut output = vec![0.0_f32; frames * 2];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
+    assert_near(output[0], 8.0, 1e-6);
+    assert_near(output[1], 4.0, 1e-6);
+    assert!(output.iter().all(|sample| sample.is_finite()));
+    assert!(output
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .any(|frame| { (frame[0] - 8.0).abs() > 1e-6 || (frame[1] - 4.0).abs() > 1e-6 }));
+}
+
+#[test]
+fn stdlib_complex_value_operations_preserve_their_operands() {
+    let source = r#"
+import std/complex
+
+outs 10
+
+init:
+  a = std::complex::Complex<f64>(1.0, 2.0)
+  b = std::complex::Complex<f64>(3.0, -4.0)
+  sum = a.added(b)
+  difference = a.subtracted(b)
+  product = a.multiplied(b)
+  scaled = a.scaled(2.0)
+  conjugate = a.conjugated()
+  polar = std::complex::polar<f64>(2.0, 0.0)
+
+sample:
+  out1 = f32(sum.re)
+  out2 = f32(sum.im)
+  out3 = f32(difference.re)
+  out4 = f32(difference.im)
+  out5 = f32(product.re)
+  out6 = f32(product.im)
+  out7 = f32(scaled.re + scaled.im)
+  out8 = f32(conjugate.re + conjugate.im)
+  out9 = f32(polar.re + polar.im)
+  out10 = f32(a.re + a.im)
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 10);
+
+    let mut output = vec![0.0_f32; out_channels];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+
+    assert_eq!(
+        output,
+        [4.0, -2.0, -2.0, 6.0, 11.0, 2.0, 6.0, -1.0, 2.0, 3.0]
+    );
+}
+
+#[test]
+fn stdlib_biquad_accepts_structured_coefficients() {
+    let source = r#"
+import std/filter
+
+outs 4
+
+init:
+  filter_f32 = std::filter::Biquad<f32>()
+  coefficients_f32 = std::filter::BiquadCoefficients<f32>(b0 = 0.5, b1 = 0.5)
+  filter_f64 = std::filter::Biquad<f64>()
+  coefficients_f64 = std::filter::BiquadCoefficients<f64>(b0 = 0.5, b1 = 0.5)
+  lowpass = std::filter::design_lowpass<f32>(1000.0, 0.707107)
+  highpass = std::filter::design_highpass<f64>(1000.0, 0.707107)
+
+event configure():
+  filter_f32.set_coefficients(coefficients_f32)
+  filter_f64.set_coefficients(coefficients_f64)
+
+sample:
+  out1 = filter_f32(1.0)
+  out2 = f32(filter_f64(f64(1.0)))
+  out3 = (lowpass.b0 + lowpass.b1 + lowpass.b2) / (1.0 + lowpass.a1 + lowpass.a2)
+  out4 = f32((highpass.b0 - highpass.b1 + highpass.b2) / (f64(1.0) - highpass.a1 + highpass.a2))
+"#;
+    let frames = 2;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let configure = instance
+        .event_index("configure")
+        .expect("configure event should exist");
+    trigger_event_by_index(
+        &mut instance,
+        configure,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("configure event should succeed");
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    assert_near(output[0], 0.5, 1e-6);
+    assert_near(output[1], 0.5, 1e-6);
+    assert_near(output[4], 1.0, 1e-6);
+    assert_near(output[5], 1.0, 1e-6);
     for frame in 0..frames {
-        assert_near(output[frame * 2], 8.0, 1e-6);
-        assert_near(output[frame * 2 + 1], 4.0, 1e-6);
+        assert_near(output[frame * out_channels + 2], 1.0, 1e-5);
+        assert_near(output[frame * out_channels + 3], 1.0, 1e-5);
+    }
+}
+
+#[test]
+fn stdlib_fft_complex_slice_roundtrip() {
+    let source = r#"
+import std/fft
+
+outs 4
+
+init:
+  input: std::complex::Complex<f64>[4]
+  input[0].set(1.0, -0.5)
+  input[1].set(2.0, 0.25)
+  input[2].set(-3.0, 1.5)
+  input[3].set(4.0, -2.0)
+  output: std::complex::Complex<f64>[4]
+  fft: std::fft<4>::FFT<f64>
+
+sample:
+  fft.forward_complex(input)
+  fft.inverse()
+  fft.store_complex(output)
+  out1 = f32(output[0].re + output[0].im)
+  out2 = f32(output[1].re + output[1].im)
+  out3 = f32(output[2].re + output[2].im)
+  out4 = f32(output[3].re + output[3].im)
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; out_channels];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+
+    assert_near(output[0], 0.5, 1e-5);
+    assert_near(output[1], 2.25, 1e-5);
+    assert_near(output[2], -1.5, 1e-5);
+    assert_near(output[3], 2.0, 1e-5);
+}
+
+#[test]
+fn generic_processor_struct_array_broadcast_runs() {
+    let source = r#"
+namespace Bank<N = 2>:
+  struct Cell<T>:
+    value: T
+
+  proc Reader<T>:
+    outs<T> 1
+
+    init:
+      cells: Cell<T>[N] = Cell<T>(value = T(0.5))
+
+    sample:
+      cell = cells[N - 1]
+      out1 = cell.value
+
+outs 1
+
+init:
+  reader = Bank<3>::Reader<f64>()
+
+sample:
+  out1 = f32(reader())
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+
+    for sample in output {
+        assert_near(sample, 0.5, 1e-6);
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{FnReturnScalarType, FnReturnType};
+use crate::ast::{FnReturnScalarType, FnReturnType, ScalarTypeRef};
 
 pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,
@@ -29,12 +29,13 @@ pub(super) fn parse_init_default_decl_type(
     let ty = parse_section_default_decl_type(pair, "init")?;
     match ty {
         DeclType::Scalar(_) | DeclType::Generic(_) => Ok(ty),
-        DeclType::Array { .. } | DeclType::ArrayGeneric { .. } | DeclType::Tuple(_) => {
-            Err(vec![syntax_at_loc(
-                loc.as_ref(),
-                "init section default type must be a scalar primitive or generic type",
-            )])
-        }
+        DeclType::Slice(_)
+        | DeclType::Array { .. }
+        | DeclType::ArrayGeneric { .. }
+        | DeclType::Tuple(_) => Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "init section default type must be a scalar primitive or generic type",
+        )]),
     }
 }
 
@@ -621,7 +622,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                     let prim = parse_primitive_type(inner_type.as_str()).map_err(|d| vec![d])?;
                     FnParamType::Array(Some(prim))
                 }
-                Rule::qualified_ident | Rule::namespace_ref => {
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
                     FnParamType::ArrayGeneric(inner_type.as_str().trim().to_owned())
                 }
                 _ => {
@@ -646,11 +647,13 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
                         size: size_expr,
                     }
                 }
-                Rule::qualified_ident | Rule::namespace_ref => FnParamType::SizedArray {
-                    elem: None,
-                    generic_name: Some(elem_pair.as_str().trim().to_owned()),
-                    size: size_expr,
-                },
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    FnParamType::SizedArray {
+                        elem: None,
+                        generic_name: Some(elem_pair.as_str().trim().to_owned()),
+                        size: size_expr,
+                    }
+                }
                 _ => {
                     return Err(vec![syntax_at_loc(
                         loc.as_ref(),
@@ -673,7 +676,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
         }
-        Rule::qualified_ident | Rule::namespace_ref => {
+        Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
             FnParamType::Struct(inner.as_str().trim().to_owned())
         }
         _ => {
@@ -684,6 +687,24 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         }
     };
     Ok(out)
+}
+
+fn parse_scalar_type_ref(
+    pair: Pair<'_, Rule>,
+    context: &str,
+) -> Result<ScalarTypeRef, Vec<Diagnostic>> {
+    match pair.as_rule() {
+        Rule::type_name => Ok(ScalarTypeRef::Primitive(
+            parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
+        )),
+        Rule::ident | Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+            Ok(ScalarTypeRef::Named(pair.as_str().trim().to_owned()))
+        }
+        _ => Err(vec![syntax_at_pair(
+            &pair,
+            format!("unsupported {context} scalar type"),
+        )]),
+    }
 }
 
 pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType, Vec<Diagnostic>> {
@@ -701,21 +722,6 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
         )]);
     };
 
-    fn parse_scalar(pair: Pair<'_, Rule>) -> Result<FnReturnScalarType, Vec<Diagnostic>> {
-        match pair.as_rule() {
-            Rule::type_name => Ok(FnReturnScalarType::Primitive(
-                parse_primitive_type(pair.as_str()).map_err(|d| vec![d])?,
-            )),
-            Rule::qualified_ident | Rule::namespace_ref => {
-                Ok(FnReturnScalarType::Named(pair.as_str().trim().to_owned()))
-            }
-            _ => Err(vec![syntax_at_pair(
-                &pair,
-                "unsupported function return scalar type",
-            )]),
-        }
-    }
-
     match inner.as_rule() {
         Rule::fn_return_scalar_type => {
             let Some(scalar_pair) = inner.into_inner().next() else {
@@ -724,7 +730,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
                     "missing function return scalar type",
                 )]);
             };
-            parse_scalar(scalar_pair).map(FnReturnType::Scalar)
+            parse_scalar_type_ref(scalar_pair, "function return").map(FnReturnType::Scalar)
         }
         Rule::fn_return_array_type => {
             let mut inner = inner.into_inner();
@@ -741,7 +747,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
                 )]);
             };
             Ok(FnReturnType::Array {
-                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+                elem: parse_scalar_type_ref(elem_pair, "function return")?,
                 size: parse_expr(size_pair)?,
             })
         }
@@ -756,7 +762,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
                             "missing function return tuple element type",
                         )]
                     })?;
-                    parse_scalar(scalar_pair)
+                    parse_scalar_type_ref(scalar_pair, "function return")
                 })
                 .collect();
             Ok(FnReturnType::Tuple(elems?))
@@ -785,6 +791,13 @@ pub(super) fn parse_event_param_type(
         )]);
     };
     match inner.as_rule() {
+        Rule::tuple_type => Ok(EventParamType::Tuple(
+            inner
+                .into_inner()
+                .filter(|p| p.as_rule() == Rule::type_name)
+                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                .collect::<Result<_, _>>()?,
+        )),
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
@@ -804,9 +817,11 @@ pub(super) fn parse_event_param_type(
                 Rule::type_name => Ok(EventParamType::Slice {
                     elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
                 }),
-                Rule::qualified_ident | Rule::namespace_ref => Ok(EventParamType::GenericSlice {
-                    elem: elem_pair.as_str().trim().to_owned(),
-                }),
+                Rule::qualified_ident | Rule::namespace_ref | Rule::named_type => {
+                    Ok(EventParamType::GenericSlice {
+                        elem: elem_pair.as_str().trim().to_owned(),
+                    })
+                }
                 _ => Err(vec![syntax_at_loc(
                     loc.as_ref(),
                     "event slice parameters require primitive or generic primitive element type",
@@ -1180,11 +1195,20 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
             Rule::array_type => {
                 return Ok(FieldType::Array(parse_array_type_spec(child)?));
             }
-            Rule::tuple_type => {
-                let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = child
+            Rule::field_tuple_type => {
+                let elems: Result<Vec<ScalarTypeRef>, Vec<Diagnostic>> = child
                     .into_inner()
-                    .filter(|p| p.as_rule() == Rule::type_name)
-                    .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
+                    .filter(|p| p.as_rule() == Rule::generic_type_arg)
+                    .map(|p| {
+                        let Some(element) = p.into_inner().next() else {
+                            return Err(vec![Diagnostic::syntax(
+                                "missing tuple field element type",
+                                0,
+                                0,
+                            )]);
+                        };
+                        parse_scalar_type_ref(element, "tuple field element")
+                    })
                     .collect();
                 return Ok(FieldType::Tuple(elems?));
             }
@@ -1267,9 +1291,12 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                     "missing indexed member assignment field",
                 )]);
             };
-            Ok(AssignTarget::Index {
-                base: format!("{}.{}", base_pair.as_str(), field_pair.as_str()),
+            let field_index = inner.next().map(parse_expr).transpose()?.map(Box::new);
+            Ok(AssignTarget::IndexedMember {
+                base: base_pair.as_str().to_owned(),
                 index: parse_expr(index_pair)?,
+                field: field_pair.as_str().to_owned(),
+                field_index,
             })
         }
         Rule::tuple_target => {

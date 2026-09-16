@@ -165,10 +165,164 @@ impl Expr {
     }
 }
 
+impl Clone for Expr {
+    fn clone(&self) -> Self {
+        self.try_fold(Self::children, |node, children| {
+            let mut child = || children.next().expect("cloned expression child");
+            Ok::<_, std::convert::Infallible>(match node {
+                Self::Number { loc, value } => Self::Number {
+                    loc: *loc,
+                    value: *value,
+                },
+                Self::Int { loc, value } => Self::Int {
+                    loc: *loc,
+                    value: *value,
+                },
+                Self::Bool { loc, value } => Self::Bool {
+                    loc: *loc,
+                    value: *value,
+                },
+                Self::Var { loc, name } => Self::Var {
+                    loc: *loc,
+                    name: name.clone(),
+                },
+                Self::Index { loc, base, .. } => Self::Index {
+                    loc: *loc,
+                    base: base.clone(),
+                    index: Box::new(child()),
+                },
+                Self::Slice {
+                    loc,
+                    base,
+                    selector,
+                    channel,
+                    start,
+                    end,
+                } => Self::Slice {
+                    loc: *loc,
+                    base: base.clone(),
+                    selector: selector.as_ref().map(|_| Box::new(child())),
+                    channel: channel.as_ref().map(|_| Box::new(child())),
+                    start: start.as_ref().map(|_| Box::new(child())),
+                    end: end.as_ref().map(|_| Box::new(child())),
+                },
+                Self::Cast { loc, to, .. } => Self::Cast {
+                    loc: *loc,
+                    to: *to,
+                    expr: Box::new(child()),
+                },
+                Self::UnaryNot { loc, .. } => Self::UnaryNot {
+                    loc: *loc,
+                    expr: Box::new(child()),
+                },
+                Self::UnaryBitNot { loc, .. } => Self::UnaryBitNot {
+                    loc: *loc,
+                    expr: Box::new(child()),
+                },
+                Self::Binary { loc, op, .. } => Self::Binary {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Self::Compare { loc, op, .. } => Self::Compare {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Self::Logical { loc, op, .. } => Self::Logical {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Self::Tuple { loc, .. } => Self::Tuple {
+                    loc: *loc,
+                    values: children.collect(),
+                },
+                Self::ArrayLiteral { loc, .. } => Self::ArrayLiteral {
+                    loc: *loc,
+                    values: children.collect(),
+                },
+                Self::Call { loc, func, .. } => Self::Call {
+                    loc: *loc,
+                    func: *func,
+                    args: children.collect(),
+                },
+                Self::UserCall {
+                    loc,
+                    name,
+                    type_args,
+                    args,
+                } => Self::UserCall {
+                    loc: *loc,
+                    name: name.clone(),
+                    type_args: type_args.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| crate::CallArg {
+                            name: arg.name.clone(),
+                            expr: child(),
+                        })
+                        .collect(),
+                },
+                Self::ArrayCtor {
+                    loc,
+                    spec,
+                    init,
+                    init_is_value,
+                    initialize,
+                } => Self::ArrayCtor {
+                    loc: *loc,
+                    spec: crate::ArrayTypeSpec {
+                        elem: spec.elem.clone(),
+                        size: Box::new(child()),
+                    },
+                    init: init.as_ref().map(|_| children.collect()),
+                    init_is_value: *init_is_value,
+                    initialize: *initialize,
+                },
+            })
+        })
+        .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{ArrayElemType, ArrayTypeSpec, BinaryOp, CallArg, PrimitiveType, Span};
+
+    #[test]
+    fn deep_expression_clone_preserves_children_and_locations() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut tree = Expr::int(0);
+                for value in 1..15_000 {
+                    tree = Expr::Binary {
+                        loc: Span::ZERO,
+                        op: BinaryOp::Sub,
+                        lhs: Box::new(tree),
+                        rhs: Box::new(Expr::int(value)),
+                    };
+                }
+                let cloned = tree.clone();
+                let integers = |expr: &Expr| {
+                    expr.walk()
+                        .filter_map(|node| match node {
+                            Expr::Int { value, .. } => Some(*value),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(integers(&cloned), integers(&tree));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn traversal_covers_slice_coordinates_constructor_size_and_named_arguments() {
@@ -179,6 +333,7 @@ mod tests {
                 size: Box::new(Expr::int(1)),
             },
             initialize: true,
+            init_is_value: false,
             init: Some(vec![
                 Expr::Slice {
                     loc: Span::ZERO,
@@ -199,6 +354,7 @@ mod tests {
                 },
             ]),
         };
+        assert_eq!(format!("{tree:?}"), format!("{:?}", tree.clone()));
         let integers = |tree: &Expr| {
             tree.walk()
                 .filter_map(|node| match node {

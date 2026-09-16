@@ -385,37 +385,17 @@ fn collect_non_sample_proc_operator_diags_from_target(
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => collect_non_sample_proc_operator_diags_from_expr(
-            index,
+    target.visit_selectors(|selector| {
+        collect_non_sample_proc_operator_diags_from_expr(
+            selector,
             owner_proc,
             nested_instances,
             proc_array_slots,
             proc_api,
             aliases,
             out,
-        ),
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_non_sample_proc_operator_diags_from_expr(
-                    coordinate,
-                    owner_proc,
-                    nested_instances,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    out,
-                );
-            }
-        }
-    }
+        );
+    });
 }
 
 fn proc_alias_from_expr(
@@ -734,23 +714,9 @@ fn seed_called_proc_local_defs_from_target(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match target {
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        AssignTarget::Index { index, .. } => {
-            seed_called_proc_local_defs_from_expr(index, def_names, pending, seen_pending);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                seed_called_proc_local_defs_from_expr(coordinate, def_names, pending, seen_pending);
-            }
-        }
-    }
+    target.visit_selectors(|selector| {
+        seed_called_proc_local_defs_from_expr(selector, def_names, pending, seen_pending)
+    });
 }
 
 fn seed_called_proc_local_defs_from_stmts(
@@ -1088,6 +1054,7 @@ pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> P
         Some(DeclType::Array { elem, .. }) => *elem,
         Some(DeclType::Tuple(_))
         | Some(DeclType::Generic(_))
+        | Some(DeclType::Slice(_))
         | Some(DeclType::ArrayGeneric { .. })
         | None => PrimitiveType::F32,
     }
@@ -1811,6 +1778,7 @@ fn reject_hook_target_write(
     match target {
         AssignTarget::Var(name) => check_symbol(name),
         AssignTarget::Index { base, .. } | AssignTarget::Slice { base, .. } => check_symbol(base),
+        AssignTarget::IndexedMember { base, field, .. } => check_symbol(&format!("{base}.{field}")),
         AssignTarget::Tuple(names) => {
             for name in names.iter().filter_map(|target| target.binding()) {
                 check_symbol(name);
@@ -2065,25 +2033,9 @@ fn validate_hook_safe_stmts(
                     reject_hook_target_write(target, ctx, frame, diag, errors);
                 }
                 validate_hook_safe_expr(expr, ctx, frame, visiting, validated, errors);
-                match target {
-                    AssignTarget::Index { index, .. } => {
-                        validate_hook_safe_expr(index, ctx, frame, visiting, validated, errors);
-                    }
-                    AssignTarget::Slice {
-                        selector,
-                        channel,
-                        start,
-                        end,
-                        ..
-                    } => {
-                        for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                            validate_hook_safe_expr(
-                                coordinate, ctx, frame, visiting, validated, errors,
-                            );
-                        }
-                    }
-                    AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-                }
+                target.visit_selectors(|selector| {
+                    validate_hook_safe_expr(selector, ctx, frame, visiting, validated, errors)
+                });
                 if *is_typed_decl {
                     match target {
                         AssignTarget::Var(name) => frame.add_local(name.clone()),
@@ -2092,7 +2044,9 @@ fn validate_hook_safe_stmts(
                                 frame.add_local(name);
                             }
                         }
-                        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                        AssignTarget::Index { .. }
+                        | AssignTarget::IndexedMember { .. }
+                        | AssignTarget::Slice { .. } => {}
                     }
                 }
             }
@@ -2390,7 +2344,9 @@ fn proc_local_target_local_names(target: &AssignTarget) -> Vec<&str> {
     match target {
         AssignTarget::Var(name) => vec![name],
         AssignTarget::Tuple(names) => names.iter().filter_map(|target| target.binding()).collect(),
-        AssignTarget::Index { .. } | AssignTarget::Slice { .. } => Vec::new(),
+        AssignTarget::Index { .. }
+        | AssignTarget::IndexedMember { .. }
+        | AssignTarget::Slice { .. } => Vec::new(),
     }
 }
 
@@ -2776,6 +2732,7 @@ pub(super) fn compute_proc_shape(
         &proc.events,
         true,
         &format!("processor '{}'", proc.name),
+        &typed_struct_defs,
         proc_options,
         errors,
     );
@@ -2917,17 +2874,59 @@ pub(super) fn compute_proc_shape(
     // Seed known_scalars with reserved names so they're visible for decl-order checks
     init_st.known_scalars.extend(reserved.iter().cloned());
     analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);
+    let init_flow = init_st.flow_state();
+    let mut init_bindings = persistent_init_bindings(
+        &proc.init,
+        &init_st,
+        &proc.init.pinned_roots.iter().cloned().collect(),
+        errors,
+    );
     let mut state = convert_init_state_to_proc_fields(&init_st);
+    for root in &proc.init.compiler_scratch_roots {
+        init_bindings.shadow_binding(root);
+        state.remove_root(root);
+    }
 
     // Non-init scopes: unified runtime analysis via register_scope_state + runtime stmt analysis.
     let mut proc_state_scalars = init_st.state_scalars;
     let mut proc_declared_symbols = init_st.declared_symbols;
     let mut proc_state_arrays = init_st.state_arrays;
-    let proc_state_array_struct_roots = init_st.state_array_struct_roots;
-    let proc_struct_instances = init_st.struct_instances;
+    let mut proc_state_array_struct_roots = init_st.state_array_struct_roots;
+    let mut proc_struct_instances = init_st.struct_instances;
     let init_st_type_args = init_st.struct_instance_type_args;
     let mut proc_state_tuples = init_st.state_tuples;
+
+    let is_compiler_scratch = |name: &String| {
+        proc.init
+            .compiler_scratch_roots
+            .iter()
+            .any(|root| path_is_within_root(name, root))
+    };
+    proc_state_scalars.retain(|name, _| !is_compiler_scratch(name));
+    proc_declared_symbols.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_arrays.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_array_struct_roots.retain(|name, _| !is_compiler_scratch(name));
+    proc_state_tuples.retain(|name, _| !is_compiler_scratch(name));
+    proc_struct_instances.retain(|name, _| !is_compiler_scratch(name));
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
+
+    for (root, info) in proc_state_array_struct_roots.clone() {
+        if !typed_struct_defs.contains_key(&info.struct_name) {
+            continue;
+        }
+        register_data_struct_root(
+            &root,
+            &info.struct_name,
+            info.len,
+            &typed_struct_defs,
+            &format!("processor '{}' state array '{root}'", proc.name),
+            &mut proc_state_scalars,
+            &mut proc_declared_symbols,
+            &mut proc_state_arrays,
+            &mut proc_state_array_struct_roots,
+            errors,
+        );
+    }
 
     rewrite_owner_struct_array_inline_fields(
         ExecutableOwnerBodies {
@@ -2974,7 +2973,6 @@ pub(super) fn compute_proc_shape(
                             &resolved_struct_name,
                             &resolved_def.type_params,
                             &resolved_def.fields,
-                            &typed_struct_defs,
                             proc_options,
                             errors,
                         ),
@@ -3006,11 +3004,22 @@ pub(super) fn compute_proc_shape(
                         }
                     }
                     FieldType::Tuple(elem_tys) => {
+                        let Some(elem_tys) = elem_tys
+                            .iter()
+                            .map(ScalarTypeRef::primitive)
+                            .collect::<Option<Vec<_>>>()
+                        else {
+                            errors.push(Diagnostic::semantic_span(
+                                format!("processor state tuple '{flat}' has an unresolved type"),
+                                field.ty_loc.or(field.loc),
+                            ));
+                            continue;
+                        };
                         register_tuple_state(
                             &mut proc_state_scalars,
                             &mut proc_state_tuples,
                             &flat,
-                            elem_tys,
+                            &elem_tys,
                         );
                     }
                     FieldType::Generic(_) => {}
@@ -3070,7 +3079,7 @@ pub(super) fn compute_proc_shape(
                     param_types: Vec::new(),
                     type_params: Vec::new(),
                     return_type: None,
-                    readonly_array_params: HashSet::new(),
+                    readonly_data_params: HashSet::new(),
                 },
             );
 
@@ -3198,8 +3207,10 @@ pub(super) fn compute_proc_shape(
         const_arrays,
     );
     let empty_output_names = HashSet::<String>::new();
+    let block_bindings;
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {
+            init_bindings: Some(&init_bindings),
             state_scalars: &mut proc_state_scalars,
             declared_symbols: &proc_declared_symbols,
             state_arrays: &proc_state_arrays,
@@ -3209,7 +3220,7 @@ pub(super) fn compute_proc_shape(
             struct_instances: &proc_struct_instances_typed,
             state_tuples: &mut proc_state_tuples,
         };
-        analyze_owner_runtime_scopes(
+        block_bindings = analyze_owner_runtime_scopes(
             &mut runtime_state,
             analysis_plan_seeds.runtime_scope_plans(
                 RuntimeScopeBodies {
@@ -3282,6 +3293,18 @@ pub(super) fn compute_proc_shape(
             errors,
         );
     }
+
+    super::retained_data::retain_proc_data(
+        proc,
+        &init_flow,
+        &init_bindings,
+        &block_bindings,
+        &mut state,
+        &typed_struct_defs,
+        &proc_declared_symbols,
+        &reserved,
+        errors,
+    );
 
     // Merge new scalars from block/sample into state
     for (name, ty) in &proc_state_scalars {
@@ -3477,7 +3500,13 @@ pub(super) fn compute_proc_shape(
         fields.push(StructField {
             loc: Default::default(),
             name: name.clone(),
-            ty: FieldType::Tuple(state.tuples[name].clone()),
+            ty: FieldType::Tuple(
+                state.tuples[name]
+                    .iter()
+                    .copied()
+                    .map(ScalarTypeRef::from)
+                    .collect(),
+            ),
             ty_loc: Default::default(),
             default: None,
         });
@@ -3540,13 +3569,6 @@ pub(super) fn compute_proc_shape(
         .iter()
         .map(|f| f.name.clone())
         .collect::<HashSet<_>>();
-    let array_field_names = fields
-        .iter()
-        .filter_map(|f| match f.ty {
-            FieldType::Array(_) => Some(f.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
 
     ProcBaseShape {
         ins,
@@ -3563,7 +3585,6 @@ pub(super) fn compute_proc_shape(
         state,
         fields,
         field_names,
-        array_field_names,
     }
 }
 
@@ -3644,7 +3665,6 @@ pub(super) fn build_proc_lowering_shape(
 
     let mut fields = base.fields.clone();
     let mut field_names = base.field_names.clone();
-    let mut array_field_names = base.array_field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
     let mut nested_proc_array_active_fields = base.nested_proc_array_active_fields.clone();
@@ -3708,9 +3728,6 @@ pub(super) fn build_proc_lowering_shape(
                 continue;
             }
             nested_field.name = flat_name.clone();
-            if matches!(nested_field.ty, FieldType::Array(_)) {
-                array_field_names.insert(flat_name.clone());
-            }
             field_names.insert(flat_name);
             fields.push(nested_field);
         }
@@ -3775,7 +3792,6 @@ pub(super) fn build_proc_lowering_shape(
         state: base.state,
         fields,
         field_names,
-        array_field_names,
         nested_fields,
     };
     cache.insert(proc_name.to_owned(), resolved.clone());

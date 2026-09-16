@@ -150,6 +150,34 @@ fn canonicalize_program(program: &mut crate::Program, stats: &mut PassStats) {
     }
 }
 
+/// Removes unused non-failing value computations and the function parameters
+/// that become unreferenced as a result. This producer-side cleanup is safe
+/// before validation and reaches a fixed point across call-argument preparation.
+pub fn prune_dead_values_and_parameters(program: &mut crate::Program) -> PassStats {
+    let mut total = PassStats::default();
+    loop {
+        let mut round = PassStats::default();
+        prune_dead_values_and_parameters_round(program, &mut round);
+        let changed = round.removed_dead_assignments != 0
+            || round.removed_locals != 0
+            || round.removed_function_parameters != 0;
+        total.merge(round);
+        if !changed {
+            return total;
+        }
+    }
+}
+
+fn prune_dead_values_and_parameters_round(program: &mut crate::Program, stats: &mut PassStats) {
+    let types = &program.types;
+    for function in &mut program.functions {
+        remove_dead_pure_locals(types, function, stats);
+    }
+    stats.removed_function_parameters = stats
+        .removed_function_parameters
+        .saturating_add(parameter_pruning::prune(program));
+}
+
 /// Runs backend-neutral MIR cleanup to a fixed point while retaining the
 /// structured, non-SSA representation.
 pub fn optimize(
@@ -189,9 +217,7 @@ pub fn optimize(
         // cleanup share one validation boundary instead of validating the
         // same intermediate program twice.
         canonicalize_program(&mut raw, &mut stats);
-        for function in &mut raw.functions {
-            remove_dead_pure_locals(function, &mut stats);
-        }
+        prune_dead_values_and_parameters_round(&mut raw, &mut stats);
         // Cleanup can remove assignments that widened a whole-function range
         // or expose constant indices. Prove bounds afterward in every round so
         // those opportunities are not permanently missed.
@@ -201,7 +227,6 @@ pub fn optimize(
         // Earlier cleanup can remove the final use of a parameter. Pruning it
         // here can in turn expose dead argument preparation in callers, which
         // the next round will remove.
-        stats.removed_function_parameters = parameter_pruning::prune(&mut raw);
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
@@ -291,8 +316,10 @@ fn guard_preinitialized_zero_stores(
                     mark_all_state_dirty(&mut dirty, state_count);
                 }
             }
-            StatementKind::SliceCopy { destination, .. } => {
-                mark_value_alias_dirty(*destination, &aliases, &mut dirty, state_count);
+            StatementKind::SliceCopy { copies, .. } => {
+                for copy in copies {
+                    mark_value_alias_dirty(copy.destination, &aliases, &mut dirty, state_count);
+                }
             }
             StatementKind::Call {
                 function: callee,
@@ -414,9 +441,13 @@ fn collect_block_state_writes(
             StatementKind::SliceStore { slice, .. } => {
                 mark_value_alias_dirty(*slice, &aliases, dirty, state_count);
             }
-            StatementKind::SliceFill { destination, .. }
-            | StatementKind::SliceCopy { destination, .. } => {
+            StatementKind::SliceFill { destination, .. } => {
                 mark_value_alias_dirty(*destination, &aliases, dirty, state_count);
+            }
+            StatementKind::SliceCopy { copies, .. } => {
+                for copy in copies {
+                    mark_value_alias_dirty(copy.destination, &aliases, dirty, state_count);
+                }
             }
             StatementKind::Call { function, args, .. } => {
                 mark_call_state_writes(*function, args, effects, &aliases, dirty, state_count)
@@ -711,7 +742,7 @@ fn collect_local_stability(
                     if passing_modes
                         .get(function.index())
                         .and_then(|modes| modes.get(index))
-                        == Some(&PassingMode::ReadWriteReference)
+                        .is_some_and(|mode| mode.is_writable_reference())
                     {
                         if let Some(local) = mutated_argument_local(argument) {
                             record_local_stability_write(
@@ -967,7 +998,7 @@ fn propagate_statement_values(
                 if passing_modes
                     .get(function.index())
                     .and_then(|modes| modes.get(index))
-                    == Some(&PassingMode::ReadWriteReference)
+                    .is_some_and(|mode| mode.is_writable_reference())
                 {
                     if let Some(local) = mutated_argument_local(argument) {
                         invalidate_fact(facts, local);
@@ -1049,12 +1080,15 @@ fn propagate_statement_values(
             propagate_value(value, facts, stats);
             true
         }
-        StatementKind::SliceCopy {
-            destination,
-            source,
-        } => {
-            propagate_value(destination, facts, stats);
-            propagate_value(source, facts, stats);
+        StatementKind::SliceCopy { copies, .. } => {
+            for crate::SliceCopy {
+                destination,
+                source,
+            } in copies
+            {
+                propagate_value(destination, facts, stats);
+                propagate_value(source, facts, stats);
+            }
             true
         }
         StatementKind::If {
@@ -1225,6 +1259,10 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
             }
         }
         Rvalue::ProcessFrame { offset } => propagate_value(offset, facts, stats),
+        Rvalue::NormalizeIndex { index, length, .. } => {
+            propagate_value(index, facts, stats);
+            propagate_value(length, facts, stats);
+        }
         Rvalue::InputLoad { element, frame, .. } | Rvalue::OutputLoad { element, frame, .. } => {
             propagate_optional_value(element, facts, stats);
             propagate_value(frame, facts, stats);
@@ -1395,7 +1433,7 @@ fn collect_mutated_locals(
                     if passing_modes
                         .get(function.index())
                         .and_then(|modes| modes.get(index))
-                        == Some(&PassingMode::ReadWriteReference)
+                        .is_some_and(|mode| mode.is_writable_reference())
                     {
                         if let Some(local) = mutated_argument_local(argument) {
                             mutated.insert(local);
@@ -1805,10 +1843,10 @@ fn fold_f64_maximum(lhs: f64, rhs: f64) -> f64 {
     }
 }
 
-fn remove_dead_pure_locals(function: &mut Function, stats: &mut PassStats) {
+fn remove_dead_pure_locals(types: &[crate::Type], function: &mut Function, stats: &mut PassStats) {
     let mut reads = vec![0_u32; function.locals.len()];
     collect_block_reads(&function.body, &mut reads);
-    remove_dead_assignments(&mut function.body, &reads, stats);
+    remove_dead_assignments(types, &function.locals, &mut function.body, &reads, stats);
 
     let mut referenced = HashSet::new();
     collect_block_local_references(&function.body, &mut referenced);
@@ -1826,7 +1864,13 @@ fn remove_dead_pure_locals(function: &mut Function, stats: &mut PassStats) {
     rewrite_block_locals(&mut function.body, &mapping);
 }
 
-fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassStats) {
+fn remove_dead_assignments(
+    types: &[crate::Type],
+    locals: &[crate::Local],
+    block: &mut Block,
+    reads: &[u32],
+    stats: &mut PassStats,
+) {
     for statement in &mut block.statements {
         match &mut statement.kind {
             StatementKind::If {
@@ -1834,10 +1878,12 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
                 else_block,
                 ..
             } => {
-                remove_dead_assignments(then_block, reads, stats);
-                remove_dead_assignments(else_block, reads, stats);
+                remove_dead_assignments(types, locals, then_block, reads, stats);
+                remove_dead_assignments(types, locals, else_block, reads, stats);
             }
-            StatementKind::Loop { body } => remove_dead_assignments(body, reads, stats),
+            StatementKind::Loop { body } => {
+                remove_dead_assignments(types, locals, body, reads, stats)
+            }
             _ => {}
         }
     }
@@ -1854,7 +1900,7 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
         };
         let remove = projections.is_empty()
             && reads.get(local.index()) == Some(&0)
-            && rvalue_is_discardable(value);
+            && rvalue_is_discardable(types, locals, value);
         if remove {
             stats.removed_dead_assignments = stats.removed_dead_assignments.saturating_add(1);
         }
@@ -1862,16 +1908,8 @@ fn remove_dead_assignments(block: &mut Block, reads: &[u32], stats: &mut PassSta
     });
 }
 
-fn rvalue_is_discardable(value: &Rvalue) -> bool {
-    match value {
-        Rvalue::Use(_)
-        | Rvalue::Unary { .. }
-        | Rvalue::Compare { .. }
-        | Rvalue::Cast { .. }
-        | Rvalue::Intrinsic { .. } => true,
-        Rvalue::Binary { op, .. } => !matches!(op, BinaryOp::Divide | BinaryOp::Remainder),
-        _ => false,
-    }
+fn rvalue_is_discardable(types: &[crate::Type], locals: &[crate::Local], value: &Rvalue) -> bool {
+    !crate::analysis::rvalue_may_fail(types, locals, value)
 }
 
 fn collect_block_reads(block: &Block, reads: &mut [u32]) {
@@ -1934,6 +1972,10 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
             }
         }
         Rvalue::ProcessFrame { offset } => mark_value_read(*offset, reads),
+        Rvalue::NormalizeIndex { index, length, .. } => {
+            mark_value_read(*index, reads);
+            mark_value_read(*length, reads);
+        }
         Rvalue::InputLoad { element, frame, .. } | Rvalue::OutputLoad { element, frame, .. } => {
             if let Some(element) = element {
                 mark_value_read(*element, reads);
@@ -1969,7 +2011,7 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
             source, start, len, ..
         } => {
             match source {
-                crate::SliceSource::Place(place) => collect_place_index_reads(place, reads),
+                crate::SliceSource::Place(place) => collect_place_read(place, reads),
                 crate::SliceSource::Buffer { buffer, channel } => {
                     collect_buffer_ref_read(*buffer, reads);
                     if let Some(channel) = channel {
@@ -1995,10 +2037,12 @@ fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => collect_buffer_ref_read(*buffer, reads),
-        Rvalue::BufferParamLen(_)
-        | Rvalue::BufferParamChannels(_)
-        | Rvalue::BufferParamSampleRate(_)
-        | Rvalue::BufferParamIsBound(_) => {}
+        Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamChannels(parameter)
+        | Rvalue::BufferParamSampleRate(parameter)
+        | Rvalue::BufferParamIsBound(parameter) => {
+            collect_buffer_param_ref_read(*parameter, reads);
+        }
     }
 }
 
@@ -2098,12 +2142,15 @@ fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
             mark_value_read(*destination, reads);
             mark_value_read(*value, reads);
         }
-        StatementKind::SliceCopy {
-            destination,
-            source,
-        } => {
-            mark_value_read(*destination, reads);
-            mark_value_read(*source, reads);
+        StatementKind::SliceCopy { copies, .. } => {
+            for crate::SliceCopy {
+                destination,
+                source,
+            } in copies
+            {
+                mark_value_read(*destination, reads);
+                mark_value_read(*source, reads);
+            }
         }
         StatementKind::If {
             condition,
@@ -2129,7 +2176,14 @@ fn collect_block_local_references(block: &Block, referenced: &mut HashSet<LocalI
     collect_read_references(block, referenced);
 }
 
-fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
+/// All local storage mentioned by a block, including writes and addresses.
+pub fn referenced_locals(block: &Block) -> HashSet<LocalId> {
+    let mut locals = HashSet::new();
+    collect_block_local_references(block, &mut locals);
+    locals
+}
+
+fn collect_statement_read_references(statement: &Statement, referenced: &mut HashSet<LocalId>) {
     fn value(value: Value, referenced: &mut HashSet<LocalId>) {
         if let Value::Local(local) = value {
             referenced.insert(local);
@@ -2174,6 +2228,10 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 }
             }
             Rvalue::ProcessFrame { offset } => value(*offset, referenced),
+            Rvalue::NormalizeIndex { index, length, .. } => {
+                value(*index, referenced);
+                value(*length, referenced);
+            }
             Rvalue::InputLoad { element, frame, .. }
             | Rvalue::OutputLoad { element, frame, .. } => {
                 if let Some(v) = element {
@@ -2210,7 +2268,7 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
                 source, start, len, ..
             } => {
                 match source {
-                    crate::SliceSource::Place(p) => place(p, false, referenced),
+                    crate::SliceSource::Place(p) => place(p, true, referenced),
                     crate::SliceSource::Buffer { buffer, channel } => {
                         buffer_ref(*buffer, referenced);
                         if let Some(v) = channel {
@@ -2244,148 +2302,168 @@ fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
             }
         }
     }
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign {
-                destination,
-                value: v,
-            } => {
-                place(destination, false, referenced);
-                rvalue(v, referenced);
-            }
-            StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
-                for argument in args {
-                    match argument {
-                        CallArgument::Value(v) => value(*v, referenced),
-                        CallArgument::Place(p) => place(p, true, referenced),
-                        CallArgument::ArrayWindow { array, start, .. } => {
-                            place(array, true, referenced);
-                            value(*start, referenced);
-                        }
-                        CallArgument::SliceElement { slice, index, .. } => {
-                            value(*slice, referenced);
-                            value(*index, referenced);
-                        }
-                        CallArgument::SliceWindow { slice, start, .. } => {
-                            value(*slice, referenced);
-                            value(*start, referenced);
-                        }
-                        CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
-                        CallArgument::BufferParam(parameter) => {
-                            buffer_param_ref(*parameter, referenced);
-                        }
-                        CallArgument::BufferSpan(_) => {}
+    match &statement.kind {
+        StatementKind::Assign {
+            destination,
+            value: v,
+        } => {
+            place(destination, false, referenced);
+            rvalue(v, referenced);
+        }
+        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
+            for argument in args {
+                match argument {
+                    CallArgument::Value(v) => value(*v, referenced),
+                    CallArgument::Place(p) => place(p, true, referenced),
+                    CallArgument::ArrayWindow { array, start, .. } => {
+                        place(array, true, referenced);
+                        value(*start, referenced);
                     }
+                    CallArgument::SliceElement { slice, index, .. } => {
+                        value(*slice, referenced);
+                        value(*index, referenced);
+                    }
+                    CallArgument::SliceWindow { slice, start, .. } => {
+                        value(*slice, referenced);
+                        value(*start, referenced);
+                    }
+                    CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
+                    CallArgument::BufferParam(parameter) => {
+                        buffer_param_ref(*parameter, referenced);
+                    }
+                    CallArgument::BufferSpan(_) => {}
                 }
             }
-            StatementKind::PublishLog { arguments, .. } => {
-                for item in arguments {
-                    value(*item, referenced);
-                }
+        }
+        StatementKind::PublishLog { arguments, .. } => {
+            for item in arguments {
+                value(*item, referenced);
             }
-            StatementKind::OutputStore {
-                element,
-                frame,
-                value: v,
-                ..
-            } => {
-                if let Some(v) = element {
-                    value(*v, referenced);
-                }
-                value(*frame, referenced);
+        }
+        StatementKind::OutputStore {
+            element,
+            frame,
+            value: v,
+            ..
+        } => {
+            if let Some(v) = element {
                 value(*v, referenced);
             }
-            StatementKind::ControlOutputStore {
-                element, value: v, ..
-            } => {
-                if let Some(v) = element {
-                    value(*v, referenced);
-                }
+            value(*frame, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::ControlOutputStore {
+            element, value: v, ..
+        } => {
+            if let Some(v) = element {
                 value(*v, referenced);
             }
-            StatementKind::BufferStore {
-                buffer,
-                channel,
-                index,
-                value: v,
-                ..
-            } => {
-                buffer_ref(*buffer, referenced);
-                if let Some(v) = channel {
-                    value(*v, referenced);
-                }
-                value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::BufferStore {
+            buffer,
+            channel,
+            index,
+            value: v,
+            ..
+        } => {
+            buffer_ref(*buffer, referenced);
+            if let Some(v) = channel {
                 value(*v, referenced);
             }
-            StatementKind::BufferParamStore {
-                parameter,
-                channel,
-                index,
-                value: v,
-                ..
-            } => {
-                buffer_param_ref(*parameter, referenced);
-                if let Some(v) = channel {
-                    value(*v, referenced);
-                }
-                value(*index, referenced);
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::BufferParamStore {
+            parameter,
+            channel,
+            index,
+            value: v,
+            ..
+        } => {
+            buffer_param_ref(*parameter, referenced);
+            if let Some(v) = channel {
                 value(*v, referenced);
             }
-            StatementKind::SliceStore {
-                slice,
-                index,
-                value: v,
-                ..
-            } => {
-                value(*slice, referenced);
-                value(*index, referenced);
-                value(*v, referenced);
-            }
-            StatementKind::SliceFill {
-                destination,
-                value: v,
-            } => {
-                value(*destination, referenced);
-                value(*v, referenced);
-            }
-            StatementKind::SliceCopy {
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceStore {
+            slice,
+            index,
+            value: v,
+            ..
+        } => {
+            value(*slice, referenced);
+            value(*index, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceFill {
+            destination,
+            value: v,
+        } => {
+            value(*destination, referenced);
+            value(*v, referenced);
+        }
+        StatementKind::SliceCopy { copies, .. } => {
+            for crate::SliceCopy {
                 destination,
                 source,
-            } => {
+            } in copies
+            {
                 value(*destination, referenced);
                 value(*source, referenced);
             }
+        }
+        StatementKind::If { condition, .. } => {
+            value(*condition, referenced);
+        }
+        StatementKind::Loop { .. } => {}
+        StatementKind::Return { values } => {
+            for v in values {
+                value(*v, referenced);
+            }
+        }
+        StatementKind::Break | StatementKind::Continue => {}
+    }
+}
+
+fn collect_read_references(block: &Block, referenced: &mut HashSet<LocalId>) {
+    for statement in &block.statements {
+        collect_statement_read_references(statement, referenced);
+        match &statement.kind {
             StatementKind::If {
-                condition,
                 then_block,
                 else_block,
+                ..
             } => {
-                value(*condition, referenced);
                 collect_read_references(then_block, referenced);
                 collect_read_references(else_block, referenced);
             }
             StatementKind::Loop { body } => collect_read_references(body, referenced),
-            StatementKind::Return { values } => {
-                for v in values {
-                    value(*v, referenced);
-                }
-            }
-            StatementKind::Break | StatementKind::Continue => {}
+            _ => {}
         }
+    }
+}
+
+fn collect_statement_writes(statement: &Statement, referenced: &mut HashSet<LocalId>) {
+    match &statement.kind {
+        StatementKind::Assign { destination, .. } => {
+            if let PlaceBase::Local(local) = destination.base {
+                referenced.insert(local);
+            }
+        }
+        StatementKind::Call { results, .. } => {
+            referenced.extend(results.iter().copied());
+        }
+        _ => {}
     }
 }
 
 fn collect_block_writes(block: &Block, referenced: &mut HashSet<LocalId>) {
     for statement in &block.statements {
+        collect_statement_writes(statement, referenced);
         match &statement.kind {
-            StatementKind::Assign { destination, .. } => {
-                if let PlaceBase::Local(local) = destination.base {
-                    referenced.insert(local);
-                }
-            }
-            StatementKind::Call { results, .. } => {
-                referenced.extend(results.iter().copied());
-            }
             StatementKind::If {
                 then_block,
                 else_block,
@@ -2400,7 +2478,15 @@ fn collect_block_writes(block: &Block, referenced: &mut HashSet<LocalId>) {
     }
 }
 
-fn rewrite_block_locals(block: &mut Block, mapping: &[Option<LocalId>]) {
+/// Adds local storage read or written directly by one statement, excluding nested blocks.
+pub fn collect_direct_local_references(statement: &Statement, referenced: &mut HashSet<LocalId>) {
+    collect_statement_writes(statement, referenced);
+    collect_statement_read_references(statement, referenced);
+}
+
+/// Reindex local references using a caller-provided mapping. Every referenced
+/// local must have a destination in the mapping.
+pub fn rewrite_block_locals(block: &mut Block, mapping: &[Option<LocalId>]) {
     for statement in &mut block.statements {
         rewrite_statement_locals(statement, mapping);
     }
@@ -2452,6 +2538,10 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
             }
         }
         Rvalue::ProcessFrame { offset } => rewrite_value(offset, mapping),
+        Rvalue::NormalizeIndex { index, length, .. } => {
+            rewrite_value(index, mapping);
+            rewrite_value(length, mapping);
+        }
         Rvalue::InputLoad { element, frame, .. } | Rvalue::OutputLoad { element, frame, .. } => {
             if let Some(element) = element {
                 rewrite_value(element, mapping);
@@ -2646,12 +2736,15 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
             rewrite_value(destination, mapping);
             rewrite_value(value, mapping);
         }
-        StatementKind::SliceCopy {
-            destination,
-            source,
-        } => {
-            rewrite_value(destination, mapping);
-            rewrite_value(source, mapping);
+        StatementKind::SliceCopy { copies, .. } => {
+            for crate::SliceCopy {
+                destination,
+                source,
+            } in copies
+            {
+                rewrite_value(destination, mapping);
+                rewrite_value(source, mapping);
+            }
         }
         StatementKind::If {
             condition,
@@ -2711,6 +2804,26 @@ mod tests {
         process.params = process_function_params(TypeId::new(0));
         program.functions = vec![function("init", FunctionKind::Init), process];
         program
+    }
+
+    #[test]
+    fn selected_buffer_parameter_metadata_keeps_its_selector_live() {
+        let selector = LocalId::new(2);
+        let parameter = crate::BufferParamRef::ArrayElement {
+            span: crate::ParameterId::new(0),
+            selector: Value::Local(selector),
+            bounds: BoundsMode::Clamp,
+        };
+        for value in [
+            Rvalue::BufferParamLen(parameter),
+            Rvalue::BufferParamChannels(parameter),
+            Rvalue::BufferParamSampleRate(parameter),
+            Rvalue::BufferParamIsBound(parameter),
+        ] {
+            let mut reads = vec![0; 3];
+            collect_rvalue_reads(&value, &mut reads);
+            assert_eq!(reads, [0, 0, 1]);
+        }
     }
 
     #[test]
@@ -3708,6 +3821,66 @@ mod tests {
     }
 
     #[test]
+    fn dead_value_pruning_scales_with_live_descriptors() {
+        let mut program = empty_program();
+        let array_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Array {
+            element: TypeId::new(0),
+            len: 1,
+        });
+        let slice_ty = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Slice {
+            element: ScalarType::I32,
+            access: AccessMode::ReadOnly,
+        });
+
+        let mut helper = function("descriptor_user", FunctionKind::User);
+        for index in 0..128_u32 {
+            helper.params.push(crate::FunctionParam {
+                name: format!("values_{index}"),
+                ty: array_ty,
+                mode: PassingMode::ReadOnlyReference,
+                integer_range: None,
+            });
+            helper.locals.push(Local {
+                name: None,
+                ty: slice_ty,
+                integer_range: None,
+            });
+            helper.body.statements.push(Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(index)),
+                    value: Rvalue::MakeSlice {
+                        source: SliceSource::Place(Place {
+                            base: PlaceBase::Parameter(crate::ParameterId::new(index)),
+                            projections: Vec::new(),
+                        }),
+                        start: Value::Constant(ScalarValue::I32(0)),
+                        len: Value::Constant(ScalarValue::I32(1)),
+                        bounds: if index == 127 {
+                            BoundsMode::Checked
+                        } else {
+                            BoundsMode::Unchecked
+                        },
+                        access: AccessMode::ReadOnly,
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            });
+        }
+        program.functions.push(helper);
+
+        let stats = super::prune_dead_values_and_parameters(&mut program);
+        assert_eq!(stats.removed_dead_assignments, 127);
+        assert_eq!(stats.removed_locals, 127);
+        assert_eq!(stats.removed_function_parameters, 127);
+        assert_eq!(program.functions[2].params.len(), 1);
+        assert_eq!(program.functions[2].locals.len(), 1);
+        assert_eq!(program.functions[2].body.statements.len(), 1);
+        crate::validate_owned(program).expect("pruned descriptor function remains valid");
+    }
+
+    #[test]
     fn parameter_pruning_participates_in_the_optimization_fixed_point() {
         let mut program = empty_program();
         let mut helper = function("conditionally_uses_value", FunctionKind::User);
@@ -3821,7 +3994,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_propagation_collapses_long_dead_chains_before_the_fixed_point() {
+    fn copy_propagation_eliminates_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 
         let mut program = empty_program();
@@ -3860,8 +4033,8 @@ mod tests {
             stats.iterations <= 4,
             "copy chains should not require one cleanup round per link"
         );
-        assert_eq!(optimized.functions[1].locals.len(), 1);
-        assert_eq!(optimized.functions[1].body.statements.len(), 1);
+        assert!(optimized.functions[1].locals.is_empty());
+        assert!(optimized.functions[1].body.statements.is_empty());
 
         let fixed_point = optimized.as_program().clone();
         let (second, second_stats) = super::optimize(optimized.into_validated())

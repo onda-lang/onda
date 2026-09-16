@@ -290,7 +290,9 @@ pub(super) fn fold_host_sr_assign_target(
     consts: &HashMap<String, TypedConstValue>,
 ) {
     match target {
-        AssignTarget::Index { index, .. } => fold_local_scalar_const_expr(index, consts),
+        AssignTarget::Index { .. } | AssignTarget::IndexedMember { .. } => {
+            target.visit_selectors_mut(|selector| fold_local_scalar_const_expr(selector, consts))
+        }
         AssignTarget::Slice {
             selector,
             channel,
@@ -958,6 +960,13 @@ pub(super) fn const_def_return_type(
             None
         }
         Some(FnReturnType::Array { elem, size }) => {
+            let FnReturnScalarType::Primitive(elem) = elem else {
+                errors.push(Diagnostic::semantic_span(
+                    "const def array return requires primitive elements",
+                    def.return_ty_loc,
+                ));
+                return None;
+            };
             let locals = HashMap::new();
             let local_arrays = HashMap::new();
             let len = eval_const_array_size_with_defs(
@@ -1415,299 +1424,184 @@ pub(super) fn fold_const_eval_expr(
     call_stack: &mut Vec<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Expr> {
-    let loc = expr.loc();
-    match expr {
-        Expr::Var { name, .. } => {
-            if let Some(value) = locals.get(name).copied() {
-                return Some(typed_const_expr_with_loc(value, loc));
-            }
-            if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
-                return Some(typed_const_expr_with_loc(*value, loc));
-            }
-            Some(expr.clone())
-        }
-        Expr::UserCall {
-            name,
-            args,
-            type_args,
-            ..
-        } => {
-            if args.is_empty() {
-                if let Some(base) = parse_array_len_instance_base(name) {
-                    if let Some(array) = local_arrays.get(base) {
-                        return Some(Expr::int(array.len() as i64).with_loc(loc));
-                    }
-                    if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
-                        return Some(Expr::int(*len as i64).with_loc(loc));
+    expr.try_fold(
+        |node, children| match node {
+            // Const defs establish their own parameter environment, so their
+            // arguments are evaluated by `eval_const_def_call`.
+            Expr::UserCall { .. }
+            | Expr::Slice { .. }
+            | Expr::Tuple { .. }
+            | Expr::ArrayCtor { .. } => {}
+            _ => node.children(children),
+        },
+        |node, children| {
+            let loc = node.loc();
+            let mut child = || children.next().expect("folded const expression child");
+            Ok::<_, ()>(match node {
+                Expr::Var { name, .. } => {
+                    if let Some(value) = locals.get(name).copied() {
+                        typed_const_expr_with_loc(value, loc)
+                    } else if let Some(ConstValue::Scalar(value)) = const_values.get(name) {
+                        typed_const_expr_with_loc(*value, loc)
+                    } else {
+                        node.clone()
                     }
                 }
-            }
-            if !type_args.is_empty() {
-                errors.push(Diagnostic::semantic_span(
-                    format!("{context}: const def calls cannot use explicit type arguments"),
-                    loc,
-                ));
-                return None;
-            }
-            let value = eval_const_def_call(
-                name,
-                args,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-                loc,
-            )?;
-            match value {
-                ConstEvalValue::Scalar(value) => Some(typed_const_expr_with_loc(value, loc)),
-                ConstEvalValue::Array(_) => {
+                Expr::UserCall {
+                    name,
+                    args,
+                    type_args,
+                    ..
+                } => {
+                    if args.is_empty() {
+                        if let Some(base) = parse_array_len_instance_base(name) {
+                            if let Some(array) = local_arrays.get(base) {
+                                return Ok(Expr::int(array.len() as i64).with_loc(loc));
+                            }
+                            if let Some(ConstValue::Array { len, .. }) = const_values.get(base) {
+                                return Ok(Expr::int(*len as i64).with_loc(loc));
+                            }
+                        }
+                    }
+                    if !type_args.is_empty() {
+                        errors.push(Diagnostic::semantic_span(
+                            format!("{context}: const def calls cannot use explicit type arguments"),
+                            loc,
+                        ));
+                        return Err(());
+                    }
+                    match eval_const_def_call(
+                        name,
+                        args,
+                        locals,
+                        local_arrays,
+                        const_values,
+                        const_defs,
+                        options,
+                        context,
+                        call_stack,
+                        errors,
+                        loc,
+                    )
+                    .ok_or(())?
+                    {
+                        ConstEvalValue::Scalar(value) => typed_const_expr_with_loc(value, loc),
+                        ConstEvalValue::Array(_) => {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "{context}: const def '{name}' returns an array, not a scalar"
+                                ),
+                                loc,
+                            ));
+                            return Err(());
+                        }
+                    }
+                }
+                Expr::Call { func, .. } => {
+                    let folded = children.collect::<Vec<_>>();
+                    eval_const_builtin_call(*func, &folded, loc, options, context, errors)
+                        .ok_or(())?
+                }
+                Expr::Index { base, index, .. } => {
+                    let folded_index = child();
+                    if let Some((_, array)) =
+                        const_eval_array_ref_by_name(base, local_arrays, const_values)
+                    {
+                        if !can_eval_const_expr_exact_int(&folded_index) {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "{context}: const array '{base}' index is not compile-time integer"
+                                ),
+                                index.loc(),
+                            ));
+                            return Err(());
+                        }
+                        let raw_idx = eval_const_expr_i64_exact(
+                            &folded_index,
+                            options,
+                            &format!("{context}: const array '{base}' index"),
+                            errors,
+                        )
+                        .ok_or(())?;
+                        let value = usize::try_from(raw_idx)
+                            .ok()
+                            .and_then(|index| array.get(index))
+                            .copied();
+                        let Some(value) = value else {
+                            errors.push(Diagnostic::semantic_span(
+                                format!(
+                                    "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
+                                    array.len()
+                                ),
+                                loc,
+                            ));
+                            return Err(());
+                        };
+                        typed_const_expr_with_loc(value, loc)
+                    } else {
+                        let mut folded = Expr::Index {
+                            loc: loc.span(),
+                            base: base.clone(),
+                            index: Box::new(folded_index),
+                        };
+                        fold_const_array_expr(&mut folded, const_values, options, errors, false);
+                        folded
+                    }
+                }
+                Expr::ArrayLiteral { .. } => Expr::ArrayLiteral {
+                    loc: loc.span(),
+                    values: children.collect(),
+                },
+                Expr::Compare { loc, op, .. } => Expr::Compare {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Expr::Logical { loc, op, .. } => Expr::Logical {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Expr::Binary { loc, op, .. } => Expr::Binary {
+                    loc: *loc,
+                    op: *op,
+                    lhs: Box::new(child()),
+                    rhs: Box::new(child()),
+                },
+                Expr::Cast { loc, to, .. } => Expr::Cast {
+                    loc: *loc,
+                    to: *to,
+                    expr: Box::new(child()),
+                },
+                Expr::UnaryNot { loc, .. } => Expr::UnaryNot {
+                    loc: *loc,
+                    expr: Box::new(child()),
+                },
+                Expr::UnaryBitNot { loc, .. } => Expr::UnaryBitNot {
+                    loc: *loc,
+                    expr: Box::new(child()),
+                },
+                Expr::Slice { .. } => {
                     errors.push(Diagnostic::semantic_span(
-                        format!("{context}: const def '{name}' returns an array, not a scalar"),
+                        format!("{context}: slices are not supported in const def evaluation"),
                         loc,
                     ));
-                    None
+                    return Err(());
                 }
-            }
-        }
-        Expr::Call { func, args, .. } => {
-            let folded = args
-                .iter()
-                .map(|arg| {
-                    fold_const_eval_expr(
-                        arg,
-                        locals,
-                        local_arrays,
-                        const_values,
-                        const_defs,
-                        options,
-                        context,
-                        call_stack,
-                        errors,
-                    )
-                })
-                .collect::<Option<Vec<_>>>()?;
-            eval_const_builtin_call(*func, &folded, loc, options, context, errors)
-        }
-        Expr::Index { base, index, .. } => {
-            let folded_index = fold_const_eval_expr(
-                index,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?;
-            if let Some((_, array)) = const_eval_array_ref_by_name(base, local_arrays, const_values)
-            {
-                if !can_eval_const_expr_exact_int(&folded_index) {
+                Expr::Tuple { .. } | Expr::ArrayCtor { .. } => {
                     errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "{context}: const array '{base}' index is not compile-time integer"
-                        ),
-                        index.loc(),
+                        format!("{context}: expression is not supported in const def evaluation"),
+                        loc,
                     ));
-                    return None;
+                    return Err(());
                 }
-                let raw_idx = eval_const_expr_i64_exact(
-                    &folded_index,
-                    options,
-                    &format!("{context}: const array '{base}' index"),
-                    errors,
-                )?;
-                let Ok(idx) = usize::try_from(raw_idx) else {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
-                            array.len()
-                        ),
-                        expr.loc(),
-                    ));
-                    return None;
-                };
-                let Some(value) = array.get(idx).copied() else {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "{context}: const array '{base}' index {raw_idx} is out of bounds for length {}",
-                            array.len()
-                        ),
-                        expr.loc(),
-                    ));
-                    return None;
-                };
-                return Some(typed_const_expr_with_loc(value, loc));
-            }
-
-            let mut folded = Expr::Index {
-                loc: expr.loc().span(),
-                base: base.clone(),
-                index: Box::new(folded_index),
-            };
-            fold_const_array_expr(&mut folded, const_values, options, errors, false);
-            Some(folded)
-        }
-        Expr::Slice { .. } => {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context}: slices are not supported in const def evaluation"),
-                loc,
-            ));
-            None
-        }
-        Expr::ArrayLiteral { values, .. } => Some(Expr::ArrayLiteral {
-            loc: expr.loc().span(),
-            values: values
-                .iter()
-                .map(|value| {
-                    fold_const_eval_expr(
-                        value,
-                        locals,
-                        local_arrays,
-                        const_values,
-                        const_defs,
-                        options,
-                        context,
-                        call_stack,
-                        errors,
-                    )
-                })
-                .collect::<Option<Vec<_>>>()?,
-        }),
-        Expr::Compare { loc, op, lhs, rhs } => Some(Expr::Compare {
-            loc: *loc,
-            op: *op,
-            lhs: Box::new(fold_const_eval_expr(
-                lhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-            rhs: Box::new(fold_const_eval_expr(
-                rhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::Logical { loc, op, lhs, rhs } => Some(Expr::Logical {
-            loc: *loc,
-            op: *op,
-            lhs: Box::new(fold_const_eval_expr(
-                lhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-            rhs: Box::new(fold_const_eval_expr(
-                rhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::Binary { loc, op, lhs, rhs } => Some(Expr::Binary {
-            loc: *loc,
-            op: *op,
-            lhs: Box::new(fold_const_eval_expr(
-                lhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-            rhs: Box::new(fold_const_eval_expr(
-                rhs,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::Cast { loc, to, expr } => Some(Expr::Cast {
-            loc: *loc,
-            to: *to,
-            expr: Box::new(fold_const_eval_expr(
-                expr,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::UnaryNot { loc, expr } => Some(Expr::UnaryNot {
-            loc: *loc,
-            expr: Box::new(fold_const_eval_expr(
-                expr,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::UnaryBitNot { loc, expr } => Some(Expr::UnaryBitNot {
-            loc: *loc,
-            expr: Box::new(fold_const_eval_expr(
-                expr,
-                locals,
-                local_arrays,
-                const_values,
-                const_defs,
-                options,
-                context,
-                call_stack,
-                errors,
-            )?),
-        }),
-        Expr::Tuple { .. } | Expr::ArrayCtor { .. } => {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context}: expression is not supported in const def evaluation"),
-                loc,
-            ));
-            None
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => Some(expr.clone()),
-    }
+                Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => node.clone(),
+            })
+        },
+    )
+    .ok()
 }
 
 #[allow(clippy::too_many_arguments)]

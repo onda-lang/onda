@@ -11,6 +11,7 @@ mod ir;
 mod json;
 mod messagepack;
 mod passes;
+pub mod payload;
 mod types;
 mod validate;
 
@@ -25,7 +26,10 @@ pub use messagepack::{
     from_messagepack, from_messagepack_with_producer_proofs, to_messagepack,
     to_messagepack_optimized, MirMessagePackError,
 };
-pub use passes::{canonicalize, optimize, OptimizedProgram, PassStats};
+pub use passes::{
+    canonicalize, collect_direct_local_references, optimize, prune_dead_values_and_parameters,
+    referenced_locals, rewrite_block_locals, OptimizedProgram, PassStats,
+};
 
 /// Removes parameters that are not referenced by internal MIR functions and
 /// rewrites all call sites. This producer-side cleanup is safe to run before
@@ -46,7 +50,7 @@ pub use validate::{
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const MIR_SCHEMA_VERSION: u32 = 6;
+pub const MIR_SCHEMA_VERSION: u32 = 7;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;
@@ -63,6 +67,7 @@ pub const PROCESS_FULL_BLOCK: i32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 pub const PROCESS_PARAM_NAMES: [&str; PROCESS_PARAM_COUNT] = ["start_frame", "frames", "flags"];
 pub use analysis::{
     analyze_buffer_writes, analyze_effects, analyze_integer_ranges, analyze_program_integer_ranges,
-    BufferWriteAnalysis, BufferWriteAnalysisError, EffectAnalysis, FunctionEffects,
-    FunctionRangeAnalysis, IntegerRange, MemoryRegionSet, ProgramRangeAnalysis, ReferenceEffects,
+    analyze_program_integer_ranges_with_effects, BufferWriteAnalysis, BufferWriteAnalysisError,
+    EffectAnalysis, FunctionEffects, FunctionRangeAnalysis, IntegerRange, MemoryRegionSet,
+    ProgramRangeAnalysis, ReferenceEffects,
 };

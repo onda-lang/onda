@@ -71,7 +71,7 @@ event_list = { event_decl ~ (stmt_sep+ ~ event_decl)* ~ stmt_sep* }
 event_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ event_param_list? ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 event_param_list = { event_param_decl ~ (comma_sep ~ event_param_decl)* }
 event_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ event_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
-event_param_type = { array_type | fn_typed_array_param | type_name | named_type }
+event_param_type = { tuple_type | array_type | fn_typed_array_param | type_name | named_type }
 delegates_block = { "delegates" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ delegate_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 delegate_block = { "delegate" ~ delegate_decl ~ NEWLINE* }
 delegate_list = { delegate_decl ~ (stmt_sep+ ~ delegate_decl)* ~ stmt_sep* }
@@ -110,8 +110,13 @@ graph_rate = { "@block" | "@sample" }
 graph_arrow = { ">>" ~ graph_delay? }
 graph_receiver_arrow = { "<<" ~ graph_delay? }
 graph_delay = { "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
-graph_expr = { prefix* ~ graph_term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | cmp_op | add_op | mul_op) ~ prefix* ~ graph_term)* }
-graph_term = _{ call_field_expr | call_expr | slice_expr | graph_nested_indexed_member_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ NEWLINE* ~ graph_expr ~ NEWLINE* ~ ")" }
+graph_expr = { graph_operand ~ (graph_infix_op ~ graph_operand)* }
+multiline_graph_expr = { multiline_graph_operand ~ (multiline_graph_infix_op ~ multiline_graph_operand)* }
+graph_infix_op = _{ or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | cmp_op | add_op | mul_op }
+multiline_graph_infix_op = _{ NEWLINE* ~ graph_infix_op ~ NEWLINE* }
+graph_operand = _{ signed_number | prefix* ~ graph_term }
+multiline_graph_operand = _{ signed_number | (prefix ~ NEWLINE*)* ~ graph_term }
+graph_term = _{ call_field_expr | call_expr | slice_expr | graph_nested_indexed_member_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | "(" ~ NEWLINE* ~ multiline_graph_expr ~ NEWLINE* ~ ")" }
 graph_nested_indexed_member_expr = { path_ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ !"::" }
 graph_edge_targets = { graph_endpoint_set | graph_endpoint }
 graph_endpoint_set = { "{" ~ NEWLINE* ~ graph_endpoint ~ (NEWLINE* ~ "," ~ NEWLINE* ~ graph_endpoint)* ~ NEWLINE* ~ "}" }
@@ -162,22 +167,23 @@ field_decl = {
   | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ (NEWLINE* ~ binding_range)?)
   | (ident ~ &field_sep)
 }
-field_type = { array_type | tuple_type | type_name | named_type }
+field_type = { array_type | field_tuple_type | type_name | named_type }
+field_tuple_type = { "(" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)+ ~ NEWLINE* ~ ")" }
 array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "<" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)* ~ NEWLINE* ~ ">" }
 generic_type_arg_list = { "<" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)* ~ NEWLINE* ~ ">" }
 generic_type_arg = { type_name | ident }
 fn_param_list = { fn_param_decl ~ (comma_sep ~ fn_param_decl)* }
-fn_typed_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ NEWLINE* ~ "]" }
-fn_sized_array_param = { (type_name | namespace_ref | qualified_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
+fn_typed_array_param = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ "]" }
+fn_sized_array_param = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 fn_untyped_array_param = { "[" ~ NEWLINE* ~ "]" }
 fn_bare_buffer = { "buffer" }
 fn_tuple_param = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ NEWLINE* ~ ")" }
-fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | fn_tuple_param | type_name | namespace_ref | qualified_ident }
+fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | fn_tuple_param | type_name | named_type }
 fn_return_arrow = { "->" }
-fn_return_scalar_type = { type_name | namespace_ref | qualified_ident }
-fn_return_array_type = { type_name ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
+fn_return_scalar_type = { type_name | named_type }
+fn_return_array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 fn_return_tuple_type = { "(" ~ NEWLINE* ~ fn_return_scalar_type ~ (comma_sep ~ fn_return_scalar_type)+ ~ NEWLINE* ~ ")" }
 fn_return_type = { fn_return_tuple_type | fn_return_array_type | fn_return_scalar_type }
 fn_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ fn_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
@@ -191,7 +197,7 @@ binding_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 pinnable_assign_stmt = { typed_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 pinned_assign_stmt = { binding_pin ~ pinnable_assign_stmt }
 named_type = { (namespace_ref | qualified_ident | ident) ~ generic_type_arg_list? }
-typed_decl_type = { array_type | tuple_type | type_name | named_type }
+typed_decl_type = { fn_typed_array_param | array_type | tuple_type | type_name | named_type }
 binding_range_mode = { "wrap" | "clamp" }
 binding_range_op = { "..=" | ".." }
 binding_range_spec = { expr ~ NEWLINE* ~ binding_range_op ~ NEWLINE* ~ expr }
@@ -202,14 +208,17 @@ binding_range_item = { binding_range_named_count | binding_range_named_range | b
 binding_range = { "{" ~ NEWLINE* ~ binding_range_item ~ (comma_sep ~ binding_range_item)* ~ NEWLINE* ~ "}" }
 typed_assign_stmt = { ident ~ NEWLINE* ~ ":" ~ NEWLINE* ~ typed_decl_type ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ (NEWLINE* ~ binding_range)? }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" }
-compound_assign_stmt = { path_ident ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
+compound_assign_stmt = { writable_place ~ NEWLINE* ~ compound_assign_op ~ NEWLINE* ~ expr }
 inferred_ranged_assign_stmt = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ NEWLINE* ~ binding_range }
 plain_assign_stmt = { assign_target ~ "=" ~ expr }
-assign_target = _{ slice_target | indexed_member_target | index_target | tuple_target | path_ident }
+assign_target = _{ slice_target | indexed_member_target | deep_place_target | index_target | tuple_target | path_ident }
+writable_place = _{ deep_place_target | index_target | path_ident }
+deep_place_target = { (namespace_ref | path_ident) ~ index_group ~ (place_field | index_group)+ }
+place_field = { "." ~ ident ~ !"::" }
 tuple_target = { parenthesized_tuple_target | tuple_target_items }
 parenthesized_tuple_target = _{ "(" ~ NEWLINE* ~ tuple_target_items ~ NEWLINE* ~ ")" }
 tuple_target_items = _{ ident ~ (comma_sep ~ ident)+ }
-indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" }
+indexed_member_target = { (namespace_ref | path_ident) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" ~ "." ~ ident ~ !"::" ~ ("[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]")? ~ !("." | "[") }
 index_target = { (namespace_ref | path_ident) ~ index_group ~ index_group? }
 slice_target = { (namespace_ref | path_ident) ~ (index_group ~ slice_group | slice_group) }
 return_stmt = { return_kw ~ expr? }
@@ -236,8 +245,13 @@ field_sep = _{ "," | ";" | NEWLINE+ }
 list_end_sep = _{ ";" | NEWLINE+ }
 stmt_sep = _{ ";" | NEWLINE+ }
 
-expr = { prefix* ~ term ~ ((or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op) ~ prefix* ~ term)* }
-term = _{ call_field_expr | call_expr | slice_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | tuple_expr | "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" }
+expr = { operand ~ (infix_op ~ operand)* }
+multiline_expr = { multiline_operand ~ (multiline_infix_op ~ multiline_operand)* }
+infix_op = _{ or_op | and_op | bit_or_op | bit_xor_op | bit_and_op | shift_op | cmp_op | add_op | mul_op }
+multiline_infix_op = _{ NEWLINE* ~ infix_op ~ NEWLINE* }
+operand = _{ signed_number | prefix* ~ term }
+multiline_operand = _{ signed_number | (prefix ~ NEWLINE*)* ~ term }
+term = _{ call_field_expr | call_expr | slice_expr | indexed_member_expr | index_expr | array_lit | bool_lit | number | namespace_ref | path_ident | tuple_expr | "(" ~ NEWLINE* ~ multiline_expr ~ NEWLINE* ~ ")" }
 tuple_expr = { "(" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)+ ~ NEWLINE* ~ ")" }
 array_lit = { "[" ~ NEWLINE* ~ (expr ~ (comma_sep ~ expr)*)? ~ NEWLINE* ~ "]" }
 call_field_expr = { call_expr ~ "." ~ ident }
@@ -288,3 +302,4 @@ keyword = _{
 ident = @{ !"__onda_" ~ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 int_lit = @{ ASCII_DIGIT+ }
 number = @{ ASCII_DIGIT+ ~ ("." ~ !"." ~ ASCII_DIGIT*)? | "." ~ ASCII_DIGIT+ }
+signed_number = { "-" ~ number }

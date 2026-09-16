@@ -278,8 +278,8 @@ pub(super) fn collect_def_proc_arg_oversample_factors_from_expr(
     out: &mut HashMap<String, usize>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
-        Expr::UserCall { name, args, .. } => {
+    for expr in expr.walk() {
+        if let Expr::UserCall { name, args, .. } = expr {
             if let Some(def) = defs_by_name.get(name) {
                 for (param_idx, kind) in def.param_kinds.iter().enumerate() {
                     let Some(arg_expr) = resolved_def_call_arg(args, &def.params, param_idx) else {
@@ -317,119 +317,7 @@ pub(super) fn collect_def_proc_arg_oversample_factors_from_expr(
                     }
                 }
             }
-            for arg in args {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    &arg.expr,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
         }
-        Expr::Index { index, .. } => collect_def_proc_arg_oversample_factors_from_expr(
-            index,
-            sample_oversample_factor,
-            defs_by_name,
-            top_level_proc_rewrite,
-            proc_api,
-            out,
-            errors,
-        ),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    coordinate,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_def_proc_arg_oversample_factors_from_expr(
-                &spec.size,
-                sample_oversample_factor,
-                defs_by_name,
-                top_level_proc_rewrite,
-                proc_api,
-                out,
-                errors,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    collect_def_proc_arg_oversample_factors_from_expr(
-                        value,
-                        sample_oversample_factor,
-                        defs_by_name,
-                        top_level_proc_rewrite,
-                        proc_api,
-                        out,
-                        errors,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_def_proc_arg_oversample_factors_from_expr(
-                lhs,
-                sample_oversample_factor,
-                defs_by_name,
-                top_level_proc_rewrite,
-                proc_api,
-                out,
-                errors,
-            );
-            collect_def_proc_arg_oversample_factors_from_expr(
-                rhs,
-                sample_oversample_factor,
-                defs_by_name,
-                top_level_proc_rewrite,
-                proc_api,
-                out,
-                errors,
-            );
-        }
-        Expr::Call { args, .. }
-        | Expr::ArrayLiteral { values: args, .. }
-        | Expr::Tuple { values: args, .. } => {
-            for arg in args {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    arg,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_def_proc_arg_oversample_factors_from_expr(
-                expr,
-                sample_oversample_factor,
-                defs_by_name,
-                top_level_proc_rewrite,
-                proc_api,
-                out,
-                errors,
-            );
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
     }
 }
 
@@ -635,23 +523,9 @@ pub(super) fn validate_generic_def_type_args_in_assign_target(
     fn_signatures: &HashMap<String, FnSignature>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } => {
-            validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors(|selector| {
+        validate_generic_def_type_args_in_expr(selector, fn_signatures, errors)
+    });
 }
 
 pub(super) fn validate_generic_def_type_args_in_expr(
@@ -659,13 +533,11 @@ pub(super) fn validate_generic_def_type_args_in_expr(
     fn_signatures: &HashMap<String, FnSignature>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match expr {
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
+    for expr in expr.walk() {
+        if let Expr::UserCall {
+            name, type_args, ..
+        } = expr
+        {
             if let Some(sig) = fn_signatures.get(name.as_str()) {
                 let display_name = sig.display_name.as_deref().unwrap_or(name);
                 if !type_args.is_empty() && !sig.type_params.is_empty() {
@@ -693,54 +565,7 @@ pub(super) fn validate_generic_def_type_args_in_expr(
                     }
                 }
             }
-            for arg in args {
-                validate_generic_def_type_args_in_expr(&arg.expr, fn_signatures, errors);
-            }
         }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                validate_generic_def_type_args_in_expr(arg, fn_signatures, errors);
-            }
-        }
-        Expr::Binary { lhs, rhs, .. }
-        | Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. } => {
-            validate_generic_def_type_args_in_expr(lhs, fn_signatures, errors);
-            validate_generic_def_type_args_in_expr(rhs, fn_signatures, errors);
-        }
-        Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. } => {
-            validate_generic_def_type_args_in_expr(inner, fn_signatures, errors);
-        }
-        Expr::Tuple { values, .. } | Expr::ArrayLiteral { values, .. } => {
-            for v in values {
-                validate_generic_def_type_args_in_expr(v, fn_signatures, errors);
-            }
-        }
-        Expr::Index { index, .. } => {
-            validate_generic_def_type_args_in_expr(index, fn_signatures, errors);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                validate_generic_def_type_args_in_expr(coordinate, fn_signatures, errors);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            validate_generic_def_type_args_in_expr(&spec.size, fn_signatures, errors);
-            if let Some(values) = init {
-                for value in values {
-                    validate_generic_def_type_args_in_expr(value, fn_signatures, errors);
-                }
-            }
-        }
-        _ => {}
     }
 }
 
@@ -980,80 +805,13 @@ pub(super) fn collect_proc_call_diags_from_expr(
     generated_proc_call_timing: &HashMap<String, OutputTiming>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
 ) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_proc_call_diags_from_expr(value, proc_api, generated_proc_call_timing, out);
-            }
-        }
-        Expr::Index { index, .. } => {
-            collect_proc_call_diags_from_expr(index, proc_api, generated_proc_call_timing, out)
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_proc_call_diags_from_expr(
-                    coordinate,
-                    proc_api,
-                    generated_proc_call_timing,
-                    out,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_proc_call_diags_from_expr(
-                &spec.size,
-                proc_api,
-                generated_proc_call_timing,
-                out,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    collect_proc_call_diags_from_expr(
-                        value,
-                        proc_api,
-                        generated_proc_call_timing,
-                        out,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_proc_call_diags_from_expr(lhs, proc_api, generated_proc_call_timing, out);
-            collect_proc_call_diags_from_expr(rhs, proc_api, generated_proc_call_timing, out);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_proc_call_diags_from_expr(arg, proc_api, generated_proc_call_timing, out);
-            }
-        }
-        Expr::UserCall {
-            name, args, loc, ..
-        } => {
+    for expr in expr.walk() {
+        if let Expr::UserCall { name, loc, .. } = expr {
             if let Some(timing) =
                 lowered_proc_call_timing(name, proc_api, generated_proc_call_timing)
             {
                 out.push((DiagCtx::new(*loc), timing));
             }
-            for arg in args {
-                collect_proc_call_diags_from_expr(
-                    &arg.expr,
-                    proc_api,
-                    generated_proc_call_timing,
-                    out,
-                );
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_proc_call_diags_from_expr(expr, proc_api, generated_proc_call_timing, out);
         }
     }
 }
@@ -1333,454 +1091,6 @@ pub(super) fn reject_non_sample_proc_operator_calls(
                 errors,
                 format!("proc operator '()' for {required}-rate proc is only allowed in {required}; call in '{def_name}' is not provably {required}-only"),
             );
-        }
-    }
-}
-
-pub(super) fn is_array_param_type(ty: Option<&FnParamType>) -> bool {
-    matches!(
-        ty,
-        Some(FnParamType::Array(_))
-            | Some(FnParamType::ArrayGeneric(_))
-            | Some(FnParamType::SizedArray { .. })
-    )
-}
-
-pub(super) fn initial_readonly_array_param_candidates(def: &FunctionDef) -> HashSet<String> {
-    def.params
-        .iter()
-        .filter(|param| is_array_param_type(param.ty.as_ref()))
-        .map(|param| param.name.clone())
-        .collect()
-}
-
-pub(super) fn readonly_alias_source(
-    expr: &Expr,
-    aliases: &HashMap<String, String>,
-) -> Option<String> {
-    match expr {
-        Expr::Var { name, .. } => aliases.get(name).cloned(),
-        Expr::Slice { base, .. } => aliases.get(base).cloned(),
-        _ => None,
-    }
-}
-
-pub(super) fn mark_readonly_param_expr_uses_as_mutable(
-    expr: &Expr,
-    aliases: &HashMap<String, String>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    readonly_params: &HashMap<String, HashSet<String>>,
-    mutable_params: &mut HashSet<String>,
-) {
-    match expr {
-        Expr::UserCall { name, args, .. } => {
-            if let Some(sig) = fn_signatures.get(name) {
-                let mut ignored = Vec::new();
-                let resolved = resolve_call_args_at(
-                    args,
-                    &sig.params,
-                    &sig.defaults,
-                    sig.params.first().map(String::as_str) == Some("self"),
-                    false,
-                    &format!("function '{name}' call"),
-                    expr.loc(),
-                    &mut ignored,
-                );
-                if ignored.is_empty() {
-                    for (idx, arg) in resolved.into_iter().enumerate() {
-                        let Some(arg) = arg else {
-                            continue;
-                        };
-                        let Some(source_param) = readonly_alias_source(arg, aliases) else {
-                            continue;
-                        };
-                        let callee_param_name = sig.params.get(idx).map(String::as_str);
-                        let callee_param_ty = sig.param_types.get(idx).and_then(|ty| ty.as_ref());
-                        let callee_param_readonly = callee_param_name.is_some_and(|param| {
-                            sig.readonly_array_params.contains(param)
-                                || readonly_params
-                                    .get(name)
-                                    .is_some_and(|params| params.contains(param))
-                        });
-                        if is_array_param_type(callee_param_ty) && !callee_param_readonly {
-                            mutable_params.insert(source_param.to_owned());
-                        }
-                    }
-                }
-            }
-
-            for arg in args {
-                mark_readonly_param_expr_uses_as_mutable(
-                    &arg.expr,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-        }
-        Expr::Call { args, .. }
-        | Expr::ArrayLiteral { values: args, .. }
-        | Expr::Tuple { values: args, .. } => {
-            for arg in args {
-                mark_readonly_param_expr_uses_as_mutable(
-                    arg,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                lhs,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            mark_readonly_param_expr_uses_as_mutable(
-                rhs,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                expr,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-        }
-        Expr::Index { index, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                index,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                mark_readonly_param_expr_uses_as_mutable(
-                    coordinate,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                &spec.size,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            if let Some(init) = init {
-                for value in init {
-                    mark_readonly_param_expr_uses_as_mutable(
-                        value,
-                        aliases,
-                        fn_signatures,
-                        readonly_params,
-                        mutable_params,
-                    );
-                }
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-    }
-}
-
-pub(super) fn mark_readonly_param_stmt_uses_as_mutable(
-    stmt: &Stmt,
-    aliases: &mut HashMap<String, String>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    readonly_params: &HashMap<String, HashSet<String>>,
-    mutable_params: &mut HashSet<String>,
-) {
-    match stmt {
-        Stmt::Assign { target, expr, .. } => match target {
-            AssignTarget::Var(name) => {
-                mark_readonly_param_expr_uses_as_mutable(
-                    expr,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-                if let Some(source_param) = readonly_alias_source(expr, aliases) {
-                    aliases.insert(name.clone(), source_param.to_owned());
-                } else {
-                    aliases.remove(name);
-                }
-            }
-            AssignTarget::Index { base, index } => {
-                if let Some(source_param) = aliases.get(base) {
-                    mutable_params.insert(source_param.clone());
-                }
-                mark_readonly_param_expr_uses_as_mutable(
-                    index,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-                mark_readonly_param_expr_uses_as_mutable(
-                    expr,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            AssignTarget::Slice {
-                base,
-                selector,
-                channel,
-                start,
-                end,
-            } => {
-                if let Some(source_param) = aliases.get(base) {
-                    mutable_params.insert(source_param.clone());
-                }
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    mark_readonly_param_expr_uses_as_mutable(
-                        coordinate,
-                        aliases,
-                        fn_signatures,
-                        readonly_params,
-                        mutable_params,
-                    );
-                }
-                mark_readonly_param_expr_uses_as_mutable(
-                    expr,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            AssignTarget::Tuple(_) => {
-                mark_readonly_param_expr_uses_as_mutable(
-                    expr,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-        },
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                expr,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                mark_readonly_param_expr_uses_as_mutable(
-                    value,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-        }
-        Stmt::Const { decl, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                &decl.expr,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                cond,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            let mut then_aliases = aliases.clone();
-            for stmt in then_branch {
-                mark_readonly_param_stmt_uses_as_mutable(
-                    stmt,
-                    &mut then_aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            let mut else_aliases = aliases.clone();
-            for stmt in else_branch {
-                mark_readonly_param_stmt_uses_as_mutable(
-                    stmt,
-                    &mut else_aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            aliases.extend(then_aliases);
-            aliases.extend(else_aliases);
-        }
-        Stmt::For {
-            step,
-            start,
-            end,
-            body,
-            ..
-        } => {
-            if let Some(step) = step {
-                mark_readonly_param_expr_uses_as_mutable(
-                    step,
-                    aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            mark_readonly_param_expr_uses_as_mutable(
-                start,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            mark_readonly_param_expr_uses_as_mutable(
-                end,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            let mut loop_aliases = aliases.clone();
-            for stmt in body {
-                mark_readonly_param_stmt_uses_as_mutable(
-                    stmt,
-                    &mut loop_aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            aliases.extend(loop_aliases);
-        }
-        Stmt::While { cond, body, .. } => {
-            mark_readonly_param_expr_uses_as_mutable(
-                cond,
-                aliases,
-                fn_signatures,
-                readonly_params,
-                mutable_params,
-            );
-            let mut loop_aliases = aliases.clone();
-            for stmt in body {
-                mark_readonly_param_stmt_uses_as_mutable(
-                    stmt,
-                    &mut loop_aliases,
-                    fn_signatures,
-                    readonly_params,
-                    mutable_params,
-                );
-            }
-            aliases.extend(loop_aliases);
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    }
-}
-
-pub(super) fn infer_readonly_array_params_for_def(
-    def: &FunctionDef,
-    fn_signatures: &HashMap<String, FnSignature>,
-    readonly_params: &HashMap<String, HashSet<String>>,
-) -> HashSet<String> {
-    let candidates = initial_readonly_array_param_candidates(def);
-    if candidates.is_empty() {
-        return candidates;
-    }
-    let mut aliases = candidates
-        .iter()
-        .map(|name| (name.clone(), name.clone()))
-        .collect::<HashMap<_, _>>();
-    let mut mutable_params = HashSet::<String>::new();
-    for stmt in &def.body {
-        mark_readonly_param_stmt_uses_as_mutable(
-            stmt,
-            &mut aliases,
-            fn_signatures,
-            readonly_params,
-            &mut mutable_params,
-        );
-    }
-    candidates
-        .into_iter()
-        .filter(|param| !mutable_params.contains(param))
-        .collect()
-}
-
-pub(super) fn update_readonly_array_param_signatures(
-    defs: &[FunctionDef],
-    fn_signatures: &mut HashMap<String, FnSignature>,
-) {
-    let mut readonly_params = defs
-        .iter()
-        .map(|def| {
-            (
-                def.name.clone(),
-                initial_readonly_array_param_candidates(def),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    loop {
-        let mut changed = false;
-        for def in defs {
-            let inferred =
-                infer_readonly_array_params_for_def(def, fn_signatures, &readonly_params);
-            let entry = readonly_params.entry(def.name.clone()).or_default();
-            if *entry != inferred {
-                *entry = inferred;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    for (name, params) in readonly_params {
-        if let Some(sig) = fn_signatures.get_mut(&name) {
-            sig.readonly_array_params = params;
         }
     }
 }
@@ -2196,113 +1506,8 @@ pub(super) fn collect_typed_def_owner_proc_hook_params_from_expr(
     proc_api: &HashMap<String, ProcApi>,
     out: &mut HashSet<usize>,
 ) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    value,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-        }
-        Expr::Index { index, .. } => {
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                index,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    coordinate,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                &spec.size,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    collect_typed_def_owner_proc_hook_params_from_expr(
-                        value,
-                        def,
-                        def_map,
-                        known_requirements,
-                        proc_api,
-                        out,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                lhs,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                rhs,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    arg,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            for arg in args {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    &arg.expr,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
+    for expr in expr.walk() {
+        if let Expr::UserCall { name, args, .. } = expr {
             if let Some((_proc_name, _args, array_base, _index_expr)) =
                 try_indexed_proc_call_meta_in_def(expr, proc_api)
             {
@@ -2313,13 +1518,13 @@ pub(super) fn collect_typed_def_owner_proc_hook_params_from_expr(
                 }
             }
             let Some(callee) = def_map.get(name) else {
-                return;
+                continue;
             };
             let Some(required_params) = known_requirements.get(name) else {
-                return;
+                continue;
             };
             if required_params.is_empty() {
-                return;
+                continue;
             }
             let mut call_errors = Vec::new();
             let resolved = resolve_call_args(
@@ -2341,18 +1546,6 @@ pub(super) fn collect_typed_def_owner_proc_hook_params_from_expr(
                     out.insert(param_idx);
                 }
             }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                inner,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
         }
     }
 }
@@ -2572,112 +1765,16 @@ pub(super) fn collect_sample_owner_proc_hook_instances_from_expr(
     global_proc_instances: &HashMap<String, ProcCallInstance>,
     out: &mut HashSet<String>,
 ) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    value,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-        }
-        Expr::Index { index, .. } => {
-            collect_sample_owner_proc_hook_instances_from_expr(
-                index,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    coordinate,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_sample_owner_proc_hook_instances_from_expr(
-                &spec.size,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    collect_sample_owner_proc_hook_instances_from_expr(
-                        value,
-                        def_map,
-                        requirements,
-                        global_proc_instances,
-                        out,
-                    );
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_sample_owner_proc_hook_instances_from_expr(
-                lhs,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
-            collect_sample_owner_proc_hook_instances_from_expr(
-                rhs,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    arg,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
-            for arg in args {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    &arg.expr,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
+    for expr in expr.walk() {
+        if let Expr::UserCall { name, args, .. } = expr {
             let Some(callee) = def_map.get(name) else {
-                return;
+                continue;
             };
             let Some(required_params) = requirements.get(name) else {
-                return;
+                continue;
             };
             if required_params.is_empty() {
-                return;
+                continue;
             }
             let mut call_errors = Vec::new();
             let resolved = resolve_call_args(
@@ -2699,17 +1796,6 @@ pub(super) fn collect_sample_owner_proc_hook_instances_from_expr(
                     out.insert(instance_name);
                 }
             }
-        }
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => {
-            collect_sample_owner_proc_hook_instances_from_expr(
-                inner,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
         }
     }
 }
@@ -3028,23 +2114,9 @@ pub(super) fn collect_called_typed_defs_in_assign_target(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match target {
-        AssignTarget::Index { index, .. } => {
-            collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
-        }
-        AssignTarget::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_called_typed_defs_in_expr(coordinate, def_names, pending, seen_pending);
-            }
-        }
-        AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-    }
+    target.visit_selectors(|selector| {
+        collect_called_typed_defs_in_expr(selector, def_names, pending, seen_pending)
+    });
 }
 
 pub(super) fn collect_called_typed_defs_in_expr(
@@ -3053,56 +2125,11 @@ pub(super) fn collect_called_typed_defs_in_expr(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match expr {
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
-            }
-        }
-        Expr::Index { index, .. } => {
-            collect_called_typed_defs_in_expr(index, def_names, pending, seen_pending);
-        }
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                collect_called_typed_defs_in_expr(coordinate, def_names, pending, seen_pending);
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            collect_called_typed_defs_in_expr(&spec.size, def_names, pending, seen_pending);
-            if let Some(values) = init {
-                for value in values {
-                    collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
-                }
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            collect_called_typed_defs_in_expr(lhs, def_names, pending, seen_pending);
-            collect_called_typed_defs_in_expr(rhs, def_names, pending, seen_pending);
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                collect_called_typed_defs_in_expr(arg, def_names, pending, seen_pending);
-            }
-        }
-        Expr::UserCall { name, args, .. } => {
+    for expr in expr.walk() {
+        if let Expr::UserCall { name, .. } = expr {
             if def_names.contains(name) && seen_pending.insert(name.clone()) {
                 pending.push(name.clone());
             }
-            for arg in args {
-                collect_called_typed_defs_in_expr(&arg.expr, def_names, pending, seen_pending);
-            }
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
         }
     }
 }

@@ -1,0 +1,98 @@
+import std/pitch
+
+struct Pitch:
+  note = 45.0
+  detune_cents = 8.0
+  sub_octaves = 1.0
+
+struct Spectrum:
+  modulator_ratio = 1.414214
+  modulation_index = 2.6
+  feedback = 0.12
+  shimmer_ratio = 3.027
+
+struct Orbit:
+  rate = 0.055
+  depth = 0.72
+  stereo_phase = 0.27
+  drift = 0.18
+
+struct Output:
+  body = 0.78
+  air = 0.24
+  drive = 1.35
+  gain = 0.5
+
+struct Patch:
+  pitch: Pitch
+  spectrum: Spectrum
+  orbit: Orbit
+  output: Output
+
+struct Frequencies:
+  center = 110.0
+  left = 110.0
+  right = 110.0
+  sub = 55.0
+
+def tune(pitch: Pitch) -> Frequencies:
+  center = std::pitch::note_to_hz(pitch.note)
+  detune = pow(2.0, pitch.detune_cents / 1200.0)
+  return Frequencies(
+    center = center,
+    left = center / detune,
+    right = center * detune,
+    sub = center / pow(2.0, pitch.sub_octaves)
+  )
+
+init:
+  patch = Patch()
+  frequencies = tune(patch.pitch)
+  carrier_left_phase = 0.0
+  carrier_right_phase = 0.0
+  modulator_phase = 0.0
+  shimmer_phase = 0.0
+  sub_phase = 0.0
+  orbit_phase = 0.0
+  previous_left = 0.0
+  previous_right = 0.0
+
+event configure(value: Patch):
+  patch = value
+  frequencies = tune(patch.pitch)
+
+sample:
+  spectrum = patch.spectrum
+  orbit = patch.orbit
+  output = patch.output
+  tuning = frequencies
+
+  orbit_phase = wrap(orbit_phase + orbit.rate / SR, 0.0, 1.0)
+  left_orbit = sin(orbit_phase * TWO_PI)
+  right_orbit = sin(wrap(orbit_phase + orbit.stereo_phase, 0.0, 1.0) * TWO_PI)
+  modulator_phase = wrap(
+    modulator_phase + tuning.center * spectrum.modulator_ratio / SR,
+    0.0,
+    1.0
+  )
+  modulation = sin(modulator_phase * TWO_PI)
+  left_index = spectrum.modulation_index * (1.0 + orbit.depth * left_orbit * 0.72)
+  right_index = spectrum.modulation_index * (1.0 + orbit.depth * right_orbit * 0.72)
+
+  drift = 1.0 + orbit.drift * 0.0025 * sin(orbit_phase * PI)
+  carrier_left_phase = wrap(carrier_left_phase + tuning.left / SR, 0.0, 1.0)
+  carrier_right_phase = wrap(carrier_right_phase + tuning.right * drift / SR, 0.0, 1.0)
+  shimmer_phase = wrap(shimmer_phase + tuning.center * spectrum.shimmer_ratio / SR, 0.0, 1.0)
+  sub_phase = wrap(sub_phase + tuning.sub / SR, 0.0, 1.0)
+
+  left_phase = carrier_left_phase * TWO_PI + modulation * left_index + previous_left * spectrum.feedback
+  right_phase = carrier_right_phase * TWO_PI + modulation * right_index + previous_right * spectrum.feedback
+  previous_left = sin(left_phase)
+  previous_right = sin(right_phase)
+  shimmer = sin(shimmer_phase * TWO_PI + modulation * 0.35) * output.air
+  sub = sin(sub_phase * TWO_PI) * 0.24
+
+  left = (previous_left * output.body + shimmer * (0.55 + 0.45 * left_orbit) + sub) * output.drive
+  right = (previous_right * output.body + shimmer * (0.55 + 0.45 * right_orbit) + sub) * output.drive
+  out1 = tanh(left) * output.gain
+  out2 = tanh(right) * output.gain

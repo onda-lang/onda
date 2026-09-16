@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunEventValue, RunParamInfo,
+    RunParamInfo,
 };
 use onda_frontend::{load_program_file, Diagnostic};
 use onda_host_protocol::{event_by_name, signature_matches, HostEventFamily};
@@ -29,6 +29,9 @@ use sha2::{Digest, Sha256};
 mod midi;
 mod playback;
 mod project_io;
+
+mod event_value_json;
+pub use event_value_json::{event_value_from_json, event_value_to_json};
 
 pub use playback::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
@@ -1513,10 +1516,11 @@ fn decode_run_param_scalar_repr(
         return Ok(Value::Null);
     };
     let value = match ty {
+        // The wire representation is already the shortest decimal for the f32.
+        // Keep that decimal in host JSON instead of widening the parsed f32 bits.
         "f32" => repr
-            .parse::<f32>()
+            .parse::<f64>()
             .ok()
-            .map(f64::from)
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number),
         "f64" => repr
@@ -1570,20 +1574,9 @@ fn run_event_param_json(param: &RunEventParamInfo) -> Value {
         "index": param.index,
         "name": param.name,
         "type": param.type_repr,
-        "default": run_event_value_json(&param.value),
-        "value": run_event_value_json(&param.value),
+        "default": event_value_to_json(&param.value),
+        "value": event_value_to_json(&param.value),
     })
-}
-
-fn run_event_value_json(value: &RunEventValue) -> Value {
-    match value {
-        RunEventValue::Bool(value) => Value::Bool(*value),
-        RunEventValue::Number(value) => json!(value),
-        RunEventValue::I64(value) => Value::String(value.to_string()),
-        RunEventValue::Array(values) => {
-            Value::Array(values.iter().map(run_event_value_json).collect())
-        }
-    }
 }
 
 impl ChildSession {
@@ -2877,9 +2870,10 @@ mod tests {
         relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
         source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
         ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
-        PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunEventValue, RunHostOptions,
-        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
+        PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunHostOptions, RunParamInfo,
+        RunParamWire, SourceCompilationState, SourceWatchRevision,
     };
+    use onda_daemon::RunEventValue;
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::fs;
@@ -2978,6 +2972,10 @@ mod tests {
             format_delegate_log_line(&json!({ "name": "done", "values": {} }), &[],),
             "delegate done"
         );
+
+        let displayed = super::event_value_to_json(&RunEventValue::from_f32(0.15));
+        assert_eq!(displayed, json!(0.15));
+        assert_eq!(displayed.to_string(), "0.15");
     }
 
     #[test]
@@ -3060,15 +3058,18 @@ mod tests {
                 .as_f64()
                 .expect("numeric range maximum")
                 .to_bits(),
-            f64::from(0.98_f32).to_bits()
+            0.98_f64.to_bits()
         );
         assert_eq!(
             decoded[1]["step"]
                 .as_f64()
                 .expect("numeric parameter step")
                 .to_bits(),
-            f64::from(0.1_f32).to_bits()
+            0.1_f64.to_bits()
         );
+        assert!(!serde_json::to_string(&decoded)
+            .expect("serialize host parameters")
+            .contains("0.980000019"));
         assert_eq!(
             decoded[0]["curve"]
                 .as_f64()

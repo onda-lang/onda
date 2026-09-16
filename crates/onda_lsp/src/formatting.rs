@@ -4,10 +4,10 @@ use onda_frontend::{
     ConstType, DeclType, DelegateDef, EventDef, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, FunctionDef, GraphEndpoint, GraphRate, InitBlock, LogicalOp,
     ParamBlock, ParamDecl, ParamScale, PortBlock, PortDecl, PrimitiveType, ProcessorDef, Program,
-    SampleBlock, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN,
-    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
-    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, INTERNAL_TASK_AWAIT_FN,
-    INTERNAL_TASK_YIELD_FN,
+    SampleBlock, ScalarTypeRef, Stmt, StructDef, TaskDef, INTERNAL_BARE_RETURN_FN,
+    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
+    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
+    INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
 pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
@@ -15,12 +15,19 @@ pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
 }
 
 pub fn format_program(program: &Program) -> String {
+    format_program_blocks(program, |_| true)
+}
+
+pub fn format_graph_inspection_program(program: &Program) -> String {
+    format_program_blocks(
+        program,
+        |block| !matches!(block, Block::Def(def) if def.loc.file().is_some_and(|file| file.starts_with("<std/"))),
+    )
+}
+
+fn format_program_blocks(program: &Program, include: impl Fn(&Block) -> bool) -> String {
     let mut out = String::new();
-    for block in program
-        .blocks
-        .iter()
-        .filter(|block| !matches!(block, Block::Def(_)))
-    {
+    for block in program.blocks.iter().filter(|block| include(block)) {
         format_block(block, 0, &mut out);
         out.push('\n');
     }
@@ -540,12 +547,20 @@ pub fn format_struct_header(def: &StructDef) -> String {
 pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
     let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
     if let Some(default) = &field.default {
-        text.push_str(" = ");
         if let Some((value, range)) = format_binding_range_initializer(default) {
-            text.push_str(&value);
+            let has_implicit_default = matches!(
+                default,
+                Expr::Call { args, .. }
+                    if matches!(args.as_slice(), [Expr::Int { value: 0, .. }, _, _])
+            );
+            if !has_implicit_default {
+                text.push_str(" = ");
+                text.push_str(&value);
+            }
             text.push(' ');
             text.push_str(&range);
         } else {
+            text.push_str(" = ");
             text.push_str(&format_expr(default));
         }
     }
@@ -707,12 +722,18 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             let mut text = prefix.to_owned();
             text.push_str(&lhs);
             if *is_typed_decl {
-                if let Expr::ArrayCtor { spec, init, .. } = expr {
+                if let Expr::ArrayCtor {
+                    spec,
+                    init,
+                    init_is_value,
+                    ..
+                } = expr
+                {
                     text.push_str(": ");
                     text.push_str(&format_array_type_spec(spec));
                     if let Some(values) = init {
                         text.push_str(" = ");
-                        if matches!(spec.elem, ArrayElemType::Struct(_)) && values.len() == 1 {
+                        if *init_is_value && values.len() == 1 {
                             text.push_str(&format_expr(&values[0]));
                         } else {
                             text.push('[');
@@ -787,6 +808,7 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
         }
         Stmt::For {
             var,
+            var_ty,
             step,
             start,
             end,
@@ -794,15 +816,22 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             body,
             ..
         } => {
-            let mut text = format!("for {} in {}..", var, format_expr(start));
+            let mut text = format!("for {var}");
+            if *var_ty != PrimitiveType::I32 {
+                text.push_str(": ");
+                text.push_str(primitive_type_name(*var_ty));
+            }
+            if let Some(step) = step {
+                text.push_str(" @ ");
+                text.push_str(&format_expr(step));
+            }
+            text.push_str(" in ");
+            text.push_str(&format_expr(start));
+            text.push_str("..");
             if *end_inclusive {
                 text.push('=');
             }
             text.push_str(&format_expr(end));
-            if let Some(step) = step {
-                text.push_str(" step ");
-                text.push_str(&format_expr(step));
-            }
             text.push(':');
             push_line(out, indent, &text);
             format_stmt_list(body, indent + 1, out);
@@ -876,6 +905,19 @@ fn format_assign_target(target: &AssignTarget) -> String {
     match target {
         AssignTarget::Var(name) => name.clone(),
         AssignTarget::Index { base, index } => format!("{base}[{}]", format_expr(index)),
+        AssignTarget::IndexedMember {
+            base,
+            index,
+            field,
+            field_index,
+        } => format!(
+            "{base}[{}].{field}{}",
+            format_expr(index),
+            field_index
+                .as_deref()
+                .map(|index| format!("[{}]", format_expr(index)))
+                .unwrap_or_default()
+        ),
         AssignTarget::Slice {
             base,
             selector,
@@ -1165,6 +1207,13 @@ fn format_call_type_arg(arg: &CallTypeArg) -> String {
 
 pub fn format_decl_type(ty: &DeclType) -> String {
     match ty {
+        DeclType::Slice(element) => format!(
+            "{}[]",
+            match element {
+                ArrayElemType::Primitive(ty) => primitive_type_name(*ty),
+                ArrayElemType::Struct(name) => name,
+            }
+        ),
         DeclType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         DeclType::Generic(name) => name.clone(),
         DeclType::ArrayGeneric { elem, size } => format!("{elem}[{}]", format_expr(size)),
@@ -1200,7 +1249,10 @@ fn format_field_type(ty: &FieldType) -> String {
         FieldType::Tuple(elem_tys) => {
             let elems: Vec<String> = elem_tys
                 .iter()
-                .map(|ty| primitive_type_name(*ty).to_owned())
+                .map(|ty| match ty {
+                    ScalarTypeRef::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+                    ScalarTypeRef::Named(name) => name.clone(),
+                })
                 .collect();
             format!("({})", elems.join(", "))
         }
@@ -1263,7 +1315,11 @@ fn format_fn_return_type(ty: &FnReturnType) -> String {
     match ty {
         FnReturnType::Scalar(ty) => format_fn_return_scalar_type(ty),
         FnReturnType::Array { elem, size } => {
-            format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+            format!(
+                "{}[{}]",
+                format_fn_return_scalar_type(elem),
+                format_expr(size)
+            )
         }
         FnReturnType::Tuple(elems) => {
             let inner = elems
@@ -1316,6 +1372,14 @@ fn format_slice_access(
 
 pub fn format_event_param_type(ty: &EventParamType) -> String {
     match ty {
+        EventParamType::Tuple(types) => format!(
+            "({})",
+            types
+                .iter()
+                .map(|ty| primitive_type_name(*ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventParamType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
         EventParamType::GenericScalar { name } => name.clone(),
         EventParamType::Array { elem, size } => {
@@ -1475,7 +1539,52 @@ fn push_line(out: &mut String, indent: usize, line: &str) {
 mod tests {
     use onda_frontend::parse_program;
 
-    use super::format_program;
+    use super::{format_graph_inspection_program, format_program};
+
+    #[test]
+    fn formatting_preserves_data_views_and_broadcast_distinctions() {
+        let source = r#"
+struct Note:
+  value = 1.0
+  taps: f32[2]
+def pair(value: Note) -> Note[2]:
+  return [value, value]
+sample:
+  listed: Note[1] = [Note()]
+  broadcast: Note[2] = Note()
+  selected: Note[] = broadcast[:]
+  primitive: f32[] = [1.0, 2.0]
+  listed[0].taps[1] = primitive[0]
+  selected[:] = pair(listed[0])
+"#;
+        let program = parse_program(source).unwrap();
+        let formatted = format_program(&program);
+        let function = program
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                onda_frontend::Block::Def(function) => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            super::format_function_signature(function),
+            "def pair(value: Note) -> Note[2]:"
+        );
+        for syntax in [
+            "listed: Note[1] = [Note()]",
+            "broadcast: Note[2] = Note()",
+            "selected: Note[] = broadcast[:]",
+            "primitive: f32[] = [1.0, 2.0]",
+            "listed[0].taps[1] = primitive[0]",
+        ] {
+            assert!(formatted.contains(syntax), "{formatted}");
+        }
+        assert_eq!(
+            formatted,
+            format_program(&parse_program(&formatted).unwrap())
+        );
+    }
 
     #[test]
     fn formatting_canonicalizes_tuple_targets_without_parentheses() {
@@ -1575,6 +1684,57 @@ block:
     }
 
     #[test]
+    fn formatting_preserves_explicit_loop_widths_and_steps() {
+        let source = r#"
+def descending_sum() -> i64:
+  total: i64 = 0
+  for i: i64 @ -1 in i64(10)..=i64(1):
+    total += i
+  return total
+
+sample:
+  out1 = f32(descending_sum())
+"#;
+        let program = parse_program(source).expect("explicit loop syntax should parse");
+        let formatted = format_program(&program);
+
+        assert!(
+            formatted.contains("for i: i64 @ -1 in i64(10)..=i64(1):\n"),
+            "{formatted}"
+        );
+        let reparsed = parse_program(&formatted).expect("formatted loop syntax should parse");
+        assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn graph_inspection_filters_embedded_std_wrappers_without_affecting_full_formatting() {
+        let source = r#"
+import std/math
+
+def user_value() -> f32:
+  return 1.0
+
+sample:
+  out1 = user_value()
+"#;
+        let program = parse_program(source).expect("source with std import should parse");
+        let formatted = format_program(&program);
+        let graph_inspection = format_graph_inspection_program(&program);
+        let has_top_level_clamp =
+            |text: &str| text.lines().any(|line| line.starts_with("def clamp<T>("));
+
+        assert!(has_top_level_clamp(&formatted), "{formatted}");
+        assert!(
+            !has_top_level_clamp(&graph_inspection),
+            "{graph_inspection}"
+        );
+        assert!(
+            graph_inspection.contains("def user_value() -> f32:\n"),
+            "{graph_inspection}"
+        );
+    }
+
+    #[test]
     fn formatting_preserves_private_params_and_pinned_state() {
         let source = r#"
 proc Worker:
@@ -1607,14 +1767,16 @@ proc Worker:
 
     #[test]
     fn formatting_preserves_ranged_struct_fields() {
-        let source = "struct Cursor:\n  index: i32 = 0 {8, wrap}\n";
+        let source = "struct Cursor:\n  index: i32 {8, wrap}\n  explicit: i32 = 0 {8}\n  offset: i32 = 2 {8}\n";
         let program = parse_program(source).expect("ranged struct field should parse");
         let formatted = format_program(&program);
 
         assert!(
-            formatted.contains("  index: i32 = 0 {8, wrap}\n"),
+            formatted.contains("  index: i32 {8, wrap}\n"),
             "{formatted}"
         );
+        assert!(formatted.contains("  explicit: i32 {8}\n"), "{formatted}");
+        assert!(formatted.contains("  offset: i32 = 2 {8}\n"), "{formatted}");
         let reparsed = parse_program(&formatted).expect("formatted struct field should parse");
         assert_eq!(format_program(&reparsed), formatted);
     }

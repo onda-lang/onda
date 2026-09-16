@@ -1,0 +1,62 @@
+struct Coefficients:
+  gain = 1.0
+  bias = 0.0
+  history: f32[8]
+
+def coefficients(gain, bias) -> Coefficients:
+  return Coefficients(gain = gain, bias = bias)
+
+def duplicate(value: Coefficients) -> Coefficients:
+  return value
+
+def pair(value: Coefficients) -> Coefficients[2]:
+  return [value, value]
+
+def from_pair(values: Coefficients[2]) -> Coefficients:
+  return values[0]
+
+def replace(value: Coefficients, gain):
+  value = coefficients(gain, 0.5)
+
+def window() -> f32[2]:
+  return [0.25, 0.75]
+
+def first(values: f32[]):
+  return values[0]
+
+init:
+  generation = 0.0
+  baseline = coefficients(2.0, 0.125)
+  initial_window: f32[2] = window()
+
+sample:
+  current = coefficients(generation, 0.25)
+  current.history[0] = generation + 1.0
+  selected = current
+  saved: Coefficients = current
+  returned = duplicate(current)
+  if generation % 2.0 == 0.0:
+    chosen = current
+  else:
+    chosen = saved
+  chosen.history[1] = 3.0
+  chosen.bias = 0.75
+  replace(selected, 4.0)
+  out1 = saved.gain + returned.history[0] + current.gain + first(window()) + baseline.gain + initial_window[0] + saved.history[1] + saved.bias
+  generation += 1.0
+
+  bank: Coefficients[4] = Coefficients(gain = generation)
+  bank[0] = saved
+  bank[1:] = bank[:3]
+  left: Coefficients[] = bank[:1]
+  right: Coefficients[] = bank[2:]
+  if generation % 2.0 == 0.0:
+    picked = left
+  else:
+    picked = right
+  picked[:] = returned
+  copied: Coefficients[2] = bank[-2:]
+  result = copied[0]
+  returned_bank = pair(result)
+  returned_element = from_pair(returned_bank)
+  out2 = result.gain + f32(picked.len()) + returned_bank[0].gain + returned_element.gain

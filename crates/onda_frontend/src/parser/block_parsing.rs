@@ -1180,6 +1180,7 @@ pub(super) fn parse_proc_block(
 
     let mut block_pre = Vec::new();
     let mut block_post = Vec::new();
+    let mut block_compiler_scratch_roots = Vec::new();
     let mut has_block_block = false;
     if let Some(exec) = block_exec {
         has_block_block = true;
@@ -1189,6 +1190,7 @@ pub(super) fn parse_proc_block(
                 "proc sample block cannot be declared both directly and inside block section",
             )]);
         }
+        block_compiler_scratch_roots = exec.compiler_scratch_roots;
         block_pre = exec.pre;
         block_post = exec.post;
         sample = exec.sample;
@@ -1245,6 +1247,7 @@ pub(super) fn parse_proc_block(
             compiler_scratch_roots: Vec::new(),
             body: Vec::new(),
         }),
+        block_compiler_scratch_roots,
         block_pre,
         sample: sample_body,
         block_post,
@@ -1325,12 +1328,7 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                         )]);
                     }
                     if let Some((func, lower, upper)) = range {
-                        let Some(value) = default.take() else {
-                            return Err(vec![syntax_at_loc(
-                                field_loc.as_ref(),
-                                "ranged struct fields require a default expression",
-                            )]);
-                        };
+                        let value = default.take().unwrap_or_else(|| Expr::int(0));
                         default = Some(Expr::Call {
                             loc: field_loc,
                             func,
@@ -1524,6 +1522,7 @@ pub(super) fn parse_fn_param_decl(
     }
 
     Ok(FnParamDecl {
+        readonly: false,
         loc,
         name: name_pair.as_str().to_owned(),
         ty,

@@ -1,3 +1,4 @@
+import { PayloadPlan, writeEventInput } from "@onda-lang/processor-abi";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -22,6 +23,80 @@ const absoluteTolerance = 1e-6;
 const relativeTolerance = 1e-6;
 
 const scenarios = [
+  {
+    name: "borrowed branch aliases and explicit aggregate arguments",
+    source: join(packageDir, "test/fixtures/structured-data-regressions.onda"),
+    blocks: 3,
+  },
+  {
+    name: "nested aggregate routing through proc events and delegates",
+    source: join(packageDir, "test/fixtures/structured-message-routing.onda"),
+    actions: [
+      { kind: "event", name: "exercise", values: [] },
+      { kind: "render" },
+      { kind: "event", name: "exercise", values: [] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "structured host slices, one prefix, normalized fields, and empty slices",
+    source: join(packageDir, "test/fixtures/structured-slice-messages.onda"),
+    actions: [
+      { kind: "event", name: "configure", values: [true, [
+        { enabled: true, gain: 4.0, bins: [1, 2], mode: "-9223372036854775808" },
+        { enabled: false, gain: 6.0, bins: [3, 4], mode: "9223372036854775807" },
+      ], 3] },
+      { kind: "render" },
+      { kind: "event", name: "configure", values: [false, [], 5] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "structured messages, tuple defaults, proc routing, and host publication",
+    source: join(packageDir, "test/fixtures/structured-messages.onda"),
+    actions: [
+      { kind: "event", name: "configure", values: [] },
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "event", name: "change", values: [[7, 11]] },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "init, proc, and task selections across snapshots and dispatch",
+    source: join(packageDir, "test/fixtures/retained-scopes.onda"),
+    actions: [
+      { kind: "segments", segments: [{ start_frame: 0, frames: 2, flags: 1 }] },
+      { kind: "snapshot" },
+      { kind: "event", name: "change", values: [] },
+      { kind: "segments", segments: [{ start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "segments", segments: [{ start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "retained block data, branch selections, snapshots, and events",
+    source: join(packageDir, "test/fixtures/retained-data.onda"),
+    actions: [
+      { kind: "segments", segments: [{ start_frame: 0, frames: 2, flags: 1 }] },
+      { kind: "snapshot" },
+      { kind: "event", name: "alter", values: [] },
+      { kind: "segments", segments: [{ start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "restore" },
+      { kind: "segments", segments: [{ start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "event", name: "alter", values: [] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "structured data construction, aliases, replacement, and fixed returns",
+    source: join(packageDir, "test/fixtures/structured-data.onda"),
+    blocks: 3,
+  },
   {
     name: "params, calls, tuples, and persistent state",
     source: join(packageDir, "test/fixtures/language-slice.onda"),
@@ -459,6 +534,11 @@ async function renderWasmBlocks(artifact, scenario) {
       restoreWasmState(memory, state, metadata, savedSnapshot);
       continue;
     }
+    // Native render requests provide fresh zeroed output buffers. Match that
+    // setup when a segmented request writes only part of the buffer.
+    for (const [index, pointer] of outputPointers.entries()) {
+      new Uint8Array(memory.buffer, pointer, blockSize * scalarSize(outputChannels[index].scalar)).fill(0);
+    }
     if (action.kind === "render") {
       processSegment(0, blockSize, 3);
     } else if (action.kind === "segments") {
@@ -512,27 +592,17 @@ function triggerWasmEvent(context) {
     (candidate) => candidate.name === action.name,
   );
   if (!event) throw new Error(`missing Wasm event '${action.name}'`);
-  if (event.has_dynamic_payload) {
-    throw new Error("parity event helper only supports fixed scalar payloads");
-  }
-  if (event.params.length !== action.values.length) {
-    throw new Error(`event '${action.name}' payload arity mismatch`);
-  }
-  const payload = allocate(event.payload_size_bytes, 8);
-  for (const [index, param] of event.params.entries()) {
-    if (!param.scalar || param.array_len !== 1 || param.is_slice) {
-      throw new Error("parity event helper only supports scalar payloads");
-    }
-    writeScalar(
-      memory,
-      payload + param.byte_offset,
-      param.scalar,
-      action.values[index],
-    );
-  }
+  const plan = new PayloadPlan(event.schema);
+  const bytes = plan.encode(action.values);
+  const payload = allocate(bytes.length, 8);
+  new Uint8Array(memory.buffer, payload, bytes.length).set(bytes);
+  const workspaceBytes = plan.requiredWorkspace(bytes);
+  const workspace = allocate(workspaceBytes, 8);
+  const descriptor = allocate(16, 4);
+  writeEventInput(memory, descriptor, payload, bytes.length, workspace, workspaceBytes);
   requireExecutionSuccess(
     instance.exports[event.export](
-      payload,
+      descriptor,
       context.params,
       context.state,
       context.bufferPointers,

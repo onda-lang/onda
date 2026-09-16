@@ -190,14 +190,24 @@ fn rebind_persistent_buffer_aliases(aliases: &[PersistentBufferAlias]) -> Vec<St
         .collect()
 }
 
-fn proc_event_array_param_fn_ty(param_ty: ProcEventParamTypeSpec) -> Option<FnParamType> {
+fn proc_event_reference_param_fn_ty(param_ty: &ProcEventParamTypeSpec) -> Option<FnParamType> {
     match param_ty {
-        ProcEventParamTypeSpec::FixedArray { elem_ty, len } => Some(FnParamType::SizedArray {
-            elem: Some(elem_ty),
-            generic_name: None,
-            size: Expr::int(len as i64),
+        ProcEventParamTypeSpec::StructSlice { name } => {
+            Some(FnParamType::ArrayGeneric(name.clone()))
+        }
+        ProcEventParamTypeSpec::Tuple(types) => Some(FnParamType::Tuple(types.clone())),
+        ProcEventParamTypeSpec::Struct { name } => Some(FnParamType::Struct(name.clone())),
+        ProcEventParamTypeSpec::StructArray { name, len } => Some(FnParamType::SizedArray {
+            elem: None,
+            generic_name: Some(name.clone()),
+            size: Expr::int(*len as i64),
         }),
-        ProcEventParamTypeSpec::Slice { elem_ty } => Some(FnParamType::Array(Some(elem_ty))),
+        ProcEventParamTypeSpec::FixedArray { elem_ty, len } => Some(FnParamType::SizedArray {
+            elem: Some(*elem_ty),
+            generic_name: None,
+            size: Expr::int(*len as i64),
+        }),
+        ProcEventParamTypeSpec::Slice { elem_ty } => Some(FnParamType::Array(Some(*elem_ty))),
         ProcEventParamTypeSpec::Scalar { .. } => None,
     }
 }
@@ -409,6 +419,7 @@ fn extend_proc_buffer_fn_params(
         buffer_specs
             .iter()
             .map(|buffer| onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -431,6 +442,7 @@ where
 {
     let mut event_params = Vec::<onda_frontend::FnParamDecl>::new();
     event_params.push(onda_frontend::FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: "self".to_owned(),
         ty: Some(FnParamType::Struct(receiver_ty.to_owned())),
@@ -443,6 +455,7 @@ where
         if param.slots.len() == 1 && param.slots[0].name == param.name {
             let slot = &param.slots[0];
             event_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: param.name.clone(),
                 ty: Some(FnParamType::Primitive(slot.ty)),
@@ -472,6 +485,7 @@ where
             .map(|slot| slot.ty)
             .expect("lowered processor array param must have at least one slot");
         event_params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: param.name.clone(),
             ty: Some(FnParamType::SizedArray {
@@ -505,6 +519,7 @@ where
     }
 
     event_params.push(onda_frontend::FnParamDecl {
+        readonly: false,
         loc: Default::default(),
         name: INIT_FULL_PARAM_NAME.to_owned(),
         ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
@@ -1317,7 +1332,6 @@ fn generate_nested_wrapper_defs(
                                 expanded_stmt,
                                 &proc.name,
                                 &shape.field_names,
-                                &shape.array_field_names,
                                 ins_names,
                                 &shape.field_array_slots,
                                 &shape.in_array_slots,
@@ -1439,7 +1453,6 @@ fn generate_nested_wrapper_defs(
                             expanded_stmt,
                             &proc.name,
                             &shape.field_names,
-                            &shape.array_field_names,
                             ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
@@ -1526,7 +1539,6 @@ fn generate_nested_wrapper_defs(
                             expanded_stmt,
                             &proc.name,
                             &shape.field_names,
-                            &shape.array_field_names,
                             ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
@@ -1582,6 +1594,7 @@ fn generate_nested_wrapper_defs(
         );
         let mut nested_init_params = vec![
             onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -1589,6 +1602,7 @@ fn generate_nested_wrapper_defs(
                 default: None,
             },
             onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: INIT_FULL_PARAM_NAME.to_owned(),
                 ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
@@ -1598,6 +1612,7 @@ fn generate_nested_wrapper_defs(
         ];
         nested_init_params.extend(callee_shape.buffer_specs.iter().map(|buffer| {
             onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -1652,6 +1667,8 @@ fn generate_nested_wrapper_defs(
         let mut dynamic_hook_temp_counter = 0;
         let mut nested_step_body = Vec::<Stmt>::new();
         for local_def in unique_proc_local_defs(callee_proc) {
+            let callee_shape = callee_shape.without_parameters(&local_def.params);
+            let callee_ins_names = callee_shape.ins.iter().cloned().collect();
             let mut body = Vec::<Stmt>::new();
             for rewritten in lower_callee_stmts_for_nested_wrapper(
                 local_def.body.clone(),
@@ -1689,7 +1706,6 @@ fn generate_nested_wrapper_defs(
                     routed_handler,
                     &proc.name,
                     &shape.field_names,
-                    &shape.array_field_names,
                     ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
@@ -1761,6 +1777,7 @@ fn generate_nested_wrapper_defs(
         );
         let mut nested_step_params = Vec::<onda_frontend::FnParamDecl>::new();
         nested_step_params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -1769,6 +1786,7 @@ fn generate_nested_wrapper_defs(
         });
         for in_name in &callee_shape.ins {
             nested_step_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: in_name.clone(),
                 ty: None,
@@ -1778,6 +1796,7 @@ fn generate_nested_wrapper_defs(
         }
         for buffer in &callee_shape.buffer_specs {
             nested_step_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -1941,6 +1960,7 @@ fn generate_nested_wrapper_defs(
                     } else {
                         let mut nested_event_params = Vec::<onda_frontend::FnParamDecl>::new();
                         nested_event_params.push(onda_frontend::FnParamDecl {
+                            readonly: false,
                             loc: Default::default(),
                             name: "self".to_owned(),
                             ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -1951,8 +1971,9 @@ fn generate_nested_wrapper_defs(
                         let mut callee_event_in_array_slots = HashMap::<String, Vec<String>>::new();
                         for param in &event_spec.params {
                             callee_event_ins_names.insert(param.name.clone());
-                            if let Some(param_ty) = proc_event_array_param_fn_ty(param.ty) {
+                            if let Some(param_ty) = proc_event_reference_param_fn_ty(&param.ty) {
                                 nested_event_params.push(onda_frontend::FnParamDecl {
+                                    readonly: true,
                                     loc: Default::default(),
                                     name: param.name.clone(),
                                     ty: Some(param_ty),
@@ -1966,6 +1987,7 @@ fn generate_nested_wrapper_defs(
                                 slot_names.push(slot.name.clone());
                                 callee_event_ins_names.insert(slot.name.clone());
                                 nested_event_params.push(onda_frontend::FnParamDecl {
+                                    readonly: true,
                                     loc: Default::default(),
                                     name: slot.name.clone(),
                                     ty: Some(FnParamType::Primitive(slot.ty)),
@@ -2033,6 +2055,7 @@ fn generate_nested_wrapper_defs(
         if callee_has_effective_block {
             let mut nested_block_params = Vec::<onda_frontend::FnParamDecl>::new();
             nested_block_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -2041,6 +2064,7 @@ fn generate_nested_wrapper_defs(
             });
             for buffer in &callee_shape.buffer_specs {
                 nested_block_params.push(onda_frontend::FnParamDecl {
+                    readonly: false,
                     loc: Default::default(),
                     name: buffer.name.clone(),
                     ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -2564,7 +2588,7 @@ pub(super) fn generate_lowered_proc_blocks(
         for stmt in &proc_init_stmts {
             if let Stmt::Assign {
                 target: AssignTarget::Var(array_var),
-                expr: expr @ Expr::ArrayCtor { init, .. },
+                expr: expr @ Expr::ArrayCtor { spec, init, .. },
                 ..
             } = stmt
             {
@@ -2733,7 +2757,6 @@ pub(super) fn generate_lowered_proc_blocks(
                                 expanded_stmt,
                                 &proc.name,
                                 &shape.field_names,
-                                &shape.array_field_names,
                                 &ins_names,
                                 &shape.field_array_slots,
                                 &shape.in_array_slots,
@@ -2750,7 +2773,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     }
                     continue;
                 }
-                if let Some(values) = init {
+                if let (ArrayElemType::Primitive(_), Some(values)) = (&spec.elem, init) {
                     let mut decl_stmt = stmt.clone();
                     if let Stmt::Assign {
                         expr: Expr::ArrayCtor { init, .. },
@@ -2763,7 +2786,6 @@ pub(super) fn generate_lowered_proc_blocks(
                         decl_stmt,
                         &proc.name,
                         &shape.field_names,
-                        &shape.array_field_names,
                         &ins_names,
                         &shape.field_array_slots,
                         &shape.in_array_slots,
@@ -2793,7 +2815,6 @@ pub(super) fn generate_lowered_proc_blocks(
                             write_stmt,
                             &proc.name,
                             &shape.field_names,
-                            &shape.array_field_names,
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
@@ -2814,7 +2835,6 @@ pub(super) fn generate_lowered_proc_blocks(
                     fill_stmt,
                     &proc.name,
                     &shape.field_names,
-                    &shape.array_field_names,
                     &ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
@@ -2852,7 +2872,6 @@ pub(super) fn generate_lowered_proc_blocks(
                         write_stmt,
                         &proc.name,
                         &shape.field_names,
-                        &shape.array_field_names,
                         &ins_names,
                         &shape.field_array_slots,
                         &shape.in_array_slots,
@@ -2936,7 +2955,6 @@ pub(super) fn generate_lowered_proc_blocks(
                             expanded_stmt,
                             &proc.name,
                             &shape.field_names,
-                            &shape.array_field_names,
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
@@ -3006,7 +3024,6 @@ pub(super) fn generate_lowered_proc_blocks(
                             expanded_stmt,
                             &proc.name,
                             &shape.field_names,
-                            &shape.array_field_names,
                             &ins_names,
                             &shape.field_array_slots,
                             &shape.in_array_slots,
@@ -3026,7 +3043,6 @@ pub(super) fn generate_lowered_proc_blocks(
                 stmt.clone(),
                 &proc.name,
                 &shape.field_names,
-                &shape.array_field_names,
                 &ins_names,
                 &shape.field_array_slots,
                 &shape.in_array_slots,
@@ -3055,6 +3071,7 @@ pub(super) fn generate_lowered_proc_blocks(
         def_sample_oversample_factors.insert(init_fn_name.clone(), proc_sample_oversample_factor);
         let mut init_params = vec![
             onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -3062,6 +3079,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 default: None,
             },
             onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: INIT_FULL_PARAM_NAME.to_owned(),
                 ty: Some(FnParamType::Primitive(PrimitiveType::Bool)),
@@ -3074,6 +3092,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 .buffer_specs
                 .iter()
                 .map(|buffer| onda_frontend::FnParamDecl {
+                    readonly: false,
                     loc: Default::default(),
                     name: buffer.name.clone(),
                     ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -3133,6 +3152,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 } else {
                     let mut event_params = Vec::<onda_frontend::FnParamDecl>::new();
                     event_params.push(onda_frontend::FnParamDecl {
+                        readonly: false,
                         loc: Default::default(),
                         name: "self".to_owned(),
                         ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -3143,8 +3163,9 @@ pub(super) fn generate_lowered_proc_blocks(
                     let mut event_in_array_slots = HashMap::<String, Vec<String>>::new();
                     for param in &event_spec.params {
                         event_ins_names.insert(param.name.clone());
-                        if let Some(param_ty) = proc_event_array_param_fn_ty(param.ty) {
+                        if let Some(param_ty) = proc_event_reference_param_fn_ty(&param.ty) {
                             event_params.push(onda_frontend::FnParamDecl {
+                                readonly: true,
                                 loc: Default::default(),
                                 name: param.name.clone(),
                                 ty: Some(param_ty),
@@ -3158,6 +3179,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             slot_names.push(slot.name.clone());
                             event_ins_names.insert(slot.name.clone());
                             event_params.push(onda_frontend::FnParamDecl {
+                                readonly: true,
                                 loc: Default::default(),
                                 name: slot.name.clone(),
                                 ty: Some(FnParamType::Primitive(slot.ty)),
@@ -3174,7 +3196,6 @@ pub(super) fn generate_lowered_proc_blocks(
                         event.body.clone(),
                         &proc.name,
                         &shape.field_names,
-                        &shape.array_field_names,
                         &event_ins_names,
                         &shape.field_array_slots,
                         &event_in_array_slots,
@@ -3241,12 +3262,13 @@ pub(super) fn generate_lowered_proc_blocks(
         let mut dynamic_hook_temp_counter = 0;
         let mut step_body = Vec::<Stmt>::new();
         for local_def in unique_proc_local_defs(proc) {
+            let shape = shape.without_parameters(&local_def.params);
+            let ins_names = shape.ins.iter().cloned().collect();
             let mut body = Vec::<Stmt>::new();
             for rewritten in rewrite_owner_proc_stmts(
                 local_def.body.clone(),
                 &proc.name,
                 &shape.field_names,
-                &shape.array_field_names,
                 &ins_names,
                 &shape.field_array_slots,
                 &shape.in_array_slots,
@@ -3300,7 +3322,6 @@ pub(super) fn generate_lowered_proc_blocks(
             proc_step_source,
             &proc.name,
             &shape.field_names,
-            &shape.array_field_names,
             &ins_names,
             &shape.field_array_slots,
             &shape.in_array_slots,
@@ -3334,6 +3355,7 @@ pub(super) fn generate_lowered_proc_blocks(
         if proc_has_effective_block {
             let mut block_params = Vec::<onda_frontend::FnParamDecl>::new();
             block_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: "self".to_owned(),
                 ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -3342,6 +3364,7 @@ pub(super) fn generate_lowered_proc_blocks(
             });
             for buffer in &shape.buffer_specs {
                 block_params.push(onda_frontend::FnParamDecl {
+                    readonly: false,
                     loc: Default::default(),
                     name: buffer.name.clone(),
                     ty: Some(proc_buffer_fn_param_type(buffer)),
@@ -3357,7 +3380,6 @@ pub(super) fn generate_lowered_proc_blocks(
                 ),
                 &proc.name,
                 &shape.field_names,
-                &shape.array_field_names,
                 &ins_names,
                 &shape.field_array_slots,
                 &shape.in_array_slots,
@@ -3467,7 +3489,6 @@ pub(super) fn generate_lowered_proc_blocks(
                     vec![guard.clone()],
                     &proc.name,
                     &shape.field_names,
-                    &shape.array_field_names,
                     &ins_names,
                     &shape.field_array_slots,
                     &shape.in_array_slots,
@@ -3522,7 +3543,6 @@ pub(super) fn generate_lowered_proc_blocks(
                 block_post_source,
                 &proc.name,
                 &shape.field_names,
-                &shape.array_field_names,
                 &ins_names,
                 &shape.field_array_slots,
                 &shape.in_array_slots,
@@ -3598,6 +3618,7 @@ pub(super) fn generate_lowered_proc_blocks(
         }
         let mut step_params = Vec::<onda_frontend::FnParamDecl>::new();
         step_params.push(onda_frontend::FnParamDecl {
+            readonly: false,
             loc: Default::default(),
             name: "self".to_owned(),
             ty: Some(FnParamType::Struct(proc.name.clone())),
@@ -3607,6 +3628,7 @@ pub(super) fn generate_lowered_proc_blocks(
         for in_name in &shape.ins {
             let in_ty = *shape.in_types.get(in_name).unwrap_or(&PrimitiveType::F32);
             step_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: in_name.clone(),
                 ty: Some(FnParamType::Primitive(in_ty)),
@@ -3616,6 +3638,7 @@ pub(super) fn generate_lowered_proc_blocks(
         }
         for buffer in &shape.buffer_specs {
             step_params.push(onda_frontend::FnParamDecl {
+                readonly: false,
                 loc: Default::default(),
                 name: buffer.name.clone(),
                 ty: Some(proc_buffer_fn_param_type(buffer)),

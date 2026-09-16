@@ -1,0 +1,49 @@
+struct Note:
+  value = 1.0
+  bins: f32[2]
+
+def make() -> Note[2]:
+  return [Note(value = 3.0), Note(value = 5.0)]
+
+proc Worker:
+  init:
+    notes = make()
+    index: i32 = 1
+    selected = notes[index]
+    fresh: f32[] = [2.0, 3.0]
+    result = 0.0
+  event change():
+    index = 0
+    selected.value += 10.0
+  task prepare():
+    owned: Note = Note(value = 7.0)
+    if index == 1:
+      kept = selected
+    else:
+      kept = owned
+    values: f32[] = [11.0, 13.0]
+    yield
+    kept.value += 1.0
+    result = kept.value + values[0]
+  block:
+    await prepare()
+    block_values: Note[2] = Note(value = 17.0)
+    kept = block_values[1]
+    sample:
+      selected.value += 1.0
+      kept.value += 2.0
+      out1 = selected.value + kept.value + fresh[0] + result
+
+init:
+  a = Worker()
+  b = Worker()
+  pin values: f32[2] = [19.0, 23.0]
+  view: f32[] = values[1:]
+
+event change():
+  a.change()
+  view[0] = view[0] + 1.0
+
+sample:
+  out1 = a() + view[0]
+  out2 = b()

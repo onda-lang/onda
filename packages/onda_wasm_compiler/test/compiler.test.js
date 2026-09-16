@@ -7,6 +7,7 @@ import {
   formatPrintBatch,
   readDelegateBatch,
   resetExecutionOutput,
+  writeEventInput,
   writeDelegateBatch,
   writeExecutionOutput,
   writePrintBatch,
@@ -234,7 +235,10 @@ sample:
   writeDelegateBatch(memory, batchAddress, storageAddress, 48);
   writeExecutionOutput(memory, executionOutputAddress, batchAddress, 0);
   assert.equal(initialize(params, state, 1, 0, 0, 0, 0, 0), 0);
-  assert.equal(trigger(payload, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
+  const descriptor = allocate(16);
+  const workspace = allocate(32);
+  writeEventInput(memory, descriptor, payload, 32, workspace, 32);
+  assert.equal(trigger(descriptor, params, state, 0, 0, 0, 0, executionOutputAddress), 0);
   const batch = readDelegateBatch(memory, batchAddress);
   assert.deepEqual(batch, {
     storageAddress,
@@ -293,7 +297,10 @@ sample:
   assert.equal(formatPrintBatch(memory, batch, artifact.metadata).text, "boot\n");
   new DataView(memory.buffer).setBigInt64(payload, 9_007_199_254_740_993n, true);
   resetExecutionOutput(memory, output);
-  assert.equal(report(payload, params, state, 0, 0, 0, 0, output), 0);
+  const descriptor = allocate(16);
+  const workspace = allocate(8);
+  writeEventInput(memory, descriptor, payload, 8, workspace, 8);
+  assert.equal(report(descriptor, params, state, 0, 0, 0, 0, output), 0);
   assert.equal(
     formatPrintBatch(memory, batch, artifact.metadata).text,
     "event: 9007199254740993\n",

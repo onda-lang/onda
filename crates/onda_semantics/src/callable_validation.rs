@@ -93,7 +93,9 @@ fn validate_stmts(
                         );
                     }
                 }
-                AssignTarget::Index { .. } | AssignTarget::Slice { .. } => {}
+                AssignTarget::Index { .. }
+                | AssignTarget::IndexedMember { .. }
+                | AssignTarget::Slice { .. } => {}
             },
             Stmt::If {
                 then_branch,

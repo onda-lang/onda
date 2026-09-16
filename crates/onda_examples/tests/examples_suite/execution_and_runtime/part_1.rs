@@ -29,6 +29,102 @@ sample:
 }
 
 #[test]
+fn optimized_indexed_buffer_parameter_metadata_uses_the_selected_slot() {
+    let source = r#"
+def selected_len(buffers, selector: i32) -> i32:
+  return buffers[selector].len()
+
+buffers:
+  bank: f32[] {2}
+
+sample:
+  out1 = f32(selected_len(bank, 1))
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut selected = [1.0_f32, 2.0, 3.0];
+    bind_buffer(
+        &mut instance,
+        1,
+        selected.as_mut_ptr().cast::<u8>(),
+        selected.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind selected buffer");
+
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+}
+
+#[test]
+fn buffer_collection_compound_assignment_evaluates_each_coordinate_once() {
+    let source = r#"
+buffers:
+  source: f32[2] {2}
+
+proc Worker:
+  buffers:
+    bank: f32[2] {2}
+
+  outs 1
+
+  init:
+    calls = 0
+
+  def select_buffer():
+    calls += 1
+    return 1
+
+  def select_channel():
+    calls += 1
+    return 1
+
+  def select_frame():
+    calls += 1
+    return 2
+
+  sample:
+    bank[select_buffer()][select_channel(), select_frame()] += 2.0
+    out1 = f32(calls) + bank[1][1, 2]
+
+init:
+  worker = Worker(bank = source)
+
+sample:
+  out1 = worker()
+"#;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, 1);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut buffer = vec![
+        1.0_f32, 10.0, //
+        2.0, 20.0, //
+        3.0, 30.0,
+    ];
+    bind_buffer(
+        &mut instance,
+        1,
+        buffer.as_mut_ptr().cast::<u8>(),
+        3,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .expect("bind selected buffer");
+
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 35.0, 1e-6);
+    assert_near(buffer[5], 32.0, 1e-6);
+}
+
+#[test]
 fn ranged_integer_params_normalize_raw_host_values_at_process_entry() {
     let source = r#"
 params:
@@ -56,7 +152,7 @@ sample:
 fn ranged_struct_fields_normalize_construction_and_method_assignments() {
     let source = r#"
 struct Cursor:
-  index: i32 = 0 {4, wrap}
+  index: i32 {4, wrap}
 
   def advance(self):
     self.index += 5
@@ -101,6 +197,159 @@ sample:
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("process ranged struct-array field");
     assert_eq!(output, [2.0, 3.0, 0.0, 1.0]);
+}
+
+#[test]
+fn generic_proc_struct_arrays_preserve_ranges_and_independent_broadcast_elements() {
+    let sources = [
+        r#"
+struct Cell<T>:
+  value: T
+  index: i32 {4, wrap}
+
+proc Bank<T>:
+  outs<T> 1
+
+  init:
+    cells: Cell<T>[2] = Cell<T>(value = T(0.5))
+
+  sample:
+    out1 = T(cells[0].index) + cells[0].value * T(10) + cells[1].value * T(100)
+    cells[0].index = cells[0].index + 1
+    cells[0].value = cells[0].value + T(1)
+
+init:
+  bank = Bank<f32>()
+
+sample:
+  out1 = bank()
+"#,
+        r#"
+struct Cell<T> {
+  value: T
+  index: i32 {4, wrap}
+}
+
+proc Bank<T> {
+  outs<T> { out1 }
+  init {
+    cells: Cell<T>[2] = Cell<T>(value = T(0.5))
+  }
+  sample {
+    out1 = T(cells[0].index) + cells[0].value * T(10) + cells[1].value * T(100)
+    cells[0].index = cells[0].index + 1
+    cells[0].value = cells[0].value + T(1)
+  }
+}
+
+init {
+  bank = Bank<f64>()
+}
+
+sample {
+  out1 = f32(bank())
+}
+"#,
+    ];
+
+    for source in sources {
+        let frames = 5;
+        let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+        assert_eq!(in_channels, 0);
+        assert_eq!(out_channels, 1);
+
+        let mut output = [0.0_f32; 5];
+        process_interleaved(&mut instance, &[], &mut output, frames)
+            .expect("process generic struct-array state");
+        assert_eq!(output, [55.0, 66.0, 77.0, 88.0, 95.0]);
+    }
+}
+
+#[test]
+fn local_struct_array_field_writes_are_observable_in_sample() {
+    let source = r#"
+struct Something:
+  value: f32
+
+const Count = 1000
+
+sample:
+  values: Something[Count * 10]
+  values[0].value = 0.5
+  out1 = values[0].value
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process local struct-array field write");
+    assert_eq!(output, [0.5; 4]);
+}
+
+#[test]
+fn indexed_struct_array_aggregate_fields_replace_through_one_canonical_view() {
+    let source = r#"
+struct Inner:
+  value: f32
+
+struct Voice:
+  taps: f32[4]
+  pair: (f32, i32)
+  inner: Inner
+
+init:
+  voices: Voice[2]
+
+sample:
+  const Outer = -5
+  const Tap = 99
+  replacement: f32[4] = [0.1, 0.2, 0.3, 0.4]
+  voices[Outer].taps[Tap] = 0.75
+  voices[1].taps = replacement
+  voices[1].pair = (0.5, 2)
+  voices[1].inner = Inner(value = 0.25)
+  selected = voices[1]
+  out1 = (voices[0].taps[3] + voices[1].taps[2] + selected.pair[0] + selected.inner.value) / 4
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process indexed struct-array aggregate fields");
+    assert_eq!(output, [0.45; 4]);
+}
+
+#[test]
+fn indexed_member_assignment_evaluates_selectors_once_before_the_value() {
+    let source = r#"
+struct Voice:
+  taps: f32[2]
+
+def mark(trace: f32[], digit: i32, result: i32) -> i32:
+  trace[0] = trace[0] * 10.0 + f32(digit)
+  return result
+
+sample:
+  voices: Voice[2]
+  trace: f32[1] = [0.0]
+  voices[mark(trace, 1, 0)].taps[mark(trace, 2, 1)] = f32(mark(trace, 3, 75)) / 100.0
+  out1 = trace[0] / 1000.0 + voices[0].taps[1]
+"#;
+    let frames = 4;
+    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 1);
+
+    let mut output = [0.0_f32; 4];
+    process_interleaved(&mut instance, &[], &mut output, frames)
+        .expect("process indexed-member evaluation order");
+    assert_eq!(output, [0.873; 4]);
 }
 
 #[test]

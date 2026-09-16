@@ -12,11 +12,12 @@ extern "C" {
 #endif
 
 /* Synchronized from format-versions.json; do not edit this copy directly. */
-#define ONDA_PROCESSOR_ABI_VERSION 5u
+#define ONDA_PROCESSOR_ABI_VERSION 6u
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
-  ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1u
+  ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1,
+  ONDA_PROCESSOR_EXECUTION_INPUT_REJECTED = 2u
 };
 
 typedef enum onda_processor_init_mode {
@@ -32,11 +33,12 @@ enum {
 };
 
 /* Caller-owned, call-scoped occurrence storage. The host resets the three result counters and the
- * shared sequence before every init, process, or event entry. A NULL output, batch, or storage
- * pointer disables that stream. Capacity is a host policy because occurrence counts and dynamic
- * slice sizes may depend on runtime execution. Delegate and print batches are independent. Records
- * carry the shared sequence so hosts can merge the streams chronologically. Generated failure
- * clears delegate results but retains print records already emitted. */
+ * shared sequence before every init or process entry. Event entries perform the same reset after
+ * successful input preflight, preserving existing output on rejection. A NULL output, batch, or
+ * storage pointer disables that stream. Capacity is a host policy because occurrence counts and
+ * dynamic slice sizes may depend on runtime execution. Delegate and print batches are independent.
+ * Records carry the shared sequence so hosts can merge the streams chronologically. Generated
+ * failure clears delegate results but retains print records already emitted. */
 typedef struct onda_processor_delegate_batch {
   uint8_t* storage;
   uint32_t capacity_bytes;
@@ -108,8 +110,19 @@ typedef uint32_t (*onda_processor_process_fn)(
   onda_processor_execution_output_t* output
 );
 
+/* Input and workspace must be disjoint from each other and all other ABI
+ * regions. Workspace is aligned to eight bytes and lives through dispatch.
+ * Rejection preserves state and existing output records. Once admitted, the
+ * event entry resets supplied output counters before running handlers. */
+typedef struct onda_processor_event_input {
+  const void* payload;
+  uint32_t payload_bytes;
+  void* workspace;
+  uint32_t workspace_capacity_bytes;
+} onda_processor_event_input_t;
+
 typedef uint32_t (*onda_processor_event_fn)(
-  const void* payload,
+  const onda_processor_event_input_t* input,
   const void* params,
   void* state,
   void* const* buffers,

@@ -21,6 +21,112 @@ sample:
     }
 
     #[test]
+    fn loop_index_cannot_fall_through_to_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+def read(box: Box) -> f32:
+  return box.value
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    out1 = read(box)
+"#;
+        assert_analyze_error_contains(
+            source,
+            "function 'read' argument 'box' expects 'Box', got a non-data value",
+        );
+    }
+
+    #[test]
+    fn loop_index_cannot_reveal_same_named_struct_fields_to_builtins() {
+        let source = r#"
+struct Box:
+  values: f32[2]
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    out1 = f32(box.values.len())
+"#;
+        let program = parse_program(source).expect("loop shadowing source should parse");
+        analyze(program).expect_err("the scalar loop binding must hide outer struct fields");
+    }
+
+    #[test]
+    fn loop_index_cannot_write_through_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+init:
+  box = Box()
+
+sample:
+  out1 = 0.0
+  for box in 0..1:
+    box.value = 1.0
+"#;
+        assert_analyze_error_contains(
+            source,
+            "loop variable 'box' is scalar and has no field 'value'",
+        );
+    }
+
+    #[test]
+    fn init_loop_index_cannot_write_through_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+init:
+  box = Box()
+  for box in 0..1:
+    box.value = 1.0
+
+sample:
+  out1 = 0.0
+"#;
+        assert_analyze_error_contains(
+            source,
+            "loop variable 'box' is scalar and has no field 'value'",
+        );
+    }
+
+    #[test]
+    fn event_scalar_cannot_fall_through_to_same_named_struct_storage() {
+        let source = r#"
+struct Box:
+  value: f32 = 0.5
+
+def read(box: Box) -> f32:
+  return box.value
+
+init:
+  box = Box()
+  observed = 0.0
+
+event inspect(box: i32):
+  observed = read(box)
+
+sample:
+  out1 = observed
+"#;
+        assert_analyze_error_contains(
+            source,
+            "function 'read' argument 'box' expects 'Box', got a non-data value",
+        );
+    }
+
+    #[test]
     fn repeated_generic_scalar_constraints_choose_one_widened_type() {
         let src = r#"
 outs:
@@ -228,6 +334,506 @@ sample:
     }
 
     #[test]
+    fn generic_struct_method_specializes_nominal_returns_and_typed_locals() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+  def copied(self, other: Box<T>) -> Box<T>:
+    copy: Box<T> = other
+    return copy
+
+sample:
+  original = Box<f32>(value = .25)
+  result = original.copied(original)
+  out1 = result.value
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal method types should specialize with their owner");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.ends_with(".copied")
+                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized nominal method types should lower");
+    }
+
+    #[test]
+    fn generic_struct_method_preserves_its_own_nested_type_parameters() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+struct Box<T>:
+  value: T
+
+  def copy<U>(self, pair: Pair<T, U>) -> Pair<T, U>:
+    local: Pair<T, U> = pair
+    forwarded = Pair<T, U>(local.first, local.second)
+    copies: Pair<T, U>[1] = [forwarded]
+    selected = copies[0]
+    return selected
+
+sample:
+  box = Box<i64>(i64(4))
+  pair = Pair<i64, f32>(i64(7), 1.5)
+  copied = box.copy(pair)
+  out1 = copied.second
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("owner and method type parameters should specialize independently");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.contains("Box.__gen__i64.copy.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("mixed owner and method generic types should lower");
+    }
+
+    #[test]
+    fn generic_tuple_struct_fields_specialize_to_primitive_elements() {
+        let src = r#"
+struct Tagged<T>:
+  pair: (T, i32) = (T(1.5), 2)
+
+sample:
+  value = Tagged<f64>()
+  out1 = f32(value.pair[0]) + f32(value.pair[1])
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("generic tuple fields should specialize");
+        let tagged = typed
+            .structs
+            .iter()
+            .find(|strukt| strukt.name == "Tagged.__gen__f64")
+            .expect("specialized Tagged struct");
+        assert!(matches!(
+            &tagged.fields[0].ty,
+            TypedFieldType::Tuple(elements)
+                if elements == &[PrimitiveType::F64, PrimitiveType::I32]
+        ));
+        lower_program_to_optimized_mir(&typed).expect("generic tuple fields should lower");
+    }
+
+    #[test]
+    fn generic_def_specializes_nominal_parameters_arrays_and_returns() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def first<T>(values: Box<T>[2]) -> Box<T>:
+  copy: Box<T> = values[0]
+  return copy
+
+def identity<T>(value: Box<T>) -> Box<T>:
+  return value
+
+def identity_array<T>(values: Box<T>[2]) -> Box<T>[2]:
+  return values
+
+def first_view<T>(values: Box<T>[]) -> Box<T>:
+  return values[0]
+
+sample:
+  boxes: Box<f64>[2] = [Box<f64>(value = .25), Box<f64>(value = .5)]
+  copies = identity_array(boxes)
+  view: Box<f64>[] = copies[:]
+  from_view = first_view(view)
+  selected = first(copies)
+  result = identity(selected)
+  out1 = f32(result.value + from_view.value)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal generic def types should specialize at the call site");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("first.__onda_mono")
+                && def.return_ty == ReturnType::Data(DataType::Struct("Box.__gen__f64".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized nominal generic def types should lower");
+    }
+
+    #[test]
+    fn generic_def_infers_every_type_argument_from_a_nominal_parameter() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def identity<A, B>(value: Pair<A, B>) -> Pair<A, B>:
+  return value
+
+def forwarded<A, B>(value: Pair<A, B>) -> Pair<A, B>:
+  return identity(value)
+
+sample:
+  source = Pair<i64, f64>(first = i64(7), second = f64(.25))
+  result = forwarded(source)
+  out1 = f32(result.first) + f32(result.second)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("all nested nominal type arguments should be inferred");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("identity.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f64".into()))
+        }));
+        assert!(typed.defs.iter().any(|def| {
+            def.name.starts_with("forwarded.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__i64_f64".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("multi-parameter nominal generic inference should lower");
+    }
+
+    #[test]
+    fn generic_def_rejects_conflicting_nominal_type_arguments() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def choose<T>(left: Box<T>, right: Box<T>) -> Box<T>:
+  return left
+
+sample:
+  narrow = Box<f32>(value = .25)
+  wide = Box<f64>(value = f64(.5))
+  result = choose(narrow, wide)
+  out1 = result.value
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("nominal type arguments must match exactly");
+        assert!(errors.iter().any(|error| {
+            error.message.contains("type parameter 'T'")
+                && error
+                    .message
+                    .contains("incompatible exact argument types f32 and f64")
+        }));
+    }
+
+    #[test]
+    fn generic_nominal_patterns_participate_in_overload_resolution() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def pick<T>(value: Pair<T, f32>) -> T:
+  return value.first
+
+def pick<T>(value: Pair<T, f64>) -> T:
+  return value.first
+
+sample:
+  narrow = Pair<i32, f32>(7, 1.0)
+  wide = Pair<i64, f64>(i64(9), f64(2.0))
+  out1 = f32(pick(narrow)) + f32(pick(wide))
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal generic patterns should select overloads");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded nominal generic patterns should lower");
+    }
+
+    #[test]
+    fn generic_nominal_overloads_support_fixed_arrays_and_slices() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def fixed_kind<T>(values: Pair<T, f32>[1]) -> f32:
+  return 0.1
+
+def fixed_kind<T>(values: Pair<T, f64>[1]) -> f32:
+  return 0.2
+
+def slice_kind<T>(values: Pair<T, f32>[]) -> f32:
+  return 0.1
+
+def slice_kind<T>(values: Pair<T, f64>[]) -> f32:
+  return 0.2
+
+init:
+  fixed32: Pair<i32, f32>[1] = [Pair<i32, f32>(1, 1.0)]
+  fixed64: Pair<i32, f64>[1] = [Pair<i32, f64>(1, f64(2.0))]
+  slice32: Pair<i32, f32>[] = fixed32[:]
+  slice64: Pair<i32, f64>[] = fixed64[:]
+
+sample:
+  out1 = fixed_kind(fixed32) + fixed_kind(fixed64) + slice_kind(slice32) + slice_kind(slice64)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("nominal array patterns should select overloads");
+        lower_program_to_optimized_mir(&typed)
+            .expect("overloaded nominal array patterns should lower");
+    }
+
+    #[test]
+    fn generic_nominal_pattern_mismatches_use_source_type_names() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+def take<T>(value: Pair<T, f64>) -> T:
+  return value.first
+
+sample:
+  wrong = Pair<i64, f32>(i64(1), 2.0)
+  out1 = f32(take(wrong))
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("the concrete nominal argument should not match");
+        assert!(errors.iter().any(|error| {
+            error.message
+                == "generic function 'take' parameter 'value' requires 'Pair<T, f64>', got 'Pair<i64, f32>'"
+        }));
+        assert!(errors
+            .iter()
+            .all(|error| !error.message.contains(".__gen__")));
+    }
+
+    #[test]
+    fn generic_def_constructors_specialize_with_their_owner() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+  def get(self) -> T:
+    return self.value
+
+  def duplicate(self) -> Box<T>:
+    return Box<T>(self.value)
+
+def explicit<T>(value: T) -> Box<T>:
+  return Box<T>(value)
+
+def inferred<T>(value: T) -> T:
+  box = Box(value)
+  duplicate = box.duplicate()
+  return duplicate.get()
+
+def pair<T>(value: T) -> Box<T>[2]:
+  boxes: Box<T>[2] = [Box<T>(value), Box<T>(value)]
+  return boxes
+
+sample:
+  box = explicit<f64>(f64(.25))
+  boxes = pair<f64>(f64(.75))
+  out1 = f32(box.value + inferred<f64>(f64(.5)) + boxes[1].value)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("constructors in generic defs should specialize with the def");
+        assert!(typed
+            .structs
+            .iter()
+            .any(|strukt| strukt.name == "Box.__gen__f64"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("generic def constructors should lower after specialization");
+    }
+
+    #[test]
+    fn generic_def_constructors_reject_unknown_forwarded_types_while_unused() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+def invalid<T>(value: T) -> T:
+  box = Box<U>(value)
+  return box.value
+
+sample:
+  out1 = 0.0
+"#;
+        let errors = analyze(parse_program(src).expect("source should parse"))
+            .expect_err("unknown forwarded constructor type should fail");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("generic type argument 'U' is not declared by generic def 'invalid'")
+        }));
+    }
+
+    #[test]
+    fn generic_processor_uses_the_same_nominal_type_specialization_in_local_defs() {
+        let src = r#"
+struct Box<T>:
+  value: T
+
+proc Reader<T>:
+  outs<T>:
+    out1
+
+  init:
+    box = Box<T>(value = T(.25))
+
+  events:
+    set(value: Box<T>):
+      box = value
+
+  def copied(value: Box<T>) -> Box<T>:
+    copy: Box<T> = value
+    return copy
+
+  sample:
+    result = copied(box)
+    out1 = result.value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("processor executable scopes should share nominal specialization rules");
+        assert!(
+            typed.defs.iter().any(|def| {
+                def.name.contains("Reader.__gen__f32")
+                    && def.name.ends_with("copied")
+                    && def.return_ty
+                        == ReturnType::Data(DataType::Struct("Box.__gen__f32".into()))
+            }),
+            "expected specialized processor-local def, got {:#?}",
+            typed.defs
+        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized processor-local nominal types should lower");
+    }
+
+    #[test]
+    fn generic_processor_materializes_struct_array_type_from_state_declaration() {
+        let src = r#"
+struct Cell<T>:
+  value: T
+
+proc Reader<T>:
+  outs<T> 1
+
+  init:
+    cells: Cell<T>[2]
+
+  sample:
+    cell = cells[0]
+    out1 = cell.value
+
+init:
+  reader = Reader<f32>()
+
+sample:
+  out1 = reader()
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("a specialized state annotation should materialize its generic struct");
+        assert!(typed
+            .structs
+            .iter()
+            .any(|strukt| strukt.name == "Cell.__gen__f32"));
+        lower_program_to_optimized_mir(&typed)
+            .expect("specialized processor struct-array state should lower");
+    }
+
+    #[test]
+    fn parameterized_namespace_materializes_broadcast_generic_struct_array_state() {
+        let src = r#"
+namespace Bank<N = 2>:
+  struct Cell<T>:
+    value: T
+
+  proc Reader<T>:
+    outs<T> 1
+
+    init:
+      cells: Cell<T>[N] = Cell<T>(value = T(.5))
+
+    sample:
+      cell = cells[N - 1]
+      out1 = cell.value
+
+init:
+  reader = Bank<3>::Reader<f64>()
+
+sample:
+  out1 = f32(reader())
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("namespace-local generic struct state should materialize transitively");
+        assert!(typed.structs.iter().any(|strukt| {
+            strukt.name.starts_with("Bank__nsinst")
+                && strukt.name.ends_with("::Cell.__gen__f64")
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("namespace-local broadcast struct-array state should lower");
+    }
+
+    #[test]
+    fn function_parameter_shadows_same_named_struct_array_root() {
+        let src = r#"
+struct Cell:
+  value: f32
+
+def first(input: f32[]):
+  return input[0]
+
+outs 1
+
+init:
+  input: Cell[2]
+  values: f32[2] = [0.25, 0.75]
+
+sample:
+  out1 = first(values)
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("the function-local parameter must shadow the outer aggregate root");
+        lower_program_to_optimized_mir(&typed)
+            .expect("shadowed aggregate roots should lower to MIR");
+    }
+
+    #[test]
+    fn generic_processor_preserves_local_def_type_parameters() {
+        let src = r#"
+struct Pair<A, B>:
+  first: A
+  second: B
+
+proc Reader<T>:
+  outs<T>:
+    out1
+
+  def copied<U>(value: Pair<T, U>) -> Pair<T, U>:
+    local: Pair<T, U> = value
+    copy = Pair<T, U>(local.first, local.second)
+    return copy
+
+  sample:
+    pair = Pair<T, f32>(T(.25), .5)
+    result = copied(pair)
+    out1 = T(result.second)
+
+init:
+  reader = Reader<f64>()
+
+sample:
+  out1 = f32(reader())
+"#;
+        let typed = analyze(parse_program(src).expect("source should parse"))
+            .expect("processor and local-def type parameters should specialize independently");
+        assert!(typed.defs.iter().any(|def| {
+            def.name.contains("Reader.__gen__f64")
+                && def.name.contains("copied.__onda_mono")
+                && def.return_ty
+                    == ReturnType::Data(DataType::Struct("Pair.__gen__f64_f32".into()))
+        }));
+        lower_program_to_optimized_mir(&typed)
+            .expect("mixed processor and local-def generic types should lower");
+    }
+
+    #[test]
     fn duplicate_generated_generic_struct_specialization_is_deduped() {
         let src = "namespace sc:\n  struct CyclePhase<T>:\n    phase: T\n\n    def tick(self):\n      self.phase = self.phase + T(1.0)\n      return self.phase\n\n  namespace Sine:\n    proc ar<T>:\n      outs:\n        out1: T\n      init<T>:\n        core = sc::CyclePhase<T>()\n      sample:\n        out1 = core.tick()\n\nouts:\n  out1\ninit:\n  a = sc::Sine::ar()\n  z = sc::CyclePhase<f32>()\n\nsample:\n  out1 = a()\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -262,31 +868,18 @@ sample:
     }
 
     #[test]
-    fn struct_return_annotation_is_rejected() {
-        let src = "struct Pair:\n  x\nouts:\n  out1\ndef borrow(pair: Pair) -> Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("struct return annotation should fail");
-        assert!(
-            errors.iter().any(|diag| {
-                diag.message
-                    .contains("function 'borrow' return type 'Pair' is not supported")
-            }),
-            "expected unsupported struct return diagnostic, got {errors:?}"
-        );
-    }
-
-    #[test]
-    fn namespaced_struct_return_annotation_is_rejected_after_rewrite() {
-        let src = "namespace dsp:\n  struct Pair:\n    x\nouts:\n  out1\ndef borrow(pair: dsp::Pair) -> dsp::Pair:\n  return pair\nsample:\n  out1 = 0.0\n";
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("namespaced struct return annotation should fail");
-        assert!(
-            errors.iter().any(|diag| {
-                diag.message
-                    .contains("function 'borrow' return type 'dsp::Pair' is not supported")
-            }),
-            "expected unsupported namespaced return diagnostic, got {errors:?}"
-        );
+    fn nominal_struct_return_annotations_are_supported() {
+        for name in ["Pair", "dsp::Pair"] {
+            let declaration = if name.contains("::") {
+                "namespace dsp:\n  struct Pair:\n    x"
+            } else {
+                "struct Pair:\n  x"
+            };
+            let source = format!("{declaration}\ndef duplicate(pair: {name}) -> {name}:\n  return pair\ninit:\n  pair = {name}()\nsample:\n  saved = duplicate(pair)\n  out1 = saved.x\n");
+            let parsed = parse_program(&source).expect("source parses");
+            let typed = analyze(parsed).expect("nominal data returns analyze");
+            lower_program_to_optimized_mir(&typed).expect("nominal data returns lower");
+        }
     }
 
     #[test]
@@ -608,7 +1201,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -628,7 +1221,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -648,7 +1241,7 @@ sample:
         assert!(
             matches!(
                 def.param_kinds.as_slice(),
-                [TypedFnParam::StructArray { struct_name }] if struct_name == "Pair"
+                [TypedFnParam::StructArray { struct_name, .. }] if struct_name == "Pair"
             ),
             "expected struct-array param kind, got {:#?}",
             def.param_kinds
@@ -669,7 +1262,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Pair"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -705,7 +1298,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Voice"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Voice"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -727,7 +1320,7 @@ sample:
             assert!(
                 matches!(
                     def.param_kinds.first(),
-                    Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Pair"
+                    Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Pair"
                 ),
                 "expected struct-array first param for '{def_name}', got {:#?}",
                 def.param_kinds
@@ -2956,6 +3549,55 @@ sample:
     }
 
     #[test]
+    fn generic_casts_in_local_consts_resolve_in_every_generic_executable_owner() {
+        let src = r#"
+struct Box<T>:
+  value: T
+  def shifted(self) -> T:
+    const One = T(1)
+    return self.value + One
+
+def shifted<T>(value: T) -> T:
+  const One = T(1)
+  const Two = One + One
+  return value + Two
+
+def generic_one<T>():
+  const One = T(1)
+  return One
+
+proc Holder<T>:
+  outs:
+    out1
+  init:
+    const Two = T(2)
+    stored: T = Two
+  events:
+    set(value: T):
+      const One = T(1)
+      stored = value + One
+  def shifted(value: T) -> T:
+    const One = T(1)
+    return value + One
+  sample:
+    out1 = f32(shifted(stored))
+
+init:
+  holder = Holder<f32>()
+  holder.set(f32(3))
+
+sample:
+  box = Box<f64>(4.0)
+  out1 = f32(box.shifted()) + f32(shifted<f64>(5.0)) + f32(generic_one<f64>()) + holder()
+"#;
+        let program = parse_program(src).expect("generic local const source should parse");
+        let typed = analyze(program)
+            .expect("generic local consts should resolve after owner specialization");
+        lower_program_to_optimized_mir(&typed)
+            .expect("resolved generic local consts should lower to MIR");
+    }
+
+    #[test]
     fn individual_proc_event_syntax_merges_with_proc_events_block_during_analysis() {
         let src = "proc Voice:\n  outs:\n    out1\n  event ping(x: i32):\n    phase = f32(x)\n  events:\n    reset():\n      phase = 0.0\n  init:\n    phase = 0.0\n  sample:\n    out1 = phase\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n";
         let program = parse_program(src).expect("parse should succeed");
@@ -3355,7 +3997,7 @@ sample:
         assert_eq!(specializations.len(), 1, "{specializations:#?}");
         assert!(matches!(
             specializations[0].param_kinds.first(),
-            Some(TypedFnParam::StructArray { struct_name }) if struct_name == "Item"
+            Some(TypedFnParam::StructArray { struct_name, .. }) if struct_name == "Item"
         ));
         lower_program_to_optimized_mir(&typed)
             .expect("the shared struct-array specialization should lower to MIR");
@@ -3865,7 +4507,7 @@ sample:
         let source = r#"
 struct Ring:
   values: f32[8]
-  index: i32 = 0 {8, wrap}
+  index: i32 {8, wrap}
 
   def write(self, value: f32):
     self.values[self.index] = value
@@ -3969,4 +4611,3 @@ sample:
             "cannot assign I64 to I32",
         );
     }
-

@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use onda_frontend::ast::{BinaryOp, CallArg, Expr, Span, Stmt};
+use onda_frontend::ast::{CallArg, Expr, Span, Stmt};
 use onda_frontend::{DiagCtx, Diagnostic, PrimitiveType};
 
+use crate::aggregate_layout::MAX_AGGREGATE_NESTING;
 use crate::decl_symbols::{insert_declared_symbol, DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::proc_state_rewrite::{
     PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
@@ -14,63 +15,38 @@ use crate::{
     LocalArrayAliasInfo, TypedFieldType, TypedStructField,
 };
 
-#[derive(Debug, Clone)]
-enum StructArrayLayoutKind {
-    Scalar(PrimitiveType),
-    Array {
-        len: usize,
-        elem_ty: Option<PrimitiveType>,
-        elem_struct: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct StructArrayLayoutField {
-    name: String,
-    kind: StructArrayLayoutKind,
-}
-
-pub(crate) fn validate_data_struct_layout(
+fn enter_struct_layout<'a>(
     struct_name: &str,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) -> bool {
-    collect_data_struct_layout(struct_name, struct_defs, context, errors).is_some()
-}
-
-fn collect_data_struct_layout(
-    struct_name: &str,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) -> Option<Vec<StructArrayLayoutField>> {
-    let mut stack = Vec::<String>::new();
-    collect_data_struct_layout_inner(struct_name, struct_defs, context, errors, &mut stack)
-}
-
-fn collect_data_struct_layout_inner(
-    struct_name: &str,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
-) -> Option<Vec<StructArrayLayoutField>> {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
+) -> Option<&'a [TypedStructField]> {
+    if let Some(start) = stack.iter().position(|name| name == struct_name) {
+        let mut cycle = stack[start..].to_vec();
+        cycle.push(struct_name.to_owned());
         push_semantic(
             DiagCtx::default(),
             errors,
-            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
+            format!(
+                "{context} contains recursive aggregate layout cycle: {}",
+                cycle.join(" -> ")
+            ),
         );
         return None;
     }
-    let fields = struct_defs.get(struct_name).cloned();
-    let Some(fields) = fields else {
+    let depth = stack.len() + 1;
+    if depth > MAX_AGGREGATE_NESTING {
+        push_semantic(
+            DiagCtx::default(),
+            errors,
+            format!(
+                "{context} aggregate nesting ending at '{struct_name}' reaches depth {depth}, exceeding the limit of {MAX_AGGREGATE_NESTING}"
+            ),
+        );
+        return None;
+    }
+    let Some(fields) = struct_defs.get(struct_name) else {
         push_semantic(
             DiagCtx::default(),
             errors,
@@ -78,56 +54,8 @@ fn collect_data_struct_layout_inner(
         );
         return None;
     };
-
     stack.push(struct_name.to_owned());
-    let mut layout = Vec::new();
-    for field in fields {
-        match field.ty {
-            TypedFieldType::Scalar(prim) => layout.push(StructArrayLayoutField {
-                name: field.name,
-                kind: StructArrayLayoutKind::Scalar(prim),
-            }),
-            TypedFieldType::Struct => {}
-            TypedFieldType::Array(len) => {
-                if let Some(elem_struct) = &field.array_elem_struct {
-                    let nested_context = format!(
-                        "{context} nested array field '{}.{}'",
-                        struct_name, field.name
-                    );
-                    if collect_data_struct_layout_inner(
-                        elem_struct,
-                        struct_defs,
-                        &nested_context,
-                        errors,
-                        stack,
-                    )
-                    .is_none()
-                    {
-                        stack.pop();
-                        return None;
-                    }
-                }
-                layout.push(StructArrayLayoutField {
-                    name: field.name,
-                    kind: StructArrayLayoutKind::Array {
-                        len,
-                        elem_ty: field.array_elem_ty,
-                        elem_struct: field.array_elem_struct.clone(),
-                    },
-                });
-            }
-            TypedFieldType::Tuple(ref elem_tys) => {
-                for (idx, prim) in elem_tys.iter().enumerate() {
-                    layout.push(StructArrayLayoutField {
-                        name: format!("{}.__{idx}", field.name),
-                        kind: StructArrayLayoutKind::Scalar(*prim),
-                    });
-                }
-            }
-        }
-    }
-    stack.pop();
-    Some(layout)
+    Some(fields)
 }
 
 pub(crate) fn register_data_struct_root(
@@ -142,9 +70,6 @@ pub(crate) fn register_data_struct_root(
     state_array_struct_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if !validate_data_struct_layout(struct_name, struct_defs, context, errors) {
-        return false;
-    }
     let mut stack = Vec::<String>::new();
     register_data_struct_root_inner(
         base,
@@ -175,25 +100,7 @@ fn register_data_struct_root_inner(
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
 ) -> bool {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context} contains recursive array[Struct, N] cycle: {cycle}"),
-        );
-        return false;
-    }
-    let Some(fields) = struct_defs.get(struct_name).cloned() else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("{context} references unknown struct '{struct_name}'"),
-        );
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
     state_array_struct_roots
@@ -203,8 +110,8 @@ fn register_data_struct_root_inner(
             len,
             static_len: Some(len),
         });
-    // Mark the root symbol so index validation can recognize `base[idx]` even
-    // when the struct has no scalar/array fields to contribute `base.*` keys.
+    // Mark the nominal root independently from its flattened field symbols so
+    // index validation can recognize `base[idx]`.
     insert_declared_symbol(
         state_scalars,
         declared_symbols,
@@ -213,22 +120,42 @@ fn register_data_struct_root_inner(
             elem_ty: PrimitiveType::F32,
         },
     );
-
-    stack.push(struct_name.to_owned());
     for field in fields {
         let flat = format!("{base}.{}", field.name);
-        match field.ty {
+        match &field.ty {
             TypedFieldType::Scalar(prim) => {
                 insert_declared_symbol(
                     state_scalars,
                     declared_symbols,
                     flat.clone(),
-                    DeclaredSymbolInfo::DataArray { elem_ty: prim },
+                    DeclaredSymbolInfo::DataArray { elem_ty: *prim },
                 );
                 state_arrays.entry(flat).or_insert(len);
             }
-            TypedFieldType::Struct => {}
-            TypedFieldType::Tuple(ref elem_tys) => {
+            TypedFieldType::Struct => {
+                let Some(nested) = field.struct_name.as_deref() else {
+                    continue;
+                };
+                let nested_context =
+                    format!("{context} nested field '{}.{}'", struct_name, field.name);
+                if !register_data_struct_root_inner(
+                    &flat,
+                    nested,
+                    len,
+                    struct_defs,
+                    &nested_context,
+                    state_scalars,
+                    declared_symbols,
+                    state_arrays,
+                    state_array_struct_roots,
+                    errors,
+                    stack,
+                ) {
+                    stack.pop();
+                    return false;
+                }
+            }
+            TypedFieldType::Tuple(elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
                     insert_declared_symbol(
@@ -241,7 +168,7 @@ fn register_data_struct_root_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let Some(nested_len) = len.checked_mul(field_len) else {
+                let Some(nested_len) = len.checked_mul(*field_len) else {
                     push_semantic(
                         DiagCtx::default(),
                         errors,
@@ -301,34 +228,145 @@ pub(crate) fn add_struct_element_alias_bindings(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    let Some(layout) = collect_data_struct_layout(struct_name, struct_defs, context, errors) else {
+    let mut stack = Vec::new();
+    add_struct_element_alias_bindings_inner(
+        alias_name,
+        struct_name,
+        None,
+        struct_defs,
+        known_scalars,
+        local_aliases,
+        local_array_aliases,
+        context,
+        errors,
+        &mut stack,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_struct_element_alias_bindings_inner(
+    base: &str,
+    struct_name: &str,
+    array_len: Option<usize>,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    known_scalars: &mut HashSet<String>,
+    local_aliases: &mut LocalAliasTypes,
+    local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+    stack: &mut Vec<String>,
+) -> bool {
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
-    for field in layout {
-        match field.kind {
-            StructArrayLayoutKind::Scalar(prim) => {
-                let alias = format!("{alias_name}.{}", field.name);
-                local_aliases.insert(alias.clone(), prim);
-                known_scalars.insert(alias);
+    for field in fields {
+        let flat = format!("{base}.{}", field.name);
+        match &field.ty {
+            TypedFieldType::Scalar(ty) => {
+                if let Some(len) = array_len {
+                    local_array_aliases.insert(
+                        flat,
+                        LocalArrayAliasInfo {
+                            proven_len: None,
+                            len,
+                            static_len: Some(len),
+                            elem_ty: *ty,
+                            elem_struct: None,
+                            writable: true,
+                        },
+                    );
+                } else {
+                    local_aliases.insert(flat.clone(), *ty);
+                    known_scalars.insert(flat);
+                }
             }
-            StructArrayLayoutKind::Array {
-                len,
-                elem_ty,
-                elem_struct,
-            } => {
+            TypedFieldType::Struct => {
+                let Some(nested) = &field.struct_name else {
+                    continue;
+                };
+                if !add_struct_element_alias_bindings_inner(
+                    &flat,
+                    nested,
+                    array_len,
+                    struct_defs,
+                    known_scalars,
+                    local_aliases,
+                    local_array_aliases,
+                    context,
+                    errors,
+                    stack,
+                ) {
+                    stack.pop();
+                    return false;
+                }
+            }
+            TypedFieldType::Tuple(types) => {
+                for (index, ty) in types.iter().enumerate() {
+                    let component = format!("{flat}.__{index}");
+                    if let Some(len) = array_len {
+                        local_array_aliases.insert(
+                            component,
+                            LocalArrayAliasInfo {
+                                proven_len: None,
+                                len,
+                                static_len: Some(len),
+                                elem_ty: *ty,
+                                elem_struct: None,
+                                writable: true,
+                            },
+                        );
+                    } else {
+                        local_aliases.insert(component.clone(), *ty);
+                        known_scalars.insert(component);
+                    }
+                }
+            }
+            TypedFieldType::Array(field_len) => {
+                let outer_len = array_len.unwrap_or(1);
+                let Some(len) = outer_len.checked_mul(*field_len) else {
+                    push_semantic(
+                        DiagCtx::default(),
+                        errors,
+                        format!(
+                            "{context} field '{flat}' flattened length exceeds addressable size"
+                        ),
+                    );
+                    stack.pop();
+                    return false;
+                };
+                let elem_struct = field.array_elem_struct.as_deref();
                 local_array_aliases.insert(
-                    format!("{alias_name}.{}", field.name),
+                    flat.clone(),
                     LocalArrayAliasInfo {
+                        proven_len: None,
                         len,
                         static_len: Some(len),
-                        elem_ty: elem_ty.unwrap_or(PrimitiveType::F32),
-                        elem_struct,
+                        elem_ty: field.array_elem_ty.unwrap_or(PrimitiveType::F32),
+                        elem_struct: elem_struct.map(ToOwned::to_owned),
                         writable: true,
                     },
                 );
+                if let Some(nested) = elem_struct {
+                    if !add_struct_element_alias_bindings_inner(
+                        &flat,
+                        nested,
+                        Some(len),
+                        struct_defs,
+                        known_scalars,
+                        local_aliases,
+                        local_array_aliases,
+                        context,
+                        errors,
+                        stack,
+                    ) {
+                        stack.pop();
+                        return false;
+                    }
+                }
             }
         }
     }
+    stack.pop();
     true
 }
 
@@ -342,14 +380,7 @@ pub(crate) fn register_struct_array_param_bindings(
     struct_array_roots: &mut HashMap<String, ArrayStructRootInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if !validate_data_struct_layout(
-        struct_name,
-        struct_defs,
-        &format!("function parameter '{base}'"),
-        errors,
-    ) {
-        return false;
-    }
+    let context = format!("function parameter '{base}'");
     let mut unused_scalars = HashMap::<String, PrimitiveType>::new();
     let mut stack = Vec::<String>::new();
     register_struct_array_param_bindings_inner(
@@ -362,6 +393,7 @@ pub(crate) fn register_struct_array_param_bindings(
         local_array_aliases,
         struct_array_roots,
         &mut unused_scalars,
+        &context,
         errors,
         &mut stack,
     )
@@ -378,30 +410,11 @@ fn register_struct_array_param_bindings_inner(
     local_array_aliases: &mut HashMap<String, LocalArrayAliasInfo>,
     struct_array_roots: &mut HashMap<String, ArrayStructRootInfo>,
     unused_scalars: &mut HashMap<String, PrimitiveType>,
+    context: &str,
     errors: &mut Vec<Diagnostic>,
     stack: &mut Vec<String>,
 ) -> bool {
-    if stack.iter().any(|s| s == struct_name) {
-        let mut cycle = stack.join(" -> ");
-        if !cycle.is_empty() {
-            cycle.push_str(" -> ");
-        }
-        cycle.push_str(struct_name);
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!(
-                "function parameter '{base}' contains recursive array[Struct, N] cycle: {cycle}"
-            ),
-        );
-        return false;
-    }
-    let Some(fields) = struct_defs.get(struct_name).cloned() else {
-        push_semantic(
-            DiagCtx::default(),
-            errors,
-            format!("function parameter '{base}' references unknown struct '{struct_name}'"),
-        );
+    let Some(fields) = enter_struct_layout(struct_name, struct_defs, context, errors, stack) else {
         return false;
     };
 
@@ -415,6 +428,7 @@ fn register_struct_array_param_bindings_inner(
     local_array_aliases
         .entry(base.to_owned())
         .or_insert(LocalArrayAliasInfo {
+            proven_len: None,
             len: len_factor.max(1),
             static_len: static_len_factor,
             elem_ty: PrimitiveType::F32,
@@ -429,18 +443,17 @@ fn register_struct_array_param_bindings_inner(
             elem_ty: PrimitiveType::F32,
         },
     );
-
-    stack.push(struct_name.to_owned());
     for field in fields {
         let flat = format!("{base}.{}", field.name);
-        match field.ty {
+        match &field.ty {
             TypedFieldType::Scalar(prim) => {
                 local_array_aliases
                     .entry(flat.clone())
                     .or_insert(LocalArrayAliasInfo {
+                        proven_len: None,
                         len: len_factor.max(1),
                         static_len: static_len_factor,
-                        elem_ty: prim,
+                        elem_ty: *prim,
                         elem_struct: None,
                         writable: true,
                     });
@@ -448,16 +461,38 @@ fn register_struct_array_param_bindings_inner(
                     unused_scalars,
                     declared_symbols,
                     flat,
-                    DeclaredSymbolInfo::DataArray { elem_ty: prim },
+                    DeclaredSymbolInfo::DataArray { elem_ty: *prim },
                 );
             }
-            TypedFieldType::Struct => {}
-            TypedFieldType::Tuple(ref elem_tys) => {
+            TypedFieldType::Struct => {
+                let Some(nested) = field.struct_name.as_deref() else {
+                    continue;
+                };
+                if !register_struct_array_param_bindings_inner(
+                    &flat,
+                    nested,
+                    len_factor,
+                    static_len_factor,
+                    struct_defs,
+                    declared_symbols,
+                    local_array_aliases,
+                    struct_array_roots,
+                    unused_scalars,
+                    context,
+                    errors,
+                    stack,
+                ) {
+                    stack.pop();
+                    return false;
+                }
+            }
+            TypedFieldType::Tuple(elem_tys) => {
                 for (idx, prim) in elem_tys.iter().enumerate() {
                     let elem_flat = format!("{flat}.__{idx}");
                     local_array_aliases
                         .entry(elem_flat.clone())
                         .or_insert(LocalArrayAliasInfo {
+                            proven_len: None,
                             len: len_factor.max(1),
                             static_len: static_len_factor,
                             elem_ty: *prim,
@@ -473,7 +508,7 @@ fn register_struct_array_param_bindings_inner(
                 }
             }
             TypedFieldType::Array(field_len) => {
-                let Some(nested_factor) = len_factor.checked_mul(field_len) else {
+                let Some(nested_factor) = len_factor.checked_mul(*field_len) else {
                     push_semantic(
                         DiagCtx::default(),
                         errors,
@@ -487,7 +522,7 @@ fn register_struct_array_param_bindings_inner(
                 };
                 let nested_factor = nested_factor.max(1);
                 let nested_static_len =
-                    static_len_factor.and_then(|len| len.checked_mul(field_len));
+                    static_len_factor.and_then(|len| len.checked_mul(*field_len));
                 if let Some(elem_struct) = &field.array_elem_struct {
                     if !register_struct_array_param_bindings_inner(
                         &flat,
@@ -499,6 +534,7 @@ fn register_struct_array_param_bindings_inner(
                         local_array_aliases,
                         struct_array_roots,
                         unused_scalars,
+                        context,
                         errors,
                         stack,
                     ) {
@@ -510,6 +546,7 @@ fn register_struct_array_param_bindings_inner(
                     local_array_aliases
                         .entry(flat.clone())
                         .or_insert(LocalArrayAliasInfo {
+                            proven_len: None,
                             len: nested_factor,
                             static_len: nested_static_len,
                             elem_ty,
@@ -623,13 +660,19 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
             let Some(root_info) = roots.get(&base) else {
                 return true;
             };
-            let Some(fields) = defs.get(&root_info.struct_name) else {
+            if !defs.contains_key(&root_info.struct_name) {
                 // Proc arrays also share the state_array_struct_roots map but are handled later by
                 // proc dispatch rewriting, not by struct-array flattening.
                 return true;
-            };
+            }
 
-            let Some(target_field) = fields.iter().find(|f| f.name == field) else {
+            let Some(target_field) =
+                crate::declaration_coercion::resolve_struct_field_decl(
+                    &root_info.struct_name,
+                    &field,
+                    defs,
+                )
+            else {
                 errors.push(Diagnostic::semantic_span(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
@@ -690,14 +733,12 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
             };
 
             let Some(root_info) = roots.get(&base) else {
-                errors.push(Diagnostic::semantic_span(
-                    format!("'{base}' is not a struct array; cannot use {base}[...].{field}[...]"),
-                    loc,
-                ));
-                return false;
+                // Runtime-local data declarations are registered during flow
+                // analysis, after this whole-program rewrite pass.
+                return true;
             };
 
-            let Some(fields) = defs.get(&root_info.struct_name) else {
+            if !defs.contains_key(&root_info.struct_name) {
                 errors.push(Diagnostic::semantic_span(
                     format!(
                         "struct definition '{}' not found for struct array '{base}'",
@@ -706,9 +747,15 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     loc,
                 ));
                 return false;
-            };
+            }
 
-            let Some(target_field) = fields.iter().find(|f| f.name == field) else {
+            let Some(target_field) =
+                crate::declaration_coercion::resolve_struct_field_decl(
+                    &root_info.struct_name,
+                    &field,
+                    defs,
+                )
+            else {
                 errors.push(Diagnostic::semantic_span(
                     format!("struct '{}' has no field '{field}'", root_info.struct_name),
                     loc,
@@ -716,10 +763,48 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 return false;
             };
 
-            let stride = match target_field.ty {
-                TypedFieldType::Array(len) => len,
-                TypedFieldType::Scalar(_) => 1,
-                TypedFieldType::Tuple(ref elems) => elems.len(),
+            match &target_field.ty {
+                // Keep the structured form so lowering clamps the outer
+                // element and inner fixed-array selector independently.
+                TypedFieldType::Array(_) => return true,
+                TypedFieldType::Tuple(types) => {
+                    let Expr::Int { value, .. } = fidx else {
+                        errors.push(Diagnostic::semantic_span(
+                            "tuple field index must be a compile-time integer constant",
+                            loc,
+                        ));
+                        return false;
+                    };
+                    let Some(component) = usize::try_from(value)
+                        .ok()
+                        .filter(|component| *component < types.len())
+                    else {
+                        errors.push(Diagnostic::semantic_span(
+                            format!(
+                                "tuple field index {value} is out of bounds for {base}[...].{field} with {} elements",
+                                types.len()
+                            ),
+                            loc,
+                        ));
+                        return false;
+                    };
+                    *expr = Expr::Index {
+                        loc,
+                        base: format!("{base}.{field}.__{component}"),
+                        index: Box::new(idx),
+                    };
+                    return false;
+                }
+                TypedFieldType::Scalar(_) => {
+                    errors.push(Diagnostic::semantic_span(
+                        format!(
+                            "field '{field}' of struct '{}' is not indexable",
+                            root_info.struct_name
+                        ),
+                        loc,
+                    ));
+                    return false;
+                }
                 TypedFieldType::Struct => {
                     errors.push(Diagnostic::semantic_span(
                         format!(
@@ -730,37 +815,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                     ));
                     return false;
                 }
-            };
-
-            let flat_base = format!("{base}.{field}");
-            // Compute flattened index: idx * stride + fidx
-            let flat_index = if stride == 1 {
-                // For scalar fields: just use idx (fidx should be 0 or the only index)
-                Expr::Binary {
-                    loc: Span::ZERO,
-                    op: BinaryOp::Add,
-                    lhs: Box::new(idx),
-                    rhs: Box::new(fidx),
-                }
-            } else {
-                Expr::Binary {
-                    loc: Span::ZERO,
-                    op: BinaryOp::Add,
-                    lhs: Box::new(Expr::Binary {
-                        loc: Span::ZERO,
-                        op: BinaryOp::Mul,
-                        lhs: Box::new(idx),
-                        rhs: Box::new(Expr::int(stride as i64)),
-                    }),
-                    rhs: Box::new(fidx),
-                }
-            };
-
-            *expr = Expr::Index {
-                loc,
-                base: flat_base,
-                index: Box::new(flat_index),
-            };
+            }
         }
         _ => return true,
     }
@@ -768,7 +823,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
     });
 }
 
-fn extract_safi_args(args: &mut [CallArg]) -> Option<(String, Expr, String, Expr)> {
+pub(crate) fn extract_safi_args(args: &[CallArg]) -> Option<(String, Expr, String, Expr)> {
     let mut base = None::<String>;
     let mut idx = None::<Expr>;
     let mut field = None::<String>;
@@ -793,7 +848,9 @@ fn extract_safi_args(args: &mut [CallArg]) -> Option<(String, Expr, String, Expr
     Some((base?, idx?, field?, fidx?))
 }
 
-fn extract_proc_index_field_args(args: &[CallArg]) -> Option<(String, Expr, String, IndexAccess)> {
+pub(crate) fn extract_proc_index_field_args(
+    args: &[CallArg],
+) -> Option<(String, Expr, String, IndexAccess)> {
     let mut base = None::<String>;
     let mut idx = None::<Expr>;
     let mut field = None::<String>;

@@ -3,18 +3,21 @@ use std::collections::{HashMap, HashSet};
 
 use onda_frontend::Span;
 
+use crate::aggregate_layout::validate_aggregate_structure;
 use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
-    coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots, desugar_processors,
-    guard_pinned_initializers, internal_proc_index_call_signature, lower_graph_blocks,
-    nested_call_out_fn_name, nested_step_fn_name, prepare_processors_for_graph_inspection,
-    proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
-    ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
+    coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots,
+    desugar_materialized_processors, guard_pinned_initializers, internal_proc_index_call_signature,
+    lower_graph_blocks, materialize_generic_processors, nested_call_out_fn_name,
+    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
+    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
+    TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
 };
 use crate::*;
 
 mod const_evaluation;
 mod const_rewriting;
+mod data_permissions;
 mod integer_ranges;
 mod post_analysis;
 
@@ -456,50 +459,68 @@ fn collect_struct_field_dependencies(def: &StructDef) -> Vec<String> {
 }
 
 fn order_struct_defs_for_field_dependencies(structs: &mut Vec<StructDef>) {
-    let index_by_name = structs
-        .iter()
-        .enumerate()
-        .map(|(idx, def)| (def.name.clone(), idx))
-        .collect::<HashMap<_, _>>();
-    if index_by_name.is_empty() {
+    if structs.is_empty() {
         return;
     }
 
-    let deps_by_index = structs
-        .iter()
-        .map(collect_struct_field_dependencies)
-        .collect::<Vec<_>>();
-    let mut remaining = (0..structs.len()).collect::<Vec<_>>();
-    let mut ordered = Vec::<StructDef>::with_capacity(structs.len());
-
-    while !remaining.is_empty() {
-        let remaining_names = remaining
+    let (dependents, mut incoming) = {
+        let index_by_name = structs
             .iter()
-            .map(|idx| structs[*idx].name.as_str())
-            .collect::<HashSet<_>>();
-        let mut ready_pos = None;
-        for (pos, idx) in remaining.iter().enumerate() {
-            let self_name = structs[*idx].name.as_str();
-            let ready = deps_by_index[*idx].iter().all(|dep| {
-                dep == self_name
-                    || !index_by_name.contains_key(dep)
-                    || !remaining_names.contains(dep.as_str())
-            });
-            if ready {
-                ready_pos = Some(pos);
-                break;
+            .enumerate()
+            .map(|(index, definition)| (definition.name.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut dependents = vec![Vec::new(); structs.len()];
+        let mut incoming = vec![0usize; structs.len()];
+        for (dependent, definition) in structs.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for dependency in collect_struct_field_dependencies(definition) {
+                let Some(&dependency) = index_by_name.get(dependency.as_str()) else {
+                    continue;
+                };
+                if dependency == dependent || !seen.insert(dependency) {
+                    continue;
+                }
+                dependents[dependency].push(dependent);
+                incoming[dependent] += 1;
             }
         }
+        (dependents, incoming)
+    };
 
-        let Some(pos) = ready_pos else {
-            ordered.extend(remaining.drain(..).map(|idx| structs[idx].clone()));
-            break;
-        };
-        let idx = remaining.remove(pos);
-        ordered.push(structs[idx].clone());
+    let mut ready = std::collections::BinaryHeap::new();
+    for (index, count) in incoming.iter().enumerate() {
+        if *count == 0 {
+            ready.push(std::cmp::Reverse(index));
+        }
+    }
+    let mut order = Vec::with_capacity(structs.len());
+    while let Some(std::cmp::Reverse(index)) = ready.pop() {
+        order.push(index);
+        for &dependent in &dependents[index] {
+            incoming[dependent] -= 1;
+            if incoming[dependent] == 0 {
+                ready.push(std::cmp::Reverse(dependent));
+            }
+        }
+    }
+    if order.len() != structs.len() {
+        order.extend(
+            incoming
+                .iter()
+                .enumerate()
+                .filter_map(|(index, count)| (*count != 0).then_some(index)),
+        );
     }
 
-    *structs = ordered;
+    let mut original = std::mem::take(structs)
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<_>>();
+    structs.extend(
+        order
+            .into_iter()
+            .map(|index| original[index].take().expect("struct ordered once")),
+    );
 }
 
 fn rewrite_function_overloads(
@@ -533,37 +554,11 @@ fn register_generated_method_owners(
 
 fn bind_event_param_call_types(env: &mut crate::def_semantics::CallTypeEnv, event: &EventDef) {
     for param in &event.params {
-        env.shadow_binding(&param.name);
-        match &param.ty {
-            EventParamType::Scalar(ty) => {
-                env.scalar_types.insert(param.name.clone(), *ty);
-            }
-            EventParamType::Array { elem, size } => {
-                env.array_types.insert(
-                    param.name.clone(),
-                    crate::def_semantics::CallArrayType::primitive(
-                        *elem,
-                        crate::def_semantics::const_positive_usize_for_call_type(size),
-                    ),
-                );
-            }
-            EventParamType::Slice { elem } => {
-                env.array_types.insert(
-                    param.name.clone(),
-                    crate::def_semantics::CallArrayType::primitive(*elem, None),
-                );
-            }
-            EventParamType::GenericScalar { .. }
-            | EventParamType::GenericArray { .. }
-            | EventParamType::GenericSlice { .. } => {}
-        }
+        let parameter = event_param_as_fn_param(param);
+        env.bind_function_param_type(&param.name, parameter.ty.as_ref(), &[]);
     }
 }
 
-/// Resolves source-level call-shape expressions once before overload
-/// resolution, return inference, and monomorphization inspect signatures or
-/// array constructors. Those passes can then share a small literal-only shape
-/// representation without each reimplementing compile-time evaluation.
 fn normalize_runtime_call_shape_exprs(
     defs: &mut [FunctionDef],
     events: &mut [EventDef],
@@ -586,71 +581,16 @@ fn normalize_runtime_call_shape_exprs(
     }
 
     fn normalize_expr(expr: &mut Expr, options: AnalysisOptions) {
-        match expr {
-            Expr::ArrayCtor { spec, init, .. } => {
+        expr.visit_mut(|expr| {
+            if let Expr::ArrayCtor { spec, .. } = expr {
                 normalize(&mut spec.size, options, "array constructor length");
-                if let Some(values) = init {
-                    for value in values {
-                        normalize_expr(value, options);
-                    }
-                }
             }
-            Expr::Index { index, .. } => normalize_expr(index, options),
-            Expr::Slice {
-                selector,
-                channel,
-                start,
-                end,
-                ..
-            } => {
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    normalize_expr(coordinate, options);
-                }
-            }
-            Expr::Compare { lhs, rhs, .. }
-            | Expr::Logical { lhs, rhs, .. }
-            | Expr::Binary { lhs, rhs, .. } => {
-                normalize_expr(lhs, options);
-                normalize_expr(rhs, options);
-            }
-            Expr::Call { args, .. } => {
-                for arg in args {
-                    normalize_expr(arg, options);
-                }
-            }
-            Expr::UserCall { args, .. } => {
-                for arg in args {
-                    normalize_expr(&mut arg.expr, options);
-                }
-            }
-            Expr::Cast { expr, .. }
-            | Expr::UnaryNot { expr, .. }
-            | Expr::UnaryBitNot { expr, .. } => normalize_expr(expr, options),
-            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-                for value in values {
-                    normalize_expr(value, options);
-                }
-            }
-            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        }
+            true
+        });
     }
 
     fn normalize_target(target: &mut AssignTarget, options: AnalysisOptions) {
-        match target {
-            AssignTarget::Index { index, .. } => normalize_expr(index, options),
-            AssignTarget::Slice {
-                selector,
-                channel,
-                start,
-                end,
-                ..
-            } => {
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    normalize_expr(coordinate, options);
-                }
-            }
-            AssignTarget::Var(_) | AssignTarget::Tuple(_) => {}
-        }
+        target.visit_selectors_mut(|selector| normalize_expr(selector, options));
     }
 
     fn normalize_stmts(stmts: &mut [Stmt], options: AnalysisOptions) {
@@ -818,6 +758,153 @@ fn def_call_type_env<'a>(
     }
 }
 
+fn aggregate_layout_error_diagnostic(
+    error: AggregateLayoutError,
+    source_structs: &[StructDef],
+) -> Diagnostic {
+    let (struct_name, field_path): (Option<&str>, Option<&str>) = match &error {
+        AggregateLayoutError::DuplicateStruct { struct_name }
+        | AggregateLayoutError::LayoutsTooLarge { struct_name, .. }
+        | AggregateLayoutError::LayoutTooWide { struct_name, .. }
+        | AggregateLayoutError::NestingTooDeep { struct_name, .. } => (Some(struct_name), None),
+        AggregateLayoutError::DuplicateField {
+            struct_name,
+            field_name,
+        }
+        | AggregateLayoutError::MalformedField {
+            struct_name,
+            field_name,
+            ..
+        } => (Some(struct_name), Some(field_name)),
+        AggregateLayoutError::UnknownStruct {
+            struct_name,
+            field_path,
+            ..
+        }
+        | AggregateLayoutError::SizeOverflow {
+            struct_name,
+            field_path,
+            ..
+        } => (Some(struct_name), Some(field_path)),
+        AggregateLayoutError::RecursiveAggregate { cycle } => {
+            (cycle.first().map(String::as_str), None)
+        }
+        AggregateLayoutError::TooManyLayouts { .. } => (
+            source_structs
+                .last()
+                .map(|definition| definition.name.as_str()),
+            None,
+        ),
+    };
+
+    let span = struct_name
+        .and_then(|name| {
+            source_structs
+                .iter()
+                .find(|definition| definition.name == name)
+        })
+        .map(|definition| {
+            field_path
+                .and_then(|path| path.split('.').next())
+                .and_then(|field_name| {
+                    definition
+                        .fields
+                        .iter()
+                        .rev()
+                        .find(|field| field.name == field_name)
+                        .map(|field| field.ty_loc)
+                })
+                .unwrap_or(definition.loc)
+        })
+        .unwrap_or(Span::ZERO);
+
+    Diagnostic::semantic_span(error.to_string(), span)
+}
+
+fn materialize_deferred_generic_structs(
+    specializer: &mut DeferredGenericStructs,
+    functions: &mut [FunctionDef],
+    options: AnalysisOptions,
+    raw_structs: &mut Vec<StructDef>,
+    typed_structs: &mut Vec<TypedStruct>,
+    struct_defs: &mut HashMap<String, Vec<TypedStructField>>,
+    methods: &mut Vec<(String, FunctionDef)>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for (raw, typed) in specializer.materialize(functions, options, errors) {
+        methods.extend(
+            lift_struct_methods(&raw, errors)
+                .into_iter()
+                .map(|method| (raw.name.clone(), method)),
+        );
+        struct_defs.insert(typed.name.clone(), typed.fields.clone());
+        raw_structs.push(raw);
+        typed_structs.push(typed);
+    }
+    for function in functions {
+        normalize_struct_constructor_ranges_in_list(&mut function.body, struct_defs);
+    }
+}
+
+fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<FunctionDef> {
+    let mut defs = Vec::with_capacity(strukt.methods.len());
+    for method in &strukt.methods {
+        if is_unsafe_index_method_name(&method.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "cannot redefine builtin method '{}.{}'",
+                    strukt.name, method.name
+                ),
+                method.loc,
+            ));
+            continue;
+        }
+        for type_param in &method.type_params {
+            if strukt.type_params.contains(type_param) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
+                        type_param, strukt.name, method.name, type_param, strukt.name
+                    ),
+                    method.loc,
+                ));
+            }
+        }
+        let mut seen_type_params = HashSet::new();
+        for type_param in &method.type_params {
+            if !seen_type_params.insert(type_param) {
+                errors.push(Diagnostic::semantic_span(
+                    format!(
+                        "duplicate type parameter '{}' in method '{}.{}'",
+                        type_param, strukt.name, method.name
+                    ),
+                    method.loc,
+                ));
+            }
+        }
+        if method.params.first().map(|param| param.name.as_str()) != Some("self") {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "method '{}.{}' must declare 'self' as first parameter",
+                    strukt.name, method.name
+                ),
+                method.loc,
+            ));
+        }
+        let mut method = method.clone();
+        method.name = format!("{}.{}", strukt.name, method.name);
+        if let Some(self_param) = method
+            .params
+            .first_mut()
+            .filter(|param| param.name == "self")
+        {
+            self_param.ty = Some(FnParamType::Struct(strukt.name.clone()));
+        }
+        defs.push(method);
+    }
+    defs
+}
+
 pub fn analyze(program: Program) -> Result<TypedProgram, Vec<Diagnostic>> {
     analyze_with_options(program, AnalysisOptions::default())
 }
@@ -862,6 +949,19 @@ pub(crate) fn preprocess_const_semantics_for_lowering(
     Ok(program)
 }
 
+fn preprocess_materialized_processor_local_consts(
+    program: &mut Program,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for block in &mut program.blocks {
+        if matches!(block, Block::Proc(_)) {
+            preprocess_local_consts_in_block(block, artifacts, options, errors);
+        }
+    }
+}
+
 pub fn lower_graphs_for_inspection_with_options(
     program: Program,
     options: AnalysisOptions,
@@ -888,6 +988,12 @@ pub fn lower_graphs_for_inspection_with_options_and_inputs(
         .blocks
         .retain(|block| !matches!(block, Block::Def(def) if def.is_const));
     prepare_processors_for_graph_inspection(&mut program, &mut errors);
+    preprocess_materialized_processor_local_consts(
+        &mut program,
+        &const_artifacts,
+        options,
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -954,7 +1060,16 @@ pub fn analyze_with_options_and_inputs(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let const_arrays = const_artifacts.const_arrays;
+    materialize_generic_processors(&mut program, &mut errors);
+    preprocess_materialized_processor_local_consts(
+        &mut program,
+        &const_artifacts,
+        options,
+        &mut errors,
+    );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     let mut declared_proc_integer_ranges = HashMap::new();
     for proc_def in program.blocks.iter_mut().filter_map(|block| match block {
         Block::Proc(proc_def) => Some(proc_def),
@@ -975,7 +1090,7 @@ pub fn analyze_with_options_and_inputs(
         }
     }
     let ProcessorDesugarResult {
-        program,
+        mut program,
         runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
@@ -985,8 +1100,10 @@ pub fn analyze_with_options_and_inputs(
         top_level_proc_rewrite,
         pinned_proc_fields,
         compiler_owned_proc_fields,
-        top_level_delegates,
-    } = desugar_processors(program, options, &const_array_infos, &mut errors);
+        compiler_scratch_proc_fields,
+        mut top_level_delegates,
+    } = desugar_materialized_processors(program, options, &const_array_infos, &mut errors);
+    let transient_init_views = normalize_indexed_member_assignments(&mut program);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
@@ -997,7 +1114,7 @@ pub fn analyze_with_options_and_inputs(
         .flatten()
         .collect::<HashSet<_>>();
     let mut compiler_owned_state_roots = HashSet::new();
-    let compiler_scratch_state_roots = program
+    let mut compiler_scratch_state_roots = program
         .block(BlockKind::Init)
         .and_then(|block| match block {
             Block::Init(init) => Some(init.compiler_scratch_roots.iter().cloned()),
@@ -1006,12 +1123,19 @@ pub fn analyze_with_options_and_inputs(
         .into_iter()
         .flatten()
         .collect::<HashSet<_>>();
+    if let Some(Block::Block(block)) = program.block(BlockKind::Block) {
+        compiler_scratch_state_roots.extend(block.compiler_scratch_roots.iter().cloned());
+    }
     for (instance, proc_instance) in &top_level_proc_rewrite.global_proc_instances {
         if let Some(fields) = pinned_proc_fields.get(&proc_instance.proc_name) {
             pinned_state_roots.extend(fields.iter().map(|field| format!("{instance}.{field}")));
         }
         if let Some(fields) = compiler_owned_proc_fields.get(&proc_instance.proc_name) {
             compiler_owned_state_roots
+                .extend(fields.iter().map(|field| format!("{instance}.{field}")));
+        }
+        if let Some(fields) = compiler_scratch_proc_fields.get(&proc_instance.proc_name) {
+            compiler_scratch_state_roots
                 .extend(fields.iter().map(|field| format!("{instance}.{field}")));
         }
     }
@@ -1063,7 +1187,6 @@ pub fn analyze_with_options_and_inputs(
         Some(Block::Events(v)) => v.events.clone(),
         _ => Vec::new(),
     };
-    let typed_delegates = coerce_typed_delegates(&top_level_delegates, options, &mut errors);
     let buffers = match program.block(BlockKind::Buffers) {
         Some(Block::Buffers(v)) => v.decls.clone(),
         _ => Vec::new(),
@@ -1380,6 +1503,8 @@ pub fn analyze_with_options_and_inputs(
     }
 
     let generic_struct_template_names: HashSet<String>;
+    let generic_struct_templates: HashMap<String, StructDef>;
+    let generic_struct_inference: GenericInferenceLocals;
     {
         let mut concrete_structs = Vec::<StructDef>::new();
         let mut generic_templates = HashMap::<String, StructDef>::new();
@@ -1424,7 +1549,47 @@ pub fn analyze_with_options_and_inputs(
         }
         generic_struct_template_names = generic_templates.keys().cloned().collect();
 
+        let generated_prefixes = generic_templates
+            .keys()
+            .map(|name| format!("{name}.__gen__"))
+            .collect::<Vec<_>>();
         let mut generated_specializations = HashMap::<String, StructDef>::new();
+        let mut authored_concrete_structs = Vec::with_capacity(concrete_structs.len());
+        for strukt in concrete_structs.drain(..) {
+            if generated_prefixes
+                .iter()
+                .any(|prefix| strukt.name.starts_with(prefix))
+            {
+                generated_specializations.insert(strukt.name.clone(), strukt);
+            } else {
+                authored_concrete_structs.push(strukt);
+            }
+        }
+        concrete_structs = authored_concrete_structs;
+
+        let inference_facts = generic_inference_facts(
+            defs.iter()
+                .chain(
+                    concrete_structs
+                        .iter()
+                        .flat_map(|strukt| strukt.methods.iter()),
+                )
+                .chain(
+                    generated_specializations
+                        .values()
+                        .flat_map(|strukt| strukt.methods.iter()),
+                ),
+            concrete_structs
+                .iter()
+                .chain(generated_specializations.values()),
+        );
+        let top_level_inference = generic_inference_seed_for_top_level_decls(
+            &raw_ins,
+            &raw_outs,
+            &raw_kouts,
+            &raw_params,
+            inference_facts,
+        );
         for s in &mut concrete_structs {
             rewrite_generic_struct_field_types(
                 s,
@@ -1434,7 +1599,7 @@ pub fn analyze_with_options_and_inputs(
             );
             for field in &mut s.fields {
                 if let Some(default) = &mut field.default {
-                    let mut locals = GenericInferenceLocals::default();
+                    let mut locals = top_level_inference.clone();
                     rewrite_generic_struct_ctor_expr(
                         default,
                         &generic_templates,
@@ -1445,49 +1610,98 @@ pub fn analyze_with_options_and_inputs(
                 }
             }
             for method in &mut s.methods {
+                rewrite_explicit_generic_struct_function_types(
+                    method,
+                    &generic_templates,
+                    &mut generated_specializations,
+                    &mut errors,
+                );
+                let method_seed = generic_inference_seed_for_function(method, &top_level_inference);
                 rewrite_generic_struct_ctor_stmt_list(
                     &mut method.body,
                     &generic_templates,
                     &mut generated_specializations,
                     &mut errors,
+                    &method_seed,
                 );
             }
         }
         for def in &mut defs {
-            rewrite_generic_struct_ctor_stmt_list(
-                &mut def.body,
+            rewrite_explicit_generic_struct_function_types(
+                def,
                 &generic_templates,
                 &mut generated_specializations,
                 &mut errors,
             );
         }
-        rewrite_generic_struct_ctor_stmt_list(
+        let runtime_inference = rewrite_generic_struct_ctor_stmt_list(
             &mut init,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &top_level_inference,
         );
-        rewrite_generic_struct_ctor_stmt_list(
+        generic_struct_templates = generic_templates.clone();
+        generic_struct_inference = runtime_inference.clone();
+        for def in &mut defs {
+            if !def.type_params.is_empty() {
+                validate_deferred_generic_structs(def, &generic_templates, &mut errors);
+                continue;
+            }
+            let visible = if runtime_def_names.contains(&def.name) {
+                &runtime_inference
+            } else {
+                &top_level_inference
+            };
+            let def_seed = generic_inference_seed_for_function(def, visible);
+            rewrite_generic_struct_ctor_stmt_list(
+                &mut def.body,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+                &def_seed,
+            );
+        }
+        let block_inference = rewrite_generic_struct_ctor_stmt_list(
             &mut block_pre,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &runtime_inference,
         );
         rewrite_generic_struct_ctor_stmt_list(
             &mut block_post,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &block_inference,
         );
         rewrite_generic_struct_ctor_stmt_list(
             &mut sample,
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &block_inference,
         );
         for event in &mut events {
+            rewrite_explicit_generic_struct_event_types(
+                &mut event.params,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+            );
+            let event_seed = generic_inference_seed_for_event(event, &runtime_inference);
             rewrite_generic_struct_ctor_stmt_list(
                 &mut event.body,
+                &generic_templates,
+                &mut generated_specializations,
+                &mut errors,
+                &event_seed,
+            );
+        }
+        for delegate in &mut top_level_delegates {
+            rewrite_explicit_generic_struct_event_types(
+                &mut delegate.params,
                 &generic_templates,
                 &mut generated_specializations,
                 &mut errors,
@@ -1498,7 +1712,19 @@ pub fn analyze_with_options_and_inputs(
             &generic_templates,
             &mut generated_specializations,
             &mut errors,
+            &top_level_inference,
         );
+        for strukt in generated_specializations.values_mut() {
+            for method in &mut strukt.methods {
+                preprocess_local_const_function(
+                    method,
+                    &HashMap::new(),
+                    &const_artifacts,
+                    options,
+                    &mut errors,
+                );
+            }
+        }
 
         struct_defs_raw = concrete_structs;
         let mut generated = generated_specializations.into_values().collect::<Vec<_>>();
@@ -1881,7 +2107,8 @@ pub fn analyze_with_options_and_inputs(
     );
     check_unique_set(&const_scalar_names, "const", &mut all_declared, &mut errors);
     check_unique_set(
-        &const_arrays
+        &const_artifacts
+            .const_arrays
             .iter()
             .map(|array| array.name.clone())
             .collect::<Vec<_>>(),
@@ -1908,6 +2135,12 @@ pub fn analyze_with_options_and_inputs(
         }
     }
     for s in &struct_defs_raw {
+        if s.fields.is_empty() {
+            errors.push(Diagnostic::semantic_span(
+                format!("struct '{}' must declare at least one data field", s.name),
+                s.loc,
+            ));
+        }
         if is_builtin_constant_name(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' is reserved as a builtin constant", s.name),
@@ -1939,14 +2172,8 @@ pub fn analyze_with_options_and_inputs(
             ));
             continue;
         }
-        let typed_fields = coerce_struct_fields(
-            &s.name,
-            &s.type_params,
-            &s.fields,
-            &struct_defs,
-            options,
-            &mut errors,
-        );
+        let typed_fields =
+            coerce_struct_fields(&s.name, &s.type_params, &s.fields, options, &mut errors);
         struct_defs.insert(s.name.clone(), typed_fields.clone());
         typed_structs.push(TypedStruct {
             name: s.name.clone(),
@@ -1955,107 +2182,19 @@ pub fn analyze_with_options_and_inputs(
         all_declared.insert(s.name.clone());
         seen_struct_defs.insert(s.name.clone(), s.clone());
 
-        for method in &s.methods {
-            if is_unsafe_index_method_name(&method.name) {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "cannot redefine builtin method '{}.{}'",
-                        s.name, method.name
-                    ),
-                    method.loc,
-                ));
-                continue;
+        for method in lift_struct_methods(s, &mut errors) {
+            if method.params.first().map(|param| param.name.as_str()) == Some("self") {
+                method_self_struct.insert(method.name.clone(), s.name.clone());
             }
-            for tp in &method.type_params {
-                if s.type_params.contains(tp) {
-                    errors.push(Diagnostic::semantic_span(
-                        format!(
-                            "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
-                            tp, s.name, method.name, tp, s.name
-                        ),
-                        method.loc,
-                    ));
-                }
-            }
-            if !method.type_params.is_empty() {
-                let mut seen = HashSet::new();
-                for tp in &method.type_params {
-                    if !seen.insert(tp.clone()) {
-                        errors.push(Diagnostic::semantic_span(
-                            format!(
-                                "duplicate type parameter '{}' in method '{}.{}'",
-                                tp, s.name, method.name
-                            ),
-                            method.loc,
-                        ));
-                    }
-                }
-            }
-            if method.params.first().map(|p| p.name.as_str()) != Some("self") {
-                errors.push(Diagnostic::semantic_span(
-                    format!(
-                        "method '{}.{}' must declare 'self' as first parameter",
-                        s.name, method.name
-                    ),
-                    method.loc,
-                ));
-            }
-            let fq_name = format!("{}.{}", s.name, method.name);
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                method_self_struct.insert(fq_name.clone(), s.name.clone());
-            }
-            let mut desugared_method_body = method.body.clone();
-            let mut method_struct_instances = HashMap::<String, String>::new();
-            let mut method_struct_array_roots = HashMap::<String, String>::new();
-            let method_ns = namespace_of_symbol(&s.name);
-            if method.params.first().map(|p| p.name.as_str()) == Some("self") {
-                register_struct_instance_and_array_roots(
-                    "self",
-                    &s.name,
-                    &struct_defs,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                );
-            }
-            for stmt in &mut desugared_method_body {
-                desugar_init_instance_method_calls(
-                    stmt,
-                    &mut method_struct_instances,
-                    &mut method_struct_array_roots,
-                    &struct_defs,
-                    &method_ns,
-                    &callable_symbols_for_method_sugar,
-                );
-            }
-            let mut method_params = method.params.clone();
-            if let Some(self_param) = method_params
-                .first_mut()
-                .filter(|param| param.name == "self")
-            {
-                self_param.ty = Some(FnParamType::Struct(s.name.clone()));
-            }
-            defs.push(FunctionDef {
-                loc: method.loc,
-                is_const: false,
-                type_params: method.type_params.clone(),
-                name: fq_name,
-                params: method_params,
-                return_ty: method.return_ty.clone(),
-                return_ty_loc: method.return_ty_loc,
-                body: desugared_method_body,
-            });
+            defs.push(method);
         }
     }
 
-    for (struct_name, fields) in &struct_defs {
-        for field in fields {
-            if let Some(elem_struct) = &field.array_elem_struct {
-                let context = format!("field '{}.{}' array element", struct_name, field.name);
-                let _ =
-                    validate_data_struct_layout(elem_struct, &struct_defs, &context, &mut errors);
-            }
-        }
+    if let Err(error) = validate_aggregate_structure(&typed_structs) {
+        errors.push(aggregate_layout_error_diagnostic(error, &struct_defs_raw));
+        return Err(errors);
     }
+    let validated_struct_count = typed_structs.len();
 
     normalize_struct_constructor_ranges_in_list(&mut init, &struct_defs);
     normalize_struct_constructor_ranges_in_list(&mut block_pre, &struct_defs);
@@ -2068,86 +2207,33 @@ pub fn analyze_with_options_and_inputs(
         normalize_struct_constructor_ranges_in_list(&mut def.body, &struct_defs);
     }
 
-    let mut desugar_struct_instances = HashMap::<String, String>::new();
-    let mut desugar_struct_array_roots = HashMap::<String, String>::new();
-    for stmt in &mut init {
-        desugar_init_instance_method_calls(
-            stmt,
-            &mut desugar_struct_instances,
-            &mut desugar_struct_array_roots,
-            &struct_defs,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut block_pre {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut block_post {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for stmt in &mut sample {
-        desugar_sample_instance_method_calls(
-            stmt,
-            &desugar_struct_instances,
-            &desugar_struct_array_roots,
-            "",
-            &callable_symbols_for_method_sugar,
-        );
-    }
-    for event in &mut events {
-        for stmt in &mut event.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &desugar_struct_instances,
-                &desugar_struct_array_roots,
-                "",
-                &callable_symbols_for_method_sugar,
-            );
-        }
-    }
-    for def in &mut defs {
-        if method_self_struct.contains_key(&def.name) {
-            continue;
-        }
-        let mut def_struct_instances = HashMap::<String, String>::new();
-        let mut def_struct_array_roots = HashMap::<String, String>::new();
-        for param in &def.params {
-            if let Some(FnParamType::Struct(struct_name)) = &param.ty {
-                if struct_defs.contains_key(struct_name) {
-                    register_struct_instance_and_array_roots(
-                        &param.name,
-                        struct_name,
-                        &struct_defs,
-                        &mut def_struct_instances,
-                        &mut def_struct_array_roots,
-                    );
-                }
-            }
-        }
-        let def_ns = namespace_of_symbol(&def.name);
-        for stmt in &mut def.body {
-            desugar_sample_instance_method_calls(
-                stmt,
-                &def_struct_instances,
-                &def_struct_array_roots,
-                &def_ns,
-                &callable_symbols_for_method_sugar,
-            );
-        }
-    }
+    let method_resolution_return_types = infer_instance_method_return_types(
+        &defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &struct_defs,
+    );
+    let mut struct_method_symbols = method_self_struct
+        .iter()
+        .filter_map(|(method, owner)| (!proc_api.contains_key(owner)).then_some(method.clone()))
+        .collect::<HashSet<_>>();
+
+    let state_method_env = desugar_executable_owner_instance_method_calls(
+        &mut init,
+        [
+            block_pre.as_mut_slice(),
+            block_post.as_mut_slice(),
+            sample.as_mut_slice(),
+        ],
+        &mut events,
+        &mut defs,
+        &crate::def_semantics::CallTypeEnv::default(),
+        &crate::def_semantics::CallTypeEnv::default(),
+        &method_resolution_return_types,
+        &struct_defs,
+        "",
+        &struct_method_symbols,
+        &callable_symbols_for_method_sugar,
+    );
 
     normalize_runtime_call_shape_exprs(
         &mut defs,
@@ -2159,7 +2245,7 @@ pub fn analyze_with_options_and_inputs(
         options,
     );
 
-    let (overload_candidates, def_public_name_by_internal) =
+    let (mut overload_candidates, mut def_public_name_by_internal) =
         crate::def_semantics::prepare_function_overloads(&mut defs);
     let proc_type_names = proc_api.keys().cloned().collect::<HashSet<_>>();
     let mut method_self_struct_internal = defs
@@ -2277,7 +2363,10 @@ pub fn analyze_with_options_and_inputs(
     );
     top_level_env
         .struct_instances
-        .extend(desugar_struct_instances.clone());
+        .extend(state_method_env.struct_instances.clone());
+    top_level_env
+        .array_types
+        .extend(state_method_env.array_types.clone());
     top_level_env.array_types.extend(
         top_level_proc_rewrite
             .global_proc_array_slots
@@ -2430,27 +2519,44 @@ pub fn analyze_with_options_and_inputs(
                 );
             }
             if let Some(default) = &p.default {
-                if matches!(
-                    p.ty,
-                    Some(FnParamType::Buffer(_))
-                        | Some(FnParamType::Array(_))
-                        | Some(FnParamType::ArrayGeneric(_))
-                        | Some(FnParamType::BareBuffer)
-                ) {
+                let borrowed = match p.ty.as_ref() {
+                    Some(FnParamType::Struct(name)) => !def.type_params.contains(name),
+                    Some(FnParamType::SizedArray {
+                        generic_name: Some(name),
+                        ..
+                    }) => !def.type_params.contains(name),
+                    Some(
+                        FnParamType::Buffer(_)
+                        | FnParamType::BufferArray { .. }
+                        | FnParamType::Array(_)
+                        | FnParamType::ArrayGeneric(_)
+                        | FnParamType::BareBuffer,
+                    ) => true,
+                    Some(
+                        FnParamType::Primitive(_)
+                        | FnParamType::SizedArray {
+                            generic_name: None, ..
+                        }
+                        | FnParamType::Tuple(_),
+                    )
+                    | None => false,
+                };
+                if borrowed {
                     push_semantic(
                         param_diag,
                         &mut errors,
                         format!(
-                            "function parameter '{}.{}' is a buffer and cannot have a default value",
+                            "function parameter '{}.{}' borrows storage and cannot have a default value",
                             public_name, p.name
                         ),
                     );
+                } else {
+                    validate_default_expr(
+                        default,
+                        &mut errors,
+                        &format!("function parameter '{}.{}'", public_name, p.name),
+                    );
                 }
-                validate_default_expr(
-                    default,
-                    &mut errors,
-                    &format!("function parameter '{}.{}'", public_name, p.name),
-                );
             }
         }
     }
@@ -2474,11 +2580,18 @@ pub fn analyze_with_options_and_inputs(
     // removed below, but their source-level result contract must still hold.
     validate_def_return_control_flow(&defs, &fn_signatures, &mut errors);
 
+    let mut deferred_generic_structs = DeferredGenericStructs::new(
+        generic_struct_templates,
+        struct_defs.keys().cloned(),
+        generic_struct_inference,
+    );
+    let mut deferred_struct_methods = Vec::new();
+
     // --- Def monomorphization pass ---
     // Identify defs whose parameters require monomorphization (generic struct,
     // untyped array `[]`, bare `buffer`, or generic def type params `<T>`).
     {
-        let mandatory_mono: HashSet<String> = fn_signatures
+        let mut mandatory_mono: HashSet<String> = fn_signatures
             .iter()
             .filter_map(|(name, sig)| {
                 crate::def_semantics::signature_requires_monomorphization(
@@ -2512,7 +2625,7 @@ pub fn analyze_with_options_and_inputs(
                     .then_some(name.clone())
             })
             .collect::<HashSet<_>>();
-        let mono_eligible = mandatory_mono
+        let mut mono_eligible = mandatory_mono
             .union(&scalar_mono_candidates)
             .cloned()
             .collect::<HashSet<_>>();
@@ -2538,7 +2651,7 @@ pub fn analyze_with_options_and_inputs(
             let mut generated_sigs = HashMap::<String, FnSignature>::new();
             let mut mono_cache =
                 HashMap::<(String, Vec<crate::def_semantics::MonoParamKey>), String>::new();
-            let original_defs_snapshot = defs.clone();
+            let mut original_defs_snapshot = defs.clone();
 
             // Overload selection, specialization, and return inference form one
             // semantic fixed point. Rewriting a generated body can make its
@@ -2607,6 +2720,86 @@ pub fn analyze_with_options_and_inputs(
                     }
                 }
 
+                materialize_deferred_generic_structs(
+                    &mut deferred_generic_structs,
+                    &mut generated_defs,
+                    options,
+                    &mut struct_defs_raw,
+                    &mut typed_structs,
+                    &mut struct_defs,
+                    &mut deferred_struct_methods,
+                    &mut errors,
+                );
+                if !deferred_struct_methods.is_empty() {
+                    let mut owner_by_public_name = HashMap::new();
+                    let mut methods = deferred_struct_methods
+                        .drain(..)
+                        .map(|(owner, method)| {
+                            owner_by_public_name.insert(method.name.clone(), owner);
+                            method
+                        })
+                        .collect::<Vec<_>>();
+                    let (method_overloads, method_public_names) =
+                        crate::def_semantics::prepare_function_overloads(&mut methods);
+                    for (name, candidates) in method_overloads {
+                        overload_candidates
+                            .entry(name)
+                            .or_default()
+                            .extend(candidates);
+                    }
+                    def_public_name_by_internal.extend(method_public_names);
+
+                    for mut method in methods {
+                        let public_name = def_public_name_by_internal
+                            .get(&method.name)
+                            .cloned()
+                            .unwrap_or_else(|| method.name.clone());
+                        let owner = owner_by_public_name[&public_name].clone();
+                        struct_method_symbols.insert(public_name.clone());
+                        callable_symbols_for_method_sugar.insert(public_name);
+                        method_self_struct_internal.insert(method.name.clone(), owner);
+                        normalize_struct_constructor_ranges_in_list(&mut method.body, &struct_defs);
+                        preprocess_local_const_function(
+                            &mut method,
+                            &HashMap::new(),
+                            &const_artifacts,
+                            options,
+                            &mut errors,
+                        );
+
+                        let mut signature = FnSignature::from_def(&method);
+                        signature.display_name =
+                            def_public_name_by_internal.get(&method.name).cloned();
+                        let requires_mono =
+                            crate::def_semantics::signature_requires_monomorphization(
+                                &signature,
+                                &generic_struct_template_names,
+                                &proc_type_names,
+                            );
+                        let has_untyped_params = signature.param_types.iter().any(Option::is_none);
+                        if requires_mono {
+                            signature.requires_call_specialization = true;
+                            mandatory_mono.insert(method.name.clone());
+                        }
+                        if requires_mono || has_untyped_params {
+                            mono_eligible.insert(method.name.clone());
+                        }
+                        fn_signatures.insert(method.name.clone(), signature);
+                        original_defs_snapshot.push(method.clone());
+                        defs.push(method);
+                    }
+                }
+
+                for def in &mut generated_defs {
+                    preprocess_local_const_function(
+                        def,
+                        &HashMap::new(),
+                        &const_artifacts,
+                        options,
+                        &mut errors,
+                    );
+                }
+
                 // Mono-rewrite generated defs' bodies (def-to-def mono calls).
                 // E.g. quad.__onda_mono__g_f32 may call double(...) which also needs mono.
                 // Loop until no new defs are generated.
@@ -2657,8 +2850,55 @@ pub fn analyze_with_options_and_inputs(
                             signature.sync_defaults_from_def(def);
                         }
                     }
+                    materialize_deferred_generic_structs(
+                        &mut deferred_generic_structs,
+                        &mut extra_defs,
+                        options,
+                        &mut struct_defs_raw,
+                        &mut typed_structs,
+                        &mut struct_defs,
+                        &mut deferred_struct_methods,
+                        &mut errors,
+                    );
+                    for def in &mut extra_defs {
+                        preprocess_local_const_function(
+                            def,
+                            &HashMap::new(),
+                            &const_artifacts,
+                            options,
+                            &mut errors,
+                        );
+                    }
                     generated_defs.extend(extra_defs);
                     generated_sigs.extend(extra_sigs);
+                }
+
+                desugar_executable_owner_instance_method_calls(
+                    &mut init,
+                    [
+                        block_pre.as_mut_slice(),
+                        block_post.as_mut_slice(),
+                        sample.as_mut_slice(),
+                    ],
+                    &mut events,
+                    &mut defs,
+                    &top_level_env,
+                    &function_env_seed,
+                    &mono_return_types,
+                    &struct_defs,
+                    "",
+                    &struct_method_symbols,
+                    &callable_symbols_for_method_sugar,
+                );
+                for def in &mut generated_defs {
+                    desugar_function_instance_method_calls(
+                        def,
+                        &function_env_seed,
+                        &mono_return_types,
+                        &struct_defs,
+                        &struct_method_symbols,
+                        &callable_symbols_for_method_sugar,
+                    );
                 }
 
                 let overload_context = crate::def_semantics::CallTypeContext {
@@ -2753,10 +2993,6 @@ pub fn analyze_with_options_and_inputs(
         }
     }
 
-    // Any calls left at their public overload name are genuinely
-    // underconstrained after specialization reached a fixed point. Run one
-    // strict pass to produce the normal ambiguity/no-match diagnostics while
-    // keeping every scope on the same semantic type engine.
     let mut final_overload_return_types = HashMap::new();
     crate::def_semantics::refresh_monomorphized_return_types(
         &mut final_overload_return_types,
@@ -2767,6 +3003,81 @@ pub fn analyze_with_options_and_inputs(
         &function_env_seed,
         &struct_defs,
     );
+    // Receiver and overload resolution expose information to each other. Both
+    // rewrites only replace unresolved source syntax, so this reaches a finite
+    // fixed point even for chains of overloaded aggregate-producing calls.
+    loop {
+        desugar_executable_owner_instance_method_calls(
+            &mut init,
+            [
+                block_pre.as_mut_slice(),
+                block_post.as_mut_slice(),
+                sample.as_mut_slice(),
+            ],
+            &mut events,
+            &mut defs,
+            &top_level_env,
+            &function_env_seed,
+            &final_overload_return_types,
+            &struct_defs,
+            "",
+            &struct_method_symbols,
+            &callable_symbols_for_method_sugar,
+        );
+        let mut ignored_errors = Vec::new();
+        let mut resolved = 0;
+        let runtime_function_env = rewrite_executable_call_scopes(
+            &mut init,
+            &mut block_pre,
+            &mut sample,
+            &mut block_post,
+            &mut events,
+            &top_level_env,
+            |stmts, env| {
+                resolved += crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
+                    stmts,
+                    env,
+                    crate::def_semantics::CallTypeContext {
+                        return_types: &final_overload_return_types,
+                        struct_defs: &struct_defs,
+                    },
+                    crate::def_semantics::OverloadOwnerContext {
+                        defer_dependent_calls: true,
+                    },
+                    &overload_candidates,
+                    &mut ignored_errors,
+                );
+            },
+        );
+        for def in &mut defs {
+            let env = def_call_type_env(
+                def,
+                &runtime_def_names,
+                &function_env_seed,
+                &runtime_function_env,
+            );
+            resolved += rewrite_function_overloads(
+                def,
+                env,
+                crate::def_semantics::CallTypeContext {
+                    return_types: &final_overload_return_types,
+                    struct_defs: &struct_defs,
+                },
+                crate::def_semantics::OverloadOwnerContext {
+                    defer_dependent_calls: true,
+                },
+                &overload_candidates,
+                &mut ignored_errors,
+            );
+        }
+        if resolved == 0 {
+            break;
+        }
+    }
+
+    // Any calls left at their public overload name are genuinely
+    // underconstrained after the fixed point. Run one strict pass to produce
+    // the normal ambiguity/no-match diagnostics.
     let runtime_function_env = rewrite_executable_call_scopes(
         &mut init,
         &mut block_pre,
@@ -2817,6 +3128,11 @@ pub fn analyze_with_options_and_inputs(
         );
     }
 
+    if typed_structs.len() != validated_struct_count {
+        if let Err(error) = validate_aggregate_structure(&typed_structs) {
+            errors.push(aggregate_layout_error_diagnostic(error, &struct_defs_raw));
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -2861,11 +3177,7 @@ pub fn analyze_with_options_and_inputs(
     let param_names: HashSet<String> = typed_params.iter().map(|p| p.name.clone()).collect();
     let def_return_types =
         infer_def_return_types(&defs, &fn_signatures, &function_env_seed, &struct_defs);
-    for (name, return_type) in &def_return_types {
-        if let Some(signature) = fn_signatures.get_mut(name) {
-            signature.return_type = Some(return_type.clone());
-        }
-    }
+    FnSignature::resolve_returns(&mut fn_signatures, &def_return_types);
     validate_def_return_types(
         &defs,
         &fn_signatures,
@@ -2885,7 +3197,16 @@ pub fn analyze_with_options_and_inputs(
             "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
         ))
         .or_insert_with(|| internal_proc_index_call_signature(true));
-    update_readonly_array_param_signatures(&defs, &mut fn_signatures);
+    data_permissions::update_readonly_data_param_signatures(
+        &defs,
+        &events,
+        &mut fn_signatures,
+        &function_env_seed,
+        &runtime_function_env,
+        &runtime_def_names,
+        &struct_defs,
+        &mut errors,
+    );
 
     let mut state_scalars = HashMap::<String, PrimitiveType>::new();
     let mut declared_symbols = DeclaredSymbolMap::new();
@@ -2992,6 +3313,19 @@ pub fn analyze_with_options_and_inputs(
         state_scalars,
     );
     analyze_owner_init_stmts(&init, &init_ctx, &init_locals, &mut init_st, &mut errors);
+    let init_bindings = persistent_init_bindings(&init, &init_st, &pinned_state_roots, &mut errors);
+    let init_local_data_names = init_st
+        .local_array_aliases
+        .keys()
+        .filter(|name| !init_bindings.local_array_aliases.contains_key(*name))
+        .chain(
+            init_st
+                .local_struct_aliases
+                .keys()
+                .filter(|name| !init_bindings.local_struct_aliases.contains_key(*name)),
+        )
+        .cloned()
+        .collect();
     guard_pinned_initializers(&mut init, TOP_LEVEL_INIT_ALL_NAME);
     let InitAnalysisState {
         known_scalars: _init_known_scalars,
@@ -3098,7 +3432,16 @@ pub fn analyze_with_options_and_inputs(
         None
     };
 
-    let typed_events = coerce_typed_events(&events, true, "top-level", options, &mut errors);
+    let typed_delegates =
+        coerce_typed_delegates(&top_level_delegates, &struct_defs, options, &mut errors);
+    let typed_events = coerce_typed_events(
+        &events,
+        true,
+        "top-level",
+        &struct_defs,
+        options,
+        &mut errors,
+    );
     let analysis_plan_seeds = build_top_level_owner_analysis_plan_seeds(
         &param_names,
         &input_names,
@@ -3113,6 +3456,7 @@ pub fn analyze_with_options_and_inputs(
     );
     {
         let mut runtime_state = ExecutableOwnerRuntimeState {
+            init_bindings: Some(&init_bindings),
             state_scalars: &mut state_scalars,
             declared_symbols: &declared_symbols,
             state_arrays: &state_arrays,
@@ -3160,6 +3504,7 @@ pub fn analyze_with_options_and_inputs(
                 .filter(|def| runtime_def_names.contains(&def.name))
                 .map(|def| {
                     let mut plan = RuntimeScopePlan {
+                        params: &def.params,
                         stmts: &def.body,
                         ..helper_plan.clone()
                     };
@@ -3173,6 +3518,7 @@ pub fn analyze_with_options_and_inputs(
                                 plan.runtime_local_array_aliases.insert(
                                     param.name.clone(),
                                     LocalArrayAliasInfo {
+                                        proven_len: None,
                                         len: 1,
                                         static_len: None,
                                         elem_ty: *elem,
@@ -3192,6 +3538,7 @@ pub fn analyze_with_options_and_inputs(
                                 plan.runtime_local_array_aliases.insert(
                                     param.name.clone(),
                                     LocalArrayAliasInfo {
+                                        proven_len: None,
                                         len,
                                         static_len: Some(len),
                                         elem_ty: *elem,
@@ -3339,7 +3686,8 @@ pub fn analyze_with_options_and_inputs(
         &defs_requiring_param_inference,
         &init,
         &block_exec,
-        &sample_and_event_exec,
+        &sample,
+        &typed_events,
         &struct_instances,
         &inferred_struct_array_roots,
         &inferred_proc_array_roots,
@@ -3367,44 +3715,58 @@ pub fn analyze_with_options_and_inputs(
         &mut errors,
     );
     let mut def_struct_defs = struct_defs.clone();
-    for (name, fields) in &synthesized_struct_defs {
+    let mut synth_names = synthesized_struct_defs.keys().cloned().collect::<Vec<_>>();
+    synth_names.sort();
+    for name in synth_names {
+        let fields = &synthesized_struct_defs[&name];
         def_struct_defs.insert(name.clone(), fields.clone());
+        typed_structs.push(TypedStruct {
+            name,
+            fields: fields.clone(),
+        });
     }
+    let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
+        Ok(layouts) => layouts,
+        Err(layout_errors) => {
+            errors.extend(
+                layout_errors
+                    .into_iter()
+                    .map(|error| aggregate_layout_error_diagnostic(error, &struct_defs_raw)),
+            );
+            AggregateLayoutTable::default()
+        }
+    };
 
     let def_global_inputs = HashSet::<String>::new();
     let def_global_outputs = HashSet::<String>::new();
     let def_global_params = HashSet::<String>::new();
     let mut def_scalar_local_types = HashMap::<String, LocalAliasTypes>::new();
+    let def_function_symbols = declared_symbols
+        .iter()
+        .filter_map(|(name, info)| match info {
+            DeclaredSymbolInfo::FunctionReturn { .. } => Some((name.clone(), info.clone())),
+            _ => None,
+        })
+        .collect::<DeclaredSymbolMap>();
     for def in defs.iter_mut().filter(|def| {
         !runtime_def_names.contains(&def.name)
             && (reachable_def_names.contains(&def.name)
                 || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs))
     }) {
         let def_error_start = errors.len();
-        let def_param_names = def
+        let fn_known = def
             .params
             .iter()
             .map(|p| p.name.clone())
             .collect::<HashSet<_>>();
         let mut def_io_surface_names = io_surface_names.clone();
         let mut def_io_surface_array_names = io_surface_array_names.clone();
-        for param in &def_param_names {
+        for param in &fn_known {
             def_io_surface_names.remove(param);
             def_io_surface_array_names.remove(param);
         }
-        let fn_known = def
-            .params
-            .iter()
-            .map(|p| p.name.clone())
-            .collect::<HashSet<_>>();
         let mut def_state_scalars = HashMap::<String, PrimitiveType>::new();
-        let mut def_declared_symbols = declared_symbols
-            .iter()
-            .filter_map(|(name, info)| match info {
-                DeclaredSymbolInfo::FunctionReturn { .. } => Some((name.clone(), info.clone())),
-                _ => None,
-            })
-            .collect::<DeclaredSymbolMap>();
+        let mut def_declared_symbols = def_function_symbols.clone();
         let fn_sig = fn_signatures.get(&def.name);
         // Def parameters are function-local and should be visible for local
         // type inference even though top-level runtime symbols are not.
@@ -3427,16 +3789,6 @@ pub fn analyze_with_options_and_inputs(
                 def_state_scalars.insert(param.name.clone(), param_ty);
             } else {
                 def_state_scalars.remove(&param.name);
-            }
-            if let Some(FnParamType::Tuple(elem_types)) = fn_sig
-                .and_then(|signature| signature.param_types.get(idx))
-                .and_then(Option::as_ref)
-            {
-                def_state_scalars.extend(elem_types.iter().enumerate().map(
-                    |(element_index, elem_ty)| {
-                        (format!("{}[{element_index}]", param.name), *elem_ty)
-                    },
-                ));
             }
         }
         let fn_locals = HashSet::new();
@@ -3512,6 +3864,7 @@ pub fn analyze_with_options_and_inputs(
             fn_local_data_aliases.insert(
                 param_name.clone(),
                 LocalArrayAliasInfo {
+                    proven_len: None,
                     len: 1,
                     static_len: param_array_static_lens.get(param_name.as_str()).copied(),
                     elem_ty: *elem_ty,
@@ -3530,6 +3883,7 @@ pub fn analyze_with_options_and_inputs(
                     fn_local_data_aliases.insert(
                         format!("{param_name}.{}", param.name),
                         LocalArrayAliasInfo {
+                            proven_len: None,
                             len,
                             static_len: Some(len),
                             elem_ty: param.ty,
@@ -3549,6 +3903,7 @@ pub fn analyze_with_options_and_inputs(
                         fn_local_data_aliases.insert(
                             format!("{param_name}.{output}"),
                             LocalArrayAliasInfo {
+                                proven_len: None,
                                 len,
                                 static_len: Some(len),
                                 elem_ty,
@@ -3570,6 +3925,7 @@ pub fn analyze_with_options_and_inputs(
             fn_local_data_aliases.insert(
                 active_symbol.clone(),
                 LocalArrayAliasInfo {
+                    proven_len: None,
                     len,
                     static_len: Some(len),
                     elem_ty: PrimitiveType::Bool,
@@ -3919,27 +4275,15 @@ pub fn analyze_with_options_and_inputs(
             (&lhs.owner_struct, &lhs.field_name).cmp(&(&rhs.owner_struct, &rhs.field_name))
         });
 
-        let mut synth_names = synthesized_struct_defs.keys().cloned().collect::<Vec<_>>();
-        synth_names.sort();
-        for name in synth_names {
-            if let Some(fields) = synthesized_struct_defs.get(&name) {
-                typed_structs.push(TypedStruct {
-                    name,
-                    fields: fields.clone(),
-                });
-            }
-        }
-        let aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
-            Ok(layouts) => layouts,
-            Err(layout_errors) => {
-                errors.extend(
-                    layout_errors
-                        .into_iter()
-                        .map(|error| Diagnostic::semantic(error.to_string(), 0, 0)),
-                );
-                AggregateLayoutTable::default()
-            }
-        };
+        aggregate_layouts.populate_message_defaults(
+            typed_events
+                .iter()
+                .flat_map(|event| &event.params)
+                .chain(typed_delegates.iter().flat_map(|delegate| &delegate.params)),
+            &def_struct_defs,
+            options,
+            &mut errors,
+        );
 
         // Specialization and nested-state flattening can create additional
         // generated defs after the first range rewrite. Reapply the storage
@@ -4018,9 +4362,9 @@ pub fn analyze_with_options_and_inputs(
                     .get(&d.name)
                     .cloned()
                     .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
-                let readonly_array_params = fn_signatures
+                let readonly_data_params = fn_signatures
                     .get(&d.name)
-                    .map(|signature| signature.readonly_array_params.clone())
+                    .map(|signature| signature.readonly_data_params.clone())
                     .unwrap_or_default();
                 TypedFunction {
                     runtime_context: runtime_def_names.contains(&d.name),
@@ -4029,7 +4373,7 @@ pub fn analyze_with_options_and_inputs(
                     type_params: d.type_params.clone(),
                     param_defaults: d.params.iter().map(|p| p.default.clone()).collect(),
                     param_kinds,
-                    readonly_array_params,
+                    readonly_data_params,
                     integer_range_params: def_integer_range_params
                         .get(&d.name)
                         .cloned()
@@ -4139,18 +4483,15 @@ pub fn analyze_with_options_and_inputs(
             })
             .collect::<HashMap<_, _>>();
         for (root, struct_name) in &struct_instances {
-            let Some(fields) = struct_defs.get(struct_name) else {
-                continue;
-            };
-            for field in fields {
-                let flat_name = format!("{root}.{}", field.name);
+            visit_struct_field_paths(struct_name, &struct_defs, |path, field| {
+                let flat_name = format!("{root}.{path}");
                 if !state_scalars.contains_key(&flat_name) {
-                    continue;
+                    return;
                 }
                 if let Some(range) = &field.integer_range {
                     state_integer_ranges.insert(flat_name, *range);
                 }
-            }
+            });
         }
         for (source, alias) in &param_range_state_aliases {
             let Some(ty @ (PrimitiveType::I32 | PrimitiveType::I64)) =
@@ -4207,7 +4548,7 @@ pub fn analyze_with_options_and_inputs(
             control_out_arrays,
             param_arrays,
             interface_views,
-            const_arrays,
+            const_arrays: const_artifacts.const_arrays,
             params: typed_params,
             buffers: typed_buffers,
             structs: typed_structs,
@@ -4228,6 +4569,15 @@ pub fn analyze_with_options_and_inputs(
             state_tuples,
             array_vars: typed_data,
             array_struct_roots: typed_data_roots,
+            init_local_data_names,
+            init_view_names: init_bindings
+                .local_array_aliases
+                .keys()
+                .chain(init_bindings.local_struct_aliases.keys())
+                .filter(|name| !path_or_ancestor_is_declared(name, &transient_init_views))
+                .cloned()
+                .collect(),
+            struct_roots: struct_instances,
             nested_proc_arrays: typed_nested_proc_arrays,
             ins_explicit,
             audio_outs_explicit,

@@ -46,7 +46,13 @@ impl<'a> FunctionLowerer<'a> {
             .slots
             .iter()
             .map(|slot| {
-                self.nested_proc_slot_call_arguments(&owner, slot, &shapes, statement_location)
+                self.nested_proc_slot_call_arguments(
+                    &owner,
+                    slot,
+                    &shapes,
+                    block,
+                    statement_location,
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.nested_proc_aliases.insert(
@@ -67,17 +73,57 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
+        self.lower_struct_array_element_alias_impl(
+            alias,
+            expression,
+            None,
+            block,
+            statement_location,
+        )
+    }
+
+    pub(super) fn lower_struct_array_field_alias(
+        &mut self,
+        alias: &str,
+        expression: &Expr,
+        field: &str,
+        block: &mut MirBlock,
+        statement_location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
+        self.lower_struct_array_element_alias_impl(
+            alias,
+            expression,
+            Some(field),
+            block,
+            statement_location,
+        )
+    }
+
+    fn lower_struct_array_element_alias_impl(
+        &mut self,
+        alias: &str,
+        expression: &Expr,
+        only_field: Option<&str>,
+        block: &mut MirBlock,
+        statement_location: SourceLoc,
+    ) -> Result<bool, MirLoweringError> {
         let Some(source) = indexed_read_source(expression) else {
             return Ok(false);
         };
         let base = source.base;
         let index = source.index;
 
+        self.prepare_data_array_view(base, block, expression.loc())?;
+
         let has_direct_source = matches!(
             self.bindings.get(base),
-            Some(Binding::StructArrayParameter { .. } | Binding::ProcArrayParameter { .. })
+            Some(
+                Binding::StructArrayParameter { .. }
+                    | Binding::StructArrayStorage { .. }
+                    | Binding::ProcArrayParameter { .. }
+            )
         ) || self
-            .runtime_globals
+            .runtime_globals_for_unbound(base)
             .is_some_and(|globals| globals.array_struct_roots.contains_key(base));
         if !has_direct_source {
             return self.lower_nested_proc_element_alias(
@@ -97,7 +143,11 @@ impl<'a> FunctionLowerer<'a> {
                 fields,
             }) = self.bindings.get(base).cloned()
             {
-                let length = self.struct_array_length_value(length, block, expression.loc());
+                let length = if source.access == IndexAccess::Clamp {
+                    self.struct_array_length_value(length, block, expression.loc())
+                } else {
+                    Value::Constant(ScalarValue::I32(0))
+                };
                 (struct_name, length, Some(fields), None)
             } else if let Some(Binding::ProcArrayParameter {
                 proc_name,
@@ -106,19 +156,33 @@ impl<'a> FunctionLowerer<'a> {
                 ..
             }) = self.bindings.get(base).cloned()
             {
-                let length = self.emit_temp(
-                    block,
-                    PrimitiveType::I32,
-                    Rvalue::Load(Place {
-                        base: PlaceBase::Parameter(length),
-                        projections: Vec::new(),
-                    }),
-                    expression.loc(),
-                );
-                (proc_name, length.value, Some(fields), None)
+                let length = if source.access == IndexAccess::Clamp {
+                    self.emit_temp(
+                        block,
+                        PrimitiveType::I32,
+                        Rvalue::Load(Place {
+                            base: PlaceBase::Parameter(length),
+                            projections: Vec::new(),
+                        }),
+                        expression.loc(),
+                    )
+                    .value
+                } else {
+                    Value::Constant(ScalarValue::I32(0))
+                };
+                (proc_name, length, Some(fields), None)
+            } else if let Some(Binding::StructArrayStorage { struct_name, len }) =
+                self.bindings.get(base).cloned()
+            {
+                (
+                    struct_name,
+                    Value::Constant(ScalarValue::I32(len as i32)),
+                    None,
+                    Some(base.to_owned()),
+                )
             } else {
                 let Some((struct_name, len)) = self
-                    .runtime_globals
+                    .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.array_struct_roots.get(base).cloned())
                 else {
                     return Ok(false);
@@ -133,7 +197,7 @@ impl<'a> FunctionLowerer<'a> {
 
         if let Some(existing) = self.bindings.get(alias) {
             match existing {
-                Binding::StructArrayElementAlias {
+                Binding::StructView {
                     struct_name: existing,
                 } if existing == &struct_name => {}
                 _ => {
@@ -157,11 +221,17 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         let shapes = self.struct_field_shapes(&struct_name, expression.loc())?;
+        let mut selected_field = false;
         for shape in shapes {
+            let scalar = matches!(shape, StructFieldShape::Scalar { .. });
             let (field_name, element, width) = match shape {
                 StructFieldShape::Scalar { name, ty } => (name, ty, 1),
                 StructFieldShape::Array { name, element, len } => (name, element, len),
             };
+            if only_field.is_some_and(|only| only != field_name) {
+                continue;
+            }
+            selected_field = true;
             let slice = if let Some(fields) = &parameter_fields {
                 let (_, local, actual_element) = fields
                     .iter()
@@ -200,18 +270,12 @@ impl<'a> FunctionLowerer<'a> {
                 };
                 local
             };
+            let access = self.slice_access(slice);
             let binding_name = format!("{alias}.{field_name}");
-            if width == 1 {
-                self.bindings.insert(
-                    binding_name,
-                    Binding::SliceElementAlias {
-                        slice,
-                        element,
-                        index: normalized,
-                    },
-                );
+            let start = if scalar {
+                Value::Local(normalized)
             } else {
-                let start = self.emit_temp(
+                self.emit_temp(
                     block,
                     PrimitiveType::I32,
                     Rvalue::Binary {
@@ -220,29 +284,51 @@ impl<'a> FunctionLowerer<'a> {
                         rhs: Value::Constant(ScalarValue::I32(width as i32)),
                     },
                     expression.loc(),
-                );
-                let window = self.emit_slice_temp(
-                    block,
-                    Some(binding_name.clone()),
-                    element,
-                    onda_mir::AccessMode::ReadWrite,
-                    Rvalue::MakeSlice {
-                        source: onda_mir::SliceSource::Place(Place::local(slice)),
-                        start: start.value,
-                        len: Value::Constant(ScalarValue::I32(width as i32)),
-                        bounds: BoundsMode::Unchecked,
-                        access: onda_mir::AccessMode::ReadWrite,
-                    },
-                    expression.loc(),
-                );
-                let Value::Local(window) = window.value else {
-                    unreachable!("slice construction always produces a local")
-                };
+                )
+                .value
+            };
+            let window = self.emit_slice_temp(
+                block,
+                Some(binding_name.clone()),
+                element,
+                access,
+                Rvalue::MakeSlice {
+                    source: onda_mir::SliceSource::Place(Place::local(slice)),
+                    start,
+                    len: Value::Constant(ScalarValue::I32(width as i32)),
+                    bounds: BoundsMode::Unchecked,
+                    access,
+                },
+                expression.loc(),
+            );
+            let Value::Local(window) = window.value else {
+                unreachable!("slice construction always produces a local")
+            };
+            if scalar {
                 self.bindings.insert(
                     binding_name,
-                    Binding::Slice(window, element, onda_mir::AccessMode::ReadWrite),
+                    Binding::SliceElementAlias {
+                        slice: window,
+                        element,
+                        index: Value::Constant(ScalarValue::I32(0)),
+                    },
+                );
+            } else {
+                self.bindings.insert(
+                    binding_name,
+                    Binding::Slice(window, element, access, Some(width)),
                 );
             }
+        }
+
+        if let Some(field) = only_field {
+            if !selected_field {
+                return Err(self.error(
+                    format!("struct-array element has no canonical field '{field}'"),
+                    expression.loc(),
+                ));
+            }
+            return Ok(true);
         }
 
         if let Some(declarations) = self.structs.get(&struct_name).cloned() {
@@ -292,7 +378,7 @@ impl<'a> FunctionLowerer<'a> {
                 };
                 self.bindings.insert(
                     format!("{alias}.{}", field.name),
-                    Binding::StructArrayElementAlias {
+                    Binding::StructView {
                         struct_name: nested_struct.clone(),
                     },
                 );
@@ -304,7 +390,7 @@ impl<'a> FunctionLowerer<'a> {
             let mut fields = Vec::with_capacity(embedded.fields.len());
             for field in embedded.fields {
                 let source_name = format!("{alias}.{}", field.outer_name);
-                let Some(Binding::Slice(slice, element, access)) =
+                let Some(Binding::Slice(slice, element, _, _)) =
                     self.bindings.get(&source_name).cloned()
                 else {
                     return Err(self.error(
@@ -314,7 +400,7 @@ impl<'a> FunctionLowerer<'a> {
                         expression.loc(),
                     ));
                 };
-                if element != field.element || access != onda_mir::AccessMode::ReadWrite {
+                if element != field.element {
                     return Err(self.error(
                         format!(
                             "embedded aggregate array alias '{binding_name}' leaf '{}' changed type or access",
@@ -334,31 +420,9 @@ impl<'a> FunctionLowerer<'a> {
                 },
             );
         }
-        self.bindings.insert(
-            alias.to_owned(),
-            Binding::StructArrayElementAlias { struct_name },
-        );
+        self.bindings
+            .insert(alias.to_owned(), Binding::StructView { struct_name });
         Ok(true)
-    }
-
-    pub(super) fn clamp_index_to_length(
-        &mut self,
-        value: Value,
-        length: Value,
-        block: &mut MirBlock,
-        location: SourceLoc,
-    ) -> LocalId {
-        let upper = self.emit_temp(
-            block,
-            PrimitiveType::I32,
-            Rvalue::Binary {
-                op: MirBinaryOp::Subtract,
-                lhs: length,
-                rhs: Value::Constant(ScalarValue::I32(1)),
-            },
-            location,
-        );
-        self.clamp_index_to_inclusive_upper(value, upper.value, block, location)
     }
 
     pub(super) fn materialize_index_to_length(
@@ -369,16 +433,31 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> LocalId {
-        match access {
-            IndexAccess::Clamp => self.clamp_index_to_length(value, length, block, location),
-            IndexAccess::Unchecked => {
-                let index = self.emit_temp(block, PrimitiveType::I32, Rvalue::Use(value), location);
-                let Value::Local(index) = index.value else {
-                    unreachable!("emitted unchecked index is always a local")
-                };
-                index
+        if access == IndexAccess::Clamp {
+            if let Value::Constant(ScalarValue::I32(length)) = length {
+                if length > 0 {
+                    return self.clamp_index_to_inclusive_upper(
+                        value,
+                        Value::Constant(ScalarValue::I32(length - 1)),
+                        block,
+                        location,
+                    );
+                }
             }
         }
+        let value = match access {
+            IndexAccess::Clamp => Rvalue::NormalizeIndex {
+                index: value,
+                length,
+                bounds: BoundsMode::Clamp,
+            },
+            IndexAccess::Unchecked => Rvalue::Use(value),
+        };
+        let index = self.emit_temp(block, PrimitiveType::I32, value, location);
+        let Value::Local(index) = index.value else {
+            unreachable!("normalized index is always a local")
+        };
+        index
     }
 
     pub(super) fn clamp_index_to_inclusive_upper(
@@ -401,691 +480,6 @@ impl<'a> FunctionLowerer<'a> {
             unreachable!("emitted index clamp result is always a local")
         };
         normalized
-    }
-
-    pub(super) fn lower_struct_array_state_initializer(
-        &mut self,
-        target: &str,
-        expression: &Expr,
-        block: &mut MirBlock,
-        statement_location: SourceLoc,
-    ) -> Result<bool, MirLoweringError> {
-        let Expr::ArrayCtor { spec, init, .. } = expression else {
-            return Ok(false);
-        };
-        let ArrayElemType::Struct(constructor) = &spec.elem else {
-            return Ok(false);
-        };
-        let Some(globals) = self.runtime_globals else {
-            return Ok(false);
-        };
-        let Some((struct_name, root_len)) = globals.array_struct_roots.get(target).cloned() else {
-            return Ok(false);
-        };
-        if *constructor != struct_name {
-            return Err(self.error(
-                format!(
-                    "array-of-struct state '{target}' expected elements of '{struct_name}', got '{constructor}'"
-                ),
-                statement_location,
-            ));
-        }
-        let fields = globals.structs.get(&struct_name).cloned().ok_or_else(|| {
-            self.error(
-                format!("array-of-struct state references unknown type '{struct_name}'"),
-                statement_location,
-            )
-        })?;
-
-        if let Some(constructors) = init {
-            if constructors.len() != 1 && constructors.len() != root_len as usize {
-                return Err(self.error(
-                    format!(
-                        "array-of-struct state '{target}' initializer has {} constructors, expected 1 (broadcast) or {root_len}",
-                        constructors.len()
-                    ),
-                    statement_location,
-                ));
-            }
-            for root_index in 0..root_len {
-                let constructor = if constructors.len() == 1 {
-                    &constructors[0]
-                } else {
-                    &constructors[root_index as usize]
-                };
-                self.lower_struct_array_element_initializer(
-                    target,
-                    &struct_name,
-                    &fields,
-                    root_index,
-                    constructor,
-                    block,
-                    statement_location,
-                )?;
-            }
-            return Ok(true);
-        }
-
-        for field in &fields {
-            let flat_name = format!("{target}.{}", field.name);
-            match &field.ty {
-                TypedFieldType::Scalar(ty) => {
-                    let (state, actual, len) = globals
-                        .state_arrays
-                        .get(&flat_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "array-of-struct scalar field '{flat_name}' has no flattened state array"
-                                ),
-                                statement_location,
-                            )
-                        })?;
-                    if actual != *ty || len != root_len {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct scalar field '{flat_name}' has an inconsistent flattened shape"
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    let value = if let Some(default) = &field.default {
-                        let value = self.lower_expr(default, block)?;
-                        self.coerce(value, *ty, block, default.loc())?.value
-                    } else {
-                        Value::Constant(zero_scalar(*ty))
-                    };
-                    self.emit_state_array_value_fill(
-                        state,
-                        *ty,
-                        value,
-                        len,
-                        block,
-                        statement_location,
-                    );
-                }
-                TypedFieldType::Tuple(types) => {
-                    let defaults = if let Some(default) = &field.default {
-                        self.lower_value_expr(default, block)?
-                    } else {
-                        types
-                            .iter()
-                            .copied()
-                            .map(|ty| LoweredValue {
-                                value: Value::Constant(zero_scalar(ty)),
-                                ty,
-                            })
-                            .collect()
-                    };
-                    if defaults.len() != types.len() {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct tuple field '{flat_name}' initializer has the wrong arity"
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    for (index, (value, ty)) in
-                        defaults.into_iter().zip(types.iter().copied()).enumerate()
-                    {
-                        let component_name = format!("{flat_name}.__{index}");
-                        let (state, actual, len) = globals
-                            .state_arrays
-                            .get(&component_name)
-                            .copied()
-                            .ok_or_else(|| {
-                                self.error(
-                                    format!(
-                                        "array-of-struct tuple component '{component_name}' has no flattened state array"
-                                    ),
-                                    statement_location,
-                                )
-                            })?;
-                        if actual != ty || len != root_len {
-                            return Err(self.error(
-                                format!(
-                                    "array-of-struct tuple component '{component_name}' has an inconsistent shape"
-                                ),
-                                statement_location,
-                            ));
-                        }
-                        let value = self.coerce(value, ty, block, expression.loc())?;
-                        self.emit_state_array_value_fill(
-                            state,
-                            ty,
-                            value.value,
-                            len,
-                            block,
-                            statement_location,
-                        );
-                    }
-                }
-                TypedFieldType::Array(field_len) if field.array_elem_struct.is_none() => {
-                    let (state, element, flattened_len) = globals
-                        .state_arrays
-                        .get(&flat_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "array-of-struct array field '{flat_name}' has no flattened state array"
-                                ),
-                                statement_location,
-                            )
-                        })?;
-                    let expected_len = root_len.checked_mul(*field_len as u32).ok_or_else(|| {
-                        self.error(
-                            format!("array-of-struct field '{flat_name}' flattened length overflows"),
-                            statement_location,
-                        )
-                    })?;
-                    if flattened_len != expected_len {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct array field '{flat_name}' has an inconsistent flattened length"
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    let default_values = field.default.as_ref().and_then(|default| match default {
-                        Expr::ArrayLiteral { values, .. } => Some(values.as_slice()),
-                        Expr::ArrayCtor { init, .. } => init.as_deref(),
-                        _ => None,
-                    });
-                    if let Some(default_values) = default_values {
-                        if default_values.len() != *field_len {
-                            return Err(self.error(
-                                format!(
-                                    "array-of-struct array field '{flat_name}' default has {} elements, expected {field_len}",
-                                    default_values.len()
-                                ),
-                                statement_location,
-                            ));
-                        }
-                        let mut pattern = Vec::with_capacity(*field_len);
-                        for default in default_values {
-                            let value = self.lower_expr(default, block)?;
-                            pattern.push(self.coerce(value, element, block, default.loc())?.value);
-                        }
-                        for root_index in 0..root_len {
-                            for (field_index, value) in pattern.iter().copied().enumerate() {
-                                let index = root_index * *field_len as u32 + field_index as u32;
-                                self.push_statement(
-                                    block,
-                                    StatementKind::Assign {
-                                        destination: Place {
-                                            base: PlaceBase::State(state),
-                                            projections: vec![Projection::Index {
-                                                index: Value::Constant(ScalarValue::I32(
-                                                    index as i32,
-                                                )),
-                                                bounds: BoundsMode::Unchecked,
-                                            }],
-                                        },
-                                        value: Rvalue::Use(value),
-                                    },
-                                    statement_location,
-                                );
-                            }
-                        }
-                    } else {
-                        self.emit_state_array_fill(
-                            state,
-                            element,
-                            flattened_len,
-                            block,
-                            statement_location,
-                        );
-                    }
-                }
-                TypedFieldType::Array(_) | TypedFieldType::Struct => {}
-            }
-        }
-        Ok(true)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn lower_struct_array_element_initializer(
-        &mut self,
-        target: &str,
-        struct_name: &str,
-        fields: &[TypedStructField],
-        root_index: u32,
-        constructor: &Expr,
-        block: &mut MirBlock,
-        statement_location: SourceLoc,
-    ) -> Result<(), MirLoweringError> {
-        let Expr::UserCall {
-            name: actual_constructor,
-            args,
-            ..
-        } = constructor
-        else {
-            return Err(self.error(
-                format!(
-                    "array-of-struct state '{target}' element {root_index} is not a '{struct_name}' constructor"
-                ),
-                constructor.loc(),
-            ));
-        };
-        if actual_constructor != struct_name {
-            return Err(self.error(
-                format!(
-                    "array-of-struct state '{target}' element {root_index} expected constructor '{struct_name}', got '{actual_constructor}'"
-                ),
-                constructor.loc(),
-            ));
-        }
-        let Some(globals) = self.runtime_globals else {
-            unreachable!("struct-array state initialization only runs in a runtime function")
-        };
-
-        let scalar_fields = fields
-            .iter()
-            .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
-            .collect::<Vec<_>>();
-        let parameter_names = scalar_fields
-            .iter()
-            .map(|field| field.name.clone())
-            .collect::<Vec<_>>();
-        let defaults = scalar_fields
-            .iter()
-            .map(|field| {
-                let TypedFieldType::Scalar(ty) = field.ty else {
-                    unreachable!("scalar_fields contains only scalar declarations")
-                };
-                field.default.clone().or_else(|| Some(zero_expr(ty)))
-            })
-            .collect::<Vec<_>>();
-        let mut diagnostics = Vec::new();
-        let resolved = resolve_call_args_at(
-            args,
-            &parameter_names,
-            &defaults,
-            false,
-            false,
-            &format!(
-                "array-of-struct constructor '{struct_name}' element {root_index} during MIR lowering"
-            ),
-            constructor.loc(),
-            &mut diagnostics,
-        );
-        if let Some(diagnostic) = diagnostics.into_iter().next() {
-            return Err(self.error(diagnostic.message, constructor.loc()));
-        }
-
-        let mut scalar_index = 0_usize;
-        for field in fields {
-            let flat_name = format!("{target}.{}", field.name);
-            match &field.ty {
-                TypedFieldType::Scalar(ty) => {
-                    let (state, actual, len) = globals
-                        .state_arrays
-                        .get(&flat_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "array-of-struct scalar field '{flat_name}' has no flattened state array"
-                                ),
-                                statement_location,
-                            )
-                        })?;
-                    if actual != *ty || root_index >= len {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct scalar field '{flat_name}' has an inconsistent flattened shape"
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    let source = resolved[scalar_index]
-                        .or_else(|| defaults[scalar_index].as_ref())
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "array-of-struct constructor '{struct_name}' has no value for field '{}'",
-                                    field.name
-                                ),
-                                constructor.loc(),
-                            )
-                        })?;
-                    scalar_index += 1;
-                    let value = self.lower_expr(source, block)?;
-                    let value = self.coerce(value, *ty, block, source.loc())?;
-                    self.assign_state_array_element(
-                        state,
-                        root_index,
-                        value.value,
-                        block,
-                        statement_location,
-                    );
-                }
-                TypedFieldType::Tuple(types) => {
-                    let values = if let Some(default) = &field.default {
-                        self.lower_value_expr(default, block)?
-                    } else {
-                        types
-                            .iter()
-                            .copied()
-                            .map(|ty| LoweredValue {
-                                value: Value::Constant(zero_scalar(ty)),
-                                ty,
-                            })
-                            .collect()
-                    };
-                    if values.len() != types.len() {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct tuple field '{flat_name}' initializer has the wrong arity"
-                            ),
-                            constructor.loc(),
-                        ));
-                    }
-                    for (component_index, (value, ty)) in
-                        values.into_iter().zip(types.iter().copied()).enumerate()
-                    {
-                        let component_name = format!("{flat_name}.__{component_index}");
-                        let (state, actual, len) = globals
-                            .state_arrays
-                            .get(&component_name)
-                            .copied()
-                            .ok_or_else(|| {
-                                self.error(
-                                    format!(
-                                        "array-of-struct tuple component '{component_name}' has no flattened state array"
-                                    ),
-                                    statement_location,
-                                )
-                            })?;
-                        if actual != ty || root_index >= len {
-                            return Err(self.error(
-                                format!(
-                                    "array-of-struct tuple component '{component_name}' has an inconsistent shape"
-                                ),
-                                statement_location,
-                            ));
-                        }
-                        let value = self.coerce(value, ty, block, constructor.loc())?;
-                        self.assign_state_array_element(
-                            state,
-                            root_index,
-                            value.value,
-                            block,
-                            statement_location,
-                        );
-                    }
-                }
-                TypedFieldType::Array(field_len) if field.array_elem_struct.is_none() => {
-                    let (state, element, flattened_len) = globals
-                        .state_arrays
-                        .get(&flat_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "array-of-struct array field '{flat_name}' has no flattened state array"
-                                ),
-                                statement_location,
-                            )
-                        })?;
-                    let start = root_index.checked_mul(*field_len as u32).ok_or_else(|| {
-                        self.error(
-                            format!("array-of-struct field '{flat_name}' index overflows"),
-                            statement_location,
-                        )
-                    })?;
-                    let end = start.checked_add(*field_len as u32).ok_or_else(|| {
-                        self.error(
-                            format!("array-of-struct field '{flat_name}' index overflows"),
-                            statement_location,
-                        )
-                    })?;
-                    if end > flattened_len {
-                        return Err(self.error(
-                            format!(
-                                "array-of-struct array field '{flat_name}' has an inconsistent flattened shape"
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    let default_values = field.default.as_ref().and_then(|default| match default {
-                        Expr::ArrayLiteral { values, .. } => Some(values.as_slice()),
-                        Expr::ArrayCtor { init, .. } => init.as_deref(),
-                        _ => None,
-                    });
-                    for field_index in 0..*field_len {
-                        let value = if let Some(values) = default_values {
-                            let source = values.get(field_index).ok_or_else(|| {
-                                self.error(
-                                    format!(
-                                        "array-of-struct array field '{flat_name}' default has {} elements, expected {field_len}",
-                                        values.len()
-                                    ),
-                                    statement_location,
-                                )
-                            })?;
-                            let value = self.lower_expr(source, block)?;
-                            self.coerce(value, element, block, source.loc())?.value
-                        } else {
-                            Value::Constant(zero_scalar(element))
-                        };
-                        self.assign_state_array_element(
-                            state,
-                            start + field_index as u32,
-                            value,
-                            block,
-                            statement_location,
-                        );
-                    }
-                }
-                TypedFieldType::Array(_) | TypedFieldType::Struct => {}
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn assign_state_array_element(
-        &mut self,
-        state: onda_mir::StateId,
-        index: u32,
-        value: Value,
-        block: &mut MirBlock,
-        location: SourceLoc,
-    ) {
-        self.push_statement(
-            block,
-            StatementKind::Assign {
-                destination: Place {
-                    base: PlaceBase::State(state),
-                    projections: vec![Projection::Index {
-                        index: Value::Constant(ScalarValue::I32(index as i32)),
-                        bounds: BoundsMode::Unchecked,
-                    }],
-                },
-                value: Rvalue::Use(value),
-            },
-            location,
-        );
-    }
-
-    pub(super) fn lower_struct_state_initializer(
-        &mut self,
-        target: &str,
-        expression: &Expr,
-        block: &mut MirBlock,
-        statement_location: SourceLoc,
-    ) -> Result<bool, MirLoweringError> {
-        let Expr::UserCall {
-            name: constructor,
-            args,
-            ..
-        } = expression
-        else {
-            return Ok(false);
-        };
-        let Some(globals) = self.runtime_globals else {
-            return Ok(false);
-        };
-        let Some(fields) = globals.structs.get(constructor).cloned() else {
-            return Ok(false);
-        };
-        let Some(expected_constructor) = globals.struct_roots.get(target) else {
-            return Ok(false);
-        };
-        if expected_constructor != constructor {
-            return Err(self.error(
-                format!(
-                    "struct state '{target}' expected constructor '{expected_constructor}', got '{constructor}'"
-                ),
-                statement_location,
-            ));
-        }
-
-        let scalar_fields = fields
-            .iter()
-            .filter(|field| matches!(field.ty, TypedFieldType::Scalar(_)))
-            .collect::<Vec<_>>();
-        let parameter_names = scalar_fields
-            .iter()
-            .map(|field| field.name.clone())
-            .collect::<Vec<_>>();
-        let defaults = scalar_fields
-            .iter()
-            .map(|field| {
-                let TypedFieldType::Scalar(ty) = field.ty else {
-                    unreachable!("scalar_fields contains only scalar declarations")
-                };
-                field.default.clone().or_else(|| Some(zero_expr(ty)))
-            })
-            .collect::<Vec<_>>();
-        let mut diagnostics = Vec::new();
-        let resolved = resolve_call_args_at(
-            args,
-            &parameter_names,
-            &defaults,
-            false,
-            false,
-            &format!("struct constructor '{constructor}' during MIR lowering"),
-            statement_location,
-            &mut diagnostics,
-        );
-        if let Some(diagnostic) = diagnostics.into_iter().next() {
-            return Err(self.error(diagnostic.message, statement_location));
-        }
-
-        let mut scalar_index = 0_usize;
-        for field in &fields {
-            let flat_name = format!("{target}.{}", field.name);
-            match &field.ty {
-                TypedFieldType::Scalar(ty) => {
-                    let state = globals.states.get(&flat_name).copied().ok_or_else(|| {
-                        self.error(
-                            format!(
-                                "struct field '{flat_name}' has no flattened scalar state slot"
-                            ),
-                            statement_location,
-                        )
-                    })?;
-                    let source = resolved[scalar_index]
-                        .or_else(|| defaults[scalar_index].as_ref())
-                        .ok_or_else(|| {
-                            self.error(
-                                format!("struct field '{flat_name}' has no initializer"),
-                                statement_location,
-                            )
-                        })?;
-                    let value = self.lower_expr(source, block)?;
-                    let value = self.coerce(value, *ty, block, source.loc())?;
-                    self.push_statement(
-                        block,
-                        StatementKind::Assign {
-                            destination: Place {
-                                base: PlaceBase::State(state.0),
-                                projections: Vec::new(),
-                            },
-                            value: Rvalue::Use(value.value),
-                        },
-                        statement_location,
-                    );
-                    scalar_index += 1;
-                }
-                TypedFieldType::Tuple(component_types) => {
-                    let components = globals
-                        .state_tuples
-                        .get(&flat_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            self.error(
-                                format!(
-                                    "struct tuple field '{flat_name}' has no flattened state components"
-                                ),
-                                statement_location,
-                            )
-                        })?;
-                    let values = if let Some(default) = &field.default {
-                        self.lower_value_expr(default, block)?
-                    } else {
-                        component_types
-                            .iter()
-                            .copied()
-                            .map(|ty| LoweredValue {
-                                value: Value::Constant(zero_scalar(ty)),
-                                ty,
-                            })
-                            .collect()
-                    };
-                    if values.len() != components.len() {
-                        return Err(self.error(
-                            format!(
-                                "struct tuple field '{flat_name}' initializer has {} values, expected {}",
-                                values.len(),
-                                components.len()
-                            ),
-                            statement_location,
-                        ));
-                    }
-                    for ((state, ty), value) in components.into_iter().zip(values) {
-                        let value = self.coerce(value, ty, block, expression.loc())?;
-                        self.push_statement(
-                            block,
-                            StatementKind::Assign {
-                                destination: Place {
-                                    base: PlaceBase::State(state),
-                                    projections: Vec::new(),
-                                },
-                                value: Rvalue::Use(value.value),
-                            },
-                            statement_location,
-                        );
-                    }
-                }
-                TypedFieldType::Array(_) => {
-                    if let Some(default) = &field.default {
-                        if !self.lower_state_array_initializer(
-                            &flat_name,
-                            default,
-                            block,
-                            statement_location,
-                        )? {
-                            return Err(self.error(
-                                format!(
-                                    "struct array field '{flat_name}' has an unsupported initializer"
-                                ),
-                                statement_location,
-                            ));
-                        }
-                    } else if let Some((state, ty, len)) =
-                        globals.state_arrays.get(&flat_name).copied()
-                    {
-                        self.emit_state_array_fill(state, ty, len, block, statement_location);
-                    }
-                }
-                TypedFieldType::Struct => {}
-            }
-        }
-        Ok(true)
     }
 
     pub(super) fn lower_state_array_initializer(
@@ -1247,13 +641,19 @@ impl<'a> FunctionLowerer<'a> {
         if !initialize {
             return Ok(true);
         }
-        for index in 0..len_u32 {
-            let value = if let Some(values) = &values {
-                self.coerce(values[index as usize], element, block, expression.loc())?
-                    .value
-            } else {
-                Value::Constant(zero_scalar(element))
-            };
+        let Some(values) = values else {
+            self.emit_array_value_fill(
+                Place::local(local),
+                element,
+                Value::Constant(zero_scalar(element)),
+                len_u32,
+                block,
+                statement_location,
+            );
+            return Ok(true);
+        };
+        for (index, value) in values.into_iter().enumerate() {
+            let value = self.coerce(value, element, block, expression.loc())?.value;
             self.push_statement(
                 block,
                 StatementKind::Assign {
@@ -1299,16 +699,35 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         location: SourceLoc,
     ) {
+        self.emit_array_value_fill(
+            Place {
+                base: PlaceBase::State(state),
+                projections: Vec::new(),
+            },
+            ty,
+            value,
+            len,
+            block,
+            location,
+        );
+    }
+
+    pub(super) fn emit_array_value_fill(
+        &mut self,
+        place: Place,
+        ty: PrimitiveType,
+        value: Value,
+        len: u32,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) {
         let destination = self.emit_slice_temp(
             block,
             None,
             ty,
             onda_mir::AccessMode::ReadWrite,
             Rvalue::MakeSlice {
-                source: onda_mir::SliceSource::Place(Place {
-                    base: PlaceBase::State(state),
-                    projections: Vec::new(),
-                }),
+                source: onda_mir::SliceSource::Place(place),
                 start: Value::Constant(ScalarValue::I32(0)),
                 len: Value::Constant(ScalarValue::I32(len as i32)),
                 bounds: BoundsMode::Unchecked,
@@ -1329,13 +748,29 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn assign_variable_values(
         &mut self,
         name: &str,
-        values: Vec<LoweredValue>,
+        mut values: Vec<LoweredValue>,
         declared_ty: Option<&onda_frontend::DeclType>,
         expression: &Expr,
         block: &mut MirBlock,
         statement_location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        if let Some(components) = self.data_tuple_components(name) {
+            if components.len() != values.len() {
+                return Err(self.error("tuple field assignment changed arity", statement_location));
+            }
+            for (name, value) in components.iter().zip(values) {
+                self.store_data_scalar(name, value, block, statement_location)?;
+            }
+            return Ok(());
+        }
         if values.len() == 1 {
+            values[0] =
+                self.normalize_data_scalar_store(name, values[0], block, statement_location)?;
+            if let Some(Binding::PlaceAlias(place, ty)) = self.bindings.get(name).cloned() {
+                let value = self.coerce(values[0], ty, block, expression.loc())?;
+                self.assign_place_value(block, place, value.value, statement_location);
+                return Ok(());
+            }
             if let Some(Binding::SliceElementAlias {
                 slice,
                 element,
@@ -1347,7 +782,7 @@ impl<'a> FunctionLowerer<'a> {
                     block,
                     StatementKind::SliceStore {
                         slice: Value::Local(slice),
-                        index: Value::Local(index),
+                        index,
                         value: value.value,
                         bounds: BoundsMode::Unchecked,
                     },
@@ -1450,12 +885,9 @@ impl<'a> FunctionLowerer<'a> {
         value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let Some(globals) = self.runtime_globals else {
+        let Some(globals) = self.runtime_globals_for_unbound(name) else {
             return Ok(false);
         };
-        if self.bindings.contains_key(name) {
-            return Ok(false);
-        }
         if let Some(components) = globals.state_tuples.get(name).cloned() {
             if values.len() != components.len() {
                 return Err(self.error(

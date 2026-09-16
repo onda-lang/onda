@@ -146,6 +146,7 @@ fn collect_block_accesses(program: &Program, block: &Block, accesses: &mut [Stat
                         // Passing mode is deliberately conservative here. A
                         // backend may refine this using EffectAnalysis.
                         PassingMode::ReadWriteReference => (true, true),
+                        PassingMode::ResultReference => (false, true),
                     };
                     match argument {
                         CallArgument::Place(place)
@@ -264,7 +265,14 @@ fn collect_rvalue(value: &Rvalue, accesses: &mut [StateAccess]) {
         Rvalue::MakeSlice {
             source: SliceSource::Place(place),
             ..
-        } => collect_place(place, true, false, accesses),
+        } => {
+            collect_place(place, true, false, accesses);
+            // A descriptor can outlive reference formation and write the slot.
+            // Promoting its backing storage needs descriptor-alias analysis.
+            if let PlaceBase::State(state) = place.base {
+                accesses[state.index()].eligible = false;
+            }
+        }
         _ => {}
     }
 }

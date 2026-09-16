@@ -41,7 +41,10 @@ fn push_block_audio_input_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, na
     );
 }
 
-fn infer_call_argument_scalar_type(expr: &Expr, env: ExprEnv<'_>) -> Option<PrimitiveType> {
+pub(crate) fn infer_call_argument_scalar_type(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<PrimitiveType> {
     let mut discarded = Vec::new();
     infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         expr,
@@ -295,7 +298,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
         AssignTarget::Var(name) => {
             ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
         }
-        AssignTarget::Index { base, index } => {
+        AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);
@@ -313,15 +316,8 @@ pub(crate) fn validate_block_bound_surface_assign_target(
                     ok = false;
                 }
             }
-            ok &= validate_block_bound_surface_expr(index, env, errors);
         }
-        AssignTarget::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-        } => {
+        AssignTarget::Slice { base, .. } => {
             if let Some(surface) = io_surface_name(base, env) {
                 if !env.io_surface_access_allowed {
                     push_io_surface_scope_error(errors, loc, surface);
@@ -334,17 +330,6 @@ pub(crate) fn validate_block_bound_surface_assign_target(
                 push_dynamic_param_surface_value_error(errors, loc, surface);
                 ok = false;
             }
-            for coordinate in [
-                selector.as_ref(),
-                channel.as_ref(),
-                start.as_ref(),
-                end.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                ok &= validate_block_bound_surface_expr(coordinate, env, errors);
-            }
         }
         AssignTarget::Tuple(names) => {
             for name in names.iter().filter_map(|target| target.binding()) {
@@ -352,6 +337,8 @@ pub(crate) fn validate_block_bound_surface_assign_target(
             }
         }
     }
+    target
+        .visit_selectors(|selector| ok &= validate_block_bound_surface_expr(selector, env, errors));
     ok
 }
 
@@ -373,7 +360,23 @@ fn validate_expr_node<'a>(
     match expr {
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
         Expr::ArrayLiteral { values, .. } => {
+            let nominal = values
+                .first()
+                .and_then(|value| infer_fixed_data_type(value, env));
             for value in values {
+                let actual = infer_fixed_data_type(value, env);
+                if let Some(expected @ DataType::Struct(_)) = nominal.as_ref() {
+                    if actual.as_ref() != Some(expected) {
+                        push_expr_error(
+                            errors,
+                            value,
+                            format!(
+                                "data array element {}",
+                                data_type_mismatch(expected, actual.as_ref())
+                            ),
+                        );
+                    }
+                }
                 children.push(value);
             }
             push_expr_error(
@@ -391,10 +394,7 @@ fn validate_expr_node<'a>(
             if is_builtin_constant_name(name) {
                 return;
             }
-            // `locals` contains lexical loop binders. Resolve them before any
-            // outer aggregate/resource namespace so a loop index fully
-            // shadows a same-named array, buffer, or struct.
-            if env.locals.contains(name) {
+            if !name.contains('.') && env.has_value_binding(name) {
                 return;
             }
             if let Some(name) = block_audio_input_name(name, env) {
@@ -402,26 +402,35 @@ fn validate_expr_node<'a>(
                 return;
             }
             if let Some((root, field)) = name.split_once('.') {
-                if env.locals.contains(root) {
+                if env.has_value_binding(root) {
+                    if env.tuple_vars.contains_key(root) {
+                        push_expr_error(
+                            errors,
+                            expr,
+                            format!("tuple binding '{root}' has no field '{field}'"),
+                        );
+                        return;
+                    }
+                    let kind = if env.locals.contains(root) {
+                        "loop variable"
+                    } else {
+                        "value binding"
+                    };
                     push_expr_error(
                         errors,
                         expr,
-                        format!("loop variable '{root}' is scalar and has no field '{field}'"),
+                        format!("{kind} '{root}' is scalar and has no field '{field}'"),
                     );
                     return;
                 }
             }
             if let Some((base, field)) = split_field_path(name, errors) {
-                if let Some((struct_name, owner_kind)) = env
-                    .param_structs
-                    .get(base)
-                    .map(|s| (s.as_str(), "parameter"))
-                    .or_else(|| {
-                        env.struct_instances
-                            .get(base)
-                            .map(|s| (s.as_str(), "instance"))
-                    })
-                {
+                if let Some(struct_name) = env.struct_name(base) {
+                    let owner_kind = if env.param_structs.contains_key(base) {
+                        "parameter"
+                    } else {
+                        "instance"
+                    };
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
                         push_expr_error(
                             errors,
@@ -511,7 +520,7 @@ fn validate_expr_node<'a>(
                 return;
             }
 
-            if env.param_structs.contains_key(name) {
+            if env.struct_name(name).is_some() && env.param_structs.contains_key(name) {
                 if name == "self" {
                     return;
                 }
@@ -522,7 +531,7 @@ fn validate_expr_node<'a>(
                 );
                 return;
             }
-            if env.struct_instances.contains_key(name) {
+            if env.struct_name(name).is_some() {
                 push_expr_error(
                     errors,
                     expr,
@@ -587,12 +596,45 @@ fn validate_expr_node<'a>(
             }
         }
         Expr::Index { base, index, .. } => {
+            let flattened_struct_array_leaf =
+                split_simple_field_path(base).and_then(|(root, field)| {
+                    env.struct_name(root).and_then(|struct_name| {
+                        resolve_flattened_struct_array_leaf_type(
+                            struct_name,
+                            field,
+                            env.struct_defs,
+                        )
+                    })
+                });
+            let lowered_state_field = split_simple_field_path(base)
+                .map(|(_, field)| field)
+                .filter(|field| {
+                    env.array_vars.contains_key(*field)
+                        || is_declared_data_array_symbol(env.declared_symbols, field)
+                });
+            let base_is_registered_array = env.array_vars.contains_key(base)
+                || lowered_state_field.is_some()
+                || flattened_struct_array_leaf.is_some();
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if env.locals.contains(lexical_root) {
+            if env.has_scalar_binding(lexical_root) {
+                let kind = if env.locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 push_expr_error(
                     errors,
                     expr,
-                    format!("loop variable '{lexical_root}' is scalar and cannot be indexed"),
+                    format!("{kind} '{lexical_root}' is scalar and cannot be indexed"),
+                );
+                children.push(index);
+                return;
+            }
+            if lexical_root != base && env.tuple_vars.contains_key(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("tuple binding '{lexical_root}' has no fields"),
                 );
                 children.push(index);
                 return;
@@ -602,92 +644,93 @@ fn validate_expr_node<'a>(
                 children.push(index);
                 return;
             }
-            if let Some((root, field)) = split_field_path(base, errors) {
-                if let Some((struct_name, owner_kind)) = env
-                    .param_structs
-                    .get(root)
-                    .map(|s| (s.as_str(), "parameter"))
-                    .or_else(|| {
-                        env.struct_instances
-                            .get(root)
-                            .map(|s| (s.as_str(), "instance"))
-                    })
-                {
-                    let Some(_fields) = env.struct_defs.get(struct_name) else {
-                        push_expr_error(
-                            errors,
-                            expr,
-                            format!("unknown struct type '{}'", struct_name),
-                        );
-                        return;
-                    };
-                    let Some(field_decl) =
-                        resolve_struct_field_decl(struct_name, field, env.struct_defs)
-                    else {
-                        push_expr_error(
-                            errors,
-                            expr,
-                            format!(
-                                "struct {} '{}' (type '{}') has no field '{}'",
-                                owner_kind, root, struct_name, field
-                            ),
-                        );
-                        return;
-                    };
-                    if !matches!(
-                        field_decl.ty,
-                        TypedFieldType::Array(_) | TypedFieldType::Tuple(_)
-                    ) {
-                        push_expr_error(
-                            errors,
-                            expr,
-                            format!(
-                                "field '{}.{}' is not array or tuple and cannot be indexed",
-                                root, field
-                            ),
-                        );
-                    }
-                    if let TypedFieldType::Tuple(ref elem_tys) = field_decl.ty {
-                        // Validate const index for tuple field
-                        match index.as_ref() {
-                            Expr::Int { value, .. } => {
-                                let idx = *value as usize;
-                                if idx >= elem_tys.len() {
+            // Struct-array field access is flattened to `root.field[index]` before
+            // validation. Once that flattened array is registered, validate it as
+            // an array below instead of interpreting the dotted storage name as a
+            // direct field path through the containing struct.
+            if !base_is_registered_array {
+                if let Some((root, field)) = split_field_path(base, errors) {
+                    if let Some(struct_name) = env.struct_name(root) {
+                        let owner_kind = if env.param_structs.contains_key(root) {
+                            "parameter"
+                        } else {
+                            "instance"
+                        };
+                        let Some(_fields) = env.struct_defs.get(struct_name) else {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!("unknown struct type '{}'", struct_name),
+                            );
+                            return;
+                        };
+                        let Some(field_decl) =
+                            resolve_struct_field_decl(struct_name, field, env.struct_defs)
+                        else {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!(
+                                    "struct {} '{}' (type '{}') has no field '{}'",
+                                    owner_kind, root, struct_name, field
+                                ),
+                            );
+                            return;
+                        };
+                        if !matches!(
+                            field_decl.ty,
+                            TypedFieldType::Array(_) | TypedFieldType::Tuple(_)
+                        ) {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!(
+                                    "field '{}.{}' is not array or tuple and cannot be indexed",
+                                    root, field
+                                ),
+                            );
+                        }
+                        if let TypedFieldType::Tuple(ref elem_tys) = field_decl.ty {
+                            // Validate const index for tuple field
+                            match index.as_ref() {
+                                Expr::Int { value, .. } => {
+                                    let idx = *value as usize;
+                                    if idx >= elem_tys.len() {
+                                        push_expr_error(
+                                            errors,
+                                            expr,
+                                            format!(
+                                                "tuple field '{}.{}' index {idx} out of bounds (has {} elements)",
+                                                root, field, elem_tys.len()
+                                            ),
+                                        );
+                                    }
+                                }
+                                _ => {
                                     push_expr_error(
                                         errors,
                                         expr,
-                                        format!(
-                                            "tuple field '{}.{}' index {idx} out of bounds (has {} elements)",
-                                            root, field, elem_tys.len()
-                                        ),
+                                        "tuple element index must be a compile-time integer constant",
                                     );
                                 }
                             }
-                            _ => {
-                                push_expr_error(
-                                    errors,
-                                    expr,
-                                    "tuple element index must be a compile-time integer constant",
-                                );
-                            }
+                        } else {
+                            children.push(index);
                         }
-                    } else {
-                        children.push(index);
+                        return;
                     }
-                    return;
-                }
-                if is_struct_array_root(env.declared_symbols, root)
-                    && !env.array_vars.contains_key(base)
-                    && !env.proc_array_roots.contains_key(root)
-                {
-                    push_expr_error(
-                        errors,
-                        expr,
-                        format!(
-                            "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
-                        ),
-                    );
-                    return;
+                    if is_struct_array_root(env.declared_symbols, root)
+                        && !env.proc_array_roots.contains_key(root)
+                    {
+                        push_expr_error(
+                            errors,
+                            expr,
+                            format!(
+                                "'{root}' is an array of structs and must be indexed before accessing field '{field}'"
+                            ),
+                        );
+                        return;
+                    }
                 }
             }
             if let Some(name) = io_surface_name(base, env) {
@@ -769,7 +812,7 @@ fn validate_expr_node<'a>(
                 children.push(index);
                 return;
             }
-            if !env.array_vars.contains_key(base)
+            if !base_is_registered_array
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
                 && !env.tuple_vars.contains_key(base)
@@ -820,11 +863,27 @@ fn validate_expr_node<'a>(
             ..
         } => {
             let lexical_root = base.split('.').next().unwrap_or(base);
-            if env.locals.contains(lexical_root) {
+            if env.has_scalar_binding(lexical_root) {
+                let kind = if env.locals.contains(lexical_root) {
+                    "loop variable"
+                } else {
+                    "value binding"
+                };
                 push_expr_error(
                     errors,
                     expr,
-                    format!("loop variable '{lexical_root}' is scalar and cannot be sliced"),
+                    format!("{kind} '{lexical_root}' is scalar and cannot be sliced"),
+                );
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    children.push(coordinate);
+                }
+                return;
+            }
+            if env.tuple_vars.contains_key(lexical_root) {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("tuple binding '{lexical_root}' cannot be sliced"),
                 );
                 for coordinate in [selector, channel, start, end].into_iter().flatten() {
                     children.push(coordinate);
@@ -839,16 +898,12 @@ fn validate_expr_node<'a>(
                 return;
             }
             if let Some((root, field)) = split_field_path(base, errors) {
-                if let Some((struct_name, owner_kind)) = env
-                    .param_structs
-                    .get(root)
-                    .map(|s| (s.as_str(), "parameter"))
-                    .or_else(|| {
-                        env.struct_instances
-                            .get(root)
-                            .map(|s| (s.as_str(), "instance"))
-                    })
-                {
+                if let Some(struct_name) = env.struct_name(root) {
+                    let owner_kind = if env.param_structs.contains_key(root) {
+                        "parameter"
+                    } else {
+                        "instance"
+                    };
                     let Some(_fields) = env.struct_defs.get(struct_name) else {
                         push_expr_error(
                             errors,
@@ -910,6 +965,7 @@ fn validate_expr_node<'a>(
             } else if let Some(name) = io_surface_array_name(base, env) {
                 push_io_surface_value_error(errors, expr.loc(), name);
             } else if !env.array_vars.contains_key(base)
+                && !env.local_array_aliases.contains_key(base)
                 && !has_declared_buffer_symbol_info(env.declared_symbols, base)
                 && !is_declared_struct_array_root_symbol(env.declared_symbols, base)
             {
@@ -1050,12 +1106,84 @@ fn validate_expr_node<'a>(
                 return;
             }
             if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
-                errors.push(Diagnostic::semantic_span(
-                    "indexed struct field access (e.g. `data[i].field[j]`) is not supported; \
-                     destructure into an intermediate alias first: \
-                     `v = data[i]` then `v.field[j]`",
-                    expr.loc(),
-                ));
+                let Some((base, index, field, field_index)) =
+                    crate::array_structs::extract_safi_args(args)
+                else {
+                    push_expr_error(errors, expr, "malformed indexed struct-array field access");
+                    return;
+                };
+                let struct_name = env
+                    .struct_array_roots
+                    .get(&base)
+                    .map(|root| root.struct_name.as_str())
+                    .or_else(|| {
+                        env.local_array_aliases
+                            .get(&base)
+                            .and_then(|alias| alias.elem_struct.as_deref())
+                    });
+                let Some(struct_name) = struct_name else {
+                    push_expr_error(errors, expr, format!("'{base}' is not an array of structs"));
+                    return;
+                };
+                let Some(field_decl) = crate::declaration_coercion::resolve_struct_field_decl(
+                    struct_name,
+                    &field,
+                    env.struct_defs,
+                ) else {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!("struct '{struct_name}' has no field '{field}'"),
+                    );
+                    return;
+                };
+                validate_expr(&index, env, errors);
+                require_expr_numeric_type(
+                    &index,
+                    infer_call_argument_scalar_type(&index, env),
+                    "struct-array index",
+                    errors,
+                );
+                match &field_decl.ty {
+                    TypedFieldType::Array(_) => {
+                        validate_expr(&field_index, env, errors);
+                        require_expr_numeric_type(
+                            &field_index,
+                            infer_call_argument_scalar_type(&field_index, env),
+                            "struct field index",
+                            errors,
+                        );
+                    }
+                    TypedFieldType::Tuple(types) => {
+                        validate_expr(&field_index, env, errors);
+                        let Expr::Int { value, .. } = field_index else {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                "tuple field index must be a compile-time integer constant",
+                            );
+                            return;
+                        };
+                        if usize::try_from(value)
+                            .ok()
+                            .is_none_or(|index| index >= types.len())
+                        {
+                            push_expr_error(
+                                errors,
+                                expr,
+                                format!(
+                                    "tuple field index {value} is out of bounds for '{base}[...].{field}' with {} elements",
+                                    types.len()
+                                ),
+                            );
+                        }
+                    }
+                    TypedFieldType::Scalar(_) | TypedFieldType::Struct => push_expr_error(
+                        errors,
+                        expr,
+                        format!("field '{field}' of struct '{struct_name}' is not indexable"),
+                    ),
+                }
                 return;
             }
             if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
@@ -1069,9 +1197,21 @@ fn validate_expr_node<'a>(
                 return;
             }
             if !env.fn_signatures.contains_key(name) {
+                if let Some(function) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
+                    if env.fn_signatures.contains_key(function) {
+                        push_expr_error(
+                            errors,
+                            expr,
+                            format!(
+                                "field selection on function result '{function}(...)' is not supported; bind the result first"
+                            ),
+                        );
+                        return;
+                    }
+                }
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if is_builtin_len_receiver(base, env) {
-                        validate_data_len_builtin_call(name, base, args, env, expr.loc(), errors);
+                        validate_data_len_builtin_call(name, args, expr.loc(), errors);
                         return;
                     }
                 }
@@ -1191,7 +1331,7 @@ fn validate_expr_node<'a>(
                         let param_readonly = sig
                             .params
                             .get(idx)
-                            .is_some_and(|param| sig.readonly_array_params.contains(param));
+                            .is_some_and(|param| sig.readonly_data_params.contains(param));
                         if let Some(FnParamType::BufferArray { buffer, len }) = param_ty {
                             validate_buffer_array_param_call_arg(
                                 display_name,
@@ -1223,6 +1363,42 @@ fn validate_expr_node<'a>(
                             && validate_aggregate_unsafe_reference_arg(arg, env, errors)
                         {
                             continue;
+                        }
+                        if let Some(FnParamType::Struct(expected)) = param_ty {
+                            let actual = infer_fixed_data_type(arg, env);
+                            if let Some(DataType::Struct(actual)) = actual.as_ref() {
+                                if env.struct_defs.contains_key(expected) && actual != expected {
+                                    push_expr_error(
+                                        errors,
+                                        arg,
+                                        format!(
+                                            "argument requires struct '{expected}', got '{actual}'"
+                                        ),
+                                    );
+                                }
+                                validate_fixed_data_expr(arg, env, errors);
+                                continue;
+                            }
+                            if env.struct_defs.contains_key(expected) {
+                                if !is_internal_proc_helper_call(name)
+                                    || !matches!(arg, Expr::Index { .. } | Expr::Var { .. })
+                                {
+                                    push_expr_error(
+                                        errors,
+                                        arg,
+                                        format!(
+                                            "function '{display_name}' argument '{}' {}",
+                                            sig.params[idx],
+                                            data_type_mismatch(
+                                                &DataType::Struct(expected.clone()),
+                                                actual.as_ref(),
+                                            )
+                                        ),
+                                    );
+                                    children.push(arg);
+                                }
+                                continue;
+                            }
                         }
                         if is_function_array_param(param_ty) {
                             if reject_protected_array_pointer_call_arg(
@@ -1262,7 +1438,8 @@ fn validate_expr_node<'a>(
                                 for value in values {
                                     children.push(value);
                                 }
-                            } else if matches!(arg, Expr::ArrayCtor { .. }) {
+                            } else if matches!(arg, Expr::ArrayCtor { .. } | Expr::UserCall { .. })
+                            {
                                 children.push(arg);
                             }
                             // Array params accept data-like args.
@@ -1294,33 +1471,6 @@ fn validate_expr_node<'a>(
                             ) {
                                 continue;
                             }
-                            continue;
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if (env.struct_instances.contains_key(v)
-                                || env.param_structs.contains_key(v))
-                                && matches!(param_ty, Some(FnParamType::Struct(_)))
-                            {
-                                continue;
-                            }
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if v == "self" && matches!(param_ty, Some(FnParamType::Struct(_))) {
-                                continue;
-                            }
-                        }
-                        if let Expr::Var { name: v, .. } = arg {
-                            if (env.struct_instances.contains_key(v)
-                                || env.param_structs.contains_key(v))
-                                && is_internal_proc_helper_call(name)
-                            {
-                                continue;
-                            }
-                        }
-                        if matches!(param_ty, Some(FnParamType::Struct(_)))
-                            && is_internal_proc_helper_call(name)
-                            && matches!(arg, Expr::Index { .. } | Expr::Var { .. })
-                        {
                             continue;
                         }
                         if let Some(FnParamType::Tuple(expected)) = param_ty {
@@ -1420,18 +1570,12 @@ fn validate_expr_node<'a>(
             }
 
             if env.struct_defs.contains_key(name) {
-                let scope_name = match env.scope {
-                    ScopeKind::Init => "init",
-                    ScopeKind::Block => "block",
-                    ScopeKind::Sample => "sample",
-                    ScopeKind::Def => "def",
-                };
                 push_expr_error(
                     errors,
                     expr,
                     format!(
-                        "struct constructors are only allowed as direct init assignments; found '{}' call in {scope_name}",
-                        name
+                        "struct constructors are only allowed as direct assignments or call arguments; found '{}' call in {}",
+                        name, env.diagnostic_scope
                     ),
                 );
                 for arg in args {
@@ -1600,47 +1744,33 @@ fn is_struct_array_root(declared_symbols: &DeclaredSymbolMap, name: &str) -> boo
 }
 
 fn is_builtin_len_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    env.array_vars.contains_key(base)
-        || has_declared_buffer_symbol_info(env.declared_symbols, base)
-        || is_builtin_array_like_receiver_with_resolver(
-            base,
-            env.declared_symbols,
-            env.struct_defs,
-            env.proc_array_roots,
-            |root| {
-                env.param_structs
-                    .get(root)
-                    .or_else(|| env.struct_instances.get(root))
-                    .map(String::as_str)
-            },
-        )
+    let root = base.split('.').next().unwrap_or(base);
+    !env.has_value_binding(root)
+        && (call_array_symbol_info(base, env).is_some()
+            || (!env.resource_receiver_is_shadowed(base)
+                && has_declared_buffer_symbol_info(env.declared_symbols, base)))
 }
 
 fn is_builtin_buffer_receiver(base: &str, env: ExprEnv<'_>) -> bool {
-    has_declared_buffer_symbol_info(env.declared_symbols, base)
+    !env.resource_receiver_is_shadowed(base)
+        && has_declared_buffer_symbol_info(env.declared_symbols, base)
 }
 
 fn is_by_ref_call_arg_var(name: &str, env: ExprEnv<'_>) -> bool {
-    env.struct_instances.contains_key(name)
-        || env.param_structs.contains_key(name)
-        || env.array_vars.contains_key(name)
+    let root = name.split('.').next().unwrap_or(name);
+    if env.has_value_binding(root) {
+        return false;
+    }
+    env.struct_name(name).is_some()
+        || call_array_symbol_info(name, env).is_some()
         || protected_proc_view_arg_name(name, env).is_some()
-        || env.output_arrays.contains(name)
         || has_declared_buffer_symbol_info(env.declared_symbols, name)
-        || is_declared_struct_array_root_symbol(env.declared_symbols, name)
-        || env.proc_array_roots.contains_key(name)
 }
 
 fn is_by_ref_call_arg_expr(expr: &Expr, env: ExprEnv<'_>) -> bool {
     match expr {
         Expr::Var { name, .. } => is_by_ref_call_arg_var(name, env),
-        Expr::Slice { base, .. } => {
-            env.array_vars.contains_key(base)
-                || protected_proc_view_arg_name(base, env).is_some()
-                || env.output_arrays.contains(base)
-                || has_declared_buffer_symbol_info(env.declared_symbols, base)
-                || is_declared_struct_array_root_symbol(env.declared_symbols, base)
-        }
+        Expr::Slice { base, .. } => is_by_ref_call_arg_var(base, env),
         _ => false,
     }
 }
@@ -1666,7 +1796,10 @@ fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
     )
 }
 
-fn infer_call_argument_tuple_types(expr: &Expr, env: ExprEnv<'_>) -> Option<Vec<PrimitiveType>> {
+pub(crate) fn infer_call_argument_tuple_types(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<Vec<PrimitiveType>> {
     match expr {
         Expr::Tuple { values, .. } => values
             .iter()
@@ -1676,19 +1809,16 @@ fn infer_call_argument_tuple_types(expr: &Expr, env: ExprEnv<'_>) -> Option<Vec<
             })
             .collect(),
         Expr::Var { name, .. } => {
-            let lexical_root = name.split('.').next().unwrap_or(name);
-            if env.locals.contains(lexical_root) {
-                return None;
-            }
             if let Some(types) = tracked_local_tuple_types(name, env.tuple_vars, env.local_aliases)
             {
                 return Some(types);
             }
+            let lexical_root = name.split('.').next().unwrap_or(name);
+            if env.has_value_binding(lexical_root) {
+                return None;
+            }
             let (root, field) = split_simple_field_path(name)?;
-            let struct_name = env
-                .struct_instances
-                .get(root)
-                .or_else(|| env.param_structs.get(root))?;
+            let struct_name = env.struct_name(root)?;
             match &resolve_struct_field_decl(struct_name, field, env.struct_defs)?.ty {
                 TypedFieldType::Tuple(types) => Some(types.clone()),
                 TypedFieldType::Scalar(_) | TypedFieldType::Struct | TypedFieldType::Array(_) => {
@@ -1702,7 +1832,7 @@ fn infer_call_argument_tuple_types(expr: &Expr, env: ExprEnv<'_>) -> Option<Vec<
             .and_then(|signature| signature.return_type.as_ref())
         {
             Some(ReturnType::Tuple(types)) => Some(types.clone()),
-            Some(ReturnType::Scalar(_)) | None => None,
+            Some(ReturnType::Scalar(_) | ReturnType::Data(_)) | None => None,
         },
         _ => None,
     }
@@ -1786,15 +1916,10 @@ enum CallArrayArgElem {
 }
 
 fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgElem> {
-    if let Some(elem) = infer_call_argument_scalar_type(value, env) {
-        return Some(CallArrayArgElem::Primitive(elem));
-    }
-    match value {
+    let nominal = match value {
         Expr::Var { name, .. } => env
-            .struct_instances
-            .get(name)
-            .or_else(|| env.param_structs.get(name))
-            .cloned()
+            .struct_name(name)
+            .map(str::to_owned)
             .map(CallArrayArgElem::Nominal),
         Expr::Index { base, .. } => {
             call_array_symbol_info(base, env).and_then(|info| match info.elem {
@@ -1807,13 +1932,55 @@ fn call_array_value_elem(value: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgE
         Expr::UserCall { name, .. } if env.struct_defs.contains_key(name) => {
             Some(CallArrayArgElem::Nominal(name.clone()))
         }
+        Expr::UserCall { name, .. } => env.fn_signatures.get(name).and_then(|signature| {
+            match signature.return_type.as_ref()? {
+                ReturnType::Data(DataType::Struct(name)) => {
+                    Some(CallArrayArgElem::Nominal(name.clone()))
+                }
+                _ => None,
+            }
+        }),
         _ => None,
-    }
+    };
+    nominal.or_else(|| infer_call_argument_scalar_type(value, env).map(CallArrayArgElem::Primitive))
 }
 
-fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+fn struct_field_array_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    let (root, field) = split_simple_field_path(name)?;
+    let struct_name = env.struct_name(root)?;
+    let declaration = resolve_struct_field_decl(struct_name, field, env.struct_defs)?;
+    let TypedFieldType::Array(len) = &declaration.ty else {
+        return None;
+    };
+    Some(CallArrayArgInfo {
+        elem: declaration
+            .array_elem_struct
+            .clone()
+            .map(CallArrayArgElem::Nominal)
+            .unwrap_or(CallArrayArgElem::Primitive(
+                declaration.array_elem_ty.unwrap_or(PrimitiveType::F32),
+            )),
+        len: Some(*len),
+    })
+}
+
+fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     let lexical_root = name.split('.').next().unwrap_or(name);
-    if env.locals.contains(lexical_root) {
+    if env.has_value_binding(lexical_root) {
+        return None;
+    }
+    if let Some(alias) = env.local_array_aliases.get(name) {
+        let elem = alias
+            .elem_struct
+            .clone()
+            .map(CallArrayArgElem::Nominal)
+            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
+        return Some(CallArrayArgInfo {
+            elem,
+            len: alias.static_len,
+        });
+    }
+    if env.struct_name(name).is_some() {
         return None;
     }
     if let Some(proc_array) = env.proc_array_roots.get(name) {
@@ -1843,17 +2010,6 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
                 .or_else(|| env.array_vars.get(name).copied()),
         });
     }
-    if let Some(alias) = env.local_array_aliases.get(name) {
-        let elem = alias
-            .elem_struct
-            .clone()
-            .map(CallArrayArgElem::Nominal)
-            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
-        return Some(CallArrayArgInfo {
-            elem,
-            len: alias.static_len,
-        });
-    }
     if !env.array_vars.contains_key(name)
         && !env.output_arrays.contains(name)
         && !is_declared_struct_array_root_symbol(env.declared_symbols, name)
@@ -1863,9 +2019,8 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
     let elem = declared_symbol_scalar_type(env.declared_symbols, name)
         .map(CallArrayArgElem::Primitive)
         .or_else(|| {
-            env.struct_instances
-                .get(name)
-                .cloned()
+            env.struct_name(name)
+                .map(str::to_owned)
                 .map(CallArrayArgElem::Nominal)
         })?;
     Some(CallArrayArgInfo {
@@ -1874,8 +2029,45 @@ fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgIn
     })
 }
 
+fn call_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    struct_field_array_info(name, env)
+        .or_else(|| direct_array_symbol_info(name, env))
+        .or_else(|| {
+            // Proc state rewriting names owned storage `self.field`, while its
+            // semantic metadata remains keyed by the source-level field name.
+            let (root, field) = split_simple_field_path(name)?;
+            let typed_receiver = env
+                .struct_name(root)
+                .is_some_and(|name| env.struct_defs.contains_key(name));
+            if root == "self" && !typed_receiver {
+                direct_array_symbol_info(field, env)
+            } else {
+                None
+            }
+        })
+}
+
+pub(crate) fn array_data_struct_element_type(name: &str, env: ExprEnv<'_>) -> Option<String> {
+    let CallArrayArgElem::Nominal(struct_name) = call_array_symbol_info(name, env)?.elem else {
+        return None;
+    };
+    env.struct_defs
+        .contains_key(&struct_name)
+        .then_some(struct_name)
+}
+
 fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     match expr {
+        Expr::UserCall { name, .. } => match env.fn_signatures.get(name)?.return_type.as_ref()? {
+            ReturnType::Data(DataType::Array { element, len }) => Some(CallArrayArgInfo {
+                elem: match element {
+                    ArrayElemType::Primitive(ty) => CallArrayArgElem::Primitive(*ty),
+                    ArrayElemType::Struct(name) => CallArrayArgElem::Nominal(name.clone()),
+                },
+                len: Some(*len),
+            }),
+            _ => None,
+        },
         Expr::Var { name, .. } => call_array_symbol_info(name, env),
         Expr::Slice { base, .. } => call_array_symbol_info(base, env).map(|mut info| {
             info.len = None;
@@ -1902,6 +2094,442 @@ fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo
     }
 }
 
+/// Storage declarations may use a proven slice length without promoting the
+/// source binding to a fixed array (in particular, it remains non-returnable).
+pub(crate) fn infer_fixed_initializer_type(expr: &Expr, env: ExprEnv<'_>) -> Option<DataType> {
+    if let Some(data) = infer_fixed_data_type(expr, env) {
+        return Some(data);
+    }
+    let (source, start, end) = match expr {
+        Expr::Var { name, .. } => (name, None, None),
+        Expr::Slice {
+            base,
+            selector: None,
+            channel: None,
+            start,
+            end,
+            ..
+        } => (base, start.as_deref(), end.as_deref()),
+        _ => return None,
+    };
+    let (element, len) = match infer_fixed_data_type(&Expr::var(source), env) {
+        Some(DataType::Array { element, len }) => (element, Some(len)),
+        _ => {
+            let alias = env.local_array_aliases.get(source)?;
+            (
+                alias
+                    .elem_struct
+                    .as_ref()
+                    .map(|name| ArrayElemType::Struct(name.clone()))
+                    .unwrap_or(ArrayElemType::Primitive(alias.elem_ty)),
+                alias.proven_len,
+            )
+        }
+    };
+    let len = crate::stmt_analysis::prove_static_slice_len(len, start, end)?;
+    (len > 0).then_some(DataType::Array { element, len })
+}
+
+pub(crate) fn infer_fixed_data_type(expr: &Expr, env: ExprEnv<'_>) -> Option<DataType> {
+    if let Expr::UserCall { name, args, .. } = expr {
+        if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
+            let (base, _, field, _) = crate::array_structs::extract_safi_args(args)?;
+            let struct_name = array_data_struct_element_type(&base, env)?;
+            return resolve_indexed_struct_field_data_type(&struct_name, &field, env.struct_defs);
+        }
+    }
+    match expr {
+        Expr::ArrayCtor { spec, .. } => {
+            return Some(DataType::Array {
+                element: spec.elem.clone(),
+                len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size)?,
+            });
+        }
+        Expr::ArrayLiteral { values, .. } => {
+            if let Some(DataType::Struct(name)) = values
+                .first()
+                .and_then(|value| infer_fixed_data_type(value, env))
+            {
+                return Some(DataType::Array {
+                    element: ArrayElemType::Struct(name),
+                    len: values.len(),
+                });
+            }
+        }
+        Expr::UserCall { name, .. } if env.struct_defs.contains_key(name) => {
+            return Some(DataType::Struct(name.clone()))
+        }
+        Expr::UserCall { name, .. } => {
+            return match env.fn_signatures.get(name)?.return_type.as_ref()? {
+                ReturnType::Data(data) => Some(data.clone()),
+                _ => None,
+            }
+        }
+        Expr::Var { name, .. } => {
+            if let Some(struct_name) = env.struct_name(name) {
+                return Some(DataType::Struct(struct_name.to_owned()));
+            }
+            if let Some((root, path)) = name.split_once('.') {
+                if let Some(struct_name) = env.struct_name(root) {
+                    if let Some(field) =
+                        resolve_struct_field_decl(struct_name, path, env.struct_defs)
+                    {
+                        match field.ty {
+                            TypedFieldType::Struct => {
+                                return field.struct_name.clone().map(DataType::Struct)
+                            }
+                            TypedFieldType::Array(len) => {
+                                return Some(DataType::Array {
+                                    element: field
+                                        .array_elem_struct
+                                        .as_ref()
+                                        .map(|name| ArrayElemType::Struct(name.clone()))
+                                        .unwrap_or(ArrayElemType::Primitive(
+                                            field.array_elem_ty.unwrap_or(PrimitiveType::F32),
+                                        )),
+                                    len,
+                                })
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Index { base, .. } => {
+            if let CallArrayArgElem::Nominal(name) = call_array_symbol_info(base, env)?.elem {
+                return env
+                    .struct_defs
+                    .contains_key(&name)
+                    .then_some(DataType::Struct(name));
+            }
+            return None;
+        }
+        Expr::Slice { .. } => return None,
+        _ => {}
+    }
+    let info = call_array_arg_info(expr, env)?;
+    Some(DataType::Array {
+        element: match info.elem {
+            CallArrayArgElem::Primitive(ty) => ArrayElemType::Primitive(ty),
+            CallArrayArgElem::Nominal(name) => ArrayElemType::Struct(name),
+            _ => return None,
+        },
+        len: info.len?,
+    })
+}
+
+pub(crate) fn validate_primitive_array_values(
+    values: &[Expr],
+    element: PrimitiveType,
+    len: usize,
+    expression: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if values.len() != len {
+        push_expr_error(
+            errors,
+            expression,
+            format!(
+                "fixed array initializer expects {len} elements, got {}",
+                values.len()
+            ),
+        );
+    }
+    for value in values {
+        validate_expr(value, env, errors);
+        require_expr_assignable_type(
+            value,
+            infer_call_argument_scalar_type(value, env),
+            element,
+            "array initializer",
+            errors,
+        );
+    }
+}
+
+pub(crate) fn infer_data_value_type(expr: &Expr, env: ExprEnv<'_>) -> Option<DataType> {
+    infer_fixed_data_type(expr, env).or_else(|| {
+        let source = indexed_read_source(expr)?;
+        array_data_struct_element_type(source.base, env).map(DataType::Struct)
+    })
+}
+
+pub(crate) fn reject_empty_slice_backing_literal(
+    expression: &Expr,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if !matches!(expression, Expr::ArrayLiteral { values, .. } if values.is_empty()) {
+        return false;
+    }
+    push_expr_error(
+        errors,
+        expression,
+        "empty array literal cannot provide backing storage for a slice; slice an existing array to create an empty view",
+    );
+    true
+}
+
+/// Validate data in a storage/reference context without treating its root as a
+/// scalar read. Selector and argument effects still receive ordinary checking.
+pub(crate) fn validate_fixed_data_expr(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::ArrayCtor {
+            spec,
+            init,
+            init_is_value,
+            ..
+        } if matches!(spec.elem, ArrayElemType::Primitive(_)) => {
+            let ArrayElemType::Primitive(element) = spec.elem else {
+                unreachable!()
+            };
+            let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(&spec.size)
+            else {
+                push_expr_error(errors, expr, "data array requires a positive fixed length");
+                return;
+            };
+            if let Some(values) = init {
+                if *init_is_value
+                    && values.len() == 1
+                    && infer_fixed_initializer_type(&values[0], env)
+                        == Some(DataType::Array {
+                            element: spec.elem.clone(),
+                            len,
+                        })
+                {
+                    validate_fixed_data_expr(&values[0], env, errors);
+                } else {
+                    let count = if *init_is_value && values.len() == 1 {
+                        1
+                    } else {
+                        len
+                    };
+                    validate_primitive_array_values(values, element, count, expr, env, errors);
+                }
+            }
+        }
+        Expr::ArrayCtor {
+            spec,
+            init,
+            init_is_value,
+            ..
+        } => {
+            let ArrayElemType::Struct(name) = &spec.elem else {
+                unreachable!()
+            };
+            if !env.struct_defs.contains_key(name) {
+                push_expr_error(errors, expr, format!("unknown data struct '{name}'"));
+                return;
+            }
+            let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(&spec.size)
+            else {
+                push_expr_error(errors, expr, "data array requires a positive fixed length");
+                return;
+            };
+            if let Some(values) = init {
+                let expected = DataType::Struct(name.clone());
+                let copy_source = (*init_is_value && values.len() == 1).then(|| &values[0]);
+                let actual_array =
+                    copy_source.and_then(|value| infer_fixed_initializer_type(value, env));
+                let array_source = copy_source.filter(|value| {
+                    call_array_arg_info(value, env).is_some_and(|info| {
+                        matches!(info.elem, CallArrayArgElem::Nominal(actual) if actual == *name)
+                    })
+                });
+                let expected_array = DataType::Array {
+                    element: spec.elem.clone(),
+                    len,
+                };
+                let is_copy = actual_array.as_ref() == Some(&expected_array);
+                if let Some(source) = array_source.filter(|_| !is_copy) {
+                    let message = match actual_array.as_ref() {
+                        Some(actual) => format!(
+                            "fixed data array initializer {}",
+                            data_type_mismatch(&expected_array, Some(actual))
+                        ),
+                        None => format!(
+                            "fixed data array initializer for '{name}[{len}]' requires a statically proven exact length"
+                        ),
+                    };
+                    push_expr_error(errors, source, message);
+                }
+                if !is_copy && !(*init_is_value && values.len() == 1) && values.len() != len {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!(
+                            "data array initializer expects {len} elements, got {}",
+                            values.len()
+                        ),
+                    );
+                }
+                for value in values {
+                    let actual = infer_data_value_type(value, env);
+                    if !is_copy && array_source.is_none() && actual.as_ref() != Some(&expected) {
+                        push_expr_error(
+                            errors,
+                            value,
+                            format!(
+                                "data array element {}",
+                                data_type_mismatch(&expected, actual.as_ref())
+                            ),
+                        );
+                    }
+                    validate_fixed_data_expr(value, env, errors);
+                }
+            }
+        }
+        Expr::ArrayLiteral { values, .. } => {
+            let nominal = values
+                .first()
+                .and_then(|value| infer_data_value_type(value, env));
+            for value in values {
+                let actual = infer_data_value_type(value, env);
+                if let Some(expected @ DataType::Struct(_)) = nominal.as_ref() {
+                    if actual.as_ref() != Some(expected) {
+                        push_expr_error(
+                            errors,
+                            value,
+                            format!(
+                                "data array element {}",
+                                data_type_mismatch(expected, actual.as_ref())
+                            ),
+                        );
+                    }
+                }
+                if actual.is_some() {
+                    validate_fixed_data_expr(value, env, errors);
+                } else {
+                    validate_expr(value, env, errors);
+                }
+            }
+        }
+        Expr::Var { name, .. }
+            if infer_fixed_data_type(expr, env).is_some()
+                || call_array_arg_info(expr, env).is_some() =>
+        {
+            if dynamic_param_surface_name(name, env).is_some() {
+                validate_expr(expr, env, errors);
+            }
+        }
+        Expr::Index { index, .. } if infer_fixed_data_type(expr, env).is_some() => {
+            validate_expr(index, env, errors)
+        }
+        Expr::UserCall { name, .. }
+            if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL
+                && infer_fixed_data_type(expr, env).is_some() =>
+        {
+            validate_expr(expr, env, errors)
+        }
+        Expr::UserCall { name, args, .. }
+            if name == READ_UNSAFE_FN && infer_data_value_type(expr, env).is_some() =>
+        {
+            validate_unsafe_index_call(name, args, env, expr.loc(), true, errors)
+        }
+        Expr::UserCall {
+            name,
+            args,
+            type_args,
+            ..
+        } if env.struct_defs.contains_key(name) => {
+            if !type_args.is_empty() {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("constructor '{name}' does not accept type arguments"),
+                );
+            }
+            let fields = &env.struct_defs[name];
+            let names = fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>();
+            let defaults = fields
+                .iter()
+                .map(|field| field.default.clone().or_else(|| Some(Expr::int(0))))
+                .collect::<Vec<_>>();
+            let resolved = resolve_call_args_at(
+                args,
+                &names,
+                &defaults,
+                false,
+                false,
+                &format!("constructor '{name}'"),
+                expr.loc(),
+                errors,
+            );
+            for (field, arg) in fields.iter().zip(resolved) {
+                let Some(arg) = arg else {
+                    continue;
+                };
+                match &field.ty {
+                    TypedFieldType::Scalar(ty) => {
+                        validate_expr(arg, env, errors);
+                        require_expr_assignable_type(
+                            arg,
+                            infer_call_argument_scalar_type(arg, env),
+                            *ty,
+                            "constructor field",
+                            errors,
+                        );
+                    }
+                    TypedFieldType::Tuple(types) => {
+                        validate_tuple_param_call_arg(name, &field.name, types, arg, env, errors)
+                    }
+                    TypedFieldType::Struct | TypedFieldType::Array(_) => {
+                        if let (
+                            TypedFieldType::Array(len),
+                            Some(element),
+                            Expr::ArrayLiteral { values, .. },
+                        ) = (&field.ty, field.array_elem_ty, arg)
+                        {
+                            validate_primitive_array_values(
+                                values, element, *len, arg, env, errors,
+                            );
+                            continue;
+                        }
+                        let expected = match field.ty {
+                            TypedFieldType::Struct => {
+                                field.struct_name.clone().map(DataType::Struct)
+                            }
+                            TypedFieldType::Array(len) => Some(DataType::Array {
+                                element: field
+                                    .array_elem_struct
+                                    .as_ref()
+                                    .map(|name| ArrayElemType::Struct(name.clone()))
+                                    .unwrap_or(ArrayElemType::Primitive(
+                                        field.array_elem_ty.unwrap_or(PrimitiveType::F32),
+                                    )),
+                                len,
+                            }),
+                            _ => unreachable!(),
+                        };
+                        let actual = infer_data_value_type(arg, env);
+                        if actual != expected {
+                            let mismatch = expected.as_ref().map_or_else(
+                                || "has an unresolved declared data type".to_owned(),
+                                |expected| data_type_mismatch(expected, actual.as_ref()),
+                            );
+                            push_expr_error(
+                                errors,
+                                arg,
+                                format!("constructor field '{}' {mismatch}", field.name),
+                            );
+                        }
+                        validate_fixed_data_expr(arg, env, errors);
+                    }
+                }
+            }
+        }
+        _ => validate_expr(expr, env, errors),
+    }
+}
+
 fn validate_array_param_call_arg(
     function_name: &str,
     param_name: &str,
@@ -1910,6 +2538,13 @@ fn validate_array_param_call_arg(
     env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if matches!(
+        param_ty,
+        FnParamType::Array(_) | FnParamType::ArrayGeneric(_)
+    ) && reject_empty_slice_backing_literal(arg, errors)
+    {
+        return;
+    }
     let Some(actual) = call_array_arg_info(arg, env) else {
         if is_definitely_scalar_call_arg(arg, env)
             || infer_call_argument_tuple_types(arg, env).is_some()
@@ -2137,9 +2772,7 @@ fn reject_immutable_array_call_arg(
 
 fn validate_data_len_builtin_call(
     name: &str,
-    base: &str,
     args: &[CallArg],
-    env: ExprEnv<'_>,
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2162,92 +2795,6 @@ fn validate_data_len_builtin_call(
                 format!("builtin method '{}' does not support named arguments", name),
             );
         }
-    }
-
-    let before = errors.len();
-    let is_data_symbol = env.array_vars.contains_key(base)
-        || has_declared_buffer_symbol_info(env.declared_symbols, base)
-        || is_builtin_array_like_receiver_with_resolver(
-            base,
-            env.declared_symbols,
-            env.struct_defs,
-            env.proc_array_roots,
-            |root| {
-                env.param_structs
-                    .get(root)
-                    .or_else(|| env.struct_instances.get(root))
-                    .map(String::as_str)
-            },
-        )
-        || if let Some((root, field)) = split_field_path(base, errors) {
-            let struct_name = env
-                .param_structs
-                .get(root)
-                .or_else(|| env.struct_instances.get(root));
-            if let Some(struct_name) = struct_name {
-                if let Some(field_decl) =
-                    resolve_struct_field_decl(struct_name, field, env.struct_defs)
-                {
-                    match field_decl.ty {
-                        TypedFieldType::Array(_) => true,
-                        TypedFieldType::Struct => {
-                            push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "builtin method '{}' requires a array symbol, but '{}.{}' is a nested struct",
-                                name, root, field
-                            ),
-                        );
-                            false
-                        }
-                        TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => {
-                            push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "builtin method '{}' requires a array symbol, but '{}.{}' is scalar",
-                                name, root, field
-                            ),
-                        );
-                            false
-                        }
-                    }
-                } else {
-                    if env.struct_defs.contains_key(struct_name) {
-                        push_loc_error(
-                            errors,
-                            loc,
-                            format!(
-                                "struct instance '{}' (type '{}') has no field '{}'",
-                                root, struct_name, field
-                            ),
-                        );
-                    } else {
-                        push_loc_error(
-                            errors,
-                            loc,
-                            format!("unknown struct type '{}'", struct_name),
-                        );
-                    }
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-    if !is_data_symbol && errors.len() == before {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin method '{}' requires a array or buffer symbol receiver, got '{}'",
-                name, base
-            ),
-        );
     }
 }
 
@@ -2280,16 +2827,7 @@ fn validate_buffer_metadata_builtin_call(
             );
         }
     }
-    if !has_declared_buffer_symbol_info(env.declared_symbols, base) {
-        push_loc_error(
-            errors,
-            loc,
-            format!(
-                "builtin method '{}' requires a buffer symbol receiver, got '{}'",
-                name, base
-            ),
-        );
-    } else if is_declared_buffer_array_info(env.declared_symbols, base) {
+    if is_declared_buffer_array_info(env.declared_symbols, base) {
         push_loc_error(
             errors,
             loc,
@@ -2751,16 +3289,20 @@ fn validate_unsafe_index_call(
                 ),
             );
         }
-        if is_write && !shape.writable {
-            push_loc_error(
-                errors,
-                first.expr.loc().or(loc),
-                if shape.is_aggregate {
-                    format!("write_unsafe does not support aggregate array '{base}'")
-                } else {
-                    format!("write_unsafe storage '{base}' is read-only")
-                },
-            );
+        if is_write {
+            if matches!(shape.element, UnsafeStorageElement::Resource) {
+                push_loc_error(
+                    errors,
+                    first.expr.loc().or(loc),
+                    format!("write_unsafe does not support resource array '{base}'"),
+                );
+            } else if !shape.writable {
+                push_loc_error(
+                    errors,
+                    first.expr.loc().or(loc),
+                    format!("write_unsafe storage '{base}' is read-only"),
+                );
+            }
         }
         if !is_write && !shape.readable {
             push_loc_error(
@@ -2769,7 +3311,7 @@ fn validate_unsafe_index_call(
                 format!("read_unsafe storage '{base}' is write-only"),
             );
         }
-        if !is_write && shape.is_aggregate && !allow_aggregate_read {
+        if !is_write && shape.element.is_aggregate() && !allow_aggregate_read {
             push_loc_error(
                 errors,
                 loc,
@@ -2788,16 +3330,37 @@ fn validate_unsafe_index_call(
             );
         }
         if is_write {
-            if let Some((value, expected_ty)) = args.get(1 + shape.index_count).zip(shape.elem_ty) {
-                let actual_ty = infer_call_argument_scalar_type(&value.expr, env);
-                require_expr_assignable_type(
-                    &value.expr,
-                    actual_ty,
-                    expected_ty,
-                    "'write_unsafe' value",
-                    errors,
-                );
+            if let Some(value) = args.get(1 + shape.index_count) {
+                match &shape.element {
+                    UnsafeStorageElement::Data(struct_name) => validate_expected_data(
+                        &value.expr,
+                        &DataType::Struct(struct_name.clone()),
+                        "write_unsafe replacement",
+                        env,
+                        value.expr.loc(),
+                        errors,
+                    ),
+                    UnsafeStorageElement::Primitive(Some(expected_ty)) => {
+                        let actual_ty = infer_call_argument_scalar_type(&value.expr, env);
+                        require_expr_assignable_type(
+                            &value.expr,
+                            actual_ty,
+                            *expected_ty,
+                            "'write_unsafe' value",
+                            errors,
+                        );
+                    }
+                    UnsafeStorageElement::Primitive(None) | UnsafeStorageElement::Resource => {}
+                }
             }
+        }
+        let validated_data_value =
+            is_write && matches!(shape.element, UnsafeStorageElement::Data(_));
+        for (index, argument) in args.iter().enumerate().skip(1) {
+            if validated_data_value && index == 1 + shape.index_count {
+                continue;
+            }
+            validate_expr(&argument.expr, env, errors);
         }
     } else {
         push_loc_error(
@@ -2807,50 +3370,53 @@ fn validate_unsafe_index_call(
                 "'{name}' first argument must be a collection, aggregate array, or buffer reference"
             ),
         );
-    }
-    for argument in args.iter().skip(1) {
-        validate_expr(&argument.expr, env, errors);
+        for argument in args.iter().skip(1) {
+            validate_expr(&argument.expr, env, errors);
+        }
     }
 }
 
-fn validate_aggregate_unsafe_reference_arg(
-    expr: &Expr,
-    env: ExprEnv<'_>,
-    errors: &mut Vec<Diagnostic>,
-) -> bool {
-    let Expr::UserCall { name, args, .. } = expr else {
-        return false;
-    };
-    if name != READ_UNSAFE_FN {
-        return false;
-    }
-    let Some(Expr::Var { name: base, .. }) = args.first().map(|arg| &arg.expr) else {
-        return false;
-    };
-    if !unsafe_storage_shape(base, env).is_some_and(|shape| shape.is_aggregate) {
-        return false;
-    }
-    validate_unsafe_index_call(name, args, env, expr.loc(), true, errors);
-    true
-}
-
-#[derive(Clone, Copy)]
 struct UnsafeStorageShape {
     index_count: usize,
-    elem_ty: Option<PrimitiveType>,
+    element: UnsafeStorageElement,
     readable: bool,
     writable: bool,
-    is_aggregate: bool,
+}
+
+enum UnsafeStorageElement {
+    Primitive(Option<PrimitiveType>),
+    Data(String),
+    Resource,
+}
+
+impl UnsafeStorageElement {
+    fn is_aggregate(&self) -> bool {
+        !matches!(self, Self::Primitive(_))
+    }
 }
 
 fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageShape> {
     if let Some(alias) = env.local_array_aliases.get(base) {
+        let data_struct = (!env.proc_array_roots.contains_key(base))
+            .then(|| {
+                alias
+                    .elem_struct
+                    .as_ref()
+                    .filter(|name| {
+                        env.struct_defs.contains_key(*name) && !is_processor_struct_name(name, env)
+                    })
+                    .cloned()
+            })
+            .flatten();
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: alias.elem_struct.is_none().then_some(alias.elem_ty),
+            element: match data_struct {
+                Some(name) => UnsafeStorageElement::Data(name),
+                None if alias.elem_struct.is_some() => UnsafeStorageElement::Resource,
+                None => UnsafeStorageElement::Primitive(Some(alias.elem_ty)),
+            },
             readable: alias.elem_struct.is_some() || !env.output_arrays.contains(base),
-            writable: alias.elem_struct.is_none() && alias.writable,
-            is_aggregate: alias.elem_struct.is_some(),
+            writable: alias.writable,
         });
     }
     if env.local_aliases.contains_key(base) {
@@ -2868,30 +3434,36 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
             || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
         return Some(UnsafeStorageShape {
             index_count: 1 + usize::from(*is_array) + usize::from(has_channel),
-            elem_ty: Some(*elem_ty),
+            element: UnsafeStorageElement::Primitive(Some(*elem_ty)),
             readable: true,
             writable: true,
-            is_aggregate: false,
         });
     }
 
     if unsafe_aggregate_array(base, env) {
+        let data_struct = (!env.proc_array_roots.contains_key(base))
+            .then(|| array_data_struct_element_type(base, env))
+            .flatten()
+            .filter(|name| !is_processor_struct_name(name, env));
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: None,
+            writable: data_struct.is_some(),
+            element: data_struct
+                .map(UnsafeStorageElement::Data)
+                .unwrap_or(UnsafeStorageElement::Resource),
             readable: true,
-            writable: false,
-            is_aggregate: true,
         });
     }
 
     if env.array_vars.contains_key(base) {
         return Some(UnsafeStorageShape {
             index_count: 1,
-            elem_ty: declared_symbol_scalar_type(env.declared_symbols, base),
+            element: UnsafeStorageElement::Primitive(declared_symbol_scalar_type(
+                env.declared_symbols,
+                base,
+            )),
             readable: !env.output_arrays.contains(base),
             writable: !env.input_names.contains(base) && !env.param_names.contains(base),
-            is_aggregate: false,
         });
     }
 
@@ -2915,11 +3487,36 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
     };
     port.map(|port| UnsafeStorageShape {
         index_count: 1,
-        elem_ty: Some(port.elem_ty),
+        element: UnsafeStorageElement::Primitive(Some(port.elem_ty)),
         readable,
         writable,
-        is_aggregate: false,
     })
+}
+
+fn validate_aggregate_unsafe_reference_arg(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let Expr::UserCall { name, args, .. } = expr else {
+        return false;
+    };
+    if name != READ_UNSAFE_FN {
+        return false;
+    }
+    let Some(Expr::Var { name: base, .. }) = args.first().map(|arg| &arg.expr) else {
+        return false;
+    };
+    if !unsafe_storage_shape(base, env).is_some_and(|shape| shape.element.is_aggregate()) {
+        return false;
+    }
+    validate_unsafe_index_call(name, args, env, expr.loc(), true, errors);
+    true
+}
+
+fn is_processor_struct_name(name: &str, env: ExprEnv<'_>) -> bool {
+    env.fn_signatures
+        .contains_key(&format!("{name}{PROC_INIT_FN_SUFFIX}"))
 }
 
 fn unsafe_aggregate_array(base: &str, env: ExprEnv<'_>) -> bool {
@@ -2928,11 +3525,7 @@ fn unsafe_aggregate_array(base: &str, env: ExprEnv<'_>) -> bool {
     }
 
     let field = if let Some((root, field)) = base.split_once('.') {
-        let Some(struct_name) = env
-            .struct_instances
-            .get(root)
-            .or_else(|| env.param_structs.get(root))
-        else {
+        let Some(struct_name) = env.struct_name(root) else {
             return false;
         };
         resolve_struct_field_decl(struct_name, field, env.struct_defs)
@@ -2962,10 +3555,9 @@ fn unsafe_selected_buffer_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeSt
         || matches!(channels, BufferChannelInfo::Static(count) if *count > 1);
     Some(UnsafeStorageShape {
         index_count: 1 + usize::from(has_channel),
-        elem_ty: Some(*elem_ty),
+        element: UnsafeStorageElement::Primitive(Some(*elem_ty)),
         readable: true,
         writable: true,
-        is_aggregate: false,
     })
 }
 

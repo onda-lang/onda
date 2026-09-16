@@ -1,6 +1,56 @@
 use super::*;
 
 impl<'a> FunctionLowerer<'a> {
+    pub(super) fn slice_access(&self, local: LocalId) -> onda_mir::AccessMode {
+        let onda_mir::Type::Slice { access, .. } =
+            self.types[self.locals[local.index()].ty.index()]
+        else {
+            unreachable!("slice binding must have a slice type")
+        };
+        access
+    }
+
+    pub(super) fn restrict_slice_access(
+        &mut self,
+        local: LocalId,
+        element: PrimitiveType,
+        access: onda_mir::AccessMode,
+        block: &mut MirBlock,
+        loc: SourceLoc,
+    ) -> Result<Value, MirLoweringError> {
+        let source_access = self.slice_access(local);
+        if source_access == access {
+            return Ok(Value::Local(local));
+        }
+        if access == onda_mir::AccessMode::ReadWrite {
+            return Err(self.error("cannot upgrade a read-only data reference", loc));
+        }
+        let len = self
+            .emit_temp(
+                block,
+                PrimitiveType::I32,
+                Rvalue::SliceLen(Value::Local(local)),
+                loc,
+            )
+            .value;
+        Ok(self
+            .emit_slice_temp(
+                block,
+                None,
+                element,
+                access,
+                Rvalue::MakeSlice {
+                    source: onda_mir::SliceSource::Place(Place::local(local)),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len,
+                    bounds: BoundsMode::Unchecked,
+                    access,
+                },
+                loc,
+            )
+            .value)
+    }
+
     pub(super) fn is_slice_expression(&self, expression: &Expr) -> bool {
         match expression {
             Expr::Slice { .. } => true,
@@ -10,15 +60,17 @@ impl<'a> FunctionLowerer<'a> {
                     Some(
                         Binding::Array(_, _, _)
                             | Binding::ArrayParameter(_, _, _)
-                            | Binding::Slice(_, _, _)
+                            | Binding::Slice(_, _, _, _)
                             | Binding::EventArrayParameter(_, _, _)
                             | Binding::BufferParameter(_, _)
                     )
                 ) || self.const_arrays.contains_key(name)
-                    || self.runtime_globals.is_some_and(|globals| {
-                        globals.state_arrays.contains_key(name)
-                            || globals.buffers.contains_key(name)
-                    })
+                    || self
+                        .runtime_globals_for_unbound(name)
+                        .is_some_and(|globals| {
+                            globals.state_arrays.contains_key(name)
+                                || globals.buffers.contains_key(name)
+                        })
             }
             _ => false,
         }
@@ -71,9 +123,14 @@ impl<'a> FunctionLowerer<'a> {
         access: onda_mir::AccessMode,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredSlice>, MirLoweringError> {
-        let (len, values) = match expression {
-            Expr::ArrayLiteral { values, .. } => (values.len(), Some(values.as_slice())),
-            Expr::ArrayCtor { spec, init, .. } => {
+        let (len, values, broadcast) = match expression {
+            Expr::ArrayLiteral { values, .. } => (values.len(), Some(values.as_slice()), false),
+            Expr::ArrayCtor {
+                spec,
+                init,
+                init_is_value,
+                ..
+            } => {
                 let ArrayElemType::Primitive(actual_element) = spec.elem else {
                     return Ok(None);
                 };
@@ -115,7 +172,9 @@ impl<'a> FunctionLowerer<'a> {
                         spec.size.loc(),
                     )
                 })?;
-                if init.as_ref().is_some_and(|values| values.len() != len) {
+                if init.as_ref().is_some_and(|values| {
+                    values.len() != len && !(*init_is_value && values.len() == 1)
+                }) {
                     return Err(self.error(
                         format!(
                             "array value initializer expected {len} elements, got {}",
@@ -124,7 +183,7 @@ impl<'a> FunctionLowerer<'a> {
                         expression.loc(),
                     ));
                 }
-                (len, init.as_deref())
+                (len, init.as_deref(), *init_is_value)
             }
             _ => return Ok(None),
         };
@@ -138,28 +197,67 @@ impl<'a> FunctionLowerer<'a> {
                 )
             })?;
         let local = self.new_array_local(None, element, len);
-        for index in 0..len {
-            let value = if let Some(values) = values {
-                let lowered = self.lower_expr(&values[index as usize], block)?;
-                self.coerce(lowered, element, block, values[index as usize].loc())?
-                    .value
-            } else {
-                Value::Constant(zero_scalar(element))
+        if broadcast && values.is_some_and(|values| values.len() == 1) {
+            let expression = &values.unwrap()[0];
+            let data = DataType::Array {
+                element: ArrayElemType::Primitive(element),
+                len: len as usize,
             };
-            self.push_statement(
-                block,
-                StatementKind::Assign {
-                    destination: Place {
-                        base: PlaceBase::Local(local),
-                        projections: vec![Projection::Index {
-                            index: Value::Constant(ScalarValue::I32(index as i32)),
-                            bounds: BoundsMode::Unchecked,
-                        }],
+            if self.is_slice_expression(expression)
+                || matches!(
+                    expression,
+                    Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. }
+                )
+                || matches!(self.data_type_of(expression), Some(DataType::Array { .. }))
+            {
+                let source = self.lower_data_expr(expression, &data, block)?;
+                let destination = self.fresh_data_name();
+                self.bindings
+                    .insert(destination.clone(), Binding::Array(local, element, len));
+                self.copy_data(&destination, &source, &data, block, expression.loc())?;
+            } else {
+                let value = self.lower_expr(expression, block)?;
+                let value = self.coerce(value, element, block, expression.loc())?;
+                self.emit_array_value_fill(
+                    Place::local(local),
+                    element,
+                    value.value,
+                    len,
+                    block,
+                    expression.loc(),
+                );
+            }
+        } else {
+            if values.is_none() {
+                self.emit_array_value_fill(
+                    Place::local(local),
+                    element,
+                    Value::Constant(zero_scalar(element)),
+                    len,
+                    block,
+                    expression.loc(),
+                );
+            }
+            for (index, expression) in values.into_iter().flatten().enumerate() {
+                let lowered = self.lower_expr(expression, block)?;
+                let value = self
+                    .coerce(lowered, element, block, expression.loc())?
+                    .value;
+                self.push_statement(
+                    block,
+                    StatementKind::Assign {
+                        destination: Place {
+                            base: PlaceBase::Local(local),
+                            projections: vec![Projection::Index {
+                                index: Value::Constant(ScalarValue::I32(index as i32)),
+                                bounds: BoundsMode::Unchecked,
+                            }],
+                        },
+                        value: Rvalue::Use(value),
                     },
-                    value: Rvalue::Use(value),
-                },
-                expression.loc(),
-            );
+                    expression.loc(),
+                );
+            }
         }
         Ok(Some(self.emit_slice_temp(
             block,
@@ -203,9 +301,48 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        let length = self.snapshot(length, block, location);
-        let start = self.normalize_slice_bound(start, length.value, false, block, location)?;
-        let end = self.normalize_slice_bound(end, length.value, true, block, location)?;
+        let (start, slice_len) =
+            self.normalize_slice_selection(length.value, start, end, block, location)?;
+        Ok(self.emit_slice_temp(
+            block,
+            None,
+            element,
+            access,
+            Rvalue::MakeSlice {
+                source,
+                start,
+                len: slice_len,
+                bounds: BoundsMode::Unchecked,
+                access,
+            },
+            location,
+        ))
+    }
+
+    pub(super) fn normalize_slice_selection(
+        &mut self,
+        length: Value,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<(Value, Value), MirLoweringError> {
+        if start.is_none() && end.is_none() {
+            return Ok((Value::Constant(ScalarValue::I32(0)), length));
+        }
+
+        let length = self
+            .snapshot(
+                LoweredValue {
+                    value: length,
+                    ty: PrimitiveType::I32,
+                },
+                block,
+                location,
+            )
+            .value;
+        let start = self.normalize_slice_bound(start, length, false, block, location)?;
+        let end = self.normalize_slice_bound(end, length, true, block, location)?;
         let difference = self.emit_temp(
             block,
             PrimitiveType::I32,
@@ -235,20 +372,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             location,
         );
-        Ok(self.emit_slice_temp(
-            block,
-            None,
-            element,
-            access,
-            Rvalue::MakeSlice {
-                source,
-                start,
-                len: Value::Local(slice_len),
-                bounds: BoundsMode::Unchecked,
-                access,
-            },
-            location,
-        ))
+        Ok((start, Value::Local(slice_len)))
     }
 
     pub(super) fn slice_base(
@@ -280,7 +404,13 @@ impl<'a> FunctionLowerer<'a> {
                             ty: PrimitiveType::I32,
                         },
                         element,
-                        onda_mir::AccessMode::ReadWrite,
+                        if self.params[parameter.index()].mode
+                            == onda_mir::PassingMode::ReadOnlyReference
+                        {
+                            onda_mir::AccessMode::ReadOnly
+                        } else {
+                            onda_mir::AccessMode::ReadWrite
+                        },
                     ));
                 }
                 Binding::BufferParameter(parameter, element) => {
@@ -411,13 +541,20 @@ impl<'a> FunctionLowerer<'a> {
                         onda_mir::AccessMode::ReadWrite,
                     ));
                 }
-                Binding::Slice(local, element, access) => {
-                    let length = self.emit_temp(
-                        block,
-                        PrimitiveType::I32,
-                        Rvalue::SliceLen(Value::Local(local)),
-                        location,
-                    );
+                Binding::Slice(local, element, access, fixed_len) => {
+                    let length = if let Some(len) = fixed_len {
+                        LoweredValue {
+                            value: Value::Constant(ScalarValue::I32(len as i32)),
+                            ty: PrimitiveType::I32,
+                        }
+                    } else {
+                        self.emit_temp(
+                            block,
+                            PrimitiveType::I32,
+                            Rvalue::SliceLen(Value::Local(local)),
+                            location,
+                        )
+                    };
                     return Ok((
                         onda_mir::SliceSource::Place(Place::local(local)),
                         length,
@@ -443,7 +580,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        let global_array = self.runtime_globals.and_then(|globals| {
+        let global_array = self.runtime_globals_for_unbound(base).and_then(|globals| {
             globals
                 .param_arrays
                 .get(base)
@@ -682,27 +819,54 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         if let Some(binding) = self.bindings.get(name).cloned() {
-            let Binding::Slice(local, element, access) = binding else {
-                return Err(self.error(
-                    format!("slice alias '{name}' conflicts with an existing non-slice binding"),
+            if let Binding::Slice(local, element, access, _) = binding {
+                if element != slice.element || access != slice.access {
+                    return Err(self.error(
+                        format!("slice alias '{name}' changed element type or access mode"),
+                        location,
+                    ));
+                }
+                self.push_statement(
+                    block,
+                    StatementKind::Assign {
+                        destination: Place::local(local),
+                        value: Rvalue::Use(slice.value),
+                    },
                     location,
-                ));
-            };
-            if element != slice.element || access != slice.access {
-                return Err(self.error(
-                    format!("slice alias '{name}' changed element type or access mode"),
-                    location,
-                ));
+                );
+                return Ok(());
             }
-            self.push_statement(
-                block,
-                StatementKind::Assign {
-                    destination: Place::local(local),
-                    value: Rvalue::Use(slice.value),
-                },
+            if matches!(binding, Binding::Array(..) | Binding::ArrayParameter(..)) {
+                let destination = self.lower_named_slice(
+                    name,
+                    SliceSelection::default(),
+                    Some(onda_mir::AccessMode::ReadWrite),
+                    block,
+                    location,
+                )?;
+                if destination.element != slice.element {
+                    return Err(self.error(
+                        format!("array assignment '{name}' changed element type"),
+                        location,
+                    ));
+                }
+                self.push_statement(
+                    block,
+                    StatementKind::SliceCopy {
+                        copies: vec![onda_mir::SliceCopy {
+                            destination: destination.value,
+                            source: slice.value,
+                        }],
+                        preflight: onda_mir::SliceCopyPreflight::Required,
+                    },
+                    location,
+                );
+                return Ok(());
+            }
+            return Err(self.error(
+                format!("slice alias '{name}' conflicts with an existing non-slice binding"),
                 location,
-            );
-            return Ok(());
+            ));
         }
         let Value::Local(local) = slice.value else {
             unreachable!("slice construction always produces a local")
@@ -712,7 +876,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.bindings.insert(
             name.to_owned(),
-            Binding::Slice(local, slice.element, slice.access),
+            Binding::Slice(local, slice.element, slice.access, None),
         );
         Ok(())
     }
@@ -741,8 +905,11 @@ impl<'a> FunctionLowerer<'a> {
             self.push_statement(
                 block,
                 StatementKind::SliceCopy {
-                    destination: destination.value,
-                    source: source.value,
+                    copies: vec![onda_mir::SliceCopy {
+                        destination: destination.value,
+                        source: source.value,
+                    }],
+                    preflight: onda_mir::SliceCopyPreflight::Required,
                 },
                 location,
             );
@@ -764,15 +931,25 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn assign_index_target(
         &mut self,
         base: &str,
-        index: &Expr,
+        index: AssignmentIndex<'_>,
         values: &[LoweredValue],
         block: &mut MirBlock,
         value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        if let Some(components) = self.data_tuple_components(base) {
+            let component = self.constant_tuple_index(base, index.expr, components.len())?;
+            let value = self.single_global_value(base, values, statement_location)?;
+            return self.store_data_scalar(
+                &components[component],
+                value,
+                block,
+                statement_location,
+            );
+        }
         if let Some(Binding::TupleReferenceParameter(components)) = self.bindings.get(base).cloned()
         {
-            let component_index = self.constant_tuple_index(base, index, components.len())?;
+            let component_index = self.constant_tuple_index(base, index.expr, components.len())?;
             let (parameter, ty) = components[component_index];
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, ty, block, value_location)?;
@@ -791,7 +968,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         if let Some(Binding::TupleSliceElementAlias(components)) = self.bindings.get(base).cloned()
         {
-            let component_index = self.constant_tuple_index(base, index, components.len())?;
+            let component_index = self.constant_tuple_index(base, index.expr, components.len())?;
             let (slice, ty, element_index) = components[component_index];
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, ty, block, value_location)?;
@@ -799,7 +976,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 StatementKind::SliceStore {
                     slice: Value::Local(slice),
-                    index: Value::Local(element_index),
+                    index: element_index,
                     value: value.value,
                     bounds: BoundsMode::Unchecked,
                 },
@@ -812,15 +989,13 @@ impl<'a> FunctionLowerer<'a> {
         {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, element, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::Assign {
                     destination: Place {
                         base: PlaceBase::Parameter(parameter),
                         projections: vec![Projection::Index {
-                            index: index_value.value,
+                            index: index.value,
                             bounds: BoundsMode::Clamp,
                         }],
                     },
@@ -834,14 +1009,12 @@ impl<'a> FunctionLowerer<'a> {
         {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, element, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::BufferParamStore {
                     parameter: onda_mir::BufferParamRef::Direct(parameter),
                     channel: None,
-                    index: index_value.value,
+                    index: index.value,
                     value: value.value,
                     bounds: BoundsMode::Clamp,
                 },
@@ -853,13 +1026,11 @@ impl<'a> FunctionLowerer<'a> {
             let reference = self.materialize_buffer_reference(reference, block, statement_location);
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, element, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             let statement = match reference {
                 MaterializedBufferReference::Interface(buffer) => StatementKind::BufferStore {
                     buffer,
                     channel: None,
-                    index: index_value.value,
+                    index: index.value,
                     value: value.value,
                     bounds: BoundsMode::Clamp,
                 },
@@ -867,7 +1038,7 @@ impl<'a> FunctionLowerer<'a> {
                     StatementKind::BufferParamStore {
                         parameter,
                         channel: None,
-                        index: index_value.value,
+                        index: index.value,
                         value: value.value,
                         bounds: BoundsMode::Clamp,
                     }
@@ -879,15 +1050,13 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(Binding::Array(local, element, _)) = self.bindings.get(base).cloned() {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, element, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::Assign {
                     destination: Place {
                         base: PlaceBase::Local(local),
                         projections: vec![Projection::Index {
-                            index: index_value.value,
+                            index: index.value,
                             bounds: BoundsMode::Clamp,
                         }],
                     },
@@ -897,7 +1066,7 @@ impl<'a> FunctionLowerer<'a> {
             );
             return Ok(());
         }
-        if let Some(Binding::Slice(local, element, access)) = self.bindings.get(base).cloned() {
+        if let Some(Binding::Slice(local, element, access, _)) = self.bindings.get(base).cloned() {
             if access != onda_mir::AccessMode::ReadWrite {
                 return Err(self.error(
                     format!("slice parameter or alias '{base}' is read-only"),
@@ -906,13 +1075,11 @@ impl<'a> FunctionLowerer<'a> {
             }
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, element, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::SliceStore {
                     slice: Value::Local(local),
-                    index: index_value.value,
+                    index: index.value,
                     value: value.value,
                     bounds: BoundsMode::Clamp,
                 },
@@ -943,7 +1110,8 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals
             .and_then(|globals| globals.state_tuples.get(base).cloned());
         if let Some(components) = state_tuple {
-            let component = components[self.constant_tuple_index(base, index, components.len())?];
+            let component =
+                components[self.constant_tuple_index(base, index.expr, components.len())?];
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, component.1, block, value_location)?;
             self.push_statement(
@@ -965,13 +1133,11 @@ impl<'a> FunctionLowerer<'a> {
         if let Some((output, ty, _)) = control_output_array {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, ty, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::ControlOutputStore {
                     output,
-                    element: Some(index_value.value),
+                    element: Some(index.value),
                     bounds: BoundsMode::Clamp,
                     value: value.value,
                 },
@@ -985,8 +1151,6 @@ impl<'a> FunctionLowerer<'a> {
         if let Some((output, ty, _)) = output_array {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, ty, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             if let Some((cache, cache_ty, _)) = self.audio_output_array_caches.get(&output).copied()
             {
                 debug_assert_eq!(cache_ty, ty);
@@ -996,7 +1160,7 @@ impl<'a> FunctionLowerer<'a> {
                         destination: Place {
                             base: PlaceBase::Local(cache),
                             projections: vec![Projection::Index {
-                                index: index_value.value,
+                                index: index.value,
                                 bounds: BoundsMode::Clamp,
                             }],
                         },
@@ -1016,7 +1180,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 StatementKind::OutputStore {
                     output,
-                    element: Some(index_value.value),
+                    element: Some(index.value),
                     bounds: BoundsMode::Clamp,
                     frame,
                     value: value.value,
@@ -1025,29 +1189,30 @@ impl<'a> FunctionLowerer<'a> {
             );
             return Ok(());
         }
-        if self.runtime_globals.is_some_and(|globals| {
-            globals.input_arrays.contains_key(base) || globals.param_arrays.contains_key(base)
-        }) {
+        if self
+            .runtime_globals_for_unbound(base)
+            .is_some_and(|globals| {
+                globals.input_arrays.contains_key(base) || globals.param_arrays.contains_key(base)
+            })
+        {
             return Err(self.error(
                 format!("interface array '{base}' is read-only"),
                 statement_location,
             ));
         }
         let state_array = self
-            .runtime_globals
+            .runtime_globals_for_unbound(base)
             .and_then(|globals| globals.state_arrays.get(base).copied());
         if let Some((state, ty, _)) = state_array {
             let value = self.single_global_value(base, values, statement_location)?;
             let value = self.coerce(value, ty, block, value_location)?;
-            let index_value = self.lower_expr(index, block)?;
-            let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             self.push_statement(
                 block,
                 StatementKind::Assign {
                     destination: Place {
                         base: PlaceBase::State(state),
                         projections: vec![Projection::Index {
-                            index: index_value.value,
+                            index: index.value,
                             bounds: BoundsMode::Clamp,
                         }],
                     },
@@ -1074,14 +1239,12 @@ impl<'a> FunctionLowerer<'a> {
         };
         let value = self.single_global_value(base, values, statement_location)?;
         let value = self.coerce(value, ty, block, value_location)?;
-        let index_value = self.lower_expr(index, block)?;
-        let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
         self.push_statement(
             block,
             StatementKind::BufferStore {
                 buffer: onda_mir::BufferRef::Direct(buffer),
                 channel: None,
-                index: index_value.value,
+                index: index.value,
                 value: value.value,
                 bounds: BoundsMode::Clamp,
             },
@@ -1124,7 +1287,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn assign_dynamic_interface_index(
         &mut self,
         base: &str,
-        index: &Expr,
+        index: AssignmentIndex<'_>,
         values: &[LoweredValue],
         block: &mut MirBlock,
         value_location: SourceLoc,
@@ -1135,8 +1298,13 @@ impl<'a> FunctionLowerer<'a> {
         };
         let value = self.single_global_value(base, values, statement_location)?;
         let value = self.coerce(value, view.element_type, block, value_location)?;
-        let selected =
-            self.lower_dynamic_interface_index(index, view.slots.len(), BoundsMode::Clamp, block)?;
+        let selected = self.apply_dynamic_interface_index_bounds(
+            index.value,
+            view.slots.len(),
+            BoundsMode::Clamp,
+            index.expr.loc(),
+            block,
+        )?;
         let dispatch = self.dynamic_interface_write_dispatch(
             &view.slots,
             0,

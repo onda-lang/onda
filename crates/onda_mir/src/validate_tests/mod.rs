@@ -53,11 +53,251 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
+fn rejects_impractically_large_function_abi_and_local_tables() {
+    let mut program = empty_program();
+    let mut oversized = function("oversized", FunctionKind::User);
+    oversized.params = vec![
+        FunctionParam {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+            mode: PassingMode::Value,
+            integer_range: None,
+        };
+        crate::MAX_FUNCTION_PARAMETER_COUNT + 1
+    ];
+    oversized.locals = vec![
+        Local {
+            name: None,
+            ty: TypeId::new(0),
+            integer_range: None,
+        };
+        crate::MAX_FUNCTION_LOCAL_COUNT + 1
+    ];
+    program.functions.push(oversized);
+
+    let errors = super::validate(&program).expect_err("oversized function must be rejected");
+    let parameter_limit = crate::MAX_FUNCTION_PARAMETER_COUNT.to_string();
+    let local_limit = crate::MAX_FUNCTION_LOCAL_COUNT.to_string();
+    assert!(errors.iter().any(|error| {
+        error.message.contains(&format!(
+            "parameters, exceeding the limit of {parameter_limit}"
+        ))
+    }));
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains(&format!("locals, exceeding the limit of {local_limit}"))));
+}
+
+#[test]
+fn selected_buffer_parameter_metadata_requires_an_assigned_selector() {
+    let mut program = empty_program();
+    let span_ty = TypeId::new(program.types.len() as u32);
+    program.types.push(Type::BufferSpan {
+        element: ScalarType::F32,
+        channels: BufferChannels::Mono,
+        access: AccessMode::ReadOnly,
+        len: 2,
+    });
+    let mut inspect = function("inspect", FunctionKind::User);
+    inspect.params.push(FunctionParam {
+        name: "buffers".to_owned(),
+        ty: span_ty,
+        mode: PassingMode::Value,
+        integer_range: None,
+    });
+    inspect.locals.extend([
+        Local {
+            name: Some("selector".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        },
+        Local {
+            name: Some("length".to_owned()),
+            ty: TypeId::new(0),
+            integer_range: None,
+        },
+    ]);
+    inspect.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place::local(LocalId::new(1)),
+            value: Rvalue::BufferParamLen(crate::BufferParamRef::ArrayElement {
+                span: crate::ParameterId::new(0),
+                selector: Value::Local(LocalId::new(0)),
+                bounds: crate::BoundsMode::Clamp,
+            }),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(inspect);
+
+    let errors = super::validate(&program).expect_err("selector must be definitely assigned");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("selector")
+            && error.message.contains("before it is definitely assigned")
+    }));
+}
+
+#[test]
+fn result_references_require_producer_proof_and_initialize_caller_storage() {
+    let mut program = empty_program();
+    let mut producer = function("produce", FunctionKind::User);
+    producer.params.push(FunctionParam {
+        name: "result".to_owned(),
+        ty: TypeId::new(0),
+        mode: PassingMode::ResultReference,
+        integer_range: None,
+    });
+    producer.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place {
+                base: PlaceBase::Parameter(crate::ParameterId::new(0)),
+                projections: Vec::new(),
+            },
+            value: Rvalue::Use(Value::Constant(ScalarValue::I32(42))),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(producer);
+    let caller = &mut program.functions[0];
+    caller.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    caller.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    caller.body.statements.extend([
+        Statement {
+            kind: StatementKind::Call {
+                function: FunctionId::new(2),
+                args: vec![CallArgument::Place(Place::local(LocalId::new(0)))],
+                results: Vec::new(),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::Use(Value::Local(LocalId::new(0))),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+    ]);
+    let errors = super::validate(&program).expect_err("result contracts are producer proofs");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("result reference requires trusted producer")));
+    // SAFETY: produce unconditionally initializes its only output before returning.
+    unsafe { super::validate_with_producer_proofs(&program) }
+        .expect("a result reference initializes its caller place");
+
+    program.functions[2].params[0].mode = PassingMode::ReadWriteReference;
+    let errors =
+        super::validate(&program).expect_err("ordinary references read their previous contents");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("before") && error.message.contains("assign")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn full_local_slice_writes_initialize_the_backing_array() {
+    let mut program = empty_program();
+    program.types.extend([
+        Type::Scalar(ScalarType::F32),
+        Type::Array {
+            element: test_type(0),
+            len: 4,
+        },
+        Type::Slice {
+            element: ScalarType::F32,
+            access: AccessMode::ReadWrite,
+        },
+    ]);
+    program.functions[1].locals.extend([
+        Local {
+            name: Some("backing".to_owned()),
+            ty: test_type(1),
+            integer_range: None,
+        },
+        Local {
+            name: Some("view".to_owned()),
+            ty: test_type(2),
+            integer_range: None,
+        },
+        Local {
+            name: Some("value".to_owned()),
+            ty: test_type(0),
+            integer_range: None,
+        },
+    ]);
+    program.functions[1].body.statements.extend([
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(1)),
+                value: Rvalue::MakeSlice {
+                    source: SliceSource::Place(Place::local(LocalId::new(0))),
+                    start: Value::Constant(ScalarValue::I32(0)),
+                    len: Value::Constant(ScalarValue::I32(4)),
+                    bounds: crate::BoundsMode::Checked,
+                    access: AccessMode::ReadWrite,
+                },
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::SliceFill {
+                destination: Value::Local(LocalId::new(1)),
+                value: Value::Constant(ScalarValue::F32(1.0)),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+        Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(LocalId::new(2)),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::Local(LocalId::new(0)),
+                    projections: vec![Projection::Index {
+                        index: Value::Constant(ScalarValue::I32(3)),
+                        bounds: crate::BoundsMode::Checked,
+                    }],
+                }),
+            },
+            source: SourceSpan::UNKNOWN,
+        },
+    ]);
+
+    super::validate(&program).expect("a full-slice fill initializes every array element");
+
+    let StatementKind::Assign {
+        value: Rvalue::MakeSlice { len, .. },
+        ..
+    } = &mut program.functions[1].body.statements[0].kind
+    else {
+        unreachable!()
+    };
+    *len = Value::Constant(ScalarValue::I32(2));
+    let errors = super::validate(&program).expect_err("a partial fill leaves later elements unset");
+    assert!(errors.iter().any(|error| {
+        error.message.contains("backing")
+            && error.message.contains("before it is definitely assigned")
+    }));
+}
+
+#[test]
 fn delegate_fixed_arrays_require_primitive_elements() {
     let mut program = empty_program();
     program.structs.push(StructType {
         name: "Payload".to_owned(),
-        fields: Vec::new(),
+        fields: vec![StructField {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+        }],
     });
     program.types.extend([
         Type::Struct(crate::StructId::new(0)),
@@ -67,6 +307,7 @@ fn delegate_fixed_arrays_require_primitive_elements() {
         },
     ]);
     program.interface.delegates.push(Delegate {
+        schema: Default::default(),
         name: "invalid".to_owned(),
         params: vec![DelegateParam {
             name: "values".to_owned(),
@@ -79,6 +320,20 @@ fn delegate_fixed_arrays_require_primitive_elements() {
     assert!(errors.iter().any(|error| error
         .message
         .contains("fixed array element must be a primitive scalar")));
+}
+
+#[test]
+fn empty_structs_are_rejected() {
+    let mut program = empty_program();
+    program.structs.push(StructType {
+        name: "Empty".to_owned(),
+        fields: Vec::new(),
+    });
+
+    let errors = super::validate(&program).expect_err("empty MIR structs must be rejected");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("struct 'Empty' must declare at least one field")));
 }
 
 #[test]
@@ -389,6 +644,7 @@ fn rejects_explicit_init_and_event_entry_signatures() {
     });
     handler.results.push(TypeId::new(0));
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "tick".to_owned(),
         params: Vec::new(),
         handler: handler_id,
@@ -415,6 +671,7 @@ fn rejects_unowned_entry_role_functions() {
     let mut program = empty_program();
     let handler_id = FunctionId::new(2);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "tick".to_owned(),
         params: Vec::new(),
         handler: handler_id,
@@ -1294,6 +1551,9 @@ fn accepts_direct_read_only_slice_event_parameters() {
         access: AccessMode::ReadOnly,
     });
     program.interface.events.push(Event {
+        schema: program
+            .payload_schema([("values", test_type(0), None)])
+            .unwrap(),
         name: "set_curve".to_owned(),
         params: vec![EventParam {
             name: "values".to_owned(),
@@ -1333,6 +1593,7 @@ fn rejects_mutable_buffer_and_nested_event_handles() {
         },
     ]);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "invalid".to_owned(),
         params: vec![
             EventParam {
@@ -2019,8 +2280,11 @@ fn rejects_slice_copy_with_different_element_types() {
     ]);
     program.functions[1].body.statements.push(Statement {
         kind: StatementKind::SliceCopy {
-            destination: Value::Local(LocalId::new(0)),
-            source: Value::Local(LocalId::new(1)),
+            copies: vec![crate::SliceCopy {
+                destination: Value::Local(LocalId::new(0)),
+                source: Value::Local(LocalId::new(1)),
+            }],
+            preflight: crate::SliceCopyPreflight::Required,
         },
         source: SourceSpan::UNKNOWN,
     });
@@ -2029,6 +2293,42 @@ fn rejects_slice_copy_with_different_element_types() {
     assert!(errors
         .iter()
         .any(|error| error.message.contains("identical element types")));
+}
+
+#[test]
+fn rejects_untrusted_slice_copy_overlap_proofs() {
+    let mut program = empty_program();
+    program.types.push(Type::Slice {
+        element: ScalarType::F32,
+        access: AccessMode::ReadWrite,
+    });
+    program.functions[1].locals.extend([
+        Local {
+            integer_range: None,
+            name: Some("destination".to_owned()),
+            ty: test_type(0),
+        },
+        Local {
+            integer_range: None,
+            name: Some("source".to_owned()),
+            ty: test_type(0),
+        },
+    ]);
+    program.functions[1].body.statements.push(Statement {
+        kind: StatementKind::SliceCopy {
+            copies: vec![crate::SliceCopy {
+                destination: Value::Local(LocalId::new(0)),
+                source: Value::Local(LocalId::new(1)),
+            }],
+            preflight: crate::SliceCopyPreflight::ProvenUnnecessary,
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+
+    let errors = super::validate(&program).expect_err("untrusted overlap proof should fail");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("trusted MIR producer proof")));
 }
 
 #[test]
@@ -2419,6 +2719,7 @@ fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
         control: crate::ParamControl::default(),
     });
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "update".to_owned(),
         params: vec![
             EventParam {
@@ -2589,6 +2890,7 @@ fn rejects_control_output_store_from_event_handler() {
             mirror: crate::StateId::new(0),
         });
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "update".to_owned(),
         params: Vec::new(),
         handler: FunctionId::new(2),
@@ -2665,6 +2967,7 @@ fn control_mirrors_are_readable_but_only_control_stores_can_mutate_them() {
 
     let handler_id = FunctionId::new(3);
     program.interface.events.push(Event {
+        schema: Default::default(),
         name: "bad_event".to_owned(),
         params: Vec::new(),
         handler: handler_id,

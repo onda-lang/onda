@@ -2,8 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use onda_frontend::PrimitiveType;
+use onda_processor_abi::payload::{PayloadField, PayloadType, ScalarEncoding};
 
 use crate::{TypedFieldType, TypedStruct, TypedStructField};
+
+pub(crate) const MAX_AGGREGATE_NESTING: usize = 256;
+/// Bounds the recursive shapes materialized across the program. Fixed array
+/// extents remain tensor axes and therefore do not increase this count.
+pub(crate) const MAX_AGGREGATE_LAYOUT_NODES: usize = 1 << 16;
+/// Bounds the canonical storage and ABI slots produced by any one aggregate.
+/// Array extents remain inside one tensor slot; only distinct leaf tensors
+/// count toward this limit. Half of the function ABI budget lets a maximum-
+/// width aggregate be both an input and a result of one helper.
+pub(crate) const MAX_AGGREGATE_LAYOUT_LEAVES: usize = onda_mir::MAX_FUNCTION_PARAMETER_COUNT / 2;
 
 /// Deterministic program-local identity for a resolved aggregate layout.
 ///
@@ -144,9 +155,15 @@ pub struct AggregateLayout {
     pub leaves: Vec<AggregateLeafLayout>,
     /// Number of primitive scalar slots in one densely flattened instance.
     pub scalar_width: usize,
+    shape: PayloadType,
 }
 
 impl AggregateLayout {
+    /// Resolved nominal shape shared with message schema and wire planning.
+    pub fn payload_type(&self) -> &PayloadType {
+        &self.shape
+    }
+
     pub fn leaf(&self, id: AggregateLeafId) -> Option<&AggregateLeafLayout> {
         self.leaves.get(id.index()).filter(|leaf| leaf.id == id)
     }
@@ -165,7 +182,38 @@ pub struct AggregateLayoutTable {
 
 impl AggregateLayoutTable {
     pub fn build(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+        validate_aggregate_structure(structs).map_err(|error| vec![error])?;
         LayoutBuilder::new(structs)?.build()
+    }
+
+    pub(crate) fn populate_message_defaults<'a>(
+        &mut self,
+        params: impl Iterator<Item = &'a crate::TypedEventParam>,
+        structs: &HashMap<String, Vec<crate::TypedStructField>>,
+        options: crate::AnalysisOptions,
+        errors: &mut Vec<onda_frontend::Diagnostic>,
+    ) {
+        let names = params
+            .filter_map(|param| match &param.ty {
+                crate::TypedEventParamType::Data(crate::DataType::Struct(name))
+                | crate::TypedEventParamType::Data(crate::DataType::Array {
+                    element: onda_frontend::ArrayElemType::Struct(name),
+                    ..
+                })
+                | crate::TypedEventParamType::StructSlice { name } => Some(name),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        let mut evaluator =
+            crate::data_construction::DefaultEvaluator::new(structs, options, errors);
+        for layout in &mut self.layouts {
+            if names.contains(&layout.struct_name) {
+                crate::data_construction::populate_schema_defaults(
+                    &mut layout.shape,
+                    &mut evaluator,
+                );
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -203,9 +251,15 @@ pub enum AggregateLayoutError {
     TooManyLayouts {
         count: usize,
     },
-    TooManyLeaves {
+    LayoutsTooLarge {
         struct_name: String,
         count: usize,
+        maximum: usize,
+    },
+    LayoutTooWide {
+        struct_name: String,
+        count: usize,
+        maximum: usize,
     },
     DuplicateField {
         struct_name: String,
@@ -218,6 +272,11 @@ pub enum AggregateLayoutError {
     },
     RecursiveAggregate {
         cycle: Vec<String>,
+    },
+    NestingTooDeep {
+        struct_name: String,
+        depth: usize,
+        maximum: usize,
     },
     MalformedField {
         struct_name: String,
@@ -240,9 +299,21 @@ impl fmt::Display for AggregateLayoutError {
             Self::TooManyLayouts { count } => {
                 write!(f, "aggregate layout count {count} exceeds the u32 ID space")
             }
-            Self::TooManyLeaves { struct_name, count } => write!(
+            Self::LayoutsTooLarge {
+                struct_name,
+                count,
+                maximum,
+            } => write!(
                 f,
-                "aggregate '{struct_name}' has {count} leaves, exceeding the u32 ID space"
+                "aggregate layouts exceed the limit of {maximum} expanded shape nodes while planning '{struct_name}' ({count} required)"
+            ),
+            Self::LayoutTooWide {
+                struct_name,
+                count,
+                maximum,
+            } => write!(
+                f,
+                "aggregate '{struct_name}' lowers to {count} canonical leaf tensors, exceeding the limit of {maximum}"
             ),
             Self::DuplicateField {
                 struct_name,
@@ -262,6 +333,14 @@ impl fmt::Display for AggregateLayoutError {
             Self::RecursiveAggregate { cycle } => {
                 write!(f, "recursive aggregate layout cycle: {}", cycle.join(" -> "))
             }
+            Self::NestingTooDeep {
+                struct_name,
+                depth,
+                maximum,
+            } => write!(
+                f,
+                "aggregate nesting ending at '{struct_name}' reaches depth {depth}, exceeding the limit of {maximum}"
+            ),
             Self::MalformedField {
                 struct_name,
                 field_name,
@@ -283,6 +362,151 @@ impl fmt::Display for AggregateLayoutError {
 }
 
 impl std::error::Error for AggregateLayoutError {}
+
+fn aggregate_fields(definition: &TypedStruct) -> impl Iterator<Item = &TypedStructField> {
+    definition
+        .fields
+        .iter()
+        .filter(|field| !field.name.contains('.'))
+}
+
+/// Validates recursive structure and expanded shape size before passes that
+/// materialize aggregate paths. The iterative traversal keeps malformed,
+/// impractically deep, or exponentially branching source bounded.
+pub(crate) fn validate_aggregate_structure(
+    structs: &[TypedStruct],
+) -> Result<(), AggregateLayoutError> {
+    let indices = structs
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| (definition.name.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut edges = vec![Vec::new(); structs.len()];
+    let mut incoming = vec![0usize; structs.len()];
+    for (index, definition) in structs.iter().enumerate() {
+        for field in aggregate_fields(definition) {
+            let nested = match field.ty {
+                TypedFieldType::Struct => field.struct_name.as_deref(),
+                TypedFieldType::Array(_) => field.array_elem_struct.as_deref(),
+                TypedFieldType::Scalar(_) | TypedFieldType::Tuple(_) => None,
+            };
+            let Some(&nested) = nested.and_then(|name| indices.get(name)) else {
+                continue;
+            };
+            edges[index].push(nested);
+            incoming[nested] += 1;
+        }
+    }
+
+    let mut states = vec![0u8; structs.len()];
+    for root in 0..structs.len() {
+        if states[root] != 0 {
+            continue;
+        }
+        states[root] = 1;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((current, next_edge)) = stack.last_mut() {
+            if let Some(&nested) = edges[*current].get(*next_edge) {
+                *next_edge += 1;
+                match states[nested] {
+                    0 => {
+                        states[nested] = 1;
+                        stack.push((nested, 0));
+                    }
+                    1 => {
+                        let start = stack
+                            .iter()
+                            .position(|(candidate, _)| *candidate == nested)
+                            .unwrap_or(0);
+                        let mut cycle = stack[start..]
+                            .iter()
+                            .map(|(index, _)| structs[*index].name.clone())
+                            .collect::<Vec<_>>();
+                        cycle.push(structs[nested].name.clone());
+                        return Err(AggregateLayoutError::RecursiveAggregate { cycle });
+                    }
+                    _ => {}
+                }
+            } else {
+                states[*current] = 2;
+                stack.pop();
+            }
+        }
+    }
+
+    let mut queue = std::collections::VecDeque::new();
+    let mut depths = vec![1usize; structs.len()];
+    let mut topological = Vec::with_capacity(structs.len());
+    for (index, count) in incoming.iter().enumerate() {
+        if *count == 0 {
+            queue.push_back(index);
+        }
+    }
+    while let Some(current) = queue.pop_front() {
+        topological.push(current);
+        for &nested in &edges[current] {
+            let depth = depths[current] + 1;
+            if depth > MAX_AGGREGATE_NESTING {
+                return Err(AggregateLayoutError::NestingTooDeep {
+                    struct_name: structs[nested].name.clone(),
+                    depth,
+                    maximum: MAX_AGGREGATE_NESTING,
+                });
+            }
+            depths[nested] = depths[nested].max(depth);
+            incoming[nested] -= 1;
+            if incoming[nested] == 0 {
+                queue.push_back(nested);
+            }
+        }
+    }
+
+    let mut shape_nodes = vec![0usize; structs.len()];
+    let mut leaf_tensors = vec![0usize; structs.len()];
+    let mut total_nodes = 0usize;
+    for &current in topological.iter().rev() {
+        let mut node_count = 1usize;
+        let mut leaf_count = 0usize;
+        for field in aggregate_fields(&structs[current]) {
+            let nested_metrics = |name: Option<&str>| {
+                name.and_then(|name| indices.get(name))
+                    .map_or((1, 1), |index| (shape_nodes[*index], leaf_tensors[*index]))
+            };
+            let (field_nodes, field_leaves) = match &field.ty {
+                TypedFieldType::Scalar(_) => (1, 1),
+                TypedFieldType::Tuple(elements) => {
+                    (1usize.saturating_add(elements.len()), elements.len())
+                }
+                TypedFieldType::Struct => nested_metrics(field.struct_name.as_deref()),
+                TypedFieldType::Array(_) => {
+                    let (element_nodes, element_leaves) =
+                        nested_metrics(field.array_elem_struct.as_deref());
+                    (1usize.saturating_add(element_nodes), element_leaves)
+                }
+            };
+            node_count = node_count.saturating_add(field_nodes);
+            leaf_count = leaf_count.saturating_add(field_leaves);
+        }
+        if leaf_count > MAX_AGGREGATE_LAYOUT_LEAVES {
+            return Err(AggregateLayoutError::LayoutTooWide {
+                struct_name: structs[current].name.clone(),
+                count: leaf_count,
+                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
+            });
+        }
+        shape_nodes[current] = node_count;
+        leaf_tensors[current] = leaf_count;
+        total_nodes = total_nodes.saturating_add(node_count);
+        if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
+            return Err(AggregateLayoutError::LayoutsTooLarge {
+                struct_name: structs[current].name.clone(),
+                count: total_nodes,
+                maximum: MAX_AGGREGATE_LAYOUT_NODES,
+            });
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum VisitState {
@@ -372,15 +596,9 @@ impl LayoutBuilder {
         })
     }
 
-    fn build_one(&mut self, struct_name: &str) -> Result<AggregateLayout, AggregateLayoutError> {
+    fn build_one(&mut self, struct_name: &str) -> Result<(), AggregateLayoutError> {
         match self.states.get(struct_name) {
-            Some(VisitState::Built) => {
-                return Ok(self
-                    .built
-                    .get(struct_name)
-                    .expect("built state has a layout")
-                    .clone());
-            }
+            Some(VisitState::Built) => return Ok(()),
             Some(VisitState::Visiting) => {
                 let cycle_start = self
                     .stack
@@ -406,17 +624,10 @@ impl LayoutBuilder {
         self.stack.pop();
 
         match result {
-            Ok((mut leaves, scalar_width)) => {
-                if u32::try_from(leaves.len()).is_err() {
-                    self.states.remove(struct_name);
-                    return Err(AggregateLayoutError::TooManyLeaves {
-                        struct_name: struct_name.to_owned(),
-                        count: leaves.len(),
-                    });
-                }
+            Ok((mut leaves, scalar_width, shape)) => {
                 for (index, leaf) in leaves.iter_mut().enumerate() {
                     leaf.id = AggregateLeafId(
-                        u32::try_from(index).expect("aggregate leaf count checked above"),
+                        u32::try_from(index).expect("aggregate shape size checked above"),
                     );
                 }
                 let layout = AggregateLayout {
@@ -424,11 +635,12 @@ impl LayoutBuilder {
                     struct_name: struct_name.to_owned(),
                     leaves,
                     scalar_width,
+                    shape,
                 };
                 self.states
                     .insert(struct_name.to_owned(), VisitState::Built);
-                self.built.insert(struct_name.to_owned(), layout.clone());
-                Ok(layout)
+                self.built.insert(struct_name.to_owned(), layout);
+                Ok(())
             }
             Err(error) => {
                 self.states.remove(struct_name);
@@ -440,165 +652,194 @@ impl LayoutBuilder {
     fn build_fields(
         &mut self,
         definition: &TypedStruct,
-    ) -> Result<(Vec<AggregateLeafLayout>, usize), AggregateLayoutError> {
-        // Nested struct fields are also present as dotted compatibility entries
-        // in `TypedStruct::fields`. Only undotted entries are source-level
-        // fields; recursion below resolves their descendants canonically.
-        let fields = definition
-            .fields
-            .iter()
-            .filter(|field| !field.name.contains('.'))
-            .cloned()
-            .collect::<Vec<_>>();
+    ) -> Result<(Vec<AggregateLeafLayout>, usize, PayloadType), AggregateLayoutError> {
+        let mut fields = Vec::new();
         let mut seen = HashSet::new();
-        let mut leaves = Vec::new();
-        let mut scalar_width = 0usize;
-
-        for field in fields {
+        // Processor lowering also uses TypedStruct for structural parameter
+        // maps whose dotted names are already-flattened access paths, not
+        // nominal aggregate fields.
+        for field in aggregate_fields(definition) {
             if !seen.insert(field.name.clone()) {
                 return Err(AggregateLayoutError::DuplicateField {
                     struct_name: definition.name.clone(),
-                    field_name: field.name,
+                    field_name: field.name.clone(),
                 });
             }
-            let mut field_leaves = self.build_field(definition, &field)?;
-            for leaf in &mut field_leaves {
-                leaf.scalar_offset = scalar_width;
-                scalar_width = scalar_width
-                    .checked_add(leaf.tensor.element_count)
-                    .ok_or_else(|| AggregateLayoutError::SizeOverflow {
-                        struct_name: definition.name.clone(),
-                        field_path: leaf.storage_path.clone(),
-                        shape: leaf.tensor.shape.clone(),
-                    })?;
-            }
-            leaves.extend(field_leaves);
+            fields.push(PayloadField {
+                name: field.name.clone(),
+                ty: self.build_field(definition, field)?,
+                default: None,
+            });
         }
-        Ok((leaves, scalar_width))
+        let erased = fields.is_empty();
+        let shape = PayloadType::Struct {
+            name: definition.name.clone(),
+            fields,
+        };
+        // An inferred structural parameter with no observed fields is erased
+        // from the function ABI. Authored nominal structs are rejected before
+        // reaching layout construction.
+        let planned = if erased {
+            Vec::new()
+        } else {
+            shape
+                .leaves()
+                .map_err(|error| AggregateLayoutError::MalformedField {
+                    struct_name: definition.name.clone(),
+                    field_name: String::new(),
+                    reason: error.to_string(),
+                })?
+        };
+        let mut leaves = Vec::with_capacity(planned.len());
+        let mut scalar_width = 0usize;
+        for tensor in planned {
+            let path = self.resolve_path(definition, &tensor.path);
+            let mut leaf = self.scalar_leaf(
+                path,
+                tensor.path,
+                primitive_encoding(tensor.encoding),
+                tensor.shape,
+                definition,
+            )?;
+            leaf.scalar_offset = scalar_width;
+            scalar_width = scalar_width
+                .checked_add(leaf.tensor.element_count)
+                .ok_or_else(|| AggregateLayoutError::SizeOverflow {
+                    struct_name: definition.name.clone(),
+                    field_path: leaf.storage_path.clone(),
+                    shape: leaf.tensor.shape.clone(),
+                })?;
+            leaves.push(leaf);
+        }
+        Ok((leaves, scalar_width, shape))
     }
 
     fn build_field(
         &mut self,
         owner: &TypedStruct,
         field: &TypedStructField,
-    ) -> Result<Vec<AggregateLeafLayout>, AggregateLayoutError> {
-        match &field.ty {
-            TypedFieldType::Scalar(scalar) => {
-                self.require_no_aggregate_metadata(owner, field)?;
-                Ok(vec![self.scalar_leaf(
-                    vec![AggregatePathComponent::Field {
-                        name: field.name.clone(),
-                        aggregate: None,
-                        extent: None,
-                    }],
-                    field.name.clone(),
-                    *scalar,
-                    Vec::new(),
-                    owner,
-                )?])
-            }
-            TypedFieldType::Tuple(scalars) => {
-                self.require_no_aggregate_metadata(owner, field)?;
-                let mut leaves = Vec::with_capacity(scalars.len());
-                for (index, scalar) in scalars.iter().copied().enumerate() {
-                    leaves.push(self.scalar_leaf(
-                        vec![
-                            AggregatePathComponent::Field {
-                                name: field.name.clone(),
-                                aggregate: None,
-                                extent: None,
-                            },
-                            AggregatePathComponent::TupleElement { index },
-                        ],
-                        format!("{}.__{index}", field.name),
-                        scalar,
-                        Vec::new(),
-                        owner,
-                    )?);
+    ) -> Result<PayloadType, AggregateLayoutError> {
+        let scalar = |ty| PayloadType::Scalar {
+            encoding: scalar_encoding(ty),
+            integer_range: field.integer_range.map(|range| {
+                let scalar = match range.ty {
+                    PrimitiveType::I32 => "i32",
+                    PrimitiveType::I64 => "i64",
+                    _ => unreachable!("integer domain"),
+                };
+                onda_processor_abi::IntegerRangeMetadata {
+                    min: onda_processor_abi::IntegerRangeEndpoint {
+                        scalar: scalar.to_owned(),
+                        value: range.min.to_string(),
+                    },
+                    max: onda_processor_abi::IntegerRangeEndpoint {
+                        scalar: scalar.to_owned(),
+                        value: range.max.to_string(),
+                    },
+                    mode: if range.wrap { "wrap" } else { "clamp" }.to_owned(),
                 }
-                Ok(leaves)
+            }),
+        };
+        match &field.ty {
+            TypedFieldType::Scalar(ty) => {
+                self.require_no_aggregate_metadata(owner, field)?;
+                Ok(scalar(*ty))
+            }
+            TypedFieldType::Tuple(types) => {
+                self.require_no_aggregate_metadata(owner, field)?;
+                Ok(PayloadType::Tuple {
+                    elements: types.iter().copied().map(scalar).collect(),
+                })
             }
             TypedFieldType::Struct => {
                 if field.array_elem_ty.is_some() || field.array_elem_struct.is_some() {
                     return Err(self.malformed(owner, field, "struct field has array metadata"));
                 }
-                let Some(nested_name) = field.struct_name.as_deref() else {
+                let Some(name) = field.struct_name.as_deref() else {
                     return Err(self.malformed(owner, field, "struct target is missing"));
                 };
-                self.nested_leaves(owner, field, nested_name, None)
+                self.nested_shape(owner, field, name)
             }
-            TypedFieldType::Array(extent) => {
+            TypedFieldType::Array(len) => {
                 if field.struct_name.is_some() {
                     return Err(self.malformed(owner, field, "array field has struct metadata"));
                 }
-                match (field.array_elem_ty, field.array_elem_struct.as_deref()) {
-                    (Some(scalar), None) => Ok(vec![self.scalar_leaf(
-                        vec![AggregatePathComponent::Field {
-                            name: field.name.clone(),
-                            aggregate: None,
-                            extent: Some(*extent),
-                        }],
-                        field.name.clone(),
-                        scalar,
-                        vec![*extent],
-                        owner,
-                    )?]),
-                    (None, Some(nested_name)) => {
-                        self.nested_leaves(owner, field, nested_name, Some(*extent))
-                    }
+                let element = match (field.array_elem_ty, field.array_elem_struct.as_deref()) {
+                    (Some(ty), None) => scalar(ty),
+                    (None, Some(name)) => self.nested_shape(owner, field, name)?,
                     (None, None) => {
-                        Err(self.malformed(owner, field, "array element type is missing"))
+                        return Err(self.malformed(owner, field, "array element type is missing"))
                     }
-                    (Some(_), Some(_)) => Err(self.malformed(
-                        owner,
-                        field,
-                        "array has both primitive and struct element types",
-                    )),
-                }
+                    (Some(_), Some(_)) => {
+                        return Err(self.malformed(
+                            owner,
+                            field,
+                            "array has both primitive and struct element types",
+                        ))
+                    }
+                };
+                Ok(PayloadType::Array {
+                    element: Box::new(element),
+                    len: *len,
+                })
             }
         }
     }
 
-    fn nested_leaves(
+    fn nested_shape(
         &mut self,
         owner: &TypedStruct,
         field: &TypedStructField,
-        nested_name: &str,
-        extent: Option<usize>,
-    ) -> Result<Vec<AggregateLeafLayout>, AggregateLayoutError> {
-        let Some(nested_id) = self.ids.get(nested_name).copied() else {
+        name: &str,
+    ) -> Result<PayloadType, AggregateLayoutError> {
+        if !self.ids.contains_key(name) {
             return Err(AggregateLayoutError::UnknownStruct {
                 struct_name: owner.name.clone(),
                 field_path: field.name.clone(),
-                referenced_struct: nested_name.to_owned(),
+                referenced_struct: name.to_owned(),
             });
-        };
-        let nested = self.build_one(nested_name)?;
-        let mut leaves = Vec::with_capacity(nested.leaves.len());
-        for nested_leaf in nested.leaves {
-            let mut path = Vec::with_capacity(nested_leaf.path.len() + 1);
-            path.push(AggregatePathComponent::Field {
-                name: field.name.clone(),
-                aggregate: Some(nested_id),
-                extent,
-            });
-            path.extend(nested_leaf.path);
-
-            let mut shape =
-                Vec::with_capacity(nested_leaf.tensor.shape.len() + usize::from(extent.is_some()));
-            if let Some(extent) = extent {
-                shape.push(extent);
-            }
-            shape.extend_from_slice(&nested_leaf.tensor.shape);
-            leaves.push(self.scalar_leaf(
-                path,
-                format!("{}.{}", field.name, nested_leaf.storage_path),
-                nested_leaf.scalar,
-                shape,
-                owner,
-            )?);
         }
-        Ok(leaves)
+        self.build_one(name)?;
+        Ok(self.built[name].shape.clone())
+    }
+
+    // Restore semantic identities along a path emitted by the common planner.
+    // This only annotates a leaf; traversal order and tensor axes have one owner.
+    fn resolve_path(&self, definition: &TypedStruct, path: &str) -> Vec<AggregatePathComponent> {
+        let mut owner = definition;
+        let mut tuple = false;
+        path.split('.')
+            .map(|name| {
+                if tuple {
+                    return AggregatePathComponent::TupleElement {
+                        index: name.strip_prefix("__").unwrap().parse().unwrap(),
+                    };
+                }
+                let field = owner
+                    .fields
+                    .iter()
+                    .find(|field| field.name == name)
+                    .expect("resolved field path");
+                let nested = field
+                    .struct_name
+                    .as_ref()
+                    .or(field.array_elem_struct.as_ref());
+                let aggregate = nested.map(|name| self.ids[name]);
+                let extent = match field.ty {
+                    TypedFieldType::Array(len) => Some(len),
+                    _ => None,
+                };
+                tuple = matches!(field.ty, TypedFieldType::Tuple(_));
+                if let Some(name) = nested {
+                    owner = &self.definitions[name];
+                }
+                AggregatePathComponent::Field {
+                    name: name.to_owned(),
+                    aggregate,
+                    extent,
+                }
+            })
+            .collect()
     }
 
     fn scalar_leaf(
@@ -652,6 +893,26 @@ impl LayoutBuilder {
             field_name: field.name.clone(),
             reason: reason.into(),
         }
+    }
+}
+
+pub(crate) fn scalar_encoding(ty: PrimitiveType) -> ScalarEncoding {
+    match ty {
+        PrimitiveType::F32 => ScalarEncoding::F32,
+        PrimitiveType::F64 => ScalarEncoding::F64,
+        PrimitiveType::I32 => ScalarEncoding::I32,
+        PrimitiveType::I64 => ScalarEncoding::I64,
+        PrimitiveType::Bool => ScalarEncoding::Bool,
+    }
+}
+
+pub(crate) fn primitive_encoding(ty: ScalarEncoding) -> PrimitiveType {
+    match ty {
+        ScalarEncoding::F32 => PrimitiveType::F32,
+        ScalarEncoding::F64 => PrimitiveType::F64,
+        ScalarEncoding::I32 => PrimitiveType::I32,
+        ScalarEncoding::I64 => PrimitiveType::I64,
+        ScalarEncoding::Bool => PrimitiveType::Bool,
     }
 }
 
@@ -745,6 +1006,105 @@ mod tests {
             AggregateLayoutError::RecursiveAggregate { cycle }
                 if cycle == &["A", "B", "A"] || cycle == &["B", "A", "B"]
         )));
+    }
+
+    #[test]
+    fn rejects_excessive_nesting_without_recursive_traversal() {
+        let mut structs = (0..=MAX_AGGREGATE_NESTING)
+            .map(|index| TypedStruct {
+                name: format!("S{index}"),
+                fields: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        for (index, definition) in structs.iter_mut().take(MAX_AGGREGATE_NESTING).enumerate() {
+            definition.fields = vec![struct_field("next", &format!("S{}", index + 1))];
+        }
+        structs[MAX_AGGREGATE_NESTING].fields = vec![scalar_field("value", PrimitiveType::F32)];
+
+        assert!(matches!(
+            validate_aggregate_structure(&structs),
+            Err(AggregateLayoutError::NestingTooDeep {
+                depth,
+                maximum: MAX_AGGREGATE_NESTING,
+                ..
+            }) if depth == MAX_AGGREGATE_NESTING + 1
+        ));
+        assert!(validate_aggregate_structure(&structs[1..]).is_ok());
+    }
+
+    #[test]
+    fn rejects_wide_layout_before_materializing_canonical_leaves() {
+        let mut structs = vec![TypedStruct {
+            name: "S0".to_owned(),
+            fields: vec![scalar_field("value", PrimitiveType::F32)],
+        }];
+        let mut leaves = 1usize;
+        for level in 1.. {
+            let nested = format!("S{}", level - 1);
+            structs.push(TypedStruct {
+                name: format!("S{level}"),
+                fields: vec![
+                    struct_field("left", &nested),
+                    struct_field("right", &nested),
+                ],
+            });
+            leaves *= 2;
+            if leaves > MAX_AGGREGATE_LAYOUT_LEAVES {
+                break;
+            }
+        }
+
+        assert!(validate_aggregate_structure(&structs[..structs.len() - 1]).is_ok());
+        assert!(matches!(
+            validate_aggregate_structure(&structs),
+            Err(AggregateLayoutError::LayoutTooWide {
+                count,
+                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
+                ..
+            }) if count == leaves
+        ));
+    }
+
+    #[test]
+    fn array_extents_remain_one_canonical_leaf_tensor() {
+        let leaf = TypedStruct {
+            name: "Leaf".to_owned(),
+            fields: vec![scalar_field("value", PrimitiveType::F32)],
+        };
+        let extent = MAX_AGGREGATE_LAYOUT_LEAVES * 4;
+        let batch = TypedStruct {
+            name: "Batch".to_owned(),
+            fields: vec![struct_array_field("items", "Leaf", extent)],
+        };
+
+        let layouts = AggregateLayoutTable::build(&[leaf, batch]).unwrap();
+        let batch = layouts.layout_for_struct("Batch").unwrap();
+        assert_eq!(batch.leaves.len(), 1);
+        assert_eq!(batch.scalar_width, extent);
+    }
+
+    #[test]
+    fn rejects_excessive_total_layout_shape_before_materializing() {
+        let fields = (0..MAX_AGGREGATE_LAYOUT_LEAVES)
+            .map(|index| scalar_field(&format!("field{index}"), PrimitiveType::F32))
+            .collect::<Vec<_>>();
+        let nodes_per_layout = fields.len() + 1;
+        let layout_count = MAX_AGGREGATE_LAYOUT_NODES / nodes_per_layout + 1;
+        let structs = (0..layout_count)
+            .map(|index| TypedStruct {
+                name: format!("S{index}"),
+                fields: fields.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            validate_aggregate_structure(&structs),
+            Err(AggregateLayoutError::LayoutsTooLarge {
+                count,
+                maximum: MAX_AGGREGATE_LAYOUT_NODES,
+                ..
+            }) if count == layout_count * nodes_per_layout
+        ));
     }
 
     #[test]

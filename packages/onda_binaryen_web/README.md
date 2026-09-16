@@ -37,8 +37,9 @@ the 8-argument `onda_processor_init(params_ptr, state_ptr, mode, buffers_ptr,
 buffer_frames_ptr, buffer_channels_ptr, buffer_sample_rates_ptr, output_ptr)`, the 12-argument processor
 `onda_process`, and one `onda_event_N` function per declared event. Init, process, and event entries
 take an optional call-scoped execution-output pointer carrying independent delegate and print
-batches. Each function returns zero on success or a positive generated execution-failure code. These are
-the complete wasm32-module profile of the generic
+batches. Each function returns zero on success or a positive execution status: `1` is a generated
+runtime-safety failure, while an event may also return `2` when its input is rejected before
+execution. These are the complete wasm32-module profile of the generic
 [`Onda processor ABI`](../../docs/processor-abi.md), not a Web Audio-specific interface. The host
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
@@ -46,6 +47,13 @@ event/delegate payload layouts, print log sites, source tables, and all exported
 the internal [delegate host integration](../../docs/delegates.md) and
 [print host integration](../../docs/printing.md) references for batch sizing, decoding, formatting,
 and overflow handling.
+
+Each `onda_event_N` receives a pointer to the ABI's 16-byte wasm32 `EventInput` descriptor before
+the ordinary processor storage arguments. The backend validates the complete little-endian wire
+payload and aligned workspace before touching handler state or output records. Truncated or trailing
+payloads, invalid slice lengths, out-of-bounds regions, misalignment, and insufficient workspace
+return `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`) and leave the processor usable; accepted
+structured values are exposed to generated code through aligned leaf tensors.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,
@@ -60,7 +68,7 @@ The executable backend supports:
 - scalar and fixed scalar-array state/parameter/audio-port addressing
 - constants, casts, arithmetic, comparisons, structured `if`/loop control, calls, and scalar or multi-value returns
 - input loads, output stores, and immutable constant-data loads
-- scalar/fixed-array event payload loads and event ABI wrappers
+- recursive scalar, tuple, struct, fixed-array, and slice event payload preparation and ABI wrappers
 - scalar/fixed-array control-output stores in the shared state blob
 - interleaved mono/static/dynamic external buffers, uniformly clamped source access, fixed
   constant-time buffer collections, nullable host pointers with neutral zero/discard storage, and
@@ -72,7 +80,13 @@ The executable backend supports:
 - native WebAssembly numeric intrinsics plus on-demand internal transcendental and strict-FMA helpers
 - Binaryen validation and optimization before emission
 
-The backend also supports primitive slice locals and reference arguments, event slices, flattened data structs, structure-of-arrays processor state, recursive processor arrays, and canonical top-level/processor oversampling schedules. Oversampling interpolation, substeps, sinc-filter state updates, and output decimation are ordinary MIR operations; Binaryen has no Onda-specific scheduling logic. Recursive call graphs are rejected as unbounded realtime work before fixed-array local storage can become re-entrant. Aggregate shapes that cannot be represented by portable MIR are rejected above the backend boundary.
+The backend also supports primitive and data-struct slice locals and reference arguments, recursive
+event/delegate schemas, flattened data structs, structure-of-arrays processor state, recursive
+processor arrays, and canonical top-level/processor oversampling schedules. Oversampling
+interpolation, substeps, sinc-filter state updates, and output decimation are ordinary MIR
+operations; Binaryen has no Onda-specific scheduling logic. Recursive call graphs are rejected as
+unbounded realtime work before fixed-array local storage can become re-entrant. Aggregate shapes
+that cannot be represented by portable MIR are rejected above the backend boundary.
 
 The MIR schema defines three ordered `i32` process parameters:
 `(start_frame, frames, flags)`. `process_frame(offset)` is the checked source of audio-I/O

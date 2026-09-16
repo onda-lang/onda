@@ -17,9 +17,9 @@ This page is generated from the standard library embedded in the compiler. Run `
 | Module | Provides |
 | --- | --- |
 | [`std/math`](#stdmath) | `ampdb`, `clamp`, `cpsmidi`, `cpsoct`, `cubic_interp`, `dbamp`, `expexp`, `explin`, `fract`, `inverse_lerp`, `lerp`, `linexp`, `linlin`, `map`, `midicps`, `midiratio`, `octcps`, `ratiomidi`, `sign`, `smoothstep`, `wrap` |
-| [`std/complex`](#stdcomplex) | `Complex` |
+| [`std/complex`](#stdcomplex) | `Complex`, `polar` |
 | [`std/osc`](#stdosc) | `KSine`, `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
-| [`std/filter`](#stdfilter) | `DCBlock`, `OnePole`, `Resonator`, `Svf`, `mode` |
+| [`std/filter`](#stdfilter) | `Biquad`, `BiquadCoefficients`, `DCBlock`, `OnePole`, `Resonator`, `Svf`, `design_highpass`, `design_lowpass`, `mode` |
 | [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `decay_coefficient`, `stage` |
 | [`std/reverb`](#stdreverb) | `Schroeder` |
 | [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
@@ -33,7 +33,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
-| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `Rectangular`, `STFT` |
+| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `RealTransform`, `Rectangular`, `STFT` |
 | [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver`, `impulse_window_count`, `impulse_window_end`, `stage_window_count` |
 | [`std/lookup`](#stdlookup) | `read`, `readC`, `readCW`, `readL`, `readLW`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
@@ -108,6 +108,12 @@ import std/complex
 
 Namespace: `std::complex`.
 
+### Functions
+
+```onda
+def polar<T>(magnitude: T, phase: T) -> Complex<T>:
+```
+
 ### Struct `Complex<T>`
 
 ```onda
@@ -121,13 +127,18 @@ struct Complex<T>:
   def copy(self, other: Complex):
   def set_polar(self, magnitude, phase):
   def add_assign(self, other: Complex):
+  def added(self, other: Complex) -> Complex<T>:
   def add_parts(self, re, im):
   def sub_assign(self, other: Complex):
+  def subtracted(self, other: Complex) -> Complex<T>:
   def sub_parts(self, re, im):
   def mul_assign(self, other: Complex):
+  def multiplied(self, other: Complex) -> Complex<T>:
   def mul_parts(self, re, im):
   def scale_assign(self, gain):
+  def scaled(self, gain) -> Complex<T>:
   def conjugate(self):
+  def conjugated(self) -> Complex<T>:
   def power(self):
   def magnitude(self):
   def phase(self):
@@ -255,6 +266,13 @@ import std/filter
 
 Namespace: `std::filter`.
 
+### Functions
+
+```onda
+def design_lowpass<T>(cutoff: T, q: T) -> BiquadCoefficients<T>:
+def design_highpass<T>(cutoff: T, q: T) -> BiquadCoefficients<T>:
+```
+
 ### Namespace `mode`
 
 #### Constants
@@ -268,6 +286,28 @@ const SVF_BANDPASS = 2
 const SVF_NOTCH = 3
 const SVF_PEAK = 4
 const SVF_ALLPASS = 5
+```
+
+### Struct `BiquadCoefficients<T>`
+
+```onda
+struct BiquadCoefficients<T>:
+  b0: T = 1.0
+  b1: T = 0.0
+  b2: T = 0.0
+  a1: T = 0.0
+  a2: T = 0.0
+```
+
+### Processor `Biquad<T>`
+
+```onda
+proc Biquad<T>:
+  ins<T> 1
+  outs<T> 1
+  events:
+    set_coefficients(value: BiquadCoefficients<T>):
+    reset():
 ```
 
 ### Processor `OnePole<T>`
@@ -429,6 +469,25 @@ const AllpassLines = 4
 const ReferenceRate = 48000
 const CombTuning: i32[CombLines] = [1116, 1188, 1277, 1356, 1139, 1211, 1300, 1379]
 const AllpassTuning: i32[AllpassLines] = [556, 441, 579, 464]
+```
+
+#### Struct `CombLine<T>`
+
+```onda
+struct CombLine<T>:
+  buffer: T[CombCapacity]
+  length: i32
+  index: i32 {CombCapacity, wrap}
+  lowpass: T
+```
+
+#### Struct `AllpassLine<T>`
+
+```onda
+struct AllpassLine<T>:
+  buffer: T[AllpassCapacity]
+  length: i32
+  index: i32 {AllpassCapacity, wrap}
 ```
 
 #### Processor `Reverb<T>`
@@ -852,7 +911,7 @@ Namespace: `std::delay<Capacity = SR * 2>`.
 ```onda
 struct Line<T>:
   data: std::data<Capacity>::Data<T>
-  write_index: i32 = 0 {Capacity, wrap}
+  write_index: i32 {Capacity, wrap}
   def read(self, delay_samples: i32):
   def readL(self, delay_samples: T):
   def readC(self, delay_samples: T):
@@ -1027,15 +1086,18 @@ const Blackman: f64[N] = _blackman_window()
 
 ```onda
 struct FFT<T>:
-  bins: std::complex::Complex<T>[N]
+  bin_real: T[N]
+  bin_imag: T[N]
   def size(self):
   def real_bin_count(self):
   def clear(self):
   def set_bin(self, i: i32, re, im):
   def load_real(self, input: T[]):
   def load_complex(self, real: T[], imag: T[]):
+  def load_complex(self, input: std::complex::Complex<T>[]):
   def store_real(self, output: T[]):
   def store_imag(self, output: T[]):
+  def store_complex(self, output: std::complex::Complex<T>[]):
   def store_magnitude(self, output: T[]):
   def store_power(self, output: T[]):
   def store_phase(self, output: T[]):
@@ -1052,12 +1114,27 @@ struct FFT<T>:
   def forward_real(self, input: T[]):
   def forward_real_packed(self, input: T[], output: T[]):
   def forward_complex(self, real: T[], imag: T[]):
+  def forward_complex(self, input: std::complex::Complex<T>[]):
   def forward_real_magnitude(self, input: T[], output: T[]):
   def forward_real_power(self, input: T[], output: T[]):
   def forward_real_phase(self, input: T[], output: T[]):
   def forward(self):
   def inverse(self):
   def inverse_real_packed(self, input: T[], output: T[]):
+```
+
+### Struct `RealTransform<T>`
+
+```onda
+struct RealTransform<T>:
+  fft: FFT<T>
+  def size(self):
+  def real_bin_count(self):
+  def clear(self):
+  def real(self, i: i32):
+  def imag(self, i: i32):
+  def forward(self, input: T[]):
+  def inverse(self, real: T[], imag: T[], output: T[]):
 ```
 
 ### Struct `STFT<T>`
@@ -1098,7 +1175,7 @@ struct RealFFT<T>:
   fft: FFT<T>
   input: T[N]
   window_kind: f32 = _WindowHann
-  write: i32 = 0 {N, wrap}
+  write: i32 {N, wrap}
   filled: i32 = 0
   since_hop: i32 = 0
   ready: bool = false
@@ -1127,7 +1204,7 @@ struct RealIFFT<T>:
   output: T[N]
   norm: T[N]
   window_kind: f32 = _WindowHann
-  frame: i32 = 0 {N, wrap}
+  frame: i32 {N, wrap}
   pending: i32 = 0
   overlap_frames: i32 = 0
   def size(self):
@@ -1207,6 +1284,7 @@ proc ZeroLatencyConvolver<T>:
   outs<T> 1
   events:
     set_offset(value: i32 = -1):
+    set_channel(channel: i32):
     set_impulse(values: T[]):
     begin_impulse(value_count: i32):
     set_impulse_window(start: i32, values: T[]):

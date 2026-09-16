@@ -58,6 +58,12 @@ namespace std::fft<N = 256>:
       return a
     return b
 
+  def _read_unchecked(values: [], index: i32):
+    return values.read_unsafe(index)
+
+  def _write_unchecked(values: [], index: i32, value):
+    values.write_unsafe(index, value)
+
   const def _bit_reverse_table() -> i32[N]:
     values: i32[N]
     values[0] = 0
@@ -89,7 +95,8 @@ namespace std::fft<N = 256>:
 
 
   struct FFT<T>:
-    bins: std::complex::Complex<T>[N]
+    bin_real: T[N]
+    bin_imag: T[N]
 
     def size(self):
       return N
@@ -98,36 +105,64 @@ namespace std::fft<N = 256>:
       return (N >> 1) + 1
 
     def clear(self):
-      for i in 0..N:
-        self.bins[i].clear()
+      self.bin_real[:] = 0.0
+      self.bin_imag[:] = 0.0
 
     def set_bin(self, i: i32, re, im):
-      self.bins[i].set(re, im)
+      self.bin_real[i] = re
+      self.bin_imag[i] = im
+
+    # The radix loop and real-transform reconstruction establish these bounds.
+    # Isolating unchecked access here retains safe, clamped public accessors.
+    def _real_at(self, i: i32):
+      return _read_unchecked(self.bin_real, i)
+
+    def _imag_at(self, i: i32):
+      return _read_unchecked(self.bin_imag, i)
+
+    def _set_bin_at(self, i: i32, re, im):
+      _write_unchecked(self.bin_real, i, re)
+      _write_unchecked(self.bin_imag, i, im)
 
     def load_real(self, input: T[]):
       count = _min_i(input.len(), N)
       for i in 0..count:
-        self.bins[i].set(input[i], 0.0)
+        self.set_bin(i, input[i], 0.0)
       for i in count..N:
-        self.bins[i].clear()
+        self.set_bin(i, 0.0, 0.0)
 
     def load_complex(self, real: T[], imag: T[]):
       count = _min_i(real.len(), imag.len())
       count = _min_i(count, N)
       for i in 0..count:
-        self.bins[i].set(real[i], imag[i])
+        self.set_bin(i, real[i], imag[i])
       for i in count..N:
-        self.bins[i].clear()
+        self.set_bin(i, 0.0, 0.0)
+
+    def load_complex(self, input: std::complex::Complex<T>[]):
+      count = _min_i(input.len(), N)
+      for i in 0..count:
+        value = input[i]
+        self.bin_real[i] = value.re
+        self.bin_imag[i] = value.im
+      for i in count..N:
+        self.bin_real[i] = 0.0
+        self.bin_imag[i] = 0.0
 
     def store_real(self, output: T[]):
       count = _min_i(output.len(), N)
       for i in 0..count:
-        output[i] = self.bins[i].real()
+        output[i] = self.real(i)
 
     def store_imag(self, output: T[]):
       count = _min_i(output.len(), N)
       for i in 0..count:
-        output[i] = self.bins[i].imag()
+        output[i] = self.imag(i)
+
+    def store_complex(self, output: std::complex::Complex<T>[]):
+      count = _min_i(output.len(), N)
+      for i in 0..count:
+        output[i].set(self.real(i), self.imag(i))
 
     def store_magnitude(self, output: T[]):
       count = _min_i(output.len(), N)
@@ -151,10 +186,10 @@ namespace std::fft<N = 256>:
         output[i] = 0.0
       real_count = _min_i(count, half + 1)
       for i in 0..real_count:
-        output[i] = self.bins[i].real()
+        output[i] = self.real(i)
       imag_count = _min_i(count - (half + 1), half - 1)
       for i in 0..imag_count:
-        output[half + 1 + i] = self.bins[i + 1].imag()
+        output[half + 1 + i] = self.imag(i + 1)
 
     def load_real_packed(self, input: T[]):
       self.clear()
@@ -198,10 +233,10 @@ namespace std::fft<N = 256>:
         output[i] = self.phase(i)
 
     def real(self, i: i32):
-      return self.bins[i].real()
+      return self.bin_real[i]
 
     def imag(self, i: i32):
-      return self.bins[i].imag()
+      return self.bin_imag[i]
 
     def power(self, i: i32):
       re = self.real(i)
@@ -224,6 +259,10 @@ namespace std::fft<N = 256>:
 
     def forward_complex(self, real: T[], imag: T[]):
       self.load_complex(real, imag)
+      self.forward()
+
+    def forward_complex(self, input: std::complex::Complex<T>[]):
+      self.load_complex(input)
       self.forward()
 
     def forward_real_magnitude(self, input: T[], output: T[]):
@@ -254,12 +293,14 @@ namespace std::fft<N = 256>:
 
     def _transform_prefix(self, n: i32, bit_shift: i32, inverse: bool):
       for i in 0..n:
-        j = _BitReverse[i] >> bit_shift
+        j = _BitReverse.read_unsafe(i) >> bit_shift
         if j > i:
-          temp_r = self.bins[i].real()
-          temp_i = self.bins[i].imag()
-          self.bins[i].set(self.bins[j].real(), self.bins[j].imag())
-          self.bins[j].set(temp_r, temp_i)
+          temp_r = self._real_at(i)
+          temp_i = self._imag_at(i)
+          other_r = self._real_at(j)
+          other_i = self._imag_at(j)
+          self._set_bin_at(i, other_r, other_i)
+          self._set_bin_at(j, temp_r, temp_i)
 
       stage = 2
       while stage <= n:
@@ -271,25 +312,25 @@ namespace std::fft<N = 256>:
           k = 0
           while k < half:
             tw_idx = k * tw_stride
-            wr = T(_TwiddleReal[tw_idx])
-            wi = T(_TwiddleImag[tw_idx])
+            wr = T(_TwiddleReal.read_unsafe(tw_idx))
+            wi = T(_TwiddleImag.read_unsafe(tw_idx))
             if !inverse:
               wi = -wi
 
             even_i = start + k
             odd_i = even_i + half
 
-            odd_r = self.bins[odd_i].real()
-            odd_i_v = self.bins[odd_i].imag()
+            odd_r = self._real_at(odd_i)
+            odd_i_v = self._imag_at(odd_i)
 
             tw_r = wr * odd_r - wi * odd_i_v
             tw_i = wr * odd_i_v + wi * odd_r
 
-            even_r = self.bins[even_i].real()
-            even_i_v = self.bins[even_i].imag()
+            even_r = self._real_at(even_i)
+            even_i_v = self._imag_at(even_i)
 
-            self.bins[even_i].set(even_r + tw_r, even_i_v + tw_i)
-            self.bins[odd_i].set(even_r - tw_r, even_i_v - tw_i)
+            self._set_bin_at(even_i, even_r + tw_r, even_i_v + tw_i)
+            self._set_bin_at(odd_i, even_r - tw_r, even_i_v - tw_i)
 
             k += 1
           start += stage
@@ -298,7 +339,140 @@ namespace std::fft<N = 256>:
       if inverse:
         inverse_scale = T(1.0) / T(n)
         for i in 0..n:
-          self.bins[i].set(self.bins[i].real() * inverse_scale, self.bins[i].imag() * inverse_scale)
+          self._set_bin_at(
+            i,
+            self._real_at(i) * inverse_scale,
+            self._imag_at(i) * inverse_scale
+          )
+
+    # Complete an N-point real transform after bins 0..N/2 have been loaded
+    # with the even samples as real parts and odd samples as imaginary parts.
+    def _forward_loaded_real(self):
+      half = N >> 1
+      self._transform_prefix(half, 1, false)
+
+      z0_re = self._real_at(0)
+      z0_im = self._imag_at(0)
+      self._set_bin_at(0, z0_re + z0_im, 0.0)
+      self._set_bin_at(half, z0_re - z0_im, 0.0)
+
+      quarter = half >> 1
+      for k in 1..quarter:
+        mirror = half - k
+        a_re = self._real_at(k)
+        a_im = self._imag_at(k)
+        mirror_re = self._real_at(mirror)
+        mirror_im = self._imag_at(mirror)
+
+        even_re = (a_re + mirror_re) * 0.5
+        even_im = (a_im - mirror_im) * 0.5
+        odd_re = (a_im + mirror_im) * 0.5
+        odd_im = (mirror_re - a_re) * 0.5
+        tw_re = T(_TwiddleReal.read_unsafe(k))
+        tw_im = T(_TwiddleImag.read_unsafe(k))
+        rotated_re = tw_re * odd_re + tw_im * odd_im
+        rotated_im = tw_re * odd_im - tw_im * odd_re
+
+        self._set_bin_at(k, even_re + rotated_re, even_im + rotated_im)
+        self._set_bin_at(mirror, even_re - rotated_re, -even_im + rotated_im)
+
+      if quarter > 0:
+        quarter_re = self._real_at(quarter)
+        quarter_im = self._imag_at(quarter)
+        self._set_bin_at(quarter, quarter_re, -quarter_im)
+
+    # Prepare and execute the inverse of the positive real spectrum currently
+    # stored in bins 0..N/2. The result is interleaved across the first N/2
+    # complex bins: even samples in real parts and odd samples in imaginary parts.
+    def _inverse_loaded_real(self):
+      half = N >> 1
+      dc = self._real_at(0)
+      nyquist = self._real_at(half)
+      self._set_bin_at(0, (dc + nyquist) * 0.5, (dc - nyquist) * 0.5)
+
+      quarter = half >> 1
+      for k in 1..quarter:
+        mirror = half - k
+        x_re = self._real_at(k)
+        x_im = self._imag_at(k)
+        mirror_re = self._real_at(mirror)
+        mirror_im = self._imag_at(mirror)
+
+        even_re = (x_re + mirror_re) * 0.5
+        even_im = (x_im - mirror_im) * 0.5
+        rotated_re = (x_re - mirror_re) * 0.5
+        rotated_im = (x_im + mirror_im) * 0.5
+        tw_re = T(_TwiddleReal.read_unsafe(k))
+        tw_im = T(_TwiddleImag.read_unsafe(k))
+        odd_re = tw_re * rotated_re - tw_im * rotated_im
+        odd_im = tw_im * rotated_re + tw_re * rotated_im
+
+        self._set_bin_at(k, even_re - odd_im, even_im + odd_re)
+        self._set_bin_at(mirror, even_re + odd_im, odd_re - even_im)
+
+      if quarter > 0:
+        quarter_re = self._real_at(quarter)
+        quarter_im = self._imag_at(quarter)
+        self._set_bin_at(quarter, quarter_re, -quarter_im)
+
+      self._transform_prefix(half, 1, true)
+
+  # Reusable, non-windowed real transform workspace. It exposes only the
+  # non-redundant spectrum and uses one N/2 complex transform in each direction.
+  struct RealTransform<T>:
+    fft: FFT<T>
+
+    def size(self):
+      return N
+
+    def real_bin_count(self):
+      return (N >> 1) + 1
+
+    def clear(self):
+      self.fft.clear()
+
+    def real(self, i: i32):
+      return self.fft.real(i)
+
+    def imag(self, i: i32):
+      return self.fft.imag(i)
+
+    def forward(self, input: T[]):
+      count = _min_i(input.len(), N)
+      half = N >> 1
+      for i in 0..half:
+        even = i << 1
+        odd = even + 1
+        even_value: T = 0.0
+        odd_value: T = 0.0
+        if even < count:
+          even_value = input.read_unsafe(even)
+        if odd < count:
+          odd_value = input.read_unsafe(odd)
+        self.fft._set_bin_at(i, even_value, odd_value)
+      self.fft._forward_loaded_real()
+
+    def inverse(self, real: T[], imag: T[], output: T[]):
+      half = N >> 1
+      count = _min_i(_min_i(real.len(), imag.len()), half + 1)
+      for i in 0..(half + 1):
+        re: T = 0.0
+        im: T = 0.0
+        if i < count:
+          re = real.read_unsafe(i)
+          im = imag.read_unsafe(i)
+        self.fft._set_bin_at(i, re, im)
+
+      self.fft._inverse_loaded_real()
+
+      output_count = _min_i(output.len(), N)
+      for i in 0..half:
+        even = i << 1
+        odd = even + 1
+        if even < output_count:
+          output.write_unsafe(even, self.fft._real_at(i))
+        if odd < output_count:
+          output.write_unsafe(odd, self.fft._imag_at(i))
 
   struct STFT<T>:
     fft: FFT<T>
@@ -503,40 +677,7 @@ namespace std::fft<N = 256>:
 
         # A real N-point transform is reconstructed from one complex N/2-point
         # transform. Only the non-redundant positive spectrum is materialized.
-        self.fft._transform_prefix(half, 1, false)
-        z0_re = self.fft.real(0)
-        z0_im = self.fft.imag(0)
-        self.fft.set_bin(0, z0_re + z0_im, 0.0)
-        self.fft.set_bin(half, z0_re - z0_im, 0.0)
-
-        quarter = half >> 1
-        for k in 1..quarter:
-          mirror = half - k
-          a_re = self.fft.real(k)
-          a_im = self.fft.imag(k)
-          mirror_re = self.fft.real(mirror)
-          mirror_im = self.fft.imag(mirror)
-
-          even_re = (a_re + mirror_re) * 0.5
-          even_im = (a_im - mirror_im) * 0.5
-          odd_re = (a_im + mirror_im) * 0.5
-          odd_im = (mirror_re - a_re) * 0.5
-          tw_re = T(_TwiddleReal[k])
-          tw_im = T(_TwiddleImag[k])
-          rotated_re = tw_re * odd_re + tw_im * odd_im
-          rotated_im = tw_re * odd_im - tw_im * odd_re
-
-          bin_re = even_re + rotated_re
-          bin_im = even_im + rotated_im
-          mirror_bin_re = even_re - rotated_re
-          mirror_bin_im = -even_im + rotated_im
-          self.fft.set_bin(k, bin_re, bin_im)
-          self.fft.set_bin(mirror, mirror_bin_re, mirror_bin_im)
-
-        if quarter > 0:
-          quarter_re = self.fft.real(quarter)
-          quarter_im = self.fft.imag(quarter)
-          self.fft.set_bin(quarter, quarter_re, -quarter_im)
+        self.fft._forward_loaded_real()
         self.ready = true
       if self.ready:
         return true
@@ -635,36 +776,7 @@ namespace std::fft<N = 256>:
       self._inverse_loaded_real_spectrum()
 
     def _inverse_loaded_real_spectrum(self):
-      half = N >> 1
-      dc = self.fft.real(0)
-      nyquist = self.fft.real(half)
-      self.fft.set_bin(0, (dc + nyquist) * 0.5, (dc - nyquist) * 0.5)
-      quarter = half >> 1
-      for k in 1..quarter:
-        mirror = half - k
-        x_re = self.fft.real(k)
-        x_im = self.fft.imag(k)
-        mirror_re = self.fft.real(mirror)
-        mirror_im = self.fft.imag(mirror)
-
-        even_re = (x_re + mirror_re) * 0.5
-        even_im = (x_im - mirror_im) * 0.5
-        rotated_re = (x_re - mirror_re) * 0.5
-        rotated_im = (x_im + mirror_im) * 0.5
-        tw_re = T(_TwiddleReal[k])
-        tw_im = T(_TwiddleImag[k])
-        odd_re = tw_re * rotated_re - tw_im * rotated_im
-        odd_im = tw_im * rotated_re + tw_re * rotated_im
-
-        self.fft.set_bin(k, even_re - odd_im, even_im + odd_re)
-        self.fft.set_bin(mirror, even_re + odd_im, odd_re - even_im)
-
-      if quarter > 0:
-        quarter_re = self.fft.real(quarter)
-        quarter_im = self.fft.imag(quarter)
-        self.fft.set_bin(quarter, quarter_re, -quarter_im)
-
-      self.fft._transform_prefix(half, 1, true)
+      self.fft._inverse_loaded_real()
       self._accumulate_real_ifft_frame()
 
     def _accumulate_real_ifft_frame(self):

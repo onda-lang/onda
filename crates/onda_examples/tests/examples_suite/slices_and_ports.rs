@@ -967,3 +967,204 @@ sample {
 
     assert_near(output[0], 3.5, 1e-6);
 }
+
+#[test]
+fn deep_compound_assignment_places_support_every_operator_and_single_evaluation() {
+    let src = r#"
+struct Leaf:
+  scalar: i32
+  values: i32[10]
+
+struct Mid:
+  leaf: Leaf
+  leaves: Leaf[2]
+
+struct State:
+  phase: Mid[2]
+  direct: Leaf[1]
+
+proc Worker:
+  outs 1
+
+  init:
+    state: State
+    selections = 0
+    initial = state.phase[0]
+    initial.leaf.scalar = 3
+    initial.leaf.values[0] = 10
+    initial.leaf.values[1] = 10
+    initial.leaf.values[2] = 6
+    initial.leaf.values[3] = 20
+    initial.leaf.values[4] = 20
+    initial.leaf.values[5] = 6
+    initial.leaf.values[6] = 4
+    initial.leaf.values[7] = 7
+    initial.leaf.values[8] = 1
+    initial.leaf.values[9] = 32
+    nested = initial.leaves[1]
+    nested.scalar = 2
+    nested.values[0] = 1
+    direct = state.direct[0]
+    direct.scalar = 5
+
+  def select():
+    selections += 1
+    return 0
+
+  def select_leaf():
+    selections += 1
+    return 1
+
+  sample:
+    state.phase[select()].leaf.values[0] += 5
+    state.phase[0].leaf.values[1] -= 3
+    state.phase[0].leaf.values[2] *= 7
+    state.phase[0].leaf.values[3] /= 4
+    state.phase[0].leaf.values[4] %= 6
+    state.phase[0].leaf.values[5] &= 3
+    state.phase[0].leaf.values[6] |= 1
+    state.phase[0].leaf.values[7] ^= 3
+    state.phase[0].leaf.values[8] <<= 4
+    state.phase[0].leaf.values[9] >>= 3
+    state.phase[0].leaf.scalar += 4
+    state.phase[0].leaves[1].scalar *= 3
+    state.phase[0].leaves[select_leaf()].values[0] += 10
+    state.direct[0].scalar += 2
+
+    current = state.phase[0]
+    current_nested = current.leaves[1]
+    current_direct = state.direct[0]
+    total = selections
+    for i in 0..10:
+      total += current.leaf.values[i]
+    total += current.leaf.scalar + current_nested.scalar + current_nested.values[0]
+    total += current_direct.scalar
+    out1 = f32(total)
+
+init:
+  worker = Worker()
+
+sample:
+  out1 = worker()
+"#;
+
+    let (mut instance, _, _) = compile_instance(src, 1);
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 135.0, 1e-6);
+}
+
+#[test]
+fn deep_plain_assignment_places_evaluate_selectors_before_the_value() {
+    let src = r#"
+struct Counter:
+  value: i32 = 0
+
+struct Leaf:
+  gain: f32 = 0.0
+
+struct Middle:
+  leaves: Leaf[2]
+
+struct Root:
+  middles: Middle[2]
+
+def next(counter: Counter) -> i32:
+  result = counter.value
+  counter.value += 1
+  return result
+
+sample:
+  counter = Counter()
+  roots: Root[2]
+  roots[next(counter)].middles[next(counter)].leaves[next(counter)].gain = f32(next(counter) + 10)
+  root = roots[0]
+  middle = root.middles[1]
+  leaf = middle.leaves[1]
+  out1 = leaf.gain + f32(counter.value)
+"#;
+
+    let (mut instance, _, _) = compile_instance(src, 1);
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 17.0, 1e-6);
+}
+
+#[test]
+fn indexed_proc_fields_and_mutating_rhs_preserve_compound_place_selection() {
+    let src = r#"
+proc Voice:
+  params:
+    gain = 1.0
+
+  outs 1
+
+  sample:
+    out1 = gain
+
+proc Bank:
+  outs 1
+
+  init:
+    values: i32[2] = [10, 20]
+    cursor = 0
+
+  def move_cursor():
+    cursor = 1
+    return 5
+
+  sample:
+    values[cursor] += move_cursor()
+    out1 = f32(values[0] + values[1])
+
+init:
+  voices: Voice[2] = Voice()
+  selector = 0
+  bank = Bank()
+
+sample:
+  voices[selector].gain += 2.0
+  out1 = voices[0]() + bank()
+"#;
+
+    let (mut instance, _, _) = compile_instance(src, 1);
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 38.0, 1e-6);
+}
+
+#[test]
+fn nested_proc_array_fields_support_compound_assignment() {
+    let src = r#"
+proc Voice:
+  params:
+    gain = 1.0
+
+  outs 1
+
+  sample:
+    out1 = gain
+
+proc Bank:
+  outs 1
+
+  init:
+    voices: Voice[2] = Voice()
+    selector = 0
+
+  sample:
+    voices[selector].gain += 2.0
+    out1 = voices[0]()
+
+init:
+  bank = Bank()
+
+sample:
+  out1 = bank()
+"#;
+
+    let (mut instance, _, _) = compile_instance(src, 1);
+    let mut output = [0.0_f32];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process should succeed");
+    assert_near(output[0], 3.0, 1e-6);
+}

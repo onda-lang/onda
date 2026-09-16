@@ -13,7 +13,8 @@ use std::sync::{Arc, OnceLock};
 
 use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEventParam,
-    DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator, TargetOptLevel,
+    DeclaredMessage, DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator,
+    TargetOptLevel,
 };
 use onda_frontend::{
     load_program_file, load_program_file_from_snapshot, parse_program, rewrite_source_references,
@@ -35,11 +36,10 @@ use onda_runtime::{
     prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
     process_unchecked_segment, read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
-    set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index,
-    trigger_event_by_index_unchecked, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, DelegateBatch as RuntimeDelegateBatch,
-    ExecutionOutput as RuntimeExecutionOutput, InitMode, Instance, InstanceConfig,
-    PrintBatch as RuntimePrintBatch,
+    set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index_unchecked,
+    validate_bindings, validate_buffers, validate_inputs, validate_outputs,
+    DelegateBatch as RuntimeDelegateBatch, ExecutionOutput as RuntimeExecutionOutput, InitMode,
+    Instance, InstanceConfig, PrintBatch as RuntimePrintBatch,
 };
 use onda_semantics::{
     analyze_with_options_and_inputs, compile_inputs_from_literals, inspect_compile_constants,
@@ -53,6 +53,8 @@ pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESS_FULL_BLOCK as i32
 pub const ONDA_EXECUTION_OK: i32 = onda_codegen_llvm::PROCESSOR_EXECUTION_OK as i32;
 pub const ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE: i32 =
     onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as i32;
+pub const ONDA_EXECUTION_INPUT_REJECTED: i32 =
+    onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED as i32;
 pub const ONDA_PRIMITIVE_F32: i32 = 0;
 pub const ONDA_PRIMITIVE_F64: i32 = 1;
 pub const ONDA_PRIMITIVE_I32: i32 = 2;
@@ -524,8 +526,10 @@ struct CompiledProgram {
     buffer_array_names: Vec<CString>,
     event_names: Vec<CString>,
     event_param_names: Vec<Vec<CString>>,
+    event_schema_json: Vec<CString>,
     delegate_names: Vec<CString>,
     delegate_param_names: Vec<Vec<CString>>,
+    delegate_schema_json: Vec<CString>,
     state_names: Vec<CString>,
     state_types: Vec<CString>,
     project_defaults: Option<ProjectDefaults>,
@@ -1887,6 +1891,24 @@ unsafe fn compile_parsed_program(
             return ptr::null_mut();
         }
     };
+    let event_schema_json = match (0..jit.event_count())
+        .map(|event_idx| {
+            let event = jit
+                .event_descriptor(event_idx)
+                .ok_or_else(|| Diagnostic::internal("event descriptor is missing"))?;
+            serde_json::to_string(event.schema()).map_err(|error| {
+                Diagnostic::internal(format!("failed to serialize event schema: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(|schemas| build_cstring_cache(schemas, "event schema JSON"))
+    {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
     let delegate_names = match build_cstring_cache(
         (0..jit.delegate_count())
             .filter_map(|idx| jit.delegate_name(idx).map(ToOwned::to_owned))
@@ -1915,6 +1937,24 @@ unsafe fn compile_parsed_program(
             .collect(),
         "delegate parameter name",
     ) {
+        Ok(v) => v,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
+    let delegate_schema_json = match (0..jit.delegate_count())
+        .map(|delegate_idx| {
+            let delegate = jit
+                .delegate_descriptor(delegate_idx)
+                .ok_or_else(|| Diagnostic::internal("delegate descriptor is missing"))?;
+            serde_json::to_string(delegate.schema()).map_err(|error| {
+                Diagnostic::internal(format!("failed to serialize delegate schema: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(|schemas| build_cstring_cache(schemas, "delegate schema JSON"))
+    {
         Ok(v) => v,
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
@@ -1966,8 +2006,10 @@ unsafe fn compile_parsed_program(
         buffer_array_names,
         event_names,
         event_param_names,
+        event_schema_json,
         delegate_names,
         delegate_param_names,
+        delegate_schema_json,
         state_names,
         state_types,
         project_defaults,
@@ -4140,6 +4182,26 @@ unsafe fn onda_instance_create_impl(
     handle
 }
 
+/// Provision event workspace outside realtime execution. Uses the instance allocator.
+#[no_mangle]
+pub unsafe extern "C" fn onda_instance_reserve_event_workspace(
+    instance: *mut onda_instance,
+    capacity_bytes: usize,
+    out_diag: *mut onda_diag_t,
+) -> bool {
+    let Some(instance) = instance.as_mut() else {
+        write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
+        return false;
+    };
+    match instance.inner.reserve_event_workspace(capacity_bytes) {
+        Ok(()) => true,
+        Err(error) => {
+            write_diag(out_diag, diag_to_c(&error));
+            false
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn onda_instance_destroy(instance: *mut onda_instance) {
     if instance.is_null() {
@@ -4257,13 +4319,14 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
     } else {
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
-    let result = with_runtime_execution_output(output, |output| {
-        trigger_event_by_index(&mut (*instance).inner, index as usize, payload, output)
-    });
-    match result {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
+    execution_status_to_c(with_runtime_execution_output(output, |output| {
+        onda_runtime::trigger_event_by_index_with_status(
+            &mut (*instance).inner,
+            index as usize,
+            payload,
+            output,
+        )
+    }))
 }
 
 #[no_mangle]

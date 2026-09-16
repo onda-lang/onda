@@ -215,25 +215,14 @@ impl DeclaredBufferArray {
     }
 }
 
-impl DeclaredEvent {
-    pub fn name(&self) -> &str {
-        &self.name
+impl crate::DeclaredMessage {
+    pub fn payload_plan(&self) -> &onda_processor_abi::payload::PayloadPlan {
+        &self.payload_plan
     }
 
-    pub fn params(&self) -> &[DeclaredEventParam] {
-        &self.params
+    pub fn schema(&self) -> &onda_processor_abi::payload::PayloadSchema {
+        self.payload_plan.schema()
     }
-
-    pub fn payload_bytes(&self) -> Option<usize> {
-        self.payload_bytes
-    }
-
-    pub fn payload_min_bytes(&self) -> usize {
-        self.payload_min_bytes
-    }
-}
-
-impl DeclaredDelegate {
     pub fn name(&self) -> &str {
         &self.name
     }

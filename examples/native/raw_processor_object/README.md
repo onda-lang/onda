@@ -29,6 +29,9 @@ their descriptor defaults (or zero for required fields without defaults), proces
 reports every output slot. Events with dynamic slice payloads are listed but skipped because a
 generic host has no application payload to supply.
 
+Event calls pass an `onda_processor_event_input_t` with packed little-endian input and a separate
+eight-byte-aligned preparation workspace, allocated once before dispatch.
+
 The example uses ordinary `malloc` and verifies the actual returned state and parameter addresses
 against the descriptor's alignment requirements before calling Onda. A host whose allocator does
 not satisfy a descriptor must use its platform's over-aligned allocation API instead.
@@ -251,7 +254,7 @@ descriptor count or storage size is zero:
 - `state` when `runtime.state_size_bytes == 0`;
 - `inputs` or `outputs` when their flattened metadata slot count is zero;
 - all four buffer-table arguments when `metadata.buffers` is empty;
-- an event payload when that event's `payload_size_bytes == 0`.
+- an event descriptor's payload when its byte count is zero. The descriptor itself remains required.
 
 Within a present `buffers` table, an individual null entry denotes an unbound buffer. Supply its
 neutral one-frame shape metadata as described by the processor ABI; reads return zero and writes

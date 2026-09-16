@@ -24,6 +24,14 @@ export class MirCompiler extends MirCompilerLowering {
       if (type.kind === "slice") {
         return this.loadSlicePlace(source.data, context);
       }
+      if (type.kind === "scalar") {
+        return [
+          this.placeAddress(source.data, context),
+          this.placeAddress(source.data, context),
+          this.module.i32.const(1),
+          this.module.i32.const(this.scalarSize(type.data)),
+        ];
+      }
       if (type.kind !== "array") {
         this.fail(`slice place source has unsupported type '${type.kind}'`);
       }
@@ -536,6 +544,27 @@ export class MirCompiler extends MirCompilerLowering {
   }
 
   compileSliceCopy(statement, data, context) {
+    if (!Array.isArray(data.copies)) this.fail("slice copy requires a leaf list");
+    if (data.preflight !== "required" && data.preflight !== "proven_unnecessary") {
+      this.fail("slice copy requires a valid overlap-preflight mode");
+    }
+    const groupedPreflight = data.copies.length > 1 && data.preflight === "required";
+    const checks = groupedPreflight
+      ? data.copies.map((copy) => this.compileSliceCopyLeaf(statement, copy, context, true, false))
+      : [];
+    return this.module.block(null, [
+      ...checks,
+      ...data.copies.map((copy) => this.compileSliceCopyLeaf(
+        statement,
+        copy,
+        context,
+        false,
+        groupedPreflight || data.preflight === "proven_unnecessary",
+      )),
+    ]);
+  }
+
+  compileSliceCopyLeaf(statement, data, context, checkOnly, overlapSafe) {
     if (this.sliceAccess(data.destination, context) !== "read_write") {
       this.fail("slice copy destination is read-only");
     }
@@ -668,9 +697,10 @@ export class MirCompiler extends MirCompilerLowering {
           source()[2],
         ),
       ),
-      this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
-      this.module.local.set(counter, this.module.i32.const(0)),
-      copy,
+      ...(overlapSafe ? [] : [
+        this.module.if(invalidOverlap(), this.raiseRuntimeFailure(context)),
+      ]),
+      ...(checkOnly ? [] : [this.module.local.set(counter, this.module.i32.const(0)), copy]),
     ]);
   }
 
@@ -688,14 +718,7 @@ export class MirCompiler extends MirCompilerLowering {
   compileValue(value, context) {
     switch (value.kind) {
       case "local": {
-        const scalar = context.localScalars[value.data];
-        if (!scalar) {
-          this.fail(`local id ${value.data} is not a scalar or is out of range`);
-        }
-        return this.module.local.get(
-          this.localIndex(value.data, context),
-          this.wasmType(scalar),
-        );
+        return this.loadLocal(value.data, context);
       }
       case "constant":
         return this.compileConstant(value.data);
@@ -779,11 +802,7 @@ export class MirCompiler extends MirCompilerLowering {
 
   loadPlace(place, context) {
     if (place.base.kind === "local" && place.projections.length === 0) {
-      const scalar = this.placeScalarType(place, context);
-      return this.module.local.get(
-        this.localIndex(place.base.data, context),
-        this.wasmType(scalar),
-      );
+      return this.loadLocal(place.base.data, context);
     }
     if (place.base.kind === "parameter" && place.projections.length === 0) {
       const scalar = this.placeScalarType(place, context);
@@ -805,7 +824,7 @@ export class MirCompiler extends MirCompilerLowering {
 
   storePlace(place, value, scalar, context) {
     if (place.base.kind === "local" && place.projections.length === 0) {
-      return this.module.local.set(this.localIndex(place.base.data, context), value);
+      return this.storeLocal(place.base.data, value, context);
     }
     if (place.base.kind === "parameter" && place.projections.length === 0) {
       const layout = context.paramLayouts[place.base.data];
@@ -819,6 +838,28 @@ export class MirCompiler extends MirCompilerLowering {
       );
     }
     return this.storeScalar(scalar, this.placeAddress(place, context), value);
+  }
+
+  loadLocal(localId, context) {
+    const scalar = context.localScalars[localId];
+    if (!scalar) {
+      this.fail(`local id ${localId} is not a scalar or is out of range`);
+    }
+    const layout = this.localScalarRefLayout[context.functionId]?.[localId];
+    return layout
+      ? this.loadScalar(scalar, this.module.i32.const(layout.address))
+      : this.module.local.get(this.localIndex(localId, context), this.wasmType(scalar));
+  }
+
+  storeLocal(localId, value, context) {
+    const scalar = context.localScalars[localId];
+    if (!scalar) {
+      this.fail(`local id ${localId} is not a scalar or is out of range`);
+    }
+    const layout = this.localScalarRefLayout[context.functionId]?.[localId];
+    return layout
+      ? this.storeScalar(scalar, this.module.i32.const(layout.address), value)
+      : this.module.local.set(this.localIndex(localId, context), value);
   }
 
   placeAddress(place, context) {
@@ -1718,6 +1759,7 @@ export class MirCompiler extends MirCompilerLowering {
           len: array.len,
         })),
         events: this.mir.interface.events.map((event, eventId) => ({
+          schema: event.schema,
           name: event.name,
           export: `onda_event_${eventId}`,
           payload_size_bytes: this.eventLayout[eventId].byteLength,
@@ -1741,6 +1783,7 @@ export class MirCompiler extends MirCompilerLowering {
           }),
         })),
         delegates: this.mir.interface.delegates.map((delegate, delegateId) => ({
+          schema: delegate.schema,
           index: delegateId,
           name: delegate.name,
           payload_size_bytes: this.delegateLayout[delegateId].byteLength,
