@@ -24,9 +24,9 @@ use serde_json::{json, Value};
 
 use crate::midi::{self, MidiMessage, TimedMidiMessage};
 use crate::{
-    available_audio_devices, classify_host_events, display_path, format_run_build_error,
-    format_single_diagnostic, run_buffer_json, run_event_json, run_event_value_json,
-    run_param_json, RunMidiCapabilities,
+    available_audio_devices, classify_host_events, display_path, event_value_from_json,
+    event_value_to_json, format_run_build_error, format_single_diagnostic, run_buffer_json,
+    run_event_json, run_param_json, RunMidiCapabilities,
 };
 
 mod buffer_worker;
@@ -695,7 +695,7 @@ fn run_delegate_occurrence_json(occurrence: &RunDelegateOccurrence) -> Value {
     let values = occurrence
         .values
         .iter()
-        .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+        .map(|entry| (entry.name.clone(), event_value_to_json(&entry.value)))
         .collect::<serde_json::Map<_, _>>();
     json!({
         "sequence": occurrence.sequence,
@@ -1507,7 +1507,7 @@ fn run_print_entry_json(entry: &RunPrintEntry) -> Value {
         "declaration": entry.declaration,
         "values": entry.values.iter().map(|value| json!({
             "type": value.type_repr,
-            "value": run_event_value_json(&value.value),
+            "value": event_value_to_json(&value.value),
         })).collect::<Vec<_>>(),
     })
 }
@@ -1659,33 +1659,6 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()
-}
-
-fn run_event_value_from_json(value: Value) -> Result<RunEventValue, String> {
-    match value {
-        Value::Bool(value) => Ok(RunEventValue::Bool(value)),
-        Value::Number(value) => value
-            .as_f64()
-            .map(RunEventValue::Number)
-            .ok_or_else(|| "triggerEvent values must be numeric".to_owned()),
-        Value::String(value) => value
-            .parse::<i64>()
-            .map(RunEventValue::I64)
-            .map_err(|_| "triggerEvent string values must be decimal i64 integers".to_owned()),
-        Value::Array(values) => values
-            .into_iter()
-            .map(run_event_value_from_json)
-            .collect::<Result<Vec<_>, _>>()
-            .map(RunEventValue::Array),
-        Value::Object(values) => values.into_iter()
-            .map(|(name, value)| run_event_value_from_json(value).map(|value| (name, value)))
-            .collect::<Result<_, _>>()
-            .map(RunEventValue::Struct),
-        _ => Err(
-            "triggerEvent values must be numbers, decimal i64 strings, booleans, arrays, or objects"
-                .to_owned(),
-        ),
-    }
 }
 
 struct RunControlServerContext {
@@ -2323,7 +2296,7 @@ fn run_control_response(
             let raw_values = request.values.unwrap_or_default();
             let values = raw_values
                 .into_iter()
-                .map(run_event_value_from_json)
+                .map(event_value_from_json)
                 .collect::<Result<Vec<_>, _>>()?;
             if request_id.is_none() {
                 control_tx

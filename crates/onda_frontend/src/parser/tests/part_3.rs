@@ -335,6 +335,108 @@ fn stmt_locations_capture_multiline_end_positions() {
 }
 
 #[test]
+fn operator_continuations_work_across_statement_forms() {
+    for operator in [
+        "||", "&&", "|", "^", "&", "<<", ">>", "==", "!=", "<", "<=", ">", ">=", "+",
+        "-", "*", "/", "%",
+    ] {
+        for expression in [
+            format!("1 {operator}\n    1"),
+            format!("1\n    {operator} 1"),
+        ] {
+            let source = format!(
+                "sample:\n  out1 = (\n    {expression}\n  )\n  out2 = 0\nouts 2\n"
+            );
+            parse_program(&source)
+                .unwrap_or_else(|errors| panic!("operator {operator:?} should continue: {errors:?}"));
+        }
+    }
+
+    let src = r#"
+const OFFSET = (
+  1 +
+  2
+)
+
+def calculate(a, b):
+  value = (
+    a
+    + b
+    * 2
+  )
+  value += (
+    b
+    / 2
+  )
+  if (
+      value
+      >= 0
+      && a
+      != b
+  ):
+    value = (
+      value
+      - 1
+    )
+  while (
+    value
+    > 10
+  ):
+    value -= (
+      1
+    )
+  for i in (0) .. (2):
+    value = (
+      value
+      + i
+    )
+  return (
+    value
+    / 2
+  )
+
+outs:
+  out1
+
+sample:
+  out1 = (
+    calculate(1, 2)
+    + OFFSET
+    * -
+      1
+  )
+"#;
+
+    parse_program(src).expect("parenthesized operators should permit statement continuations");
+
+    let graph = r#"
+outs:
+  out1
+graph:
+  (
+    0.5
+    + 0.25
+  ) >> out1
+"#;
+    parse_program(graph).expect("parenthesized graph operators should permit continuations");
+}
+
+#[test]
+fn operators_do_not_continue_unparenthesized_statements() {
+    for src in [
+        "sample:\n  out1 = 1 +\n    2\n",
+        "sample:\n  out1 = 1\n    + 2\n",
+        "sample {\n  out1 = 1 +\n  2\n}\n",
+        "sample {\n  out1 = 1\n  + 2\n}\n",
+    ] {
+        assert!(
+            parse_program(src).is_err(),
+            "bare newlines must remain statement separators: {src:?}"
+        );
+    }
+}
+
+#[test]
 fn declaration_locations_capture_param_ranges() {
     let src = "params:\n  gain = 1.0\nsample:\n  out1 = gain\n";
     let program = parse_program(src).expect("program should parse");

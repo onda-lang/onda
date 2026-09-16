@@ -3,9 +3,10 @@ use std::path::Path;
 
 use onda_daemon::{
     DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunDelegateBatch, RunDelegateInfo,
-    RunEventValue, RunOptions, RunParamInfo, RunPrintBatch,
+    RunOptions, RunParamInfo, RunPrintBatch,
 };
 use onda_frontend::Diagnostic;
+use onda_run::{event_value_from_json, event_value_to_json};
 use onda_semantics::AnalysisOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -110,7 +111,7 @@ enum Request {
     RunTriggerEvent {
         path: String,
         name: String,
-        values: Vec<EventValueRequest>,
+        values: Vec<Value>,
     },
     RunSnapshot {
         path: String,
@@ -126,41 +127,6 @@ struct ProcessSegmentRequest {
     start_frame: usize,
     frames: usize,
     flags: u32,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum EventValueRequest {
-    Array(Vec<EventValueRequest>),
-    Struct(std::collections::BTreeMap<String, EventValueRequest>),
-    Bool(bool),
-    Number(f64),
-    I64(String),
-}
-
-impl TryFrom<EventValueRequest> for RunEventValue {
-    type Error = String;
-
-    fn try_from(value: EventValueRequest) -> Result<Self, Self::Error> {
-        match value {
-            EventValueRequest::Array(values) => values
-                .into_iter()
-                .map(Self::try_from)
-                .collect::<Result<Vec<_>, _>>()
-                .map(Self::Array),
-            EventValueRequest::Struct(fields) => fields
-                .into_iter()
-                .map(|(name, value)| Self::try_from(value).map(|value| (name, value)))
-                .collect::<Result<_, _>>()
-                .map(Self::Struct),
-            EventValueRequest::Bool(value) => Ok(Self::Bool(value)),
-            EventValueRequest::Number(value) => Ok(Self::Number(value)),
-            EventValueRequest::I64(value) => value
-                .parse()
-                .map(Self::I64)
-                .map_err(|_| format!("invalid decimal i64 event value '{value}'")),
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -409,7 +375,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 .ok_or_else(|| "run is not active".to_owned())?;
             let values = values
                 .into_iter()
-                .map(TryInto::try_into)
+                .map(event_value_from_json)
                 .collect::<Result<Vec<_>, _>>()?;
             let execution = run.trigger_event(&name, &values);
             let batch = run.take_delegate_batch().map_err(|diag| {
@@ -502,7 +468,7 @@ fn attach_run_delegate_batch(mut result: Value, batch: &RunDelegateBatch) -> Val
             let values = occurrence
                 .values
                 .iter()
-                .map(|entry| (entry.name.clone(), run_event_value_json(&entry.value)))
+                .map(|entry| (entry.name.clone(), event_value_to_json(&entry.value)))
                 .collect::<serde_json::Map<_, _>>();
             json!({
                 "sequence": occurrence.sequence,
@@ -535,30 +501,13 @@ fn attach_run_print_batch(mut result: Value, batch: &RunPrintBatch) -> Value {
             "declaration": entry.declaration,
             "values": entry.values.iter().map(|value| json!({
                 "type": value.type_repr,
-                "value": run_event_value_json(&value.value),
+                "value": event_value_to_json(&value.value),
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "overflow_count": batch.overflow_count,
         "transport_drop_count": batch.transport_drop_count,
     });
     result
-}
-
-fn run_event_value_json(value: &RunEventValue) -> Value {
-    match value {
-        RunEventValue::Bool(value) => Value::Bool(*value),
-        RunEventValue::Number(value) => json!(value),
-        RunEventValue::I64(value) => Value::String(value.to_string()),
-        RunEventValue::Array(values) => {
-            Value::Array(values.iter().map(run_event_value_json).collect())
-        }
-        RunEventValue::Struct(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(name, value)| (name.clone(), run_event_value_json(value)))
-                .collect(),
-        ),
-    }
 }
 
 fn diagnostic_json(diag: &Diagnostic) -> Value {
@@ -626,6 +575,7 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    use onda_daemon::RunEventValue;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -670,14 +620,14 @@ mod tests {
 
     #[test]
     fn daemon_json_preserves_decimal_i64_event_values() {
-        let value = RunEventValue::try_from(EventValueRequest::I64("9007199254740993".to_owned()))
+        let value = event_value_from_json(Value::String("9007199254740993".to_owned()))
             .expect("decimal i64 input should parse");
         assert_eq!(value, RunEventValue::I64(9_007_199_254_740_993));
         assert_eq!(
-            run_event_value_json(&value),
+            event_value_to_json(&value),
             Value::String("9007199254740993".to_owned())
         );
-        assert!(RunEventValue::try_from(EventValueRequest::I64("1.5".to_owned())).is_err());
+        assert!(event_value_from_json(Value::String("1.5".to_owned())).is_err());
     }
 
     #[test]
@@ -965,7 +915,7 @@ mod tests {
                 request: Request::RunTriggerEvent {
                     path,
                     name: "trigger".to_owned(),
-                    values: vec![EventValueRequest::Number(7.0)],
+                    values: vec![json!(7.0)],
                 },
             },
         );
@@ -976,6 +926,47 @@ mod tests {
         assert_eq!(
             result["delegate_occurrences"][0]["values"]["value"].as_f64(),
             Some(7.0)
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stdio_preserves_non_finite_delegate_values() {
+        let dir = mk_temp_dir("run_non_finite_delegate");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "delegate report(value: f32)\n\nevent trigger():\n  report(sqrt(-1.0))\n\nsample:\n  out1 = 0.0\n",
+        );
+        let path = main.to_string_lossy().into_owned();
+        let mut session = DaemonSession::default();
+
+        let start = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunStart { path: path.clone() },
+            },
+        );
+        assert!(start.ok, "start response: {:?}", start.error);
+
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(2),
+                request: Request::RunTriggerEvent {
+                    path,
+                    name: "trigger".to_owned(),
+                    values: Vec::new(),
+                },
+            },
+        );
+        assert!(response.ok, "event response: {:?}", response.error);
+        let result = response.result.expect("event result");
+        assert_eq!(
+            result["delegate_occurrences"][0]["values"]["value"],
+            Value::String("NaN".to_owned())
         );
 
         fs::remove_dir_all(&dir).ok();

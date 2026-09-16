@@ -302,7 +302,9 @@ reports generated-capacity loss as `overflowCount` and bounded transport-queue l
 Decoded `i64` payloads remain full-width integers. Native Rust hosts expose them as
 `RunEventValue::I64`, JSON transports encode them as canonical decimal strings, and the Web Audio
 adapter exposes JavaScript `BigInt` values. This avoids rounding payloads through an `f64` or
-JavaScript `Number` boundary.
+JavaScript `Number` boundary. JSON transports encode non-finite floating-point values as the strings
+`"NaN"`, `"Infinity"`, and `"-Infinity"`; the same spellings are accepted for event input. Finite
+floats remain JSON numbers.
 
 ## Lifetime and failure rules
 

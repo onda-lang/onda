@@ -3386,110 +3386,40 @@ sample:
 
 #[test]
 
-fn top_level_def_nested_proc_array_dynamic_call_runs_block_hooks_only_for_active_slot_per_block() {
+fn parenthesized_multiline_operators_compile_and_run() {
     let src = r#"
-
-proc Voice:
-
-  outs:
-
-    out1
-
-    pre
-
-    post
-
-  init:
-
-    pre_count = 0.0
-
-    post_count = 0.0
-
-  block:
-
-    pre_count = pre_count + 1.0
-
-    sample:
-
-      out1 = 0.0
-
-      pre = pre_count
-
-      post = post_count
-
-    post_count = post_count + 1.0
-
-
-
-proc Bank:
-
-  outs:
-
-    out1
-
-  init:
-
-    voices: Voice[2] = [Voice(), Voice()]
-
-    idx: i32 = 0
-
-  sample:
-
-    x = run_selected(self, idx)
-
-    v0 = voices[0]
-
-    v1 = voices[1]
-
-    out1 = x * 0.0 + v0.pre * 1000.0 + v1.pre * 100.0 + v0.post * 10.0 + v1.post
-
-    idx = 1 - idx
-
-
-
-def run_selected(bank: Bank, idx: i32):
-
-  return bank.voices[idx]().out1
-
-
-
 outs:
-
   out1
 
-
-
-init:
-
-  bank = Bank()
-
-
-
 sample:
-
-  out1 = bank()
-
+  value = (
+    1.0
+    + 2.0
+    * 3.0
+    - 4.0
+    / 2.0
+  )
+  if (
+    value >=
+    5.0
+    && value
+    < 6.0
+  ):
+    out1 = value
+  else:
+    out1 = 0.0
 "#;
 
-    let frames = 1;
-
+    let frames = 4;
     let (mut instance, in_channels, out_channels) = compile_instance(src, frames);
-
     assert_eq!(in_channels, 0);
-
     assert_eq!(out_channels, 1);
 
-    let mut out_a = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut out_a, frames).expect("process should succeed");
-
-    assert_near(out_a[0], 1000.0, 1e-6);
-
-    let mut out_b = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
-
-    assert_near(out_b[0], 1110.0, 1e-6);
+    let mut output = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
+    for sample in output {
+        assert_near(sample, 5.0, 1e-6);
+    }
 }
 
 #[test]

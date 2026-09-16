@@ -1156,7 +1156,10 @@ pub(super) fn parse_stmt_block(pair: Pair<'_, Rule>) -> Result<Vec<Stmt>, Vec<Di
 }
 
 pub(super) fn parse_expr(pair: Pair<'_, Rule>) -> Result<Expr, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::expr && pair.as_rule() != Rule::graph_expr {
+    if !matches!(
+        pair.as_rule(),
+        Rule::expr | Rule::multiline_expr | Rule::graph_expr | Rule::multiline_graph_expr
+    ) {
         return Err(vec![syntax_at_pair(
             &pair,
             "internal parser error: expected expression pair",
@@ -1608,7 +1611,9 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .collect();
             Expr::Tuple { loc, values }
         }
-        Rule::expr | Rule::graph_expr => parse_expr_inner(pair),
+        Rule::expr | Rule::multiline_expr | Rule::graph_expr | Rule::multiline_graph_expr => {
+            parse_expr_inner(pair)
+        }
         _ => unreachable!("unexpected primary expression token"),
     }
 }

@@ -139,7 +139,9 @@ Basic source rules:
 
 - Statements can be separated by newlines or `;`.
 - Line comments start with `#`.
-- Newlines are allowed inside parenthesized, bracketed, and angle-bracketed lists. Trailing commas
+- Newlines are allowed inside parenthesized, bracketed, and angle-bracketed lists. Parenthesized
+  expressions may also place newlines before or after any operator, consistently across every
+  statement context. Outside delimiters, a newline remains a statement separator. Trailing commas
   are not accepted.
 - Names are introduced before they are used.
 - Top-level declarations are processed in lexical order.

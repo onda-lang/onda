@@ -13,6 +13,14 @@
     bindings that leak into typed events, MIR, or tooling.
   - Measure and document default per-instance event, delegate, and print capacity costs before tuning
     them; keep all rendering-thread storage bounded and provisioned before execution.
+  - Evaluate allowing top-level defs to borrow processor arrays owned by another processor, so a
+    field such as `voices: Voice[8]` can be passed through `voices: Voice[]`, `Voice[N]`, or an
+    untyped parameter just like a top-level processor array. This is specific to processor-valued
+    arrays; proc-owned arrays of ordinary structs already work. Any implementation should use one
+    canonical, allocation-free borrowed processor-array view across top-level and nested storage,
+    preserving instance identity, lifecycle hooks, active slots, buffers, events, delegates, and
+    oversampling rather than copying state or adding an owner-specific lowering path. Proc-local
+    defs remain the direct way to operate on such arrays in the meantime.
 
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.
