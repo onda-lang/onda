@@ -859,6 +859,8 @@ namespace Outer<S = SR>:
 
   struct Buf:
 
+    marker: i32 = 0
+
     def capacity(self):
 
       return S

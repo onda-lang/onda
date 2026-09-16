@@ -68,6 +68,7 @@ sample {
 #[cfg(feature = "llvm-orc")]
 const RESERVED_METHOD_NAMES_EXAMPLE: &str = r#"
 struct Ops {
+  marker = 0.0
   def len(self) { return 1.25 }
   def chans(self) { return 0.25 }
 }
@@ -710,6 +711,7 @@ sample {
 const STRUCT_METHOD_OVERLOAD_EXAMPLE: &str = r#"
 outs { out1 }
 struct V {
+  marker = 0.0
   def run(self, x) {
     return x
   }

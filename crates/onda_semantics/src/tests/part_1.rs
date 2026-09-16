@@ -228,6 +228,8 @@ sample:
         assert_analyze_error_contains(
             r#"
 struct Wrapper:
+  marker = 0.0
+
   def read_unsafe(self) -> f32:
     return 0.0
 
@@ -1484,7 +1486,7 @@ sample:
             ),
             (
                 "field read from __proc-prefixed user method",
-                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
+                "proc Voice:\n  params:\n    private cutoff = 1000.0\n  outs:\n    out1\n  sample:\n    out1 = cutoff\nstruct Inspector:\n  marker = 0.0\n  def __proc_read(self, voice: Voice):\n    return voice.cutoff\nouts:\n  out1\ninit:\n  voice = Voice()\n  inspector = Inspector()\nsample:\n  out1 = inspector.__proc_read(voice)\n",
                 "param 'cutoff' is private and cannot be read",
             ),
             (
@@ -3985,4 +3987,3 @@ sample:
             .expect("typed const array");
         assert_eq!(table.values, vec![TypedConstValue::F32(0.25)]);
     }
-

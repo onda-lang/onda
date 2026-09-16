@@ -1726,6 +1726,8 @@ sample:
 fn task_frame_typing_uses_the_selected_method_overload() {
     let source = r#"
 struct Calculator:
+  marker = 0.0
+
   def value(self, x: i32) -> i32:
     return x + 1
   def value(self, x: f64) -> f64:

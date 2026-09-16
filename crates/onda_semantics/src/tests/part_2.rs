@@ -2410,6 +2410,8 @@ def fetch(buf, channel: i32, frame: i32):
   return buf[channel, frame]
 
 struct Classifier:
+  marker = 0.0
+
   def value(self, input: bool) -> f32:
     return 3.0
 
@@ -2689,6 +2691,8 @@ sample:
     fn user_methods_named_like_resource_builtins_keep_their_declared_return_types() {
         let source = r#"
 struct Ops:
+  marker = 0.0
+
   def len(self) -> f64:
     return f64(1)
 
