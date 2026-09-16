@@ -717,7 +717,7 @@ impl<'a> ModuleEmitter<'a> {
             0,
         );
         let effects = onda_mir::analyze_effects(program);
-        let ranges = onda_mir::analyze_program_integer_ranges(program);
+        let ranges = onda_mir::analyze_program_integer_ranges_with_effects(program, &effects);
         let const_globals = build_const_globals(program, context, module)?;
         let functions =
             declare_functions(program, &effects, &ranges, context, module, types, layouts)?;

@@ -67,6 +67,7 @@ pub const PROCESS_FULL_BLOCK: i32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 pub const PROCESS_PARAM_NAMES: [&str; PROCESS_PARAM_COUNT] = ["start_frame", "frames", "flags"];
 pub use analysis::{
     analyze_buffer_writes, analyze_effects, analyze_integer_ranges, analyze_program_integer_ranges,
-    BufferWriteAnalysis, BufferWriteAnalysisError, EffectAnalysis, FunctionEffects,
-    FunctionRangeAnalysis, IntegerRange, MemoryRegionSet, ProgramRangeAnalysis, ReferenceEffects,
+    analyze_program_integer_ranges_with_effects, BufferWriteAnalysis, BufferWriteAnalysisError,
+    EffectAnalysis, FunctionEffects, FunctionRangeAnalysis, IntegerRange, MemoryRegionSet,
+    ProgramRangeAnalysis, ReferenceEffects,
 };

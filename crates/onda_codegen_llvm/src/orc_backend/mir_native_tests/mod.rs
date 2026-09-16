@@ -617,6 +617,44 @@ sample:
 }
 
 #[test]
+fn llvm_does_not_treat_aliased_readonly_reference_ranges_as_invariant() {
+    let (_, mir) = source_program(
+        r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  box = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(box, box, values)
+"#,
+        1,
+    );
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O0,
+        },
+    )
+    .expect("aliased aggregate references should emit LLVM IR");
+
+    assert!(
+        ir.contains("index_clamped"),
+        "the aliased reference load must retain its index clamp: {ir}"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("load i32, ptr %1") && !line.contains("!range")),
+        "the aliased readonly load must not carry inferred !range metadata: {ir}"
+    );
+}
+
+#[test]
 fn array_window_accepts_equivalent_duplicate_element_type_ids() {
     let i32_ty = onda_mir::TypeId::new(0);
     let source_element = onda_mir::TypeId::new(1);

@@ -339,6 +339,115 @@ sample:
     }
 
     #[test]
+    fn writable_aggregate_aliases_preserve_index_clamps_without_penalizing_disjoint_calls() {
+        fn selected_bounds(source: &str) -> onda_mir::BoundsMode {
+            fn find(
+                block: &onda_mir::Block,
+                values: onda_mir::ParameterId,
+            ) -> Option<onda_mir::BoundsMode> {
+                for statement in &block.statements {
+                    match &statement.kind {
+                        onda_mir::StatementKind::Assign {
+                            value: onda_mir::Rvalue::Load(place),
+                            ..
+                        } if place.base == onda_mir::PlaceBase::Parameter(values) => {
+                            if let Some(onda_mir::Projection::Index { bounds, .. }) =
+                                place.projections.last()
+                            {
+                                return Some(*bounds);
+                            }
+                        }
+                        onda_mir::StatementKind::If {
+                            then_block,
+                            else_block,
+                            ..
+                        } => {
+                            if let Some(bounds) =
+                                find(then_block, values).or_else(|| find(else_block, values))
+                            {
+                                return Some(bounds);
+                            }
+                        }
+                        onda_mir::StatementKind::Loop { body } => {
+                            if let Some(bounds) = find(body, values) {
+                                return Some(bounds);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+
+            let typed = analyze(parse_program(source).expect("source should parse"))
+                .expect("aggregate alias source should analyze");
+            let mir = lower_program_to_optimized_mir(&typed)
+                .expect("aggregate alias source should lower to optimized MIR");
+            let select = mir
+                .functions
+                .iter()
+                .find(|function| function.name == "select")
+                .expect("select helper should remain in MIR");
+            let values = select
+                .params
+                .iter()
+                .position(|parameter| parameter.name == "values")
+                .map(|index| onda_mir::ParameterId::new(index as u32))
+                .expect("select should retain its values parameter");
+            find(&select.body, values).expect("select should retain its indexed values load")
+        }
+
+        let aliased = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  box = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(box, box, values)
+"#;
+        assert_eq!(selected_bounds(aliased), onda_mir::BoundsMode::Clamp);
+
+        let indexed_alias = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  boxes: Box[2] = [Box(index = 0), Box(index = 0)]
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(boxes[0], boxes[0], values)
+"#;
+        assert_eq!(selected_bounds(indexed_alias), onda_mir::BoundsMode::Clamp);
+
+        let disjoint = r#"
+struct Box:
+  index: i32
+
+def select(read: Box, write: Box, values: f32[3]):
+  write.index = 100
+  return values[read.index]
+
+sample:
+  read = Box(index = 0)
+  write = Box(index = 0)
+  values: f32[3] = [1.0, 2.0, 3.0]
+  out1 = select(read, write, values)
+"#;
+        assert_eq!(
+            selected_bounds(disjoint),
+            onda_mir::BoundsMode::Unchecked
+        );
+    }
+
+    #[test]
     fn constant_for_indices_remove_bounds_normalization_across_surfaces() {
         let source = r#"
 const N = 4
