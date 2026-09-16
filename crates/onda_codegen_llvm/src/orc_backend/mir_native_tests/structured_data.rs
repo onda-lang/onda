@@ -1570,7 +1570,7 @@ sample:
 }
 
 #[test]
-fn raw_events_reject_before_mutation_and_prepare_normalized_aligned_input() {
+fn events_reject_before_mutation_and_prepare_normalized_aligned_input() {
     let (_, mir) = source_program(
         r#"
 struct Note:
@@ -1621,6 +1621,33 @@ sample:
             ..onda_processor_abi::ExecutionOutput::none()
         };
         execution.next_sequence = 9;
+        let status = unsafe {
+            native
+                .trigger_event_by_index_with_status(
+                    &mut state,
+                    &params,
+                    0,
+                    &payload[..payload.len() - 1],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    Some(&mut execution),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            status,
+            onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+        );
+        assert_eq!(state.bytes(), initial);
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (7, 3, 5)
+        );
+        assert_eq!(execution.next_sequence, 9);
+        assert_eq!(storage, [0xa5; 40]);
+
         let mut malformed = (0..payload.len())
             .map(|len| payload[..len].to_vec())
             .collect::<Vec<_>>();

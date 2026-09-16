@@ -1,8 +1,8 @@
 use onda_frontend::Diagnostic;
 
 use crate::{
-    BufferDescriptorTables, DeclaredEvent, JitProgram, RuntimeAllocator, RuntimeBuffer,
-    RuntimeState, UninitializedRuntimeState,
+    BufferDescriptorTables, JitProgram, RuntimeAllocator, RuntimeBuffer, RuntimeState,
+    UninitializedRuntimeState,
 };
 
 fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
@@ -18,35 +18,6 @@ fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutpu
             batch.reset();
         }
     }
-}
-
-fn validate_event_payload(desc: &DeclaredEvent, payload: &[u8]) -> Result<(), Diagnostic> {
-    if let Some(expected) = desc.payload_bytes() {
-        if payload.len() != expected {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "event '{}' expects {} payload bytes, got {}",
-                    desc.name(),
-                    expected,
-                    payload.len()
-                ),
-                0,
-                0,
-            ));
-        }
-        return Ok(());
-    }
-
-    desc.payload_plan
-        .required_workspace(payload)
-        .map(|_| ())
-        .map_err(|error| {
-            Diagnostic::runtime(
-                format!("event '{}' rejected payload: {error}", desc.name()),
-                0,
-                0,
-            )
-        })
 }
 
 impl JitProgram {
@@ -488,19 +459,6 @@ impl JitProgram {
         self.events.get(index)
     }
 
-    /// Validates one packed event payload. Returns `false` for an unknown event index.
-    pub fn validate_event_payload(
-        &self,
-        event_index: usize,
-        payload: &[u8],
-    ) -> Result<bool, Diagnostic> {
-        let Some(event) = self.event_descriptor(event_index) else {
-            return Ok(false);
-        };
-        validate_event_payload(event, payload)?;
-        Ok(true)
-    }
-
     pub fn delegate_descriptor(&self, index: usize) -> Option<&crate::DeclaredDelegate> {
         self.delegates.get(index)
     }
@@ -782,7 +740,9 @@ impl JitProgram {
         }
     }
 
-    /// Validates payload shape before entering generated event code.
+    /// Validates hosted memory regions before entering generated event code.
+    /// The generated entry performs the single payload preflight while preparing
+    /// its aligned input workspace.
     ///
     /// # Safety
     ///
@@ -817,8 +777,9 @@ impl JitProgram {
         crate::check_execution_status(status)
     }
 
-    /// Validates payload and buffer shape, then returns the generated execution status.
-    /// Validation errors are returned before generated event code is entered.
+    /// Validates hosted memory regions, then returns the generated execution status.
+    /// Payload rejection is reported by the generated entry before it mutates
+    /// workspace, processor state, or execution output.
     ///
     /// # Safety
     ///
@@ -837,14 +798,14 @@ impl JitProgram {
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
-        if !self.validate_event_payload(event_index, payload)? {
+        if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
             return Ok(0);
         }
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index_with_validated_payload(
+                self.compiled.trigger_event_by_index_with_status(
                     state,
                     params,
                     event_index,

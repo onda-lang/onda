@@ -2957,7 +2957,8 @@ impl MirJitProgram {
         }
     }
 
-    /// Validates event and buffer metadata before entering generated code.
+    /// Validates hosted memory regions before entering generated code. The
+    /// generated entry performs payload preflight and preparation together.
     ///
     /// # Safety
     ///
@@ -2992,8 +2993,9 @@ impl MirJitProgram {
         crate::check_execution_status(status)
     }
 
-    /// Validates event and buffer metadata, then returns the generated execution status.
-    /// Validation errors are returned before generated event code is entered.
+    /// Validates hosted memory regions, then returns the generated execution
+    /// status. Payload rejection is returned by the generated entry before it
+    /// mutates workspace, processor state, or execution output.
     ///
     /// # Safety
     ///
@@ -3001,39 +3003,6 @@ impl MirJitProgram {
     /// described by its frame/channel metadata for the duration of the call.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn trigger_event_by_index_with_status(
-        &self,
-        state: &mut RuntimeState,
-        params: &[u8],
-        event_index: usize,
-        payload: &[u8],
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
-        if self.compiled.events.get(event_index).is_none() {
-            return Ok(0);
-        }
-        self.validate_event_payload(event_index, payload)?;
-        unsafe {
-            self.trigger_event_by_index_with_validated_payload(
-                state,
-                params,
-                event_index,
-                payload,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )
-        }
-    }
-
-    /// Executes a payload-validated event after checking the remaining host regions.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn trigger_event_by_index_with_validated_payload(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -3142,30 +3111,6 @@ impl MirJitProgram {
             ));
         }
         Ok(())
-    }
-
-    fn validate_event_payload(&self, event_index: usize, payload: &[u8]) -> Result<(), Diagnostic> {
-        if let Some(expected) = self.layouts.event_payloads[event_index].fixed_size {
-            if payload.len() == expected {
-                return Ok(());
-            }
-            return Err(Diagnostic::runtime(
-                format!(
-                    "native MIR event {event_index} payload has {} bytes; expected {expected}",
-                    payload.len()
-                ),
-                0,
-                0,
-            ));
-        }
-
-        self.layouts.event_payloads[event_index]
-            .plan
-            .required_workspace(payload)
-            .map(|_| ())
-            .map_err(|error| {
-                Diagnostic::runtime(format!("native MIR event {event_index}: {error}"), 0, 0)
-            })
     }
 }
 
