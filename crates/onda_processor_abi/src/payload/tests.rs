@@ -219,6 +219,39 @@ fn invalid_schema_defaults_and_ambiguous_paths_are_rejected() {
     assert!(PayloadPlan::new(&schema).is_err());
 }
 
+#[test]
+fn zero_leaf_payload_types_are_rejected() {
+    let empty = PayloadType::Struct {
+        name: "Empty".into(),
+        fields: Vec::new(),
+    };
+    for ty in [
+        empty.clone(),
+        PayloadType::Struct {
+            name: "Wrapper".into(),
+            fields: vec![field("empty", empty.clone())],
+        },
+        PayloadType::Struct {
+            name: "Mixed".into(),
+            fields: vec![
+                field("value", PayloadType::scalar(ScalarEncoding::F32)),
+                field("empty", empty.clone()),
+            ],
+        },
+        PayloadType::Slice {
+            element: Box::new(empty),
+        },
+    ] {
+        let schema = PayloadSchema {
+            params: vec![field("value", ty)],
+        };
+        assert!(matches!(
+            PayloadPlan::new(&schema),
+            Err(PayloadError::InvalidSchema)
+        ));
+    }
+}
+
 mod allocation_check {
     use super::*;
     use std::alloc::{GlobalAlloc, Layout, System};

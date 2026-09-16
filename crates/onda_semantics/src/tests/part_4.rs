@@ -3059,6 +3059,28 @@ sample:
     }
 
     #[test]
+    fn empty_structs_are_rejected_at_the_declaration() {
+        for source in [
+            "struct Empty {}\n\nsample:\n  out1 = 0.0\n",
+            "struct Namespace:\n  def value(self) -> f32:\n    return 1.0\n\nsample:\n  out1 = 0.0\n",
+        ] {
+            let diagnostics = analyze(parse_program(source).expect("source should parse"))
+                .expect_err("a struct without data fields must be rejected");
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .message
+                        .contains("must declare at least one data field")
+                })
+                .expect("empty struct diagnostic should be present");
+
+            assert_eq!((diagnostic.line, diagnostic.column), (1, 1));
+        }
+    }
+
+    #[test]
     fn deferred_generic_aggregate_cycles_use_canonical_validation() {
         let source = r#"
 struct Node<T>:

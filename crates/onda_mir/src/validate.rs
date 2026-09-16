@@ -498,6 +498,12 @@ impl Validator<'_> {
         }
 
         for structure in &self.program.structs {
+            if structure.fields.is_empty() {
+                self.program_error(format!(
+                    "struct '{}' must declare at least one field",
+                    structure.name
+                ));
+            }
             for field in &structure.fields {
                 self.require_type(field.ty, None, SourceSpan::UNKNOWN);
             }

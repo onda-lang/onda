@@ -42,7 +42,7 @@ impl PayloadType {
                     }
                 }
                 Self::Struct { name, fields } => {
-                    if name.is_empty() {
+                    if name.is_empty() || fields.is_empty() {
                         return Err(PayloadError::InvalidSchema);
                     }
                     layout::unique_fields(fields)?;

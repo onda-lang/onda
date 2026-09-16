@@ -25,7 +25,7 @@ pub struct IntegerDomain {
 #[derive(Debug, Clone)]
 pub struct ParameterPlan {
     pub dynamic: bool,
-    /// Struct slices retain a separate logical length, even with no leaves.
+    /// Struct slices use one shared logical length for all of their leaf tensors.
     pub length_parameter: Option<usize>,
     pub tensors: Range<usize>,
 }
@@ -81,7 +81,11 @@ impl PayloadPlan {
                     abi_parameter += 1;
                     index
                 });
-            for leaf in ty.leaves()? {
+            let leaves = ty.leaves()?;
+            if leaves.is_empty() {
+                return Err(PayloadError::InvalidSchema);
+            }
+            for leaf in leaves {
                 let elements = leaf
                     .shape
                     .iter()

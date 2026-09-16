@@ -73,12 +73,22 @@ test("payload preflight rejects every truncation, trailing bytes, negative and o
   assert.throws(() => plan.encode({ prefix: true, notes: [], tail: Number.MAX_SAFE_INTEGER + 1 }), /exact/);
 });
 
-test("empty struct slices preserve their logical length without leaf storage", () => {
-  const plan = new PayloadPlan({ params: [{ name: "items", ty: { kind: "slice", element: { kind: "struct", name: "Empty", fields: [] } } }] });
-  const bytes = plan.encode({ items: [{}, {}, {}] });
-  assert.equal(bytes.length, 4);
-  assert.deepEqual(plan.decode(bytes), { items: [{}, {}, {}] });
-  assert.equal(plan.abiParameterCount, 1);
+test("zero-leaf payload types are rejected", () => {
+  const empty = { kind: "struct", name: "Empty", fields: [] };
+  for (const ty of [
+    empty,
+    { kind: "struct", name: "Wrapper", fields: [{ name: "empty", ty: empty }] },
+    { kind: "struct", name: "Mixed", fields: [{ name: "value", ty: scalar("f32") }, { name: "empty", ty: empty }] },
+    { kind: "slice", element: empty },
+  ]) {
+    assert.throws(
+      () => new PayloadPlan({ params: [{ name: "value", ty }] }),
+      /at least one (?:field|scalar)/,
+    );
+  }
+});
+
+test("event input descriptors require aligned storage", () => {
   const memory = new ArrayBuffer(64);
   writeEventInput(memory, 8, 24, 4, 32, 16);
   assert.deepEqual([...new Uint32Array(memory, 8, 4)], [24, 4, 32, 16]);

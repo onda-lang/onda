@@ -157,7 +157,7 @@ export type OndaPayloadDefault = string | OndaPayloadDefault[];
 export type OndaPayloadType =
   | { kind: "scalar"; encoding: OndaScalarType; integer_range?: OndaStateMetadata["integer_range"] }
   | { kind: "tuple"; elements: OndaPayloadType[] }
-  | { kind: "struct"; name: string; fields: OndaPayloadField[] }
+  | { kind: "struct"; name: string; fields: [OndaPayloadField, ...OndaPayloadField[]] }
   | { kind: "array"; element: OndaPayloadType; len: number }
   | { kind: "slice"; element: OndaPayloadType };
 export interface OndaPayloadField {

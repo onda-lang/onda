@@ -100,17 +100,8 @@ sample:
 }
 
 #[test]
-fn empty_struct_slice_element_access_fails_without_touching_storage() {
-    let sources = [
-        r#"
-struct Empty {}
-sample:
-  items: Empty[1]
-  view: Empty[] = items[1:1]
-  selected = view[0]
-  out1 = 1.0
-"#,
-        r#"
+fn empty_slice_element_access_fails_without_touching_storage() {
+    let source = r#"
 struct Cell:
   value = 5.0
 sample:
@@ -118,54 +109,52 @@ sample:
   view: Cell[] = items[1:1]
   selected = view[0]
   out1 = selected.value
-"#,
-    ];
-    for source in sources {
-        let (_, mir) = source_program(source, 1);
-        for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
-            let native = lower_mir_and_jit_with_options(
-                mir.clone(),
-                MirCompileOptions {
-                    fast_math: false,
-                    opt_level: level,
-                },
+"#;
+    let (_, mir) = source_program(source, 1);
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let native = lower_mir_and_jit_with_options(
+            mir.clone(),
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: level,
+            },
+        )
+        .unwrap();
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        let mut output = [0.0_f32];
+        let outputs = [output.as_mut_ptr().cast::<u8>()];
+        let inputs: [*const u8; 0] = [];
+        let buffers: [*mut u8; 0] = [];
+        let metadata_i32: [i32; 0] = [];
+        let metadata_f32: [f32; 0] = [];
+        assert!(native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                onda_mir::PROCESS_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
             )
-            .unwrap();
-            let params = native.default_param_bytes();
-            let mut state = native.initialize_state(&params).unwrap();
-            let mut output = [0.0_f32];
-            let outputs = [output.as_mut_ptr().cast::<u8>()];
-            let inputs: [*const u8; 0] = [];
-            let buffers: [*mut u8; 0] = [];
-            let metadata_i32: [i32; 0] = [];
-            let metadata_f32: [f32; 0] = [];
-            assert!(native
-                .test_process_checked(
-                    &mut state,
-                    &params,
-                    0,
-                    1,
-                    onda_mir::PROCESS_FULL_BLOCK as u32,
-                    &inputs,
-                    &outputs,
-                    &buffers,
-                    &metadata_i32,
-                    &metadata_i32,
-                    &metadata_f32,
-                )
-                .is_err());
-        }
+            .is_err());
     }
 }
 
 #[test]
-fn retained_empty_struct_slices_preserve_their_logical_length() {
+fn retained_struct_slices_preserve_their_logical_length() {
     let source = r#"
-struct Empty {}
-def make() -> Empty[3]:
-  return [Empty(), Empty(), Empty()]
+struct Cell:
+  value: f32
+def make() -> Cell[3]:
+  return [Cell(), Cell(), Cell()]
 init:
-  view: Empty[] = make()
+  view: Cell[] = make()
 sample:
   out1 = f32(view.len())
 "#;

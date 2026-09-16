@@ -340,8 +340,8 @@ audio indices from `start_frame`.
 Parameter storage follows the paired descriptor's offsets and scalar shapes. Every event and
 delegate also carries a recursive `schema`: named parameters with scalar, primitive tuple, nominal
 struct, fixed array, or top-level slice types. Fields include constant defaults and integer domains.
-The schema is the authority for host encoding and decoding; flattened executable parameters are
-validated against it.
+Every struct schema contains at least one field. The schema is the authority for host encoding and
+decoding; flattened executable parameters are validated against it.
 
 Wire payloads are packed little-endian in parameter and depth-first field order. Every primitive
 leaf is one contiguous tensor with outer array axes before inner field-array axes. A runtime slice

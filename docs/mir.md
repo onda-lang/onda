@@ -171,9 +171,8 @@ every bound external buffer has positive dimensions, so backends implement exter
 without a redundant empty-range branch. Empty slices remain valid values, but indexed access to one
 fails because there is no element to clamp to.
 
-`normalize_index` applies those rules to a scalar index and a runtime logical length without
-requiring physical element storage. Aggregate views use it before constructing their flattened leaf
-windows, including zero-leaf structures whose extent exists only as a logical length.
+`normalize_index` applies those rules to a scalar index and a runtime logical length. Aggregate
+views use it before constructing their flattened leaf windows.
 
 `make_slice` applies its bounds mode to the complete `(start, len)` range. Clamp normalizes the start
 to `0..=source_len`, negative lengths to zero, and the length to the remaining range. `Checked`

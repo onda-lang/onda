@@ -1178,6 +1178,7 @@ Supported features:
 - Tuple fields.
 - Nested structs and fixed arrays of primitives or structs.
 - Generic structs.
+- Every struct must declare at least one data field. Methods do not count as data fields.
 - Aggregate nesting is limited to 256 levels so malformed or impractically deep
   definitions are rejected without exhausting compiler resources.
 - Resolved aggregate layouts may contain at most 65,536 expanded shape nodes across a program.

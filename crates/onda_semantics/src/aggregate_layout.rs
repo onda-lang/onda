@@ -671,17 +671,25 @@ impl LayoutBuilder {
                 default: None,
             });
         }
+        let erased = fields.is_empty();
         let shape = PayloadType::Struct {
             name: definition.name.clone(),
             fields,
         };
-        let planned = shape
-            .leaves()
-            .map_err(|error| AggregateLayoutError::MalformedField {
-                struct_name: definition.name.clone(),
-                field_name: String::new(),
-                reason: error.to_string(),
-            })?;
+        // An inferred structural parameter with no observed fields is erased
+        // from the function ABI. Authored nominal structs are rejected before
+        // reaching layout construction.
+        let planned = if erased {
+            Vec::new()
+        } else {
+            shape
+                .leaves()
+                .map_err(|error| AggregateLayoutError::MalformedField {
+                    struct_name: definition.name.clone(),
+                    field_name: String::new(),
+                    reason: error.to_string(),
+                })?
+        };
         let mut leaves = Vec::with_capacity(planned.len());
         let mut scalar_width = 0usize;
         for tensor in planned {
@@ -1076,28 +1084,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_struct_branching_before_materializing_shapes() {
-        let mut structs = vec![TypedStruct {
-            name: "S0".to_owned(),
-            fields: Vec::new(),
-        }];
-        let mut shape_nodes = 1usize;
-        let mut total_nodes = shape_nodes;
-        for level in 1.. {
-            let nested = format!("S{}", level - 1);
-            structs.push(TypedStruct {
-                name: format!("S{level}"),
-                fields: vec![
-                    struct_field("left", &nested),
-                    struct_field("right", &nested),
-                ],
-            });
-            shape_nodes = 1 + 2 * shape_nodes;
-            total_nodes += shape_nodes;
-            if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
-                break;
-            }
-        }
+    fn rejects_excessive_total_layout_shape_before_materializing() {
+        let fields = (0..MAX_AGGREGATE_LAYOUT_LEAVES)
+            .map(|index| scalar_field(&format!("field{index}"), PrimitiveType::F32))
+            .collect::<Vec<_>>();
+        let nodes_per_layout = fields.len() + 1;
+        let layout_count = MAX_AGGREGATE_LAYOUT_NODES / nodes_per_layout + 1;
+        let structs = (0..layout_count)
+            .map(|index| TypedStruct {
+                name: format!("S{index}"),
+                fields: fields.clone(),
+            })
+            .collect::<Vec<_>>();
 
         assert!(matches!(
             validate_aggregate_structure(&structs),
@@ -1105,7 +1103,7 @@ mod tests {
                 count,
                 maximum: MAX_AGGREGATE_LAYOUT_NODES,
                 ..
-            }) if count == total_nodes
+            }) if count == layout_count * nodes_per_layout
         ));
     }
 

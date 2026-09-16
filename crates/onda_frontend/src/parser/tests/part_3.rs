@@ -422,10 +422,42 @@ graph:
 }
 
 #[test]
+fn angle_list_newlines_allow_mixed_token_placement_without_leaking_indentation() {
+    let source = r#"
+struct Pair<
+  A,
+  B
+>:
+  first: A
+  second: B
+
+def identity<
+  T
+>(value: T) -> T:
+  return value
+
+init:
+  first = Pair<f32,
+    i32>(first = 0.25, second = 1)
+  second = Pair<
+    f32,
+    i32>(first = 0.5, second = 2)
+
+sample:
+  out1 = identity<
+    f32>(first.first + second.first)
+"#;
+
+    parse_program(source).expect("angle lists should accept newlines at every token boundary");
+}
+
+#[test]
 fn operators_do_not_continue_unparenthesized_statements() {
     for src in [
         "sample:\n  out1 = 1 +\n    2\n",
         "sample:\n  out1 = 1\n    + 2\n",
+        "sample:\n  out1 = 1 <\n    2\n",
+        "sample:\n  out1 = 1 <=\n    2\n",
         "sample {\n  out1 = 1 +\n  2\n}\n",
         "sample {\n  out1 = 1\n  + 2\n}\n",
     ] {

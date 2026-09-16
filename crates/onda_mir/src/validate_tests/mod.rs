@@ -294,7 +294,10 @@ fn delegate_fixed_arrays_require_primitive_elements() {
     let mut program = empty_program();
     program.structs.push(StructType {
         name: "Payload".to_owned(),
-        fields: Vec::new(),
+        fields: vec![StructField {
+            name: "value".to_owned(),
+            ty: TypeId::new(0),
+        }],
     });
     program.types.extend([
         Type::Struct(crate::StructId::new(0)),
@@ -317,6 +320,20 @@ fn delegate_fixed_arrays_require_primitive_elements() {
     assert!(errors.iter().any(|error| error
         .message
         .contains("fixed array element must be a primitive scalar")));
+}
+
+#[test]
+fn empty_structs_are_rejected() {
+    let mut program = empty_program();
+    program.structs.push(StructType {
+        name: "Empty".to_owned(),
+        fields: Vec::new(),
+    });
+
+    let errors = super::validate(&program).expect_err("empty MIR structs must be rejected");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("struct 'Empty' must declare at least one field")));
 }
 
 #[test]

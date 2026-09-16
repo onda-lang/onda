@@ -110,8 +110,8 @@ fn register_data_struct_root_inner(
             len,
             static_len: Some(len),
         });
-    // Mark the root symbol so index validation can recognize `base[idx]` even
-    // when the struct has no scalar/array fields to contribute `base.*` keys.
+    // Mark the nominal root independently from its flattened field symbols so
+    // index validation can recognize `base[idx]`.
     insert_declared_symbol(
         state_scalars,
         declared_symbols,

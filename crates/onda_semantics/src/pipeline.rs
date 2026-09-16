@@ -2127,6 +2127,12 @@ pub fn analyze_with_options_and_inputs(
         }
     }
     for s in &struct_defs_raw {
+        if s.fields.is_empty() {
+            errors.push(Diagnostic::semantic_span(
+                format!("struct '{}' must declare at least one data field", s.name),
+                s.loc,
+            ));
+        }
         if is_builtin_constant_name(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' is reserved as a builtin constant", s.name),

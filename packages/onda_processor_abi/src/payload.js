@@ -103,6 +103,7 @@ export class PayloadPlan {
         case "struct":
           if (typeof ty.name !== "string" || !ty.name) throw new TypeError("invalid payload struct name");
           fields(ty.fields);
+          if (!ty.fields.length) throw new TypeError("payload structs must contain at least one field");
           for (const field of ty.fields) {
             if (field.default !== undefined) parsePayloadDefault(field.ty, field.default);
             visit(field.ty, `${path}.${field.name}`, shape, [...steps, { field: field.name }]);
@@ -126,6 +127,7 @@ export class PayloadPlan {
       if (dynamic && !arrayElement(ty)) throw new TypeError("invalid payload slice element");
       const lengthParameter = dynamic && ty.kind === "struct" ? abiParameter++ : null;
       visit(ty, field.name, [], dynamic ? [{ axis: null }] : []);
+      if (this.tensors.length === start) throw new TypeError("payload types must contain at least one scalar");
       for (let index = start; index < this.tensors.length; index += 1) {
         this.tensors[index].parameter = abiParameter++;
         this.tensors[index].lengthPrefix = dynamic && lengthParameter === null;

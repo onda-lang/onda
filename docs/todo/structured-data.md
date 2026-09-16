@@ -135,7 +135,8 @@ Returning or replacing an aggregate can also copy large data; neither operation 
 
 Support nominal structs, nested structs, fixed arrays of primitives or structs, and
 primitive-only tuple fields. Resolve generic arguments and all owned array lengths before
-storage planning. Reject recursive by-value layouts and overflowing sizes.
+storage planning. Every struct must declare at least one data field; reject empty structs,
+recursive by-value layouts, and overflowing sizes.
 
 Do not add arrays of arrays, arrays of tuples, aggregate tuple elements, structural conversions,
 or elementwise aggregate arithmetic here. Procs and buffers remain resources and cannot be

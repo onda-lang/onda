@@ -47,6 +47,7 @@ pub enum PayloadType {
     Tuple {
         elements: Vec<PayloadType>,
     },
+    /// A nominal aggregate. Valid schemas contain at least one field.
     Struct {
         name: String,
         fields: Vec<PayloadField>,
