@@ -12,6 +12,170 @@ struct Transfer {
     domain: Option<IntegerDomain>,
 }
 
+struct PreparedTensor {
+    workspace: LLVMValueRef,
+    elements: LLVMValueRef,
+}
+
+struct PreparedInput {
+    workspace: LLVMValueRef,
+    tensors: Vec<PreparedTensor>,
+}
+
+pub(super) unsafe fn tensor_view_type(module: &ModuleEmitter<'_>) -> LLVMTypeRef {
+    LLVMStructTypeInContext(
+        module.context,
+        [module.ptr_ty, LLVMInt32TypeInContext(module.context)].as_mut_ptr(),
+        2,
+        0,
+    )
+}
+
+pub(super) unsafe fn target_is_little_endian(module: &ModuleEmitter<'_>) -> bool {
+    *LLVMGetDataLayoutStr(module.module) != b'E' as i8
+}
+
+pub(super) unsafe fn emit_view_entry(
+    module: &ModuleEmitter<'_>,
+    event: onda_mir::EventId,
+) -> Result<(), MirCodegenError> {
+    let handler = module.functions[module.program.interface.events[event.index()]
+        .handler
+        .index()];
+    let name = CString::new(format!("onda_event_views_{}", event.raw()))
+        .map_err(|_| MirCodegenError::llvm("generated event symbol contains a NUL"))?;
+    let function = LLVMAddFunction(module.module, name.as_ptr(), handler.ty);
+    if function.is_null() {
+        return Err(MirCodegenError::llvm("failed to declare event-view entry"));
+    }
+    let builder = LLVMCreateBuilderInContext(module.context);
+    if builder.is_null() {
+        return Err(MirCodegenError::llvm("failed to create event-view builder"));
+    }
+    let result = (|| {
+        let entry = append_block(module.context, function, "entry")?;
+        LLVMPositionBuilderAtEnd(builder, entry);
+        reset_execution_output_batches(module, builder, LLVMGetParam(function, 7))?;
+        let mut args: [LLVMValueRef; 8] =
+            std::array::from_fn(|index| LLVMGetParam(function, index as u32));
+        let status = LLVMBuildCall2(
+            builder,
+            handler.ty,
+            handler.value,
+            args.as_mut_ptr(),
+            args.len() as u32,
+            c"event_status".as_ptr(),
+        );
+        LLVMBuildRet(builder, status);
+        Ok(())
+    })();
+    LLVMDisposeBuilder(builder);
+    result
+}
+
+pub(super) unsafe fn emit_packed_entry(
+    module: &ModuleEmitter<'_>,
+    event: onda_mir::EventId,
+) -> Result<(), MirCodegenError> {
+    let handler = module.functions[module.program.interface.events[event.index()]
+        .handler
+        .index()];
+    let name = CString::new(format!("onda_event_{}", event.raw()))
+        .map_err(|_| MirCodegenError::llvm("generated event symbol contains a NUL"))?;
+    let function = LLVMAddFunction(module.module, name.as_ptr(), handler.ty);
+    if function.is_null() {
+        return Err(MirCodegenError::llvm(
+            "failed to declare packed event entry",
+        ));
+    }
+    let builder = LLVMCreateBuilderInContext(module.context);
+    if builder.is_null() {
+        return Err(MirCodegenError::llvm(
+            "failed to create packed event builder",
+        ));
+    }
+    let result = (|| {
+        let entry = append_block(module.context, function, "entry")?;
+        LLVMPositionBuilderAtEnd(builder, entry);
+        reset_execution_output_batches(module, builder, LLVMGetParam(function, 7))?;
+        let prepared = prepare(module, function, builder, event)?;
+        let i32_ty = LLVMInt32TypeInContext(module.context);
+        let view_ty = tensor_view_type(module);
+        let views = if prepared.tensors.is_empty() {
+            LLVMConstPointerNull(module.ptr_ty)
+        } else {
+            let storage_ty = LLVMArrayType2(view_ty, prepared.tensors.len() as u64);
+            let storage = LLVMBuildAlloca(builder, storage_ty, c"event_tensor_views".as_ptr());
+            let zero = LLVMConstInt(i32_ty, 0, 0);
+            for (index, tensor) in prepared.tensors.iter().enumerate() {
+                let slot = LLVMBuildGEP2(
+                    builder,
+                    storage_ty,
+                    storage,
+                    [zero, LLVMConstInt(i32_ty, index as u64, 0)].as_mut_ptr(),
+                    2,
+                    c"event_tensor_view".as_ptr(),
+                );
+                let data = LLVMBuildGEP2(
+                    builder,
+                    LLVMInt8TypeInContext(module.context),
+                    prepared.workspace,
+                    [tensor.workspace].as_mut_ptr(),
+                    1,
+                    c"event_tensor_data".as_ptr(),
+                );
+                for (field, value) in [
+                    (0, data),
+                    (
+                        1,
+                        LLVMBuildTrunc(
+                            builder,
+                            tensor.elements,
+                            i32_ty,
+                            c"event_tensor_elements".as_ptr(),
+                        ),
+                    ),
+                ] {
+                    LLVMBuildStore(
+                        builder,
+                        value,
+                        LLVMBuildStructGEP2(
+                            builder,
+                            view_ty,
+                            slot,
+                            field,
+                            c"event_tensor_view_field".as_ptr(),
+                        ),
+                    );
+                }
+            }
+            storage
+        };
+        let mut args = [
+            views,
+            LLVMGetParam(function, 1),
+            LLVMGetParam(function, 2),
+            LLVMGetParam(function, 3),
+            LLVMGetParam(function, 4),
+            LLVMGetParam(function, 5),
+            LLVMGetParam(function, 6),
+            LLVMGetParam(function, 7),
+        ];
+        let status = LLVMBuildCall2(
+            builder,
+            handler.ty,
+            handler.value,
+            args.as_mut_ptr(),
+            args.len() as u32,
+            c"event_status".as_ptr(),
+        );
+        LLVMBuildRet(builder, status);
+        Ok(())
+    })();
+    LLVMDisposeBuilder(builder);
+    result
+}
+
 pub(super) unsafe fn aligned_offset(
     builder: LLVMBuilderRef,
     offset: LLVMValueRef,
@@ -31,12 +195,12 @@ pub(super) unsafe fn aligned_offset(
     )
 }
 
-pub(super) unsafe fn prepare(
+unsafe fn prepare(
     module: &ModuleEmitter<'_>,
     function: LLVMValueRef,
     builder: LLVMBuilderRef,
     event: onda_mir::EventId,
-) -> Result<LLVMValueRef, MirCodegenError> {
+) -> Result<PreparedInput, MirCodegenError> {
     let emitter = InputEmitter {
         module,
         function,
@@ -100,6 +264,7 @@ pub(super) unsafe fn prepare(
     ))?;
     let plan = &module.layouts.event_payloads[event.index()].plan;
     let mut transfers = Vec::new();
+    let mut tensors = Vec::with_capacity(plan.tensors().len());
     let mut wire = emitter.int(0);
     let mut prepared = emitter.int(0);
     for parameter in plan.parameters() {
@@ -149,6 +314,10 @@ pub(super) unsafe fn prepare(
                 c"tensor_bytes".as_ptr(),
             );
             prepared = aligned_offset(builder, prepared, tensor.encoding.byte_size());
+            tensors.push(PreparedTensor {
+                workspace: prepared,
+                elements,
+            });
             transfers.push(Transfer {
                 wire,
                 workspace: prepared,
@@ -202,7 +371,7 @@ pub(super) unsafe fn prepare(
     for transfer in transfers {
         emitter.copy(input, workspace, transfer)?;
     }
-    Ok(workspace)
+    Ok(PreparedInput { workspace, tensors })
 }
 
 struct InputEmitter<'a, 'p> {
@@ -252,7 +421,7 @@ impl InputEmitter<'_, '_> {
         )
     }
     unsafe fn little_endian(&self) -> bool {
-        *LLVMGetDataLayoutStr(self.module.module) != b'E' as i8
+        target_is_little_endian(self.module)
     }
     unsafe fn load_wire(&self, pointer: LLVMValueRef, encoding: ScalarEncoding) -> LLVMValueRef {
         let bytes = encoding.byte_size();
@@ -423,7 +592,7 @@ pub(super) unsafe fn wire_bits(
     value: LLVMValueRef,
     bytes: usize,
 ) -> LLVMValueRef {
-    if *LLVMGetDataLayoutStr(module.module) != b'E' as i8 || bytes == 1 {
+    if target_is_little_endian(module) || bytes == 1 {
         return value;
     }
     let ty = LLVMIntTypeInContext(module.context, bytes as u32 * 8);

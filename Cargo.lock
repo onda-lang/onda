@@ -3642,6 +3642,7 @@ dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
  "onda_mir",
+ "onda_processor_abi",
  "onda_project",
  "onda_runtime",
  "onda_semantics",

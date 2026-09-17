@@ -22,6 +22,10 @@ omitting print storage suppresses delivery without changing Onda execution. Reco
 are dropped whole and increment the saturated `overflow_count`. Records emitted before a generated
 runtime failure remain available for diagnostics.
 
+Their descriptors and non-null storage regions must also be mutually disjoint and must not overlap
+any other memory accessed by the processor call. This is the shared execution-output aliasing
+contract described by the processor ABI.
+
 Prints preserve concrete scalar types. With no surrounding parameter type to constrain them, pure
 numeric literals use Onda's ordinary defaults: `print(3)` records `i32` and `print(3.0)` records
 `f32`. Use `i64(3)` or `f64(3.0)` when the wider type is intentional. Variables and other typed

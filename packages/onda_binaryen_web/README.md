@@ -55,6 +55,9 @@ Truncated or trailing
 payloads, invalid slice lengths, out-of-bounds regions, misalignment, and insufficient workspace
 return `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`) with empty output and leave the processor usable;
 accepted structured values are exposed to generated code through aligned leaf tensors.
+The WebAssembly profile does not export the native `onda_event_views_N` unchecked entry. Browser
+events cross JavaScript/worklet and linear-memory boundaries, so dispatch remains on this packed,
+checked entry and its preallocated workspace.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,

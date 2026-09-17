@@ -78,6 +78,54 @@ fn nested_soa_payloads_prepare_align_and_round_trip() {
 }
 
 #[test]
+fn native_tensor_views_validate_shape_alignment_and_canonical_values() {
+    let plan = PayloadPlan::new(&schema()).unwrap();
+    let enabled = 1_u8;
+    let gains = [1.5_f64, 2.5];
+    let bins = [3_i32, 5, 7, 11];
+    let last = 13_i64;
+    let mut views = [
+        crate::EventTensorView {
+            data: &enabled,
+            element_count: 1,
+        },
+        crate::EventTensorView {
+            data: gains.as_ptr().cast(),
+            element_count: 2,
+        },
+        crate::EventTensorView {
+            data: bins.as_ptr().cast(),
+            element_count: 4,
+        },
+        crate::EventTensorView {
+            data: (&last as *const i64).cast(),
+            element_count: 1,
+        },
+    ];
+    unsafe { plan.validate_tensor_views(&views) }.unwrap();
+
+    views[2].element_count = 2;
+    assert_eq!(
+        unsafe { plan.validate_tensor_views(&views) },
+        Err(PayloadError::InvalidLengths)
+    );
+    views[2].element_count = 4;
+    let misaligned = Workspace([0; 128]);
+    views[1].data = unsafe { misaligned.0.as_ptr().add(1) };
+    assert_eq!(
+        unsafe { plan.validate_tensor_views(&views) },
+        Err(PayloadError::InvalidValue)
+    );
+    views[1].data = gains.as_ptr().cast();
+    let invalid_bool = 2_u8;
+    views[0].data = &invalid_bool;
+    assert_eq!(
+        unsafe { plan.validate_tensor_views(&views) },
+        Err(PayloadError::InvalidValue)
+    );
+}
+
+#[test]
 fn rejected_input_or_capacity_does_not_mutate_workspace_or_output() {
     let plan = PayloadPlan::new(&schema()).unwrap();
     let input = input();

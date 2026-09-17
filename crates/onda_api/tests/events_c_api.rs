@@ -2472,6 +2472,226 @@ sample { out1 = gate }
 }
 
 #[test]
+fn c_api_event_tensor_views_borrow_canonical_soa() {
+    unsafe {
+        let frames = 512_i32;
+        let program = compile_program(
+            r#"
+struct Point:
+  x: f32
+  y: f32
+outs:
+  out1
+event load(gain: f32, a: Point[], tag: i32, b: Point[]):
+  held = gain + a[0].x + a[1].y + f32(a.len()) + f32(tag) + b[0].x + b[1].y + f32(b.len())
+init:
+  held = 0.0
+sample:
+  out1 = held
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
+        assert!(
+            !instance.is_null(),
+            "instance create failed: {}",
+            diag_message(&diag)
+        );
+        let instance = InstanceHandle(instance);
+        let mut output = vec![0.0_f32; frames as usize];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(output.as_slice()) as i32,
+            ),
+            0
+        );
+
+        let gain = 0.5_f32;
+        let a_x = [1.0_f32, 2.0];
+        let a_y = [3.0_f32, 4.0];
+        let tag = 5_i32;
+        let b_x = [6.0_f32, 8.0];
+        let mut b_y = [7.0_f32, 9.0];
+        let tensor_count = onda_event_tensor_count(program.0, 0);
+        assert_eq!(tensor_count, 6);
+        let mut views = Vec::with_capacity(tensor_count as usize);
+        for tensor_index in 0..tensor_count {
+            let mut info = std::mem::MaybeUninit::<onda_event_tensor_info_t>::uninit();
+            assert_eq!(
+                onda_event_tensor_info(program.0, 0, tensor_index, info.as_mut_ptr()),
+                0
+            );
+            let info = info.assume_init();
+            let path = CStr::from_ptr(info.path).to_str().unwrap();
+            let (data, element_count, element_type, parameter_index, is_slice) = match path {
+                "gain" => ((&gain as *const f32).cast(), 1, ONDA_PRIMITIVE_F32, 0, 0),
+                "a.x" => (
+                    a_x.as_ptr().cast(),
+                    a_x.len() as i32,
+                    ONDA_PRIMITIVE_F32,
+                    1,
+                    1,
+                ),
+                "a.y" => (
+                    a_y.as_ptr().cast(),
+                    a_y.len() as i32,
+                    ONDA_PRIMITIVE_F32,
+                    1,
+                    1,
+                ),
+                "tag" => ((&tag as *const i32).cast(), 1, ONDA_PRIMITIVE_I32, 2, 0),
+                "b.x" => (
+                    b_x.as_ptr().cast(),
+                    b_x.len() as i32,
+                    ONDA_PRIMITIVE_F32,
+                    3,
+                    1,
+                ),
+                "b.y" => (
+                    b_y.as_ptr().cast(),
+                    b_y.len() as i32,
+                    ONDA_PRIMITIVE_F32,
+                    3,
+                    1,
+                ),
+                _ => panic!("unexpected event tensor path {path}"),
+            };
+            assert_eq!(info.element_type, element_type);
+            assert_eq!(info.parameter_index, parameter_index);
+            assert_eq!(info.is_slice, is_slice);
+            assert_eq!(info.fixed_element_count, 1);
+            assert_eq!(info.shape_rank, 0);
+            assert!(info.shape.is_null());
+            views.push(onda_event_tensor_view_t {
+                data,
+                element_count,
+            });
+        }
+        assert_eq!(
+            onda_trigger_event_views_by_index(
+                instance.0,
+                0,
+                views.as_ptr(),
+                views.len() as i32,
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_OK
+        );
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            ONDA_EXECUTION_OK
+        );
+        for sample in &output {
+            assert!((*sample - 29.5).abs() < 1e-6, "got {sample}");
+        }
+
+        b_y[1] = 10.0;
+        assert_eq!(b_y[1], 10.0);
+        assert_eq!(
+            onda_trigger_event_views_by_index_unchecked(
+                instance.0,
+                0,
+                views.as_ptr(),
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_OK
+        );
+        output.fill(0.0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            ONDA_EXECUTION_OK
+        );
+        assert!(output.iter().all(|sample| (*sample - 30.5).abs() < 1e-6));
+
+        let mut mismatched = views.clone();
+        mismatched[2].element_count = 1;
+        assert_eq!(
+            onda_trigger_event_views_by_index(
+                instance.0,
+                0,
+                mismatched.as_ptr(),
+                mismatched.len() as i32,
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_INPUT_REJECTED
+        );
+        output.fill(0.0);
+        assert_eq!(
+            onda_process_checked(instance.0, frames, std::ptr::null_mut()),
+            ONDA_EXECUTION_OK
+        );
+        assert!(output.iter().all(|sample| (*sample - 30.5).abs() < 1e-6));
+    }
+}
+
+#[test]
+fn c_api_event_tensor_metadata_flattens_deep_structs_and_arrays() {
+    unsafe {
+        let program = compile_program(
+            r#"
+struct Vec2:
+  x: f32
+  y: f32
+struct Trail:
+  points: Vec2[4]
+struct Body:
+  position: Vec2
+  trail: Trail
+  mass: f32
+outs:
+  out1
+event inspect(bodies: Body[], fixed: Body[2]):
+  held = 0.0
+init:
+  held = 0.0
+sample:
+  out1 = held
+"#,
+        );
+        let expected = [
+            ("bodies.position.x", 0, 1, 1, &[][..]),
+            ("bodies.position.y", 0, 1, 1, &[][..]),
+            ("bodies.trail.points.x", 0, 1, 4, &[4][..]),
+            ("bodies.trail.points.y", 0, 1, 4, &[4][..]),
+            ("bodies.mass", 0, 1, 1, &[][..]),
+            ("fixed.position.x", 1, 0, 2, &[2][..]),
+            ("fixed.position.y", 1, 0, 2, &[2][..]),
+            ("fixed.trail.points.x", 1, 0, 8, &[2, 4][..]),
+            ("fixed.trail.points.y", 1, 0, 8, &[2, 4][..]),
+            ("fixed.mass", 1, 0, 2, &[2][..]),
+        ];
+        assert_eq!(onda_event_tensor_count(program.0, 0), expected.len() as i32);
+        for (tensor_index, (path, parameter, is_slice, elements, shape)) in
+            expected.into_iter().enumerate()
+        {
+            let mut info = std::mem::MaybeUninit::<onda_event_tensor_info_t>::uninit();
+            assert_eq!(
+                onda_event_tensor_info(program.0, 0, tensor_index as i32, info.as_mut_ptr()),
+                0
+            );
+            let info = info.assume_init();
+            assert_eq!(CStr::from_ptr(info.path).to_str().unwrap(), path);
+            assert_eq!(info.parameter_index, parameter);
+            assert_eq!(info.element_type, ONDA_PRIMITIVE_F32);
+            assert_eq!(info.is_slice, is_slice);
+            assert_eq!(info.fixed_element_count, elements);
+            assert_eq!(info.shape_rank, shape.len() as i32);
+            let actual_shape = if info.shape_rank == 0 {
+                assert!(info.shape.is_null());
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(info.shape, info.shape_rank as usize)
+            };
+            assert_eq!(actual_shape, shape);
+        }
+    }
+}
+
+#[test]
 fn c_api_structured_message_schemas_and_dynamic_sizes_are_reflectable() {
     unsafe {
         let program = compile_program(

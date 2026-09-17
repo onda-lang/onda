@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.8.6]
 
+### Added
+
+- Added synchronous native SoA event tensor views for zero-copy host dispatch. The hosted C API
+  exposes flat schema-derived tensor metadata plus checked and trusted entry points; native
+  processor objects advertise trusted `onda_event_views_N` symbols. JavaScript payload plans expose
+  the same flat metadata, while WebAssembly event dispatch remains packed and checked.
+
 ### Changed
 
 - Advanced the processor ABI to version 7. Event entry points now reset caller-owned execution

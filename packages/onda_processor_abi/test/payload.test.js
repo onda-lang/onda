@@ -41,6 +41,36 @@ test("structured payloads use one length and canonical nested SoA tensors", () =
   assert.ok(Object.is(decoded.notes[0].gain, -0));
   assert.equal(plan.requiredWorkspace(bytes), plan.sizes([2]).workspace);
   assert.equal(plan.tensors.length, 7);
+  assert.deepEqual(plan.tensorMetadata, [
+    {
+      path: "prefix", encoding: "bool", shape: [], parameterIndex: 0,
+      isSlice: false, fixedElementCount: 1,
+    },
+    {
+      path: "notes.enabled", encoding: "bool", shape: [], parameterIndex: 1,
+      isSlice: true, fixedElementCount: 1,
+    },
+    {
+      path: "notes.gain", encoding: "f64", shape: [], parameterIndex: 1,
+      isSlice: true, fixedElementCount: 1,
+    },
+    {
+      path: "notes.bins", encoding: "i32", shape: [2], parameterIndex: 1,
+      isSlice: true, fixedElementCount: 2,
+    },
+    {
+      path: "notes.pair.__0", encoding: "i64", shape: [], parameterIndex: 1,
+      isSlice: true, fixedElementCount: 1,
+    },
+    {
+      path: "notes.pair.__1", encoding: "f32", shape: [], parameterIndex: 1,
+      isSlice: true, fixedElementCount: 1,
+    },
+    {
+      path: "tail", encoding: "i64", shape: [], parameterIndex: 2,
+      isSlice: false, fixedElementCount: 1,
+    },
+  ]);
   assert.equal(plan.parameters[1].lengthParameter, 1);
   assert.equal(plan.abiParameterCount, 8);
   const empty = plan.encode({ prefix: false, notes: [] });

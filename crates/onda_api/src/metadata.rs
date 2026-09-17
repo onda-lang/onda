@@ -1,5 +1,70 @@
 use super::*;
 
+pub(super) struct CEventTensorInfo {
+    path: CString,
+    shape: Box<[i32]>,
+    parameter_index: i32,
+    element_type: i32,
+    is_slice: i32,
+    fixed_element_count: i32,
+}
+
+pub(super) fn build_event_tensor_info(
+    jit: &JitProgram,
+) -> Result<Vec<Vec<CEventTensorInfo>>, Diagnostic> {
+    (0..jit.event_count())
+        .map(|event_index| {
+            let event = jit
+                .event_descriptor(event_index)
+                .ok_or_else(|| Diagnostic::internal("event descriptor is missing"))?;
+            let plan = event.payload_plan();
+            let mut result = Vec::with_capacity(plan.tensors().len());
+            for (parameter_index, parameter) in plan.parameters().iter().enumerate() {
+                for tensor_index in parameter.tensors.clone() {
+                    let tensor = &plan.tensors()[tensor_index];
+                    let path = CString::new(tensor.path.as_str()).map_err(|_| {
+                        Diagnostic::internal(
+                            "event tensor path contains NUL byte; cannot expose over C ABI",
+                        )
+                    })?;
+                    let shape = tensor
+                        .shape
+                        .iter()
+                        .map(|extent| {
+                            i32::try_from(*extent).map_err(|_| {
+                                Diagnostic::internal("event tensor shape does not fit i32")
+                            })
+                        })
+                        .collect::<Result<Box<[_]>, _>>()?;
+                    result.push(CEventTensorInfo {
+                        path,
+                        shape,
+                        parameter_index: i32::try_from(parameter_index).map_err(|_| {
+                            Diagnostic::internal("event parameter index does not fit i32")
+                        })?,
+                        element_type: match tensor.encoding {
+                            onda_processor_abi::payload::ScalarEncoding::F32 => ONDA_PRIMITIVE_F32,
+                            onda_processor_abi::payload::ScalarEncoding::F64 => ONDA_PRIMITIVE_F64,
+                            onda_processor_abi::payload::ScalarEncoding::I32 => ONDA_PRIMITIVE_I32,
+                            onda_processor_abi::payload::ScalarEncoding::I64 => ONDA_PRIMITIVE_I64,
+                            onda_processor_abi::payload::ScalarEncoding::Bool => {
+                                ONDA_PRIMITIVE_BOOL
+                            }
+                        },
+                        is_slice: i32::from(parameter.dynamic),
+                        fixed_element_count: i32::try_from(tensor.elements).map_err(|_| {
+                            Diagnostic::internal(
+                                "event tensor fixed element count does not fit i32",
+                            )
+                        })?,
+                    });
+                }
+            }
+            Ok(result)
+        })
+        .collect()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn onda_input_count(program: *const onda_program) -> i32 {
     if program.is_null() {
@@ -779,6 +844,76 @@ pub unsafe extern "C" fn onda_event_schema_json(
         return ptr::null();
     }
     cstr_ptr_at(&(&*program).inner.event_schema_json, index)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_event_tensor_count(
+    program: *const onda_program,
+    event_index: i32,
+) -> i32 {
+    if program.is_null() || event_index < 0 {
+        return -1;
+    }
+    (&*program)
+        .inner
+        .event_tensor_info
+        .get(event_index as usize)
+        .map_or(-1, |tensors| saturating_usize_to_i32(tensors.len()))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_event_tensor_info(
+    program: *const onda_program,
+    event_index: i32,
+    tensor_index: i32,
+    out_info: *mut onda_event_tensor_info_t,
+) -> i32 {
+    if out_info.is_null() {
+        return -1;
+    }
+    ptr::write(
+        out_info,
+        onda_event_tensor_info_t {
+            path: ptr::null(),
+            shape: ptr::null(),
+            shape_rank: 0,
+            parameter_index: -1,
+            element_type: -1,
+            is_slice: -1,
+            fixed_element_count: -1,
+        },
+    );
+    if program.is_null() || event_index < 0 || tensor_index < 0 {
+        return -1;
+    }
+    let Some(info) = (&*program)
+        .inner
+        .event_tensor_info
+        .get(event_index as usize)
+        .and_then(|tensors| tensors.get(tensor_index as usize))
+    else {
+        return -1;
+    };
+    let Ok(shape_rank) = i32::try_from(info.shape.len()) else {
+        return -1;
+    };
+    ptr::write(
+        out_info,
+        onda_event_tensor_info_t {
+            path: info.path.as_ptr(),
+            shape: if info.shape.is_empty() {
+                ptr::null()
+            } else {
+                info.shape.as_ptr()
+            },
+            shape_rank,
+            parameter_index: info.parameter_index,
+            element_type: info.element_type,
+            is_slice: info.is_slice,
+            fixed_element_count: info.fixed_element_count,
+        },
+    );
+    0
 }
 
 #[no_mangle]

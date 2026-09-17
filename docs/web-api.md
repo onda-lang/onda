@@ -141,7 +141,9 @@ endpoints, apply linear, logarithmic, or curved scale, and clamp and snap to the
 
 Complete wasm32 processor exports receive an optional execution-output descriptor containing
 independently nullable delegate and print batches. Allocate all descriptors and storage before
-real-time execution.
+real-time execution. Their linear-memory regions must be mutually disjoint and must not overlap any
+other region accessed by the processor call, matching the processor ABI's execution-output
+contract.
 
 `writeDelegateBatch` and `writePrintBatch` initialize reusable batch descriptors.
 `writeExecutionOutput` connects their addresses. Call `resetExecutionOutput` immediately before
@@ -309,6 +311,7 @@ OndaPayloadSchema
 OndaPayloadDefault
 OndaPayloadValue
 OndaPayloadSizes
+OndaPayloadTensorMetadata
 PayloadPlan
 canonicalF32Number
 EVENT_INPUT_SIZE_BYTES
@@ -438,11 +441,21 @@ are rejected. Missing event arguments use declared constant defaults.
 Supply `i64` as `bigint`, an exact safe integer, or a decimal string. `decode(bytes)` returns named
 nested values with `bigint` for `i64`. Plans own immutable schema snapshots.
 
+`tensorMetadata` exposes the schema's flattened SoA contract without reparsing JSON. Each immutable
+record contains `path`, `encoding`, fixed `shape`, `parameterIndex`, `isSlice`, and
+`fixedElementCount`. Tuple path components use `__0`, `__1`, and so on. A slice's runtime tensor
+length is its logical length times `fixedElementCount`; the dynamic outer axis is therefore not
+repeated in `shape`.
+
 `requiredWorkspace(bytes)` preflights packed little-endian input. `sizes(lengths)` reports wire
 and aligned workspace sizes without allocating payload storage. Low-level wasm hosts provision
 both regions and a 16-byte descriptor, then call `writeEventInput` before invoking the event.
 Rejected input returns `PROCESSOR_EXECUTION_INPUT_REJECTED` (2) and leaves processor state usable.
 `OndaAudioProcessor.trigger` performs logical encoding before transferring bytes to the worklet.
+Web hosts intentionally have no unchecked tensor-view event entry: JavaScript values must cross the
+main-thread/worklet and Wasm linear-memory boundaries, so native borrowed addresses cannot be
+preserved end to end. Web event dispatch remains the packed, checked `onda_event_N` path and uses
+its preallocated workspace.
 Decoded `f32` leaves use `canonicalF32Number(value)`: the returned JavaScript number has the
 shortest decimal representation that round-trips to the same `f32`, so JSON and controls do not
 expose an irrelevant widened binary tail.

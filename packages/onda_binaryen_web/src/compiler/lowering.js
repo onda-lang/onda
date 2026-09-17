@@ -793,6 +793,7 @@ export class MirCompilerLowering extends MirCompilerCore {
   }
 
   compilePackedSliceCopy(slice, count, scalar, destination, counterLocal) {
+    const elementSize = this.scalarSize(scalar);
     const loopLabel = `$onda.delegate.copy.${this.nextLabel++}`;
     const counter = () => this.module.local.get(counterLocal, binaryen.i32);
     const sourceAddress = () =>
@@ -805,10 +806,10 @@ export class MirCompilerLowering extends MirCompilerCore {
         destination(),
         this.module.i32.mul(
           counter(),
-          this.module.i32.const(this.scalarSize(scalar)),
+          this.module.i32.const(elementSize),
         ),
       );
-    return this.module.block(null, [
+    const elementwise = this.module.block(null, [
       this.module.local.set(counterLocal, this.module.i32.const(0)),
       this.module.loop(
         loopLabel,
@@ -829,6 +830,18 @@ export class MirCompilerLowering extends MirCompilerCore {
         ),
       ),
     ]);
+    return this.module.if(
+      this.module.i32.ne(count(), this.module.i32.const(0)),
+      this.module.if(
+        this.module.i32.eq(slice()[3], this.module.i32.const(elementSize)),
+        this.module.memory.copy(
+          destination(),
+          slice()[0],
+          this.module.i32.mul(count(), this.module.i32.const(elementSize)),
+        ),
+        elementwise,
+      ),
+    );
   }
 
   compileOutputStore(data, context) {

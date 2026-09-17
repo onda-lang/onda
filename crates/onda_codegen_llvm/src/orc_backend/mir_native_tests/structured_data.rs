@@ -1570,6 +1570,138 @@ sample:
 }
 
 #[test]
+fn contiguous_delegate_tensors_use_memcpy_packing() {
+    let (_, mir) = source_program(
+        r#"
+delegate captured(values: f32[])
+event capture(values: f32[]):
+  captured(values)
+sample:
+  out1 = 0.0
+"#,
+        1,
+    );
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O0,
+        },
+    )
+    .expect("delegate payload IR");
+    let fast_path = ir
+        .lines()
+        .position(|line| line.starts_with("delegate_payload_copy_contiguous"))
+        .expect("contiguous delegate-copy block");
+    assert!(
+        ir.lines()
+            .skip(fast_path)
+            .take(12)
+            .any(|line| line.contains("llvm.memcpy")),
+        "contiguous delegate-copy block should use memcpy: {ir}"
+    );
+}
+
+#[test]
+fn borrowed_event_views_do_not_require_preparation_workspace() {
+    let (_, mir) = source_program(
+        r#"
+init:
+  observed = 0.0
+event configure(values: f32[]):
+  observed = values[0] + values[1] + f32(values.len())
+sample:
+  out1 = observed
+"#,
+        1,
+    );
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let native = lower_mir_and_jit_with_options(
+            mir.clone(),
+            MirCompileOptions {
+                fast_math: false,
+                opt_level: level,
+            },
+        )
+        .unwrap();
+        let params = native.default_param_bytes();
+        let mut state = native.initialize_state(&params).unwrap();
+        state.event_workspace = crate::RuntimeBuffer::default();
+        let values = [0.25_f32, 0.75];
+        let views = [onda_processor_abi::EventTensorView {
+            data: values.as_ptr().cast(),
+            element_count: values.len() as i32,
+        }];
+        let status = unsafe {
+            native
+                .trigger_event_views_by_index_with_status(
+                    &mut state,
+                    &params,
+                    0,
+                    &views,
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    None,
+                )
+                .unwrap()
+        };
+        assert_eq!(status, onda_processor_abi::PROCESSOR_EXECUTION_OK);
+        let mut output = [0.0_f32];
+        native
+            .test_process_checked(
+                &mut state,
+                &params,
+                0,
+                1,
+                3,
+                &[],
+                &[output.as_mut_ptr().cast()],
+                &[],
+                &[],
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(output, [3.0]);
+    }
+}
+
+#[test]
+fn borrowed_event_views_use_the_target_scalar_alignment() {
+    let (_, mir) = source_program(
+        r#"
+init:
+  observed = 0.0
+event configure(value: f64):
+  observed = f32(value)
+sample:
+  out1 = observed
+"#,
+        1,
+    );
+    let mut target = crate::TargetConfig::for_triple("i686-unknown-linux-gnu");
+    target.opt_level = TargetOptLevel::O0;
+    let ir = lower_mir_to_target_llvm_ir(
+        &mir,
+        &MirTargetOptions {
+            fast_math: false,
+            target,
+        },
+    )
+    .expect("i686 event-view IR");
+    let event_view_load = ir
+        .lines()
+        .find(|line| line.contains("load double") && line.contains("event_tensor_view_value"))
+        .expect("event-view f64 load");
+    assert!(
+        event_view_load.ends_with("align 4"),
+        "i686 f64 views use four-byte ABI alignment: {event_view_load}"
+    );
+}
+
+#[test]
 fn events_reject_before_mutation_and_prepare_normalized_aligned_input() {
     let (_, mir) = source_program(
         r#"

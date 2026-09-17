@@ -100,6 +100,29 @@ typedef struct onda_execution_output {
   onda_print_batch_t* print_batch;
 } onda_execution_output_t;
 
+/* One contiguous, naturally aligned, native-endian primitive tensor borrowed for a synchronous
+   event call. element_count is the number of primitive scalars, not the top-level logical slice
+   length. data may be NULL only when element_count is zero. */
+typedef struct onda_event_tensor_view {
+  const void* data;
+  int32_t element_count;
+} onda_event_tensor_view_t;
+
+/* Flattened metadata for one event tensor view. path is the dot-separated schema-leaf path.
+   shape contains only fixed array axes, outermost first. For a fixed parameter, its required view
+   element_count is fixed_element_count. For a slice, the required element_count is the logical
+   slice length multiplied by fixed_element_count. path and shape remain valid until the program is
+   destroyed. */
+typedef struct onda_event_tensor_info {
+  const char* path;
+  const int32_t* shape;
+  int32_t shape_rank;
+  int32_t parameter_index;
+  int32_t element_type;
+  int32_t is_slice;
+  int32_t fixed_element_count;
+} onda_event_tensor_info_t;
+
 typedef struct onda_owned_string {
   char* data;
   size_t length;
@@ -161,12 +184,14 @@ void onda_owned_string_dispose(onda_owned_string_t* text);
 /* Initialization, process, and event-dispatch functions accept a nullable
    execution output whose two batch pointers are independently nullable. NULL
    delegate delivery does not affect synchronous Onda `when` handlers. Each
-   supplied batch is reset when generated execution begins. A nonzero
-   overflow_count means one or more complete records were dropped for
-   insufficient capacity. Records carry one shared call-local sequence so a host
-   can merge the two streams chronologically. Print records emitted before generated failure remain
-   available while an instance survives; initialized constructors clear both
-   batches when they return NULL. Delegate records are cleared on failure. */
+   supplied batch is reset when generated execution begins. Supplied batch descriptors and their
+   non-NULL storage regions must be mutually disjoint and must not overlap bound input, output, or
+   buffer storage, event payload or tensor-view storage, or any other memory accessed by the call.
+   A nonzero overflow_count means one or more complete records were dropped for insufficient
+   capacity. Records carry one shared call-local sequence so a host can merge the two streams
+   chronologically. Print records emitted before generated failure remain available while an
+   instance survives; initialized constructors clear both batches when they return NULL. Delegate
+   records are cleared on failure. */
 
 /* Primitive element type identifiers used by metadata and buffer binding APIs. */
 enum {
@@ -796,6 +821,30 @@ int onda_trigger_event_by_index_unchecked(
   int payload_bytes,
   onda_execution_output_t* output
 );
+/* Triggers an event from contiguous native SoA tensors in recursive schema-leaf order. The call
+   validates tensor count, shape, alignment, shared slice lengths, and canonical bool/ranged-integer
+   values, then borrows the tensor storage directly without packing or workspace copies. All
+   nonempty regions must remain readable and unchanged until this synchronous call returns and must
+   not overlap memory written by the event. Returns the same status values as
+   onda_trigger_event_by_index. */
+int onda_trigger_event_views_by_index(
+  onda_instance_t* instance,
+  int index,
+  const onda_event_tensor_view_t* tensors,
+  int tensor_count,
+  onda_execution_output_t* output
+);
+/* Triggers an event from the same canonical SoA representation without validating instance state,
+   buffers, tensor count, shape, alignment, or logical values. tensors must point to exactly the
+   schema-derived number of valid views; violating any contract is undefined behavior. The instance
+   must be fully initialized and its buffer bindings prepared by onda_validate_buffers or
+   onda_prepare_unchecked_process after their most recent mutation. */
+int onda_trigger_event_views_by_index_unchecked(
+  onda_instance_t* instance,
+  int index,
+  const onda_event_tensor_view_t* tensors,
+  onda_execution_output_t* output
+);
 
 /* Binds one input entry to host memory; returns 0 on success, negative on error.
    Zero-copy contract: runtime stores src_ptr and reads from it directly (no internal copy).
@@ -1079,6 +1128,18 @@ int onda_event_payload_min_bytes(const onda_program_t* program, int index);
 /* Returns the recursive event schema as UTF-8 JSON, or NULL if invalid. The borrowed string remains
    valid until the program is destroyed. */
 const char* onda_event_schema_json(const onda_program_t* program, int index);
+/* Returns the number of flattened primitive tensors required by the event-view API, or -1 for an
+   invalid program or event index. Tensor indices are the exact order expected by dispatch. */
+int onda_event_tensor_count(const onda_program_t* program, int event_index);
+/* Writes flattened metadata for one event tensor. Returns 0 on success or -1 for invalid input.
+   element_type is an ONDA_PRIMITIVE_* value and parameter_index names the top-level event
+   parameter that owns this leaf. */
+int onda_event_tensor_info(
+  const onda_program_t* program,
+  int event_index,
+  int tensor_index,
+  onda_event_tensor_info_t* out_info
+);
 /* Computes exact packed payload and aligned preparation-workspace sizes from one logical length per
    top-level slice, in declaration order. Returns false for an invalid index, pointer, length count,
    negative length, or overflowing shape. Output values are written only on success. */

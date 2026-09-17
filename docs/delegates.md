@@ -28,6 +28,11 @@ Passing `None` in Rust or `NULL` in C suppresses only the host-facing copy. Payl
 synchronous `when` handlers still run. Generated execution never allocates, grows the storage,
 blocks, or calls an arbitrary host callback.
 
+Every supplied delegate or print batch descriptor and non-null storage region must be mutually
+disjoint and must not overlap any other memory accessed by the processor call, including host-bound
+audio and external-buffer storage or event input tensors. Generated delegate packing relies on this
+invariant when bulk-copying contiguous tensors.
+
 One packed record contains:
 
 ```text

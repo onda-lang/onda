@@ -39,6 +39,47 @@ test("validates the descriptor fixture shared with the Rust schema", () => {
     validateProcessorMetadata(fixture).format_version,
     PROCESSOR_ARTIFACT_FORMAT_VERSION,
   );
+
+  const nativeViews = structuredClone(fixture);
+  nativeViews.artifact_kind = "relocatable_object";
+  nativeViews.target.pointer_model = "native_address";
+  nativeViews.target.calling_convention = "c";
+  delete nativeViews.exports.memory;
+  delete nativeViews.exports.heap_base;
+  nativeViews.exports.event_views = ["onda_event_views_0"];
+  nativeViews.integration.required_symbols = nativeViews.integration.required_symbols
+    .filter((name) => name !== "memory" && name !== "__heap_base");
+  nativeViews.integration.required_symbols.push("onda_event_views_0");
+  nativeViews.integration.profile = {
+    kind: "native_relocatable_object",
+    symbol_visibility: "linker_managed",
+  };
+  assert.deepEqual(
+    validateProcessorMetadata(nativeViews).exports.event_views,
+    ["onda_event_views_0"],
+  );
+
+  const mismatchedViews = structuredClone(nativeViews);
+  mismatchedViews.exports.event_views = [];
+  assert.throws(
+    () => validateProcessorMetadata(mismatchedViews),
+    /event_views must be parallel/,
+  );
+
+  const missingViewSymbol = structuredClone(nativeViews);
+  missingViewSymbol.integration.required_symbols.pop();
+  assert.throws(
+    () => validateProcessorMetadata(missingViewSymbol),
+    /missing executable export 'onda_event_views_0'/,
+  );
+
+  const webViews = structuredClone(fixture);
+  webViews.exports.event_views = ["onda_event_views_0"];
+  webViews.integration.required_symbols.push("onda_event_views_0");
+  assert.throws(
+    () => validateProcessorMetadata(webViews),
+    /only valid for native relocatable objects/,
+  );
   assert.equal(fixture.metadata.states[0].integer_range.mode, "wrap");
   assert.equal(fixture.metadata.delegates[0].params[0].is_array, false);
 

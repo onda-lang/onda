@@ -2521,6 +2521,146 @@ test("publishes top-level delegates into the call-scoped delegate batch", async 
   assert.equal(view.getInt32(storage + 12, true), 42);
 });
 
+test("bulk-copies contiguous delegate tensors and preserves strided copies", async () => {
+  const mir = executableMir();
+  const sliceType = mir.types.length;
+  mir.types.push(type("slice", { element: "f32", access: "read_only" }));
+  mir.const_data.push({
+    name: "contiguous",
+    element: "f32",
+    values: [1.25, 2.5, 3.75].map((value) => ({ type: "f32", value })),
+  });
+  mir.interface.buffers.push({
+    name: "stereo",
+    element: "f32",
+    channels: { static: 2 },
+    access: "read_only",
+  });
+  mir.interface.delegates.push({
+    name: "values",
+    params: [{ name: "items", ty: sliceType }],
+  });
+  const process = mir.functions[mir.entry_points.process];
+  const contiguous = process.locals.length;
+  const strided = contiguous + 1;
+  process.locals.push(
+    { name: "contiguous", ty: sliceType },
+    { name: "strided", ty: sliceType },
+  );
+  process.body.statements.unshift(
+    assign(place("local", contiguous), {
+      kind: "make_slice",
+      data: {
+        source: { kind: "const_data", data: 0 },
+        start: constant("i32", 0),
+        len: constant("i32", 3),
+        bounds: "unchecked",
+        access: "read_only",
+      },
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: local(contiguous) }],
+    }),
+    assign(place("local", strided), {
+      kind: "make_slice",
+      data: {
+        source: {
+          kind: "buffer",
+          data: { buffer: 0, channel: constant("i32", 1) },
+        },
+        start: constant("i32", 0),
+        len: constant("i32", 3),
+        bounds: "unchecked",
+        access: "read_only",
+      },
+    }),
+    statement("publish_delegate", {
+      delegate: 0,
+      args: [{ kind: "value", data: local(strided) }],
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  const emitted = emittedFunction(artifact.wat, "$onda.fn.1");
+  assert.match(emitted, /memory\.copy/);
+  assert.match(emitted, /\(loop \$\$onda\.delegate\.copy\./);
+
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  let heap = Number(__heap_base.value);
+  const allocate = (bytes, alignment = 4) => {
+    heap = Math.ceil(heap / alignment) * alignment;
+    const address = heap;
+    heap += bytes;
+    return address;
+  };
+  const params = allocate(Math.max(artifact.metadata.runtime.param_size_bytes, 1));
+  const state = allocate(Math.max(artifact.metadata.runtime.state_size_bytes, 1), 16);
+  const outputTable = allocate(4);
+  const output = allocate(4);
+  const bufferPointers = allocate(4);
+  const bufferFrames = allocate(4);
+  const bufferChannels = allocate(4);
+  const bufferSampleRates = allocate(4);
+  const bufferData = allocate(6 * 4);
+  const batch = allocate(20);
+  const storage = allocate(56, 8);
+  const executionOutput = allocate(12);
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  view.setUint32(bufferPointers, bufferData, true);
+  view.setInt32(bufferFrames, 3, true);
+  view.setInt32(bufferChannels, 2, true);
+  view.setFloat32(bufferSampleRates, 48_000, true);
+  new Float32Array(memory.buffer, bufferData, 6).set([1, 10, 2, 20, 3, 30]);
+  writeDelegateBatch(memory, batch, storage, 56);
+  writeExecutionOutput(memory, executionOutput, batch);
+
+  assert.equal(
+    onda_processor_init(
+      params,
+      state,
+      1,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+      0,
+    ),
+    0,
+  );
+  assert.equal(
+    callProcess(
+      onda_process,
+      0,
+      outputTable,
+      0,
+      0,
+      0,
+      params,
+      state,
+      bufferPointers,
+      bufferFrames,
+      bufferChannels,
+      bufferSampleRates,
+      executionOutput,
+    ),
+    0,
+  );
+
+  assert.equal(view.getUint32(batch + 8, true), 56);
+  assert.equal(view.getUint32(batch + 12, true), 2);
+  assert.deepEqual(
+    [...new Float32Array(memory.buffer, storage + 16, 3)],
+    [1.25, 2.5, 3.75],
+  );
+  assert.deepEqual(
+    [...new Float32Array(memory.buffer, storage + 44, 3)],
+    [10, 20, 30],
+  );
+});
+
 for (const structured of [false, true]) test(`rejects inconsistent ${structured ? "struct-slice" : "fixed-array"} delegate lengths`, async () => {
   const mir = executableMir();
   mir.types.push(

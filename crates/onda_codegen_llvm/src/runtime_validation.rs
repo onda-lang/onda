@@ -837,6 +837,152 @@ impl JitProgram {
         }
     }
 
+    /// Dispatches an event from checked native tensor views without copying
+    /// their contents into the event workspace.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty view must describe live readable storage for the call.
+    /// The storage must not be mutated concurrently or alias memory written by
+    /// the event.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        if self.event_descriptor(event_index).is_none() {
+            reset_execution_output(output);
+            return Ok(0);
+        }
+        #[cfg(feature = "llvm-orc")]
+        {
+            unsafe {
+                self.compiled.trigger_event_views_by_index_with_status(
+                    state,
+                    params,
+                    event_index,
+                    views,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                    output,
+                )
+            }
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            reset_execution_output(output);
+            let _ = (
+                state,
+                params,
+                event_index,
+                views,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            );
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
+    /// Validates the tensor count, shapes, alignment, shared slice lengths, and
+    /// canonical logical values for one event. Unknown event indices are neutral.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty view must describe live readable storage that is not
+    /// mutated concurrently for the duration of validation.
+    pub unsafe fn validate_event_tensor_views(
+        &self,
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+    ) -> bool {
+        #[cfg(feature = "llvm-orc")]
+        {
+            unsafe {
+                self.compiled
+                    .validate_event_tensor_views(event_index, views)
+            }
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            let _ = (event_index, views);
+            true
+        }
+    }
+
+    /// Enters generated event code without hosted-region, buffer, or tensor-view
+    /// validation.
+    ///
+    /// # Safety
+    ///
+    /// The instance storage, buffer tables, and schema-derived number of tensor
+    /// views must satisfy the complete ABI contract. Each view must contain the
+    /// exact contiguous SoA tensor required by its schema leaf.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_unchecked(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: *const onda_processor_abi::EventTensorView,
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        if self.event_descriptor(event_index).is_none() {
+            reset_execution_output(output);
+            return Ok(0);
+        }
+        #[cfg(feature = "llvm-orc")]
+        {
+            Ok(unsafe {
+                self.compiled.trigger_event_views_by_index_unchecked(
+                    state,
+                    params,
+                    event_index,
+                    views,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                    output,
+                )
+            })
+        }
+        #[cfg(not(feature = "llvm-orc"))]
+        {
+            reset_execution_output(output);
+            let _ = (
+                state,
+                params,
+                event_index,
+                views,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+            );
+            Err(Diagnostic::internal(
+                "ORC backend is required but not enabled at build time",
+            ))
+        }
+    }
+
     /// Enters generated event code without hosted payload or buffer-shape validation.
     /// The generated entry still performs mandatory payload preflight.
     ///

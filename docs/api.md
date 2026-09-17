@@ -426,11 +426,18 @@ scalar from a fixed array of length one. The first slice itself has a fixed offs
 prefix. Every parameter following a slice has a runtime-dependent offset, so the offset query
 returns `-1`; decode sequentially from the preceding slice length instead.
 
-These parameter queries describe the flattened executable tensors. For logical structs, tuples,
-nested arrays, field names, defaults, and integer domains, use `onda_event_schema_json` or
-`onda_delegate_schema_json`. Each returns the same recursive `PayloadSchema` JSON carried by a raw
-processor descriptor. Struct values are objects keyed by field name; tuples and arrays are ordered
-sequences. The string is borrowed and remains valid until the program is destroyed.
+`onda_event_tensor_count` and `onda_event_tensor_info` expose the event-view ABI directly as a flat
+table in dispatch order. Each entry provides its dot-separated leaf path, owning top-level parameter,
+primitive type, fixed array shape and element product, and whether it has a dynamic outer slice axis.
+For a fixed parameter, `fixed_element_count` is the view's required `element_count`. For a slice,
+the required `element_count` is the logical slice length multiplied by `fixed_element_count`.
+Borrowed paths and shapes remain valid until program destruction.
+
+For the full recursive logical schema, defaults, and integer domains, use
+`onda_event_schema_json` or `onda_delegate_schema_json`. Each returns the same recursive
+`PayloadSchema` JSON carried by a raw processor descriptor. Struct values are objects keyed by field
+name; tuples and arrays are ordered sequences. The string is borrowed and remains valid until the
+program is destroyed.
 
 `onda_event_payload_bytes` returns the exact wire size for a fixed event and `-1` for a dynamic
 event. `onda_event_payload_min_bytes` includes every dynamic slice's four-byte length prefix with
@@ -592,7 +599,32 @@ event indices are deliberately neutral and return success.
 buffer state satisfying the ABI contract. Like unchecked processing, it may return a positive
 generated failure code or a negative API error.
 
-Both functions accept an optional execution output and execute synchronously on the calling thread.
+`onda_trigger_event_views_by_index` is the native zero-copy alternative. It accepts one
+`onda_event_tensor_view_t` per primitive schema leaf, in declaration and depth-first field order.
+`element_count` is the number of primitive scalars in that leaf; leaves belonging to the same
+top-level slice must therefore imply the same logical length after their fixed inner array extents
+are removed. Every leaf is one contiguous, naturally aligned native-endian tensor. Struct slices
+therefore use structure-of-arrays storage: one view for each primitive field, rather than strided
+views into an array-of-structs allocation.
+
+The checked view call verifies tensor count, shapes, shared lengths, alignment, pointer arithmetic,
+and canonical bool and ranged-integer values before executing. Unlike packed wire input, borrowed
+views represent logical native values, so noncanonical values are rejected rather than normalized.
+It then constructs Onda's read-only slice descriptors over the supplied memory without packing or
+copying tensor contents into event workspace. Nonempty regions must remain readable and unchanged
+until the synchronous call returns and must not overlap memory written by the event. Empty views may
+use a null data pointer. As with all C pointer APIs, the caller owns the validity of the described
+allocations.
+
+`onda_trigger_event_views_by_index_unchecked` uses exactly the same canonical SoA representation,
+but derives the tensor count from the event schema and performs no instance, buffer, tensor shape,
+alignment, or value validation. The instance must be fully initialized with prepared buffer
+bindings (via `onda_validate_buffers` or `onda_prepare_unchecked_process` after rebinding), and
+`tensors` must point to the exact schema-derived number of valid views. Violating this contract is
+undefined behavior. This is the minimum-overhead entry for hosts that prepare and reuse known-correct
+views.
+
+All event functions accept an optional execution output and execute synchronously on the calling thread.
 Event payloads use the recursive schema returned by `onda_event_schema_json`. Encode parameters in
 declaration order and fields depth-first; structs are structure-of-arrays tensors, and each dynamic
 slice contributes one little-endian `i32` logical length followed by its leaf tensors. Use
@@ -641,6 +673,12 @@ if (status == ONDA_EXECUTION_OK) {
   }
 }
 ```
+
+Each supplied delegate or print batch descriptor and its non-null storage must be disjoint from the
+other batch and from every region accessed during the call, including bound input, output, and
+buffer storage plus packed event payloads or native event tensor views. This is a required calling
+contract even for checked entry points because ordinary binding and payload validation cannot
+establish arbitrary C pointer aliasing.
 
 `onda_delegate_batch_reset` clears counters without changing storage. The runtime host resets every
 supplied batch before init or process code; an event entry resets it before input preflight, so
@@ -826,6 +864,8 @@ onda_set_param_plain_f64
 onda_set_param_normalized
 onda_trigger_event_by_index
 onda_trigger_event_by_index_unchecked
+onda_trigger_event_views_by_index
+onda_trigger_event_views_by_index_unchecked
 onda_bind_input
 onda_bind_output
 onda_bind_buffer
@@ -899,6 +939,8 @@ onda_state_type_bytes
 onda_event_payload_bytes
 onda_event_payload_min_bytes
 onda_event_schema_json
+onda_event_tensor_count
+onda_event_tensor_info
 onda_event_payload_sizes
 onda_delegate_payload_bytes
 onda_delegate_payload_min_bytes

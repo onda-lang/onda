@@ -5,75 +5,74 @@ impl FunctionEmitter<'_, '_> {
         &mut self,
         event: onda_mir::EventId,
     ) -> Result<(), MirCodegenError> {
-        let payload = load_context_field(
+        let views = load_context_field(
             self.module,
             self.builder,
             self.runtime_context,
             12,
-            "event_payload",
+            "event_tensor_views",
         )?;
-        let i8_ty = LLVMInt8TypeInContext(self.module.context);
         let i32_ty = LLVMInt32TypeInContext(self.module.context);
-        let mut offset = LLVMConstInt(i32_ty, 0, 0);
+        let view_ty = super::super::event_input::tensor_view_type(self.module);
         let event = &self.module.program.interface.events[event.index()];
         let plan = &self.module.layouts.event_payloads[match self.function.kind {
             FunctionKind::Event(id) => id.index(),
             _ => unreachable!(),
         }]
         .plan;
+        let view = |index: usize| {
+            LLVMBuildGEP2(
+                self.builder,
+                view_ty,
+                views,
+                [LLVMConstInt(i32_ty, index as u64, 0)].as_mut_ptr(),
+                1,
+                c"event_tensor_view".as_ptr(),
+            )
+        };
+        let field = |view, index, ty| {
+            LLVMBuildLoad2(
+                self.builder,
+                ty,
+                LLVMBuildStructGEP2(
+                    self.builder,
+                    view_ty,
+                    view,
+                    index,
+                    c"event_tensor_view_field".as_ptr(),
+                ),
+                c"event_tensor_view_value".as_ptr(),
+            )
+        };
         self.event_parameters.reserve(event.params.len());
         for group in plan.parameters() {
-            let length = if group.dynamic {
-                offset = super::super::event_input::aligned_offset(self.builder, offset, 4);
-                let pointer = LLVMBuildGEP2(
+            if let Some(index) = group.length_parameter {
+                let first = &plan.tensors()[group.tensors.start];
+                let elements = field(view(group.tensors.start), 1, i32_ty);
+                let length = LLVMBuildUDiv(
                     self.builder,
-                    i8_ty,
-                    payload,
-                    [offset].as_mut_ptr(),
-                    1,
-                    c"event_length_ptr".as_ptr(),
+                    elements,
+                    LLVMConstInt(i32_ty, first.elements as u64, 0),
+                    c"event_logical_length".as_ptr(),
                 );
-                let length =
-                    LLVMBuildLoad2(self.builder, i32_ty, pointer, c"event_length".as_ptr());
-                LLVMSetAlignment(length, 4);
-                if let Some(index) = group.length_parameter {
-                    self.event_parameters.push(PlaceRef {
-                        ptr: pointer,
-                        ty: event.params[index].ty,
-                        alignment: 4,
-                    });
-                }
-                offset = LLVMBuildAdd(
-                    self.builder,
-                    offset,
-                    LLVMConstInt(i32_ty, 4, 0),
-                    c"event_data_offset".as_ptr(),
-                );
-                length
-            } else {
-                LLVMConstInt(i32_ty, 1, 0)
-            };
+                let pointer = LLVMBuildAlloca(self.builder, i32_ty, c"event_length".as_ptr());
+                LLVMBuildStore(self.builder, length, pointer);
+                self.event_parameters.push(PlaceRef {
+                    ptr: pointer,
+                    ty: event.params[index].ty,
+                    alignment: 4,
+                });
+            }
             for index in group.tensors.clone() {
                 let tensor = &plan.tensors()[index];
                 let parameter = &event.params[tensor.parameter];
-                let size = tensor.encoding.byte_size();
-                offset = super::super::event_input::aligned_offset(self.builder, offset, size);
-                let pointer = LLVMBuildGEP2(
-                    self.builder,
-                    i8_ty,
-                    payload,
-                    [offset].as_mut_ptr(),
-                    1,
-                    c"event_tensor".as_ptr(),
-                );
-                let elements = LLVMBuildMul(
-                    self.builder,
-                    length,
-                    LLVMConstInt(i32_ty, tensor.elements as u64, 0),
-                    c"event_elements".as_ptr(),
-                );
+                let descriptor = view(index);
+                let pointer = field(descriptor, 0, self.module.ptr_ty);
+                let elements = field(descriptor, 1, i32_ty);
+                let element_bytes = tensor.encoding.byte_size();
+                let parameter_alignment = self.module.layouts.type_alignments[parameter.ty.index()];
+                let stride = LLVMConstInt(i32_ty, element_bytes as u64, 0);
                 if group.dynamic {
-                    let stride = LLVMConstInt(i32_ty, size as u64, 0);
                     let descriptor = self.build_slice_descriptor(
                         parameter.ty,
                         pointer,
@@ -90,26 +89,15 @@ impl FunctionEmitter<'_, '_> {
                     self.event_parameters.push(PlaceRef {
                         ptr,
                         ty: parameter.ty,
-                        alignment: self.module.layouts.type_alignments[parameter.ty.index()],
+                        alignment: parameter_alignment,
                     });
                 } else {
                     self.event_parameters.push(PlaceRef {
                         ptr: pointer,
                         ty: parameter.ty,
-                        alignment: size,
+                        alignment: parameter_alignment,
                     });
                 }
-                offset = LLVMBuildAdd(
-                    self.builder,
-                    offset,
-                    LLVMBuildMul(
-                        self.builder,
-                        elements,
-                        LLVMConstInt(i32_ty, size as u64, 0),
-                        c"event_tensor_bytes".as_ptr(),
-                    ),
-                    c"event_next_tensor".as_ptr(),
-                );
             }
         }
         Ok(())
@@ -649,6 +637,7 @@ impl FunctionEmitter<'_, '_> {
             self.declaration.value,
             "delegate_payload_copy_done",
         )?;
+        let byte_size = scalar_store_size(source.element);
         let nonempty = LLVMBuildICmp(
             self.builder,
             LLVMIntPredicate::LLVMIntNE,
@@ -656,7 +645,54 @@ impl FunctionEmitter<'_, '_> {
             LLVMConstInt(i32_ty, 0, 0),
             c_name("delegate_payload_nonempty")?.as_ptr(),
         );
-        LLVMBuildCondBr(self.builder, nonempty, body, done);
+        // Native scalar bytes are already wire bytes on little-endian targets;
+        // one-byte booleans are endian-independent. Strided tensors and
+        // multi-byte big-endian values retain the scalar packing loop.
+        let elementwise_predecessor =
+            if super::super::event_input::target_is_little_endian(self.module) || byte_size == 1 {
+                let dispatch = append_block(
+                    self.module.context,
+                    self.declaration.value,
+                    "delegate_payload_copy_dispatch",
+                )?;
+                let contiguous = append_block(
+                    self.module.context,
+                    self.declaration.value,
+                    "delegate_payload_copy_contiguous",
+                )?;
+                LLVMBuildCondBr(self.builder, nonempty, dispatch, done);
+                LLVMPositionBuilderAtEnd(self.builder, dispatch);
+                LLVMBuildCondBr(
+                    self.builder,
+                    LLVMBuildICmp(
+                        self.builder,
+                        LLVMIntPredicate::LLVMIntEQ,
+                        source.stride_bytes,
+                        LLVMConstInt(i32_ty, byte_size, 0),
+                        c_name("delegate_payload_contiguous_stride")?.as_ptr(),
+                    ),
+                    contiguous,
+                    body,
+                );
+                LLVMPositionBuilderAtEnd(self.builder, contiguous);
+                let bytes = LLVMBuildMul(
+                    self.builder,
+                    LLVMBuildZExt(
+                        self.builder,
+                        len,
+                        i64_ty,
+                        c_name("delegate_payload_len_i64")?.as_ptr(),
+                    ),
+                    LLVMConstInt(i64_ty, byte_size, 0),
+                    c_name("delegate_payload_copy_bytes")?.as_ptr(),
+                );
+                LLVMBuildMemCpy(self.builder, destination, 1, source.read_ptr, 1, bytes);
+                LLVMBuildBr(self.builder, done);
+                dispatch
+            } else {
+                LLVMBuildCondBr(self.builder, nonempty, body, done);
+                preheader
+            };
         LLVMPositionBuilderAtEnd(self.builder, body);
         let index = LLVMBuildPhi(
             self.builder,
@@ -664,7 +700,12 @@ impl FunctionEmitter<'_, '_> {
             c_name("delegate_payload_index")?.as_ptr(),
         );
         let zero = LLVMConstInt(i32_ty, 0, 0);
-        LLVMAddIncoming(index, [zero].as_mut_ptr(), [preheader].as_mut_ptr(), 1);
+        LLVMAddIncoming(
+            index,
+            [zero].as_mut_ptr(),
+            [elementwise_predecessor].as_mut_ptr(),
+            1,
+        );
         let index_i64 = LLVMBuildZExt(
             self.builder,
             index,
@@ -693,7 +734,7 @@ impl FunctionEmitter<'_, '_> {
         let destination_offset = LLVMBuildMul(
             self.builder,
             index_i64,
-            LLVMConstInt(i64_ty, scalar_store_size(source.element), 0),
+            LLVMConstInt(i64_ty, byte_size, 0),
             c_name("delegate_payload_destination_offset")?.as_ptr(),
         );
         let destination_ptr = LLVMBuildGEP2(
@@ -717,7 +758,7 @@ impl FunctionEmitter<'_, '_> {
                 self.module,
                 self.builder,
                 value,
-                scalar_store_size(source.element) as usize,
+                byte_size as usize,
             ),
             destination_ptr,
         );

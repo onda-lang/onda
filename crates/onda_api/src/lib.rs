@@ -37,9 +37,11 @@ use onda_runtime::{
     process_unchecked_segment, read_control_output_bytes, set_param_by_index,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index_unchecked,
-    validate_bindings, validate_buffers, validate_inputs, validate_outputs,
-    DelegateBatch as RuntimeDelegateBatch, ExecutionOutput as RuntimeExecutionOutput, InitMode,
-    Instance, InstanceConfig, PrintBatch as RuntimePrintBatch,
+    trigger_event_views_by_index_unchecked as runtime_trigger_event_views_by_index_unchecked,
+    trigger_event_views_by_index_with_status, validate_bindings, validate_buffers, validate_inputs,
+    validate_outputs, DelegateBatch as RuntimeDelegateBatch,
+    ExecutionOutput as RuntimeExecutionOutput, InitMode, Instance, InstanceConfig,
+    PrintBatch as RuntimePrintBatch,
 };
 use onda_semantics::{
     analyze_with_options_and_inputs, compile_inputs_from_literals, inspect_compile_constants,
@@ -163,6 +165,38 @@ pub struct onda_execution_output_t {
     pub delegate_batch: *mut onda_delegate_batch_t,
     pub print_batch: *mut onda_print_batch_t,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct onda_event_tensor_view_t {
+    pub data: *const c_void,
+    pub element_count: i32,
+}
+
+/// Flattened metadata for one event tensor view. Borrowed pointers remain valid
+/// until the program is destroyed.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct onda_event_tensor_info_t {
+    pub path: *const c_char,
+    pub shape: *const i32,
+    pub shape_rank: i32,
+    pub parameter_index: i32,
+    pub element_type: i32,
+    pub is_slice: i32,
+    pub fixed_element_count: i32,
+}
+
+const _: () = {
+    assert!(
+        std::mem::size_of::<onda_event_tensor_view_t>()
+            == std::mem::size_of::<onda_codegen_llvm::EventTensorView>()
+    );
+    assert!(
+        std::mem::align_of::<onda_event_tensor_view_t>()
+            == std::mem::align_of::<onda_codegen_llvm::EventTensorView>()
+    );
+};
 
 #[repr(C)]
 pub struct onda_owned_string_t {
@@ -526,6 +560,7 @@ struct CompiledProgram {
     buffer_array_names: Vec<CString>,
     event_names: Vec<CString>,
     event_param_names: Vec<Vec<CString>>,
+    event_tensor_info: Vec<Vec<CEventTensorInfo>>,
     event_schema_json: Vec<CString>,
     delegate_names: Vec<CString>,
     delegate_param_names: Vec<Vec<CString>>,
@@ -1891,6 +1926,13 @@ unsafe fn compile_parsed_program(
             return ptr::null_mut();
         }
     };
+    let event_tensor_info = match build_event_tensor_info(&jit) {
+        Ok(value) => value,
+        Err(diag) => {
+            write_diag(out_diag, diag_to_c(&diag));
+            return ptr::null_mut();
+        }
+    };
     let event_schema_json = match (0..jit.event_count())
         .map(|event_idx| {
             let event = jit
@@ -2006,6 +2048,7 @@ unsafe fn compile_parsed_program(
         buffer_array_names,
         event_names,
         event_param_names,
+        event_tensor_info,
         event_schema_json,
         delegate_names,
         delegate_param_names,
@@ -4299,63 +4342,6 @@ pub unsafe extern "C" fn onda_control_output_read_bytes(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_trigger_event_by_index(
-    instance: *mut onda_instance,
-    index: i32,
-    payload_ptr: *const c_void,
-    payload_bytes: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() || index < 0 || payload_bytes < 0 {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    if payload_bytes > 0 && payload_ptr.is_null() {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    let payload = if payload_bytes == 0 {
-        &[][..]
-    } else {
-        std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
-    };
-    execution_status_to_c(with_runtime_execution_output(output, |output| {
-        onda_runtime::trigger_event_by_index_with_status(
-            &mut (*instance).inner,
-            index as usize,
-            payload,
-            output,
-        )
-    }))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
-    instance: *mut onda_instance,
-    index: i32,
-    payload_ptr: *const c_void,
-    payload_bytes: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() || index < 0 || payload_bytes < 0 {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    if payload_bytes > 0 && payload_ptr.is_null() {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    let payload = if payload_bytes == 0 {
-        &[][..]
-    } else {
-        std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
-    };
-    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        trigger_event_by_index_unchecked(&mut (*instance).inner, index as usize, payload, output)
-    }))
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn onda_bind_input(
     instance: *mut onda_instance,
     index: i32,
@@ -4679,9 +4665,14 @@ pub unsafe extern "C" fn onda_process_unchecked_segment(
     }))
 }
 
+mod event_dispatch;
+pub use event_dispatch::*;
 mod metadata;
 pub use metadata::*;
-use metadata::{primitive_type_bytes, primitive_type_from_i32, primitive_type_to_i32};
+use metadata::{
+    build_event_tensor_info, primitive_type_bytes, primitive_type_from_i32, primitive_type_to_i32,
+    CEventTensorInfo,
+};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

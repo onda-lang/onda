@@ -44,13 +44,14 @@ pub use target_config::{
 
 pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 =
     onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED;
+pub use onda_processor_abi::EventTensorView;
 
 pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
     if status == PROCESSOR_EXECUTION_OK {
         Ok(())
     } else if status == PROCESSOR_EXECUTION_INPUT_REJECTED {
         Err(Diagnostic::runtime(
-            "event input rejected: invalid payload or insufficient workspace",
+            "event input rejected: invalid payload or tensor views, or insufficient workspace",
             0,
             0,
         ))

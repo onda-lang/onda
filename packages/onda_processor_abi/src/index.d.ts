@@ -167,6 +167,18 @@ export interface OndaPayloadField {
 }
 export interface OndaPayloadSchema { params: OndaPayloadField[] }
 
+export interface OndaPayloadTensorMetadata {
+  /** Dot-separated top-level parameter and struct-field path. Array axes are described by shape. */
+  readonly path: string;
+  readonly encoding: OndaScalarType;
+  /** Fixed array axes, outermost first. */
+  readonly shape: readonly number[];
+  readonly parameterIndex: number;
+  readonly isSlice: boolean;
+  /** Product of all fixed array axes. */
+  readonly fixedElementCount: number;
+}
+
 export type OndaPayloadValue = number | bigint | boolean | string | OndaPayloadValue[] | { [name: string]: OndaPayloadValue };
 export interface OndaPayloadSizes { wire: number; workspace: number }
 export class PayloadPlan {
@@ -176,6 +188,8 @@ export class PayloadPlan {
   readonly minimumWorkspace: number;
   readonly dynamicParameters: number;
   readonly abiParameterCount: number;
+  /** Flattened SoA tensors in event/delegate ABI order. */
+  readonly tensorMetadata: readonly OndaPayloadTensorMetadata[];
   /** Whether scalar representations match this flattened ABI parameter's schema default. */
   matchesAbiDefault(parameter: number, defaultReprs: readonly string[] | null): boolean;
   sizes(lengths: readonly number[]): OndaPayloadSizes;
@@ -273,6 +287,8 @@ export interface OndaProcessorMetadata {
     init: string;
     process: string;
     events: string[];
+    /** Trusted native SoA entries parallel to events; absent for WebAssembly artifacts. */
+    event_views?: string[];
   };
   runtime: {
     state_size_bytes: number;

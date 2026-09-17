@@ -7,7 +7,7 @@ use onda_realtime::configure_current_thread_audio_fp_mode;
 use std::fmt::{self, Write as _};
 use std::marker::PhantomData;
 
-pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
+pub use onda_codegen_llvm::{EventTensorView, ParamDomain, ParamScalarType, ParamScale};
 
 /// Bytes occupied by the delegate index, payload length, and sequence header of each occurrence.
 pub const DELEGATE_RECORD_HEADER_SIZE: usize = 12;
@@ -2400,6 +2400,118 @@ fn trigger_event_by_index_impl(
             &instance.params,
             event_index,
             payload,
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+            output,
+        )
+    })?;
+    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+        state.initialized = false;
+    }
+    Ok(status)
+}
+
+/// Dispatches an event from native tensor views without copying their contents
+/// into the event workspace. Structural shape, alignment, and logical-value
+/// invariants are checked before the handler executes.
+///
+/// # Safety
+///
+/// Every nonempty view must describe live readable storage for the duration of
+/// the synchronous call. That storage must not be mutated concurrently or
+/// overlap memory written by the event.
+pub unsafe fn trigger_event_views_by_index_with_status(
+    instance: &mut Instance,
+    event_index: usize,
+    views: &[EventTensorView],
+    mut output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
+    configure_current_thread_audio_fp_mode();
+    if !instance.buffers_validated {
+        if let Err(error) = validate_buffers(instance) {
+            output.reset();
+            return Err(error);
+        }
+    }
+    let state = match &mut instance.state {
+        InstanceState::Allocated(state) if state.initialized => state,
+        InstanceState::Allocated(_) => {
+            output.reset();
+            return Err(invalid_instance_error());
+        }
+        InstanceState::Pending(_) => {
+            output.reset();
+            return Err(uninitialized_instance_error());
+        }
+    };
+    if !unsafe {
+        instance
+            .program
+            .validate_event_tensor_views(event_index, views)
+    } {
+        output.reset();
+        return Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED);
+    }
+    let status = with_processor_execution_output(output, |output| unsafe {
+        instance.program.trigger_event_views_by_index_unchecked(
+            &mut state.storage,
+            &instance.params,
+            event_index,
+            views.as_ptr(),
+            &instance.buffer_ptrs,
+            &instance.buffer_frames,
+            &instance.buffer_channels,
+            &instance.buffer_sample_rates,
+            output,
+        )
+    })?;
+    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+        state.initialized = false;
+    }
+    Ok(status)
+}
+
+/// Dispatches an event from canonical native tensor views without copying or
+/// validating instance storage, buffer descriptors, or the tensor views.
+///
+/// Runtime safety failure invalidates the instance. Full initialization is
+/// required after execution failure.
+///
+/// # Safety
+///
+/// Buffer bindings must have been validated after their most recent mutation.
+/// The instance must be fully initialized. `views` must point to the exact
+/// schema-derived number of views, each containing a contiguous, naturally
+/// aligned native SoA tensor with the required shape and canonical values.
+pub unsafe fn trigger_event_views_by_index_unchecked(
+    instance: &mut Instance,
+    event_index: usize,
+    views: *const EventTensorView,
+    output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
+    configure_current_thread_audio_fp_mode();
+    debug_assert!(
+        instance.is_initialized(),
+        "trigger_event_views_by_index_unchecked called before full initialization; this is UB in release builds"
+    );
+    debug_assert!(
+        instance.buffers_validated,
+        "trigger_event_views_by_index_unchecked called without preparing buffer descriptors"
+    );
+    let state = match &mut instance.state {
+        InstanceState::Allocated(state) if state.initialized => state,
+        InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
+            std::hint::unreachable_unchecked()
+        },
+    };
+    let status = with_processor_execution_output(output, |output| unsafe {
+        instance.program.trigger_event_views_by_index_unchecked(
+            &mut state.storage,
+            &instance.params,
+            event_index,
+            views,
             &instance.buffer_ptrs,
             &instance.buffer_frames,
             &instance.buffer_channels,

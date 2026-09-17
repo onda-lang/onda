@@ -218,6 +218,16 @@ type NativeEventFn = unsafe extern "C" fn(
     *const f32,
     *mut onda_processor_abi::ExecutionOutput,
 ) -> u32;
+type NativeEventViewsFn = unsafe extern "C" fn(
+    *const onda_processor_abi::EventTensorView,
+    *const u8,
+    *mut u8,
+    *const *mut u8,
+    *const i32,
+    *const i32,
+    *const f32,
+    *mut onda_processor_abi::ExecutionOutput,
+) -> u32;
 
 #[derive(Debug)]
 struct NativeOrcProcess {
@@ -225,6 +235,7 @@ struct NativeOrcProcess {
     process: NativeProcessFn,
     init: NativeInitFn,
     events: Vec<NativeEventFn>,
+    event_views: Vec<NativeEventViewsFn>,
 }
 
 // SAFETY: construction finishes all LLJIT mutation before this owner is published. The stored
@@ -748,6 +759,11 @@ impl<'a> ModuleEmitter<'a> {
         for index in 0..self.program.functions.len() {
             emit_function_body(self, index)?;
         }
+        for event in 0..self.program.interface.events.len() {
+            let event = onda_mir::EventId::new(event as u32);
+            event_input::emit_view_entry(self, event)?;
+            event_input::emit_packed_entry(self, event)?;
+        }
         Ok(())
     }
 }
@@ -797,9 +813,9 @@ unsafe fn declare_functions(
                     ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty, ptr_ty,
                 ];
                 (
-                    format!("onda_event_{}", event.raw()),
+                    format!("__onda_event_views_{}", event.raw()),
                     LLVMFunctionType(i32_ty, args.as_mut_ptr(), args.len() as u32, 0),
-                    false,
+                    true,
                 )
             }
             FunctionKind::User => {
@@ -1371,21 +1387,12 @@ unsafe fn emit_function_body(
                 LLVMGetParam(declaration.value, 7),
                 !module.program.interface.delegates.is_empty(),
                 !module.program.log_sites.is_empty(),
-                true,
             )?)
         } else {
             None
         };
-        let prepared_input = if let FunctionKind::Event(event) = function.kind {
-            Some(event_input::prepare(
-                module,
-                declaration.value,
-                builder,
-                event,
-            )?)
-        } else {
-            None
-        };
+        let prepared_input = matches!(function.kind, FunctionKind::Event(_))
+            .then(|| LLVMGetParam(declaration.value, 0));
         let context_prologue = LLVMGetInsertBlock(builder);
         let (runtime_context, fallback_buffer_read, fallback_buffer_write) = match function.kind {
             FunctionKind::User => {
@@ -1711,7 +1718,6 @@ unsafe fn build_entry_runtime_context(
             output,
             needs_delegate_batch,
             needs_print_batch,
-            false,
         )?
     } else {
         (null, null, null)
@@ -1802,7 +1808,6 @@ unsafe fn load_execution_output_batches(
     output: LLVMValueRef,
     load_delegate: bool,
     load_print: bool,
-    reset: bool,
 ) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let null = LLVMConstPointerNull(module.ptr_ty);
     let delegate_slot = LLVMBuildAlloca(
@@ -1846,7 +1851,7 @@ unsafe fn load_execution_output_batches(
         (0_u32, delegate_slot, load_delegate),
         (1_u32, print_slot, load_print),
     ] {
-        if !enabled && !reset {
+        if !enabled {
             continue;
         }
         let pointer = LLVMBuildStructGEP2(
@@ -1862,12 +1867,7 @@ unsafe fn load_execution_output_batches(
             pointer,
             c_name("execution_output_batch")?.as_ptr(),
         );
-        if enabled {
-            LLVMBuildStore(builder, batch, slot);
-        }
-        if reset {
-            reset_output_batch(module, builder, batch)?;
-        }
+        LLVMBuildStore(builder, batch, slot);
     }
     let sequence = LLVMBuildStructGEP2(
         builder,
@@ -1877,13 +1877,6 @@ unsafe fn load_execution_output_batches(
         c_name("execution_output_sequence_ptr")?.as_ptr(),
     );
     LLVMBuildStore(builder, sequence, sequence_slot);
-    if reset {
-        LLVMBuildStore(
-            builder,
-            LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
-            sequence,
-        );
-    }
     LLVMBuildBr(builder, done);
     LLVMPositionBuilderAtEnd(builder, done);
     Ok((
@@ -1906,6 +1899,62 @@ unsafe fn load_execution_output_batches(
             c_name("execution_sequence")?.as_ptr(),
         ),
     ))
+}
+
+unsafe fn reset_execution_output_batches(
+    module: &ModuleEmitter<'_>,
+    builder: LLVMBuilderRef,
+    output: LLVMValueRef,
+) -> Result<(), MirCodegenError> {
+    let present = LLVMBuildICmp(
+        builder,
+        LLVMIntPredicate::LLVMIntNE,
+        output,
+        LLVMConstPointerNull(module.ptr_ty),
+        c_name("execution_output_present")?.as_ptr(),
+    );
+    let reset = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "execution_output_reset",
+    )?;
+    let done = append_block(
+        module.context,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)),
+        "execution_output_reset_done",
+    )?;
+    LLVMBuildCondBr(builder, present, reset, done);
+    LLVMPositionBuilderAtEnd(builder, reset);
+    for index in 0..=1 {
+        let pointer = LLVMBuildStructGEP2(
+            builder,
+            module.execution_output_ty,
+            output,
+            index,
+            c_name("execution_output_batch_ptr")?.as_ptr(),
+        );
+        let batch = LLVMBuildLoad2(
+            builder,
+            module.ptr_ty,
+            pointer,
+            c_name("execution_output_batch")?.as_ptr(),
+        );
+        reset_output_batch(module, builder, batch)?;
+    }
+    LLVMBuildStore(
+        builder,
+        LLVMConstInt(LLVMInt32TypeInContext(module.context), 0, 0),
+        LLVMBuildStructGEP2(
+            builder,
+            module.execution_output_ty,
+            output,
+            2,
+            c_name("execution_output_sequence_ptr")?.as_ptr(),
+        ),
+    );
+    LLVMBuildBr(builder, done);
+    LLVMPositionBuilderAtEnd(builder, done);
+    Ok(())
 }
 
 unsafe fn entry_buffer_descriptor_table(
@@ -3110,6 +3159,125 @@ impl MirJitProgram {
         }
     }
 
+    /// Validates hosted regions and native tensor views, then synchronously
+    /// executes the event while borrowing the tensor storage directly.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty tensor view and external-buffer pointer must describe a
+    /// live readable region for the duration of the call. Tensor storage must
+    /// not be mutated concurrently or overlap memory written by the event.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        mut output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        let Some(event) = self.compiled.event_views.get(event_index).copied() else {
+            reset_execution_output(output);
+            return Ok(onda_processor_abi::PROCESSOR_EXECUTION_OK);
+        };
+        let validation = self.validate_runtime_regions(state, params).and_then(|()| {
+            validate_buffer_abi(
+                &self.mir,
+                BufferDescriptorTables::new(
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                ),
+            )
+        });
+        if let Err(error) = validation {
+            reset_execution_output(output);
+            return Err(error);
+        }
+        let plan = &self.layouts.event_payloads[event_index].plan;
+        if unsafe { plan.validate_tensor_views(views) }.is_err() {
+            reset_execution_output(output.as_deref_mut());
+            return Ok(onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED);
+        }
+        Ok(unsafe {
+            invoke_event_views(
+                event,
+                state,
+                params,
+                views.as_ptr(),
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )
+        })
+    }
+
+    /// Validates canonical native tensor views for one event. Unknown event
+    /// indices are neutral.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty view must describe live readable storage that is not
+    /// mutated concurrently for the duration of validation.
+    pub unsafe fn validate_event_tensor_views(
+        &self,
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+    ) -> bool {
+        self.layouts
+            .event_payloads
+            .get(event_index)
+            .is_none_or(|layout| unsafe { layout.plan.validate_tensor_views(views).is_ok() })
+    }
+
+    /// Enters generated event code without validating hosted regions, buffer
+    /// descriptors, tensor count, tensor shape, alignment, or logical values.
+    ///
+    /// # Safety
+    ///
+    /// State, parameters, external buffers, and the schema-derived number of
+    /// tensor views must satisfy the complete ABI contract. Every view must
+    /// describe contiguous, naturally aligned native storage containing the
+    /// exact element count and canonical values required by its schema leaf.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_unchecked(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: *const onda_processor_abi::EventTensorView,
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        mut output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> u32 {
+        let Some(event) = self.compiled.event_views.get(event_index).copied() else {
+            reset_execution_output(output.as_deref_mut());
+            return onda_processor_abi::PROCESSOR_EXECUTION_OK;
+        };
+        unsafe {
+            invoke_event_views(
+                event,
+                state,
+                params,
+                views,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )
+        }
+    }
+
     fn validate_runtime_regions(
         &self,
         state: &RuntimeState,
@@ -3132,6 +3300,32 @@ impl MirJitProgram {
             ));
         }
         Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn invoke_event_views(
+    event: NativeEventViewsFn,
+    state: &mut RuntimeState,
+    params: &[u8],
+    views: *const onda_processor_abi::EventTensorView,
+    buffer_ptrs: &[*mut u8],
+    buffer_frames: &[i32],
+    buffer_channels: &[i32],
+    buffer_sample_rates: &[f32],
+    output: Option<&mut onda_processor_abi::ExecutionOutput>,
+) -> u32 {
+    unsafe {
+        event(
+            views,
+            abi_const_ptr(params),
+            abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
+            abi_const_ptr(buffer_ptrs),
+            abi_const_ptr(buffer_frames),
+            abi_const_ptr(buffer_channels),
+            abi_const_ptr(buffer_sample_rates),
+            output.map_or(std::ptr::null_mut(), |output| output as *mut _),
+        )
     }
 }
 
@@ -3247,6 +3441,7 @@ fn compile_native_jit(
             let init = super::jit_utils::lookup_symbol(lljit, "onda_processor_init", "MIR init")
                 .map_err(codegen_diagnostic)?;
             let mut events = Vec::with_capacity(program.interface.events.len());
+            let mut event_views = Vec::with_capacity(program.interface.events.len());
             for index in 0..program.interface.events.len() {
                 let address = super::jit_utils::lookup_symbol(
                     lljit,
@@ -3257,6 +3452,15 @@ fn compile_native_jit(
                 events.push(std::mem::transmute::<usize, NativeEventFn>(
                     address as usize,
                 ));
+                let address = super::jit_utils::lookup_symbol(
+                    lljit,
+                    &format!("onda_event_views_{index}"),
+                    "MIR borrowed-view event",
+                )
+                .map_err(codegen_diagnostic)?;
+                event_views.push(std::mem::transmute::<usize, NativeEventViewsFn>(
+                    address as usize,
+                ));
             }
             Ok((
                 NativeOrcProcess {
@@ -3264,6 +3468,7 @@ fn compile_native_jit(
                     process: std::mem::transmute::<usize, NativeProcessFn>(process as usize),
                     init: std::mem::transmute::<usize, NativeInitFn>(init as usize),
                     events,
+                    event_views,
                 },
                 layouts,
             ))

@@ -143,6 +143,17 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   for (const name of metadata.exports.events) {
     requireString(name, "exports.events[]");
   }
+  if (metadata.exports.event_views !== undefined) {
+    if (!Array.isArray(metadata.exports.event_views)) {
+      throw new OndaArtifactError("exports.event_views must be an array when present");
+    }
+    if (metadata.exports.event_views.length !== metadata.exports.events.length) {
+      throw new OndaArtifactError("exports.event_views must be parallel to exports.events");
+    }
+    for (const name of metadata.exports.event_views) {
+      requireString(name, "exports.event_views[]");
+    }
+  }
   if (!Array.isArray(metadata.integration?.required_symbols)) {
     throw new OndaArtifactError("integration.required_symbols must be an array");
   }
@@ -154,6 +165,7 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
     metadata.exports.init,
     metadata.exports.process,
     ...metadata.exports.events,
+    ...(metadata.exports.event_views ?? []),
   ]) {
     if (!requiredSymbols.has(name)) {
       throw new OndaArtifactError(
@@ -173,6 +185,11 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   if (!expectedProfileKinds.includes(profileKind)) {
     throw new OndaArtifactError(
       `integration profile '${String(profileKind)}' is incompatible with artifact kind '${metadata.artifact_kind}'`,
+    );
+  }
+  if (metadata.exports.event_views !== undefined && profileKind !== "native_relocatable_object") {
+    throw new OndaArtifactError(
+      "exports.event_views is only valid for native relocatable objects",
     );
   }
   if (profileKind === "core_webassembly_module") {

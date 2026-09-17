@@ -106,6 +106,32 @@ There is one `onda_event_N` for each declared event, in metadata order. The curr
 public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
 multi-processor libraries without changing MIR.
 
+Native relocatable objects also advertise one trusted `onda_event_views_N` entry per event through
+the optional `exports.event_views` array. It has the same trailing arguments and result as
+`onda_event_N`, but its first argument is a pointer to the schema-derived array below:
+
+```c
+struct onda_processor_event_tensor_view {
+  const void *data;
+  int32_t element_count;
+};
+```
+
+Each view is one contiguous, naturally aligned, native-endian primitive tensor in canonical
+depth-first SoA leaf order. `element_count` counts primitive scalars; for a slice leaf it is the
+slice length times that leaf's fixed inner element count. The entry borrows every tensor only for
+the synchronous call, resets call-scoped output, and neither allocates nor uses an event workspace.
+It deliberately does not receive a tensor count or validate shape, alignment, canonical bool and
+ranged-integer values, storage overlap, or the other processor pointers. Passing anything other
+than the exact views and processor storage required by the paired descriptor is undefined behavior.
+Use `onda_event_N` at trust boundaries.
+
+This entry is a native-object capability, not part of the WebAssembly profiles. Native hosts can
+derive its flat tensor contract once from the event schema with
+`onda_processor_abi::payload::PayloadPlan`; JavaScript hosts can inspect the equivalent
+`PayloadPlan.tensorMetadata`. The metadata records expose each leaf's path, primitive encoding,
+fixed shape, owning top-level parameter, slice status, and fixed element count.
+
 `InitMode` has two portable values: `PRESERVE_PINNED = 0` and `FULL = 1`. Full initialization clears
 the physical state before running every declaration initializer, including pinned state and task
 continuations. Preserve-pinned initialization skips those guarded declarations and leaves their
@@ -154,6 +180,12 @@ used_bytes: u32
 record_count: u32
 overflow_count: u32
 ```
+
+Every supplied batch descriptor and non-null storage region is mutually disjoint and does not
+overlap any other region accessed through the entry-point call. This includes parameter and state
+storage, audio pointer tables and samples, external-buffer descriptor tables and samples, packed
+event input and workspace, native event tensor views, and the execution-output descriptor itself.
+The invariant permits generated delegate packing to use non-overlap-assuming bulk copies.
 
 The fixed header of every contiguous record is three `u32` values followed immediately by payload
 bytes. A delegate record stores declaration-order delegate index, payload byte count, and call-local
@@ -230,7 +262,10 @@ application links the emitted object, allocates storage from the exact paired de
 input/output and external-buffer pointer tables, optionally prepares an
 `onda_processor_execution_output_t` containing independently allocated delegate and print batches,
 resets it immediately before entry, and calls `onda_processor_init`, `onda_process`, and any
-`onda_event_N` functions directly. No Onda runtime or compiler library is required.
+`onda_event_N` functions directly. Native descriptors may additionally advertise
+`onda_event_views_N`; `onda_processor_event_tensor_view_t` and
+`onda_processor_event_views_fn` declare that trusted entry. No Onda runtime or compiler library is
+required.
 
 The application must reject descriptor/ABI versions it does not implement and must verify that the
 descriptor's target, pointer width, byte order, and calling convention match the linked process. It
@@ -350,7 +385,8 @@ length per struct field. Prepared workspace inserts scalar alignment padding and
 order. Its required size is computed by the shared payload planner, independently of wire size.
 
 The Rust `onda_processor_abi::payload::PayloadPlan` and JavaScript `PayloadPlan` expose recursive
-host codecs and checked sizing. Construct plans and encode logical host values off the rendering
+host codecs, checked sizing, and the same flattened tensor metadata. Construct plans and encode
+logical host values off the rendering
 thread. Rust instances initially reserve fixed requirements and at least 64 KiB for dynamic events;
 `Instance::reserve_event_workspace` and `onda_instance_reserve_event_workspace` can increase this
 capacity outside realtime execution, using the instance allocator. WebAudio transfers encoded
@@ -461,13 +497,15 @@ running.
 
 The release SDK installs `include/onda_processor_abi.h` and this document together. The header is
 self-contained and header-only except for the processor-specific `onda_processor_init`,
-`onda_process`, and generated `onda_event_N` symbols supplied by the compiled object. Include it
-from C or C++; no `libonda` linkage is required to call a processor object.
+`onda_process`, generated `onda_event_N`, and optional native `onda_event_views_N` symbols supplied
+by the compiled object. Include it from C or C++; no `libonda` linkage is required to call a
+processor object.
 
 The public declarations fall into four groups:
 
 - ABI versions, execution results, initialization modes, and segmented-processing flags.
-- Function-pointer signatures and the generated init, process, and event entry points.
+- Function-pointer signatures and the generated init, process, packed-event, and native event-view
+  entry points.
 - Caller-owned delegate, print, execution-output, occurrence, and cursor records.
 - Inline batch iteration and parameter-domain validation/conversion helpers.
 

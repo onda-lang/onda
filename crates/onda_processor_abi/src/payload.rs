@@ -34,6 +34,16 @@ impl ScalarEncoding {
             Self::F64 | Self::I64 => 8,
         }
     }
+
+    const fn native_alignment(self) -> usize {
+        match self {
+            Self::F32 => std::mem::align_of::<f32>(),
+            Self::F64 => std::mem::align_of::<f64>(),
+            Self::I32 => std::mem::align_of::<i32>(),
+            Self::I64 => std::mem::align_of::<i64>(),
+            Self::Bool => std::mem::align_of::<u8>(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

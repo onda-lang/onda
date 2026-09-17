@@ -136,6 +136,15 @@ export class PayloadPlan {
     }
     this.abiParameterCount = abiParameter;
     this.dynamicParameters = this.parameters.filter((param) => param.dynamic).length;
+    this.tensorMetadata = Object.freeze(this.parameters.flatMap((group, parameterIndex) =>
+      this.tensors.slice(group.start, group.end).map((tensor) => Object.freeze({
+        path: tensor.path,
+        encoding: tensor.encoding,
+        shape: Object.freeze([...tensor.shape]),
+        parameterIndex,
+        isSlice: group.dynamic,
+        fixedElementCount: tensor.elements,
+      }))));
     const minimum = this.sizes(Array(this.dynamicParameters).fill(0));
     this.fixedWireSize = this.dynamicParameters === 0 ? minimum.wire : null;
     this.minimumWorkspace = minimum.workspace;

@@ -50,6 +50,90 @@ impl PayloadPlan {
             wire_size: input.len(),
         })
     }
+
+    /// Validates native tensor views against this plan without copying their
+    /// contents. Dynamic leaves in one logical parameter must agree on their
+    /// outer length. Every tensor must be contiguous and naturally aligned.
+    /// Bools and ranged integers must already be canonical.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty view must identify a contiguous readable region large
+    /// enough for `element_count` primitive scalars and remain live and free
+    /// from concurrent mutation for the duration of validation. Natural
+    /// alignment is validated by this function and is not a caller
+    /// precondition.
+    pub unsafe fn validate_tensor_views(
+        &self,
+        views: &[crate::EventTensorView],
+    ) -> Result<(), PayloadError> {
+        if views.len() != self.tensors.len() {
+            return Err(PayloadError::InvalidLengths);
+        }
+        for parameter in &self.params {
+            let mut logical_len = None;
+            for index in parameter.tensors.clone() {
+                let tensor = &self.tensors[index];
+                let view = views[index];
+                let count = usize::try_from(view.element_count)
+                    .map_err(|_| PayloadError::NegativeLength)?;
+                let element_bytes = tensor.encoding.byte_size();
+                let element_alignment = tensor.encoding.native_alignment();
+                if count != 0 && view.data.is_null() {
+                    return Err(PayloadError::InvalidValue);
+                }
+                if count != 0 && !view.data.addr().is_multiple_of(element_alignment) {
+                    return Err(PayloadError::InvalidValue);
+                }
+                let extent = count
+                    .checked_mul(element_bytes)
+                    .ok_or(PayloadError::Overflow)?;
+                if extent > i32::MAX as usize || view.data.addr().checked_add(extent).is_none() {
+                    return Err(PayloadError::Overflow);
+                }
+                if parameter.dynamic {
+                    if count % tensor.elements != 0 {
+                        return Err(PayloadError::InvalidLengths);
+                    }
+                    let current = count / tensor.elements;
+                    if logical_len
+                        .replace(current)
+                        .is_some_and(|len| len != current)
+                    {
+                        return Err(PayloadError::InvalidLengths);
+                    }
+                } else if count != tensor.elements {
+                    return Err(PayloadError::InvalidLengths);
+                }
+                if tensor.encoding == ScalarEncoding::Bool || tensor.domain.is_some() {
+                    for element in 0..count {
+                        let ptr = unsafe { view.data.add(element * element_bytes) };
+                        let valid = match tensor.encoding {
+                            ScalarEncoding::Bool => unsafe { ptr.read() <= 1 },
+                            ScalarEncoding::I32 => {
+                                let value =
+                                    i64::from(unsafe { ptr.cast::<i32>().read_unaligned() });
+                                tensor
+                                    .domain
+                                    .is_none_or(|domain| value >= domain.min && value <= domain.max)
+                            }
+                            ScalarEncoding::I64 => {
+                                let value = unsafe { ptr.cast::<i64>().read_unaligned() };
+                                tensor
+                                    .domain
+                                    .is_none_or(|domain| value >= domain.min && value <= domain.max)
+                            }
+                            ScalarEncoding::F32 | ScalarEncoding::F64 => true,
+                        };
+                        if !valid {
+                            return Err(PayloadError::InvalidValue);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PreparedPayload<'_> {

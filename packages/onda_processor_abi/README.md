@@ -65,9 +65,18 @@ Wire payloads are packed little-endian in canonical structure-of-arrays leaf ord
 `sizes(lengths)` when only dynamic slice lengths are known, or `requiredWorkspace(payload)` to
 preflight encoded bytes. Allocate payload, workspace, and the 16-byte `EventInput` descriptor before
 realtime dispatch, and keep their memory regions disjoint from one another and processor storage.
+`plan.tensorMetadata` exposes the same flattened contract as immutable records containing the leaf
+`path`, primitive `encoding`, fixed `shape`, owning `parameterIndex`, `isSlice`, and
+`fixedElementCount`. It is suitable for generating typed host storage or diagnostics without
+walking the recursive schema again.
 `PayloadPlan.encode()` itself allocates and therefore belongs on a host/control thread, as does
 decoding published delegate records. An event result of `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`)
 means preflight failed after output was reset but before handler or processor-state mutation.
+
+WebAssembly intentionally exposes only the packed checked event entry. JavaScript values cross a
+thread boundary and must enter Wasm linear memory, so the native synchronous borrowed-view contract
+cannot provide end-to-end zero-copy dispatch on the Web. Web hosts should prepare capacity ahead of
+time and reuse the payload and workspace regions.
 
 ## Delegate batches
 

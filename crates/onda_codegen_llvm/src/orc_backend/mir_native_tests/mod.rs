@@ -2951,6 +2951,21 @@ events {
         ["onda_event_0", "onda_event_1"]
     );
     assert_eq!(
+        artifact.metadata.exports.event_views,
+        ["onda_event_views_0", "onda_event_views_1"]
+    );
+    assert_eq!(
+        artifact.metadata.integration.required_symbols,
+        [
+            "onda_processor_init",
+            "onda_process",
+            "onda_event_0",
+            "onda_event_1",
+            "onda_event_views_0",
+            "onda_event_views_1",
+        ]
+    );
+    assert_eq!(
         artifact.metadata.runtime.state_size_bytes,
         native.state_size_bytes()
     );

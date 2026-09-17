@@ -37,8 +37,10 @@ enum {
  * input preflight, so rejection returns empty output. A NULL output, batch, or
  * storage pointer disables that stream. Capacity is a host policy because occurrence counts and
  * dynamic slice sizes may depend on runtime execution. Delegate and print batches are independent.
- * Records carry the shared sequence so hosts can merge the streams chronologically. Generated
- * failure clears delegate results but retains print records already emitted. */
+ * Every supplied batch descriptor and non-NULL storage region must be mutually disjoint and must
+ * not overlap any other ABI region accessed during the call. Records carry the shared sequence so
+ * hosts can merge the streams chronologically. Generated failure clears delegate results but
+ * retains print records already emitted. */
 typedef struct onda_processor_delegate_batch {
   uint8_t* storage;
   uint32_t capacity_bytes;
@@ -123,6 +125,26 @@ typedef struct onda_processor_event_input {
 
 typedef uint32_t (*onda_processor_event_fn)(
   const onda_processor_event_input_t* input,
+  const void* params,
+  void* state,
+  void* const* buffers,
+  const int32_t* buffer_frames,
+  const int32_t* buffer_channels,
+  const float* buffer_sample_rates,
+  onda_processor_execution_output_t* output
+);
+
+/* Native relocatable objects additionally expose onda_event_views_N. Each element describes one
+ * contiguous, naturally aligned, native-endian SoA tensor in the flattened schema-leaf order.
+ * element_count counts primitive scalars. The entry trusts tensor count, shape, alignment, and
+ * canonical logical values; violating the descriptor contract is undefined behavior. */
+typedef struct onda_processor_event_tensor_view {
+  const void* data;
+  int32_t element_count;
+} onda_processor_event_tensor_view_t;
+
+typedef uint32_t (*onda_processor_event_views_fn)(
+  const onda_processor_event_tensor_view_t* tensors,
   const void* params,
   void* state,
   void* const* buffers,

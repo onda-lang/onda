@@ -27,6 +27,16 @@ pub struct EventInput {
     pub workspace: *mut u8,
     pub workspace_capacity_bytes: u32,
 }
+
+/// One contiguous, naturally aligned native tensor borrowed for the duration
+/// of a synchronous event call. `element_count` counts primitive scalars.
+/// Empty tensors may use a null data pointer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EventTensorView {
+    pub data: *const u8,
+    pub element_count: i32,
+}
 pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
 pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
@@ -258,6 +268,9 @@ pub struct Exports {
     pub init: String,
     pub process: String,
     pub events: Vec<String>,
+    /// Optional trusted native SoA event entries, parallel to `events`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_views: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
