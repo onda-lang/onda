@@ -10,10 +10,10 @@ pub mod payload;
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 6;
-pub const PROCESSOR_ABI_VERSION: u32 = 6;
+pub const PROCESSOR_ABI_VERSION: u32 = 7;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
-/// Rejected before executing a handler or changing output records.
+/// Rejected after resetting output but before executing a handler.
 pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 = 2;
 
 /// Call-scoped event input. All regions must be live and disjoint from state,
@@ -38,7 +38,7 @@ pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
 /// Caller-owned, call-scoped storage for top-level delegate occurrences.
 ///
 /// The host resets the three result counters before init and process entries;
-/// generated event entries reset them after successful input preflight.
+/// generated event entries reset them before input preflight.
 /// `storage` may be null; in that neutral configuration publication is
 /// discarded without counting overflow.
 #[repr(C)]
@@ -82,7 +82,7 @@ impl DelegateBatch {
 /// Caller-owned, call-scoped storage for authored print occurrences.
 ///
 /// The host resets the three result counters before init and process entries;
-/// generated event entries reset them after successful input preflight.
+/// generated event entries reset them before input preflight.
 /// `storage` may be null; in that neutral configuration publication is
 /// discarded without counting overflow.
 #[repr(C)]
@@ -126,8 +126,8 @@ impl PrintBatch {
 /// Caller-owned output streams shared by every processor entry ABI.
 ///
 /// The host resets this descriptor before init and process entries. Generated
-/// event entries perform the same reset only after successful input preflight,
-/// preserving existing records and sequence state when input is rejected.
+/// event entries perform the same reset before input preflight, so rejected
+/// input returns empty batches with a zero sequence.
 #[repr(C)]
 #[derive(Debug)]
 pub struct ExecutionOutput {

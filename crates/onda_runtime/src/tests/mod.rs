@@ -3346,7 +3346,7 @@ fn checked_buffer_bindings_reject_wrapping_element_counts() {
 }
 
 #[test]
-fn rejected_event_capacity_preserves_instance_and_can_be_reserved_off_thread() {
+fn rejected_event_clears_output_and_preserves_instance() {
     let mut instance = compile_test_instance(
         r#"
 init:
@@ -3362,9 +3362,12 @@ sample:
     let event = instance.event_index("update").unwrap();
     let mut output_storage = [0_u8; 32];
     let mut print_batch = PrintBatch::from_storage(&mut output_storage);
-    print_batch.used_bytes = 7;
-    print_batch.record_count = 3;
-    print_batch.overflow_count = 5;
+    let seed_output = |batch: &mut PrintBatch<'_>| {
+        batch.used_bytes = 7;
+        batch.record_count = 3;
+        batch.overflow_count = 5;
+    };
+    seed_output(&mut print_batch);
     let status = trigger_event_by_index_with_status(
         &mut instance,
         event,
@@ -3385,8 +3388,9 @@ sample:
             print_batch.record_count,
             print_batch.overflow_count,
         ),
-        (7, 3, 5)
+        (0, 0, 0)
     );
+    seed_output(&mut print_batch);
     let error = trigger_event_by_index(
         &mut instance,
         event,
@@ -3404,7 +3408,7 @@ sample:
             print_batch.record_count,
             print_batch.overflow_count,
         ),
-        (7, 3, 5)
+        (0, 0, 0)
     );
 
     let count = instance.event_workspace_capacity() / 4 + 1;
@@ -3414,6 +3418,7 @@ sample:
         trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).is_err()
     );
     assert!(instance.is_initialized());
+    seed_output(&mut print_batch);
     let status = trigger_event_by_index_with_status(
         &mut instance,
         event,
@@ -3434,8 +3439,9 @@ sample:
             print_batch.record_count,
             print_batch.overflow_count,
         ),
-        (7, 3, 5)
+        (0, 0, 0)
     );
+    seed_output(&mut print_batch);
     let status = unsafe {
         trigger_event_by_index_unchecked(
             &mut instance,
@@ -3458,7 +3464,7 @@ sample:
             print_batch.record_count,
             print_batch.overflow_count,
         ),
-        (7, 3, 5)
+        (0, 0, 0)
     );
     assert!(instance.is_initialized());
     instance.reserve_event_workspace(payload.len()).unwrap();

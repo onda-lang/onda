@@ -40,8 +40,8 @@ use onda_mir::{
 };
 
 use crate::{
-    BufferDescriptorTables, RuntimeAllocator, RuntimeState, TargetOptLevel, UninitRuntimeBuffer,
-    UninitializedRuntimeState,
+    runtime_validation::reset_execution_output, BufferDescriptorTables, RuntimeAllocator,
+    RuntimeState, TargetOptLevel, UninitRuntimeBuffer, UninitializedRuntimeState,
 };
 
 use self::host_abi::{abi_const_ptr, abi_mut_ptr, validate_audio_abi, validate_buffer_abi};
@@ -1364,6 +1364,18 @@ unsafe fn emit_function_body(
     let result = (|| {
         let entry = append_block(module.context, declaration.value, "entry")?;
         LLVMPositionBuilderAtEnd(builder, entry);
+        let event_output = if matches!(function.kind, FunctionKind::Event(_)) {
+            Some(load_execution_output_batches(
+                module,
+                builder,
+                LLVMGetParam(declaration.value, 7),
+                !module.program.interface.delegates.is_empty(),
+                !module.program.log_sites.is_empty(),
+                true,
+            )?)
+        } else {
+            None
+        };
         let prepared_input = if let FunctionKind::Event(event) = function.kind {
             Some(event_input::prepare(
                 module,
@@ -1402,6 +1414,7 @@ unsafe fn emit_function_body(
                 function.kind,
                 builder,
                 prepared_input,
+                event_output,
             )?,
         };
         // Direct buffer metadata is materialized in the entry block so it is
@@ -1568,6 +1581,7 @@ unsafe fn build_entry_runtime_context(
     kind: FunctionKind,
     builder: LLVMBuilderRef,
     prepared_input: Option<LLVMValueRef>,
+    event_output: Option<(LLVMValueRef, LLVMValueRef, LLVMValueRef)>,
 ) -> Result<(LLVMValueRef, LLVMValueRef, LLVMValueRef), MirCodegenError> {
     let context = LLVMBuildAlloca(
         builder,
@@ -1682,26 +1696,26 @@ unsafe fn build_entry_runtime_context(
 
     let needs_delegate_batch = !module.program.interface.delegates.is_empty();
     let needs_print_batch = !module.program.log_sites.is_empty();
-    let reset_output = matches!(kind, FunctionKind::Event(_));
-    let (delegate_batch, print_batch, output_sequence) =
-        if needs_delegate_batch || needs_print_batch || reset_output {
-            let output = match kind {
-                FunctionKind::Init => LLVMGetParam(function, 7),
-                FunctionKind::Process => LLVMGetParam(function, 11),
-                FunctionKind::Event(_) => LLVMGetParam(function, 7),
-                FunctionKind::User => unreachable!(),
-            };
-            load_execution_output_batches(
-                module,
-                builder,
-                output,
-                needs_delegate_batch,
-                needs_print_batch,
-                reset_output,
-            )?
-        } else {
-            (null, null, null)
+    let (delegate_batch, print_batch, output_sequence) = if let Some(output) = event_output {
+        output
+    } else if needs_delegate_batch || needs_print_batch {
+        let output = match kind {
+            FunctionKind::Init => LLVMGetParam(function, 7),
+            FunctionKind::Process => LLVMGetParam(function, 11),
+            FunctionKind::Event(_) => unreachable!("event output was loaded before preflight"),
+            FunctionKind::User => unreachable!(),
         };
+        load_execution_output_batches(
+            module,
+            builder,
+            output,
+            needs_delegate_batch,
+            needs_print_batch,
+            false,
+        )?
+    } else {
+        (null, null, null)
+    };
     for (index, value) in [
         (DELEGATE_BATCH_CONTEXT_INDEX, delegate_batch),
         (PRINT_BATCH_CONTEXT_INDEX, print_batch),
@@ -2994,8 +3008,8 @@ impl MirJitProgram {
     }
 
     /// Validates hosted memory regions, then returns the generated execution
-    /// status. Payload rejection is returned by the generated entry before it
-    /// mutates workspace, processor state, or execution output.
+    /// status. Payload rejection is returned by the generated entry after it
+    /// resets execution output but before it mutates workspace or processor state.
     ///
     /// # Safety
     ///
@@ -3015,18 +3029,24 @@ impl MirJitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
+            reset_execution_output(output);
             return Ok(0);
         };
-        self.validate_runtime_regions(state, params)?;
-        validate_buffer_abi(
-            &self.mir,
-            BufferDescriptorTables::new(
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-            ),
-        )?;
+        let validation = self.validate_runtime_regions(state, params).and_then(|()| {
+            validate_buffer_abi(
+                &self.mir,
+                BufferDescriptorTables::new(
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                ),
+            )
+        });
+        if let Err(error) = validation {
+            reset_execution_output(output);
+            return Err(error);
+        }
         let status = unsafe {
             event(
                 &onda_processor_abi::EventInput {
@@ -3068,6 +3088,7 @@ impl MirJitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
+            reset_execution_output(output);
             return 0;
         };
         unsafe {

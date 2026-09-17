@@ -5,7 +5,7 @@ use crate::{
     UninitializedRuntimeState,
 };
 
-fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
+pub(crate) fn reset_execution_output(output: Option<&mut onda_processor_abi::ExecutionOutput>) {
     let Some(output) = output else { return };
     output.next_sequence = 0;
     // SAFETY: the raw ABI requires each non-null batch pointer in a supplied
@@ -778,8 +778,8 @@ impl JitProgram {
     }
 
     /// Validates hosted memory regions, then returns the generated execution status.
-    /// Payload rejection is reported by the generated entry before it mutates
-    /// workspace, processor state, or execution output.
+    /// Payload rejection is reported by the generated entry after it resets
+    /// execution output but before it mutates workspace or processor state.
     ///
     /// # Safety
     ///
@@ -820,6 +820,7 @@ impl JitProgram {
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
+            reset_execution_output(output);
             let _ = (
                 state,
                 params,
@@ -829,7 +830,6 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                output,
             );
             return Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -881,6 +881,7 @@ impl JitProgram {
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
+            reset_execution_output(output);
             let _ = (
                 state,
                 params,
@@ -890,7 +891,6 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                output,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",

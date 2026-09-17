@@ -2740,7 +2740,7 @@ sample { out1 = f32(value) }
                 prints.record_count,
                 prints.overflow_count
             ),
-            (7, 3, 5)
+            (0, 0, 0)
         );
         assert_eq!(
             (
@@ -2748,7 +2748,7 @@ sample { out1 = f32(value) }
                 delegates.record_count,
                 delegates.overflow_count,
             ),
-            (7, 3, 5)
+            (0, 0, 0)
         );
 
         let set_divisor = |value: i32, output: *mut onda_execution_output_t| {

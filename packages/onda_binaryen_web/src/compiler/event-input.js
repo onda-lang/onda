@@ -1,8 +1,9 @@
 import binaryen from "binaryen";
 import { PROCESSOR_EXECUTION_INPUT_REJECTED } from "@onda-lang/processor-abi";
 
-// Emit preflight separately from transfer so rejection cannot change workspace,
-// state, or existing output records. All generated metadata is per tensor.
+// Emit preflight separately from transfer so rejection cannot change workspace
+// or processor state. The event entry resets its call-scoped output first. All
+// generated metadata is per tensor.
 export function prepareEventInput(compiler, plan) {
   const m = compiler.module;
   const locals = [];

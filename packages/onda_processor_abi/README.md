@@ -67,7 +67,7 @@ preflight encoded bytes. Allocate payload, workspace, and the 16-byte `EventInpu
 realtime dispatch, and keep their memory regions disjoint from one another and processor storage.
 `PayloadPlan.encode()` itself allocates and therefore belongs on a host/control thread, as does
 decoding published delegate records. An event result of `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`)
-means preflight failed without handler or output mutation.
+means preflight failed after output was reset but before handler or processor-state mutation.
 
 ## Delegate batches
 
@@ -99,7 +99,7 @@ writeDelegateBatch(memory, batchAddress, storageAddress, capacityBytes);
 writeExecutionOutput(memory, outputAddress, batchAddress, 0);
 // Before onda_process (or initialization):
 resetExecutionOutput(memory, outputAddress);
-// Pass outputAddress as the final entry argument. onda_event_N resets it itself after preflight.
+// Pass outputAddress as the final entry argument. onda_event_N resets it before preflight.
 const batch = readDelegateBatch(memory, batchAddress);
 const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
 const occurrences = decodeDelegateRecords(

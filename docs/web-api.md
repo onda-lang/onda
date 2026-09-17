@@ -145,8 +145,8 @@ real-time execution.
 
 `writeDelegateBatch` and `writePrintBatch` initialize reusable batch descriptors.
 `writeExecutionOutput` connects their addresses. Call `resetExecutionOutput` immediately before
-every generated init or process entry. Generated event entries reset after successful input
-preflight instead, so rejected input preserves existing records. After a successful generated call,
+every generated init or process entry. Generated event entries reset before input preflight, so
+rejected input returns empty batches. After a successful generated call,
 `readDelegateBatch` or `readPrintBatch` validates the result counters.
 `decodeDelegateRecords` converts delegate payloads using `metadata.delegates`.
 `decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and

@@ -2370,21 +2370,30 @@ fn trigger_event_by_index_impl(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    output: ExecutionOutput<'_, '_>,
+    mut output: ExecutionOutput<'_, '_>,
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     if !instance.buffers_validated {
-        validate_buffers(instance)?;
+        if let Err(error) = validate_buffers(instance) {
+            output.reset();
+            return Err(error);
+        }
     }
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
-        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
-        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
+        InstanceState::Allocated(_) => {
+            output.reset();
+            return Err(invalid_instance_error());
+        }
+        InstanceState::Pending(_) => {
+            output.reset();
+            return Err(uninitialized_instance_error());
+        }
     };
-    // The generated preparation path owns payload preflight and normalization;
-    // it rejects before touching workspace, processor state, or existing output
-    // records. Keep that status separate so only a handler failure closes the
-    // instance, matching the process entry-point lifecycle.
+    // The generated entry resets output before owning payload preflight and
+    // normalization. Rejection leaves workspace and processor state untouched.
+    // Keep that status separate so only a handler failure closes the instance,
+    // matching the process lifecycle.
     let status = with_processor_execution_output(output, |output| unsafe {
         instance.program.trigger_event_by_index_unchecked(
             &mut state.storage,

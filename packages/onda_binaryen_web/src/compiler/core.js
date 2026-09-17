@@ -2534,7 +2534,6 @@ export class MirCompilerCore {
       const wrapperName = `$onda.abi.event.${eventId}`;
       const prepared = prepareEventInput(this, this.eventPlans[eventId]);
       const body = this.module.block(null, [
-        ...prepared.statements,
         this.module.global.set(
           POINTER_GLOBALS.delegateBatch,
           this.executionOutputBatch(7, EXECUTION_OUTPUT_DELEGATE_BATCH_OFFSET),
@@ -2548,6 +2547,7 @@ export class MirCompilerCore {
           this.executionOutputSequence(7),
         ),
         ...this.resetExecutionOutput(),
+        ...prepared.statements,
         ...this.resetRuntimeFailure(event.handler),
         this.module.global.set(
           POINTER_GLOBALS.eventPayload,

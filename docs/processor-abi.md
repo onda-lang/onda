@@ -175,8 +175,8 @@ may depend on runtime control flow. Capacity is a host policy, and `overflow_cou
 was insufficient.
 
 Before every init or process entry, the host resets the counters of each supplied batch and resets
-`next_sequence` to zero. An input-event entry performs that reset itself after successful preflight,
-so rejected input preserves existing records. Publications into either present batch consume the
+`next_sequence` to zero. An input-event entry performs that reset itself before preflight, so
+rejected input returns empty batches. Publications into either present batch consume the
 shared counter. A complete record is appended only when it fits. Otherwise it is discarded whole
 and that batch's overflow counter saturates at `u32::MAX`; a later smaller record may still fit. Null output,
 batch, or storage is neutral and does not count overflow. Generated execution failure clears
@@ -442,8 +442,8 @@ violations of the raw ABI remain outside generated-code recovery and can still t
 undefined behavior. `RUNTIME_SAFETY_FAILURE` means execution may have partially changed state or
 output; a host must stop using that processor state until full initialization or snapshot restoration
 establishes valid state again, and audio hosts discard partial output. `INPUT_REJECTED` completes no
-handler work, preserves state and existing output records, and leaves the processor usable after the
-host corrects its payload or workspace capacity.
+handler work, preserves processor state, returns empty output batches, and leaves the processor
+usable after the host corrects its payload or workspace capacity.
 
 ## Web Audio reference adapter
 

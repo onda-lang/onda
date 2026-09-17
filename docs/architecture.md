@@ -361,8 +361,8 @@ Non-crate directories of note:
   delegate publication and authored printing remain explicit observable MIR effects as
   `PublishDelegate` and `PublishLog`. Init, process, and input-event entries accept one optional
   `ExecutionOutput` containing independent caller-owned delegate and print batches. Init and process
-  entries reset supplied counters and one shared output sequence on entry; an event entry resets
-  them only after successful input preflight, so rejected input preserves existing records. Entries
+  entries reset supplied counters and one shared output sequence on entry; an event entry does the
+  same before input preflight, so rejected input returns empty batches. Entries
   append complete packed records without allocation. Hosts merge the two batches by sequence before
   delivery. Generated failure
   clears incomplete delegates while retaining diagnostic print records. Native and Binaryen

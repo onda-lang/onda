@@ -5,6 +5,14 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.6]
+
+### Changed
+
+- Advanced the processor ABI to version 7. Event entry points now reset caller-owned execution
+  output before payload preflight, so rejected input returns empty batches while leaving processor
+  state untouched.
+
 ## [0.8.5]
 
 ### Changed
@@ -771,6 +779,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.6]: https://github.com/onda-lang/onda/compare/0.8.5...0.8.6
 [0.8.5]: https://github.com/onda-lang/onda/compare/0.8.4...0.8.5
 [0.8.4]: https://github.com/onda-lang/onda/compare/0.8.3...0.8.4
 [0.8.3]: https://github.com/onda-lang/onda/compare/0.8.2...0.8.3

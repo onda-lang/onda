@@ -2371,18 +2371,21 @@ test("exports packed scalar and fixed-array event handlers", async () => {
   const savedState = new Uint8Array(memory.buffer, state, artifact.metadata.runtime.state_size_bytes).slice();
   const preparedBytes = new Uint8Array(memory.buffer, workspace, 16);
   preparedBytes.fill(0xa5);
-  seedExecutionOutput();
   for (const size of [...Array(12).keys(), 13]) {
+    seedExecutionOutput();
     writeEventInput(memory, descriptor, payload, size, workspace, 16);
     assert.equal(onda_event_0(descriptor, params, state, 0, 0, 0, 0, executionOutput), 2);
     assert.deepEqual(new Uint8Array(memory.buffer, state, savedState.length), savedState);
     assert.deepEqual([...preparedBytes], Array(16).fill(0xa5));
-    assert.deepEqual(executionOutputCounters(), [7, 3, 5, 7, 3, 5, 9]);
+    assert.deepEqual(executionOutputCounters(), [0, 0, 0, 0, 0, 0, 0]);
   }
   writeEventInput(memory, descriptor, payload, 12, workspace, 8);
+  seedExecutionOutput();
   assert.equal(onda_event_0(descriptor, params, state, 0, 0, 0, 0, executionOutput), 2);
+  assert.deepEqual(executionOutputCounters(), [0, 0, 0, 0, 0, 0, 0]);
+  seedExecutionOutput();
   assert.equal(onda_event_0(0, params, state, 0, 0, 0, 0, executionOutput), 2);
-  assert.deepEqual(executionOutputCounters(), [7, 3, 5, 7, 3, 5, 9]);
+  assert.deepEqual(executionOutputCounters(), [0, 0, 0, 0, 0, 0, 0]);
   writeEventInput(memory, descriptor, payload, 12, workspace, 16);
   callProcess(onda_process, 0, outputTable, 0, 4, 3, params, state, 0, 0, 0, 0);
   assert.deepEqual(

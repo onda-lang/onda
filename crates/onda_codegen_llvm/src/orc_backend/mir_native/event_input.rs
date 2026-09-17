@@ -1,5 +1,6 @@
-//! Raw event preflight and aligned input preparation. Shape work is emitted once
-//! per tensor; runtime work scales only with the admitted payload contents.
+//! Raw event preflight and aligned input preparation. The event entry resets its
+//! call-scoped output before entering this path. Shape work is emitted once per
+//! tensor; runtime work scales only with the admitted payload contents.
 use super::*;
 use onda_processor_abi::payload::{IntegerDomain, ScalarEncoding};
 
@@ -197,7 +198,7 @@ pub(super) unsafe fn prepare(
         LLVMBuildAnd(builder, present, aligned, c"workspace_valid".as_ptr()),
         c"workspace_admitted".as_ptr(),
     ))?;
-    // No workspace, state, or output writes precede this point.
+    // No workspace or processor-state writes precede this point.
     for transfer in transfers {
         emitter.copy(input, workspace, transfer)?;
     }

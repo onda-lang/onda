@@ -50,10 +50,11 @@ and overflow handling.
 
 Each `onda_event_N` receives a pointer to the ABI's 16-byte wasm32 `EventInput` descriptor before
 the ordinary processor storage arguments. The backend validates the complete little-endian wire
-payload and aligned workspace before touching handler state or output records. Truncated or trailing
+payload and aligned workspace after resetting call-scoped output and before touching handler state.
+Truncated or trailing
 payloads, invalid slice lengths, out-of-bounds regions, misalignment, and insufficient workspace
-return `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`) and leave the processor usable; accepted
-structured values are exposed to generated code through aligned leaf tensors.
+return `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`) with empty output and leave the processor usable;
+accepted structured values are exposed to generated code through aligned leaf tensors.
 
 `createProcessorArtifactFiles()` validates the final module, computes a SHA-256 digest, and returns
 a reusable `.wasm` plus `.onda.json` descriptor pair. `validateProcessorArtifact`,

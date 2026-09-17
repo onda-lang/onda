@@ -1613,14 +1613,19 @@ sample:
         let initial = state.bytes().to_vec();
         let mut storage = [0xa5; 40];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
-        batch.used_bytes = 7;
-        batch.record_count = 3;
-        batch.overflow_count = 5;
         let mut execution = onda_processor_abi::ExecutionOutput {
             delegate_batch: &mut batch,
             ..onda_processor_abi::ExecutionOutput::none()
         };
-        execution.next_sequence = 9;
+        let seed_output =
+            |batch: &mut onda_processor_abi::DelegateBatch,
+             execution: &mut onda_processor_abi::ExecutionOutput| {
+                batch.used_bytes = 7;
+                batch.record_count = 3;
+                batch.overflow_count = 5;
+                execution.next_sequence = 9;
+            };
+        seed_output(&mut batch, &mut execution);
         let status = unsafe {
             native
                 .trigger_event_by_index_with_status(
@@ -1643,9 +1648,9 @@ sample:
         assert_eq!(state.bytes(), initial);
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
-            (7, 3, 5)
+            (0, 0, 0)
         );
-        assert_eq!(execution.next_sequence, 9);
+        assert_eq!(execution.next_sequence, 0);
         assert_eq!(storage, [0xa5; 40]);
 
         let mut malformed = (0..payload.len())
@@ -1660,6 +1665,7 @@ sample:
             malformed.push(invalid);
         }
         for invalid in malformed {
+            seed_output(&mut batch, &mut execution);
             let status = unsafe {
                 native.trigger_event_by_index_unchecked(
                     &mut state,
@@ -1680,13 +1686,14 @@ sample:
             assert_eq!(state.bytes(), initial);
             assert_eq!(
                 (batch.used_bytes, batch.record_count, batch.overflow_count),
-                (7, 3, 5)
+                (0, 0, 0)
             );
-            assert_eq!(execution.next_sequence, 9);
+            assert_eq!(execution.next_sequence, 0);
             assert_eq!(storage, [0xa5; 40]);
         }
         // Capacity rejection follows the same path and does not poison the instance.
         state.event_workspace = crate::RuntimeBuffer::default();
+        seed_output(&mut batch, &mut execution);
         let status = unsafe {
             native.trigger_event_by_index_unchecked(
                 &mut state,
@@ -1705,7 +1712,11 @@ sample:
             onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
         );
         assert_eq!(state.bytes(), initial);
-        assert_eq!(execution.next_sequence, 9);
+        assert_eq!(
+            (batch.used_bytes, batch.record_count, batch.overflow_count),
+            (0, 0, 0)
+        );
+        assert_eq!(execution.next_sequence, 0);
         state.reserve_event_workspace(64).unwrap();
         let status = unsafe {
             native.trigger_event_by_index_unchecked(

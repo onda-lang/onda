@@ -1,7 +1,7 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
 export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 6;
-export const PROCESSOR_ABI_VERSION: 6;
+export const PROCESSOR_ABI_VERSION: 7;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
@@ -257,7 +257,7 @@ export interface OndaProcessorMetadata {
   format: "onda-processor";
   format_version: 6;
   artifact_kind: OndaArtifactKind;
-  abi_version: 6;
+  abi_version: 7;
   backend: string;
   mir_schema_version: number;
   target: OndaTargetInfo;

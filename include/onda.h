@@ -106,7 +106,7 @@ typedef struct onda_owned_string {
 } onda_owned_string_t;
 
 /* Clears the result counters without modifying storage or capacity. Process and event calls also
-   reset these counters when generated execution begins. */
+   reset these counters at the beginning of each invocation. */
 void onda_delegate_batch_reset(onda_delegate_batch_t* batch);
 /* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
    invalid/malformed input. The returned payload has the same lifetime as batch storage. */
@@ -776,8 +776,8 @@ int onda_set_param_normalized(onda_instance_t* instance, int index, double norma
 /* Triggers one event by index with packed payload bytes and optionally collects host-facing
    execution output; returns 0 on success, ONDA_EXECUTION_INPUT_REJECTED for malformed input or
    insufficient workspace, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE for handler failure, or a negative
-   API error. Rejection preserves existing execution output; an admitted event resets supplied
-   batches before running its handler. Unknown event indices are ignored and return success. */
+   API error. Every invocation resets supplied batches before validation, so rejection returns empty
+   output without changing processor state. Unknown event indices are ignored and return success. */
 int onda_trigger_event_by_index(
   onda_instance_t* instance,
   int index,
@@ -785,9 +785,9 @@ int onda_trigger_event_by_index(
   int payload_bytes,
   onda_execution_output_t* output
 );
-/* Triggers one event without hosted payload/binding validation. The generated entry still performs
-   mandatory payload preflight and preserves existing execution output on rejection. The instance
-   must have completed full initialization, and buffer metadata must satisfy the ABI contract.
+/* Triggers one event without hosted payload/binding validation. The generated entry resets supplied
+   output before mandatory payload preflight, so rejection returns empty output. The instance must
+   have completed full initialization, and buffer metadata must satisfy the ABI contract.
    Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,

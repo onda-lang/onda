@@ -192,7 +192,7 @@ impl PayloadPlan {
         Ok(sizes)
     }
 
-    /// Validate complete wire boundaries before any handler or output mutation.
+    /// Validate complete wire boundaries before any handler or processor-state mutation.
     pub fn required_workspace(&self, input: &[u8]) -> Result<usize, PayloadError> {
         let (wire, workspace) = self.walk(|offset, _| read_length(input, offset), |_| {})?;
         if wire > input.len() {
