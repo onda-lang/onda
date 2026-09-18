@@ -226,8 +226,12 @@ uint32_t status = onda_process(
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
   onda_processor_batch_cursor_t cursor = {0};
   onda_processor_delegate_occurrence_t occurrence;
-  while (onda_processor_delegate_batch_next(&delegates, &cursor, &occurrence)) {
+  int next;
+  while ((next = onda_processor_delegate_batch_next(&delegates, &cursor, &occurrence)) > 0) {
     consume_delegate(&occurrence);
+  }
+  if (next < 0) {
+    report_malformed_delegate_batch();
   }
   if (delegates.overflow_count != 0u) {
     report_delegate_overflow(delegates.overflow_count);

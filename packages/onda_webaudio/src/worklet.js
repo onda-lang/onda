@@ -1,4 +1,4 @@
-import { paramAddress } from "./param-metadata.js";
+import { paramAddress, paramElementAddress } from "./param-metadata.js";
 import {
   EXECUTION_OPERATION_EVENT,
   EXECUTION_OPERATION_INIT,
@@ -7,16 +7,25 @@ import {
   openExecutionOutputRing,
   writeExecutionOutputRing,
 } from "./execution-output-ring.js";
-
-const ONDA_PROCESS_BEGIN_BLOCK = 1 << 0;
-const ONDA_PROCESS_END_BLOCK = 1 << 1;
-const ONDA_INIT_PRESERVE_PINNED = 0;
-const ONDA_INIT_FULL = 1;
-const PROCESSOR_EXECUTION_INPUT_REJECTED = 2;
+import {
+  PROCESSOR_BEGIN_BLOCK,
+  PROCESSOR_END_BLOCK,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_INIT_FULL,
+  PROCESSOR_INIT_PRESERVE_PINNED,
+} from "./processor-constants.js";
 const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
 const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
+
+class ProcessorExecutionError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
 const DELEGATE_BATCH_SIZE_BYTES = 20;
 const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 12;
@@ -289,7 +298,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.refreshMemoryCache(true);
     this.invalidateState();
     if (processorOptions.initialize === true) {
-      this.init(ONDA_INIT_FULL);
+      this.init(PROCESSOR_INIT_FULL);
     }
     this.allocationLocked = true;
     this.port.onmessage = (event) => this.handleMessage(event.data ?? {});
@@ -485,8 +494,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     }
   }
 
-  setParam(selector, value) {
-    const { info: param, element } = paramAddress(this.paramInfo, selector);
+  setParam(selector, value, explicitElement = null) {
+    const { info: param, element } = explicitElement === null
+      ? paramAddress(this.paramInfo, selector)
+      : paramElementAddress(this.paramInfo, selector, explicitElement);
     if (value === undefined) {
       throw new Error(`Onda parameter '${param.name}' requires a value`);
     }
@@ -517,10 +528,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   init(mode) {
-    if (mode !== ONDA_INIT_PRESERVE_PINNED && mode !== ONDA_INIT_FULL) {
+    if (mode !== PROCESSOR_INIT_PRESERVE_PINNED && mode !== PROCESSOR_INIT_FULL) {
       throw new Error(`invalid Onda init mode '${String(mode)}'`);
     }
-    if (mode === ONDA_INIT_PRESERVE_PINNED && !this.initialized) {
+    if (mode === PROCESSOR_INIT_PRESERVE_PINNED && !this.initialized) {
       throw new Error("full initialization is required before preserving pinned state");
     }
     this.runInitialization(mode);
@@ -538,7 +549,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.blockCursor = blockCursor;
   }
 
-  runInitialization(mode, afterInitialize) {
+  runInitialization(mode, afterInitialize, collectOutput = true) {
     // Reinitializing state does not create a compile-block boundary. Retain
     // the host-side position so the next process segment cannot synthesize an
     // extra BEGIN_BLOCK or postpone the matching END_BLOCK.
@@ -548,7 +559,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     // leaves the processor on the silent pending path.
     this.invalidateState();
     this.refreshMemoryCache();
-    this.prepareExecutionOutput();
+    if (collectOutput) this.prepareExecutionOutput();
     const status = this.exports.onda_processor_init(
       this.paramsPtr,
       this.statePtr,
@@ -557,13 +568,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferFramesPtr,
       this.bufferChannelsPtr,
       this.bufferSampleRatesPtr,
-      this.executionOutputPtr,
+      collectOutput ? this.executionOutputPtr : 0,
     );
     // Generated failures retain diagnostic prints but clear delegates.
-    this.publishExecutionOutput(
-      EXECUTION_OPERATION_INIT,
-      0,
-    );
+    if (collectOutput) {
+      this.publishExecutionOutput(
+        EXECUTION_OPERATION_INIT,
+        0,
+      );
+    }
     this.checkExecutionStatus(status, "processor init");
     afterInitialize?.();
     this.commitInitializedState(blockCursor);
@@ -576,9 +589,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   checkExecutionStatus(status, operation) {
-    if (status === 0) return;
+    if (status === PROCESSOR_EXECUTION_OK) return;
     this.invalidateState();
-    throw new Error(`${operation} failed with Onda execution status ${String(status)}`);
+    throw new ProcessorExecutionError(
+      `${operation} failed with Onda execution status ${String(status)}`,
+      status,
+    );
   }
 
   createSnapshot() {
@@ -609,7 +625,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     // The ABI restore base is a fresh post-init image, so scratch and
     // control-mirror state never leak across a restore. Initialization and
     // overlay form one lifecycle transition: neither partial result is ready.
-    this.runInitialization(ONDA_INIT_FULL, () => {
+    this.runInitialization(PROCESSOR_INIT_FULL, () => {
       const state = this.stateBytes;
       for (const entry of this.snapshotInfo) {
         const packedOffset = Number(entry.packed_snapshot_byte_offset);
@@ -622,7 +638,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         );
         this.normalizeSnapshotIntegerRange(entry, state, physicalOffset, byteSize);
       }
-    });
+    }, false);
   }
 
   normalizeSnapshotIntegerRange(entry, state, offset, byteSize) {
@@ -710,6 +726,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.setParam(
           message.param ?? message.name ?? message.index,
           message.value,
+          message.element ?? null,
         );
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "init") {
@@ -751,17 +768,20 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
       }
     } catch (error) {
-      this.port.postMessage({
+      const response = {
         type: "onda-error",
         operation: message.type ?? "unknown",
         requestId: message.requestId,
         error: String(error && error.message ? error.message : error),
-      });
+      };
+      if (Number.isInteger(error?.status)) response.status = error.status;
+      this.port.postMessage(response);
     }
   }
 
   dispatchEvent(selector, payload) {
     this.requireInitialized("event dispatch");
+    if (Number.isInteger(selector) && selector >= this.eventInfo.length) return;
     const eventId = Number.isInteger(selector)
       ? selector
       : this.eventInfo.findIndex((event) => event.name === selector);
@@ -794,7 +814,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
-    if (status === PROCESSOR_EXECUTION_INPUT_REJECTED) throw new Error(`event '${event.name}' input rejected: invalid payload or insufficient workspace`);
+    if (status === PROCESSOR_EXECUTION_INPUT_REJECTED) {
+      throw new ProcessorExecutionError(
+        `event '${event.name}' input rejected: invalid payload or insufficient workspace`,
+        status,
+      );
+    }
     this.publishExecutionOutput(
       EXECUTION_OPERATION_EVENT,
       eventId,
@@ -1559,8 +1584,8 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         this.blockSize - startFrame,
       );
       const endsBlock = startFrame + segmentFrames === this.blockSize;
-      const flags = (startFrame === 0 ? ONDA_PROCESS_BEGIN_BLOCK : 0)
-        | (endsBlock ? ONDA_PROCESS_END_BLOCK : 0);
+      const flags = (startFrame === 0 ? PROCESSOR_BEGIN_BLOCK : 0)
+        | (endsBlock ? PROCESSOR_END_BLOCK : 0);
 
       this.marshalInputSegment(
         inputs,
@@ -1578,12 +1603,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         EXECUTION_OPERATION_PROCESS,
         0,
       );
-      if (status !== 0) {
+      if (status !== PROCESSOR_EXECUTION_OK) {
         this.invalidateState();
         this.clearOutputs(outputs);
         this.port.postMessage({
           type: "onda-error",
           operation: "process",
+          status,
           error: `processor process failed with Onda execution status ${String(status)}`,
         });
         return true;

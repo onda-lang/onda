@@ -392,7 +392,7 @@ impl JitProgram {
     ///
     /// # Safety
     ///
-    /// The buffer pointees must satisfy [`Self::initialize_state_in_place`]'s
+    /// The buffer pointees must satisfy [`Self::initialize_state_in_place_checked`]'s
     /// lifetime, extent, alignment, and aliasing requirements.
     pub unsafe fn restore_state_snapshot(
         &self,
@@ -401,9 +401,38 @@ impl JitProgram {
         snapshot: &[u8],
         buffers: BufferDescriptorTables<'_>,
     ) -> Result<(), Diagnostic> {
+        let status =
+            unsafe { self.restore_state_snapshot_with_status(params, state, snapshot, buffers) }?;
+        crate::check_execution_status(status)
+    }
+
+    /// Reinitializes state before applying a snapshot while preserving generated status.
+    ///
+    /// # Safety
+    ///
+    /// The buffer pointees must satisfy [`Self::initialize_state_in_place_checked`]'s
+    /// lifetime, extent, alignment, and aliasing requirements.
+    pub unsafe fn restore_state_snapshot_with_status(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        snapshot: &[u8],
+        buffers: BufferDescriptorTables<'_>,
+    ) -> Result<u32, Diagnostic> {
         self.validate_state_snapshot(snapshot)?;
-        unsafe { self.initialize_state_in_place(params, state, true, buffers, None)? };
-        self.overlay_state_snapshot(state, snapshot)
+        let status = unsafe {
+            self.initialize_state_in_place_checked_with_status(
+                params,
+                state,
+                crate::InitMode::Full,
+                buffers,
+                None,
+            )
+        }?;
+        if status == crate::PROCESSOR_EXECUTION_OK {
+            self.overlay_state_snapshot(state, snapshot)?;
+        }
+        Ok(status)
     }
 
     pub fn validate_state_snapshot(&self, snapshot: &[u8]) -> Result<(), Diagnostic> {
@@ -464,7 +493,15 @@ impl JitProgram {
     }
 
     pub fn initialize_state(&self, params: &[u8]) -> Result<RuntimeState, Diagnostic> {
-        self.initialize_state_with_allocator(params, None)
+        self.initialize_state_with_status(params)?.into_result()
+    }
+
+    /// Initializes owned state while preserving a generated initialization failure status.
+    pub fn initialize_state_with_status(
+        &self,
+        params: &[u8],
+    ) -> Result<crate::StateInitialization, Diagnostic> {
+        self.initialize_state_with_allocator_and_status(params, None)
     }
 
     pub fn initialize_state_with_allocator(
@@ -472,10 +509,20 @@ impl JitProgram {
         params: &[u8],
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
+        self.initialize_state_with_allocator_and_status(params, allocator)?
+            .into_result()
+    }
+
+    /// Allocator-backed initialization that preserves a generated failure status.
+    pub fn initialize_state_with_allocator_and_status(
+        &self,
+        params: &[u8],
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<crate::StateInitialization, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
             self.compiled
-                .initialize_state_with_allocator(params, allocator)
+                .initialize_state_with_allocator_and_status(params, allocator)
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
@@ -512,8 +559,9 @@ impl JitProgram {
     /// by the program. Buffer storage must not overlap other buffers, descriptor
     /// tables, state, parameters, or execution-output storage. Every non-null output
     /// batch pointer and its non-null storage pointer must be valid, exclusively
-    /// writable, and correctly sized/aligned for the call. Output counters must be
-    /// reset before entry. Descriptor validation cannot establish these properties.
+    /// writable, and correctly sized/aligned for the call. This method resets supplied
+    /// output before validation; descriptor validation cannot establish the remaining
+    /// memory properties.
     ///
     /// ```compile_fail,E0133
     /// use onda_codegen_llvm::{BufferDescriptorTables, JitProgram, UninitializedRuntimeState};
@@ -530,16 +578,34 @@ impl JitProgram {
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
+        unsafe { self.initialize_allocated_state_with_status(params, state, buffers, output) }
+            .and_then(crate::StateInitialization::into_result)
+    }
+
+    /// Initializes previously allocated state while preserving generated status.
+    ///
+    /// # Safety
+    ///
+    /// Host buffers and output storage must satisfy
+    /// [`Self::initialize_allocated_state`]'s safety requirements.
+    pub unsafe fn initialize_allocated_state_with_status(
+        &self,
+        params: &[u8],
+        state: &mut UninitializedRuntimeState,
+        buffers: BufferDescriptorTables<'_>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<crate::StateInitialization, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
                 self.compiled
-                    .initialize_allocated_state(params, state, buffers, output)
+                    .initialize_allocated_state_with_status(params, state, buffers, output)
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state, buffers, output);
+            reset_execution_output(output);
+            let _ = (params, state, buffers);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -553,24 +619,46 @@ impl JitProgram {
     /// Host buffers and output storage must satisfy
     /// [`Self::initialize_allocated_state`]'s lifetime, extent, alignment,
     /// exclusivity, and aliasing requirements.
-    pub unsafe fn initialize_state_in_place(
+    pub unsafe fn initialize_state_in_place_checked(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        full: bool,
+        mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.initialize_state_in_place_checked_with_status(params, state, mode, buffers, output)
+        }?;
+        crate::check_execution_status(status)
+    }
+
+    /// Validates hosted regions, then preserves the generated initialization status.
+    ///
+    /// # Safety
+    ///
+    /// Host buffers and output storage must satisfy
+    /// [`Self::initialize_allocated_state`]'s safety requirements.
+    pub unsafe fn initialize_state_in_place_checked_with_status(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        mode: crate::InitMode,
+        buffers: BufferDescriptorTables<'_>,
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled
-                    .initialize_state_in_place(params, state, full, buffers, output)
+                self.compiled.initialize_state_in_place_checked_with_status(
+                    params, state, mode, buffers, output,
+                )
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state, full, buffers, output);
+            reset_execution_output(output);
+            let _ = (params, state, mode, buffers);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
@@ -583,13 +671,13 @@ impl JitProgram {
     /// # Safety
     ///
     /// State and parameter storage must match this program. Buffer descriptors
-    /// must be validated and retain [`Self::initialize_state_in_place`]'s
+    /// must be validated and retain [`Self::initialize_state_in_place_checked`]'s
     /// lifetime, extent, alignment, exclusivity, and aliasing guarantees.
     pub unsafe fn initialize_state_in_place_unchecked(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        full: bool,
+        mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<u32, Diagnostic> {
@@ -597,19 +685,19 @@ impl JitProgram {
         {
             Ok(unsafe {
                 self.compiled
-                    .initialize_state_in_place_unchecked(params, state, full, buffers, output)
+                    .initialize_state_in_place_unchecked(params, state, mode, buffers, output)
             })
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
-            let _ = (params, state, full, buffers, output);
+            let _ = (params, state, mode, buffers, output);
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
             ))
         }
     }
 
-    /// Validates ABI shape before entering generated code.
+    /// Resets supplied output and validates ABI shape before entering generated code.
     ///
     /// # Safety
     ///
@@ -634,10 +722,50 @@ impl JitProgram {
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.process_checked_with_status(
+                state,
+                params,
+                start_frame,
+                frames,
+                flags,
+                in_ptrs,
+                out_ptrs,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )
+        }?;
+        crate::check_execution_status(status)
+    }
+
+    /// Validates ABI shape before entering generated code while preserving its execution status.
+    ///
+    /// # Safety
+    ///
+    /// Host regions must satisfy [`Self::process_checked`]'s safety requirements.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn process_checked_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        start_frame: usize,
+        frames: usize,
+        flags: u32,
+        in_ptrs: &[*const u8],
+        out_ptrs: &[*mut u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.process_checked(
+                self.compiled.process_checked_with_status(
                     state,
                     params,
                     start_frame,
@@ -655,6 +783,7 @@ impl JitProgram {
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
+            reset_execution_output(output);
             let _ = (
                 state,
                 params,
@@ -667,7 +796,6 @@ impl JitProgram {
                 buffer_frames,
                 buffer_channels,
                 buffer_sample_rates,
-                output,
             );
             Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
@@ -749,7 +877,7 @@ impl JitProgram {
     /// Raw external-buffer pointers must satisfy their complete binding
     /// contract and remain valid for the duration of the call.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_by_index(
+    pub unsafe fn trigger_event_by_index_checked(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -762,7 +890,7 @@ impl JitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         let status = unsafe {
-            self.trigger_event_by_index_with_status(
+            self.trigger_event_by_index_checked_with_status(
                 state,
                 params,
                 event_index,
@@ -786,7 +914,7 @@ impl JitProgram {
     /// Raw external-buffer pointers must satisfy their complete binding
     /// contract and remain valid for the duration of the call.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_by_index_with_status(
+    pub unsafe fn trigger_event_by_index_checked_with_status(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -800,12 +928,12 @@ impl JitProgram {
     ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
-            return Ok(0);
+            return Ok(crate::PROCESSOR_EXECUTION_OK);
         }
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index_with_status(
+                self.compiled.trigger_event_by_index_checked_with_status(
                     state,
                     params,
                     event_index,
@@ -846,7 +974,44 @@ impl JitProgram {
     /// The storage must not be mutated concurrently or alias memory written by
     /// the event.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_views_by_index_with_status(
+    pub unsafe fn trigger_event_views_by_index_checked(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.trigger_event_views_by_index_checked_with_status(
+                state,
+                params,
+                event_index,
+                views,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )?
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Dispatches an event from checked native tensor views while preserving
+    /// the generated execution status.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty view must describe live readable storage for the call.
+    /// The storage must not be mutated concurrently or alias memory written by
+    /// the event.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_checked_with_status(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -860,22 +1025,23 @@ impl JitProgram {
     ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
-            return Ok(0);
+            return Ok(crate::PROCESSOR_EXECUTION_OK);
         }
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_views_by_index_with_status(
-                    state,
-                    params,
-                    event_index,
-                    views,
-                    buffer_ptrs,
-                    buffer_frames,
-                    buffer_channels,
-                    buffer_sample_rates,
-                    output,
-                )
+                self.compiled
+                    .trigger_event_views_by_index_checked_with_status(
+                        state,
+                        params,
+                        event_index,
+                        views,
+                        buffer_ptrs,
+                        buffer_frames,
+                        buffer_channels,
+                        buffer_sample_rates,
+                        output,
+                    )
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
@@ -946,7 +1112,7 @@ impl JitProgram {
     ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
-            return Ok(0);
+            return Ok(crate::PROCESSOR_EXECUTION_OK);
         }
         #[cfg(feature = "llvm-orc")]
         {
@@ -989,7 +1155,7 @@ impl JitProgram {
     /// # Safety
     ///
     /// The state, parameters, and raw external-buffer tables must satisfy the
-    /// same invariants enforced by [`Self::trigger_event_by_index`] and remain
+    /// same invariants enforced by [`Self::trigger_event_by_index_checked`] and remain
     /// valid for the duration of the call. Malformed payload bytes are safely
     /// rejected by the generated entry.
     #[allow(clippy::too_many_arguments)]
@@ -1007,7 +1173,7 @@ impl JitProgram {
     ) -> Result<u32, Diagnostic> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
-            return Ok(0);
+            return Ok(crate::PROCESSOR_EXECUTION_OK);
         }
         #[cfg(feature = "llvm-orc")]
         {

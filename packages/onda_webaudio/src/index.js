@@ -1,4 +1,4 @@
-import { paramAddress } from "./param-metadata.js";
+import { paramAddress, paramElementAddress } from "./param-metadata.js";
 import {
   PayloadPlan,
   createParamControl,
@@ -18,6 +18,10 @@ import {
   drainExecutionOutputRing,
   openExecutionOutputRing,
 } from "./execution-output-ring.js";
+import {
+  PROCESSOR_INIT_FULL,
+  PROCESSOR_INIT_PRESERVE_PINNED,
+} from "./processor-constants.js";
 
 export {
   createParamDomain,
@@ -25,11 +29,23 @@ export {
   constrainParamPlain,
   paramNormalizedToPlain,
   paramPlainToNormalized,
+  PROCESSOR_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
 } from "@onda-lang/processor-abi";
 
 export const ONDA_AUDIO_WORKLET_PROCESSOR_NAME = "onda-wasm-processor";
-export const ONDA_INIT_PRESERVE_PINNED = 0;
-export const ONDA_INIT_FULL = 1;
+export const ONDA_INIT_PRESERVE_PINNED = PROCESSOR_INIT_PRESERVE_PINNED;
+export const ONDA_INIT_FULL = PROCESSOR_INIT_FULL;
+
+export class OndaExecutionError extends Error {
+  constructor(message, operation, status) {
+    super(message);
+    this.name = "OndaExecutionError";
+    this.operation = operation;
+    this.status = status;
+  }
+}
 
 const registrationByContext = new WeakMap();
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
@@ -171,6 +187,11 @@ function paramInfoFor(params, selector, cache = null) {
   return element === null ? info : paramElementInfo(info, element, cache);
 }
 
+function paramElementInfoFor(params, selector, element, cache = null) {
+  const address = paramElementAddress(params, selector, element);
+  return paramElementInfo(address.info, address.element, cache);
+}
+
 function preparedParamControl(info, cache = null) {
   if (info.type_repr !== info.scalar) return null;
   if (info.scalar !== "bool" && info.param_control === null) return null;
@@ -263,7 +284,7 @@ async function createOndaAudioProcessorImpl(context, artifact, options, initiali
   }
   const nodeOptions = audioWorkletNodeOptionsFromValidated(
     validated,
-    { ...options, compiledModule, initialize },
+    { ...options, compiledModule, initialize: false },
     false,
   );
   const node = new NodeConstructor(
@@ -271,12 +292,32 @@ async function createOndaAudioProcessorImpl(context, artifact, options, initiali
     ONDA_AUDIO_WORKLET_PROCESSOR_NAME,
     nodeOptions,
   );
-  return new OndaAudioProcessor(
+  const processor = new OndaAudioProcessor(
     node,
     validated.metadata,
     options.onPrint,
     nodeOptions.processorOptions.executionOutputRing,
   );
+  if (!initialize) return processor;
+  try {
+    await processor.init(ONDA_INIT_FULL);
+    return processor;
+  } catch (error) {
+    // Initialization publishes diagnostic prints before reporting its status. Consume any
+    // already-published records while the construction-time listener is still installed.
+    try {
+      processor.drainExecutionOutput();
+    } catch {
+      // Preserve the initialization failure if consuming its diagnostics also fails.
+    }
+    processor.close(error);
+    try {
+      node.disconnect?.();
+    } catch {
+      // Preserve the initialization failure if node teardown also fails.
+    }
+    throw error;
+  }
 }
 
 export async function compileOndaProcessorModule(artifact) {
@@ -312,6 +353,7 @@ export class OndaAudioProcessor {
     this.paramElements = new WeakMap();
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.executionErrorListeners = new Set();
     this.delegateListeners = new Set();
     this.delegateSubscriptionId = 0;
     this.printListeners = new Set(
@@ -333,15 +375,22 @@ export class OndaAudioProcessor {
     this.closeReason = null;
     this.handleMessage = (event) => {
       const message = event.data ?? {};
-      if (message.requestId === undefined) return;
+      const error = message.type === "onda-error"
+        ? Number.isInteger(message.status)
+          ? new OndaExecutionError(message.error, message.operation, message.status)
+          : new Error(message.error)
+        : null;
+      if (message.requestId === undefined) {
+        if (error instanceof OndaExecutionError) {
+          this.notifyListeners(this.executionErrorListeners, error);
+        }
+        return;
+      }
       const pending = this.pending.get(message.requestId);
       if (!pending) return;
       this.pending.delete(message.requestId);
-      if (message.type === "onda-error") {
-        pending.reject(new Error(message.error));
-      } else {
-        pending.resolve(message);
-      }
+      if (error) pending.reject(error);
+      else pending.resolve(message);
     };
     node.port.addEventListener("message", this.handleMessage);
     node.port.start?.();
@@ -375,7 +424,7 @@ export class OndaAudioProcessor {
         if (result.async) await result.value;
       }
     };
-    void wait().catch((error) => this.reportExecutionOutputError(error));
+    void wait().catch((error) => this.reportListenerError(error));
   }
 
   stopExecutionOutputDrain() {
@@ -398,18 +447,18 @@ export class OndaAudioProcessor {
     );
   }
 
-  reportExecutionOutputError(error) {
+  reportListenerError(error) {
     queueMicrotask(() => {
       throw error;
     });
   }
 
-  notifyExecutionOutputListeners(listeners, batch) {
+  notifyListeners(listeners, value) {
     for (const listener of listeners) {
       try {
-        listener(batch);
+        listener(value);
       } catch (error) {
-        this.reportExecutionOutputError(error);
+        this.reportListenerError(error);
       }
     }
   }
@@ -422,7 +471,7 @@ export class OndaAudioProcessor {
         try {
           this.consumeExecutionOutput(entry);
         } catch (error) {
-          this.reportExecutionOutputError(error);
+          this.reportListenerError(error);
         }
       },
     );
@@ -540,7 +589,7 @@ export class OndaAudioProcessor {
           entries: batchRecords.map((record) => record.entry),
           ...meta,
         };
-        this.notifyExecutionOutputListeners(this.printListeners, batch);
+        this.notifyListeners(this.printListeners, batch);
       } else {
         const meta = delegate ?? { overflowCount: 0, transportDropCount: 0 };
         delegate = null;
@@ -550,7 +599,7 @@ export class OndaAudioProcessor {
           occurrences: batchRecords.map((record) => record.occurrence),
           ...meta,
         };
-        this.notifyExecutionOutputListeners(this.delegateListeners, batch);
+        this.notifyListeners(this.delegateListeners, batch);
       }
       cursor = end;
     }
@@ -562,7 +611,7 @@ export class OndaAudioProcessor {
         entries: [],
         ...print,
       };
-      this.notifyExecutionOutputListeners(this.printListeners, batch);
+      this.notifyListeners(this.printListeners, batch);
     }
     if (
       delegate
@@ -574,7 +623,7 @@ export class OndaAudioProcessor {
         occurrences: [],
         ...delegate,
       };
-      this.notifyExecutionOutputListeners(this.delegateListeners, batch);
+      this.notifyListeners(this.delegateListeners, batch);
     }
   }
 
@@ -609,6 +658,29 @@ export class OndaAudioProcessor {
     }
   }
 
+  setParamElement(param, element, value) {
+    try {
+      if (!Array.isArray(this.paramInfo)) {
+        throw new Error(
+          "setParamElement requires processor metadata; construct the adapter with createOndaAudioProcessor()",
+        );
+      }
+      const info = paramElementInfoFor(
+        this.paramInfo,
+        param,
+        element,
+        this.paramElements,
+      );
+      return this.request("set-param", {
+        param,
+        element,
+        value: constrainParamValue(info, value, this.paramControls, this.paramElements),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   setParamNormalized(param, value) {
     try {
       if (!Array.isArray(this.paramInfo)) {
@@ -630,17 +702,66 @@ export class OndaAudioProcessor {
     }
   }
 
+  setParamElementNormalized(param, element, value) {
+    try {
+      if (!Array.isArray(this.paramInfo)) {
+        throw new Error(
+          "setParamElementNormalized requires processor metadata; construct the adapter with createOndaAudioProcessor()",
+        );
+      }
+      const info = paramElementInfoFor(
+        this.paramInfo,
+        param,
+        element,
+        this.paramElements,
+      );
+      const control = preparedParamControl(info, this.paramControls);
+      if (!control) {
+        throw new Error(`Onda parameter '${info.name}' has no scalar host-control domain`);
+      }
+      return this.request("set-param", {
+        param,
+        element,
+        value: control.normalizedToPlain(value),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   trigger(event, values = {}) {
     try {
       this.assertOpen();
       const events = this.metadata?.metadata?.events;
-      const info = Number.isInteger(event) ? events?.[event] : events?.find((entry) => entry.name === event);
+      if (Number.isInteger(event)) {
+        if (!Array.isArray(events)) {
+          throw new Error(
+            "event triggers require processor metadata; construct the adapter with createOndaAudioProcessor()",
+          );
+        }
+        if (event >= events.length) {
+          const payload = new Uint8Array();
+          return this.request("event", { event, payload }, [payload.buffer]);
+        }
+      }
+      const info = Number.isInteger(event)
+        ? events?.[event]
+        : events?.find((entry) => entry.name === event);
       if (!info) throw new Error(`unknown Onda event '${String(event)}'`);
       let plan = this.eventPlans.get(info);
       if (!plan) { plan = new PayloadPlan(info.schema); this.eventPlans.set(info, plan); }
       const payload = plan.encode(values);
       return this.request("event", { event, payload }, [payload.buffer]);
     } catch (error) { return Promise.reject(error); }
+  }
+
+  onExecutionError(listener) {
+    this.assertOpen();
+    if (typeof listener !== "function") {
+      throw new TypeError("execution-error listener must be a function");
+    }
+    this.executionErrorListeners.add(listener);
+    return () => this.executionErrorListeners.delete(listener);
   }
 
   onDelegates(listener) {
@@ -775,6 +896,7 @@ export class OndaAudioProcessor {
     this.stopExecutionOutputDrain();
     for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();
+    this.executionErrorListeners.clear();
     this.delegateListeners.clear();
     this.printListeners.clear();
   }

@@ -40,6 +40,51 @@ fn instance_is_send() {
 }
 
 #[test]
+fn runtime_exposes_canonical_processor_statuses_and_flags() {
+    assert_eq!(
+        PROCESSOR_EXECUTION_OK,
+        onda_processor_abi::PROCESSOR_EXECUTION_OK
+    );
+    assert_eq!(
+        PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+        onda_processor_abi::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    );
+    assert_eq!(
+        PROCESSOR_EXECUTION_INPUT_REJECTED,
+        onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
+    assert_eq!(
+        PROCESSOR_BEGIN_BLOCK,
+        onda_processor_abi::PROCESSOR_BEGIN_BLOCK
+    );
+    assert_eq!(PROCESSOR_END_BLOCK, onda_processor_abi::PROCESSOR_END_BLOCK);
+    assert_eq!(
+        PROCESSOR_FULL_BLOCK,
+        onda_processor_abi::PROCESSOR_FULL_BLOCK
+    );
+    assert_eq!(
+        InitMode::PreservePinned as u32,
+        onda_processor_abi::PROCESSOR_INIT_PRESERVE_PINNED
+    );
+    assert_eq!(
+        InitMode::Full as u32,
+        onda_processor_abi::PROCESSOR_INIT_FULL
+    );
+}
+
+#[test]
+fn event_status_preserves_state_only_for_success_and_input_rejection() {
+    assert!(!event_status_invalidates_state(PROCESSOR_EXECUTION_OK));
+    assert!(!event_status_invalidates_state(
+        PROCESSOR_EXECUTION_INPUT_REJECTED
+    ));
+    assert!(event_status_invalidates_state(
+        PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    ));
+    assert!(event_status_invalidates_state(u32::MAX));
+}
+
+#[test]
 fn initialized_constructor_clears_prints_when_initialization_fails() {
     let program = compile_test_program(
         r#"
@@ -231,7 +276,10 @@ fn delegate_batch_iterates_complete_native_records_without_allocation() {
     batch.record_count = 2;
     batch.overflow_count = 3;
 
-    let occurrences = batch.occurrences().collect::<Vec<_>>();
+    let occurrences = batch
+        .occurrences()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("valid records should decode");
     assert_eq!(occurrences.len(), 2);
     assert_eq!(occurrences[0].delegate_index, 2);
     assert_eq!(occurrences[0].sequence, 7);
@@ -239,10 +287,58 @@ fn delegate_batch_iterates_complete_native_records_without_allocation() {
     assert_eq!(occurrences[1].delegate_index, 5);
     assert_eq!(occurrences[1].sequence, 9);
     assert_eq!(occurrences[1].payload, [1]);
-    assert_eq!(batch.occurrence(1), Some(occurrences[1]));
-    assert_eq!(batch.occurrence(2), None);
+    assert_eq!(batch.occurrence(1), Ok(Some(occurrences[1])));
+    assert_eq!(batch.occurrence(2), Ok(None));
     assert_eq!(batch.capacity_bytes(), 29);
     assert_eq!(batch.overflow_count, 3);
+}
+
+#[test]
+fn runtime_batch_access_distinguishes_absence_from_malformed_storage() {
+    let mut delegate_storage = [0_u8; 16];
+    let mut delegates = DelegateBatch::from_storage(&mut delegate_storage);
+    delegates.used_bytes = 1;
+    delegates.record_count = 1;
+    assert_eq!(
+        delegates.occurrences().next(),
+        Some(Err(BatchDecodeError::MalformedRecord { record_index: 0 }))
+    );
+    assert_eq!(
+        delegates.occurrence(1),
+        Err(BatchDecodeError::MalformedRecord { record_index: 0 })
+    );
+
+    delegates.record_count = 0;
+    assert_eq!(
+        delegates.occurrence(0),
+        Err(BatchDecodeError::InvalidEnvelope)
+    );
+    delegates.record_count = 1;
+    delegates.used_bytes = 17;
+    assert_eq!(
+        delegates.occurrence(0),
+        Err(BatchDecodeError::InvalidEnvelope)
+    );
+
+    let mut trailing_storage = [0_u8; 13];
+    trailing_storage[4..8].copy_from_slice(&0_u32.to_ne_bytes());
+    let mut trailing = DelegateBatch::from_storage(&mut trailing_storage);
+    trailing.used_bytes = 13;
+    trailing.record_count = 1;
+    assert_eq!(trailing.occurrence(0), Err(BatchDecodeError::TrailingBytes));
+
+    let mut print_storage = [0_u8; 16];
+    let mut prints = PrintBatch::from_storage(&mut print_storage);
+    prints.used_bytes = 1;
+    prints.record_count = 1;
+    assert_eq!(
+        prints.occurrences().next(),
+        Some(Err(BatchDecodeError::MalformedRecord { record_index: 0 }))
+    );
+    assert_eq!(
+        prints.occurrence(1),
+        Err(BatchDecodeError::MalformedRecord { record_index: 0 })
+    );
 }
 
 #[test]
@@ -337,10 +433,10 @@ fn creation_defers_full_init_until_after_initial_parameter_configuration() {
 
     assert!(!instance.is_initialized());
     assert!(process_checked(&mut instance, 1, ExecutionOutput::none()).is_err());
-    assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
     set_param_by_index(&mut instance, 0, &0.75_f32.to_ne_bytes())
         .expect("initial parameter should update");
-    init(&mut instance, InitMode::Full).expect("full init should succeed");
+    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
     assert!(instance.is_initialized());
     process_checked(&mut instance, 1, ExecutionOutput::none())
         .expect("initialized instance should process");
@@ -576,7 +672,7 @@ fn state_init_and_restore_preserve_validated_buffer_tables() {
         .snapshot_state_bytes()
         .expect("initialized state should snapshot");
 
-    init(&mut instance, InitMode::PreservePinned).expect("init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("init should succeed");
     assert!(instance.buffers_validated);
     assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 
@@ -680,7 +776,7 @@ sample:
         )
         .expect("bound output should bind");
     }
-    init(&mut bound, InitMode::Full).expect("bound instance should initialize");
+    init_checked(&mut bound, InitMode::Full).expect("bound instance should initialize");
     process_checked(&mut bound, 1, ExecutionOutput::none()).expect("bound instance should process");
     assert_eq!(bound_output, [121.0]);
 
@@ -702,13 +798,13 @@ sample:
     assert_eq!(bound_output, [126.0]);
 
     let refresh = bound.event_index("refresh").expect("refresh event");
-    trigger_event_by_index(&mut bound, refresh, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut bound, refresh, &[], ExecutionOutput::none())
         .expect("proc init event should run against the current binding");
     process_checked(&mut bound, 1, ExecutionOutput::none())
         .expect("reinitialized proc should process");
     assert_eq!(bound_output, [131.0]);
 
-    init(&mut bound, InitMode::Full)
+    init_checked(&mut bound, InitMode::Full)
         .expect("top-level init should run against the replacement binding");
     process_checked(&mut bound, 1, ExecutionOutput::none())
         .expect("fully reinitialized instance should process");
@@ -894,7 +990,7 @@ sample:
     assert_eq!(output, [2.0; BLOCK_SIZE]);
 
     let reload = instance.event_index("reload").expect("reload event");
-    trigger_event_by_index(&mut instance, reload, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, reload, &[], ExecutionOutput::none())
         .expect("task reset event should run");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
@@ -904,13 +1000,13 @@ sample:
         .expect("restarted task should complete");
     assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-    init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default init block should process");
     assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-    init(&mut instance, InitMode::Full).expect("full init should succeed");
+    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("full init block should process");
@@ -1070,7 +1166,7 @@ block:
     assert_eq!(output, [2.0]);
 
     let retry = instance.event_index("retry").expect("retry event");
-    trigger_event_by_index(&mut instance, retry, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
@@ -1080,14 +1176,14 @@ block:
         .expect("reset task should complete again");
     assert_eq!(output, [4.0]);
 
-    init(&mut instance, InitMode::PreservePinned)
+    init_checked(&mut instance, InitMode::PreservePinned)
         .expect("default init should preserve the completed task");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default init should preserve the completed task");
     assert_eq!(output, [4.0]);
 
-    init(&mut instance, InitMode::Full).expect("full init should restart the task");
+    init_checked(&mut instance, InitMode::Full).expect("full init should restart the task");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("full init should restart the task");
@@ -1096,14 +1192,15 @@ block:
         .expect("restarted task should complete from a cleared state");
     assert_eq!(output, [2.0]);
 
-    init(&mut instance, InitMode::PreservePinned)
+    init_checked(&mut instance, InitMode::PreservePinned)
         .expect("default init should preserve pinned task state");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default init should preserve the completed task");
     assert_eq!(output, [2.0]);
 
-    init(&mut instance, InitMode::Full).expect("full init should restart after default init");
+    init_checked(&mut instance, InitMode::Full)
+        .expect("full init should restart after default init");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("full init should restart after default init");
@@ -1262,7 +1359,7 @@ block:
     assert_eq!(output, [8.0]);
 
     let retry = instance.event_index("retry").expect("retry event");
-    trigger_event_by_index(&mut instance, retry, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
@@ -1311,7 +1408,7 @@ block:
         .expect("task should complete");
     assert_eq!(output, [2.0]);
 
-    init(&mut instance, InitMode::PreservePinned)
+    init_checked(&mut instance, InitMode::PreservePinned)
         .expect("default init should execute explicit task reset");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
@@ -1364,7 +1461,7 @@ block:
     assert_eq!(read_ready(&instance), 2.0);
 
     let retry = instance.event_index("retry").expect("retry event");
-    trigger_event_by_index(&mut instance, retry, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("reset task should yield");
@@ -1575,7 +1672,8 @@ sample {
         .expect("initial state should process");
     assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
 
-    init(&mut instance, InitMode::PreservePinned).expect("ordinary live init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned)
+        .expect("ordinary live init should succeed");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("reinitialized state should process");
     assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
@@ -1583,12 +1681,13 @@ sample {
         .expect("state should advance");
     assert_eq!((pinned[0], ordinary[0]), (15.0, 22.0));
 
-    init(&mut instance, InitMode::PreservePinned).expect("second default init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned)
+        .expect("second default init should succeed");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("second init state should process");
     assert_eq!((pinned[0], ordinary[0]), (17.0, 21.0));
 
-    init(&mut instance, InitMode::Full).expect("full live init should succeed");
+    init_checked(&mut instance, InitMode::Full).expect("full live init should succeed");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("fully initialized state should process");
     assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
@@ -1626,14 +1725,14 @@ sample { out1 = amp + pinned }
         .expect("output should bind");
     }
     let event = instance.event_index("set_amp").expect("set_amp event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         event,
         &0.5_f32.to_ne_bytes(),
         ExecutionOutput::none(),
     )
     .expect("event should run");
-    init(&mut instance, InitMode::PreservePinned).expect("live init should run");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("live init should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("state should process");
     assert_eq!(output, [1.5]);
@@ -1680,18 +1779,18 @@ sample:
     assert_eq!(output, [4.0]);
 
     let mutate = instance.event_index("mutate").expect("mutate event");
-    trigger_event_by_index(&mut instance, mutate, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, mutate, &[], ExecutionOutput::none())
         .expect("mutation should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("mutated state should process");
     assert_eq!(output, [100.0]);
 
-    init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default init should process");
     assert_eq!(output, [61.0]);
 
-    init(&mut instance, InitMode::Full).expect("full init should succeed");
+    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("full init should process");
     assert_eq!(output, [4.0]);
@@ -1731,7 +1830,7 @@ sample:
     let event = instance
         .event_index("set_pinned")
         .expect("set_pinned event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         event,
         &50_i32.to_ne_bytes(),
@@ -1745,12 +1844,12 @@ sample:
         .expect("divisor parameter should update");
 
     assert!(
-        init(&mut instance, InitMode::PreservePinned).is_err(),
+        init_checked(&mut instance, InitMode::PreservePinned).is_err(),
         "division by zero should fail"
     );
     assert!(!instance.is_initialized());
     assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
-    assert!(trigger_event_by_index(
+    assert!(trigger_event_by_index_checked(
         &mut instance,
         event,
         &0_i32.to_ne_bytes(),
@@ -1762,7 +1861,7 @@ sample:
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should recover");
     assert!(
-        init(&mut instance, InitMode::PreservePinned).is_err(),
+        init_checked(&mut instance, InitMode::PreservePinned).is_err(),
         "preserve-pinned init cannot recover indeterminate pinned state"
     );
     instance
@@ -1775,10 +1874,10 @@ sample:
 
     set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
         .expect("divisor parameter should update");
-    assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should recover");
-    init(&mut instance, InitMode::Full).expect("full init should recover invalid state");
+    init_checked(&mut instance, InitMode::Full).expect("full init should recover invalid state");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("reinitialized state should process");
     assert_eq!(output, [11.0]);
@@ -1800,7 +1899,7 @@ sample:
     );
     let event = instance.event_index("divide").expect("divide event");
 
-    assert!(trigger_event_by_index(
+    assert!(trigger_event_by_index_checked(
         &mut instance,
         event,
         &0_i32.to_ne_bytes(),
@@ -1808,17 +1907,17 @@ sample:
     )
     .is_err());
     assert!(!instance.is_initialized());
-    assert!(trigger_event_by_index(
+    assert!(trigger_event_by_index_checked(
         &mut instance,
         event,
         &1_i32.to_ne_bytes(),
         ExecutionOutput::none()
     )
     .is_err());
-    assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
 
-    init(&mut instance, InitMode::Full).expect("full init should recover the instance");
-    trigger_event_by_index(
+    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
+    trigger_event_by_index_checked(
         &mut instance,
         event,
         &1_i32.to_ne_bytes(),
@@ -1858,16 +1957,16 @@ sample:
         onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
     );
     assert!(!instance.is_initialized());
-    assert!(trigger_event_by_index(
+    assert!(trigger_event_by_index_checked(
         &mut instance,
         event,
         &1_i32.to_ne_bytes(),
         ExecutionOutput::none()
     )
     .is_err());
-    assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
 
-    init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
     validate_buffers(&mut instance).expect("buffer descriptors should revalidate");
     let status = unsafe {
         trigger_event_by_index_unchecked(
@@ -1915,11 +2014,11 @@ sample:
     );
     assert!(!instance.is_initialized());
     assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
-    assert!(init(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
 
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should update");
-    init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
     prepare_unchecked_process(&mut instance).expect("bindings should revalidate");
     let status = unsafe { process_unchecked(&mut instance, ExecutionOutput::none()) }
         .expect("processing should run after recovery");
@@ -2328,7 +2427,7 @@ sample:
     let default_init = instance
         .event_index("default_init")
         .expect("default init event");
-    trigger_event_by_index(&mut instance, default_init, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, default_init, &[], ExecutionOutput::none())
         .expect("default proc init should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("tasks should resume after init");
@@ -2339,7 +2438,7 @@ sample:
     assert_eq!(output2, [233.0; BLOCK_SIZE]);
 
     let full_init = instance.event_index("full_init").expect("full init event");
-    trigger_event_by_index(&mut instance, full_init, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, full_init, &[], ExecutionOutput::none())
         .expect("forced proc init should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("fully reset task should yield");
@@ -2420,23 +2519,23 @@ sample:
         .expect("default init event");
     let full_init = instance.event_index("full_init").expect("full init event");
 
-    trigger_event_by_index(&mut instance, dirty, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, dirty, &[], ExecutionOutput::none())
         .expect("arrays should become dirty");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("dirty state should process");
     assert_eq!(direct_output, [97.0; BLOCK_SIZE]);
     assert_eq!(nested_output, [97.0; BLOCK_SIZE]);
 
-    trigger_event_by_index(&mut instance, default_init, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, default_init, &[], ExecutionOutput::none())
         .expect("default proc init should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default state should process");
     assert_eq!(direct_output, [90.0; BLOCK_SIZE]);
     assert_eq!(nested_output, [90.0; BLOCK_SIZE]);
 
-    trigger_event_by_index(&mut instance, dirty, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, dirty, &[], ExecutionOutput::none())
         .expect("arrays should become dirty");
-    trigger_event_by_index(&mut instance, full_init, &[], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, full_init, &[], ExecutionOutput::none())
         .expect("full proc init should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("fully reset state should process");
@@ -2490,7 +2589,7 @@ sample:
         &mut instance,
         0,
         0,
-        PROCESS_BEGIN_BLOCK,
+        PROCESSOR_BEGIN_BLOCK,
         ExecutionOutput::none(),
     )
     .expect("zero-frame begin should advance and yield the task");
@@ -2498,12 +2597,12 @@ sample:
     process_checked_segment(&mut instance, 0, 2, 0, ExecutionOutput::none())
         .expect("first audio segment should observe the yielded task");
     assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
-    init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
     process_checked_segment(
         &mut instance,
         2,
         2,
-        PROCESS_END_BLOCK,
+        PROCESSOR_END_BLOCK,
         ExecutionOutput::none(),
     )
     .expect("default init must not reopen the task gate within a logical block");
@@ -2560,7 +2659,7 @@ block:
         &mut instance,
         0,
         0,
-        PROCESS_BEGIN_BLOCK,
+        PROCESSOR_BEGIN_BLOCK,
         ExecutionOutput::none(),
     )
     .expect("zero-frame begin should advance and yield the task");
@@ -2568,12 +2667,12 @@ block:
         .expect("first audio segment should observe the yielded task");
     assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
 
-    init(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
     process_checked_segment(
         &mut instance,
         2,
         2,
-        PROCESS_END_BLOCK,
+        PROCESSOR_END_BLOCK,
         ExecutionOutput::none(),
     )
     .expect("default init must not reopen the top-level task gate");
@@ -2631,20 +2730,20 @@ sample:
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("disabled task should be bypassed");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    trigger_event_by_index(&mut instance, set_enabled, &[1], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, set_enabled, &[1], ExecutionOutput::none())
         .expect("enable event should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("enabled task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
 
-    trigger_event_by_index(&mut instance, set_enabled, &[0], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, set_enabled, &[0], ExecutionOutput::none())
         .expect("disable event should run");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("suspended task should not gate a bypassed block");
     assert_eq!(output, [1.0; BLOCK_SIZE]);
 
-    trigger_event_by_index(&mut instance, set_enabled, &[1], ExecutionOutput::none())
+    trigger_event_by_index_checked(&mut instance, set_enabled, &[1], ExecutionOutput::none())
         .expect("re-enable event should run");
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("task should resume and complete");
@@ -3163,14 +3262,14 @@ sample:
         .expect("both child tasks should complete");
     assert_eq!(output, [22.0; BLOCK_SIZE]);
 
-    init(&mut instance, InitMode::PreservePinned)
+    init_checked(&mut instance, InitMode::PreservePinned)
         .expect("default init should preserve nested task state");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("default init should preserve completed child tasks");
     assert_eq!(output, [22.0; BLOCK_SIZE]);
 
-    init(&mut instance, InitMode::Full).expect("full init should restart nested tasks");
+    init_checked(&mut instance, InitMode::Full).expect("full init should restart nested tasks");
     output.fill(99.0);
     process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
         .expect("restarted child tasks should yield");
@@ -3239,9 +3338,11 @@ sample:
     assert_eq!(output, [99.0; BLOCK_SIZE]);
 
     let retry = instance.event_index("retry").expect("retry event");
-    assert!(trigger_event_by_index(&mut instance, retry, &[], ExecutionOutput::none()).is_err());
+    assert!(
+        trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none()).is_err()
+    );
 
-    init(&mut instance, InitMode::Full).expect("full init should recover the instance");
+    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
     assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
 }
 
@@ -3346,6 +3447,48 @@ fn checked_buffer_bindings_reject_wrapping_element_counts() {
 }
 
 #[test]
+fn checked_event_views_offer_diagnostic_and_status_forms() {
+    let mut instance = compile_test_instance(
+        r#"
+init:
+  held: i32 = 0
+event update(value: i32):
+  held = value
+sample:
+  out1 = f32(held)
+"#,
+        1,
+        1,
+    );
+    let event = instance.event_index("update").unwrap();
+    let value = 7_i32;
+    let views = [EventTensorView {
+        data: (&value as *const i32).cast(),
+        element_count: 1,
+    }];
+    unsafe {
+        trigger_event_views_by_index_checked(&mut instance, event, &views, ExecutionOutput::none())
+            .unwrap();
+    }
+
+    let rejected = [EventTensorView {
+        data: std::ptr::null(),
+        element_count: 0,
+    }];
+    let error = unsafe {
+        trigger_event_views_by_index_checked(
+            &mut instance,
+            event,
+            &rejected,
+            ExecutionOutput::none(),
+        )
+    }
+    .unwrap_err();
+    assert!(error.message.contains("tensor views"));
+    assert!(instance.is_initialized());
+}
+
+#[test]
 fn rejected_event_clears_output_and_preserves_instance() {
     let mut instance = compile_test_instance(
         r#"
@@ -3368,7 +3511,7 @@ sample:
         batch.overflow_count = 5;
     };
     seed_output(&mut print_batch);
-    let status = trigger_event_by_index_with_status(
+    let status = trigger_event_by_index_checked_with_status(
         &mut instance,
         event,
         &[0; 3],
@@ -3391,7 +3534,7 @@ sample:
         (0, 0, 0)
     );
     seed_output(&mut print_batch);
-    let error = trigger_event_by_index(
+    let error = trigger_event_by_index_checked(
         &mut instance,
         event,
         &[0; 3],
@@ -3414,12 +3557,16 @@ sample:
     let count = instance.event_workspace_capacity() / 4 + 1;
     let mut payload = vec![0; 4 + count * 4];
     payload[..4].copy_from_slice(&(count as i32).to_le_bytes());
-    assert!(
-        trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).is_err()
-    );
+    assert!(trigger_event_by_index_checked(
+        &mut instance,
+        event,
+        &payload,
+        ExecutionOutput::none()
+    )
+    .is_err());
     assert!(instance.is_initialized());
     seed_output(&mut print_batch);
-    let status = trigger_event_by_index_with_status(
+    let status = trigger_event_by_index_checked_with_status(
         &mut instance,
         event,
         &payload,
@@ -3468,6 +3615,7 @@ sample:
     );
     assert!(instance.is_initialized());
     instance.reserve_event_workspace(payload.len()).unwrap();
-    trigger_event_by_index(&mut instance, event, &payload, ExecutionOutput::none()).unwrap();
+    trigger_event_by_index_checked(&mut instance, event, &payload, ExecutionOutput::none())
+        .unwrap();
     assert!(instance.is_initialized());
 }

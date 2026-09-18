@@ -77,15 +77,22 @@ never overlap. Program and instance destruction are not realtime-safe.
 The common conventions are:
 
 - Pointer-returning constructors return `NULL` on failure.
-- Most checked runtime operations return `0` on success and a negative API error on invalid input.
-- Unchecked generated entry points may additionally return a positive `ONDA_EXECUTION_*` code.
+- Operation-status functions return `0` on success, `ONDA_API_ERROR_INVALID_ARGUMENT` for malformed
+  scalar arguments or required null handles/pointers, `ONDA_API_ERROR_VALIDATION_FAILED` when the
+  current program or instance contract rejects an otherwise structured request, and
+  `ONDA_API_ERROR_PARAMETER_REJECTED` for an unsuitable parameter write.
+  `ONDA_API_ERROR_ALLOCATION_FAILED` reports failure to provision explicitly requested runtime
+  storage.
+- Generated execution entry points may additionally return a positive `ONDA_EXECUTION_*` code.
 - Count, index, type, and size queries generally return `-1` for invalid input.
 - Borrowed-string queries generally return `NULL` for invalid input.
 - Optional floating metadata returns NaN when it is absent or invalid.
 - Size-query functions write nothing when the destination is `NULL` or too small and return the
   required size.
 
-The exact convention for an individual function is documented in `onda.h` when it differs.
+Query sentinels are separate from the named operation error codes even when they have the same
+numeric value. The exact convention for an individual function is documented in `onda.h` when it
+differs.
 
 ### Diagnostics
 
@@ -385,12 +392,21 @@ Input, output, and parameter ranges use `onda_*_has_range`, `onda_*_range_min_f6
 
 | Function | Meaning |
 | --- | --- |
-| `onda_param_scale` | `ONDA_PARAM_SCALE_LINEAR`, `ONDA_PARAM_SCALE_LOG`, or `-1`. |
+| `onda_param_scale` | `ONDA_PARAM_SCALE_NONE`, `ONDA_PARAM_SCALE_LINEAR`, `ONDA_PARAM_SCALE_LOG`, or `-1` for an invalid query. Values match the raw processor ABI. |
 | `onda_param_has_curve`, `onda_param_curve` | Optional finite lincurve shaping. |
 | `onda_param_unit_copy` | Optional NUL-terminated UTF-8 presentation unit. |
 | `onda_param_has_step`, `onda_param_step_f64`, `onda_param_step_count` | Discrete host-control grid. |
 | `onda_param_normalized_to_plain` | Convert and constrain a normalized host value. |
 | `onda_param_plain_to_normalized` | Constrain and convert a plain host value. |
+
+Numeric fixed-array parameters expose their shared element domain through the scale, curve, unit,
+step, and conversion queries. Every valid parameter without a numeric domain returns
+`ONDA_PARAM_SCALE_NONE`. Unranged numeric conversions return NaN and their control setters reject
+the write. Boolean controls are the exception: plain and normalized values use the `value >= 0.5`
+threshold, including individual fixed-array elements.
+`onda_param_step_count` returns `0` when a valid parameter has no discrete step, including when it
+has no numeric domain, and `-1` for an invalid query; positive results are the number of intervals
+in the declared grid.
 
 The shared `double` host-control surface exactly represents integers only through
 `ONDA_MAX_EXACT_HOST_CONTROL_INTEGER`. Raw parameter bytes retain full-width `i64` values.
@@ -466,9 +482,10 @@ lexical owner, declaration, primitive argument types, and fixed payload size. Al
 | `onda_instance_create_initialized_with_allocator` | Fully initialized. | Host allocator |
 
 Creation validates the requested flattened input and output channel counts. The initialized forms
-accept `onda_execution_output_t`, allowing authored initialization prints and delegates to be
-collected on success. If initialized creation fails, both output batches are cleared and the
-diagnostic is the only result. Release every successful instance with `onda_instance_destroy`.
+accept `onda_execution_output_t`, allowing authored initialization prints to be collected on
+success. Initialization cannot publish delegates, so a supplied delegate batch remains empty. If
+initialized creation fails, both output batches are cleared and the diagnostic is the only result.
+Release every successful instance with `onda_instance_destroy`.
 
 `onda_allocator_t` affects only instance-owned runtime storage. Its `alloc` callback runs
 synchronously during creation and explicit `onda_instance_reserve_event_workspace` calls. Realtime
@@ -477,15 +494,18 @@ The context and callbacks must remain valid until every associated
 instance is destroyed and must support the threads/concurrency used by the host.
 
 `onda_instance_reserve_event_workspace(instance, capacity_bytes, out_diag)` provisions aligned
-input preparation storage outside realtime execution. Fixed messages fit the initial capacity;
-dynamic messages start with at least 64 KiB. A request above the current capacity allocates
-replacement storage and frees the old storage; other requests retain it. Reservation can run before
-or after initialization, and allocation failure preserves the existing workspace and processor
-state. Capacity rejection during event dispatch does not invalidate the instance.
+input preparation storage outside realtime execution. It returns `0` on success,
+`ONDA_API_ERROR_INVALID_ARGUMENT` for a null instance or capacity above 2,147,483,640 bytes—the
+largest supported workspace after eight-byte alignment—or `ONDA_API_ERROR_ALLOCATION_FAILED` when
+the requested capacity cannot be provisioned. Fixed messages fit the initial capacity; dynamic
+messages start with at least 64 KiB. A request above the current capacity allocates replacement
+storage and frees the old storage; other requests retain it. Reservation can run before or after
+initialization, and allocation failure preserves the existing workspace and processor state.
+Capacity rejection during event dispatch does not invalidate the instance.
 
 ### Initialization
 
-`onda_init(instance, mode, output)` reruns authored initialization in place:
+`onda_init_checked(instance, mode, output)` reruns authored initialization in place:
 
 - `ONDA_INIT_FULL` initializes the complete state and is required before processing a newly created
   uninitialized instance.
@@ -495,32 +515,41 @@ state. Capacity rejection during event dispatch does not invalidate the instance
 Initialization prepares and observes the instance's current external-buffer bindings. Project
 defaults are installed before initialized project creation runs authored initialization; ordinary
 unbound slots use their neutral descriptors. Rebinding does not rerun initialization automatically;
-call `onda_init` when state derived by an earlier initializer should be recomputed from the new
-binding.
+call `onda_init_checked` when state derived by an earlier initializer should be recomputed from the
+new binding.
 
-The successful path allocates nothing. A failed initialization leaves state indeterminate; the
-instance rejects stateful operations until a full initialization or snapshot restore succeeds.
+The successful path allocates nothing. Checked initialization returns an `ONDA_API_ERROR_*` code
+when validation rejects the request before generated code runs. It returns
+`ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` when generated initialization fails; that failure leaves
+state indeterminate, and the instance rejects stateful operations until a full initialization or
+snapshot restore succeeds.
 
 `onda_init_unchecked(instance, mode, output)` is the realtime reset variant for instances that
 have completed full initialization at least once. Validate current buffer descriptors after any
 rebind with `onda_validate_buffers` or `onda_prepare_unchecked_process`, and retain the same bound
 storage guarantees as unchecked processing. This call does not revalidate bindings or construct a
 diagnostic on generated failure: it returns zero on success, a positive generated-runtime failure
-code, or a negative API error. Both success and generated failure allocate nothing. A failed call
-invalidates state; unchecked `ONDA_INIT_FULL` can recover it, while preserve-pinned mode requires
-currently initialized state. Print records survive generated failure and delegate records are
-cleared, as with other execution entry points.
+code, or an `ONDA_API_ERROR_*` code. Both success and generated failure allocate nothing. A failed
+call invalidates state; unchecked `ONDA_INIT_FULL` can recover it, while preserve-pinned mode
+requires currently initialized state. Print records survive generated failure and delegate records
+are cleared, as with other execution entry points.
 
 ## Parameters and bindings
 
 ### Parameter writes
 
 - `onda_set_param_by_index` writes an exact scalar or fixed-array value from native packed bytes.
+- `onda_set_param_element_by_index` writes one primitive scalar or fixed-array element from native
+  bytes without modifying its siblings.
 - `onda_set_param_plain_f64` constrains a scalar plain value to its range and step.
+- `onda_set_param_element_plain_f64` applies the same conversion to one scalar or fixed-array
+  element.
 - `onda_set_param_normalized` converts a normalized `[0, 1]` scalar host value into the declared
   plain domain.
+- `onda_set_param_element_normalized` applies the same conversion to one scalar or fixed-array
+  element.
 
-Use raw bytes for full-width `i64` parameters and array parameters.
+Use raw bytes for full-width `i64` parameters and whole-array writes.
 
 ### Audio bindings
 
@@ -541,7 +570,7 @@ processing calls without reconstructing the instance. The memory must be writabl
 
 Either of these forms unbinds a buffer:
 
-- `sample_rate == 0`, regardless of the other fields.
+- `sample_rate == 0`, regardless of pointer and shape.
 - `ptr == NULL`, `frames == 0`, and `channels == 0`.
 
 An unbound buffer remains processable through neutral one-frame storage: reads return zero and
@@ -577,6 +606,11 @@ block while keeping full-block bindings:
 
 Generated local frame `i` accesses host frame `start_frame + i`.
 
+Both checked processing functions return an `ONDA_API_ERROR_*` code when request or binding
+validation fails before execution. They return `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` when
+generated code fails; that failure invalidates processor state until successful full initialization
+or snapshot restoration.
+
 ### Unchecked processing
 
 After successful `onda_prepare_unchecked_process`, use `onda_process_unchecked` for one complete
@@ -590,16 +624,16 @@ state until successful full initialization or snapshot restoration.
 
 ## Events
 
-`onda_trigger_event_by_index` validates the packed payload and current buffer descriptors before
-running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
+`onda_trigger_event_by_index_checked` validates the packed payload and current buffer descriptors
+before running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
 insufficient workspace and `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` for handler failure. Unknown
 event indices are deliberately neutral and return success.
 
 `onda_trigger_event_by_index_unchecked` requires successful full initialization and a payload plus
 buffer state satisfying the ABI contract. Like unchecked processing, it may return a positive
-generated failure code or a negative API error.
+generated failure code or an `ONDA_API_ERROR_*` code.
 
-`onda_trigger_event_views_by_index` is the native zero-copy alternative. It accepts one
+`onda_trigger_event_views_by_index_checked` is the native zero-copy alternative. It accepts one
 `onda_event_tensor_view_t` per primitive schema leaf, in declaration and depth-first field order.
 `element_count` is the number of primitive scalars in that leaf; leaves belonging to the same
 top-level slice must therefore imply the same logical length after their fixed inner array extents
@@ -668,9 +702,11 @@ int status = onda_process_checked(instance, frames, &output);
 if (status == ONDA_EXECUTION_OK) {
   onda_batch_cursor_t cursor = {0};
   onda_delegate_occurrence_t occurrence;
-  while (onda_delegate_batch_next(&delegates, &cursor, &occurrence)) {
+  int next;
+  while ((next = onda_delegate_batch_next(&delegates, &cursor, &occurrence)) > 0) {
     /* Decode occurrence.payload using occurrence.delegate_index metadata. */
   }
+  if (next < 0) handle_malformed_batch();
 }
 ```
 
@@ -683,9 +719,10 @@ establish arbitrary C pointer aliasing.
 `onda_delegate_batch_reset` clears counters without changing storage. The runtime host resets every
 supplied batch before init or process code; an event entry resets it before input preflight, so
 rejected events return empty batches.
-`onda_delegate_batch_next` performs linear constant-time cursor
-iteration; `onda_delegate_batch_occurrence_at` is convenient for one index but repeated indexed
-iteration is quadratic.
+`onda_delegate_batch_next` performs linear constant-time cursor iteration, returning `1` for a
+record, `0` at the end, and `-1` for invalid or malformed input.
+`onda_delegate_batch_occurrence_at` returns `0` for an out-of-range index and `-1` for malformed
+input; it is convenient for one index but repeated indexed iteration is quadratic.
 
 Missing storage suppresses only the host copy. Calls and internal handlers still run. Records are
 appended whole; insufficient capacity drops the record and increments saturated `overflow_count`.
@@ -723,13 +760,15 @@ onda_diag_dispose(&diag);
 ```
 
 `onda_print_batch_reset`, `onda_print_batch_next`, and `onda_print_batch_occurrence_at` parallel the
-delegate helpers. The occurrence site index resolves through `onda_log_site_info`.
+delegate helpers, including their result conventions. The occurrence site index resolves through
+`onda_log_site_info`.
 
 `onda_format_print_batch` allocates one Onda-owned NUL-terminated string. Its output must be empty on
 entry and must later be released with `onda_owned_string_dispose`. `onda_format_print_batch_into`
 formats into caller-owned memory without allocation: `out_length` receives the required non-NUL
 length, the destination is untouched unless it can hold the complete text plus a trailing NUL, and
-the destination must not overlap batch storage.
+the destination must not overlap batch storage. Both return `ONDA_API_ERROR_INVALID_ARGUMENT` for
+required null inputs and `ONDA_API_ERROR_VALIDATION_FAILED` for malformed batch contents.
 
 Print and delegate storage are independently nullable and never share capacity. Omitting print
 storage suppresses delivery without suppressing argument evaluation. Overflow drops complete
@@ -742,9 +781,13 @@ failure remain available for diagnostics.
 `onda_state_total_bytes` reports the same packed persistent-state size from program metadata.
 
 `onda_instance_snapshot_state` copies persistent state, excluding scratch and control-output
-mirrors. A `NULL` or undersized destination performs a size query. `onda_instance_restore_state`
-runs full initialization and then overlays an exact snapshot. Restore failure leaves state
-indeterminate.
+mirrors. A `NULL` or undersized destination performs a size query. Invalid arguments return `-1`;
+a requested copy returns `ONDA_API_ERROR_VALIDATION_FAILED` when initialized state is unavailable.
+`onda_instance_restore_state` runs full initialization and then overlays an exact snapshot. Invalid
+snapshot or binding input is rejected with an `ONDA_API_ERROR_*` code before execution and preserves
+the prior state. A generated initializer failure returns `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE`
+and leaves state indeterminate. The internal initialization is silent: restore does not collect or
+publish its print output.
 
 `onda_control_output_read_bytes` copies the latest held value of one top-level `kouts` entry and
 uses the same size-query convention.
@@ -860,11 +903,14 @@ onda_instance_create_initialized_with_allocator
 onda_instance_reserve_event_workspace
 onda_instance_destroy
 onda_set_param_by_index
+onda_set_param_element_by_index
 onda_set_param_plain_f64
+onda_set_param_element_plain_f64
 onda_set_param_normalized
-onda_trigger_event_by_index
+onda_set_param_element_normalized
+onda_trigger_event_by_index_checked
 onda_trigger_event_by_index_unchecked
-onda_trigger_event_views_by_index
+onda_trigger_event_views_by_index_checked
 onda_trigger_event_views_by_index_unchecked
 onda_bind_input
 onda_bind_output
@@ -872,7 +918,7 @@ onda_bind_buffer
 onda_reset_buffer_to_project_default
 onda_process_checked
 onda_process_checked_segment
-onda_init
+onda_init_checked
 onda_init_unchecked
 onda_instance_state_bytes
 onda_instance_snapshot_state

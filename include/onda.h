@@ -24,6 +24,20 @@ typedef struct onda_project_materialization_plan onda_project_materialization_pl
 typedef struct onda_compile_constants onda_compile_constants_t;
 typedef struct onda_diag onda_diag_t;
 
+/* Named negative results for operation-status functions. These are distinct from query APIs whose
+   documentation assigns -1 as an unavailable/invalid sentinel.
+   INVALID_ARGUMENT covers malformed scalar arguments, invalid enum values, and required null
+   handles or pointers. VALIDATION_FAILED means a structurally valid request was rejected by the
+   current program or instance contract before generated execution began. PARAMETER_REJECTED means
+   a parameter index, shape, width, or control domain was unsuitable for the requested write.
+   ALLOCATION_FAILED means caller-requested runtime storage could not be provisioned. */
+enum {
+  ONDA_API_ERROR_INVALID_ARGUMENT = -1,
+  ONDA_API_ERROR_VALIDATION_FAILED = -2,
+  ONDA_API_ERROR_PARAMETER_REJECTED = -3,
+  ONDA_API_ERROR_ALLOCATION_FAILED = -4
+};
+
 /* Bytes preceding the payload of every packed hosted delegate occurrence. */
 enum {
   ONDA_DELEGATE_RECORD_HEADER_SIZE = 12u,
@@ -131,34 +145,40 @@ typedef struct onda_owned_string {
 /* Clears the result counters without modifying storage or capacity. Process and event calls also
    reset these counters at the beginning of each invocation. */
 void onda_delegate_batch_reset(onda_delegate_batch_t* batch);
-/* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
-   invalid/malformed input. The returned payload has the same lifetime as batch storage. */
+/* Advances a cursor and decodes the next occurrence in constant time. Returns 1 on success, 0 at
+   the end, or -1 for invalid/malformed input. The returned payload has the same lifetime as batch
+   storage. */
 int onda_delegate_batch_next(
   const onda_delegate_batch_t* batch,
   onda_batch_cursor_t* cursor,
   onda_delegate_occurrence_t* occurrence
 );
-/* Decodes one occurrence by index, returning 1 on success or 0 for invalid/malformed input. The
-   returned payload points into batch storage and remains valid only while that storage remains
-   unchanged. Repeated indexed iteration is quadratic; use onda_delegate_batch_next instead. */
+/* Decodes one occurrence by index, returning 1 on success, 0 when the index is out of range, or -1
+   for invalid/malformed input. The returned payload points into batch storage and remains valid
+   only while that storage remains unchanged. Repeated indexed iteration is quadratic; use
+   onda_delegate_batch_next instead. */
 int onda_delegate_batch_occurrence_at(
   const onda_delegate_batch_t* batch,
   uint32_t index,
   onda_delegate_occurrence_t* occurrence
 );
 void onda_print_batch_reset(onda_print_batch_t* batch);
+/* Print equivalent of onda_delegate_batch_next, with the same 1/0/-1 result convention. */
 int onda_print_batch_next(
   const onda_print_batch_t* batch,
   onda_batch_cursor_t* cursor,
   onda_print_occurrence_t* occurrence
 );
-/* Repeated indexed iteration is quadratic; use onda_print_batch_next instead. */
+/* Print equivalent of onda_delegate_batch_occurrence_at, with the same result convention.
+   Repeated indexed iteration is quadratic; use onda_print_batch_next instead. */
 int onda_print_batch_occurrence_at(
   const onda_print_batch_t* batch,
   uint32_t index,
   onda_print_occurrence_t* occurrence
 );
-/* Allocating convenience formatter. out_text must be empty ({ NULL, 0 }); dispose it before
+/* Allocating convenience formatter. Returns 0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for
+   required null inputs or a nonempty out_text, or ONDA_API_ERROR_VALIDATION_FAILED when the batch
+   cannot be formatted. out_text must be empty ({ NULL, 0 }); dispose it before
    passing it again. The function does not implicitly dispose an existing value. On success its
    bytes are Onda-owned; do not install caller-owned memory in this structure. Use
    onda_format_print_batch_into for caller-owned output storage. */
@@ -168,10 +188,12 @@ int onda_format_print_batch(
   onda_owned_string_t* out_text,
   onda_diag_t* out_diag
 );
-/* Allocation-free formatter into caller-owned storage. out_length always receives the required
-   non-NUL byte count on valid input. The function writes nothing unless out_capacity can hold the
-   complete text and trailing NUL. out_utf8 must not overlap batch storage. No dispose call is
-   required for out_utf8. */
+/* Allocation-free formatter into caller-owned storage. Returns 0 on success,
+   ONDA_API_ERROR_INVALID_ARGUMENT for required null inputs, or
+   ONDA_API_ERROR_VALIDATION_FAILED when the batch cannot be formatted. out_length always receives
+   the required non-NUL byte count on valid input. The function writes nothing unless out_capacity
+   can hold the complete text and trailing NUL. out_utf8 must not overlap batch storage. No dispose
+   call is required for out_utf8. */
 int onda_format_print_batch_into(
   const onda_instance_t* instance,
   const onda_print_batch_t* batch,
@@ -183,8 +205,9 @@ int onda_format_print_batch_into(
 void onda_owned_string_dispose(onda_owned_string_t* text);
 /* Initialization, process, and event-dispatch functions accept a nullable
    execution output whose two batch pointers are independently nullable. NULL
-   delegate delivery does not affect synchronous Onda `when` handlers. Each
-   supplied batch is reset when generated execution begins. Supplied batch descriptors and their
+   delegate delivery does not affect synchronous Onda `when` handlers. A supplied delegate batch
+   remains empty during initialization because init code cannot publish delegates. Every supplied
+   batch is reset when generated execution begins. Supplied batch descriptors and their
    non-NULL storage regions must be mutually disjoint and must not overlap bound input, output, or
    buffer storage, event payload or tensor-view storage, or any other memory accessed by the call.
    A nonzero overflow_count means one or more complete records were dropped for insufficient
@@ -203,8 +226,9 @@ enum {
 };
 
 enum {
-  ONDA_PARAM_SCALE_LINEAR = 0,
-  ONDA_PARAM_SCALE_LOG = 1
+  ONDA_PARAM_SCALE_NONE = 0,
+  ONDA_PARAM_SCALE_LINEAR = 1,
+  ONDA_PARAM_SCALE_LOG = 2
 };
 
 typedef enum onda_init_mode {
@@ -726,7 +750,7 @@ void onda_program_destroy(onda_program_t* program);
 
 /* Creates an uninitialized runtime instance for a compiled program, or NULL on failure.
    Creation allocates physical state and writes parameter defaults without executing Onda code.
-   The host may set parameters and bindings before calling onda_init with ONDA_INIT_FULL.
+   The host may set parameters and bindings before calling onda_init_checked with ONDA_INIT_FULL.
    Uses compile-time sample_rate and block_size captured in the program handle.
    Programs compiled from filesystem .ondaproject inputs or project images
    automatically bind their immutable project buffer defaults. The instance
@@ -772,9 +796,12 @@ onda_instance_t* onda_instance_create_initialized_with_allocator(
 /* Reserve aligned event input workspace outside realtime execution, using the instance allocator.
    Fixed payloads fit the initial capacity; dynamic payloads start with at least 64 KiB. A request
    above the current capacity allocates replacement storage and frees the old storage; other requests
-   retain it. Failure preserves the existing workspace and processor state. Reservation is allowed
-   before or after full initialization. */
-bool onda_instance_reserve_event_workspace(
+   retain it. Returns 0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for a null instance or capacity
+   above 2,147,483,640 bytes (the largest supported eight-byte-aligned workspace), or
+   ONDA_API_ERROR_ALLOCATION_FAILED when valid requested capacity cannot be provisioned. Failure
+   preserves the existing workspace and processor state. Reservation is allowed before or after
+   full initialization. */
+int onda_instance_reserve_event_workspace(
   onda_instance_t* instance,
   size_t capacity_bytes,
   onda_diag_t* out_diag
@@ -786,24 +813,52 @@ bool onda_instance_reserve_event_workspace(
    realtime-safe. */
 void onda_instance_destroy(onda_instance_t* instance);
 
-/* Sets a parameter by index from raw bytes; returns 0 on success, negative on error. */
+/* Sets a parameter by index from raw bytes. Returns 0 on success,
+   ONDA_API_ERROR_INVALID_ARGUMENT for malformed arguments, or
+   ONDA_API_ERROR_PARAMETER_REJECTED when the program rejects the parameter write. */
 int onda_set_param_by_index(
   onda_instance_t* instance,
   int index,
   const void* value_ptr,
   int value_bytes
 );
-/* Sets a scalar parameter in its plain domain, clamping and snapping as declared. */
+/* Writes one primitive element without modifying its siblings. Scalars have one element at index
+   zero. Returns the same status values as onda_set_param_by_index. */
+int onda_set_param_element_by_index(
+  onda_instance_t* instance,
+  int index,
+  int element,
+  const void* value_ptr,
+  int value_bytes
+);
+/* Sets a scalar parameter in its plain domain, clamping and snapping as declared. Returns the same
+   status values as onda_set_param_by_index. */
 int onda_set_param_plain_f64(onda_instance_t* instance, int index, double plain);
-/* Sets a scalar parameter from a normalized host value in [0, 1]. */
+/* Element form of onda_set_param_plain_f64 for scalar or fixed-array parameters. */
+int onda_set_param_element_plain_f64(
+  onda_instance_t* instance,
+  int index,
+  int element,
+  double plain
+);
+/* Sets a scalar parameter from a normalized host value in [0, 1]. Returns the same status values
+   as onda_set_param_by_index. */
 int onda_set_param_normalized(onda_instance_t* instance, int index, double normalized);
+/* Element form of onda_set_param_normalized for scalar or fixed-array parameters. */
+int onda_set_param_element_normalized(
+  onda_instance_t* instance,
+  int index,
+  int element,
+  double normalized
+);
 
 /* Triggers one event by index with packed payload bytes and optionally collects host-facing
    execution output; returns 0 on success, ONDA_EXECUTION_INPUT_REJECTED for malformed input or
-   insufficient workspace, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE for handler failure, or a negative
-   API error. Every invocation resets supplied batches before validation, so rejection returns empty
-   output without changing processor state. Unknown event indices are ignored and return success. */
-int onda_trigger_event_by_index(
+   insufficient workspace, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE for handler failure, or an
+   ONDA_API_ERROR_* code. Every invocation resets supplied batches before validation, so rejection
+   returns empty output without changing processor state. Unknown event indices are ignored and
+   return success. */
+int onda_trigger_event_by_index_checked(
   onda_instance_t* instance,
   int index,
   const void* payload_ptr,
@@ -813,7 +868,7 @@ int onda_trigger_event_by_index(
 /* Triggers one event without hosted payload/binding validation. The generated entry resets supplied
    output before mandatory payload preflight, so rejection returns empty output. The instance must
    have completed full initialization, and buffer metadata must satisfy the ABI contract.
-   Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
+   Returns 0 on success, a positive generated-runtime failure code, or an ONDA_API_ERROR_* code. */
 int onda_trigger_event_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -826,8 +881,8 @@ int onda_trigger_event_by_index_unchecked(
    values, then borrows the tensor storage directly without packing or workspace copies. All
    nonempty regions must remain readable and unchanged until this synchronous call returns and must
    not overlap memory written by the event. Returns the same status values as
-   onda_trigger_event_by_index. */
-int onda_trigger_event_views_by_index(
+   onda_trigger_event_by_index_checked. */
+int onda_trigger_event_views_by_index_checked(
   onda_instance_t* instance,
   int index,
   const onda_event_tensor_view_t* tensors,
@@ -838,7 +893,8 @@ int onda_trigger_event_views_by_index(
    buffers, tensor count, shape, alignment, or logical values. tensors must point to exactly the
    schema-derived number of valid views; violating any contract is undefined behavior. The instance
    must be fully initialized and its buffer bindings prepared by onda_validate_buffers or
-   onda_prepare_unchecked_process after their most recent mutation. */
+   onda_prepare_unchecked_process after their most recent mutation. Returns the same status values
+   as onda_trigger_event_by_index_unchecked. */
 int onda_trigger_event_views_by_index_unchecked(
   onda_instance_t* instance,
   int index,
@@ -846,7 +902,8 @@ int onda_trigger_event_views_by_index_unchecked(
   onda_execution_output_t* output
 );
 
-/* Binds one input entry to host memory; returns 0 on success, negative on error.
+/* Binds one input entry to host memory; returns 0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for
+   malformed arguments, or ONDA_API_ERROR_VALIDATION_FAILED when the binding is incompatible.
    Zero-copy contract: runtime stores src_ptr and reads from it directly (no internal copy).
    src_ptr must remain valid, correctly sized, and at a stable address until this slot is
    rebound/unbound (null + 0 bytes) or the instance is destroyed.
@@ -860,7 +917,8 @@ int onda_bind_input(
   int src_bytes
 );
 
-/* Binds one output entry to host memory; returns 0 on success, negative on error.
+/* Binds one output entry to host memory; returns 0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for
+   malformed arguments, or ONDA_API_ERROR_VALIDATION_FAILED when the binding is incompatible.
    Zero-copy contract: runtime stores dst_ptr and writes to it directly (no internal copy).
    dst_ptr must remain valid, correctly sized, and at a stable address until this slot is
    rebound/unbound (null + 0 bytes) or the instance is destroyed.
@@ -875,6 +933,8 @@ int onda_bind_output(
 );
 
 /* Binds one buffer entry; elem_type must be an ONDA_PRIMITIVE_* value.
+   Returns 0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for malformed arguments, or
+   ONDA_API_ERROR_VALIDATION_FAILED when the binding is incompatible.
    Zero-copy contract: runtime stores ptr and accesses it directly (no internal copy).
    sample_rate == 0 unbinds the slot regardless of ptr and shape. Null + 0 frames + 0 channels also
    unbinds the slot, regardless of sample_rate. An unbound slot remains processable through neutral
@@ -897,8 +957,8 @@ int onda_bind_buffer(
 );
 
 /* Restores the immutable project asset associated with a buffer slot. Returns
-   0 on success, -1 for an invalid instance/index, or -2 when the program has
-   no project defaults or the slot has no project default. */
+   0 on success, ONDA_API_ERROR_INVALID_ARGUMENT for a null instance or negative index, or
+   ONDA_API_ERROR_VALIDATION_FAILED when the program/index has no project-default slot. */
 int onda_reset_buffer_to_project_default(
   onda_instance_t* instance,
   int index
@@ -917,7 +977,9 @@ enum {
 };
 
 /* Processes up to one logical block with current bindings and parameters, optionally collecting
-   host-facing execution output; returns 0 on success.
+   host-facing execution output. Returns 0 on success,
+   ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE when generated execution fails, or an ONDA_API_ERROR_*
+   code.
    frames must be in [0, compile_time_block_size]. The runtime only reads/writes the first
    `frames` samples of each bound input/output entry for the current call. This convenience
    function runs block-pre and block-post hooks for this call. */
@@ -930,7 +992,8 @@ int onda_process_checked(
    The JIT loops local frames [0, frames) and reads/writes bound I/O at
    absolute frame start_frame + local_frame. Use ONDA_PROCESS_BEGIN_BLOCK on
    the first segment and ONDA_PROCESS_END_BLOCK on the final segment. A single
-   unsplit block should pass start_frame=0 and ONDA_PROCESS_FULL_BLOCK. */
+   unsplit block should pass start_frame=0 and ONDA_PROCESS_FULL_BLOCK. Returns the same status
+   values as onda_process_checked. */
 int onda_process_checked_segment(
   onda_instance_t* instance,
   int start_frame,
@@ -943,11 +1006,12 @@ int onda_process_checked_segment(
    authored initializers while preserving pinned state and task continuations, and is only valid
    after successful full initialization. Current external-buffer bindings are prepared before
    authored initialization runs; unbound slots use neutral descriptors. The successful path
-   performs no allocation. On failure,
-   instance state is indeterminate and stateful instance operations reject it until full
-   initialization or snapshot restore succeeds. Returns 0 on success, -1 for an invalid handle or
-   mode, or -2 when init execution fails. */
-int onda_init(
+   performs no allocation. A generated failure leaves instance state indeterminate, and stateful
+   instance operations reject it until full initialization or snapshot restore succeeds.
+   Pre-execution validation errors preserve the prior state. Returns 0 on success,
+   ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE when generated initialization fails, or an
+   ONDA_API_ERROR_* code. */
+int onda_init_checked(
   onda_instance_t* instance,
   onda_init_mode_t mode,
   onda_execution_output_t* output
@@ -958,7 +1022,7 @@ int onda_init(
    onda_prepare_unchecked_process or onda_validate_buffers). Bound storage
    must retain its validity and exclusive-access guarantees. Both success and
    generated-runtime failure paths allocate nothing. Returns 0 on success, a
-   positive generated-runtime failure code, or a negative API error. Failure
+   positive generated-runtime failure code, or an ONDA_API_ERROR_* code. Failure
    invalidates state; ONDA_INIT_FULL can recover it, while
    ONDA_INIT_PRESERVE_PINNED requires currently initialized state. */
 int onda_init_unchecked(
@@ -970,7 +1034,9 @@ int onda_init_unchecked(
 int onda_instance_state_bytes(const onda_instance_t* instance);
 /*
  * Copies the packed persistent-state snapshot. Compiler scratch and control-output mirrors are omitted.
- * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is
+ * returned. Returns -1 for invalid arguments. When a copy is requested,
+ * ONDA_API_ERROR_VALIDATION_FAILED means initialized processor state is unavailable.
  */
 int onda_instance_snapshot_state(
   const onda_instance_t* instance,
@@ -978,7 +1044,10 @@ int onda_instance_snapshot_state(
   int out_capacity
 );
 /* Restores a packed snapshot by running full initialization in place, then overlaying
-   persistent state. On failure, instance state is indeterminate. Returns 0 on success. */
+   persistent state. The internal initialization uses no execution output, so its prints are
+   suppressed. Returns 0 on success, ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE when generated
+   initialization fails, or an ONDA_API_ERROR_* code. A generated failure leaves state
+   indeterminate; validation rejection occurs before execution and preserves the prior state. */
 int onda_instance_restore_state(
   onda_instance_t* instance,
   const void* bytes,
@@ -987,6 +1056,8 @@ int onda_instance_restore_state(
 /*
  * Copies the latest held value for one top-level kouts/control-output entry.
  * If out_bytes is NULL or out_capacity is too small, no bytes are copied and the required size is returned.
+ * Returns -1 for invalid arguments/index or ONDA_API_ERROR_VALIDATION_FAILED when initialized
+ * processor state is unavailable.
  */
 int onda_control_output_read_bytes(
   const onda_instance_t* instance,
@@ -995,19 +1066,21 @@ int onda_control_output_read_bytes(
   int out_capacity
 );
 /* Prepares current buffer descriptors, including neutral unbound slots, and validates required
-   input/output bindings; returns 0 on success. */
+   input/output bindings; returns 0 on success or ONDA_API_ERROR_* on rejection. */
 int onda_validate_bindings(onda_instance_t* instance);
-/* Validates input bindings only; returns 0 on success. */
+/* Validates input bindings only; returns 0 on success or ONDA_API_ERROR_* on rejection. */
 int onda_validate_inputs(onda_instance_t* instance);
-/* Validates output bindings only; returns 0 on success. */
+/* Validates output bindings only; returns 0 on success or ONDA_API_ERROR_* on rejection. */
 int onda_validate_outputs(onda_instance_t* instance);
-/* Prepares buffer descriptors, including neutral unbound slots; returns 0 on success. */
+/* Prepares buffer descriptors, including neutral unbound slots; returns 0 on success or
+   ONDA_API_ERROR_* on rejection. */
 int onda_validate_buffers(onda_instance_t* instance);
-/* Validates full initialization and all bindings before unchecked processing. */
+/* Validates full initialization and all bindings before unchecked processing; returns 0 on
+   success or ONDA_API_ERROR_* on rejection. */
 int onda_prepare_unchecked_process(onda_instance_t* instance);
 /* Processes a full logical block without revalidation. Calling before successful
    onda_prepare_unchecked_process, or after mutating a prepared binding, violates the API contract;
-   returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
+   returns 0 on success, a positive generated-runtime failure code, or an ONDA_API_ERROR_* code. */
 int onda_process_unchecked(
   onda_instance_t* instance,
   onda_execution_output_t* output
@@ -1015,7 +1088,7 @@ int onda_process_unchecked(
 /* Processes one logical-block segment without revalidation. Successful full initialization and
    onda_prepare_unchecked_process are required. Use the same full-block binding, start_frame,
    frames, and flags contract as onda_process_checked_segment.
-   Returns 0 on success, a positive generated-runtime failure code, or a negative API error. */
+   Returns 0 on success, a positive generated-runtime failure code, or an ONDA_API_ERROR_* code. */
 int onda_process_unchecked_segment(
   onda_instance_t* instance,
   int start_frame,
@@ -1327,7 +1400,10 @@ double onda_output_range_max_f64(const onda_program_t* program, int index);
 double onda_param_range_min_f64(const onda_program_t* program, int index);
 /* Returns parameter range maximum as f64, or NaN if missing/invalid. */
 double onda_param_range_max_f64(const onda_program_t* program, int index);
-/* Returns ONDA_PARAM_SCALE_*, or -1 if the index is invalid/non-scalar. */
+/* Returns ONDA_PARAM_SCALE_NONE for a valid parameter without a numeric control domain,
+   ONDA_PARAM_SCALE_LINEAR or ONDA_PARAM_SCALE_LOG for a ranged numeric scalar or the shared
+   element domain of a ranged numeric fixed array, and -1 if the index is invalid. Values match
+   onda_processor_param_scale. */
 int onda_param_scale(const onda_program_t* program, int index);
 /* Returns 1 when the parameter has lincurve shaping, 0 when absent, -1 if invalid. */
 int onda_param_has_curve(const onda_program_t* program, int index);
@@ -1341,11 +1417,11 @@ int onda_param_unit_copy(
   char* out_bytes,
   int out_capacity
 );
-/* Returns 1 when the parameter has a discrete step, 0 when continuous, -1 if invalid. */
+/* Returns 1 when the parameter has a discrete step, 0 when absent, -1 if invalid. */
 int onda_param_has_step(const onda_program_t* program, int index);
 double onda_param_step_f64(const onda_program_t* program, int index);
-/* Number of intervals between min and max; returns 0 when absent/invalid. */
-uint32_t onda_param_step_count(const onda_program_t* program, int index);
+/* Number of intervals between min and max; returns 0 when no step exists or -1 for invalid input. */
+int64_t onda_param_step_count(const onda_program_t* program, int index);
 double onda_param_normalized_to_plain(
   const onda_program_t* program,
   int index,

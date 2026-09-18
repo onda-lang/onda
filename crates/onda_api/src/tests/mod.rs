@@ -55,11 +55,68 @@ fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
         unsafe { onda_delegate_batch_occurrence_at(&batch, 1, &mut occurrence) },
         1
     );
+    assert_eq!(
+        unsafe { onda_delegate_batch_occurrence_at(&batch, 2, &mut occurrence) },
+        0
+    );
 
     unsafe { onda_delegate_batch_reset(&mut batch) };
     assert_eq!(
         (batch.used_bytes, batch.record_count, batch.overflow_count),
         (0, 0, 0)
+    );
+    batch.used_bytes = 1;
+    let mut cursor = onda_batch_cursor_t::default();
+    assert_eq!(
+        unsafe { onda_delegate_batch_next(&batch, &mut cursor, &mut occurrence) },
+        -1
+    );
+    assert_eq!(
+        unsafe { onda_delegate_batch_occurrence_at(&batch, 0, &mut occurrence) },
+        -1
+    );
+    batch.record_count = 1;
+    assert_eq!(
+        unsafe { onda_delegate_batch_occurrence_at(&batch, 1, &mut occurrence) },
+        -1,
+        "an absent index must not hide malformed records"
+    );
+    assert_eq!(
+        unsafe { onda_delegate_batch_next(std::ptr::null(), &mut cursor, &mut occurrence) },
+        -1
+    );
+
+    let mut print_batch = onda_print_batch_t {
+        storage: std::ptr::null_mut(),
+        capacity_bytes: 0,
+        used_bytes: 0,
+        record_count: 0,
+        overflow_count: 0,
+    };
+    let mut print_occurrence = onda_print_occurrence_t {
+        site_index: 0,
+        payload_size_bytes: 0,
+        sequence: 0,
+        payload: ptr::null(),
+    };
+    let mut print_cursor = onda_batch_cursor_t::default();
+    assert_eq!(
+        unsafe { onda_print_batch_next(&print_batch, &mut print_cursor, &mut print_occurrence) },
+        0
+    );
+    print_batch.used_bytes = 1;
+    assert_eq!(
+        unsafe { onda_print_batch_next(&print_batch, &mut print_cursor, &mut print_occurrence) },
+        -1
+    );
+    let mut malformed_print_storage = [0_u8; 1];
+    print_batch.storage = malformed_print_storage.as_mut_ptr();
+    print_batch.capacity_bytes = 1;
+    print_batch.record_count = 1;
+    assert_eq!(
+        unsafe { onda_print_batch_occurrence_at(&print_batch, 1, &mut print_occurrence) },
+        -1,
+        "an absent index must not hide malformed records"
     );
 }
 

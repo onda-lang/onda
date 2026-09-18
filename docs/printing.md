@@ -68,11 +68,14 @@ For structured handling, use `onda_print_batch_occurrence_at`, `onda_log_site_in
 artifact-local source table exposed by `onda_source_file_count` / `onda_source_file_path`. Site
 metadata gives the decoded label, lexical owner, declaration, source span, argument primitive types,
 and fixed payload size.
+Batch iteration returns `1` for a decoded record, `0` at normal exhaustion or for an out-of-range
+indexed lookup, and `-1` for invalid or malformed input.
 
 Initialization can print too. Supply an output to `onda_instance_create_initialized`,
-`onda_instance_create_initialized_with_allocator`, or `onda_init`. Allocation-only constructors do
+`onda_instance_create_initialized_with_allocator`, or `onda_init_checked`. Allocation-only constructors do
 not execute authored code and therefore take no output. If initialized construction fails, its
-output batches are cleared and the diagnostic is the only result.
+output batches are cleared and the diagnostic is the only result. Snapshot restoration performs
+its required full initialization silently and does not publish those print records.
 
 ### Ownership and allocation
 
@@ -118,7 +121,10 @@ The Rust `_into` formatter writes no trailing NUL and, like the C path, leaves a
 destination untouched while returning the required byte count. The allocating `format_print_batch`
 convenience returns a `String`. `decode_print_batch` returns ordered typed scalar values and borrowed
 site metadata when a host needs custom routing or presentation. `ExecutionOutput::none()` discards
-both host-facing streams.
+both host-facing streams. `PrintBatch::occurrences()` yields
+`Result<PrintOccurrence, BatchDecodeError>`, and indexed lookup returns
+`Result<Option<PrintOccurrence>, BatchDecodeError>`, keeping malformed storage distinct from normal
+exhaustion or an absent index.
 
 ## Raw processor ABI and WebAssembly
 

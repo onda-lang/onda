@@ -8,7 +8,8 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::{
-    bind_buffer, bind_output, create_instance, init, process_checked, InitMode, InstanceConfig,
+    bind_buffer, bind_output, create_instance, init_checked, process_checked, InitMode,
+    InstanceConfig,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
@@ -96,7 +97,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         unsafe { bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len()) }
             .map_err(|d| format!("bind output[{idx}] failed: {d:?}"))?;
     }
-    init(&mut instance, InitMode::Full)
+    init_checked(&mut instance, InitMode::Full)
         .map_err(|d| format!("instance initialization failed: {d:?}"))?;
 
     let render_frames = ((input_frames as f32) / PLAYBACK_RATE).ceil() as usize;

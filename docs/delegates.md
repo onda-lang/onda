@@ -14,9 +14,10 @@ For the independent diagnostic stream carried by the same execution-output conta
 
 ## Delivery model
 
-Every process segment, initialization, and input-event invocation is one independent
-collection boundary. Hosts prepare the complete execution-output descriptor before crossing the
-processor ABI:
+Every process segment and input-event invocation is one independent collection boundary. Hosts
+prepare the complete execution-output descriptor before crossing the processor ABI. Initialization
+uses the same descriptor and reset convention for ABI uniformity, but language validation forbids
+delegate publication reachable from init, so its delegate batch remains empty:
 
 1. The caller optionally supplies a delegate batch.
 2. The host resets its counters and shared sequence before init or process entry. An event entry does
@@ -113,7 +114,8 @@ int status = onda_process_checked(instance, frames, &output);
 if (status == 0) {
   onda_batch_cursor_t cursor = {0};
   onda_delegate_occurrence_t occurrence;
-  while (onda_delegate_batch_next(&batch, &cursor, &occurrence)) {
+  int next;
+  while ((next = onda_delegate_batch_next(&batch, &cursor, &occurrence)) > 0) {
 
     if (occurrence.delegate_index == (uint32_t)delegate &&
         occurrence.payload_size_bytes == sizeof(float)) {
@@ -122,6 +124,7 @@ if (status == 0) {
       consume_meter(value);
     }
   }
+  if (next < 0) fail_malformed_batch();
 
   if (batch.overflow_count != 0) {
     report_dropped_delegate_occurrences(batch.overflow_count);
@@ -131,6 +134,10 @@ if (status == 0) {
 /* Free only after processing has stopped. */
 free(storage);
 ```
+
+`onda_delegate_batch_next` returns `1` for a record, `0` at normal exhaustion, and `-1` for invalid
+or malformed input. Indexed lookup returns `0` when the requested occurrence is absent and `-1` for
+invalid or malformed input.
 
 `onda_delegate_payload_bytes` and `onda_delegate_payload_min_bytes` exclude the record header and
 are useful for payload validation. `onda_delegate_record_bytes` and
@@ -145,7 +152,8 @@ count and data rather than treating the minimum empty-slice layout as an actual 
 Passing `NULL` as `output.delegate_batch`, or passing a null execution output, is the ordinary path
 when the host does not consume delegates. The same singular execution output is available on
 initialization, checked, unchecked, segmented-process, and input-event functions; its independent
-`print_batch` pointer may be present or absent without affecting delegate capacity.
+`print_batch` pointer may be present or absent without affecting delegate capacity. Initialization
+can populate only that print half because init code cannot publish delegates.
 
 ## Rust runtime API
 
@@ -174,6 +182,7 @@ process_checked(
     },
 )?;
 for occurrence in batch.occurrences() {
+    let occurrence = occurrence?;
     if occurrence.delegate_index as usize == meter {
         consume_meter_payload(occurrence.payload);
     }
@@ -181,12 +190,18 @@ for occurrence in batch.occurrences() {
 if batch.overflow_count != 0 {
     report_overflow(batch.overflow_count);
 }
-# Ok::<(), onda_frontend::Diagnostic>(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Use `ExecutionOutput::none()` or the corresponding unchecked/event API when collection is not
 needed. `Instance::delegate_descriptor` exposes the recursive schema and prepared payload plan for generic
 encoders and decoders, including exact `i64` values and nested defaults.
+
+Rust batch iterators yield `Result<Occurrence, BatchDecodeError>`: normal exhaustion ends the
+iterator, while an invalid envelope, malformed record, or trailing bytes produces one error.
+`DelegateBatch::occurrence` and `PrintBatch::occurrence` similarly return
+`Result<Option<Occurrence>, BatchDecodeError>`, keeping an absent index distinct from malformed
+storage.
 
 ## Raw processor ABI
 
@@ -214,15 +229,17 @@ uint32_t status = onda_process(
 if (status == ONDA_PROCESSOR_EXECUTION_OK) {
   onda_processor_batch_cursor_t cursor = {0};
   onda_processor_delegate_occurrence_t occurrence;
-  while (onda_processor_delegate_batch_next(&batch, &cursor, &occurrence)) {
+  int next;
+  while ((next = onda_processor_delegate_batch_next(&batch, &cursor, &occurrence)) > 0) {
     consume_delegate(&occurrence);
   }
+  if (next < 0) fail_malformed_batch();
 }
 ```
 
 Pass a null `output.delegate_batch` or null output when collection is not required. The raw and
 hosted batch types are intentionally independent even though they implement the same logical
-record contract.
+record contract and the same `1` / `0` / `-1` iteration and indexed-lookup results.
 
 ## JavaScript processor ABI
 
@@ -235,8 +252,7 @@ import {
   writeDelegateBatch,
   writeExecutionOutput,
   resetExecutionOutput,
-  readDelegateBatch,
-  decodeDelegateRecords,
+  decodeDelegateBatch,
 } from "@onda-lang/processor-abi";
 
 const fixedRecordBytes = artifact.metadata.metadata.delegates.map((delegate) =>
@@ -253,15 +269,12 @@ const status = exports.onda_process(
   buffers, bufferFrames, bufferChannels, bufferSampleRates, outputAddress,
 );
 if (status === 0) {
-  const batch = readDelegateBatch(memory, batchAddress);
-  const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
-  const occurrences = decodeDelegateRecords(
-    storage,
-    batch.usedBytes,
-    artifact.metadata.metadata.delegates,
-    artifact.metadata.target.byte_order,
+  const { occurrences, overflowCount } = decodeDelegateBatch(
+    memory,
+    batchAddress,
+    artifact.metadata,
   );
-  if (batch.overflowCount) reportOverflow(batch.overflowCount);
+  if (overflowCount) reportOverflow(overflowCount);
   consumeOccurrences(occurrences);
 }
 ```

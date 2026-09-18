@@ -8,9 +8,15 @@ use std::fmt::{self, Write as _};
 use std::marker::PhantomData;
 
 pub use onda_codegen_llvm::{EventTensorView, ParamDomain, ParamScalarType, ParamScale};
+pub use onda_processor_abi::{
+    InitMode, PROCESSOR_BEGIN_BLOCK, PROCESSOR_END_BLOCK, PROCESSOR_EXECUTION_INPUT_REJECTED,
+    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE, PROCESSOR_FULL_BLOCK,
+};
+
+const BATCH_RECORD_HEADER_SIZE: usize = 12;
 
 /// Bytes occupied by the delegate index, payload length, and sequence header of each occurrence.
-pub const DELEGATE_RECORD_HEADER_SIZE: usize = 12;
+pub const DELEGATE_RECORD_HEADER_SIZE: usize = BATCH_RECORD_HEADER_SIZE;
 
 /// A non-owning decoded view into one occurrence in a [`DelegateBatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,44 +26,155 @@ pub struct DelegateOccurrence<'batch> {
     pub payload: &'batch [u8],
 }
 
+/// Why a caller-owned delegate or print batch could not be decoded.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BatchDecodeError {
+    /// The batch counters and storage pointer do not describe a valid batch envelope.
+    InvalidEnvelope,
+    /// A declared record is truncated or its payload length exceeds the remaining storage.
+    MalformedRecord { record_index: u32 },
+    /// Bytes remain after every declared record has been decoded.
+    TrailingBytes,
+}
+
+impl fmt::Display for BatchDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEnvelope => {
+                formatter.write_str("batch counters and storage are inconsistent")
+            }
+            Self::MalformedRecord { record_index } => {
+                write!(
+                    formatter,
+                    "batch record {record_index} is truncated or malformed"
+                )
+            }
+            Self::TrailingBytes => formatter.write_str("batch contains trailing record bytes"),
+        }
+    }
+}
+
+impl std::error::Error for BatchDecodeError {}
+
+#[derive(Debug, Clone, Copy)]
+struct BatchRecord<'batch> {
+    index: u32,
+    sequence: u32,
+    payload: &'batch [u8],
+}
+
+#[derive(Debug, Clone)]
+struct BatchRecords<'batch> {
+    storage: &'batch [u8],
+    cursor: usize,
+    record_index: u32,
+    record_count: u32,
+    pending_error: Option<BatchDecodeError>,
+    finished: bool,
+}
+
+impl<'batch> BatchRecords<'batch> {
+    fn new(storage: Option<&'batch [u8]>, record_count: u32) -> Self {
+        Self {
+            storage: storage.unwrap_or(&[]),
+            cursor: 0,
+            record_index: 0,
+            record_count,
+            pending_error: storage
+                .is_none()
+                .then_some(BatchDecodeError::InvalidEnvelope),
+            finished: false,
+        }
+    }
+
+    fn next_record(&mut self) -> Option<Result<BatchRecord<'batch>, BatchDecodeError>> {
+        if self.finished {
+            return None;
+        }
+        if let Some(error) = self.pending_error.take() {
+            self.finished = true;
+            return Some(Err(error));
+        }
+        if self.record_index == self.record_count {
+            self.finished = true;
+            return (self.cursor != self.storage.len())
+                .then_some(Err(BatchDecodeError::TrailingBytes));
+        }
+
+        let malformed = || BatchDecodeError::MalformedRecord {
+            record_index: self.record_index,
+        };
+        let Some(header_end) = self.cursor.checked_add(BATCH_RECORD_HEADER_SIZE) else {
+            self.finished = true;
+            return Some(Err(malformed()));
+        };
+        let Some(header) = self.storage.get(self.cursor..header_end) else {
+            self.finished = true;
+            return Some(Err(malformed()));
+        };
+        let index = u32::from_ne_bytes(header[..4].try_into().expect("fixed record header"));
+        let payload_bytes =
+            u32::from_ne_bytes(header[4..8].try_into().expect("fixed record header")) as usize;
+        let sequence = u32::from_ne_bytes(header[8..12].try_into().expect("fixed record header"));
+        let Some(record_end) = header_end.checked_add(payload_bytes) else {
+            self.finished = true;
+            return Some(Err(malformed()));
+        };
+        let Some(payload) = self.storage.get(header_end..record_end) else {
+            self.finished = true;
+            return Some(Err(malformed()));
+        };
+        self.cursor = record_end;
+        self.record_index += 1;
+        Some(Ok(BatchRecord {
+            index,
+            sequence,
+            payload,
+        }))
+    }
+}
+
 /// Allocation-free iterator over the complete records in a [`DelegateBatch`].
 #[derive(Debug, Clone)]
 pub struct DelegateOccurrences<'batch> {
-    storage: &'batch [u8],
-    cursor: usize,
-    remaining: u32,
+    records: BatchRecords<'batch>,
 }
 
 impl<'batch> Iterator for DelegateOccurrences<'batch> {
-    type Item = DelegateOccurrence<'batch>;
+    type Item = Result<DelegateOccurrence<'batch>, BatchDecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        let header_end = self.cursor.checked_add(DELEGATE_RECORD_HEADER_SIZE)?;
-        let header = self.storage.get(self.cursor..header_end)?;
-        let delegate_index = u32::from_ne_bytes(header[..4].try_into().ok()?);
-        let payload_bytes = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
-        let sequence = u32::from_ne_bytes(header[8..12].try_into().ok()?);
-        let record_end = header_end.checked_add(payload_bytes)?;
-        let payload = self.storage.get(header_end..record_end)?;
-        self.cursor = record_end;
-        self.remaining -= 1;
-        Some(DelegateOccurrence {
-            delegate_index,
-            sequence,
-            payload,
+        self.records.next_record().map(|record| {
+            record.map(|record| DelegateOccurrence {
+                delegate_index: record.index,
+                sequence: record.sequence,
+                payload: record.payload,
+            })
         })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining as usize;
-        (0, Some(remaining))
     }
 }
 
 impl std::iter::FusedIterator for DelegateOccurrences<'_> {}
+
+unsafe fn used_batch_storage<'batch>(
+    storage: *const u8,
+    capacity_bytes: u32,
+    used_bytes: u32,
+    record_count: u32,
+) -> Option<&'batch [u8]> {
+    if used_bytes > capacity_bytes
+        || (record_count == 0 && used_bytes != 0)
+        || (record_count != 0 && storage.is_null())
+    {
+        return None;
+    }
+    if used_bytes == 0 {
+        return Some(&[]);
+    }
+    // SAFETY: the batch constructors require this region to remain valid for the batch storage
+    // lifetime, and the envelope checks above keep the slice within its declared capacity.
+    Some(unsafe { std::slice::from_raw_parts(storage, used_bytes as usize) })
+}
 
 /// Caller-owned, call-scoped storage for externally published delegate occurrences.
 ///
@@ -77,8 +194,10 @@ pub struct DelegateBatch<'storage> {
     _storage: PhantomData<&'storage mut [u8]>,
 }
 
-pub const PRINT_RECORD_HEADER_SIZE: usize = 12;
+/// Bytes occupied by the print-site index, payload length, and sequence header of each occurrence.
+pub const PRINT_RECORD_HEADER_SIZE: usize = BATCH_RECORD_HEADER_SIZE;
 
+/// A non-owning decoded view into one occurrence in a [`PrintBatch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrintOccurrence<'batch> {
     pub site_index: u32,
@@ -86,38 +205,23 @@ pub struct PrintOccurrence<'batch> {
     pub payload: &'batch [u8],
 }
 
+/// Allocation-free iterator over the complete records in a [`PrintBatch`].
 #[derive(Debug, Clone)]
 pub struct PrintOccurrences<'batch> {
-    storage: &'batch [u8],
-    cursor: usize,
-    remaining: u32,
+    records: BatchRecords<'batch>,
 }
 
 impl<'batch> Iterator for PrintOccurrences<'batch> {
-    type Item = PrintOccurrence<'batch>;
+    type Item = Result<PrintOccurrence<'batch>, BatchDecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        let header_end = self.cursor.checked_add(PRINT_RECORD_HEADER_SIZE)?;
-        let header = self.storage.get(self.cursor..header_end)?;
-        let site_index = u32::from_ne_bytes(header[..4].try_into().ok()?);
-        let payload_bytes = u32::from_ne_bytes(header[4..8].try_into().ok()?) as usize;
-        let sequence = u32::from_ne_bytes(header[8..12].try_into().ok()?);
-        let record_end = header_end.checked_add(payload_bytes)?;
-        let payload = self.storage.get(header_end..record_end)?;
-        self.cursor = record_end;
-        self.remaining -= 1;
-        Some(PrintOccurrence {
-            site_index,
-            sequence,
-            payload,
+        self.records.next_record().map(|record| {
+            record.map(|record| PrintOccurrence {
+                site_index: record.index,
+                sequence: record.sequence,
+                payload: record.payload,
+            })
         })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some(self.remaining as usize))
     }
 }
 
@@ -135,6 +239,7 @@ pub struct PrintBatch<'storage> {
 }
 
 impl<'storage> PrintBatch<'storage> {
+    /// Creates a reusable batch over caller-owned storage.
     pub fn from_storage(storage: &'storage mut [u8]) -> Self {
         Self {
             storage: storage.as_mut_ptr(),
@@ -146,6 +251,7 @@ impl<'storage> PrintBatch<'storage> {
         }
     }
 
+    /// Creates a present batch without record storage.
     pub const fn absent() -> Self {
         Self {
             storage: std::ptr::null_mut(),
@@ -157,9 +263,12 @@ impl<'storage> PrintBatch<'storage> {
         }
     }
 
+    /// Creates a batch over caller-managed storage.
+    ///
     /// # Safety
-    /// A non-null pointer must remain exclusively writable for `capacity_bytes`
-    /// bytes throughout `'storage`.
+    ///
+    /// When `storage` is non-null, it must remain exclusively writable for `capacity_bytes` bytes
+    /// throughout `'storage`. A null pointer creates an absent batch and ignores the capacity.
     pub unsafe fn from_raw_parts(storage: *mut u8, capacity_bytes: u32) -> Self {
         Self {
             storage,
@@ -171,22 +280,35 @@ impl<'storage> PrintBatch<'storage> {
         }
     }
 
+    /// Returns the caller-owned storage capacity.
     pub fn capacity_bytes(&self) -> u32 {
         self.capacity_bytes
     }
 
-    pub fn occurrence(&self, index: u32) -> Option<PrintOccurrence<'_>> {
-        self.occurrences().nth(index as usize)
+    /// Returns one decoded occurrence by zero-based record index.
+    ///
+    /// The complete batch is validated even when the requested record is found early.
+    pub fn occurrence(&self, index: u32) -> Result<Option<PrintOccurrence<'_>>, BatchDecodeError> {
+        let mut selected = None;
+        for (current, occurrence) in self.occurrences().enumerate() {
+            let occurrence = occurrence?;
+            if current == index as usize {
+                selected = Some(occurrence);
+            }
+        }
+        Ok(selected)
     }
 
+    /// Iterates the complete occurrences produced by the most recent successful call.
+    ///
+    /// Malformed input yields one [`BatchDecodeError`] and then ends the fused iterator.
     pub fn occurrences(&self) -> PrintOccurrences<'_> {
         PrintOccurrences {
-            storage: self.used_storage().unwrap_or(&[]),
-            cursor: 0,
-            remaining: self.record_count,
+            records: BatchRecords::new(self.used_storage(), self.record_count),
         }
     }
 
+    /// Clears result counters without modifying the storage or capacity.
     pub fn reset(&mut self) {
         self.used_bytes = 0;
         self.record_count = 0;
@@ -194,44 +316,15 @@ impl<'storage> PrintBatch<'storage> {
     }
 
     fn used_storage(&self) -> Option<&[u8]> {
-        if self.used_bytes > self.capacity_bytes {
-            return None;
+        // SAFETY: the constructors establish the pointer lifetime and exclusive-storage contract.
+        unsafe {
+            used_batch_storage(
+                self.storage,
+                self.capacity_bytes,
+                self.used_bytes,
+                self.record_count,
+            )
         }
-        if self.used_bytes == 0 {
-            return Some(&[]);
-        }
-        if self.storage.is_null() {
-            return None;
-        }
-        Some(unsafe { std::slice::from_raw_parts(self.storage, self.used_bytes as usize) })
-    }
-
-    fn has_valid_record_layout(&self) -> bool {
-        let Some(storage) = self.used_storage() else {
-            return false;
-        };
-        let mut cursor = 0_usize;
-        for _ in 0..self.record_count {
-            let Some(header_end) = cursor.checked_add(PRINT_RECORD_HEADER_SIZE) else {
-                return false;
-            };
-            let Some(header) = storage.get(cursor..header_end) else {
-                return false;
-            };
-            let payload_bytes = u32::from_ne_bytes(
-                header[4..8]
-                    .try_into()
-                    .expect("print record header has a four-byte payload size"),
-            ) as usize;
-            let Some(record_end) = header_end.checked_add(payload_bytes) else {
-                return false;
-            };
-            if record_end > storage.len() {
-                return false;
-            }
-            cursor = record_end;
-        }
-        cursor == storage.len()
     }
 }
 
@@ -312,21 +405,28 @@ impl<'storage> DelegateBatch<'storage> {
     }
 
     /// Returns one decoded occurrence by zero-based record index.
-    pub fn occurrence(&self, index: u32) -> Option<DelegateOccurrence<'_>> {
-        self.occurrences().nth(index as usize)
+    pub fn occurrence(
+        &self,
+        index: u32,
+    ) -> Result<Option<DelegateOccurrence<'_>>, BatchDecodeError> {
+        let mut selected = None;
+        for (current, occurrence) in self.occurrences().enumerate() {
+            let occurrence = occurrence?;
+            if current == index as usize {
+                selected = Some(occurrence);
+            }
+        }
+        Ok(selected)
     }
 
     /// Iterates the complete occurrences produced by the most recent successful call.
     ///
     /// The iterator is allocation-free and borrows the batch, preventing its storage from being
-    /// reused while occurrence payload views remain live. A malformed descriptor stops iteration;
-    /// batches returned by successful generated execution satisfy the record contract.
+    /// reused while occurrence payload views remain live. Malformed input yields one
+    /// [`BatchDecodeError`] and then ends the fused iterator.
     pub fn occurrences(&self) -> DelegateOccurrences<'_> {
-        let storage = self.used_storage().unwrap_or(&[]);
         DelegateOccurrences {
-            storage,
-            cursor: 0,
-            remaining: self.record_count,
+            records: BatchRecords::new(self.used_storage(), self.record_count),
         }
     }
 
@@ -338,18 +438,15 @@ impl<'storage> DelegateBatch<'storage> {
     }
 
     fn used_storage(&self) -> Option<&[u8]> {
-        if self.used_bytes > self.capacity_bytes {
-            return None;
+        // SAFETY: the constructors establish the pointer lifetime and exclusive-storage contract.
+        unsafe {
+            used_batch_storage(
+                self.storage,
+                self.capacity_bytes,
+                self.used_bytes,
+                self.record_count,
+            )
         }
-        if self.used_bytes == 0 {
-            return Some(&[]);
-        }
-        if self.storage.is_null() {
-            return None;
-        }
-        // SAFETY: constructors require the caller to keep this region valid for `'storage`, and
-        // `used_bytes <= capacity_bytes` was checked above. The returned borrow is tied to `self`.
-        Some(unsafe { std::slice::from_raw_parts(self.storage, self.used_bytes as usize) })
     }
 }
 
@@ -630,16 +727,9 @@ fn write_print_batch_for_program(
     batch: &PrintBatch<'_>,
     output: &mut impl fmt::Write,
 ) -> Result<(), Diagnostic> {
-    if !batch.has_valid_record_layout() {
-        return Err(Diagnostic::runtime(
-            "print batch contains malformed, truncated, or trailing record bytes",
-            0,
-            0,
-        ));
-    }
     let write_error = || Diagnostic::runtime("failed to write formatted print output", 0, 0);
-    let mut occurrence_count = 0_u32;
     for occurrence in batch.occurrences() {
+        let occurrence = occurrence.map_err(batch_decode_diagnostic)?;
         let Some(site) = program.mir().log_sites.get(occurrence.site_index as usize) else {
             return Err(Diagnostic::runtime(
                 format!(
@@ -682,16 +772,12 @@ fn write_print_batch_for_program(
             write!(output, "{value}").map_err(|_| write_error())?;
         }
         output.write_char('\n').map_err(|_| write_error())?;
-        occurrence_count += 1;
-    }
-    if occurrence_count != batch.record_count {
-        return Err(Diagnostic::runtime(
-            "print batch contains malformed or truncated records",
-            0,
-            0,
-        ));
     }
     Ok(())
+}
+
+fn batch_decode_diagnostic(error: BatchDecodeError) -> Diagnostic {
+    Diagnostic::runtime(format!("invalid execution-output batch: {error}"), 0, 0)
 }
 
 fn decode_print_value(
@@ -781,15 +867,12 @@ pub fn decode_print_batch_for_program<'program>(
     program: &'program JitProgram,
     batch: &PrintBatch<'_>,
 ) -> Result<Vec<DecodedPrintOccurrence<'program>>, Diagnostic> {
-    if !batch.has_valid_record_layout() {
-        return Err(Diagnostic::runtime(
-            "print batch contains malformed, truncated, or trailing record bytes",
-            0,
-            0,
-        ));
-    }
-    let mut decoded = Vec::with_capacity(batch.record_count as usize);
+    let capacity = batch.used_storage().map_or(0, |storage| {
+        (storage.len() / BATCH_RECORD_HEADER_SIZE).min(batch.record_count as usize)
+    });
+    let mut decoded = Vec::with_capacity(capacity);
     for occurrence in batch.occurrences() {
+        let occurrence = occurrence.map_err(batch_decode_diagnostic)?;
         let Some(site) = program.mir().log_sites.get(occurrence.site_index as usize) else {
             return Err(Diagnostic::runtime(
                 format!(
@@ -829,13 +912,6 @@ pub fn decode_print_batch_for_program<'program>(
             values,
         });
     }
-    if decoded.len() != batch.record_count as usize {
-        return Err(Diagnostic::runtime(
-            "print batch contains malformed or truncated records",
-            0,
-            0,
-        ));
-    }
     Ok(decoded)
 }
 
@@ -860,10 +936,6 @@ pub fn format_decoded_print_occurrences(occurrences: &[DecodedPrintOccurrence<'_
     }
     text
 }
-
-pub const PROCESS_BEGIN_BLOCK: u32 = 1 << 0;
-pub const PROCESS_END_BLOCK: u32 = 1 << 1;
-pub const PROCESS_FULL_BLOCK: u32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
 
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceConfig {
@@ -906,16 +978,6 @@ struct AllocatedState {
 }
 
 impl AllocatedState {
-    fn attempt(
-        &mut self,
-        operation: impl FnOnce(&mut RuntimeState) -> Result<(), Diagnostic>,
-    ) -> Result<(), Diagnostic> {
-        self.attempt_status(|state| {
-            operation(state).map(|()| onda_codegen_llvm::PROCESSOR_EXECUTION_OK)
-        })
-        .map(|_| ())
-    }
-
     fn attempt_status(
         &mut self,
         operation: impl FnOnce(&mut RuntimeState) -> Result<u32, Diagnostic>,
@@ -925,17 +987,9 @@ impl AllocatedState {
         // partially mutated state observable as ready.
         self.initialized = false;
         let result = operation(&mut self.storage);
-        self.initialized = matches!(result, Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_OK));
+        self.initialized = matches!(result, Ok(PROCESSOR_EXECUTION_OK));
         result
     }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum InitMode {
-    /// Rerun ordinary initializers while retaining pinned roots and task continuations.
-    PreservePinned,
-    /// Initialize the complete state image, including pinned roots and task continuations.
-    Full,
 }
 
 fn uninitialized_instance_error() -> Diagnostic {
@@ -1247,6 +1301,12 @@ impl Instance {
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
+        let status = self.restore_state_bytes_with_status(bytes)?;
+        onda_codegen_llvm::check_execution_status(status)
+    }
+
+    /// Restores a state snapshot while preserving a generated initialization failure status.
+    pub fn restore_state_bytes_with_status(&mut self, bytes: &[u8]) -> Result<u32, Diagnostic> {
         configure_current_thread_audio_fp_mode();
         self.program.validate_state_snapshot(bytes)?;
         if !self.buffers_validated {
@@ -1254,19 +1314,23 @@ impl Instance {
         }
         let was_pending = matches!(self.state, InstanceState::Pending(_));
         if was_pending {
-            init(self, InitMode::Full)?;
+            let status = init_checked_with_status(self, InitMode::Full, ExecutionOutput::none())?;
+            if status != PROCESSOR_EXECUTION_OK {
+                return Ok(status);
+            }
         }
         let InstanceState::Allocated(state) = &mut self.state else {
             unreachable!("full initialization succeeded without initializing state")
         };
-        state.attempt(|state| {
+        state.attempt_status(|state| {
             if was_pending {
-                self.program.overlay_state_snapshot(state, bytes)
+                self.program.overlay_state_snapshot(state, bytes)?;
+                Ok(PROCESSOR_EXECUTION_OK)
             } else {
                 // SAFETY: buffer bindings were validated above, and their
                 // pointees remain valid under the instance binding contract.
                 unsafe {
-                    self.program.restore_state_snapshot(
+                    self.program.restore_state_snapshot_with_status(
                         &self.params,
                         state,
                         bytes,
@@ -1284,7 +1348,7 @@ impl Instance {
 }
 
 /// Allocates an instance and writes its parameter defaults without running Onda initialization.
-/// Call [`init`] with [`InitMode::Full`] before using any stateful operation.
+/// Call [`init_checked`] with [`InitMode::Full`] before using any stateful operation.
 pub fn create_instance(
     program: JitProgram,
     config: InstanceConfig,
@@ -1313,7 +1377,7 @@ pub fn create_instance_initialized(
 /// initialization output.
 ///
 /// If initialization fails, both output batches are cleared and the diagnostic is the only result.
-/// Create an uninitialized instance and call [`init_with_output`] to retain prints emitted before a
+/// Create an uninitialized instance and call [`init_checked_with_output`] to retain prints emitted before a
 /// failing initializer.
 pub fn create_instance_initialized_with_output(
     program: JitProgram,
@@ -1362,7 +1426,7 @@ fn initialize_new_instance(
             return Err(error);
         }
     };
-    let result = init_with_output(
+    let result = init_checked_with_output(
         &mut instance,
         InitMode::Full,
         ExecutionOutput {
@@ -1505,15 +1569,25 @@ fn create_instance_inner(
 /// Full initialization is required before any stateful instance operation.
 /// A failed live initialization invalidates the state image until a later full
 /// initialization or snapshot restore succeeds.
-pub fn init(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
-    init_with_output(instance, mode, ExecutionOutput::none())
+pub fn init_checked(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
+    init_checked_with_output(instance, mode, ExecutionOutput::none())
 }
 
-pub fn init_with_output(
+pub fn init_checked_with_output(
+    instance: &mut Instance,
+    mode: InitMode,
+    output: ExecutionOutput<'_, '_>,
+) -> Result<(), Diagnostic> {
+    let status = init_checked_with_status(instance, mode, output)?;
+    onda_codegen_llvm::check_execution_status(status)
+}
+
+/// Runs checked initialization while preserving the generated execution status.
+pub fn init_checked_with_status(
     instance: &mut Instance,
     mode: InitMode,
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
+) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     output.reset();
     if !instance.buffers_validated {
@@ -1523,8 +1597,8 @@ pub fn init_with_output(
         (InstanceState::Pending(state), InitMode::Full) => {
             // SAFETY: validated bindings retain their host-memory contract;
             // execution output borrows exclusive storage and was reset above.
-            let initialized = unsafe {
-                instance.program.initialize_allocated_state(
+            let result = unsafe {
+                instance.program.initialize_allocated_state_with_status(
                     &instance.params,
                     state,
                     BufferDescriptorTables::new(
@@ -1536,11 +1610,16 @@ pub fn init_with_output(
                     output,
                 )
             }?;
-            instance.state = InstanceState::Allocated(AllocatedState {
-                storage: initialized,
-                initialized: true,
-            });
-            Ok(())
+            match result {
+                onda_codegen_llvm::StateInitialization::Initialized(storage) => {
+                    instance.state = InstanceState::Allocated(AllocatedState {
+                        storage,
+                        initialized: true,
+                    });
+                    Ok(PROCESSOR_EXECUTION_OK)
+                }
+                onda_codegen_llvm::StateInitialization::Failed(status) => Ok(status),
+            }
         }
         (InstanceState::Pending(_), InitMode::PreservePinned) => {
             Err(uninitialized_instance_error())
@@ -1548,22 +1627,24 @@ pub fn init_with_output(
         (InstanceState::Allocated(state), InitMode::PreservePinned) if !state.initialized => {
             Err(invalid_instance_error())
         }
-        (InstanceState::Allocated(state), mode) => state.attempt(|state| {
+        (InstanceState::Allocated(state), mode) => state.attempt_status(|state| {
             // SAFETY: the same validated host bindings and exclusive, reset
             // output storage are used as for first initialization above.
             unsafe {
-                instance.program.initialize_state_in_place(
-                    &instance.params,
-                    state,
-                    matches!(mode, InitMode::Full),
-                    BufferDescriptorTables::new(
-                        &instance.buffer_ptrs,
-                        &instance.buffer_frames,
-                        &instance.buffer_channels,
-                        &instance.buffer_sample_rates,
-                    ),
-                    output,
-                )
+                instance
+                    .program
+                    .initialize_state_in_place_checked_with_status(
+                        &instance.params,
+                        state,
+                        mode,
+                        BufferDescriptorTables::new(
+                            &instance.buffer_ptrs,
+                            &instance.buffer_frames,
+                            &instance.buffer_channels,
+                            &instance.buffer_sample_rates,
+                        ),
+                        output,
+                    )
             }
         }),
     })
@@ -1602,7 +1683,7 @@ pub unsafe fn init_unchecked(
             instance.program.initialize_state_in_place_unchecked(
                 &instance.params,
                 state,
-                mode == InitMode::Full,
+                mode,
                 BufferDescriptorTables::new(
                     &instance.buffer_ptrs,
                     &instance.buffer_frames,
@@ -1699,6 +1780,64 @@ pub fn set_param_plain_f64(
     index: usize,
     plain: f64,
 ) -> Result<(), Diagnostic> {
+    set_param_control_f64(instance, index, None, ParamControlInput::Plain(plain))
+}
+
+/// Constrains and writes one primitive parameter element in its plain domain.
+pub fn set_param_element_plain_f64(
+    instance: &mut Instance,
+    index: usize,
+    element: usize,
+    plain: f64,
+) -> Result<(), Diagnostic> {
+    set_param_control_f64(
+        instance,
+        index,
+        Some(element),
+        ParamControlInput::Plain(plain),
+    )
+}
+
+pub fn set_param_normalized(
+    instance: &mut Instance,
+    index: usize,
+    normalized: f64,
+) -> Result<(), Diagnostic> {
+    set_param_control_f64(
+        instance,
+        index,
+        None,
+        ParamControlInput::Normalized(normalized),
+    )
+}
+
+/// Maps and writes one primitive parameter element from a normalized host value.
+pub fn set_param_element_normalized(
+    instance: &mut Instance,
+    index: usize,
+    element: usize,
+    normalized: f64,
+) -> Result<(), Diagnostic> {
+    set_param_control_f64(
+        instance,
+        index,
+        Some(element),
+        ParamControlInput::Normalized(normalized),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ParamControlInput {
+    Plain(f64),
+    Normalized(f64),
+}
+
+fn set_param_control_f64(
+    instance: &mut Instance,
+    index: usize,
+    element: Option<usize>,
+    input: ParamControlInput,
+) -> Result<(), Diagnostic> {
     let Some(desc) = instance.program.param_descriptor(index) else {
         return Err(Diagnostic::runtime(
             format!("unknown parameter index {index}"),
@@ -1706,37 +1845,45 @@ pub fn set_param_plain_f64(
             0,
         ));
     };
-    if desc.is_array() {
+    if element.is_none() && desc.is_array() {
         return Err(Diagnostic::runtime(
             format!("parameter '{}' is not a scalar", desc.name()),
             0,
             0,
         ));
     }
-    let value = match desc.elem_ty() {
-        PrimitiveType::Bool => {
-            return set_param_by_index(instance, index, &[u8::from(plain >= 0.5)]);
-        }
-        _ => desc
-            .param_domain()
-            .map(|domain| domain.constrain_plain(plain))
-            .ok_or_else(|| {
+    if element.is_some_and(|element| element >= desc.array_len()) {
+        return Err(Diagnostic::runtime(
+            format!("parameter '{}' element is out of bounds", desc.name()),
+            0,
+            0,
+        ));
+    }
+    let ty = desc.elem_ty();
+    let value = match ty {
+        PrimitiveType::Bool => match input {
+            ParamControlInput::Plain(value) | ParamControlInput::Normalized(value) => {
+                if value >= 0.5 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        },
+        _ => {
+            let domain = desc.param_domain().ok_or_else(|| {
                 Diagnostic::runtime(
                     format!("parameter '{}' has no numeric control domain", desc.name()),
                     0,
                     0,
                 )
-            })?,
+            })?;
+            match input {
+                ParamControlInput::Plain(value) => domain.constrain_plain(value),
+                ParamControlInput::Normalized(value) => domain.normalized_to_plain(value),
+            }
+        }
     };
-    set_scalar_param_f64(instance, index, desc.elem_ty(), value)
-}
-
-fn set_scalar_param_f64(
-    instance: &mut Instance,
-    index: usize,
-    ty: PrimitiveType,
-    value: f64,
-) -> Result<(), Diagnostic> {
     let mut bytes = [0_u8; 8];
     let len = match ty {
         PrimitiveType::F32 => {
@@ -1755,44 +1902,15 @@ fn set_scalar_param_f64(
             bytes.copy_from_slice(&(value.round() as i64).to_ne_bytes());
             8
         }
-        PrimitiveType::Bool => unreachable!(),
+        PrimitiveType::Bool => {
+            bytes[0] = u8::from(value != 0.0);
+            1
+        }
     };
-    set_param_by_index(instance, index, &bytes[..len])
-}
-
-pub fn set_param_normalized(
-    instance: &mut Instance,
-    index: usize,
-    normalized: f64,
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.param_descriptor(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown parameter index {index}"),
-            0,
-            0,
-        ));
-    };
-    if desc.is_array() {
-        return Err(Diagnostic::runtime(
-            format!("parameter '{}' is not a scalar", desc.name()),
-            0,
-            0,
-        ));
+    match element {
+        Some(element) => set_param_element_by_index(instance, index, element, &bytes[..len]),
+        None => set_param_by_index(instance, index, &bytes[..len]),
     }
-    if desc.elem_ty() == PrimitiveType::Bool && !desc.is_array() {
-        return set_param_by_index(instance, index, &[u8::from(normalized >= 0.5)]);
-    }
-    let plain = desc
-        .param_domain()
-        .map(|domain| domain.normalized_to_plain(normalized))
-        .ok_or_else(|| {
-            Diagnostic::runtime(
-                format!("parameter '{}' has no numeric control domain", desc.name()),
-                0,
-                0,
-            )
-        })?;
-    set_scalar_param_f64(instance, index, desc.elem_ty(), plain)
 }
 
 pub fn read_control_output_bytes(
@@ -2142,7 +2260,17 @@ pub fn process_checked(
     frames: usize,
     output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
-    process_checked_segment(instance, 0, frames, PROCESS_FULL_BLOCK, output)
+    let status = process_checked_with_status(instance, frames, output)?;
+    onda_codegen_llvm::check_execution_status(status)
+}
+
+/// Processes one checked block while preserving the generated execution status.
+pub fn process_checked_with_status(
+    instance: &mut Instance,
+    frames: usize,
+    output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
+    process_checked_segment_with_status(instance, 0, frames, PROCESSOR_FULL_BLOCK, output)
 }
 
 /// Processes a validated segment, optionally collects delegate and print occurrences, and
@@ -2153,28 +2281,40 @@ pub fn process_checked_segment(
     start_frame: usize,
     frames: usize,
     flags: u32,
-    mut output: ExecutionOutput<'_, '_>,
+    output: ExecutionOutput<'_, '_>,
 ) -> Result<(), Diagnostic> {
+    let status = process_checked_segment_with_status(instance, start_frame, frames, flags, output)?;
+    onda_codegen_llvm::check_execution_status(status)
+}
+
+/// Processes a checked segment while preserving the generated execution status.
+pub fn process_checked_segment_with_status(
+    instance: &mut Instance,
+    start_frame: usize,
+    frames: usize,
+    flags: u32,
+    mut output: ExecutionOutput<'_, '_>,
+) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     output.reset();
     validate_process_request(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
+    let start_frame = u32::try_from(start_frame)
+        .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?;
+    let frames = u32::try_from(frames)
+        .map_err(|_| Diagnostic::runtime("process frame count does not fit u32", 0, 0))?;
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) => return Err(invalid_instance_error()),
         InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
     };
-    state.attempt(|state| {
-        let status = with_processor_execution_output(output, |output| unsafe {
+    state.attempt_status(|state| {
+        with_processor_execution_output(output, |output| unsafe {
             instance.program.process_unchecked(
                 state,
                 &instance.params,
-                u32::try_from(start_frame).map_err(|_| {
-                    Diagnostic::runtime("process start frame does not fit u32", 0, 0)
-                })?,
-                u32::try_from(frames).map_err(|_| {
-                    Diagnostic::runtime("process frame count does not fit u32", 0, 0)
-                })?,
+                start_frame,
+                frames,
                 flags,
                 &instance.input_ptrs,
                 &instance.output_ptrs,
@@ -2184,8 +2324,7 @@ pub fn process_checked_segment(
                 &instance.buffer_sample_rates,
                 output,
             )
-        })?;
-        onda_codegen_llvm::check_execution_status(status)
+        })
     })
 }
 
@@ -2218,7 +2357,7 @@ pub unsafe fn process_unchecked(
             instance,
             0,
             instance.config.frames_per_block,
-            PROCESS_FULL_BLOCK,
+            PROCESSOR_FULL_BLOCK,
             output,
         )
     }
@@ -2292,7 +2431,7 @@ pub unsafe fn process_unchecked_segment(
             output,
         )
     })?;
-    if status != onda_codegen_llvm::PROCESSOR_EXECUTION_OK {
+    if status != PROCESSOR_EXECUTION_OK {
         state.initialized = false;
     }
     Ok(status)
@@ -2318,7 +2457,7 @@ fn validate_process_request(
             0,
         ));
     }
-    let unknown_flags = flags & !PROCESS_FULL_BLOCK;
+    let unknown_flags = flags & !PROCESSOR_FULL_BLOCK;
     if unknown_flags != 0 {
         return Err(Diagnostic::runtime(
             format!("unknown process flags 0x{unknown_flags:x}"),
@@ -2342,10 +2481,14 @@ fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnost
     Ok(())
 }
 
+fn event_status_invalidates_state(status: u32) -> bool {
+    status != PROCESSOR_EXECUTION_OK && status != PROCESSOR_EXECUTION_INPUT_REJECTED
+}
+
 /// Dispatches an event, optionally collects delegate and print occurrences, and invalidates the
 /// instance if generated execution fails.
 /// Input rejection preserves the instance; execution failure requires full initialization or restore.
-pub fn trigger_event_by_index(
+pub fn trigger_event_by_index_checked(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
@@ -2357,7 +2500,7 @@ pub fn trigger_event_by_index(
 
 /// Dispatches an event while preserving the generated execution status.
 /// Input rejection returns status 2 without invalidating the instance.
-pub fn trigger_event_by_index_with_status(
+pub fn trigger_event_by_index_checked_with_status(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
@@ -2407,7 +2550,7 @@ fn trigger_event_by_index_impl(
             output,
         )
     })?;
-    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+    if event_status_invalidates_state(status) {
         state.initialized = false;
     }
     Ok(status)
@@ -2422,7 +2565,27 @@ fn trigger_event_by_index_impl(
 /// Every nonempty view must describe live readable storage for the duration of
 /// the synchronous call. That storage must not be mutated concurrently or
 /// overlap memory written by the event.
-pub unsafe fn trigger_event_views_by_index_with_status(
+pub unsafe fn trigger_event_views_by_index_checked(
+    instance: &mut Instance,
+    event_index: usize,
+    views: &[EventTensorView],
+    output: ExecutionOutput<'_, '_>,
+) -> Result<(), Diagnostic> {
+    let status = unsafe {
+        trigger_event_views_by_index_checked_with_status(instance, event_index, views, output)?
+    };
+    onda_codegen_llvm::check_execution_status(status)
+}
+
+/// Dispatches an event from checked native tensor views while preserving the
+/// generated execution status.
+///
+/// # Safety
+///
+/// Every nonempty view must describe live readable storage for the duration of
+/// the synchronous call. That storage must not be mutated concurrently or
+/// overlap memory written by the event.
+pub unsafe fn trigger_event_views_by_index_checked_with_status(
     instance: &mut Instance,
     event_index: usize,
     views: &[EventTensorView],
@@ -2452,7 +2615,7 @@ pub unsafe fn trigger_event_views_by_index_with_status(
             .validate_event_tensor_views(event_index, views)
     } {
         output.reset();
-        return Ok(onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED);
+        return Ok(PROCESSOR_EXECUTION_INPUT_REJECTED);
     }
     let status = with_processor_execution_output(output, |output| unsafe {
         instance.program.trigger_event_views_by_index_unchecked(
@@ -2467,7 +2630,7 @@ pub unsafe fn trigger_event_views_by_index_with_status(
             output,
         )
     })?;
-    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+    if event_status_invalidates_state(status) {
         state.initialized = false;
     }
     Ok(status)
@@ -2476,8 +2639,8 @@ pub unsafe fn trigger_event_views_by_index_with_status(
 /// Dispatches an event from canonical native tensor views without copying or
 /// validating instance storage, buffer descriptors, or the tensor views.
 ///
-/// Runtime safety failure invalidates the instance. Full initialization is
-/// required after execution failure.
+/// Generated execution failure invalidates the instance. Full initialization
+/// is required after execution failure.
 ///
 /// # Safety
 ///
@@ -2519,7 +2682,7 @@ pub unsafe fn trigger_event_views_by_index_unchecked(
             output,
         )
     })?;
-    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+    if event_status_invalidates_state(status) {
         state.initialized = false;
     }
     Ok(status)
@@ -2528,8 +2691,9 @@ pub unsafe fn trigger_event_views_by_index_unchecked(
 /// Dispatches an event without hosted payload or current-buffer validation, optionally collecting
 /// delegate and print occurrences. The generated entry still performs mandatory payload preflight.
 ///
-/// Runtime safety failure invalidates the instance. Rejected input (status 2), including insufficient
-/// workspace capacity, preserves it. Full initialization is required after execution failure.
+/// Generated execution failure invalidates the instance. Rejected input (status 2), including
+/// insufficient workspace capacity, preserves it. Full initialization is required after execution
+/// failure.
 ///
 /// # Safety
 ///
@@ -2571,7 +2735,7 @@ pub unsafe fn trigger_event_by_index_unchecked(
             output,
         )
     })?;
-    if status == onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE {
+    if event_status_invalidates_state(status) {
         state.initialized = false;
     }
     Ok(status)

@@ -16,7 +16,7 @@ extern "C" {
 
 enum {
   ONDA_PROCESSOR_EXECUTION_OK = 0u,
-  ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1,
+  ONDA_PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1u,
   ONDA_PROCESSOR_EXECUTION_INPUT_REJECTED = 2u
 };
 
@@ -234,6 +234,9 @@ ONDA_PROCESSOR_STATIC_INLINE void onda_processor_execution_output_reset(
   }
 }
 
+/* Advances a cursor over the shared batch record format. Returns 1 for a record, 0 at the exact
+ * end of a valid batch, or -1 for invalid/malformed input. Treat the cursor as opaque apart from
+ * zero-initializing it before iteration. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
   const uint8_t* storage,
   uint32_t capacity_bytes,
@@ -246,12 +249,18 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
   const uint8_t** payload
 ) {
   if (
-    storage == NULL || cursor == NULL || record_index == NULL || payload_size == NULL ||
-    sequence == NULL || payload == NULL || used_bytes > capacity_bytes ||
-    cursor->record_index >= record_count || cursor->byte_offset > used_bytes ||
-    used_bytes - cursor->byte_offset < ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
+    cursor == NULL || record_index == NULL || payload_size == NULL || sequence == NULL ||
+    payload == NULL || used_bytes > capacity_bytes ||
+    (record_count == 0u && used_bytes != 0u) || (record_count != 0u && storage == NULL) ||
+    cursor->record_index > record_count || cursor->byte_offset > used_bytes
   ) {
-    return 0;
+    return -1;
+  }
+  if (cursor->record_index == record_count) {
+    return cursor->byte_offset == used_bytes ? 0 : -1;
+  }
+  if (used_bytes - cursor->byte_offset < ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE) {
+    return -1;
   }
   uint32_t next_record_index;
   uint32_t next_payload_size;
@@ -271,7 +280,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
     next_payload_size >
     used_bytes - cursor->byte_offset - ONDA_PROCESSOR_BATCH_RECORD_HEADER_SIZE
   ) {
-    return 0;
+    return -1;
   }
   *record_index = next_record_index;
   *payload_size = next_payload_size;
@@ -282,14 +291,18 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_next_record(
   return 1;
 }
 
-/* Advances a cursor and decodes the next occurrence in constant time. Returns 0 at the end or for
- * invalid/malformed input. The payload view remains valid until storage is changed or reused. */
+/* Advances a cursor and decodes the next occurrence in constant time. Returns 1 for a record, 0 at
+ * the end, or -1 for invalid/malformed input. The payload view remains valid until storage is
+ * changed or reused. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_next(
   const onda_processor_delegate_batch_t* batch,
   onda_processor_batch_cursor_t* cursor,
   onda_processor_delegate_occurrence_t* occurrence
 ) {
-  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+  if (batch == NULL || occurrence == NULL) {
+    return -1;
+  }
+  return onda_processor_batch_next_record(
     batch->storage,
     batch->capacity_bytes,
     batch->used_bytes,
@@ -302,12 +315,16 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_next(
   );
 }
 
+/* Print equivalent of onda_processor_delegate_batch_next, with the same result convention. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
   const onda_processor_print_batch_t* batch,
   onda_processor_batch_cursor_t* cursor,
   onda_processor_print_occurrence_t* occurrence
 ) {
-  return batch != NULL && occurrence != NULL && onda_processor_batch_next_record(
+  if (batch == NULL || occurrence == NULL) {
+    return -1;
+  }
+  return onda_processor_batch_next_record(
     batch->storage,
     batch->capacity_bytes,
     batch->used_bytes,
@@ -320,39 +337,98 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
   );
 }
 
-/* Indexed access is convenient for isolated records. Use the cursor APIs for linear iteration. */
+/* Validates the complete shared batch and returns 1 for the indexed record, 0 when a valid batch
+ * has no such record, or -1 for invalid/malformed input. */
+ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_record_at(
+  const uint8_t* storage,
+  uint32_t capacity_bytes,
+  uint32_t used_bytes,
+  uint32_t record_count,
+  uint32_t index,
+  uint32_t* record_index,
+  uint32_t* payload_size,
+  uint32_t* sequence,
+  const uint8_t** payload
+) {
+  if (record_index == NULL || payload_size == NULL || sequence == NULL || payload == NULL) {
+    return -1;
+  }
+  onda_processor_batch_cursor_t cursor = { 0u, 0u };
+  int found = 0;
+  for (uint32_t current = 0u; current < record_count; ++current) {
+    uint32_t next_record_index;
+    uint32_t next_payload_size;
+    uint32_t next_sequence;
+    const uint8_t* next_payload;
+    if (
+      onda_processor_batch_next_record(
+        storage,
+        capacity_bytes,
+        used_bytes,
+        record_count,
+        &cursor,
+        &next_record_index,
+        &next_payload_size,
+        &next_sequence,
+        &next_payload
+      ) != 1
+    ) {
+      return -1;
+    }
+    if (current == index) {
+      *record_index = next_record_index;
+      *payload_size = next_payload_size;
+      *sequence = next_sequence;
+      *payload = next_payload;
+      found = 1;
+    }
+  }
+  return cursor.byte_offset == used_bytes ? found : -1;
+}
+
+/* Indexed access returns 1 for a record, 0 for an absent index, or -1 for invalid/malformed input.
+ * Use the cursor APIs for linear iteration. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
   const onda_processor_delegate_batch_t* batch,
   uint32_t index,
   onda_processor_delegate_occurrence_t* occurrence
 ) {
-  if (batch == NULL || index >= batch->record_count) {
-    return 0;
+  if (batch == NULL || occurrence == NULL) {
+    return -1;
   }
-  onda_processor_batch_cursor_t cursor = { 0u, 0u };
-  for (uint32_t current = 0u; current <= index; ++current) {
-    if (!onda_processor_delegate_batch_next(batch, &cursor, occurrence)) {
-      return 0;
-    }
-  }
-  return 1;
+  return onda_processor_batch_record_at(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    index,
+    &occurrence->delegate_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->sequence,
+    &occurrence->payload
+  );
 }
 
+/* Print equivalent of onda_processor_delegate_batch_occurrence_at. */
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
   const onda_processor_print_batch_t* batch,
   uint32_t index,
   onda_processor_print_occurrence_t* occurrence
 ) {
-  if (batch == NULL || index >= batch->record_count) {
-    return 0;
+  if (batch == NULL || occurrence == NULL) {
+    return -1;
   }
-  onda_processor_batch_cursor_t cursor = { 0u, 0u };
-  for (uint32_t current = 0u; current <= index; ++current) {
-    if (!onda_processor_print_batch_next(batch, &cursor, occurrence)) {
-      return 0;
-    }
-  }
-  return 1;
+  return onda_processor_batch_record_at(
+    batch->storage,
+    batch->capacity_bytes,
+    batch->used_bytes,
+    batch->record_count,
+    index,
+    &occurrence->site_index,
+    &occurrence->payload_size_bytes,
+    &occurrence->sequence,
+    &occurrence->payload
+  );
 }
 
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(

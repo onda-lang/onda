@@ -167,6 +167,7 @@ test("failed processing invalidates the worklet and keeps later callbacks silent
   assert.equal(processor.blockCursor, 0);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].type, "onda-error");
+  assert.equal(messages[0].status, 1);
 
   output.fill(1);
   assert.equal(processor.process([], [[output]]), true);
@@ -188,12 +189,55 @@ test("failed event execution invalidates the worklet", () => {
     },
   });
 
-  assert.throws(
-    () => processor.dispatchEvent("fail", new Uint8Array()),
-    /event 'fail' failed with Onda execution status 1/,
-  );
+  assert.throws(() => processor.dispatchEvent("fail", new Uint8Array()), (error) => {
+    assert.match(error.message, /event 'fail' failed with Onda execution status 1/);
+    assert.equal(error.status, 1);
+    return true;
+  });
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
+});
+
+test("worklet event dispatch ignores unknown nonnegative indices", () => {
+  const processor = new Processor({
+    processorOptions: { wasmBytes: wasm, metadata: metadata() },
+  });
+
+  assert.doesNotThrow(() => processor.dispatchEvent(99, new Uint8Array([1, 2, 3])));
+  assert.throws(
+    () => processor.dispatchEvent(-1, new Uint8Array()),
+    /unknown Onda event '-1'/,
+  );
+  assert.throws(
+    () => processor.dispatchEvent("missing", new Uint8Array()),
+    /unknown Onda event 'missing'/,
+  );
+});
+
+test("snapshot restore performs silent full initialization", () => {
+  const processor = new Processor({
+    processorOptions: { wasmBytes: wasm, metadata: metadata() },
+  });
+  const wasmExports = processor.exports;
+  let initOutputPtr;
+  processor.exports = {
+    ...wasmExports,
+    onda_processor_init(...args) {
+      initOutputPtr = args.at(-1);
+      return wasmExports.onda_processor_init(...args);
+    },
+  };
+  let prepares = 0;
+  let publishes = 0;
+  processor.prepareExecutionOutput = () => { prepares += 1; };
+  processor.publishExecutionOutput = () => { publishes += 1; };
+
+  processor.restoreSnapshot(new Uint8Array());
+
+  assert.equal(prepares, 0);
+  assert.equal(publishes, 0);
+  assert.equal(initOutputPtr, 0);
+  assert.equal(processor.initialized, true);
 });
 
 test("event encoding preserves exact i64 values before worklet dispatch", () => {
@@ -676,7 +720,7 @@ test("worklet writes adapter-canonical parameter values without reconversion", (
   });
   const view = new DataView(processor.memory.buffer);
 
-  processor.setParam("mode", 4);
+  processor.setParam("mode", 4, 0);
   assert.equal(view.getInt32(processor.paramsPtr, true), 4);
   processor.setParam("mode", 10);
   assert.equal(view.getInt32(processor.paramsPtr, true), 10);
@@ -696,11 +740,13 @@ test("worklet indexed array writes preserve sibling values for every primitive",
     }];
     const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: descriptor } });
     const before = new Uint8Array(processor.memory.buffer, processor.paramsPtr, width).slice();
-    processor.setParam("values[1]", scalar === "bool" ? true : 8);
+    processor.setParam("values", scalar === "bool" ? true : 8, 1);
     assert.deepEqual(new Uint8Array(processor.memory.buffer, processor.paramsPtr, width), before);
     const view = new DataView(processor.memory.buffer);
     const read = { f32: "getFloat32", f64: "getFloat64", i32: "getInt32", i64: "getBigInt64", bool: "getUint8" }[scalar];
     assert.equal(view[read](processor.paramsPtr + width, true), scalar === "bool" ? 1 : scalar === "i64" ? 8n : 8);
+    processor.setParam("values[1]", scalar === "bool" ? false : 6);
     assert.throws(() => processor.setParam("values[2]", 0), /out of bounds/);
+    assert.throws(() => processor.setParam("values", 0, 2), /out of bounds/);
   }
 });

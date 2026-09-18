@@ -115,7 +115,7 @@ fn proc_local_def_void_call_from_event() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &[],
@@ -237,7 +237,7 @@ fn proc_local_def_shared_helper_called_from_multiple_events() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &[],
@@ -450,7 +450,7 @@ fn proc_local_def_transitive_call() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &[],
@@ -1361,7 +1361,7 @@ fn proc_local_def_default_params() {
         .event_index("apply_default")
         .expect("event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &3.0_f32.to_le_bytes(),
@@ -1389,7 +1389,7 @@ fn proc_local_def_default_params() {
 
     payload.extend_from_slice(&0.5_f32.to_le_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx2,
         &payload,
@@ -1536,7 +1536,7 @@ fn proc_local_def_nested_proc_event_call() {
         .event_index("clear")
         .expect("clear event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &[],
@@ -1657,7 +1657,7 @@ fn proc_local_def_generic_proc() {
         .event_index("reset")
         .expect("reset event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &[],

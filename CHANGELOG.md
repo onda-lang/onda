@@ -5,6 +5,59 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.7]
+
+### Added
+
+- Defined the hosted C operation error codes for invalid arguments, failed validation, rejected
+  parameter writes, and explicit runtime-storage allocation failure. Query functions retain their
+  individually documented sentinel conventions.
+- Added native and hosted C raw, plain, and normalized setters for individual fixed-array parameter
+  elements.
+- Added explicit Web Audio plain and normalized setters for individual scalar or fixed-array
+  parameter elements.
+- Added `decodeDelegateBatch` for validated one-call decoding of a complete WebAssembly delegate
+  batch.
+
+### Changed
+
+- Renamed checked native initialization and event dispatch entry points, and their hosted C
+  equivalents, to use the same explicit `*_checked` / `*_unchecked` convention as processing.
+
+### Fixed
+
+- Checked process, initialization, and snapshot-restore C APIs now preserve positive generated
+  runtime failure statuses instead of collapsing them into the same negative result as
+  pre-execution validation errors. Native runtime and codegen APIs now provide paired checked and
+  status-preserving forms for initialization, processing, snapshot restoration, and both packed
+  and tensor-view event dispatch.
+- Native runtime and codegen, Binaryen, and source-to-Wasm package roots now expose the processor
+  initialization modes and segmented-process flags alongside all processor execution statuses. The
+  Binaryen artifact subpath exposes the complete processor-ABI TypeScript surface that its
+  JavaScript entry already provided.
+- Native Rust initialization uses the shared typed processor init mode throughout, and segmented
+  process flags use one `PROCESSOR_*` naming family across Rust crates.
+- Web Audio event dispatch now matches native dispatch by treating unknown nonnegative numeric
+  indices as successful no-ops while continuing to reject unknown names and negative indices.
+- Snapshot restore now suppresses its internal initialization output consistently in native and
+  Web Audio hosts.
+- Hosted parameter-scale values now match the raw processor ABI, distinguish any valid parameter
+  without a numeric control domain from an invalid query, and expose a ranged numeric array's shared
+  element scale consistently with the other control-domain queries.
+- Hosted step-count queries and hosted/raw delegate and print batch access now distinguish invalid
+  or malformed input from an absent step, absent indexed occurrence, or normal end of iteration.
+- Rust runtime delegate and print batch access now makes the same distinction with fallible
+  iterators and `Result<Option<_>>` indexed lookup.
+- JavaScript processor-ABI batch readers now validate capacity, storage bounds, record counts, and
+  the complete packed record layout before returning a result descriptor.
+- Web Audio generated failures now use `OndaExecutionError`, preserving the operation and raw
+  execution status for programmatic handling. Init and event operations reject with it, while
+  render-time failures are delivered through `onExecutionError`. The initialized factory installs that
+  status-bearing control path before requesting full initialization and resolves only on success;
+  the package root re-exports the matching execution-status constants.
+- API documentation now reflects that initialization can publish prints but cannot publish
+  delegates.
+
 ## [0.8.6]
 
 ### Added
@@ -304,8 +357,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `reset_instance_state` with `init`, and handle the `Result` now returned by
   `Instance::snapshot_state_bytes()`.
 - C callers should use `onda_instance_create_initialized` for the previous construction behavior,
-  or call `onda_init(instance, ONDA_INIT_FULL)` after `onda_instance_create`. Replace
-  `onda_reset_instance_state` with the appropriate `onda_init` mode.
+  or call `onda_init_checked(instance, ONDA_INIT_FULL)` after `onda_instance_create`. Replace
+  `onda_reset_instance_state` with the appropriate `onda_init_checked` mode.
 - Web Audio callers should use `createOndaAudioProcessorInitialized` for the previous construction
   behavior, or call `processor.init(ONDA_INIT_FULL)` after `createOndaAudioProcessor`. Replace
   `processor.reset()` with `processor.init(ONDA_INIT_PRESERVE_PINNED)` or
@@ -786,6 +839,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.7]: https://github.com/onda-lang/onda/compare/0.8.6...0.8.7
 [0.8.6]: https://github.com/onda-lang/onda/compare/0.8.5...0.8.6
 [0.8.5]: https://github.com/onda-lang/onda/compare/0.8.4...0.8.5
 [0.8.4]: https://github.com/onda-lang/onda/compare/0.8.3...0.8.4

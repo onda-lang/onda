@@ -134,7 +134,7 @@ sample:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &inputs,
                 &outputs,
                 &buffers,
@@ -343,7 +343,7 @@ block:
                     &params,
                     0,
                     1,
-                    onda_mir::PROCESS_FULL_BLOCK as u32,
+                    onda_mir::PROCESSOR_FULL_BLOCK as u32,
                     &[],
                     &[output.as_mut_ptr().cast()],
                     &[],
@@ -357,7 +357,17 @@ block:
         assert_eq!(render(&mut state), 0.0);
         let mut relocated = state.try_clone_with_allocator(None).unwrap();
         unsafe {
-            native.trigger_event_by_index(&mut relocated, &params, 0, &[], &[], &[], &[], &[], None)
+            native.trigger_event_by_index_checked(
+                &mut relocated,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                None,
+            )
         }
         .unwrap();
         assert_eq!(render(&mut relocated), 22.0);
@@ -407,7 +417,7 @@ sample:
                     &params,
                     0,
                     1,
-                    onda_mir::PROCESS_FULL_BLOCK as u32,
+                    onda_mir::PROCESSOR_FULL_BLOCK as u32,
                     &[],
                     &[output.as_mut_ptr().cast()],
                     &[],
@@ -423,16 +433,26 @@ sample:
         // relocated state, and mutation must not affect the original instance.
         let mut relocated = state.try_clone_with_allocator(None).unwrap();
         unsafe {
-            native.trigger_event_by_index(&mut relocated, &params, 0, &[], &[], &[], &[], &[], None)
+            native.trigger_event_by_index_checked(
+                &mut relocated,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                None,
+            )
         }
         .unwrap();
         assert_eq!(render(&mut relocated), 25.0);
         assert_eq!(render(&mut state), 4.0);
         unsafe {
-            native.initialize_state_in_place(
+            native.initialize_state_in_place_checked(
                 &params,
                 &mut relocated,
-                false,
+                crate::InitMode::PreservePinned,
                 BufferDescriptorTables::new(&[], &[], &[], &[]),
                 None,
             )
@@ -440,10 +460,10 @@ sample:
         .unwrap();
         assert_eq!(render(&mut relocated), 20.0);
         unsafe {
-            native.initialize_state_in_place(
+            native.initialize_state_in_place_checked(
                 &params,
                 &mut relocated,
-                true,
+                crate::InitMode::Full,
                 BufferDescriptorTables::new(&[], &[], &[], &[]),
                 None,
             )
@@ -497,7 +517,7 @@ block:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_BEGIN_BLOCK as u32,
+                onda_mir::PROCESSOR_BEGIN_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -515,7 +535,7 @@ block:
             &params,
             0,
             1,
-            onda_mir::PROCESS_END_BLOCK as u32,
+            onda_mir::PROCESSOR_END_BLOCK as u32,
             &[],
             &outputs,
             &[],
@@ -577,7 +597,7 @@ block:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_BEGIN_BLOCK as u32,
+                onda_mir::PROCESSOR_BEGIN_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -588,7 +608,17 @@ block:
             .unwrap();
         // This event has no borrowed buffers, payload, or output batch.
         unsafe {
-            native.trigger_event_by_index(&mut state, &params, 0, &[], &[], &[], &[], &[], None)
+            native.trigger_event_by_index_checked(
+                &mut state,
+                &params,
+                0,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                None,
+            )
         }
         .unwrap();
         native
@@ -597,7 +627,7 @@ block:
                 &params,
                 1,
                 1,
-                onda_mir::PROCESS_END_BLOCK as u32,
+                onda_mir::PROCESSOR_END_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -613,7 +643,7 @@ block:
                 &params,
                 0,
                 2,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -667,7 +697,7 @@ block:
                 &params,
                 0,
                 2,
-                onda_mir::PROCESS_BEGIN_BLOCK as u32,
+                onda_mir::PROCESSOR_BEGIN_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -685,7 +715,7 @@ block:
                 &params,
                 2,
                 2,
-                onda_mir::PROCESS_END_BLOCK as u32,
+                onda_mir::PROCESSOR_END_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -702,7 +732,7 @@ block:
                 &params,
                 2,
                 2,
-                onda_mir::PROCESS_END_BLOCK as u32,
+                onda_mir::PROCESSOR_END_BLOCK as u32,
                 &[],
                 &outputs,
                 &[],
@@ -776,7 +806,7 @@ sample:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &[],
                 &[output.as_mut_ptr().cast()],
                 &[],
@@ -848,7 +878,7 @@ sample:
             &params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &[],
             &[output.as_mut_ptr().cast()],
             &[pointer, pointer],
@@ -1438,7 +1468,7 @@ sample:
                 ..onda_processor_abi::ExecutionOutput::none()
             };
             unsafe {
-                native.trigger_event_by_index(
+                native.trigger_event_by_index_checked(
                     &mut state,
                     &params,
                     0,
@@ -1536,7 +1566,7 @@ sample:
         let params = native.default_param_bytes();
         let mut state = native.initialize_state(&params).unwrap();
         unsafe {
-            native.trigger_event_by_index(
+            native.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1634,7 +1664,7 @@ sample:
         }];
         let status = unsafe {
             native
-                .trigger_event_views_by_index_with_status(
+                .trigger_event_views_by_index_checked_with_status(
                     &mut state,
                     &params,
                     0,
@@ -1648,6 +1678,21 @@ sample:
                 .unwrap()
         };
         assert_eq!(status, onda_processor_abi::PROCESSOR_EXECUTION_OK);
+        unsafe {
+            native
+                .trigger_event_views_by_index_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    &views,
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    None,
+                )
+                .unwrap();
+        }
         let mut output = [0.0_f32];
         native
             .test_process_checked(
@@ -1760,7 +1805,7 @@ sample:
         seed_output(&mut batch, &mut execution);
         let status = unsafe {
             native
-                .trigger_event_by_index_with_status(
+                .trigger_event_by_index_checked_with_status(
                     &mut state,
                     &params,
                     0,
@@ -1937,7 +1982,7 @@ sample:
                 ..onda_processor_abi::ExecutionOutput::none()
             };
             unsafe {
-                native.trigger_event_by_index(
+                native.trigger_event_by_index_checked(
                     &mut state,
                     &params,
                     0,

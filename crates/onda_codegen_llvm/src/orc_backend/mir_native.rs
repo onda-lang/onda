@@ -2677,7 +2677,15 @@ impl MirJitProgram {
     }
 
     pub fn initialize_state(&self, params: &[u8]) -> Result<RuntimeState, Diagnostic> {
-        self.initialize_state_with_allocator(params, None)
+        self.initialize_state_with_status(params)?.into_result()
+    }
+
+    /// Initializes owned state while preserving a generated initialization failure status.
+    pub fn initialize_state_with_status(
+        &self,
+        params: &[u8],
+    ) -> Result<crate::StateInitialization, Diagnostic> {
+        self.initialize_state_with_allocator_and_status(params, None)
     }
 
     pub fn initialize_state_with_allocator(
@@ -2685,11 +2693,28 @@ impl MirJitProgram {
         params: &[u8],
         allocator: Option<RuntimeAllocator>,
     ) -> Result<RuntimeState, Diagnostic> {
+        self.initialize_state_with_allocator_and_status(params, allocator)?
+            .into_result()
+    }
+
+    /// Allocator-backed initialization that preserves a generated failure status.
+    pub fn initialize_state_with_allocator_and_status(
+        &self,
+        params: &[u8],
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<crate::StateInitialization, Diagnostic> {
         let mut state = self.allocate_state_with_allocator(allocator)?;
         let buffers = self.neutral_buffer_descriptors()?;
         // SAFETY: the owned tables describe only unbound buffers; there are no
         // host buffer or output pointers to dereference.
-        unsafe { self.initialize_allocated_state(params, &mut state, buffers.as_borrowed(), None) }
+        unsafe {
+            self.initialize_allocated_state_with_status(
+                params,
+                &mut state,
+                buffers.as_borrowed(),
+                None,
+            )
+        }
     }
 
     fn neutral_buffer_descriptors(&self) -> Result<OwnedBufferDescriptorTables, Diagnostic> {
@@ -2772,6 +2797,24 @@ impl MirJitProgram {
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<RuntimeState, Diagnostic> {
+        unsafe { self.initialize_allocated_state_with_status(params, state, buffers, output) }
+            .and_then(crate::StateInitialization::into_result)
+    }
+
+    /// Initializes pending state while preserving the generated execution status.
+    ///
+    /// # Safety
+    ///
+    /// Buffer and output pointees must satisfy
+    /// [`Self::initialize_allocated_state`]'s safety requirements.
+    pub unsafe fn initialize_allocated_state_with_status(
+        &self,
+        params: &[u8],
+        state: &mut UninitializedRuntimeState,
+        buffers: BufferDescriptorTables<'_>,
+        mut output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<crate::StateInitialization, Diagnostic> {
+        reset_execution_output(output.as_deref_mut());
         if params.len() != self.layouts.params.size {
             return Err(Diagnostic::runtime(
                 format!(
@@ -2802,7 +2845,7 @@ impl MirJitProgram {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 state_words.as_mut_ptr().cast::<u8>(),
-                1,
+                crate::InitMode::Full as u32,
                 abi_const_ptr(buffers.pointers),
                 abi_const_ptr(buffers.frames),
                 abi_const_ptr(buffers.channels),
@@ -2810,7 +2853,9 @@ impl MirJitProgram {
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
-        crate::check_execution_status(status)?;
+        if status != crate::PROCESSOR_EXECUTION_OK {
+            return Ok(crate::StateInitialization::Failed(status));
+        }
         // SAFETY: full initialization clears all declared state bytes, and the
         // only possible trailing bytes were initialized above.
         let state_words = unsafe {
@@ -2820,11 +2865,11 @@ impl MirJitProgram {
                 .expect("validated pending state storage")
                 .assume_init()
         };
-        Ok(RuntimeState {
+        Ok(crate::StateInitialization::Initialized(RuntimeState {
             state_words,
             event_workspace: std::mem::take(&mut state.event_workspace),
             state_size_bytes: self.layouts.state.size,
-        })
+        }))
     }
 
     /// Reruns initialization in existing state storage.
@@ -2833,14 +2878,35 @@ impl MirJitProgram {
     ///
     /// Host buffers and output storage must satisfy
     /// [`Self::initialize_allocated_state`]'s safety requirements.
-    pub unsafe fn initialize_state_in_place(
+    pub unsafe fn initialize_state_in_place_checked(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        full: bool,
+        mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.initialize_state_in_place_checked_with_status(params, state, mode, buffers, output)
+        }?;
+        crate::check_execution_status(status)
+    }
+
+    /// Validates hosted regions, then preserves the generated initialization status.
+    ///
+    /// # Safety
+    ///
+    /// Host buffers and output storage must satisfy
+    /// [`Self::initialize_allocated_state`]'s safety requirements.
+    pub unsafe fn initialize_state_in_place_checked_with_status(
+        &self,
+        params: &[u8],
+        state: &mut RuntimeState,
+        mode: crate::InitMode,
+        buffers: BufferDescriptorTables<'_>,
+        mut output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        reset_execution_output(output.as_deref_mut());
         if params.len() != self.layouts.params.size {
             return Err(Diagnostic::runtime(
                 format!(
@@ -2863,10 +2929,9 @@ impl MirJitProgram {
             ));
         }
         validate_buffer_abi(&self.mir, buffers)?;
-        let status = unsafe {
-            self.initialize_state_in_place_unchecked(params, state, full, buffers, output)
-        };
-        crate::check_execution_status(status)
+        Ok(unsafe {
+            self.initialize_state_in_place_unchecked(params, state, mode, buffers, output)
+        })
     }
 
     /// Reruns initialization without validation or diagnostic construction.
@@ -2874,12 +2939,12 @@ impl MirJitProgram {
     /// # Safety
     ///
     /// State and parameter storage must match this program, and host buffers
-    /// and output must satisfy [`Self::initialize_state_in_place`]'s contract.
+    /// and output must satisfy [`Self::initialize_state_in_place_checked`]'s contract.
     pub unsafe fn initialize_state_in_place_unchecked(
         &self,
         params: &[u8],
         state: &mut RuntimeState,
-        full: bool,
+        mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> u32 {
@@ -2887,7 +2952,7 @@ impl MirJitProgram {
             (self.compiled.init)(
                 abi_const_ptr(params),
                 abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
-                u32::from(full),
+                mode as u32,
                 abi_const_ptr(buffers.pointers),
                 abi_const_ptr(buffers.frames),
                 abi_const_ptr(buffers.channels),
@@ -2897,7 +2962,7 @@ impl MirJitProgram {
         }
     }
 
-    /// Validates the process ABI shape before entering generated code.
+    /// Resets supplied output and validates the process ABI shape before entering generated code.
     ///
     /// # Safety
     ///
@@ -2925,6 +2990,47 @@ impl MirJitProgram {
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.process_checked_with_status(
+                state,
+                params,
+                start_frame,
+                frames,
+                flags,
+                in_ptrs,
+                out_ptrs,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )
+        }?;
+        crate::check_execution_status(status)
+    }
+
+    /// Validates the process ABI shape, then preserves the generated execution status.
+    ///
+    /// # Safety
+    ///
+    /// Host regions must satisfy [`Self::process_checked`]'s safety requirements.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn process_checked_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        start_frame: usize,
+        frames: usize,
+        flags: u32,
+        in_ptrs: &[*const u8],
+        out_ptrs: &[*mut u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        mut output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<u32, Diagnostic> {
+        reset_execution_output(output.as_deref_mut());
         let block_size = self.mir.config.block_size as usize;
         if start_frame > block_size || frames > block_size.saturating_sub(start_frame) {
             return Err(Diagnostic::runtime(
@@ -2936,7 +3042,7 @@ impl MirJitProgram {
                 0,
             ));
         }
-        if flags & !(onda_mir::PROCESS_FULL_BLOCK as u32) != 0 {
+        if flags & !(onda_mir::PROCESSOR_FULL_BLOCK as u32) != 0 {
             return Err(Diagnostic::runtime(
                 format!(
                     "native MIR process flags {flags:#x} contain bits outside BEGIN_BLOCK/END_BLOCK"
@@ -2976,8 +3082,7 @@ impl MirJitProgram {
                 output.map_or(std::ptr::null_mut(), |output| output as *mut _),
             )
         };
-        crate::check_execution_status(status)?;
-        Ok(())
+        Ok(status)
     }
 
     /// Executes the public process entry without validating any host regions.
@@ -3028,7 +3133,7 @@ impl MirJitProgram {
     /// Every non-null external-buffer pointer must remain valid for the region
     /// described by its frame/channel metadata for the duration of the call.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_by_index(
+    pub unsafe fn trigger_event_by_index_checked(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -3041,7 +3146,7 @@ impl MirJitProgram {
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
     ) -> Result<(), Diagnostic> {
         let status = unsafe {
-            self.trigger_event_by_index_with_status(
+            self.trigger_event_by_index_checked_with_status(
                 state,
                 params,
                 event_index,
@@ -3065,7 +3170,7 @@ impl MirJitProgram {
     /// Every non-null external-buffer pointer must remain valid for the region
     /// described by its frame/channel metadata for the duration of the call.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_by_index_with_status(
+    pub unsafe fn trigger_event_by_index_checked_with_status(
         &self,
         state: &mut RuntimeState,
         params: &[u8],
@@ -3079,7 +3184,7 @@ impl MirJitProgram {
     ) -> Result<u32, Diagnostic> {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
             reset_execution_output(output);
-            return Ok(0);
+            return Ok(crate::PROCESSOR_EXECUTION_OK);
         };
         let validation = self.validate_runtime_regions(state, params).and_then(|()| {
             validate_buffer_abi(
@@ -3138,7 +3243,7 @@ impl MirJitProgram {
     ) -> u32 {
         let Some(event) = self.compiled.events.get(event_index).copied() else {
             reset_execution_output(output);
-            return 0;
+            return crate::PROCESSOR_EXECUTION_OK;
         };
         unsafe {
             event(
@@ -3168,7 +3273,44 @@ impl MirJitProgram {
     /// live readable region for the duration of the call. Tensor storage must
     /// not be mutated concurrently or overlap memory written by the event.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_views_by_index_with_status(
+    pub unsafe fn trigger_event_views_by_index_checked(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        event_index: usize,
+        views: &[onda_processor_abi::EventTensorView],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+        output: Option<&mut onda_processor_abi::ExecutionOutput>,
+    ) -> Result<(), Diagnostic> {
+        let status = unsafe {
+            self.trigger_event_views_by_index_checked_with_status(
+                state,
+                params,
+                event_index,
+                views,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                output,
+            )?
+        };
+        crate::check_execution_status(status)
+    }
+
+    /// Validates hosted regions and native tensor views while preserving the
+    /// generated execution status.
+    ///
+    /// # Safety
+    ///
+    /// Every nonempty tensor view and external-buffer pointer must describe a
+    /// live readable region for the duration of the call. Tensor storage must
+    /// not be mutated concurrently or overlap memory written by the event.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn trigger_event_views_by_index_checked_with_status(
         &self,
         state: &mut RuntimeState,
         params: &[u8],

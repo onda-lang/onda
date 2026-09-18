@@ -12,7 +12,8 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{parse_program, PrimitiveType};
 use onda_runtime::{
-    bind_buffer, bind_output, create_instance, init, process_checked, InitMode, InstanceConfig,
+    bind_buffer, bind_output, create_instance, init_checked, process_checked, InitMode,
+    InstanceConfig,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
@@ -263,7 +264,7 @@ fn measure(
             )
             .map_err(|error| format!("right output binding failed: {error:?}"))?;
         }
-        init(&mut instance, InitMode::Full)
+        init_checked(&mut instance, InitMode::Full)
             .map_err(|error| format!("instance initialization failed: {error:?}"))?;
 
         let mut peak_us = 0.0_f64;

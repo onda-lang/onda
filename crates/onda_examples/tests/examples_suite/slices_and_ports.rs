@@ -123,7 +123,7 @@ fn slice_in_event_handler() {
 
     payload.extend_from_slice(&40.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         0,
         &payload,

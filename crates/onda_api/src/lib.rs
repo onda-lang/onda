@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredEventParam,
-    DeclaredMessage, DeclaredState, JitProgram, MirCompileOptions, RuntimeAllocator,
+    DeclaredMessage, DeclaredState, JitProgram, MirCompileOptions, ParamScale, RuntimeAllocator,
     TargetOptLevel,
 };
 use onda_frontend::{
@@ -32,16 +32,21 @@ use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, create_instance_with_allocator,
     format_print_batch as runtime_format_print_batch,
     format_print_batch_into as runtime_format_print_batch_into,
-    init_unchecked as runtime_init_unchecked, init_with_output as runtime_init_with_output,
-    prepare_unchecked_process, process_checked, process_checked_segment, process_unchecked,
+    init_checked_with_output as runtime_init_checked_with_output,
+    init_checked_with_status as runtime_init_checked_with_status,
+    init_unchecked as runtime_init_unchecked, prepare_unchecked_process,
+    process_checked_segment_with_status, process_checked_with_status, process_unchecked,
     process_unchecked_segment, read_control_output_bytes, set_param_by_index,
+    set_param_element_by_index as runtime_set_param_element_by_index,
+    set_param_element_normalized as runtime_set_param_element_normalized,
+    set_param_element_plain_f64 as runtime_set_param_element_plain_f64,
     set_param_normalized as runtime_set_param_normalized,
     set_param_plain_f64 as runtime_set_param_plain_f64, trigger_event_by_index_unchecked,
+    trigger_event_views_by_index_checked_with_status,
     trigger_event_views_by_index_unchecked as runtime_trigger_event_views_by_index_unchecked,
-    trigger_event_views_by_index_with_status, validate_bindings, validate_buffers, validate_inputs,
-    validate_outputs, DelegateBatch as RuntimeDelegateBatch,
-    ExecutionOutput as RuntimeExecutionOutput, InitMode, Instance, InstanceConfig,
-    PrintBatch as RuntimePrintBatch,
+    validate_bindings, validate_buffers, validate_inputs, validate_outputs,
+    DelegateBatch as RuntimeDelegateBatch, ExecutionOutput as RuntimeExecutionOutput, InitMode,
+    Instance, InstanceConfig, PrintBatch as RuntimePrintBatch,
 };
 use onda_semantics::{
     analyze_with_options_and_inputs, compile_inputs_from_literals, inspect_compile_constants,
@@ -49,19 +54,28 @@ use onda_semantics::{
     CompileInputs, ConstValue, TypedBufferChannels, TypedConstValue, TypedProgram,
 };
 
-pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESS_BEGIN_BLOCK as i32;
-pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESS_END_BLOCK as i32;
-pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESS_FULL_BLOCK as i32;
+pub const ONDA_PROCESS_BEGIN_BLOCK: i32 = onda_runtime::PROCESSOR_BEGIN_BLOCK as i32;
+pub const ONDA_PROCESS_END_BLOCK: i32 = onda_runtime::PROCESSOR_END_BLOCK as i32;
+pub const ONDA_PROCESS_FULL_BLOCK: i32 = onda_runtime::PROCESSOR_FULL_BLOCK as i32;
+pub const ONDA_API_ERROR_INVALID_ARGUMENT: i32 = -1;
+pub const ONDA_API_ERROR_VALIDATION_FAILED: i32 = -2;
+pub const ONDA_API_ERROR_PARAMETER_REJECTED: i32 = -3;
+pub const ONDA_API_ERROR_ALLOCATION_FAILED: i32 = -4;
 pub const ONDA_EXECUTION_OK: i32 = onda_codegen_llvm::PROCESSOR_EXECUTION_OK as i32;
 pub const ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE: i32 =
     onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as i32;
 pub const ONDA_EXECUTION_INPUT_REJECTED: i32 =
     onda_codegen_llvm::PROCESSOR_EXECUTION_INPUT_REJECTED as i32;
+pub const ONDA_INIT_PRESERVE_PINNED: i32 = onda_codegen_llvm::PROCESSOR_INIT_PRESERVE_PINNED as i32;
+pub const ONDA_INIT_FULL: i32 = onda_codegen_llvm::PROCESSOR_INIT_FULL as i32;
 pub const ONDA_PRIMITIVE_F32: i32 = 0;
 pub const ONDA_PRIMITIVE_F64: i32 = 1;
 pub const ONDA_PRIMITIVE_I32: i32 = 2;
 pub const ONDA_PRIMITIVE_I64: i32 = 3;
 pub const ONDA_PRIMITIVE_BOOL: i32 = 4;
+pub const ONDA_PARAM_SCALE_NONE: i32 = 0;
+pub const ONDA_PARAM_SCALE_LINEAR: i32 = 1;
+pub const ONDA_PARAM_SCALE_LOG: i32 = 2;
 pub const ONDA_COMPILE_CONST_KIND_SCALAR: i32 = 0;
 pub const ONDA_COMPILE_CONST_KIND_FIXED_ARRAY: i32 = 1;
 pub const ONDA_COMPILE_CONST_KIND_ARRAY: i32 = 2;
@@ -72,17 +86,21 @@ const _: () = assert!(ONDA_DELEGATE_RECORD_HEADER_SIZE == ONDA_PRINT_RECORD_HEAD
 
 fn execution_status_to_c(status: Result<u32, Diagnostic>) -> i32 {
     match status {
-        Ok(value) => i32::try_from(value).unwrap_or(-2),
-        Err(_) => -2,
+        Ok(value) => i32::try_from(value).unwrap_or(ONDA_API_ERROR_VALIDATION_FAILED),
+        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
     }
 }
 
 fn init_mode_from_c(mode: i32) -> Option<InitMode> {
     match mode {
-        0 => Some(InitMode::PreservePinned),
-        1 => Some(InitMode::Full),
+        ONDA_INIT_PRESERVE_PINNED => Some(InitMode::PreservePinned),
+        ONDA_INIT_FULL => Some(InitMode::Full),
         _ => None,
     }
+}
+
+fn process_flags_are_valid(flags: i32) -> bool {
+    flags >= 0 && (flags & !ONDA_PROCESS_FULL_BLOCK) == 0
 }
 
 #[repr(C)]
@@ -262,30 +280,93 @@ unsafe fn next_batch_record(
     used_bytes: u32,
     record_count: u32,
     cursor: &mut onda_batch_cursor_t,
-) -> Option<(u32, u32, u32, *const u8)> {
-    if storage.is_null()
-        || used_bytes > capacity_bytes
-        || cursor.record_index >= record_count
+) -> Result<Option<(u32, u32, u32, *const u8)>, ()> {
+    if !batch_envelope_is_valid(storage, capacity_bytes, used_bytes, record_count)
+        || cursor.record_index > record_count
         || cursor.byte_offset > used_bytes
     {
-        return None;
+        return Err(());
+    }
+    if cursor.record_index == record_count {
+        return if cursor.byte_offset == used_bytes {
+            Ok(None)
+        } else {
+            Err(())
+        };
+    }
+    if storage.is_null() {
+        return Err(());
     }
     let record_offset = cursor.byte_offset as usize;
-    let header_end = record_offset.checked_add(BATCH_RECORD_HEADER_SIZE)?;
+    let header_end = record_offset
+        .checked_add(BATCH_RECORD_HEADER_SIZE)
+        .ok_or(())?;
     if header_end > used_bytes as usize {
-        return None;
+        return Err(());
     }
     let record_index = ptr::read_unaligned(storage.add(record_offset).cast::<u32>());
     let payload_size_bytes = ptr::read_unaligned(storage.add(record_offset + 4).cast::<u32>());
     let sequence = ptr::read_unaligned(storage.add(record_offset + 8).cast::<u32>());
-    let record_end = header_end.checked_add(payload_size_bytes as usize)?;
+    let record_end = header_end
+        .checked_add(payload_size_bytes as usize)
+        .ok_or(())?;
     if record_end > used_bytes as usize {
-        return None;
+        return Err(());
     }
     let payload = storage.add(header_end);
     cursor.byte_offset = record_end as u32;
     cursor.record_index += 1;
-    Some((record_index, payload_size_bytes, sequence, payload))
+    Ok(Some((record_index, payload_size_bytes, sequence, payload)))
+}
+
+unsafe fn batch_record_at(
+    storage: *const u8,
+    capacity_bytes: u32,
+    used_bytes: u32,
+    record_count: u32,
+    index: u32,
+) -> Result<Option<(u32, u32, u32, *const u8)>, ()> {
+    if !batch_envelope_is_valid(storage, capacity_bytes, used_bytes, record_count) {
+        return Err(());
+    }
+    let mut cursor = onda_batch_cursor_t::default();
+    let mut selected = None;
+    for record_index in 0..record_count {
+        let Some(record) = next_batch_record(
+            storage,
+            capacity_bytes,
+            used_bytes,
+            record_count,
+            &mut cursor,
+        )?
+        else {
+            return Err(());
+        };
+        if record_index == index {
+            selected = Some(record);
+        }
+    }
+    match next_batch_record(
+        storage,
+        capacity_bytes,
+        used_bytes,
+        record_count,
+        &mut cursor,
+    )? {
+        None => Ok(selected),
+        Some(_) => Err(()),
+    }
+}
+
+fn batch_envelope_is_valid(
+    storage: *const u8,
+    capacity_bytes: u32,
+    used_bytes: u32,
+    record_count: u32,
+) -> bool {
+    used_bytes <= capacity_bytes
+        && (record_count == 0 || !storage.is_null())
+        && (record_count != 0 || used_bytes == 0)
 }
 
 #[no_mangle]
@@ -297,16 +378,19 @@ pub unsafe extern "C" fn onda_delegate_batch_next(
     let (Some(batch), Some(cursor), Some(occurrence)) =
         (batch.as_ref(), cursor.as_mut(), occurrence.as_mut())
     else {
-        return 0;
+        return -1;
     };
-    let Some((delegate_index, payload_size_bytes, sequence, payload)) = next_batch_record(
+    let record = next_batch_record(
         batch.storage,
         batch.capacity_bytes,
         batch.used_bytes,
         batch.record_count,
         cursor,
-    ) else {
-        return 0;
+    );
+    let (delegate_index, payload_size_bytes, sequence, payload) = match record {
+        Ok(Some(record)) => record,
+        Ok(None) => return 0,
+        Err(()) => return -1,
     };
     occurrence.delegate_index = delegate_index;
     occurrence.payload_size_bytes = payload_size_bytes;
@@ -322,17 +406,25 @@ pub unsafe extern "C" fn onda_delegate_batch_occurrence_at(
     occurrence: *mut onda_delegate_occurrence_t,
 ) -> i32 {
     let (Some(batch), Some(occurrence)) = (batch.as_ref(), occurrence.as_mut()) else {
+        return -1;
+    };
+    let record = batch_record_at(
+        batch.storage,
+        batch.capacity_bytes,
+        batch.used_bytes,
+        batch.record_count,
+        index,
+    );
+    let Some((delegate_index, payload_size_bytes, sequence, payload)) = (match record {
+        Ok(record) => record,
+        Err(()) => return -1,
+    }) else {
         return 0;
     };
-    if index >= batch.record_count {
-        return 0;
-    }
-    let mut cursor = onda_batch_cursor_t::default();
-    for _ in 0..=index {
-        if onda_delegate_batch_next(batch, &mut cursor, occurrence) == 0 {
-            return 0;
-        }
-    }
+    occurrence.delegate_index = delegate_index;
+    occurrence.payload_size_bytes = payload_size_bytes;
+    occurrence.sequence = sequence;
+    occurrence.payload = payload;
     1
 }
 
@@ -359,17 +451,25 @@ pub unsafe extern "C" fn onda_print_batch_occurrence_at(
     occurrence: *mut onda_print_occurrence_t,
 ) -> i32 {
     let (Some(batch), Some(occurrence)) = (batch.as_ref(), occurrence.as_mut()) else {
+        return -1;
+    };
+    let record = batch_record_at(
+        batch.storage,
+        batch.capacity_bytes,
+        batch.used_bytes,
+        batch.record_count,
+        index,
+    );
+    let Some((site_index, payload_size_bytes, sequence, payload)) = (match record {
+        Ok(record) => record,
+        Err(()) => return -1,
+    }) else {
         return 0;
     };
-    if index >= batch.record_count {
-        return 0;
-    }
-    let mut cursor = onda_batch_cursor_t::default();
-    for _ in 0..=index {
-        if onda_print_batch_next(batch, &mut cursor, occurrence) == 0 {
-            return 0;
-        }
-    }
+    occurrence.site_index = site_index;
+    occurrence.payload_size_bytes = payload_size_bytes;
+    occurrence.sequence = sequence;
+    occurrence.payload = payload;
     1
 }
 
@@ -382,16 +482,19 @@ pub unsafe extern "C" fn onda_print_batch_next(
     let (Some(batch), Some(cursor), Some(occurrence)) =
         (batch.as_ref(), cursor.as_mut(), occurrence.as_mut())
     else {
-        return 0;
+        return -1;
     };
-    let Some((site_index, payload_size_bytes, sequence, payload)) = next_batch_record(
+    let record = next_batch_record(
         batch.storage,
         batch.capacity_bytes,
         batch.used_bytes,
         batch.record_count,
         cursor,
-    ) else {
-        return 0;
+    );
+    let (site_index, payload_size_bytes, sequence, payload) = match record {
+        Ok(Some(record)) => record,
+        Ok(None) => return 0,
+        Err(()) => return -1,
     };
     occurrence.site_index = site_index;
     occurrence.payload_size_bytes = payload_size_bytes;
@@ -1315,8 +1418,11 @@ pub unsafe extern "C" fn onda_format_print_batch_into(
     out_length: *mut usize,
     out_diag: *mut onda_diag_t,
 ) -> i32 {
+    if instance.is_null() || batch.is_null() {
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
+    }
     let Some(out_length) = out_length.as_mut() else {
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     };
     let mut empty = [];
     let output = if out_utf8.is_null() || out_capacity == 0 {
@@ -1339,7 +1445,7 @@ pub unsafe extern "C" fn onda_format_print_batch_into(
         Err(diag) => {
             *out_length = 0;
             write_diag(out_diag, diag_to_c(&diag));
-            -2
+            ONDA_API_ERROR_VALIDATION_FAILED
         }
     }
 }
@@ -1351,11 +1457,14 @@ pub unsafe extern "C" fn onda_format_print_batch(
     out_text: *mut onda_owned_string_t,
     out_diag: *mut onda_diag_t,
 ) -> i32 {
+    if instance.is_null() || batch.is_null() {
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
+    }
     let Some(out_text) = out_text.as_mut() else {
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     };
     if !out_text.data.is_null() || out_text.length != 0 {
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     match format_host_print_batch(instance, batch) {
         Ok(text) => match CString::new(text) {
@@ -1373,12 +1482,12 @@ pub unsafe extern "C" fn onda_format_print_batch(
                         0,
                     )),
                 );
-                -2
+                ONDA_API_ERROR_VALIDATION_FAILED
             }
         },
         Err(diag) => {
             write_diag(out_diag, diag_to_c(&diag));
-            -2
+            ONDA_API_ERROR_VALIDATION_FAILED
         }
     }
 }
@@ -4209,7 +4318,7 @@ unsafe fn onda_instance_create_impl(
 
     if initialize {
         let result = with_runtime_execution_output(output, |output| {
-            runtime_init_with_output(&mut instance, InitMode::Full, output)
+            runtime_init_checked_with_output(&mut instance, InitMode::Full, output)
         });
         if let Err(error) = result {
             reset_c_execution_output(output);
@@ -4231,16 +4340,23 @@ pub unsafe extern "C" fn onda_instance_reserve_event_workspace(
     instance: *mut onda_instance,
     capacity_bytes: usize,
     out_diag: *mut onda_diag_t,
-) -> bool {
+) -> i32 {
     let Some(instance) = instance.as_mut() else {
         write_diag(out_diag, runtime_diag(STATIC_ERR_NULL_ARG));
-        return false;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     };
+    if capacity_bytes > i32::MAX as usize - 7 {
+        write_diag(
+            out_diag,
+            runtime_diag("event workspace capacity exceeds the supported maximum"),
+        );
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
+    }
     match instance.inner.reserve_event_workspace(capacity_bytes) {
-        Ok(()) => true,
+        Ok(()) => 0,
         Err(error) => {
             write_diag(out_diag, diag_to_c(&error));
-            false
+            ONDA_API_ERROR_ALLOCATION_FAILED
         }
     }
 }
@@ -4260,413 +4376,10 @@ pub unsafe extern "C" fn onda_instance_destroy(instance: *mut onda_instance) {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn onda_set_param_by_index(
-    instance: *mut onda_instance,
-    index: i32,
-    value_ptr: *const c_void,
-    value_bytes: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 || value_bytes < 0 {
-        return -1;
-    }
-    if value_bytes > 0 && value_ptr.is_null() {
-        return -1;
-    }
-    let bytes = if value_bytes == 0 {
-        &[][..]
-    } else {
-        std::slice::from_raw_parts(value_ptr.cast::<u8>(), value_bytes as usize)
-    };
-    match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
-        Ok(_) => 0,
-        Err(_) => -3,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_set_param_plain_f64(
-    instance: *mut onda_instance,
-    index: i32,
-    plain: f64,
-) -> i32 {
-    if instance.is_null() || index < 0 {
-        return -1;
-    }
-    match runtime_set_param_plain_f64(&mut (*instance).inner, index as usize, plain) {
-        Ok(()) => 0,
-        Err(_) => -3,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_set_param_normalized(
-    instance: *mut onda_instance,
-    index: i32,
-    normalized: f64,
-) -> i32 {
-    if instance.is_null() || index < 0 {
-        return -1;
-    }
-    match runtime_set_param_normalized(&mut (*instance).inner, index as usize, normalized) {
-        Ok(()) => 0,
-        Err(_) => -3,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_control_output_read_bytes(
-    instance: *const onda_instance,
-    index: i32,
-    out_bytes: *mut c_void,
-    out_capacity: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 || out_capacity < 0 {
-        return -1;
-    }
-    let Some(required_usize) = (*instance).inner.control_output_type_bytes(index as usize) else {
-        return -1;
-    };
-    let required = match i32::try_from(required_usize) {
-        Ok(value) => value,
-        Err(_) => return -1,
-    };
-    if out_bytes.is_null() || out_capacity < required {
-        return required;
-    }
-    let out_slice = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
-    match read_control_output_bytes(&(*instance).inner, index as usize, out_slice) {
-        Ok(_) => required,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_bind_input(
-    instance: *mut onda_instance,
-    index: i32,
-    src_ptr: *const c_void,
-    src_bytes: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 || src_bytes < 0 {
-        return -1;
-    }
-    let ptr = src_ptr.cast::<u8>();
-    let bytes = src_bytes as usize;
-    match unsafe { bind_input(&mut (*instance).inner, index as usize, ptr, bytes) } {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_bind_output(
-    instance: *mut onda_instance,
-    index: i32,
-    dst_ptr: *mut c_void,
-    dst_bytes: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 || dst_bytes < 0 {
-        return -1;
-    }
-    let ptr = dst_ptr.cast::<u8>();
-    let bytes = dst_bytes as usize;
-    match unsafe { bind_output(&mut (*instance).inner, index as usize, ptr, bytes) } {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_bind_buffer(
-    instance: *mut onda_instance,
-    index: i32,
-    ptr: *mut c_void,
-    frames: i32,
-    channels: i32,
-    sample_rate: f32,
-    elem_type: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 {
-        return -1;
-    }
-    let Some(elem_ty) = primitive_type_from_i32(elem_type) else {
-        return -1;
-    };
-    let (ptr, frames, channels) = if sample_rate == 0.0 {
-        (std::ptr::null_mut(), 0, 0)
-    } else {
-        if frames < 0 || channels < 0 {
-            return -1;
-        }
-        (ptr.cast::<u8>(), frames as usize, channels as usize)
-    };
-    match unsafe {
-        bind_buffer(
-            &mut (*instance).inner,
-            index as usize,
-            ptr,
-            frames,
-            channels,
-            sample_rate,
-            elem_ty,
-        )
-    } {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_reset_buffer_to_project_default(
-    instance: *mut onda_instance,
-    index: i32,
-) -> i32 {
-    if instance.is_null() || index < 0 {
-        return -1;
-    }
-    let instance = &mut *instance;
-    let program = Arc::clone(&instance.program);
-    let Some(defaults) = &program.project_defaults else {
-        return -2;
-    };
-    match bind_project_default(&mut instance.inner, defaults, index as usize) {
-        Ok(true) => 0,
-        Ok(false) | Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_process_checked(
-    instance: *mut onda_instance,
-    frames: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() || frames < 0 {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    with_runtime_execution_output(output, |output| {
-        process_checked(&mut (*instance).inner, frames as usize, output)
-    })
-    .map_or(-2, |()| 0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_process_checked_segment(
-    instance: *mut onda_instance,
-    start_frame: i32,
-    frames: i32,
-    flags: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    with_runtime_execution_output(output, |output| {
-        process_checked_segment(
-            &mut (*instance).inner,
-            start_frame as usize,
-            frames as usize,
-            flags as u32,
-            output,
-        )
-    })
-    .map_or(-2, |()| 0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_init(
-    instance: *mut onda_instance,
-    mode: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    let Some(mode) = init_mode_from_c(mode) else {
-        reset_c_execution_output(output);
-        return -1;
-    };
-    with_runtime_execution_output(output, |output| {
-        runtime_init_with_output(&mut (*instance).inner, mode, output)
-    })
-    .map_or(-2, |()| 0)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_init_unchecked(
-    instance: *mut onda_instance,
-    mode: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    let Some(mode) = init_mode_from_c(mode) else {
-        reset_c_execution_output(output);
-        return -1;
-    };
-    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        runtime_init_unchecked(&mut (*instance).inner, mode, output)
-    }))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_instance_state_bytes(instance: *const onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    saturating_usize_to_i32((*instance).inner.state_size_bytes())
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_instance_snapshot_state(
-    instance: *const onda_instance,
-    out_bytes: *mut c_void,
-    out_capacity: i32,
-) -> i32 {
-    if instance.is_null() || out_capacity < 0 {
-        return -1;
-    }
-    let required = match i32::try_from((*instance).inner.state_size_bytes()) {
-        Ok(value) => value,
-        Err(_) => return -1,
-    };
-    if out_bytes.is_null() || out_capacity < required {
-        return required;
-    }
-    let destination = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
-    if (*instance)
-        .inner
-        .write_snapshot_state_bytes(destination)
-        .is_err()
-    {
-        return -1;
-    }
-    required
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_instance_restore_state(
-    instance: *mut onda_instance,
-    bytes: *const c_void,
-    byte_count: i32,
-) -> i32 {
-    if instance.is_null() || byte_count < 0 {
-        return -1;
-    }
-    if byte_count > 0 && bytes.is_null() {
-        return -1;
-    }
-    let snapshot = if byte_count == 0 {
-        &[][..]
-    } else {
-        std::slice::from_raw_parts(bytes.cast::<u8>(), byte_count as usize)
-    };
-    match (*instance).inner.restore_state_bytes(snapshot) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_bindings(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    match validate_bindings(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_inputs(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    match validate_inputs(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_outputs(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    match validate_outputs(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_buffers(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    match validate_buffers(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_process_unchecked(
-    instance: *mut onda_instance,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        process_unchecked(&mut (*instance).inner, output)
-    }))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_prepare_unchecked_process(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    match prepare_unchecked_process(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => -2,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_process_unchecked_segment(
-    instance: *mut onda_instance,
-    start_frame: i32,
-    frames: i32,
-    flags: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() || start_frame < 0 || frames < 0 || flags < 0 {
-        reset_c_execution_output(output);
-        return -1;
-    }
-    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        process_unchecked_segment(
-            &mut (*instance).inner,
-            start_frame as usize,
-            frames as usize,
-            flags as u32,
-            output,
-        )
-    }))
-}
-
 mod event_dispatch;
 pub use event_dispatch::*;
+mod instance_operations;
+pub use instance_operations::*;
 mod metadata;
 pub use metadata::*;
 use metadata::{

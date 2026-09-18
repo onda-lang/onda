@@ -21,6 +21,10 @@ static onda_processor_param_domain integer_domain(
 }
 
 int main(void) {
+  assert(ONDA_API_ERROR_INVALID_ARGUMENT == -1);
+  assert(ONDA_API_ERROR_VALIDATION_FAILED == -2);
+  assert(ONDA_API_ERROR_PARAMETER_REJECTED == -3);
+  assert(ONDA_API_ERROR_ALLOCATION_FAILED == -4);
   assert(ONDA_DELEGATE_RECORD_HEADER_SIZE == 12u);
   assert(ONDA_PRINT_RECORD_HEADER_SIZE == 12u);
   assert(ONDA_PROCESSOR_DELEGATE_RECORD_HEADER_SIZE == 12u);
@@ -58,17 +62,20 @@ int main(void) {
   batch.record_count = 2;
   onda_processor_delegate_occurrence_t processor_occurrence;
   onda_processor_batch_cursor_t cursor = {0};
-  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
+  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence) == 1);
   assert(processor_occurrence.delegate_index == 3);
   assert(processor_occurrence.payload_size_bytes == 4);
   assert(processor_occurrence.sequence == 7);
   assert(memcmp(processor_occurrence.payload, "test", 4) == 0);
-  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
+  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence) == 1);
   assert(processor_occurrence.delegate_index == 4);
   assert(processor_occurrence.sequence == 8);
   assert(memcmp(processor_occurrence.payload, "next", 4) == 0);
-  assert(!onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence));
-  assert(onda_processor_delegate_batch_occurrence_at(&batch, 1, &processor_occurrence));
+  assert(onda_processor_delegate_batch_next(&batch, &cursor, &processor_occurrence) == 0);
+  assert(onda_processor_delegate_batch_occurrence_at(&batch, 1, &processor_occurrence) == 1);
+  assert(onda_processor_delegate_batch_occurrence_at(&batch, 2, &processor_occurrence) == 0);
+  batch.used_bytes = 31;
+  assert(onda_processor_delegate_batch_occurrence_at(&batch, 2, &processor_occurrence) == -1);
 
   onda_processor_print_batch_t print_batch = {
     storage,
@@ -96,11 +103,17 @@ int main(void) {
   print_batch.record_count = 1;
   onda_processor_print_occurrence_t print_occurrence;
   onda_processor_batch_cursor_t print_cursor = {0};
-  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence));
+  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence) == 1);
   assert(print_occurrence.site_index == 5);
   assert(print_occurrence.payload_size_bytes == 1);
   assert(print_occurrence.sequence == 9);
   assert(print_occurrence.payload[0] == 1);
+  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence) == 0);
+  print_batch.used_bytes = 14;
+  print_cursor = (onda_processor_batch_cursor_t){0};
+  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence) == 1);
+  assert(onda_processor_print_batch_next(&print_batch, &print_cursor, &print_occurrence) == -1);
+  assert(onda_processor_print_batch_occurrence_at(&print_batch, 1, &print_occurrence) == -1);
 
   onda_processor_param_domain domain =
     integer_domain(ONDA_PROCESSOR_PARAM_SCALAR_I32, 0.0, 10.0, 1.0, 10);

@@ -1131,7 +1131,7 @@ fn checked_end_segment_uses_rebound_proc_array_buffer() {
         &mut instance,
         0,
         segment_frames,
-        PROCESS_BEGIN_BLOCK,
+        PROCESSOR_BEGIN_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process begin segment with old buf2");
@@ -1153,7 +1153,7 @@ fn checked_end_segment_uses_rebound_proc_array_buffer() {
         &mut instance,
         segment_frames,
         segment_frames,
-        PROCESS_END_BLOCK,
+        PROCESSOR_END_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process end segment after rebind");
@@ -1313,7 +1313,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
             &mut instance,
             0,
             frames,
-            PROCESS_FULL_BLOCK,
+            PROCESSOR_FULL_BLOCK,
             onda_runtime::ExecutionOutput::none(),
         )
         .expect("unchecked process with old buf2");
@@ -1341,7 +1341,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
             &mut instance,
             0,
             frames,
-            PROCESS_FULL_BLOCK,
+            PROCESSOR_FULL_BLOCK,
             onda_runtime::ExecutionOutput::none(),
         )
         .expect("unchecked process with refreshed refs");

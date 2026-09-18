@@ -15,7 +15,7 @@ import {
   MATH_KERNEL_STACK_GLOBAL,
   MAX_MEMORY_PAGES,
   DEFAULT_OPTIMIZE_LEVEL,
-  ONDA_PROCESS_FULL_BLOCK,
+  PROCESSOR_FULL_BLOCK,
   DELEGATE_BATCH_USED_OFFSET,
   DELEGATE_BATCH_RECORD_COUNT_OFFSET,
   DELEGATE_BATCH_OVERFLOW_OFFSET,
@@ -2443,7 +2443,7 @@ export class MirCompilerCore {
       this.module.i32.ne(
         this.module.i32.and(
           flags(),
-          this.module.i32.const(~ONDA_PROCESS_FULL_BLOCK),
+          this.module.i32.const(~PROCESSOR_FULL_BLOCK),
         ),
         this.module.i32.const(0),
       ),

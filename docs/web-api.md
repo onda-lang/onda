@@ -127,8 +127,10 @@ versions rather than guessing layout compatibility.
 `createParamControl(metadata)` validates one scalar parameter descriptor and returns a reusable
 `OndaPreparedParamControl`. For an array, `createParamControl(metadata, index)` prepares one element;
 `paramElementMetadata(metadata, index)` projects its scalar descriptor, default, and storage offset.
-The Web Audio adapter accepts indexed names such as `offsets[1]` in `setParam` and
-`setParamNormalized`, and exact-length arrays in `setParam("offsets", values)`.
+The Web Audio adapter exposes `setParamElement(nameOrIndex, element, value)` and
+`setParamElementNormalized(nameOrIndex, element, normalized)` for individual scalar or fixed-array
+elements. Indexed names such as `offsets[1]` remain accepted by `setParam` and
+`setParamNormalized`; exact-length arrays use `setParam("offsets", values)`.
 `createParamDomain(domain)` does the same from already-decoded values.
 Prepared controls expose `constrainPlain`, `normalizedToPlain`, and `plainToNormalized` methods.
 
@@ -150,7 +152,8 @@ contract.
 every generated init or process entry. Generated event entries reset before input preflight, so
 rejected input returns empty batches. After a successful generated call,
 `readDelegateBatch` or `readPrintBatch` validates the result counters.
-`decodeDelegateRecords` converts delegate payloads using `metadata.delegates`.
+`decodeDelegateBatch` validates and decodes a complete delegate batch in one call;
+`decodeDelegateRecords` decodes an already-isolated storage region using `metadata.delegates`.
 `decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and
 `formatPrintBatch` add canonical text formatting. Both decoded record types expose a `sequence` from
 the host-reset call-local counter; merge that call's two arrays by this field when presenting one
@@ -192,27 +195,36 @@ The package root re-exports the common artifact validation and file helpers. The
 - `compileOndaProcessorModule(artifact)` validates and compiles a reusable module off the render thread.
 - `ondaAudioWorkletNodeOptions(artifact, options?)` builds low-level node options.
 - `createOndaAudioProcessor(context, artifact, options?)` allocates an uninitialized adapter.
-- `createOndaAudioProcessorInitialized(context, artifact, options?)` allocates and fully initializes it.
+- `createOndaAudioProcessorInitialized(context, artifact, options?)` allocates it, requests full
+  initialization through the status-bearing control protocol, and resolves only on success.
 - `flattenedAudioChannelCount(ports?)` totals declared physical channels with validation.
 
 `OndaAudioProcessorOptions` accepts initial plain parameter values, external buffers, event,
 delegate, and print capacities, an optional construction-time `onPrint` listener, a precompiled
 module, custom node options, and an `AudioWorkletNode` constructor. Pass `onPrint` when using the
-initialized constructor if initialization output must be observed; registering a listener after
+initialized factory if initialization output must be observed; registering a listener after
 construction cannot replay output from an execution that has already completed. The artifact sample
 rate must equal the context sample rate and it must expose at least one audio input or output.
 Print and delegate delivery uses a bounded `SharedArrayBuffer` ring and requires cross-origin
 isolation in browsers; ordinary audio processing remains available when shared memory is absent.
 Low-level callers that manually pair the returned node options with `OndaAudioProcessor` must pass
-`processorOptions.executionOutputRing` as the adapter constructor's fourth argument.
+the artifact metadata as the adapter constructor's second argument and
+`processorOptions.executionOutputRing` as its fourth argument. Event encoding and numeric
+unknown-index classification require that metadata.
 
 ### `OndaAudioProcessor`
 
 The adapter exposes its `node` and validated `metadata`, plus these operations:
 
-- `setParam(nameOrIndex, plain)` and `setParamNormalized(nameOrIndex, normalized)`.
-- `trigger(nameOrIndex, values?)` for input events.
-- `onDelegates(listener)` and `onPrint(listener)`, each returning an unsubscribe function.
+- `setParam(nameOrIndex, plain)` and `setParamNormalized(nameOrIndex, normalized)` for whole
+  parameters.
+- `setParamElement(nameOrIndex, element, plain)` and
+  `setParamElementNormalized(nameOrIndex, element, normalized)` for one scalar or fixed-array
+  element.
+- `trigger(nameOrIndex, values?)` for input events. Unknown nonnegative numeric indices are
+  successful no-ops, matching native dispatch; unknown names and negative indices are rejected.
+- `onExecutionError(listener)`, `onDelegates(listener)`, and `onPrint(listener)`, each returning an
+  unsubscribe function.
 - `init(mode)`, `snapshot()`, and `restoreSnapshot(bytes)`.
 - `readControlOutputs()` and `readBuffer(nameOrIndex)`.
 - `request(type, fields?, transfer?)` for adapter protocol extensions.
@@ -230,7 +242,24 @@ each init, event, or process segment.
 
 `ONDA_INIT_FULL` clears and initializes all physical state. `ONDA_INIT_PRESERVE_PINNED` retains
 pinned state according to the processor ABI. The package also re-exports the prepared and one-shot
-parameter conversion helpers.
+parameter conversion helpers. Snapshot restoration performs its internal full initialization
+silently, without delivering init prints or delegates.
+
+Raw WebAssembly exports use the same generated status values as native processor objects:
+`PROCESSOR_EXECUTION_OK` (`0`), `PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE` (`1`), and event-only
+`PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`). The Web Audio adapter translates host-side validation
+problems into rejected promises before generated execution. It also rejects init and event promises
+when generated code returns a nonzero status: status `1` invalidates the live processor, while event
+status `2` preserves it. These generated failures use `OndaExecutionError`, whose `operation` and
+`status` fields retain the machine-readable failure. The Web Audio root re-exports all three
+`PROCESSOR_EXECUTION_*` constants for direct comparison. Render-time process failure invalidates the
+processor and silences subsequent callbacks. `onExecutionError(listener)` receives its typed
+`OndaExecutionError`; requested init and event failures remain on their promise rejection path and
+are not reported twice.
+The raw `@onda-lang/processor-abi` package exposes `PROCESSOR_BEGIN_BLOCK`,
+`PROCESSOR_END_BLOCK`, and `PROCESSOR_FULL_BLOCK` for native and direct WebAssembly hosts that use
+segmented processing. Web Audio schedules render quanta internally and has no segmented-process
+method.
 
 `@onda-lang/webaudio/worklet` is the side-effect-only AudioWorklet registration module and has no
 named exports.
@@ -277,8 +306,11 @@ PRINT_RECORD_HEADER_SIZE_BYTES
 PROCESSOR_ABI_VERSION
 PROCESSOR_ARTIFACT_FORMAT
 PROCESSOR_ARTIFACT_FORMAT_VERSION
+PROCESSOR_BEGIN_BLOCK
+PROCESSOR_END_BLOCK
 PROCESSOR_EXECUTION_OK
 PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+PROCESSOR_FULL_BLOCK
 PROCESSOR_INIT_FULL
 PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
@@ -287,6 +319,7 @@ createParamControl
 paramElementMetadata
 createParamDomain
 createProcessorArtifactFiles
+decodeDelegateBatch
 decodeDelegateRecords
 decodePrintRecords
 formatPrintBatch
@@ -326,12 +359,19 @@ OndaArtifactError
 OndaBinaryenError
 OndaBinaryenOptions
 OndaProcessorArtifact
+OndaProcessorInitMode
 OndaProcessorMetadata
 PROCESSOR_ABI_VERSION
 PROCESSOR_ARTIFACT_FORMAT
 PROCESSOR_ARTIFACT_FORMAT_VERSION
+PROCESSOR_BEGIN_BLOCK
+PROCESSOR_END_BLOCK
+PROCESSOR_EXECUTION_INPUT_REJECTED
 PROCESSOR_EXECUTION_OK
 PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+PROCESSOR_FULL_BLOCK
+PROCESSOR_INIT_FULL
+PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
 SUPPORTED_MIR_SCHEMA_VERSION
 compileTrustedMir
@@ -372,6 +412,7 @@ OndaLspAnalysisOptions
 OndaLspMessage
 OndaMaterializedProjectFile
 OndaProcessorArtifact
+OndaProcessorInitMode
 OndaProcessorMetadata
 OndaProjectBufferInfo
 OndaProjectCapabilities
@@ -389,8 +430,14 @@ OndaWorkerLike
 PROCESSOR_ABI_VERSION
 PROCESSOR_ARTIFACT_FORMAT
 PROCESSOR_ARTIFACT_FORMAT_VERSION
+PROCESSOR_BEGIN_BLOCK
+PROCESSOR_END_BLOCK
+PROCESSOR_EXECUTION_INPUT_REJECTED
 PROCESSOR_EXECUTION_OK
 PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+PROCESSOR_FULL_BLOCK
+PROCESSOR_INIT_FULL
+PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
 WorkerCompilerOptions
 createCompiler
@@ -414,11 +461,16 @@ OndaAudioProcessor
 OndaAudioProcessorOptions
 OndaAudioPrintBatch
 OndaAudioPrintListener
+OndaExecutionError
+OndaExecutionErrorListener
 OndaInitMode
 OndaParamDomain
 OndaPreparedParamControl
 OndaProcessorArtifact
 OndaProcessorMetadata
+PROCESSOR_EXECUTION_INPUT_REJECTED
+PROCESSOR_EXECUTION_OK
+PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
 compileOndaProcessorModule
 constrainParamPlain
 createOndaAudioProcessor

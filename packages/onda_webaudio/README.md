@@ -57,7 +57,12 @@ write to the worklet. Boolean normalized values use the `0.5` threshold. For exa
 ```js
 await processor.setParam("cutoff", 440);          // exactly 440 Hz
 await processor.setParamNormalized("cutoff", 0.5); // midpoint in its declared control scale
+await processor.setParamElement("offsets", 1, 12); // one fixed-array element
+await processor.setParamElementNormalized("offsets", 1, 0.5);
 ```
+
+The element methods also accept scalar parameters with element index zero. Indexed names such as
+`offsets[1]` remain available through `setParam()` and `setParamNormalized()`.
 
 The same synchronous conversion helpers are re-exported for UI display and typed entry:
 
@@ -128,7 +133,9 @@ Fixed arrays must have their declared length. Slice lengths may vary up to the c
 payload capacity. `i64` leaves accept `bigint`, exact safe integers, or decimal integer strings and
 reject values outside the signed 64-bit range. Missing top-level arguments use declared defaults;
 structs and struct arrays have no event defaults and must be supplied in full. Input rejected during
-worklet preflight leaves processor state usable and rejects the returned promise.
+worklet preflight leaves processor state usable and rejects the returned promise. Unknown
+nonnegative numeric event indices are successful no-ops, matching native dispatch; unknown names
+and negative indices reject the promise.
 
 ## Prints
 
@@ -249,23 +256,28 @@ const processor = await createOndaAudioProcessorInitialized(context, artifact, {
 Hosts may instead pass a flat array in physical descriptor order or key individual physical names
 such as `"bank[1]"`. Logical group metadata determines the contiguous slot range; no sample data is
 copied when Onda selects a slot while processing. Initial descriptors are installed before the
-initialized constructor runs full initialization, so authored top-level and proc init code can
+initialized factory awaits full initialization, so authored top-level and proc init code can
 preprocess the supplied samples once before rendering begins.
 
 Artifact descriptors and module exports are validated by the shared, compiler-free
 `@onda-lang/processor-abi` package before anything reaches the rendering thread.
-If generated init or event code returns a nonzero execution status, the adapter reports the error
-to the caller. A failing process call reports an `onda-error` and emits silence. Any generated-code
-failure invalidates the live state, so later callbacks remain silent and stateful operations are
-rejected until full initialization or snapshot restoration succeeds.
+If generated init or event code returns a nonzero execution status, the adapter rejects with
+`OndaExecutionError`; its `operation` and `status` fields preserve the raw processor result. Event
+input rejection preserves live state. The package re-exports the `PROCESSOR_EXECUTION_*` constants
+for direct status comparisons. Runtime-safety failure invalidates the processor, so later callbacks
+remain silent and stateful operations are rejected until full initialization or snapshot
+restoration succeeds. Subscribe with `onExecutionError(listener)` to receive the same typed error
+when a render-time process call fails; the failed callback emits silence.
 `init(ONDA_INIT_PRESERVE_PINNED)` reruns generated initialization
 while preserving pinned roots and task continuations; `init(ONDA_INIT_FULL)` initializes the
 complete physical state and is required before processing an instance returned by
-`createOndaAudioProcessor`. The initialized convenience constructor performs full initialization
-during worklet construction. Neither mode allocates on the successful path, and a
+`createOndaAudioProcessor`. The initialized convenience factory installs its response and output
+handling before requesting full initialization, then resolves only after initialization succeeds.
+Neither mode allocates on the successful path, and a
 failure returns the processor to its silent pending state until full initialization or snapshot
 restore succeeds. Suspend or disconnect playback before initialization that performs substantial
-work.
+work. Snapshot restoration performs its internal full initialization silently and does not deliver
+init prints or delegates.
 
 Dynamic event storage is also allocated before rendering. Its default capacity is 64 KiB per
 processor with dynamic events and can be changed explicitly:

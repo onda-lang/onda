@@ -81,10 +81,11 @@ time and reuse the payload and workspace regions.
 ## Delegate batches
 
 The package exports `DELEGATE_RECORD_HEADER_SIZE_BYTES`, `DELEGATE_BATCH_SIZE_BYTES`,
-`writeDelegateBatch()`, `readDelegateBatch()`, and `decodeDelegateRecords()` for allocation-free
-call-scoped delegate collection. Descriptor entries expose exact fixed payload sizes or dynamic
-minimum sizes. A complete fixed record occupies the twelve-byte header (index, payload size, and
-call-local output sequence) plus its payload; no exact
+`writeDelegateBatch()`, `readDelegateBatch()`, and `decodeDelegateBatch()` for call-scoped delegate
+collection. Batch preparation and generated publication are allocation-free;
+`decodeDelegateRecords()` remains available for an already-isolated storage region. Descriptor
+entries expose exact fixed payload sizes or dynamic minimum sizes. A complete fixed record occupies
+the twelve-byte header (index, payload size, and call-local output sequence) plus its payload; no exact
 whole-call capacity exists because occurrence counts and slice lengths may be runtime-dependent.
 
 ```js
@@ -93,8 +94,7 @@ import {
   writeDelegateBatch,
   writeExecutionOutput,
   resetExecutionOutput,
-  readDelegateBatch,
-  decodeDelegateRecords,
+  decodeDelegateBatch,
 } from "@onda-lang/processor-abi";
 
 const delegates = artifact.metadata.metadata.delegates;
@@ -109,15 +109,12 @@ writeExecutionOutput(memory, outputAddress, batchAddress, 0);
 // Before onda_process (or initialization):
 resetExecutionOutput(memory, outputAddress);
 // Pass outputAddress as the final entry argument. onda_event_N resets it before preflight.
-const batch = readDelegateBatch(memory, batchAddress);
-const storage = new Uint8Array(memory.buffer, storageAddress, batch.usedBytes);
-const occurrences = decodeDelegateRecords(
-  storage,
-  batch.usedBytes,
-  delegates,
-  artifact.metadata.target.byte_order,
+const { occurrences, overflowCount } = decodeDelegateBatch(
+  memory,
+  batchAddress,
+  artifact.metadata,
 );
-if (batch.overflowCount) reportOverflow(batch.overflowCount);
+if (overflowCount) reportOverflow(overflowCount);
 ```
 
 Allocate the descriptor and storage before realtime execution and consume records before the next

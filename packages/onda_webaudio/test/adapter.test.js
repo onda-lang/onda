@@ -4,6 +4,14 @@ import test from "node:test";
 import {
   PROCESSOR_ABI_VERSION,
   PROCESSOR_ARTIFACT_FORMAT_VERSION,
+  PROCESSOR_BEGIN_BLOCK,
+  PROCESSOR_END_BLOCK,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+  PROCESSOR_FULL_BLOCK,
+  PROCESSOR_INIT_FULL,
+  PROCESSOR_INIT_PRESERVE_PINNED,
   PROCESSOR_SNAPSHOT_FORMAT_VERSION,
 } from "@onda-lang/processor-abi";
 
@@ -12,6 +20,10 @@ import {
   ONDA_INIT_FULL,
   ONDA_INIT_PRESERVE_PINNED,
   OndaAudioProcessor,
+  OndaExecutionError,
+  PROCESSOR_EXECUTION_INPUT_REJECTED as WEBAUDIO_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_EXECUTION_OK as WEBAUDIO_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as WEBAUDIO_RUNTIME_SAFETY_FAILURE,
   compileOndaProcessorModule,
   createOndaAudioProcessor,
   createOndaAudioProcessorInitialized,
@@ -24,6 +36,16 @@ import {
   openExecutionOutputRing,
   writeExecutionOutputRing,
 } from "../src/execution-output-ring.js";
+import {
+  PROCESSOR_BEGIN_BLOCK as WORKLET_BEGIN_BLOCK,
+  PROCESSOR_END_BLOCK as WORKLET_END_BLOCK,
+  PROCESSOR_EXECUTION_OK as WORKLET_EXECUTION_OK,
+  PROCESSOR_EXECUTION_INPUT_REJECTED as WORKLET_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE as WORKLET_RUNTIME_SAFETY_FAILURE,
+  PROCESSOR_FULL_BLOCK as WORKLET_FULL_BLOCK,
+  PROCESSOR_INIT_FULL as WORKLET_INIT_FULL,
+  PROCESSOR_INIT_PRESERVE_PINNED as WORKLET_INIT_PRESERVE_PINNED,
+} from "../src/processor-constants.js";
 
 const FIXTURE_MIR_SCHEMA_VERSION = 6;
 
@@ -160,6 +182,46 @@ class FakeNode {
   }
 }
 
+class InitializedFakeNode extends FakeNode {
+  constructor(...args) {
+    super(...args);
+    const postMessage = this.port.postMessage.bind(this.port);
+    this.port.postMessage = (message) => {
+      postMessage(message);
+      if (message.type === "init") {
+        queueMicrotask(() => this.port.reply({
+          type: "onda-ok",
+          requestId: message.requestId,
+        }));
+      }
+    };
+  }
+}
+
+class FailingInitFakeNode extends FakeNode {
+  constructor(...args) {
+    super(...args);
+    this.disconnected = false;
+    const postMessage = this.port.postMessage.bind(this.port);
+    this.port.postMessage = (message) => {
+      postMessage(message);
+      if (message.type === "init") {
+        queueMicrotask(() => this.port.reply({
+          type: "onda-error",
+          operation: "init",
+          requestId: message.requestId,
+          status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+          error: "initialization failed",
+        }));
+      }
+    };
+  }
+
+  disconnect() {
+    this.disconnected = true;
+  }
+}
+
 function createTestOutputRing(delegateCapacity = 64, printCapacity = 64) {
   const buffer = createExecutionOutputRing(delegateCapacity, printCapacity, 1024);
   return { buffer, ring: openExecutionOutputRing(buffer) };
@@ -185,6 +247,32 @@ function writeTestOutput(ring, fields, delegateStorage = null, printStorage = nu
   }, delegate, print), true);
 }
 
+function i32PrintRecord(siteIndex, value, sequence = 0) {
+  const storage = new Uint8Array(16);
+  const view = new DataView(storage.buffer);
+  view.setUint32(0, siteIndex, true);
+  view.setUint32(4, 4, true);
+  view.setUint32(8, sequence, true);
+  view.setInt32(12, value, true);
+  return storage;
+}
+
+test("Web Audio constants match the processor ABI", () => {
+  assert.equal(ONDA_INIT_PRESERVE_PINNED, PROCESSOR_INIT_PRESERVE_PINNED);
+  assert.equal(ONDA_INIT_FULL, PROCESSOR_INIT_FULL);
+  assert.equal(WEBAUDIO_EXECUTION_OK, PROCESSOR_EXECUTION_OK);
+  assert.equal(WEBAUDIO_RUNTIME_SAFETY_FAILURE, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+  assert.equal(WEBAUDIO_EXECUTION_INPUT_REJECTED, PROCESSOR_EXECUTION_INPUT_REJECTED);
+  assert.equal(WORKLET_EXECUTION_OK, PROCESSOR_EXECUTION_OK);
+  assert.equal(WORKLET_RUNTIME_SAFETY_FAILURE, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+  assert.equal(WORKLET_EXECUTION_INPUT_REJECTED, PROCESSOR_EXECUTION_INPUT_REJECTED);
+  assert.equal(WORKLET_BEGIN_BLOCK, PROCESSOR_BEGIN_BLOCK);
+  assert.equal(WORKLET_END_BLOCK, PROCESSOR_END_BLOCK);
+  assert.equal(WORKLET_FULL_BLOCK, PROCESSOR_FULL_BLOCK);
+  assert.equal(WORKLET_INIT_PRESERVE_PINNED, PROCESSOR_INIT_PRESERVE_PINNED);
+  assert.equal(WORKLET_INIT_FULL, PROCESSOR_INIT_FULL);
+});
+
 test("closed processors reject new work and settle pending requests", async () => {
   const node = new FakeNode({}, ONDA_AUDIO_WORKLET_PROCESSOR_NAME, {});
   const processor = new OndaAudioProcessor(node, artifact().metadata);
@@ -196,6 +284,7 @@ test("closed processors reject new work and settle pending requests", async () =
 
   await assert.rejects(pending, reason);
   await assert.rejects(processor.trigger("note"), reason);
+  assert.throws(() => processor.onExecutionError(() => {}), reason);
   assert.throws(() => processor.onPrint(() => {}), reason);
   assert.equal(node.port.messages.length, 1);
 });
@@ -217,6 +306,94 @@ test("event triggers reject unknown payload parameters before posting work", asy
   assert.equal(request.type, "event");
   node.port.reply({ type: "onda-ok", requestId: request.requestId });
   await pending;
+  processor.close();
+});
+
+test("event triggers ignore unknown nonnegative indices but reject unknown names", async () => {
+  const source = artifact();
+  source.metadata.metadata.events = [{ name: "note", schema: { params: [] } }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+
+  const pending = processor.trigger(99, { ignored: true });
+  const request = node.port.messages.at(-1);
+  assert.equal(request.type, "event");
+  assert.equal(request.event, 99);
+  assert.equal(request.payload.byteLength, 0);
+  node.port.reply({ type: "onda-ok", requestId: request.requestId });
+  await pending;
+  await assert.rejects(processor.trigger(-1), /unknown Onda event '-1'/);
+  await assert.rejects(processor.trigger("missing"), /unknown Onda event 'missing'/);
+  assert.equal(node.port.messages.length, 1);
+  processor.close();
+});
+
+test("event triggers require metadata before classifying numeric indices", async () => {
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node);
+
+  await assert.rejects(
+    processor.trigger(0, { gain: 1 }),
+    /event triggers require processor metadata/,
+  );
+  assert.equal(node.port.messages.length, 0);
+  processor.close();
+});
+
+test("execution failures preserve their generated status", async () => {
+  const source = artifact();
+  source.metadata.metadata.events = [{ name: "note", schema: { params: [] } }];
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, source.metadata);
+  const reported = [];
+  processor.onExecutionError((error) => reported.push(error));
+  const pending = processor.trigger("note");
+  const request = node.port.messages.at(-1);
+  node.port.reply({
+    type: "onda-error",
+    operation: "event",
+    requestId: request.requestId,
+    status: PROCESSOR_EXECUTION_INPUT_REJECTED,
+    error: "event input rejected",
+  });
+
+  await assert.rejects(pending, (error) => {
+    assert.ok(error instanceof OndaExecutionError);
+    assert.equal(error.operation, "event");
+    assert.equal(error.status, PROCESSOR_EXECUTION_INPUT_REJECTED);
+    return true;
+  });
+  assert.deepEqual(reported, []);
+  processor.close();
+});
+
+test("delivers render failures through typed execution-error listeners", () => {
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, artifact().metadata);
+  const errors = [];
+  const unsubscribe = processor.onExecutionError((error) => errors.push(error));
+
+  node.port.reply({
+    type: "onda-error",
+    operation: "process",
+    status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    error: "processor process failed",
+  });
+
+  assert.equal(errors.length, 1);
+  assert.ok(errors[0] instanceof OndaExecutionError);
+  assert.equal(errors[0].operation, "process");
+  assert.equal(errors[0].status, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+  assert.equal(unsubscribe(), true);
+  assert.equal(unsubscribe(), false);
+
+  node.port.reply({
+    type: "onda-error",
+    operation: "process",
+    status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    error: "processor process failed again",
+  });
+  assert.equal(errors.length, 1);
   processor.close();
 });
 
@@ -281,16 +458,93 @@ test("registers the worklet before constructing the public processor node", asyn
   assert.equal(processor.node.options.processorOptions.initialize, false);
 });
 
-test("initialized creation requests full initialization in the worklet constructor", async () => {
+test("initialized creation awaits status-bearing full initialization", async () => {
   const context = {
     sampleRate: 48_000,
     audioWorklet: { addModule: async () => {} },
   };
   const processor = await createOndaAudioProcessorInitialized(context, artifact(), {
-    AudioWorkletNode: FakeNode,
+    AudioWorkletNode: InitializedFakeNode,
   });
-  assert.equal(processor.node.options.processorOptions.initialize, true);
+  assert.equal(processor.node.options.processorOptions.initialize, false);
   assert.equal(processor.node.options.processorOptions.printCollectionEnabled, false);
+  assert.equal(processor.node.port.messages.at(-1).type, "init");
+  assert.equal(processor.node.port.messages.at(-1).mode, ONDA_INIT_FULL);
+});
+
+test("initialized creation rejects generated initialization failures", async () => {
+  const context = {
+    sampleRate: 48_000,
+    audioWorklet: { addModule: async () => {} },
+  };
+  let node;
+  class CapturedFailingInitNode extends FailingInitFakeNode {
+    constructor(...args) {
+      super(...args);
+      node = this;
+    }
+  }
+  await assert.rejects(
+    createOndaAudioProcessorInitialized(context, artifact(), {
+      AudioWorkletNode: CapturedFailingInitNode,
+    }),
+    (error) => {
+      assert.ok(error instanceof OndaExecutionError);
+      assert.equal(error.operation, "init");
+      assert.equal(error.status, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+      return true;
+    },
+  );
+  assert.equal(node.disconnected, true);
+  assert.equal(node.port.listeners.size, 0);
+});
+
+test("initialized creation delivers diagnostic prints before rejecting", async () => {
+  const source = artifact();
+  source.metadata.metadata.log_sites = [{
+    index: 0,
+    label: "init",
+    source: { file: null, line: 1, column: 1, end_line: 1, end_column: 10 },
+    lexical_owner: "program",
+    declaration: "init",
+    argument_types: ["i32"],
+    payload_size_bytes: 4,
+  }];
+  const context = {
+    sampleRate: 48_000,
+    audioWorklet: { addModule: async () => {} },
+  };
+  const batches = [];
+  class FailingInitWithPrintFakeNode extends FailingInitFakeNode {
+    constructor(...args) {
+      super(...args);
+      const postMessage = this.port.postMessage.bind(this.port);
+      const processorOptions = this.options.processorOptions;
+      const ring = openExecutionOutputRing(processorOptions.executionOutputRing);
+      this.port.postMessage = (message) => {
+        if (message.type === "init") {
+          const storage = i32PrintRecord(0, 42);
+          writeTestOutput(ring, {
+            operation: EXECUTION_OPERATION_INIT,
+            printSubscriptionId: processorOptions.printSubscriptionId,
+            printUsed: storage.byteLength,
+            printRecordCount: 1,
+          }, null, storage);
+        }
+        postMessage(message);
+      };
+    }
+  }
+
+  await assert.rejects(
+    createOndaAudioProcessorInitialized(context, source, {
+      AudioWorkletNode: FailingInitWithPrintFakeNode,
+      onPrint: (batch) => batches.push(batch),
+    }),
+    OndaExecutionError,
+  );
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].text, "init: 42\n");
 });
 
 test("initialized creation installs its print listener before worklet output arrives", async () => {
@@ -310,18 +564,13 @@ test("initialized creation installs its print listener before worklet output arr
   };
   const batches = [];
   const processor = await createOndaAudioProcessorInitialized(context, source, {
-    AudioWorkletNode: FakeNode,
+    AudioWorkletNode: InitializedFakeNode,
     onPrint: (batch) => batches.push(batch),
   });
   assert.equal(processor.node.options.processorOptions.printCollectionEnabled, true);
   assert.equal(processor.node.options.processorOptions.printSubscriptionId, 1);
 
-  const storage = new Uint8Array(16);
-  const view = new DataView(storage.buffer);
-  view.setUint32(0, 0, true);
-  view.setUint32(4, 4, true);
-  view.setUint32(8, 0, true);
-  view.setInt32(12, 42, true);
+  const storage = i32PrintRecord(0, 42);
   writeTestOutput(processor.executionOutputRing, {
     operation: EXECUTION_OPERATION_INIT,
     printSubscriptionId: 1,
@@ -630,9 +879,11 @@ test("converts normalized parameters before posting a plain worklet write", asyn
   const node = { port: new FakePort() };
   const processor = new OndaAudioProcessor(node, source.metadata);
 
-  const pending = processor.setParamNormalized("cutoff", 0.5);
+  const pending = processor.setParamElementNormalized("cutoff", 0, 0.5);
   const request = node.port.messages.at(-1);
   assert.equal(request.type, "set-param");
+  assert.equal(request.param, "cutoff");
+  assert.equal(request.element, 0);
   assert.ok(Math.abs(request.value - Math.sqrt(20 * 20_000)) < 1e-12);
   node.port.reply({ type: "onda-ok", requestId: request.requestId });
   await pending;
@@ -681,7 +932,7 @@ test("constrains plain parameters before posting to the worklet", async () => {
   processor.close();
 });
 
-test("array updates constrain each element and accept indexed normalized writes", async () => {
+test("array updates constrain each element through explicit and indexed writes", async () => {
   const source = artifact();
   source.metadata.runtime.param_size_bytes = 8;
   source.metadata.runtime.param_align_bytes = 4;
@@ -695,16 +946,20 @@ test("array updates constrain each element and accept indexed normalized writes"
   assert.deepEqual(options.processorOptions.params, { modes: [4, 10] });
   const node = { port: new FakePort() };
   const processor = new OndaAudioProcessor(node, source.metadata);
-  const pending = processor.setParamNormalized("modes[1]", 0.6);
+  const pending = processor.setParamElementNormalized("modes", 1, 0.6);
   const request = node.port.messages.at(-1);
-  assert.equal(request.param, "modes[1]");
+  assert.equal(request.param, "modes");
+  assert.equal(request.element, 1);
   assert.equal(request.value, 6);
   node.port.reply({ type: "onda-ok", requestId: request.requestId });
   await pending;
+  await assert.rejects(processor.setParamElement("modes", 2, 0), /out of bounds/);
   await assert.rejects(processor.setParam("modes[2]", 0), /out of bounds/);
   const elements = processor.paramElements.get(processor.paramInfo[0]);
   const control = processor.paramControls.get(elements.get(1));
   for (const update of [
+    () => processor.setParamElement("modes", 1, 5),
+    () => processor.setParamElementNormalized("modes", 1, 0.6),
     () => processor.setParam("modes[1]", 5),
     () => processor.setParamNormalized("modes[1]", 0.6),
     () => processor.setParam("modes", [3, 5]),

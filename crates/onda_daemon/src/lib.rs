@@ -525,8 +525,8 @@ mod tests {
             .expect("run should start");
         let run = session.run_mut(&main).expect("active run");
         let segments = [
-            (0, 2, onda_runtime::PROCESS_BEGIN_BLOCK),
-            (2, 2, onda_runtime::PROCESS_END_BLOCK),
+            (0, 2, onda_runtime::PROCESSOR_BEGIN_BLOCK),
+            (2, 2, onda_runtime::PROCESSOR_END_BLOCK),
         ];
 
         run.render_block_segments(&segments)

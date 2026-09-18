@@ -6,6 +6,9 @@ export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED: 0;
 export const PROCESSOR_INIT_FULL: 1;
+export const PROCESSOR_BEGIN_BLOCK: 1;
+export const PROCESSOR_END_BLOCK: 2;
+export const PROCESSOR_FULL_BLOCK: 3;
 export type OndaProcessorInitMode = 0 | 1;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION: 1;
 /** Bytes preceding the payload of every packed delegate occurrence. */
@@ -415,7 +418,7 @@ export function writeDelegateBatch(
   storageAddress: number,
   capacityBytes: number,
 ): void;
-/** Read and validate the result descriptor after successful generated execution. */
+/** Read and validate the complete result envelope and packed record layout. */
 export function readDelegateBatch(
   memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
   batchAddress: number,
@@ -447,6 +450,14 @@ export function decodePrintRecords(
   logSites: OndaLogSiteMetadata[],
   byteOrder?: "little_endian" | "big_endian",
 ): OndaPrintEntry[];
+export function decodeDelegateBatch(
+  memory: WebAssembly.Memory | ArrayBuffer | ArrayBufferView | DataView,
+  delegateBatchAddress: number,
+  metadata: OndaProcessorMetadata | {
+    delegates: OndaDelegateMetadata[];
+    target?: OndaTargetInfo;
+  },
+): { occurrences: OndaDelegateOccurrence[]; overflowCount: number };
 export function formatPrintBatch(
   memory: WebAssembly.Memory,
   printBatchAddress: number,

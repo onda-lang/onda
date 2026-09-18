@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   SUPPORTED_MIR_SCHEMA_VERSION,
   compileTrustedMir as compileMir,
 } from "../src/index.js";
@@ -204,6 +205,7 @@ const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
 try {
   await Promise.all([
     copyFile(new URL("../../onda_webaudio/src/param-metadata.js", import.meta.url), join(workletFixture, "param-metadata.js")),
+    copyFile(new URL("../../onda_webaudio/src/processor-constants.js", import.meta.url), join(workletFixture, "processor-constants.js")),
     copyFile(
       fileURLToPath(
         new URL(
@@ -839,6 +841,7 @@ test("AudioWorklet reports generated execution failures and remains silent", () 
   assert.deepEqual(processor.port.messages.at(-1), {
     type: "onda-error",
     operation: "process",
+    status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
     error: "processor process failed with Onda execution status 1",
   });
 

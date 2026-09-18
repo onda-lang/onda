@@ -105,7 +105,7 @@ static int run_case(
 
   const int event_status = unchecked
     ? onda_trigger_event_views_by_index_unchecked(instance, event_index, views, NULL)
-    : onda_trigger_event_views_by_index(instance, event_index, views, view_count, NULL);
+    : onda_trigger_event_views_by_index_checked(instance, event_index, views, view_count, NULL);
   const int process_status = event_status == ONDA_EXECUTION_OK
     ? onda_process_checked(instance, 1, NULL)
     : event_status;

@@ -18,6 +18,11 @@ import {
   ONDA_VERSION,
   OndaCompileError,
   OndaCompilerError,
+  PROCESSOR_BEGIN_BLOCK,
+  PROCESSOR_END_BLOCK,
+  PROCESSOR_FULL_BLOCK,
+  PROCESSOR_INIT_FULL,
+  PROCESSOR_INIT_PRESERVE_PINNED,
   createCompiler,
   createProcessorArtifactFiles,
 } from "../src/index.js";
@@ -28,6 +33,14 @@ const SOURCE = `params:
 sample:
   out1 = gain
 `;
+
+test("re-exports processor execution constants", () => {
+  assert.equal(PROCESSOR_INIT_PRESERVE_PINNED, 0);
+  assert.equal(PROCESSOR_INIT_FULL, 1);
+  assert.equal(PROCESSOR_BEGIN_BLOCK, 1);
+  assert.equal(PROCESSOR_END_BLOCK, 2);
+  assert.equal(PROCESSOR_FULL_BLOCK, 3);
+});
 
 function pcm16Wav(samples) {
   const dataLength = samples.length * 2;

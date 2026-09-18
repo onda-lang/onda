@@ -9,6 +9,111 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use onda::*;
 
+#[test]
+fn c_api_public_status_and_metadata_codes_are_stable() {
+    assert_eq!(ONDA_API_ERROR_INVALID_ARGUMENT, -1);
+    assert_eq!(ONDA_API_ERROR_VALIDATION_FAILED, -2);
+    assert_eq!(ONDA_API_ERROR_PARAMETER_REJECTED, -3);
+    assert_eq!(ONDA_API_ERROR_ALLOCATION_FAILED, -4);
+    assert_eq!(ONDA_INIT_PRESERVE_PINNED, 0);
+    assert_eq!(ONDA_INIT_FULL, 1);
+    assert_eq!(ONDA_PROCESS_BEGIN_BLOCK, 1);
+    assert_eq!(ONDA_PROCESS_END_BLOCK, 2);
+    assert_eq!(ONDA_PROCESS_FULL_BLOCK, 3);
+    assert_eq!(ONDA_EXECUTION_OK, 0);
+    assert_eq!(ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE, 1);
+    assert_eq!(ONDA_EXECUTION_INPUT_REJECTED, 2);
+    assert_eq!(ONDA_PARAM_SCALE_NONE, 0);
+    assert_eq!(ONDA_PARAM_SCALE_LINEAR, 1);
+    assert_eq!(ONDA_PARAM_SCALE_LOG, 2);
+}
+
+#[test]
+fn c_api_bindings_distinguish_malformed_arguments_from_program_rejection() {
+    unsafe {
+        let program = compile_program(
+            r#"
+ins { in1 }
+outs { out1 }
+buffers { samples: buffer<f32> }
+sample { out1 = in1 }
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 1, 1, std::ptr::null_mut(), &mut *diag);
+        assert!(!instance.is_null(), "{}", diag_message(&diag));
+        let instance = InstanceHandle(instance);
+
+        assert_eq!(
+            onda_bind_input(instance.0, 0, std::ptr::null(), 4),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_bind_output(instance.0, 0, std::ptr::null_mut(), 4),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_bind_buffer(
+                instance.0,
+                0,
+                std::ptr::null_mut(),
+                1,
+                1,
+                48_000.0,
+                ONDA_PRIMITIVE_F32,
+            ),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+
+        let mut sample = 0.0_f32;
+        for (frames, channels, sample_rate) in [
+            (0, 1, 48_000.0),
+            (1, 0, 48_000.0),
+            (1, 1, -1.0),
+            (1, 1, f32::NAN),
+        ] {
+            assert_eq!(
+                onda_bind_buffer(
+                    instance.0,
+                    0,
+                    (&mut sample as *mut f32).cast(),
+                    frames,
+                    channels,
+                    sample_rate,
+                    ONDA_PRIMITIVE_F32,
+                ),
+                ONDA_API_ERROR_INVALID_ARGUMENT
+            );
+        }
+
+        assert_eq!(
+            onda_bind_input(instance.0, 1, (&sample as *const f32).cast(), 4),
+            ONDA_API_ERROR_VALIDATION_FAILED
+        );
+        assert_eq!(
+            onda_bind_output(instance.0, 1, (&mut sample as *mut f32).cast(), 4),
+            ONDA_API_ERROR_VALIDATION_FAILED
+        );
+        assert_eq!(
+            onda_bind_buffer(
+                instance.0,
+                1,
+                (&mut sample as *mut f32).cast(),
+                1,
+                1,
+                48_000.0,
+                ONDA_PRIMITIVE_F32,
+            ),
+            ONDA_API_ERROR_VALIDATION_FAILED
+        );
+        assert_eq!(
+            onda_reset_buffer_to_project_default(instance.0, 1),
+            ONDA_API_ERROR_VALIDATION_FAILED
+        );
+    }
+}
+
 fn diag_message(diag: &onda_diag_t) -> String {
     if diag.message.is_null() {
         return "<null>".to_owned();
@@ -124,10 +229,14 @@ struct AllocStats {
     allocs: usize,
     frees: usize,
     live: usize,
+    max_allocation: Option<usize>,
 }
 
 unsafe extern "C" fn test_alloc(context: *mut c_void, size: usize, align: usize) -> *mut c_void {
     let stats = &mut *(context.cast::<AllocStats>());
+    if stats.max_allocation.is_some_and(|maximum| size > maximum) {
+        return std::ptr::null_mut();
+    }
     let Ok(layout) = Layout::from_size_align(size, align) else {
         return std::ptr::null_mut();
     };
@@ -1629,7 +1738,7 @@ sample { out1 = value }
             0
         );
         assert_eq!(output, [0.75; 4]);
-        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
             0
@@ -1637,7 +1746,7 @@ sample { out1 = value }
         assert_eq!(output, [0.25; 4]);
 
         assert_eq!(onda_reset_buffer_to_project_default(instance.0, 0), 0);
-        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, output.len() as i32, std::ptr::null_mut()),
             0
@@ -2176,7 +2285,13 @@ sample { out1 = amp }
         );
 
         assert_eq!(
-            onda_trigger_event_by_index(instance.0, 99, std::ptr::null(), 0, std::ptr::null_mut()),
+            onda_trigger_event_by_index_checked(
+                instance.0,
+                99,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut()
+            ),
             0
         );
         assert_eq!(
@@ -2188,13 +2303,19 @@ sample { out1 = amp }
         }
 
         assert_eq!(
-            onda_trigger_event_by_index(instance.0, 0, std::ptr::null(), 0, std::ptr::null_mut()),
+            onda_trigger_event_by_index_checked(
+                instance.0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut()
+            ),
             ONDA_EXECUTION_INPUT_REJECTED
         );
 
         let payload = 0.625_f32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 0,
                 payload.as_ptr().cast::<c_void>(),
@@ -2213,7 +2334,7 @@ sample { out1 = amp }
 
         let zero = 0_i32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 1,
                 zero.as_ptr().cast::<c_void>(),
@@ -2289,7 +2410,7 @@ sample:
         };
         let payload = 17_i32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 0,
                 payload.as_ptr().cast::<c_void>(),
@@ -2333,7 +2454,7 @@ sample:
 
         let payload = 23_i32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 0,
                 payload.as_ptr().cast::<c_void>(),
@@ -2437,7 +2558,7 @@ sample { out1 = gate }
 
         let bad_payload = 2_i32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 event_idx,
                 bad_payload.as_ptr().cast::<c_void>(),
@@ -2452,7 +2573,7 @@ sample { out1 = gate }
         payload.extend_from_slice(&0.25_f32.to_ne_bytes());
         payload.extend_from_slice(&0.75_f32.to_ne_bytes());
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 event_idx,
                 payload.as_ptr().cast::<c_void>(),
@@ -2572,7 +2693,7 @@ sample:
             });
         }
         assert_eq!(
-            onda_trigger_event_views_by_index(
+            onda_trigger_event_views_by_index_checked(
                 instance.0,
                 0,
                 views.as_ptr(),
@@ -2610,7 +2731,7 @@ sample:
         let mut mismatched = views.clone();
         mismatched[2].element_count = 1;
         assert_eq!(
-            onda_trigger_event_views_by_index(
+            onda_trigger_event_views_by_index_checked(
                 instance.0,
                 0,
                 mismatched.as_ptr(),
@@ -2818,12 +2939,12 @@ sample { out1 = amp + pinned }
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             -2
         );
-        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), -2);
-        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 0, std::ptr::null_mut()), -2);
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
 
         let payload = 0.5_f32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 0,
                 payload.as_ptr().cast::<c_void>(),
@@ -2840,7 +2961,7 @@ sample { out1 = amp + pinned }
             assert!((*sample - 2.0).abs() < 1e-6, "got {sample}");
         }
 
-        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 0, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2851,7 +2972,7 @@ sample { out1 = amp + pinned }
 
         let changed_payload = 0.25_f32.to_ne_bytes();
         assert_eq!(
-            onda_trigger_event_by_index(
+            onda_trigger_event_by_index_checked(
                 instance.0,
                 0,
                 changed_payload.as_ptr().cast::<c_void>(),
@@ -2860,7 +2981,7 @@ sample { out1 = amp + pinned }
             ),
             0
         );
-        assert_eq!(onda_init(instance.0, 0, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 0, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2869,7 +2990,7 @@ sample { out1 = amp + pinned }
             assert!((*sample - 1.25).abs() < 1e-6);
         }
 
-        assert_eq!(onda_init(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
         assert_eq!(
             onda_process_checked(instance.0, frames, std::ptr::null_mut()),
             0
@@ -2878,8 +2999,14 @@ sample { out1 = amp + pinned }
             assert!((*sample - 1.0).abs() < 1e-6);
         }
 
-        assert_eq!(onda_init(std::ptr::null_mut(), 0, std::ptr::null_mut()), -1);
-        assert_eq!(onda_init(std::ptr::null_mut(), 1, std::ptr::null_mut()), -1);
+        assert_eq!(
+            onda_init_checked(std::ptr::null_mut(), 0, std::ptr::null_mut()),
+            -1
+        );
+        assert_eq!(
+            onda_init_checked(std::ptr::null_mut(), 1, std::ptr::null_mut()),
+            -1
+        );
     }
 }
 
@@ -3070,6 +3197,18 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
             length: 0,
         };
         assert_eq!(
+            onda_format_print_batch(std::ptr::null(), &prints, &mut text, &mut *diag),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_format_print_batch(instance.0, std::ptr::null(), &mut text, &mut *diag),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_format_print_batch(instance.0, &prints, std::ptr::null_mut(), &mut *diag),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
             onda_format_print_batch(instance.0, &prints, &mut text, &mut *diag),
             0
         );
@@ -3085,7 +3224,7 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
         let original_length = text.length;
         assert_eq!(
             onda_format_print_batch(instance.0, &prints, &mut text, &mut *diag),
-            -1
+            ONDA_API_ERROR_INVALID_ARGUMENT
         );
         assert_eq!((text.data, text.length), (original_text, original_length));
         onda_owned_string_dispose(&mut text);
@@ -3113,6 +3252,39 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
             0
         );
         let mut required = 0_usize;
+        assert_eq!(
+            onda_format_print_batch_into(
+                std::ptr::null(),
+                &prints,
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+                &mut *diag,
+            ),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+                &mut required,
+                &mut *diag,
+            ),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_format_print_batch_into(
+                instance.0,
+                &prints,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut *diag,
+            ),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
         assert_eq!(
             onda_format_print_batch_into(
                 instance.0,
@@ -3168,7 +3340,7 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
                 &mut required,
                 &mut *diag,
             ),
-            -2
+            ONDA_API_ERROR_VALIDATION_FAILED
         );
         prints.record_count = 1;
 
@@ -3286,21 +3458,51 @@ sample {
 
         let creation_allocs = stats.allocs;
         let creation_frees = stats.frees;
-        assert!(onda_instance_reserve_event_workspace(
-            instance, 128, &mut *diag
-        ));
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, 128, &mut *diag),
+            0
+        );
         assert_eq!(stats.allocs, creation_allocs + 1);
         assert_eq!(stats.frees, creation_frees);
-        assert!(onda_instance_reserve_event_workspace(
-            instance, 128, &mut *diag
-        ));
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, 128, &mut *diag),
+            0
+        );
         assert_eq!(stats.allocs, creation_allocs + 1);
         assert_eq!(stats.frees, creation_frees);
-        assert!(onda_instance_reserve_event_workspace(
-            instance, 256, &mut *diag
-        ));
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, 256, &mut *diag),
+            0
+        );
         assert_eq!(stats.allocs, creation_allocs + 2);
         assert_eq!(stats.frees, creation_frees + 1);
+
+        stats.max_allocation = Some(256);
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, 512, &mut *diag),
+            ONDA_API_ERROR_ALLOCATION_FAILED
+        );
+        assert_eq!(stats.allocs, creation_allocs + 2);
+        assert_eq!(stats.frees, creation_frees + 1);
+        onda_diag_dispose(&mut *diag);
+        stats.max_allocation = None;
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, 256, &mut *diag),
+            0
+        );
+        assert_eq!(stats.allocs, creation_allocs + 2);
+        assert_eq!(stats.frees, creation_frees + 1);
+
+        assert_eq!(
+            onda_instance_reserve_event_workspace(std::ptr::null_mut(), 1, &mut *diag),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        onda_diag_dispose(&mut *diag);
+        assert_eq!(
+            onda_instance_reserve_event_workspace(instance, usize::MAX, &mut *diag),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        onda_diag_dispose(&mut *diag);
 
         let mut out = vec![0.0_f32; frames as usize];
         assert_eq!(
@@ -3516,6 +3718,79 @@ sample { out1 = cutoff * gain }
         assert_eq!(onda_param_curve(program.0, 1), -4.0);
         assert_eq!(onda_param_has_curve(program.0, 2), -1);
         assert!(onda_param_curve(program.0, 2).is_nan());
+        assert_eq!(onda_param_scale(program.0, 0), ONDA_PARAM_SCALE_LOG);
+        assert_eq!(onda_param_scale(program.0, 1), ONDA_PARAM_SCALE_LINEAR);
+        assert_eq!(onda_param_scale(program.0, 2), -1);
+    }
+}
+
+#[test]
+fn c_api_numeric_param_array_queries_share_the_element_control_domain() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  ratios: f64[2] = [1.0, 2.0] {0.5, 4.0, log, "x"}
+sample:
+  out1 = f32(ratios[0] + 10.0 * ratios[1])
+"#,
+        );
+
+        assert_eq!(onda_param_scale(program.0, 0), ONDA_PARAM_SCALE_LOG);
+        assert_eq!(onda_param_has_curve(program.0, 0), 0);
+        assert!(onda_param_curve(program.0, 0).is_nan());
+        assert_eq!(
+            onda_param_unit_copy(program.0, 0, std::ptr::null_mut(), 0),
+            2
+        );
+        assert_eq!(onda_param_has_step(program.0, 0), 0);
+        assert_eq!(onda_param_step_count(program.0, 0), 0);
+        assert_eq!(onda_param_step_count(program.0, 1), -1);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 0, 0.0), 0.5);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 0, 0.5), 0.0);
+
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
+        assert!(!instance.is_null(), "{}", diag_message(&diag));
+        let instance = InstanceHandle(instance);
+        let mut output = [0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_set_param_element_plain_f64(instance.0, 0, 0, 9.0), 0);
+        assert_eq!(onda_set_param_element_normalized(instance.0, 0, 1, 0.0), 0);
+        assert_eq!(onda_process_checked(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(output[0], 9.0);
+
+        let raw = 3.0_f64.to_ne_bytes();
+        assert_eq!(
+            onda_set_param_element_by_index(
+                instance.0,
+                0,
+                0,
+                raw.as_ptr().cast(),
+                raw.len() as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_process_checked(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(output[0], 8.0);
+
+        assert_eq!(
+            onda_set_param_element_plain_f64(instance.0, 0, -1, 1.0),
+            ONDA_API_ERROR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            onda_set_param_element_normalized(instance.0, 0, 2, 1.0),
+            ONDA_API_ERROR_PARAMETER_REJECTED
+        );
     }
 }
 
@@ -3539,8 +3814,16 @@ sample { out1 = 0.0 }
         assert_eq!(onda_param_plain_to_normalized(program.0, 0, 0.5), 1.0);
         assert_eq!(onda_param_normalized_to_plain(program.0, 0, f64::NAN), 0.0);
 
-        assert!(onda_param_normalized_to_plain(program.0, 1, 1.0).is_nan());
+        assert_eq!(onda_param_normalized_to_plain(program.0, 1, 0.49), 0.0);
+        assert_eq!(onda_param_normalized_to_plain(program.0, 1, 0.5), 1.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 1, -1.0), 0.0);
+        assert_eq!(onda_param_plain_to_normalized(program.0, 1, 0.5), 1.0);
         assert!(onda_param_plain_to_normalized(program.0, 2, 1.0).is_nan());
+        assert_eq!(onda_param_scale(program.0, 0), ONDA_PARAM_SCALE_NONE);
+        assert_eq!(onda_param_scale(program.0, 1), ONDA_PARAM_SCALE_NONE);
+        assert_eq!(onda_param_has_curve(program.0, 1), 0);
+        assert_eq!(onda_param_has_step(program.0, 1), 0);
+        assert_eq!(onda_param_step_count(program.0, 1), 0);
     }
 }
 
@@ -3737,7 +4020,7 @@ block {
 
         assert_eq!(
             onda_process_checked_segment(instance.0, 0, frames, 1 << 8, std::ptr::null_mut()),
-            -2
+            ONDA_API_ERROR_INVALID_ARGUMENT
         );
         assert_eq!(
             onda_process_checked_segment(
@@ -3968,6 +4251,164 @@ sample { out1 = SAMPLE_RATE }
         for sample in out {
             assert!((sample - sample_rate).abs() < 1e-3);
         }
+    }
+}
+
+#[test]
+fn c_api_checked_process_distinguishes_validation_from_generated_failure() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  divisor: i32 = 1
+sample:
+  out1 = f32(1 / divisor)
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance =
+            onda_instance_create_initialized(program.0, 0, 1, std::ptr::null_mut(), &mut *diag);
+        assert!(!instance.is_null(), "{}", diag_message(&diag));
+        let instance = InstanceHandle(instance);
+
+        assert_eq!(
+            onda_process_checked_segment(instance.0, 0, 1, 1 << 2, std::ptr::null_mut()),
+            ONDA_API_ERROR_INVALID_ARGUMENT,
+            "unknown positive process flags are malformed arguments"
+        );
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            ONDA_API_ERROR_VALIDATION_FAILED,
+            "missing output binding must be rejected before execution"
+        );
+
+        let mut output = [0.0_f32; 512];
+        assert_eq!(
+            onda_bind_output(
+                instance.0,
+                0,
+                output.as_mut_ptr().cast(),
+                std::mem::size_of_val(&output) as i32,
+            ),
+            0
+        );
+        assert_eq!(onda_prepare_unchecked_process(instance.0), 0);
+        assert_eq!(
+            onda_process_unchecked_segment(instance.0, 0, 1, 1 << 2, std::ptr::null_mut()),
+            ONDA_API_ERROR_INVALID_ARGUMENT,
+            "unchecked segments use the same scalar-argument classification"
+        );
+        assert_eq!(
+            onda_process_checked_segment(
+                instance.0,
+                0,
+                1,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_OK,
+            "pre-execution rejection must leave the instance usable"
+        );
+
+        assert_eq!(
+            onda_set_param_by_index(instance.0, 0, 0_i32.to_ne_bytes().as_ptr().cast(), 4),
+            0
+        );
+        assert_eq!(
+            onda_process_checked_segment(
+                instance.0,
+                0,
+                1,
+                ONDA_PROCESS_BEGIN_BLOCK,
+                std::ptr::null_mut(),
+            ),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            ONDA_API_ERROR_VALIDATION_FAILED,
+            "generated failure must invalidate the instance"
+        );
+
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
+        assert_eq!(
+            onda_process_checked(instance.0, 512, std::ptr::null_mut()),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE,
+            "the full checked entry must preserve generated status too"
+        );
+    }
+}
+
+#[test]
+fn c_api_checked_init_and_restore_preserve_generated_failure_status() {
+    unsafe {
+        let program = compile_program(
+            r#"
+params:
+  divisor: i32 = 1
+init:
+  value = 8 / divisor
+sample:
+  out1 = f32(value)
+"#,
+        );
+        let mut diag = empty_diag();
+        let instance = onda_instance_create(program.0, 0, 1, &mut *diag);
+        assert!(!instance.is_null(), "{}", diag_message(&diag));
+        let instance = InstanceHandle(instance);
+
+        assert_eq!(
+            onda_set_param_by_index(instance.0, 0, 0_i32.to_ne_bytes().as_ptr().cast(), 4),
+            0
+        );
+        assert_eq!(
+            onda_init_checked(instance.0, 1, std::ptr::null_mut()),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert_eq!(
+            onda_set_param_by_index(instance.0, 0, 1_i32.to_ne_bytes().as_ptr().cast(), 4),
+            0
+        );
+        assert_eq!(onda_init_checked(instance.0, 1, std::ptr::null_mut()), 0);
+
+        let snapshot_bytes = onda_instance_state_bytes(instance.0);
+        assert!(snapshot_bytes > 0);
+        let mut snapshot = vec![0_u8; snapshot_bytes as usize];
+        assert_eq!(
+            onda_instance_snapshot_state(instance.0, snapshot.as_mut_ptr().cast(), snapshot_bytes,),
+            snapshot_bytes
+        );
+        assert_eq!(
+            onda_instance_restore_state(instance.0, snapshot.as_ptr().cast(), snapshot_bytes - 1),
+            ONDA_API_ERROR_VALIDATION_FAILED
+        );
+        assert_eq!(
+            onda_instance_snapshot_state(instance.0, snapshot.as_mut_ptr().cast(), snapshot_bytes,),
+            snapshot_bytes,
+            "invalid snapshot input must preserve initialized state"
+        );
+
+        assert_eq!(
+            onda_set_param_by_index(instance.0, 0, 0_i32.to_ne_bytes().as_ptr().cast(), 4),
+            0
+        );
+        assert_eq!(
+            onda_instance_restore_state(instance.0, snapshot.as_ptr().cast(), snapshot_bytes),
+            ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE
+        );
+        assert_eq!(
+            onda_instance_snapshot_state(instance.0, snapshot.as_mut_ptr().cast(), snapshot_bytes,),
+            ONDA_API_ERROR_VALIDATION_FAILED,
+            "generated restore failure must invalidate state"
+        );
+        assert_eq!(
+            onda_set_param_by_index(instance.0, 0, 1_i32.to_ne_bytes().as_ptr().cast(), 4),
+            0
+        );
+        assert_eq!(
+            onda_instance_restore_state(instance.0, snapshot.as_ptr().cast(), snapshot_bytes),
+            0
+        );
     }
 }
 
@@ -4268,7 +4709,7 @@ sample { out1 = 0.25 }
 
         assert_eq!(
             onda_bind_buffer(instance.0, 0, std::ptr::null_mut(), 1, 1, 48_000.0, 0,),
-            -2
+            ONDA_API_ERROR_INVALID_ARGUMENT
         );
     }
 }

@@ -3,6 +3,21 @@ export const ONDA_INIT_PRESERVE_PINNED: 0;
 export const ONDA_INIT_FULL: 1;
 export type OndaInitMode = 0 | 1;
 
+export {
+  PROCESSOR_EXECUTION_INPUT_REJECTED,
+  PROCESSOR_EXECUTION_OK,
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+} from "@onda-lang/processor-abi";
+
+/** A nonzero status returned by generated processor execution. */
+export class OndaExecutionError extends Error {
+  constructor(message: string, operation: string, status: number);
+  readonly operation: string;
+  readonly status: number;
+}
+
+export type OndaExecutionErrorListener = (error: OndaExecutionError) => void;
+
 export type {
   OndaParamDomain,
   OndaPreparedParamControl,
@@ -88,6 +103,7 @@ export function createOndaAudioProcessor(
   artifact: OndaProcessorArtifact,
   options?: OndaAudioProcessorOptions,
 ): Promise<OndaAudioProcessor>;
+/** Resolves after full initialization succeeds; generated failures reject with OndaExecutionError. */
 export function createOndaAudioProcessorInitialized(
   context: BaseAudioContext,
   artifact: OndaProcessorArtifact,
@@ -110,9 +126,20 @@ export class OndaAudioProcessor {
   request(type: string, fields?: Record<string, unknown>, transfer?: Transferable[]): Promise<any>;
   /** Set a plain Onda value; ranged scalar values are clamped and snapped. */
   setParam(param: string | number, value: unknown): Promise<any>;
+  /** Set one scalar or fixed-array parameter element without modifying its siblings. */
+  setParamElement(param: string | number, element: number, value: unknown): Promise<any>;
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */
   setParamNormalized(param: string | number, value: number): Promise<any>;
+  /** Normalized form of setParamElement(). */
+  setParamElementNormalized(
+    param: string | number,
+    element: number,
+    value: number,
+  ): Promise<any>;
+  /** Unknown nonnegative numeric event indices are successful no-ops; unknown names are rejected. */
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
+  /** Subscribe to asynchronous render-time generated failures. */
+  onExecutionError(listener: OndaExecutionErrorListener): () => boolean;
   /**
    * Subscribe to batches decoded after generated execution. Collection is active only while at
    * least one listener is registered. overflowCount reports configured-capacity loss and

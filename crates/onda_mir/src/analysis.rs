@@ -1533,7 +1533,7 @@ fn function_parameter_ranges(
             IntegerRange::new(ScalarType::I32, 0, maximum);
         ranges[crate::PROCESS_FRAMES_PARAM_INDEX] = IntegerRange::new(ScalarType::I32, 0, maximum);
         ranges[crate::PROCESS_FLAGS_PARAM_INDEX] =
-            IntegerRange::new(ScalarType::I32, 0, i64::from(crate::PROCESS_FULL_BLOCK));
+            IntegerRange::new(ScalarType::I32, 0, i64::from(crate::PROCESSOR_FULL_BLOCK));
     }
     ranges
 }

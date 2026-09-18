@@ -41,6 +41,14 @@ function compileMir(mir, options) {
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
+test("re-exports processor execution constants", () => {
+  assert.equal(backend.PROCESSOR_INIT_PRESERVE_PINNED, 0);
+  assert.equal(backend.PROCESSOR_INIT_FULL, 1);
+  assert.equal(backend.PROCESSOR_BEGIN_BLOCK, 1);
+  assert.equal(backend.PROCESSOR_END_BLOCK, 2);
+  assert.equal(backend.PROCESSOR_FULL_BLOCK, 3);
+});
+
 const unknownSource = {
   file: null,
   line: 0,

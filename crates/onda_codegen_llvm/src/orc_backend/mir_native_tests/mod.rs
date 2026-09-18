@@ -104,6 +104,22 @@ trait CheckedHostCalls {
     ) -> Result<(), Diagnostic>;
 
     #[allow(clippy::too_many_arguments)]
+    fn test_process_checked_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        start_frame: usize,
+        frames: usize,
+        flags: u32,
+        in_ptrs: &[*const u8],
+        out_ptrs: &[*mut u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+    ) -> Result<u32, Diagnostic>;
+
+    #[allow(clippy::too_many_arguments)]
     fn test_trigger_event_by_index(
         &self,
         state: &mut RuntimeState,
@@ -150,6 +166,38 @@ impl CheckedHostCalls for MirJitProgram {
         }
     }
 
+    fn test_process_checked_with_status(
+        &self,
+        state: &mut RuntimeState,
+        params: &[u8],
+        start_frame: usize,
+        frames: usize,
+        flags: u32,
+        in_ptrs: &[*const u8],
+        out_ptrs: &[*mut u8],
+        buffer_ptrs: &[*mut u8],
+        buffer_frames: &[i32],
+        buffer_channels: &[i32],
+        buffer_sample_rates: &[f32],
+    ) -> Result<u32, Diagnostic> {
+        unsafe {
+            self.process_checked_with_status(
+                state,
+                params,
+                start_frame,
+                frames,
+                flags,
+                in_ptrs,
+                out_ptrs,
+                buffer_ptrs,
+                buffer_frames,
+                buffer_channels,
+                buffer_sample_rates,
+                None,
+            )
+        }
+    }
+
     fn test_trigger_event_by_index(
         &self,
         state: &mut RuntimeState,
@@ -162,7 +210,7 @@ impl CheckedHostCalls for MirJitProgram {
         buffer_sample_rates: &[f32],
     ) -> Result<(), Diagnostic> {
         unsafe {
-            self.trigger_event_by_index(
+            self.trigger_event_by_index_checked(
                 state,
                 params,
                 event_index,
@@ -214,7 +262,7 @@ fn run_native_outputs_with_opt_level(
             &params,
             0,
             block_size,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &output_ptrs,
             &buffers,
@@ -281,17 +329,17 @@ block:
         }};
     }
 
-    run_segment!(0, 3, onda_mir::PROCESS_BEGIN_BLOCK as u32);
+    run_segment!(0, 3, onda_mir::PROCESSOR_BEGIN_BLOCK as u32);
     run_segment!(3, 0, 0);
-    run_segment!(3, 5, onda_mir::PROCESS_END_BLOCK as u32);
+    run_segment!(3, 5, onda_mir::PROCESSOR_END_BLOCK as u32);
     assert_eq!(native_output, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
 
     // Zero-frame calls still run independently gated hooks. Exercise all
     // four legal flag combinations without imposing positional rules.
     run_segment!(0, 0, 0);
-    run_segment!(0, 0, onda_mir::PROCESS_BEGIN_BLOCK as u32);
-    run_segment!(block_size, 0, onda_mir::PROCESS_END_BLOCK as u32);
-    run_segment!(4, 0, onda_mir::PROCESS_FULL_BLOCK as u32);
+    run_segment!(0, 0, onda_mir::PROCESSOR_BEGIN_BLOCK as u32);
+    run_segment!(block_size, 0, onda_mir::PROCESSOR_END_BLOCK as u32);
+    run_segment!(4, 0, onda_mir::PROCESSOR_FULL_BLOCK as u32);
 
     native_output.fill(-99.0);
     run_segment!(0, block_size, 0);
@@ -355,7 +403,7 @@ fn checked_process_rejects_null_and_misaligned_audio_channels() {
             &params,
             0,
             8,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             inputs,
             outputs,
             &buffers,
@@ -818,7 +866,7 @@ sample:
             &native_params,
             0,
             block_size,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &native_outputs,
             &native_buffers,
@@ -877,7 +925,7 @@ sample:
             &params,
             0,
             block_size,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -898,7 +946,7 @@ sample:
             &params,
             0,
             block_size,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -954,7 +1002,7 @@ sample:
             &params,
             0,
             1,
-            onda_mir::PROCESS_BEGIN_BLOCK as u32,
+            onda_mir::PROCESSOR_BEGIN_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -972,7 +1020,7 @@ sample:
             &params,
             1,
             1,
-            onda_mir::PROCESS_END_BLOCK as u32,
+            onda_mir::PROCESSOR_END_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -1050,7 +1098,7 @@ sample:
             &native_params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -1135,7 +1183,7 @@ sample:
             &params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &[],
             &outputs,
             &buffers,
@@ -1183,7 +1231,7 @@ sample:
             &native_params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -1262,7 +1310,7 @@ sample:
             &native_params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &native_outputs,
             &buffers,
@@ -1448,7 +1496,7 @@ sample:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &inputs,
                 &outputs,
                 &buffers,
@@ -1536,13 +1584,93 @@ sample:
     let buffers: [*mut u8; 0] = [];
     let metadata_i32: [i32; 0] = [];
     let metadata_f32: [f32; 0] = [];
+    let mut print_storage = [0xa5; 32];
+    let mut prints = onda_processor_abi::PrintBatch::from_storage(&mut print_storage);
+    let mut execution = onda_processor_abi::ExecutionOutput {
+        print_batch: &mut prints,
+        ..onda_processor_abi::ExecutionOutput::none()
+    };
+    prints.used_bytes = 12;
+    prints.record_count = 1;
+    prints.overflow_count = 2;
+    execution.next_sequence = 3;
+    unsafe {
+        native
+            .process_checked_with_status(
+                &mut state,
+                &params,
+                usize::MAX,
+                0,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
+                &inputs,
+                &outputs,
+                &buffers,
+                &metadata_i32,
+                &metadata_i32,
+                &metadata_f32,
+                Some(&mut execution),
+            )
+            .expect_err("invalid checked process input should fail preflight");
+    }
+    assert_eq!(
+        (
+            prints.used_bytes,
+            prints.record_count,
+            prints.overflow_count
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(execution.next_sequence, 0);
+
+    prints.used_bytes = 12;
+    prints.record_count = 1;
+    prints.overflow_count = 2;
+    execution.next_sequence = 3;
+    unsafe {
+        native
+            .initialize_state_in_place_checked_with_status(
+                &[],
+                &mut state,
+                crate::InitMode::Full,
+                BufferDescriptorTables::new(&buffers, &metadata_i32, &metadata_i32, &metadata_f32),
+                Some(&mut execution),
+            )
+            .expect_err("invalid checked init input should fail preflight");
+    }
+    assert_eq!(
+        (
+            prints.used_bytes,
+            prints.record_count,
+            prints.overflow_count
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(execution.next_sequence, 0);
+
+    let status = native
+        .test_process_checked_with_status(
+            &mut state,
+            &params,
+            0,
+            1,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
+            &inputs,
+            &outputs,
+            &buffers,
+            &metadata_i32,
+            &metadata_i32,
+            &metadata_f32,
+        )
+        .expect("checked processing should preserve the generated status");
+    assert_eq!(status, crate::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+
     let error = native
         .test_process_checked(
             &mut state,
             &params,
             0,
             1,
-            onda_mir::PROCESS_FULL_BLOCK as u32,
+            onda_mir::PROCESSOR_FULL_BLOCK as u32,
             &inputs,
             &outputs,
             &buffers,
@@ -1626,6 +1754,13 @@ sample:
         1,
     );
     let init_native = lower_mir_and_jit(init_mir).expect("failing init should JIT");
+    let init_status = init_native
+        .initialize_state_with_status(&init_native.default_param_bytes())
+        .expect("generated failure should remain distinct from host validation");
+    assert!(matches!(
+        init_status,
+        crate::StateInitialization::Failed(crate::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE)
+    ));
     let init_error = init_native
         .initialize_state(&init_native.default_param_bytes())
         .expect_err("division by zero in init should return a runtime failure");
@@ -1779,7 +1914,7 @@ sample:
                     &params,
                     0,
                     1,
-                    onda_mir::PROCESS_FULL_BLOCK as u32,
+                    onda_mir::PROCESSOR_FULL_BLOCK as u32,
                     &inputs,
                     &outputs,
                     &buffers,
@@ -2473,7 +2608,7 @@ sample:
                             &params,
                             0,
                             64,
-                            onda_mir::PROCESS_FULL_BLOCK as u32,
+                            onda_mir::PROCESSOR_FULL_BLOCK as u32,
                             &[],
                             &[output.as_mut_ptr().cast()],
                             &pointers,

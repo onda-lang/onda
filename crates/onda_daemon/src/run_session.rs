@@ -9,7 +9,7 @@ use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
-    format_decoded_print_occurrences, init_with_output, prepare_unchecked_process,
+    format_decoded_print_occurrences, init_checked_with_output, prepare_unchecked_process,
     process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked, DelegateBatch,
     ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
     DELEGATE_RECORD_HEADER_SIZE,
@@ -728,7 +728,7 @@ impl RunSession {
         self.render_block_segments(&[(
             0,
             self.options.block_size,
-            onda_runtime::PROCESS_FULL_BLOCK,
+            onda_runtime::PROCESSOR_FULL_BLOCK,
         )])
     }
 
@@ -764,7 +764,11 @@ impl RunSession {
     pub fn render_block_interleaved(&mut self, rendered: &mut [f32]) -> Result<(), Diagnostic> {
         self.render_block_segments_interleaved(
             rendered,
-            &[(0, self.options.block_size, onda_runtime::PROCESS_FULL_BLOCK)],
+            &[(
+                0,
+                self.options.block_size,
+                onda_runtime::PROCESSOR_FULL_BLOCK,
+            )],
         )
     }
 
@@ -810,7 +814,7 @@ impl RunSession {
                     0
                 } else {
                     began_block = true;
-                    onda_runtime::PROCESS_BEGIN_BLOCK
+                    onda_runtime::PROCESSOR_BEGIN_BLOCK
                 };
                 sequence_base = sequence_base.saturating_add(self.process_segment_in_batch(
                     cursor,
@@ -827,9 +831,9 @@ impl RunSession {
             )?);
         }
         let flags = if began_block {
-            onda_runtime::PROCESS_END_BLOCK
+            onda_runtime::PROCESSOR_END_BLOCK
         } else {
-            onda_runtime::PROCESS_FULL_BLOCK
+            onda_runtime::PROCESSOR_FULL_BLOCK
         };
         self.process_segment_in_batch(
             cursor,
@@ -1568,7 +1572,7 @@ fn create_bound_instance(
         onda_runtime::set_param_element_by_index(&mut instance, index, element, bytes.as_slice())?;
     }
 
-    init_with_output(&mut instance, InitMode::Full, output)?;
+    init_checked_with_output(&mut instance, InitMode::Full, output)?;
     prepare_unchecked_process(&mut instance)?;
     Ok(instance)
 }

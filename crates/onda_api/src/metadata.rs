@@ -1816,18 +1816,13 @@ pub unsafe extern "C" fn onda_param_scale(program: *const onda_program, index: i
     if program.is_null() || index < 0 {
         return -1;
     }
-    match (&*program)
-        .inner
-        .jit
-        .params()
-        .get(index as usize)
-        .and_then(|param| param.param_domain())
-        .map(|domain| domain.scale_name())
-    {
-        Some("linear") => 0,
-        Some("log") => 1,
-        None => -1,
-        Some(_) => -1,
+    let Some(param) = (&*program).inner.jit.params().get(index as usize) else {
+        return -1;
+    };
+    match param.param_domain().map(|domain| domain.scale()) {
+        Some(ParamScale::Linear) => ONDA_PARAM_SCALE_LINEAR,
+        Some(ParamScale::Log) => ONDA_PARAM_SCALE_LOG,
+        None => ONDA_PARAM_SCALE_NONE,
     }
 }
 
@@ -1934,17 +1929,17 @@ pub unsafe extern "C" fn onda_param_step_f64(program: *const onda_program, index
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, index: i32) -> u32 {
+pub unsafe extern "C" fn onda_param_step_count(program: *const onda_program, index: i32) -> i64 {
     if program.is_null() || index < 0 {
-        return 0;
+        return -1;
     }
-    (&*program)
-        .inner
-        .jit
-        .params()
-        .get(index as usize)
-        .and_then(|param| param.param_domain())
+    let Some(param) = (&*program).inner.jit.params().get(index as usize) else {
+        return -1;
+    };
+    param
+        .param_domain()
         .and_then(|domain| domain.step_count())
+        .map(i64::from)
         .unwrap_or(0)
 }
 
@@ -1966,7 +1961,7 @@ unsafe fn convert_param_value(
     let Some(param) = (&*program).inner.jit.params().get(index as usize) else {
         return f64::NAN;
     };
-    if !param.is_array() && param.elem_ty() == PrimitiveType::Bool {
+    if param.elem_ty() == PrimitiveType::Bool {
         return if value >= 0.5 { 1.0 } else { 0.0 };
     }
     let Some(domain) = param.param_domain() else {

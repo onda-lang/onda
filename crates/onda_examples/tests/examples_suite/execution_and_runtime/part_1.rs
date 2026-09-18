@@ -904,7 +904,7 @@ fn graph_nodes_remain_addressable_from_top_level_events() {
         .event_index("set_gain")
         .expect("top-level graph event must exist");
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &0.75_f32.to_ne_bytes(),
@@ -939,7 +939,7 @@ fn stdlib_env_ar_runs_as_a_one_shot_envelope() {
 
     assert!(output.iter().all(|sample| sample.abs() <= 1e-6));
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         bang_idx,
         &[],
@@ -1018,7 +1018,7 @@ sample:
     assert_eq!(out_channels, 1);
 
     let start = instance.event_index("start").expect("start event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         start,
         &[],
@@ -1039,7 +1039,7 @@ fn stdlib_asr_release_survives_sustain_and_release_time_automation() {
     fn event(instance: &mut onda_runtime::Instance, name: &str, value: Option<f32>) {
         let index = instance.event_index(name).expect("event exists");
         let payload = value.map(f32::to_le_bytes);
-        trigger_event_by_index(
+        trigger_event_by_index_checked(
             instance,
             index,
             payload.as_ref().map_or(&[], |bytes| bytes.as_slice()),
@@ -1468,7 +1468,7 @@ sample:
     )
     .expect("bind sample clip");
     let play = instance.event_index("play").expect("play event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         play,
         &[],
@@ -1517,7 +1517,7 @@ sample:
     assert_eq!(out_channels, 2);
 
     let play = instance.event_index("play").expect("play event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         play,
         &[],
@@ -1570,7 +1570,7 @@ sample:
     .expect("bind sample clip");
 
     let play = instance.event_index("play").expect("play event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         play,
         &(-1.0_f32).to_ne_bytes(),
@@ -1583,7 +1583,7 @@ sample:
     assert_eq!(output, [3.0, 0.0]);
 
     let seek = instance.event_index("seek").expect("seek event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         seek,
         &5.0_f32.to_ne_bytes(),
@@ -1631,7 +1631,7 @@ sample:
     )
     .expect("bind f64 sample clip");
     let play = instance.event_index("play").expect("play event");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         play,
         &[],
@@ -2581,7 +2581,7 @@ sample {
 
     payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         0,
         &payload,
@@ -2995,7 +2995,7 @@ sample {
 
     payload.extend_from_slice(&9007199254740993_i64.to_ne_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         0,
         &payload,

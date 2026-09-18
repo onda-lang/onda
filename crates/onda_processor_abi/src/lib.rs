@@ -15,6 +15,21 @@ pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
 /// Rejected after resetting output but before executing a handler.
 pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 = 2;
+pub const PROCESSOR_BEGIN_BLOCK: u32 = 1 << 0;
+pub const PROCESSOR_END_BLOCK: u32 = 1 << 1;
+pub const PROCESSOR_FULL_BLOCK: u32 = PROCESSOR_BEGIN_BLOCK | PROCESSOR_END_BLOCK;
+
+/// State-retention policy for processor initialization.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InitMode {
+    /// Rerun ordinary initializers while retaining pinned state and task continuations.
+    PreservePinned = 0,
+    /// Initialize the complete state image, including pinned state and task continuations.
+    Full = 1,
+}
+pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = InitMode::PreservePinned as u32;
+pub const PROCESSOR_INIT_FULL: u32 = InitMode::Full as u32;
 
 /// Call-scoped event input. All regions must be live and disjoint from state,
 /// parameters, external buffers, and output storage. Workspace is eight-byte
@@ -37,8 +52,6 @@ pub struct EventTensorView {
     pub data: *const u8,
     pub element_count: i32,
 }
-pub const PROCESSOR_INIT_PRESERVE_PINNED: u32 = 0;
-pub const PROCESSOR_INIT_FULL: u32 = 1;
 pub const PROCESSOR_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 /// Packed occurrence headers: stream-local index, payload byte count, and call-local sequence.

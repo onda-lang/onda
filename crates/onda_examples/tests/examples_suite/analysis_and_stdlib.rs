@@ -1483,7 +1483,7 @@ sample:
     let restart = instance
         .event_index("restart")
         .expect("restart event should exist");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         restart,
         &[],
@@ -2004,7 +2004,7 @@ fn stdlib_convolution_time_domain_event_compile_and_run() {
 
     payload.extend_from_slice(&0.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         idx,
         &payload,
@@ -2201,7 +2201,7 @@ fn stdlib_convolution_incremental_loading_preserves_the_impulse() {
     let reload = instance
         .event_index("reload_impulse")
         .expect("reload event should exist");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         reload,
         &[],
@@ -2289,7 +2289,7 @@ fn stdlib_convolution_zero_latency_aligns_every_non_uniform_stage() {
     let reset = instance
         .event_index("reset_conv")
         .expect("reset_conv event must exist");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         reset,
         &[],
@@ -3690,7 +3690,7 @@ fn top_level_consts_can_drive_event_sizes_and_proc_apis() {
 
     payload.extend_from_slice(&3.0_f32.to_ne_bytes());
 
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         event_idx,
         &payload,
@@ -4013,7 +4013,7 @@ sample:
     let configure = instance
         .event_index("configure")
         .expect("configure event should exist");
-    trigger_event_by_index(
+    trigger_event_by_index_checked(
         &mut instance,
         configure,
         &[],

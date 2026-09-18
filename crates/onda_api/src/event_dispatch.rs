@@ -1,7 +1,7 @@
 use super::*;
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_trigger_event_by_index(
+pub unsafe extern "C" fn onda_trigger_event_by_index_checked(
     instance: *mut onda_instance,
     index: i32,
     payload_ptr: *const c_void,
@@ -10,11 +10,11 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
 ) -> i32 {
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     if payload_bytes > 0 && payload_ptr.is_null() {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     let payload = if payload_bytes == 0 {
         &[][..]
@@ -22,7 +22,7 @@ pub unsafe extern "C" fn onda_trigger_event_by_index(
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
     execution_status_to_c(with_runtime_execution_output(output, |output| {
-        onda_runtime::trigger_event_by_index_with_status(
+        onda_runtime::trigger_event_by_index_checked_with_status(
             &mut (*instance).inner,
             index as usize,
             payload,
@@ -41,11 +41,11 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
 ) -> i32 {
     if instance.is_null() || index < 0 || payload_bytes < 0 {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     if payload_bytes > 0 && payload_ptr.is_null() {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     let payload = if payload_bytes == 0 {
         &[][..]
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_unchecked(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_trigger_event_views_by_index(
+pub unsafe extern "C" fn onda_trigger_event_views_by_index_checked(
     instance: *mut onda_instance,
     index: i32,
     tensors: *const onda_event_tensor_view_t,
@@ -67,11 +67,11 @@ pub unsafe extern "C" fn onda_trigger_event_views_by_index(
 ) -> i32 {
     if instance.is_null() || index < 0 || tensor_count < 0 {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     if tensor_count > 0 && tensors.is_null() {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     let views = if tensor_count == 0 {
         &[][..]
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn onda_trigger_event_views_by_index(
         )
     };
     execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        trigger_event_views_by_index_with_status(
+        trigger_event_views_by_index_checked_with_status(
             &mut (*instance).inner,
             index as usize,
             views,
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn onda_trigger_event_views_by_index_unchecked(
 ) -> i32 {
     if instance.is_null() || index < 0 {
         reset_c_execution_output(output);
-        return -1;
+        return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
         runtime_trigger_event_views_by_index_unchecked(

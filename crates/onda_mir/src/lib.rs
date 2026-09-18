@@ -59,9 +59,9 @@ pub const PROCESS_FLAGS_PARAM_INDEX: usize = 2;
 pub const PROCESS_PARAM_COUNT: usize = 3;
 
 /// Flags accepted by segmented process entry points.
-pub const PROCESS_BEGIN_BLOCK: i32 = 1 << 0;
-pub const PROCESS_END_BLOCK: i32 = 1 << 1;
-pub const PROCESS_FULL_BLOCK: i32 = PROCESS_BEGIN_BLOCK | PROCESS_END_BLOCK;
+pub const PROCESSOR_BEGIN_BLOCK: i32 = onda_processor_abi::PROCESSOR_BEGIN_BLOCK as i32;
+pub const PROCESSOR_END_BLOCK: i32 = onda_processor_abi::PROCESSOR_END_BLOCK as i32;
+pub const PROCESSOR_FULL_BLOCK: i32 = onda_processor_abi::PROCESSOR_FULL_BLOCK as i32;
 
 /// Stable serialized names for the positional process-entry parameters.
 pub const PROCESS_PARAM_NAMES: [&str; PROCESS_PARAM_COUNT] = ["start_frame", "frames", "flags"];

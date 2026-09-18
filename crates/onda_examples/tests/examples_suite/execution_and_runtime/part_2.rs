@@ -3307,7 +3307,7 @@ block {
         &mut instance,
         0,
         segment_frames,
-        PROCESS_BEGIN_BLOCK,
+        PROCESSOR_BEGIN_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process first segment");
@@ -3320,7 +3320,7 @@ block {
         &mut instance,
         segment_frames,
         segment_frames,
-        PROCESS_END_BLOCK,
+        PROCESSOR_END_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process final segment");
@@ -3335,7 +3335,7 @@ block {
         &mut instance,
         0,
         frames,
-        PROCESS_FULL_BLOCK,
+        PROCESSOR_FULL_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process next block");
@@ -3379,7 +3379,7 @@ block {
             &mut instance,
             0,
             segment_frames,
-            PROCESS_BEGIN_BLOCK,
+            PROCESSOR_BEGIN_BLOCK,
             onda_runtime::ExecutionOutput::none(),
         )
         .expect("process first unchecked segment");
@@ -3394,7 +3394,7 @@ block {
             &mut instance,
             segment_frames,
             segment_frames,
-            PROCESS_END_BLOCK,
+            PROCESSOR_END_BLOCK,
             onda_runtime::ExecutionOutput::none(),
         )
         .expect("process final unchecked segment");
@@ -3411,7 +3411,7 @@ block {
             &mut instance,
             0,
             frames,
-            PROCESS_FULL_BLOCK,
+            PROCESSOR_FULL_BLOCK,
             onda_runtime::ExecutionOutput::none(),
         )
         .expect("process next unchecked block");
@@ -3456,7 +3456,7 @@ sample {
         &mut instance,
         segment_start,
         segment_frames,
-        PROCESS_FULL_BLOCK,
+        PROCESSOR_FULL_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process segment");
@@ -3492,7 +3492,7 @@ sample 2 {
         &mut instance,
         segment_start,
         segment_frames,
-        PROCESS_FULL_BLOCK,
+        PROCESSOR_FULL_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process oversampled segment");
@@ -3561,7 +3561,7 @@ sample {
         &mut instance,
         0,
         segment_frames,
-        PROCESS_BEGIN_BLOCK,
+        PROCESSOR_BEGIN_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process inactive first segment");
@@ -3574,7 +3574,7 @@ sample {
         &mut instance,
         segment_frames,
         segment_frames,
-        PROCESS_END_BLOCK,
+        PROCESSOR_END_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process active final segment");
@@ -3589,7 +3589,7 @@ sample {
         &mut instance,
         0,
         frames,
-        PROCESS_FULL_BLOCK,
+        PROCESSOR_FULL_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
     .expect("process next block");

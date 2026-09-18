@@ -12,10 +12,14 @@ export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
 export const PROCESSOR_INIT_PRESERVE_PINNED = 0;
 export const PROCESSOR_INIT_FULL = 1;
+export const PROCESSOR_BEGIN_BLOCK = 1 << 0;
+export const PROCESSOR_END_BLOCK = 1 << 1;
+export const PROCESSOR_FULL_BLOCK = PROCESSOR_BEGIN_BLOCK | PROCESSOR_END_BLOCK;
 export const PROCESSOR_SNAPSHOT_FORMAT_VERSION = 1;
-export const DELEGATE_RECORD_HEADER_SIZE_BYTES = 12;
+const BATCH_RECORD_HEADER_SIZE_BYTES = 12;
+export const DELEGATE_RECORD_HEADER_SIZE_BYTES = BATCH_RECORD_HEADER_SIZE_BYTES;
 export const DELEGATE_BATCH_SIZE_BYTES = 20;
-export const PRINT_RECORD_HEADER_SIZE_BYTES = 12;
+export const PRINT_RECORD_HEADER_SIZE_BYTES = BATCH_RECORD_HEADER_SIZE_BYTES;
 export const PRINT_BATCH_SIZE_BYTES = 20;
 export const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 
@@ -939,6 +943,9 @@ export function writeDelegateBatch(
   if (storageAddress > 0xffff_ffff || capacityBytes > 0xffff_ffff) {
     throw new OndaArtifactError("delegate batch addresses and sizes must fit u32");
   }
+  if (storageAddress !== 0 && capacityBytes !== 0) {
+    requireMemoryRange(view, storageAddress, capacityBytes, "delegate batch storage");
+  }
   view.setUint32(batchAddress, storageAddress, true);
   view.setUint32(batchAddress + 4, capacityBytes, true);
   view.setUint32(batchAddress + 8, 0, true);
@@ -947,15 +954,12 @@ export function writeDelegateBatch(
 }
 
 export function readDelegateBatch(memory, batchAddress) {
-  const view = writableDataView(memory);
-  requireMemoryRange(view, batchAddress, DELEGATE_BATCH_SIZE_BYTES, "delegate batch");
-  return {
-    storageAddress: view.getUint32(batchAddress, true),
-    capacityBytes: view.getUint32(batchAddress + 4, true),
-    usedBytes: view.getUint32(batchAddress + 8, true),
-    recordCount: view.getUint32(batchAddress + 12, true),
-    overflowCount: view.getUint32(batchAddress + 16, true),
-  };
+  return readRecordBatch(
+    memory,
+    batchAddress,
+    DELEGATE_BATCH_SIZE_BYTES,
+    "delegate batch",
+  );
 }
 
 export function writePrintBatch(memory, batchAddress, storageAddress, capacityBytes) {
@@ -966,6 +970,9 @@ export function writePrintBatch(memory, batchAddress, storageAddress, capacityBy
   if (storageAddress > 0xffff_ffff || capacityBytes > 0xffff_ffff) {
     throw new OndaArtifactError("print batch addresses and sizes must fit u32");
   }
+  if (storageAddress !== 0 && capacityBytes !== 0) {
+    requireMemoryRange(view, storageAddress, capacityBytes, "print batch storage");
+  }
   view.setUint32(batchAddress, storageAddress, true);
   view.setUint32(batchAddress + 4, capacityBytes, true);
   view.setUint32(batchAddress + 8, 0, true);
@@ -974,15 +981,65 @@ export function writePrintBatch(memory, batchAddress, storageAddress, capacityBy
 }
 
 export function readPrintBatch(memory, batchAddress) {
+  return readRecordBatch(
+    memory,
+    batchAddress,
+    PRINT_BATCH_SIZE_BYTES,
+    "print batch",
+  );
+}
+
+function readRecordBatch(memory, batchAddress, descriptorSize, label) {
   const view = writableDataView(memory);
-  requireMemoryRange(view, batchAddress, PRINT_BATCH_SIZE_BYTES, "print batch");
-  return {
+  requireMemoryRange(view, batchAddress, descriptorSize, label);
+  const batch = {
     storageAddress: view.getUint32(batchAddress, true),
     capacityBytes: view.getUint32(batchAddress + 4, true),
     usedBytes: view.getUint32(batchAddress + 8, true),
     recordCount: view.getUint32(batchAddress + 12, true),
     overflowCount: view.getUint32(batchAddress + 16, true),
   };
+  if (batch.usedBytes > batch.capacityBytes) {
+    throw new OndaArtifactError(`${label} usedBytes exceeds capacityBytes`);
+  }
+  if (batch.recordCount !== 0 && batch.storageAddress === 0) {
+    throw new OndaArtifactError(`${label} has records without storage`);
+  }
+  if (batch.storageAddress !== 0 && batch.capacityBytes !== 0) {
+    requireMemoryRange(
+      view,
+      batch.storageAddress,
+      batch.capacityBytes,
+      `${label} storage`,
+    );
+  }
+  if ((batch.recordCount === 0) !== (batch.usedBytes === 0)) {
+    throw new OndaArtifactError(`${label} recordCount does not match packed storage`);
+  }
+  validateBatchRecordLayout(view, batch, label);
+  return batch;
+}
+
+function validateBatchRecordLayout(view, batch, label) {
+  if (batch.recordCount > Math.floor(batch.usedBytes / BATCH_RECORD_HEADER_SIZE_BYTES)) {
+    throw new OndaArtifactError(`${label} recordCount exceeds packed storage`);
+  }
+  let cursor = batch.storageAddress;
+  const end = cursor + batch.usedBytes;
+  for (let record = 0; record < batch.recordCount; record += 1) {
+    if (end - cursor < BATCH_RECORD_HEADER_SIZE_BYTES) {
+      throw new OndaArtifactError(`${label} ends in a partial record header`);
+    }
+    const payloadBytes = view.getUint32(cursor + 4, true);
+    cursor += BATCH_RECORD_HEADER_SIZE_BYTES;
+    if (payloadBytes > end - cursor) {
+      throw new OndaArtifactError(`${label} ends in a partial record payload`);
+    }
+    cursor += payloadBytes;
+  }
+  if (cursor !== end) {
+    throw new OndaArtifactError(`${label} contains trailing record bytes`);
+  }
 }
 
 export function writeExecutionOutput(
@@ -1184,13 +1241,7 @@ function escapedPrintLabel(label) {
 
 export function formatPrintBatch(memory, printBatchAddress, metadata) {
   const batch = readPrintBatch(memory, printBatchAddress);
-  const bytes = asUint8Array(memory.buffer ?? memory);
-  if (batch.usedBytes > batch.capacityBytes) {
-    throw new OndaArtifactError("print batch usedBytes exceeds capacityBytes");
-  }
-  if (batch.storageAddress + batch.usedBytes > bytes.byteLength) {
-    throw new OndaArtifactError("print batch storage exceeds WebAssembly memory");
-  }
+  const bytes = memoryBytes(memory);
   const formatted = formatPrintRecords(
     bytes.subarray(batch.storageAddress, batch.storageAddress + batch.usedBytes),
     batch.usedBytes,
@@ -1201,6 +1252,21 @@ export function formatPrintBatch(memory, printBatchAddress, metadata) {
     throw new OndaArtifactError("print batch recordCount does not match packed storage");
   }
   return formatted;
+}
+
+export function decodeDelegateBatch(memory, delegateBatchAddress, metadata) {
+  const batch = readDelegateBatch(memory, delegateBatchAddress);
+  const bytes = memoryBytes(memory);
+  const occurrences = decodeDelegateRecords(
+    bytes.subarray(batch.storageAddress, batch.storageAddress + batch.usedBytes),
+    batch.usedBytes,
+    metadata.metadata?.delegates ?? metadata.delegates,
+    metadata.target?.byte_order ?? "little_endian",
+  );
+  if (occurrences.length !== batch.recordCount) {
+    throw new OndaArtifactError("delegate batch recordCount does not match packed storage");
+  }
+  return { occurrences, overflowCount: batch.overflowCount };
 }
 
 export function formatPrintRecords(storage, usedBytes, metadata, overflowCount = 0) {
@@ -1307,9 +1373,14 @@ function writableDataView(memory) {
   throw new OndaArtifactError("delegate batch memory must be WebAssembly memory or a buffer view");
 }
 
+function memoryBytes(memory) {
+  return asUint8Array(memory instanceof WebAssembly.Memory ? memory.buffer : memory);
+}
+
 function requireMemoryRange(view, address, size, label) {
   requireInteger(address, `${label} address`, 0);
-  if (address + size > view.byteLength) {
+  requireInteger(size, `${label} size`, 0);
+  if (address > view.byteLength || size > view.byteLength - address) {
     throw new OndaArtifactError(`${label} exceeds memory`);
   }
 }

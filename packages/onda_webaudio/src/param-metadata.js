@@ -16,3 +16,18 @@ export function paramAddress(params, selector) {
   }
   throw new Error(`unknown Onda parameter '${String(selector)}'`);
 }
+
+export function paramElementAddress(params, selector, element) {
+  const address = paramAddress(params, selector);
+  if (address.element !== null) {
+    throw new Error("an explicit element write requires a parameter name or index");
+  }
+  if (
+    !Number.isSafeInteger(element)
+    || element < 0
+    || element >= address.info.array_len
+  ) {
+    throw new Error(`Onda parameter '${address.info.name}' element index is out of bounds`);
+  }
+  return { info: address.info, element };
+}

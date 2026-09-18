@@ -30,7 +30,9 @@ Copy-Item (Join-Path $abiDir "src\param-control.js") (Join-Path $demoDir "param-
 Copy-Item (Join-Path $abiDir "src\payload.js") (Join-Path $demoDir "payload.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\processor-constants.js") (Join-Path $demoDir "processor-constants.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\param-metadata.js") (Join-Path $demoDir "param-metadata.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\execution-output-ring.js") (Join-Path $demoDir "execution-output-ring.js") -Force
 Copy-Item `
     (Join-Path $repoRoot "examples\projects\embedded_room\assets\impulse.wav") `
     (Join-Path $demoDir "impulse.wav") `

@@ -79,7 +79,7 @@ onda_event_N(
 ) -> i32
 ```
 
-Processor ABI and descriptor version 6 require an `EventInput` descriptor for every event:
+Since processor ABI and descriptor version 6, every event requires an `EventInput` descriptor:
 
 ```c
 struct EventInput {
@@ -141,9 +141,10 @@ not transactional: a host that needs rollback must provide that policy itself.
 The initialization interface uses the named initialization mode, supplies current external-buffer
 descriptors to initialization, and adds one optional `ExecutionOutput` to init, process, and event
 entries. Its independently optional print and delegate batches share one call-local sequence so
-hosts can preserve source order across both streams. The instance-level C and WebAssembly host APIs
-use the same initialization-mode values. A failed initialization leaves the physical state
-indeterminate.
+hosts can preserve source order across both streams. Language validation forbids delegate
+publication reachable from init, so initialization can populate only the print batch. The
+instance-level C and WebAssembly host APIs use the same initialization-mode values. A failed
+initialization leaves the physical state indeterminate.
 
 Every entry point returns zero on success or a positive execution-failure code. Code `1` is
 `RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
@@ -314,9 +315,9 @@ or scratch state. It includes pinned authored roots and compiler-owned task fram
 distinct from the target-native physical state image, which can use another byte order or alignment.
 
 Restore begins with `onda_processor_init(params, state, FULL, buffers, buffer_frames,
-buffer_channels, buffer_sample_rates, output)`, using the current bindings, then overlays every
-persistent entry from the packed snapshot. This resets instance scratch while preserving persistent
-state and task continuations.
+buffer_channels, buffer_sample_rates, NULL)`, using the current bindings, then overlays every
+persistent entry from the packed snapshot. Restore initialization output is intentionally
+suppressed. This resets instance scratch while preserving persistent state and task continuations.
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
@@ -509,10 +510,13 @@ The public declarations fall into four groups:
 - Caller-owned delegate, print, execution-output, occurrence, and cursor records.
 - Inline batch iteration and parameter-domain validation/conversion helpers.
 
-The inline batch iterators validate record boundaries before returning a payload view. Sequential
-iteration with `onda_processor_delegate_batch_next` or `onda_processor_print_batch_next` is linear
-in record count and constant-space. The random-access convenience functions rescan from the start
-and are therefore linear in the requested index; use a cursor when consuming a whole batch.
+The inline batch iterators validate record boundaries before returning a payload view. Each next
+call returns `1` for a record, `0` only at the exact end of a valid batch, and `-1` for invalid or
+malformed input. Sequential iteration with `onda_processor_delegate_batch_next` or
+`onda_processor_print_batch_next` is linear in record count and constant-space. The random-access
+convenience functions validate the complete batch and return `0` only when the requested index is
+absent; repeated indexed iteration is therefore quadratic, so use a cursor when consuming a whole
+batch.
 
 All parameter conversion helpers are allocation-free and constant-time. Prepare and validate a
 domain once when constructing host controls rather than validating descriptor text on the audio
@@ -526,6 +530,7 @@ released without appearing in this reference.
 <!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
 onda_process
 onda_processor_batch_next_record
+onda_processor_batch_record_at
 onda_processor_delegate_batch_next
 onda_processor_delegate_batch_occurrence_at
 onda_processor_delegate_batch_reset

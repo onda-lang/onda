@@ -159,7 +159,7 @@ pub(super) fn clamp_parameter_arrays(program: &mut Program) {
                         Rvalue::Binary {
                             op: BinaryOp::BitAnd,
                             lhs: Value::Local(flags),
-                            rhs: integer(PROCESS_BEGIN_BLOCK),
+                            rhs: integer(PROCESSOR_BEGIN_BLOCK),
                         },
                     ),
                     assign(

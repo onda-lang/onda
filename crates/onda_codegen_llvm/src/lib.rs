@@ -26,7 +26,8 @@ mod target_config;
 pub use aot_artifact::{
     AotMetadata, AotObjectArtifact, AotStateMetadata, AOT_METADATA_FORMAT_VERSION,
     AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION, PROCESSOR_ARTIFACT_FORMAT,
-    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+    PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE, PROCESSOR_INIT_FULL,
+    PROCESSOR_INIT_PRESERVE_PINNED,
 };
 #[cfg(feature = "llvm-orc")]
 pub use orc_backend::{
@@ -42,9 +43,10 @@ pub use target_config::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
 };
 
-pub const PROCESSOR_EXECUTION_INPUT_REJECTED: u32 =
-    onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED;
-pub use onda_processor_abi::EventTensorView;
+pub use onda_processor_abi::{
+    EventTensorView, InitMode, PROCESSOR_BEGIN_BLOCK, PROCESSOR_END_BLOCK,
+    PROCESSOR_EXECUTION_INPUT_REJECTED, PROCESSOR_FULL_BLOCK,
+};
 
 pub fn check_execution_status(status: u32) -> Result<(), Diagnostic> {
     if status == PROCESSOR_EXECUTION_OK {
@@ -220,6 +222,27 @@ pub struct RuntimeState {
     pub(crate) state_words: RuntimeBuffer<u64>,
     pub(crate) state_size_bytes: usize,
     pub(crate) event_workspace: RuntimeBuffer<u64>,
+}
+
+#[derive(Debug)]
+/// Result of attempting full initialization in previously uninitialized storage.
+pub enum StateInitialization {
+    /// Generated initialization completed and the state storage is ready for use.
+    Initialized(RuntimeState),
+    /// Generated initialization failed with the contained execution status.
+    Failed(u32),
+}
+
+impl StateInitialization {
+    fn into_result(self) -> Result<RuntimeState, Diagnostic> {
+        match self {
+            Self::Initialized(state) => Ok(state),
+            Self::Failed(status) => {
+                check_execution_status(status)?;
+                unreachable!("successful execution status returned as failed initialization")
+            }
+        }
+    }
 }
 
 /// Allocated physical state storage that has not completed full processor initialization.
@@ -749,6 +772,23 @@ mod tests {
         assert_send_sync::<JitProgram>();
     }
 
+    #[test]
+    fn processor_control_constants_are_exposed_from_the_codegen_root() {
+        assert_eq!(
+            PROCESSOR_BEGIN_BLOCK,
+            onda_processor_abi::PROCESSOR_BEGIN_BLOCK
+        );
+        assert_eq!(PROCESSOR_END_BLOCK, onda_processor_abi::PROCESSOR_END_BLOCK);
+        assert_eq!(
+            PROCESSOR_FULL_BLOCK,
+            onda_processor_abi::PROCESSOR_FULL_BLOCK
+        );
+        assert_eq!(
+            PROCESSOR_EXECUTION_INPUT_REJECTED,
+            onda_processor_abi::PROCESSOR_EXECUTION_INPUT_REJECTED
+        );
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct SourceCompileOptions {
         sample_rate: f32,
@@ -957,7 +997,7 @@ sample:
         let mut storage = [0_u8; 32];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -989,7 +1029,7 @@ sample:
 
         batch.reset();
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 99,
@@ -1060,7 +1100,7 @@ sample:
         let mut delegates = onda_processor_abi::DelegateBatch::from_storage(&mut delegate_storage);
         let mut prints = onda_processor_abi::PrintBatch::from_storage(&mut print_storage);
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1116,7 +1156,7 @@ sample:
         let mut storage = [0_u8; 44];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1157,7 +1197,7 @@ sample:
         let empty_payload = [0_u8; 8];
         batch.reset();
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1210,7 +1250,7 @@ sample:
         let mut storage = [0_u8; 16];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1259,7 +1299,7 @@ sample:
         let mut storage = [0_u8; 8];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         let result = unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1304,7 +1344,7 @@ sample:
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
 
         let result = unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1352,7 +1392,7 @@ sample:
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
 
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1399,7 +1439,7 @@ sample:
         let mut batch = onda_processor_abi::PrintBatch::from_storage(&mut storage);
 
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1612,7 +1652,7 @@ sample:
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         let payload = 19_i32.to_ne_bytes();
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1679,7 +1719,7 @@ sample:
         let mut storage = [0_u8; 108];
         let mut batch = onda_processor_abi::DelegateBatch::from_storage(&mut storage);
         unsafe {
-            program.trigger_event_by_index(
+            program.trigger_event_by_index_checked(
                 &mut state,
                 &params,
                 0,
@@ -1773,7 +1813,7 @@ sample:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &[],
                 &output_ptrs,
                 &[],
@@ -2048,7 +2088,7 @@ sample:
                 &params,
                 0,
                 1,
-                onda_mir::PROCESS_FULL_BLOCK as u32,
+                onda_mir::PROCESSOR_FULL_BLOCK as u32,
                 &inputs,
                 &outputs,
                 &buffers,

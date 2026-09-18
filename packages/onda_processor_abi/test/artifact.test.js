@@ -11,6 +11,7 @@ import {
   createParamControl,
   constrainParamPlain,
   createProcessorArtifactFiles,
+  decodeDelegateBatch,
   decodeDelegateRecords,
   formatPrintBatch,
   formatPrintRecords,
@@ -943,6 +944,100 @@ test("prepares and decodes call-scoped delegate batches", () => {
   assert.equal(planBuilds, 1);
   assert.notEqual(nextRecords[0].values, records[0].values);
   assert.notEqual(nextRecords[0].payload, records[0].payload);
+
+  assert.deepEqual(
+    decodeDelegateBatch(memory, 0, {
+      target: { byte_order: "little_endian" },
+      metadata: { delegates },
+    }),
+    { occurrences: nextRecords, overflowCount: 0 },
+  );
+});
+
+test("decodes delegate batches relative to sliced memory views", () => {
+  const backing = new ArrayBuffer(160);
+  const memory = new Uint8Array(backing, 32, 96);
+  writeDelegateBatch(memory, 0, 20, 32);
+
+  const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+  view.setUint32(20, 0, true);
+  view.setUint32(24, 4, true);
+  view.setUint32(28, 7, true);
+  view.setInt32(32, 42, true);
+  view.setUint32(8, 16, true);
+  view.setUint32(12, 1, true);
+
+  const metadata = {
+    delegates: [{
+      name: "value",
+      schema: {
+        params: [{ name: "value", ty: { kind: "scalar", encoding: "i32" } }],
+      },
+    }],
+  };
+  const expected = {
+    occurrences: [{
+      delegateIndex: 0,
+      sequence: 7,
+      name: "value",
+      payload: new Uint8Array([42, 0, 0, 0]),
+      payloadByteLength: 4,
+      values: { value: 42 },
+    }],
+    overflowCount: 0,
+  };
+
+  assert.deepEqual(decodeDelegateBatch(memory, 0, metadata), expected);
+  assert.deepEqual(
+    decodeDelegateBatch(new DataView(backing, 32, 96), 0, metadata),
+    expected,
+  );
+});
+
+test("null batch storage ignores capacity", () => {
+  const memory = new ArrayBuffer(40);
+  writeDelegateBatch(memory, 0, 0, 0xffff_ffff);
+  writePrintBatch(memory, 20, 0, 0xffff_ffff);
+
+  const expected = {
+    storageAddress: 0,
+    capacityBytes: 0xffff_ffff,
+    usedBytes: 0,
+    recordCount: 0,
+    overflowCount: 0,
+  };
+  assert.deepEqual(readDelegateBatch(memory, 0), expected);
+  assert.deepEqual(readPrintBatch(memory, 20), expected);
+});
+
+test("batch readers reject malformed result envelopes and record layouts", () => {
+  const memory = new ArrayBuffer(96);
+  const view = new DataView(memory);
+  writeDelegateBatch(memory, 0, 32, 64);
+
+  view.setUint32(8, 65, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /usedBytes exceeds capacityBytes/);
+
+  view.setUint32(8, 12, true);
+  view.setUint32(12, 0, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /recordCount does not match/);
+
+  view.setUint32(12, 1, true);
+  view.setUint32(36, 1, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /partial record payload/);
+
+  view.setUint32(8, 13, true);
+  view.setUint32(36, 0, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /trailing record bytes/);
+
+  view.setUint32(0, 0, true);
+  view.setUint32(8, 12, true);
+  view.setUint32(12, 1, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /records without storage/);
+
+  view.setUint32(0, 32, true);
+  view.setUint32(4, 65, true);
+  assert.throws(() => readDelegateBatch(memory, 0), /storage exceeds memory/);
 });
 
 test("rejects execution-output addresses outside wasm32", () => {

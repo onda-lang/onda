@@ -378,7 +378,7 @@ impl<'a> FunctionLowerer<'a> {
             Rvalue::Binary {
                 op: MirBinaryOp::BitAnd,
                 lhs: flags.value,
-                rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESS_BEGIN_BLOCK)),
+                rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESSOR_BEGIN_BLOCK)),
             },
             process_location,
         );
@@ -515,7 +515,7 @@ impl<'a> FunctionLowerer<'a> {
             Rvalue::Binary {
                 op: MirBinaryOp::BitAnd,
                 lhs: flags.value,
-                rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESS_END_BLOCK)),
+                rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESSOR_END_BLOCK)),
             },
             process_location,
         );
