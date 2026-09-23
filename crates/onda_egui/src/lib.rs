@@ -302,27 +302,59 @@ impl RunApp {
     }
 
     fn render_midi_keyboard(&mut self, ui: &mut egui::Ui, theme: &RunTheme) {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("MIDI Keyboard");
-            ui.separator();
-            ui.label("Octave");
-            let previous_octave = self.keyboard_octave;
+        let previous_octave = self.keyboard_octave;
+        let octave = |ui: &mut egui::Ui, app: &mut Self| {
             ui.add(
-                egui::DragValue::new(&mut self.keyboard_octave)
+                egui::DragValue::new(&mut app.keyboard_octave)
                     .range(-1..=7)
                     .speed(0.1),
             );
-            if self.keyboard_octave != previous_octave {
-                self.release_virtual_notes();
-            }
+            ui.label("Octave");
+        };
+        let velocity = |ui: &mut egui::Ui, app: &mut Self, slider_width| {
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = slider_width;
+                ui.add(
+                    egui::Slider::new(&mut app.keyboard_velocity, 0.0..=1.0)
+                        .show_value(true)
+                        .max_decimals(2),
+                );
+            });
             ui.label("Velocity");
-            ui.add_sized(
-                [150.0, ui.spacing().interact_size.y],
-                egui::Slider::new(&mut self.keyboard_velocity, 0.0..=1.0)
-                    .show_value(true)
-                    .max_decimals(2),
-            );
-        });
+        };
+        let controls = |ui: &mut egui::Ui, app: &mut Self| {
+            let width = ui.available_width();
+            let height = ui.spacing().interact_size.y;
+            let layout = egui::Layout::right_to_left(egui::Align::Center);
+            if width < 350.0 {
+                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+                    octave(ui, app);
+                });
+                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+                    let slider_width = (ui.available_width() - 140.0).clamp(64.0, 180.0);
+                    velocity(ui, app, slider_width);
+                });
+            } else {
+                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+                    let slider_width = (ui.available_width() - 220.0).clamp(64.0, 180.0);
+                    velocity(ui, app, slider_width);
+                    ui.separator();
+                    octave(ui, app);
+                });
+            }
+        };
+        if ui.available_width() < 390.0 {
+            ui.strong("MIDI Keyboard");
+            controls(ui, self);
+        } else {
+            ui.horizontal(|ui| {
+                ui.strong("MIDI Keyboard");
+                controls(ui, self);
+            });
+        }
+        if self.keyboard_octave != previous_octave {
+            self.release_virtual_notes();
+        }
         ui.add_space(6.0);
 
         const WHITE_NOTES: [i32; 14] = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23];
@@ -3180,6 +3212,7 @@ mod tests {
     use std::collections::HashMap;
 
     use eframe::{egui, Storage};
+    use onda_run::RunHostOptions;
 
     use super::{
         buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label, buffer_waveform_scale,
@@ -3188,7 +3221,7 @@ mod tests {
         log_entry_context, param_grid_columns, prepared_param_domain,
         render_compact_param_value_editor, scalar_drag_speed, scalar_step,
         structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain, ParamLayout,
-        ParamScalarType, ParamScale, PARAM_LAYOUT_STORAGE_KEY,
+        ParamScalarType, ParamScale, RunApp, RunTheme, PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -3580,6 +3613,35 @@ mod tests {
             format_run_status("Running", 48_000, 256),
             "Running — 48 kHz · 256 frames"
         );
+    }
+
+    #[test]
+    fn midi_keyboard_keeps_the_main_panel_visible_at_narrow_widths() {
+        for width in [300.0, 400.0, 680.0] {
+            let ctx = egui::Context::default();
+            let mut app = RunApp::new(None, RunHostOptions::default(), None, ParamLayout::Sliders);
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 840.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    let panel = egui::TopBottomPanel::bottom("midi-keyboard")
+                        .resizable(false)
+                        .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(14, 10)))
+                        .show(ctx, |ui| {
+                            app.render_midi_keyboard(ui, &RunTheme::from_dark_mode(true));
+                        });
+                    assert!(panel.response.rect.height() < 240.0, "width: {width}");
+                    assert!(panel.response.rect.left() >= 0.0, "width: {width}");
+                    assert!(panel.response.rect.right() <= width, "width: {width}");
+                    assert!(ctx.available_rect().height() > 600.0, "width: {width}");
+                },
+            );
+        }
     }
 
     #[test]

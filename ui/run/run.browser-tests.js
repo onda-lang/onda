@@ -31,6 +31,15 @@ const params = [
 try {
   send({ running: true, connected: true, path: "test.onda", status: "Active",
     supportsTransport: false, events, params });
+  const midiVelocity = document.getElementById("midi-velocity");
+  check(midiVelocity?.getAttribute("role") === "slider",
+    "MIDI velocity uses the shared slider control");
+  midiVelocity.focus();
+  midiVelocity.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "ArrowRight", bubbles: true, cancelable: true,
+  }));
+  check(document.querySelector("#midi-velocity-value").textContent === "0.81",
+    "MIDI velocity slider supports precise keyboard adjustment");
   const scalar = document.querySelector("#events input");
   edit(scalar, "0.75");
   for (let i = 0; i < 20; ++i) refresh();

@@ -170,8 +170,8 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .prose th { color: var(--ink); text-align: left; }
 .prose th, .prose td { padding: .65rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 .prose :not(pre) > code { padding: .1em .3em; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); color: var(--ink); font: .86em var(--mono); }
-.prose pre, .home-example pre { position: relative; margin: 1.4rem 0; padding: 1.2rem 1.35rem; overflow: auto; border-radius: 5px; background: var(--code-bg); }
-.prose pre code, .home-example pre code { color: var(--code-ink); font: .84rem/1.6 var(--mono); }
+.prose pre, .home-example pre { position: relative; margin: 1.4rem 0; padding: 1rem; overflow: auto; border-radius: 5px; background: var(--code-bg); color: var(--code-ink); font: .84rem/1.45 var(--mono); }
+.prose pre code, .home-example pre code { font: inherit; }
 .syntax-section, .syntax-declaration { color: var(--syntax-section); font-weight: 650; }
 .syntax-keyword { color: var(--syntax-keyword); }
 .syntax-type { color: var(--syntax-type); }

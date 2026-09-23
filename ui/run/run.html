@@ -859,8 +859,8 @@
         width: 56px;
       }
 
-      .midi-control input[type="range"] {
-        width: 120px;
+      .midi-control .param-slider {
+        width: clamp(140px, 26vw, 180px);
       }
 
       .piano {
@@ -1483,11 +1483,11 @@
           Octave
           <input class="param-number" id="midi-octave" type="number" min="-1" max="7" value="4" />
         </label>
-        <label class="midi-control">
+        <div class="midi-control">
           Velocity
-          <input id="midi-velocity" type="range" min="0" max="1" step="0.01" value="0.8" />
+          <span id="midi-velocity"></span>
           <span id="midi-velocity-value">0.80</span>
-        </label>
+        </div>
       </div>
       <div class="piano" id="piano" aria-label="Musical keyboard"></div>
     </section>
@@ -1716,8 +1716,9 @@
       const midiKeyboardNode = document.getElementById("midi-keyboard");
       const pianoNode = document.getElementById("piano");
       const midiOctaveNode = document.getElementById("midi-octave");
-      const midiVelocityNode = document.getElementById("midi-velocity");
+      const midiVelocityMountNode = document.getElementById("midi-velocity");
       const midiVelocityValueNode = document.getElementById("midi-velocity-value");
+      let midiVelocityValue = 0.8;
       const scopeSection = document.getElementById("scope-section");
       const scopeToggle = document.getElementById("scope-toggle");
       const scopeBody = document.getElementById("scope-body");
@@ -1871,7 +1872,7 @@
       }
 
       function midiVelocity() {
-        return Math.max(0, Math.min(1, Number(midiVelocityNode.value) || 0));
+        return midiVelocityValue;
       }
 
       function postVirtualMidiNote(note, pressed) {
@@ -1966,10 +1967,6 @@
         midiOctaveNode.value = String(Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0)));
         renderVirtualMidiNotes();
       });
-      midiVelocityNode.addEventListener("input", () => {
-        midiVelocityValueNode.textContent = midiVelocity().toFixed(2);
-      });
-
       function handleComputerMidiKey(code, pressed) {
         if (state.midiKeyboardInteractive === false) return false;
         const offset = COMPUTER_MIDI_KEYS.get(code);
@@ -2382,8 +2379,8 @@
         });
       }
 
-      function initializeRangeControl(control, param) {
-        const canEdit = canEditRunControls();
+      function initializeRangeControl(control, param, editable = canEditRunControls()) {
+        const canEdit = Boolean(editable);
         control.tabIndex = canEdit ? 0 : -1;
         control.setAttribute("role", "slider");
         control.setAttribute("aria-label", paramDisplayName(param));
@@ -2393,10 +2390,17 @@
         return canEdit;
       }
 
-      function createSliderControl(param, currentValue, step, onInputValue, onCommitValue) {
+      function createSliderControl(
+        param,
+        currentValue,
+        step,
+        onInputValue,
+        onCommitValue,
+        editable,
+      ) {
         const slider = document.createElement("div");
         slider.className = "param-slider";
-        const canEdit = initializeRangeControl(slider, param);
+        const canEdit = initializeRangeControl(slider, param, editable);
 
         const track = document.createElement("div");
         track.className = "param-slider-track";
@@ -2468,6 +2472,36 @@
 
         controller.render();
         return { control: slider, setValue: controller.setValue };
+      }
+
+      function setupMidiVelocityControl() {
+        const param = {
+          name: "velocity",
+          label: "Velocity",
+          type: "f32",
+          rangeMin: 0,
+          rangeMax: 1,
+          scale: "linear",
+          curve: null,
+          unit: null,
+          step: 0.01,
+          stepCount: 100,
+          default: 0.8,
+        };
+        const update = value => {
+          midiVelocityValue = value;
+          midiVelocityValueNode.textContent = value.toFixed(2);
+        };
+        const { control } = createSliderControl(
+          param,
+          midiVelocityValue,
+          param.step,
+          update,
+          update,
+          true,
+        );
+        control.id = midiVelocityMountNode.id;
+        midiVelocityMountNode.replaceWith(control);
       }
 
       function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
@@ -3768,6 +3802,7 @@
 
       setupCollapsibleSections();
       setupParamLayoutToggle();
+      setupMidiVelocityControl();
       window.addEventListener("resize", () => {
         window.requestAnimationFrame(drawVisibleBufferWaveforms);
       });

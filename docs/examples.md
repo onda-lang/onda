@@ -12,7 +12,7 @@ The examples are a collection of patches that showcase different ways of impleme
 algorithms and DSP code in Onda. The [language guide]({{ '/docs/language/' | relative_url }}) and
 [standard-library reference]({{ '/docs/stdlib/' | relative_url }}) cover isolated syntax and APIs.
 
-Examples with built-in sequencing expose an `auto_play` switch. It defaults to `1`; set it to `0`
+Examples with built-in sequencing expose an `auto_play` switch. It defaults to `true`; set it to `false`
 to stop scheduling new notes while existing voices and effect tails decay naturally. Each also
 exposes a no-argument `bang()` event that immediately triggers and advances the next sequencer
 state. Live-input processing and any additional instrument events remain available.
@@ -31,25 +31,6 @@ state. Live-input processing and any additional instrument events remain availab
 The polyphonic instruments self-play and also keep their host-facing strike/pluck events where that
 interaction is part of the instrument.
 
-## MIDI and plug-in host surfaces
-
-These patches are shared with `onda-plugin`. The instruments use the exact canonical MIDI events,
-so opening either patch with `onda run` reveals the bottom piano and MIDI Input selector. The
-computer keyboard is active by default; in the browser, choose **Connect MIDI device…** for hardware
-MIDI or play the on-screen keys.
-
-| Example | Description |
-| --- | --- |
-| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
-| [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
-| [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
-| [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
-| [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
-| [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
-
-The four effects require a selected audio input or browser microphone. Canonical `plugin_host`
-events are hidden but inactive in standalone hosts; a DAW supplies them through the plug-in.
-
 ## Effects
 
 | Example | Description |
@@ -63,7 +44,7 @@ events are hidden but inactive in standalone hosts; a DAW supplies them through 
 | [Schroeder reverb]({{ '/playground/?example=effects/schroeder_reverb.onda' | relative_url }}) | A bright classic comb-and-allpass room |
 | [FDN reverb]({{ '/playground/?example=effects/fdn_reverb.onda' | relative_url }}) | A dense eight-line matrix tail |
 
-Effects audition themselves by default. Set `live_input` to `1` to process `in1` and `in2`. The
+Effects audition themselves by default. Set `live_input` to `true` to process `in1` and `in2`. The
 Schroeder and FDN wrappers are also compact, musical graph-syntax examples: their `graph` blocks
 route the audition/live source, parameters, and stereo outputs declaratively.
 
@@ -92,6 +73,25 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 | [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | A host-bound recording with normalized scrubbing, stretched through an event/delegate chain carrying structured time, magnitude, and complex-spectrum frames |
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
+
+## MIDI and plug-in host surfaces
+
+These patches are shared with `onda-plugin`. The instruments use the exact canonical MIDI events,
+so opening either patch with `onda run` reveals the bottom piano and MIDI Input selector. The
+computer keyboard is active by default; in the browser, choose **Connect MIDI device…** for hardware
+MIDI or play the on-screen keys.
+
+| Example | Description |
+| --- | --- |
+| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
+| [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
+| [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
+| [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
+| [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
+| [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
+
+The four effects require a selected audio input or browser microphone. Canonical `plugin_host`
+events are hidden but inactive in standalone hosts; a DAW supplies them through the plug-in.
 
 ## Self-contained projects
 

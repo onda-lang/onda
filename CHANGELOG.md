@@ -5,6 +5,17 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.8]
+
+### Changed
+
+- Aligned the egui MIDI keyboard's octave and velocity controls to the right, keeping the panel
+  compact when the window is narrow or resized. The shared web run view now uses its standard,
+  wider slider for MIDI velocity.
+- Simplified the browser playground editor's gutters, removed the separate diagnostic marker
+  gutter, and softened line-number color while retaining inline diagnostics.
+- Reduced padding and line spacing in website code examples and documentation blocks.
+
 ## [0.8.7]
 
 ### Added
@@ -839,6 +850,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.8]: https://github.com/onda-lang/onda/compare/0.8.7...0.8.8
 [0.8.7]: https://github.com/onda-lang/onda/compare/0.8.6...0.8.7
 [0.8.6]: https://github.com/onda-lang/onda/compare/0.8.5...0.8.6
 [0.8.5]: https://github.com/onda-lang/onda/compare/0.8.4...0.8.5

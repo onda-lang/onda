@@ -290,7 +290,7 @@ async function runProject() {
       exampleLoaded: requestedExampleProject ? requestedExample : null,
       buffers: artifact.metadata.metadata.buffers.length,
       hasLineNumbers: Boolean(editorEl.querySelector(".cm-lineNumbers")),
-      hasLspDiagnostics: Boolean(editorEl.querySelector(".cm-gutter-lint")),
+      hasLspDiagnostics: projectEditor.diagnostics.has(projectEditor.active),
       hasSharedRunView: Boolean(runViewFrame.contentWindow),
       hasSeparateRunButton: Boolean(document.querySelector("[data-run-project]")),
       hasMasterGain: Boolean(document.querySelector("[data-gain]")),

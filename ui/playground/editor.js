@@ -7,7 +7,7 @@ import {
   indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language";
-import { lintGutter, setDiagnostics } from "@codemirror/lint";
+import { setDiagnostics } from "@codemirror/lint";
 import { EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
@@ -229,7 +229,7 @@ const ondaEditorTheme = EditorView.theme({
     backgroundColor: "var(--code-bg)",
     fontFamily: "var(--mono)",
     fontSize: "var(--onda-editor-font-size, .84rem)",
-    lineHeight: "1.55",
+    lineHeight: "1.4",
   },
   ".cm-scroller": {
     minWidth: 0,
@@ -237,14 +237,13 @@ const ondaEditorTheme = EditorView.theme({
     overflow: "auto",
     fontFamily: "inherit",
   },
-  ".cm-content": { minHeight: "100%", padding: "1rem 0", caretColor: "var(--code-ink)" },
-  ".cm-line": { padding: "0 1rem" },
+  ".cm-content": { minHeight: "100%", padding: "4px 0", caretColor: "var(--code-ink)" },
   ".cm-gutters": {
     color: "var(--muted)",
     backgroundColor: "var(--code-bg)",
-    borderRight: "1px solid var(--line)",
+    border: 0,
   },
-  ".cm-lineNumbers .cm-gutterElement": { padding: "0 .65rem 0 .75rem" },
+  ".cm-lineNumbers": { color: "color-mix(in srgb, var(--muted) 50%, var(--code-bg))" },
   ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--soft) 58%, transparent)" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
     backgroundColor: "color-mix(in srgb, var(--ink) 24%, transparent) !important",
@@ -492,7 +491,6 @@ export class OndaProjectEditor {
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
-        lintGutter(),
         ondaLanguage,
         syntaxHighlighting(ondaHighlightStyle),
         semanticTokenField,
