@@ -1745,6 +1745,7 @@
       let renderedEventShape = "";
       let pendingScopeFrame = 0;
       let latestScopeData = { channels: 0, samples: [] };
+      let scopePixelSize = null;
       let currentTheme = "";
       const virtualMidiSources = new Map();
       const virtualMidiNoteCounts = new Map();
@@ -2014,13 +2015,14 @@
 
       function drawScope(channels, samples) {
         const dpr = window.devicePixelRatio || 1;
-        const rect = scopeCanvas.getBoundingClientRect();
-        const w = Math.round(rect.width * dpr);
-        const h = Math.round(rect.height * dpr);
+        const rect = scopePixelSize ? null : scopeCanvas.getBoundingClientRect();
+        const w = scopePixelSize?.width ?? Math.round(rect.width * dpr);
+        const h = scopePixelSize?.height ?? Math.round(rect.height * dpr);
         if (scopeCanvas.width !== w || scopeCanvas.height !== h) {
           scopeCanvas.width = w;
           scopeCanvas.height = h;
         }
+        if (w === 0 || h === 0) return;
         scopeCtx.clearRect(0, 0, w, h);
         if (channels === 0 || samples.length === 0) {
           return;
@@ -2032,11 +2034,14 @@
 
         const computed = getComputedStyle(document.documentElement);
         const gridColor = computed.getPropertyValue("--scope-grid").trim();
+        const color = computed.getPropertyValue("--scope-1").trim();
         const chHeight = h / channels;
+        const traceWidth = Math.max(1, Math.round(1.5 * dpr));
+        const halfPixel = traceWidth % 2 ? 0.5 : 0;
+        const silent = samples.every(sample => sample === 0);
         for (let ch = 0; ch < channels; ch++) {
-          const yCenter = chHeight * ch + chHeight / 2;
+          const yCenter = Math.round(chHeight * (ch + 0.5) - halfPixel) + halfPixel;
           const amplitude = chHeight / 2 * 0.85;
-          const color = computed.getPropertyValue("--scope-1").trim();
 
           scopeCtx.strokeStyle = gridColor;
           scopeCtx.lineWidth = 1;
@@ -2046,17 +2051,22 @@
           scopeCtx.stroke();
 
           scopeCtx.strokeStyle = color;
-          scopeCtx.lineWidth = 1.5 * dpr;
+          scopeCtx.lineWidth = traceWidth;
           scopeCtx.beginPath();
-          for (let i = 0; i < w; i++) {
-            const frameIdx = Math.floor(i * frames / w);
-            const sample = samples[frameIdx * channels + ch];
-            const clamped = Math.max(-1, Math.min(1, sample));
-            const y = yCenter - clamped * amplitude;
-            if (i === 0) {
-              scopeCtx.moveTo(i, y);
-            } else {
-              scopeCtx.lineTo(i, y);
+          if (silent) {
+            scopeCtx.moveTo(0, yCenter);
+            scopeCtx.lineTo(w - 1, yCenter);
+          } else {
+            for (let i = 0; i < w; i++) {
+              const frameIdx = Math.floor(i * frames / w);
+              const sample = samples[frameIdx * channels + ch];
+              const clamped = Math.max(-1, Math.min(1, sample));
+              const y = yCenter - clamped * amplitude;
+              if (i === 0) {
+                scopeCtx.moveTo(i, y);
+              } else {
+                scopeCtx.lineTo(i, y);
+              }
             }
           }
           scopeCtx.stroke();
@@ -3803,8 +3813,16 @@
       setupCollapsibleSections();
       setupParamLayoutToggle();
       setupMidiVelocityControl();
+      new ResizeObserver(([entry]) => {
+        const size = entry.devicePixelContentBoxSize?.[0];
+        scopePixelSize = size
+          ? { width: size.inlineSize, height: size.blockSize }
+          : null;
+        scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
+      }).observe(scopeCanvas, { box: "device-pixel-content-box" });
       window.addEventListener("resize", () => {
         window.requestAnimationFrame(drawVisibleBufferWaveforms);
+        scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
       });
       applyTheme();
       render();

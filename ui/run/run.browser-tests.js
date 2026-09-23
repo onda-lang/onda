@@ -187,6 +187,17 @@ try {
     "structured event controls dispatch complete nested values");
   send({ events });
 
+  send({ running: true, supportsScope: true });
+  const scopeCanvas = document.getElementById("scope-canvas");
+  window._onHostMessage({ type: "scopeData", channels: 1, samples: Array(1024).fill(0) });
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const initialScopeWidth = scopeCanvas.width;
+  scopeCanvas.style.width = "401px";
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  check(initialScopeWidth > 0 && scopeCanvas.width !== initialScopeWidth,
+    "scope backing canvas follows layout changes without new audio data");
+  scopeCanvas.style.width = "";
+
   send({ connected: false });
   check(document.querySelector(".event-trigger").disabled
     && document.querySelector("#events input").disabled,

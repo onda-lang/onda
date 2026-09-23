@@ -2804,15 +2804,19 @@ fn draw_scope(
     }
 
     let ch_height = rect.height() / channels as f32;
+    let silent = samples.iter().all(|sample| *sample == 0.0);
     for ch in 0..channels {
         let center_y = rect.top() + ch_height * ch as f32 + ch_height * 0.5;
-        painter.line_segment(
-            [
-                egui::pos2(rect.left(), center_y),
-                egui::pos2(rect.right(), center_y),
-            ],
-            egui::Stroke::new(1.0_f32, theme.scope_grid),
-        );
+        let baseline = [
+            egui::pos2(rect.left(), center_y),
+            egui::pos2(rect.right(), center_y),
+        ];
+        painter.line_segment(baseline, egui::Stroke::new(1.0_f32, theme.scope_grid));
+
+        if silent {
+            painter.line_segment(baseline, egui::Stroke::new(1.5_f32, stroke_color));
+            continue;
+        }
 
         let mut points = Vec::with_capacity(frames);
         for x in 0..frames {

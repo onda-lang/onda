@@ -5,6 +5,14 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.9]
+
+### Changed
+
+- Improved the shared web scope at fractional display scales by sizing its canvas to device pixels,
+  aligning trace strokes to physical pixels, and redrawing when its layout changes.
+- Reduced silent-scope rendering work in the web and egui run views to one line per channel.
+
 ## [0.8.8]
 
 ### Changed
@@ -850,6 +858,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.9]: https://github.com/onda-lang/onda/compare/0.8.8...0.8.9
 [0.8.8]: https://github.com/onda-lang/onda/compare/0.8.7...0.8.8
 [0.8.7]: https://github.com/onda-lang/onda/compare/0.8.6...0.8.7
 [0.8.6]: https://github.com/onda-lang/onda/compare/0.8.5...0.8.6
