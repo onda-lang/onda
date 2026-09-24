@@ -198,6 +198,36 @@ try {
     "scope backing canvas follows layout changes without new audio data");
   scopeCanvas.style.width = "";
 
+  send({ midi: { noteOn: true }, currentMidiInputDevice: "Computer Keyboard" });
+  const octaveInput = document.getElementById("midi-octave");
+  const key = (code, type = "keydown", target = document) => target.dispatchEvent(
+    new KeyboardEvent(type, { code, bubbles: true, cancelable: true }),
+  );
+  key("KeyA");
+  check(window.__testMessages.at(-1).type === "midiNote"
+    && window.__testMessages.at(-1).key === 60
+    && window.__testMessages.at(-1).pressed,
+    "computer keyboard plays from the selected octave");
+  key("KeyZ");
+  check(octaveInput.value === "3" && window.__testMessages.at(-1).key === 60
+    && !window.__testMessages.at(-1).pressed,
+    "Z lowers the octave and releases held notes");
+  key("KeyA");
+  check(window.__testMessages.at(-1).key === 48
+    && window.__testMessages.at(-1).pressed,
+    "notes use the new octave after Z");
+  window._onHostMessage({ type: "computerKey", code: "KeyX", pressed: true });
+  check(octaveInput.value === "4" && !window.__testMessages.at(-1).pressed,
+    "forwarded X raises the octave and releases held notes");
+  octaveInput.value = "7";
+  key("KeyX");
+  check(octaveInput.value === "7", "octave shortcuts respect the upper limit");
+  octaveInput.value = "-1";
+  key("KeyZ");
+  check(octaveInput.value === "-1", "octave shortcuts respect the lower limit");
+  key("KeyX", "keydown", octaveInput);
+  check(octaveInput.value === "-1", "octave shortcuts leave editable controls alone");
+
   send({ connected: false });
   check(document.querySelector(".event-trigger").disabled
     && document.querySelector("#events input").disabled,

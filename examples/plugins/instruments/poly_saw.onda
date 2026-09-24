@@ -3,9 +3,12 @@ import std/filter
 import std/levels
 import std/osc
 import std/pitch
+import std/reverb
 
 const VoiceCount = 8
 const MidiChannelCount = 16
+const PitchBendSemitones = 5.0
+const ReverbWetGain = 6.0
 
 proc StereoSaturator:
   params:
@@ -27,11 +30,20 @@ proc Voice:
     decay_s = 0.16
     sustain = 0.68
     release_s = 0.32
+    cutoff = 1800.0
+    resonance = 1.2
+    filter_attack_s = 0.012
+    filter_decay_s = 0.28
+    filter_sustain = 0.18
+    filter_release_s = 0.4
+    filter_env_octaves = 3.0
 
   init:
     saw_l = std::osc::Saw()
     saw_r = std::osc::Saw()
     envelope = std::env::ADSR()
+    filter_envelope = std::env::ADSR()
+    filter = std::filter::Svf()
 
   def update_pitch():
     frequency = std::pitch::note_to_hz(f32(key) + bend)
@@ -44,6 +56,10 @@ proc Voice:
     envelope.decay_s = decay_s
     envelope.sustain = sustain
     envelope.release_s = release_s
+    filter_envelope.attack_s = filter_attack_s
+    filter_envelope.decay_s = filter_decay_s
+    filter_envelope.sustain = filter_sustain
+    filter_envelope.release_s = filter_release_s
 
   event start(key_value: i32, velocity_value, bend_value):
     key = key_value
@@ -54,6 +70,7 @@ proc Voice:
     saw_l.reset()
     saw_r.reset(0.5)
     envelope.start()
+    filter_envelope.start()
 
   event set_bend(value):
     bend = value
@@ -61,6 +78,7 @@ proc Voice:
 
   event release():
     envelope.release()
+    filter_envelope.release()
 
   when envelope.finished():
     finished()
@@ -71,7 +89,10 @@ proc Voice:
 
     sample:
       amplitude = envelope() * velocity
-      out1 = (saw_l() + saw_r()) * 0.5 * amplitude
+      filter_level = filter_envelope()
+      filter_cutoff = clamp(cutoff * pow(2.0, filter_level * filter_env_octaves), 30.0, SR * 0.45)
+      filter.update_coeffs(filter_cutoff, resonance)
+      out1 = filter((saw_l() + saw_r()) * 0.5) * amplitude
 
 struct VoiceManager:
   ids: i32[VoiceCount]
@@ -91,13 +112,27 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value
+    release_value,
+    cutoff_value,
+    resonance_value,
+    filter_attack_value,
+    filter_decay_value,
+    filter_sustain_value,
+    filter_release_value,
+    filter_octaves_value
   ):
     voices[index].detune = detune_value
     voices[index].attack_s = attack_value
     voices[index].decay_s = decay_value
     voices[index].sustain = sustain_value
     voices[index].release_s = release_value
+    voices[index].cutoff = cutoff_value
+    voices[index].resonance = resonance_value
+    voices[index].filter_attack_s = filter_attack_value
+    voices[index].filter_decay_s = filter_decay_value
+    voices[index].filter_sustain = filter_sustain_value
+    voices[index].filter_release_s = filter_release_value
+    voices[index].filter_env_octaves = filter_octaves_value
 
   def note_on(
     self,
@@ -111,7 +146,14 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value
+    release_value,
+    cutoff_value,
+    resonance_value,
+    filter_attack_value,
+    filter_decay_value,
+    filter_sustain_value,
+    filter_release_value,
+    filter_octaves_value
   ):
     selected = -1
     for offset in 0..VoiceCount:
@@ -130,7 +172,9 @@ struct VoiceManager:
     self.held[selected] = true
     self.configure(
       voices, selected, detune_value, attack_value,
-      decay_value, sustain_value, release_value
+      decay_value, sustain_value, release_value, cutoff_value,
+      resonance_value, filter_attack_value, filter_decay_value,
+      filter_sustain_value, filter_release_value, filter_octaves_value
     )
     voices[selected].start(key, velocity, self.bends[channel])
     self.next_voice = (selected + 1) % VoiceCount
@@ -147,10 +191,9 @@ struct VoiceManager:
     self,
     voices: Voice[],
     channel: i32,
-    value,
-    bend_range
+    value
   ):
-    self.bends[channel] = (value - 0.5) * 2.0 * bend_range
+    self.bends[channel] = (value - 0.5) * 2.0 * PitchBendSemitones
     for i in 0..VoiceCount:
       if self.active[i] && self.channels[i] == channel:
         voices[i].set_bend(self.bends[channel])
@@ -163,14 +206,23 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value
+    release_value,
+    cutoff_value,
+    resonance_value,
+    filter_attack_value,
+    filter_decay_value,
+    filter_sustain_value,
+    filter_release_value,
+    filter_octaves_value
   ):
     for i in 0..VoiceCount:
       if self.active[i]:
         self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
         self.configure(
           voices, i, detune_value, attack_value,
-          decay_value, sustain_value, release_value
+          decay_value, sustain_value, release_value, cutoff_value,
+          resonance_value, filter_attack_value, filter_decay_value,
+          filter_sustain_value, filter_release_value, filter_octaves_value
         )
 
   def finish(self, index: i32):
@@ -188,24 +240,31 @@ struct VoiceManager:
     return (mix_l, mix_r)
 
 params:
-  cutoff = 1800.0 {80.0, 12000.0, log, "Hz"}
-  resonance = 1.2 {0.1, 8.0}
   detune = 0.08 {0.0, 0.35}
   attack_s = 0.008 {0.001, 1.0, log, "s"}
   decay_s = 0.16 {0.01, 2.0, log, "s"}
   sustain = 0.68 {0.0, 1.0}
   release_s = 0.32 {0.01, 4.0, log, "s"}
+  cutoff = 800.0 {80.0, 12000.0, log, "Hz"}
+  resonance = 2.0 {0.1, 8.0}
+  filter_attack_s = 0.012 {0.001, 1.0, log, "s"}
+  filter_decay_s = 0.28 {0.01, 3.0, log, "s"}
+  filter_sustain = 0.18 {0.0, 1.0}
+  filter_release_s = 0.4 {0.01, 4.0, log, "s"}
+  filter_env_octaves = 3.0 {0.0, 6.0}
   spread = 0.72 {0.0, 1.0}
-  drive = 1.5 {1.0, 5.0}
-  bend_range = 2.0 {1.0, 24.0, step = 1.0, unit = "semitones"}
+  drive = 1.0 {1.0, 8.0}
+  reverb_room_size = 0.8 {0.0, 1.0}
+  reverb_damping = 0.3 {0.0, 0.99}
+  reverb_width = 1.0 {0.0, 1.0}
+  reverb_level = 1.0 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
 
 init:
   voices: Voice[VoiceCount]
   voice_manager = VoiceManager()
-  filter_l = std::filter::Svf()
-  filter_r = std::filter::Svf()
   saturator = StereoSaturator()
+  reverb = std::reverb::Schroeder::Reverb()
 
 when voices.finished(index):
   VoiceManager.finish(voice_manager, index)
@@ -218,19 +277,26 @@ event note_on(id: i32, channel: i32, key: i32, velocity):
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s
+    release_value = release_s,
+    cutoff_value = cutoff,
+    resonance_value = resonance,
+    filter_attack_value = filter_attack_s,
+    filter_decay_value = filter_decay_s,
+    filter_sustain_value = filter_sustain,
+    filter_release_value = filter_release_s,
+    filter_octaves_value = filter_env_octaves
   )
 
 event note_off(id: i32, channel: i32, key: i32, velocity):
   voice_manager.note_off(voices, id, channel, key)
 
 event pitch_bend(channel: i32, value):
-  voice_manager.pitch_bend(voices, channel, value, bend_range)
+  voice_manager.pitch_bend(voices, channel, value)
 
 block:
-  filter_cutoff = clamp(cutoff, 30.0, SR * 0.45)
-  filter_l.update_coeffs(filter_cutoff, resonance)
-  filter_r.update_coeffs(filter_cutoff, resonance)
+  reverb.room_size = reverb_room_size
+  reverb.damping = reverb_damping
+  reverb.width = reverb_width
   voice_manager.update(
     voices,
     spread = spread,
@@ -238,13 +304,19 @@ block:
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s
+    release_value = release_s,
+    cutoff_value = cutoff,
+    resonance_value = resonance,
+    filter_attack_value = filter_attack_s,
+    filter_decay_value = filter_decay_s,
+    filter_sustain_value = filter_sustain,
+    filter_release_value = filter_release_s,
+    filter_octaves_value = filter_env_octaves
   )
 
   sample:
     mix_l, mix_r = voice_manager.render(voices)
-    filtered_l = filter_l(mix_l)
-    filtered_r = filter_r(mix_r)
-    saturated_l, saturated_r = saturator(filtered_l, filtered_r, drive = drive)
-    out1 = saturated_l * level
-    out2 = saturated_r * level
+    saturated_l, saturated_r = saturator(mix_l, mix_r, drive = drive)
+    wet_l, wet_r = reverb(saturated_l, saturated_r, mix = 1.0)
+    out1 = (saturated_l + wet_l * reverb_level * ReverbWetGain) * level
+    out2 = (saturated_r + wet_r * reverb_level * ReverbWetGain) * level

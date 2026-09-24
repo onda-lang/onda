@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { diagnosticCount, forEachDiagnostic } from "@codemirror/lint";
+import { lineNumberMarkers } from "@codemirror/view";
 
 import {
+  OndaProjectEditor,
   colonIndentText,
   editorGuttersAreFixed,
   editorViewportMargins,
@@ -10,6 +13,67 @@ import {
   semanticTokenClassNames,
   validProjectPath,
 } from "./editor.js";
+
+test("diagnostics mark line numbers without adding a gutter", () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1024 };
+  try {
+    const editor = {
+      active: "other.onda",
+      states: new Map(),
+      diagnostics: new Map(),
+      scheduleSemanticTokens() {},
+      renderFiles() {},
+    };
+    const path = "main.onda";
+    editor.states.set(path, OndaProjectEditor.prototype.createState.call(editor, path, "bad\n"));
+    const markers = () => {
+      const found = [];
+      for (const set of editor.states.get(path).facet(lineNumberMarkers)) {
+        set.between(0, 3, (_from, _to, marker) => found.push(marker));
+      }
+      return found;
+    };
+    const range = {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 1 },
+    };
+    OndaProjectEditor.prototype.setDocumentDiagnostics.call(editor, path, [
+      { range, severity: 2, message: "warning" },
+      { range, severity: 1, message: "error" },
+    ]);
+    assert.equal(diagnosticCount(editor.states.get(path)), 1);
+    assert.equal(markers()[0].elementClass, "cm-onda-diagnostic-error");
+    assert.match(markers()[0].tooltip, /Line 1\nwarning: warning/);
+    assert.match(markers()[0].tooltip, /error: error/);
+
+    OndaProjectEditor.prototype.setDocumentDiagnostics.call(editor, path, []);
+    assert.equal(diagnosticCount(editor.states.get(path)), 0);
+    assert.deepEqual(markers(), []);
+
+    OndaProjectEditor.prototype.setDocumentDiagnostics.call(editor, path, [{
+      range: {
+        start: { line: 0, character: 3 },
+        end: { line: 0, character: 4 },
+      },
+      severity: 1,
+      message: "end-of-line error",
+    }]);
+    const ranges = [];
+    forEachDiagnostic(editor.states.get(path), (_diagnostic, from, to) => {
+      ranges.push([from, to]);
+    });
+    assert.deepEqual(ranges, [[2, 3]]);
+
+    editor.states.set(path, editor.states.get(path).update({
+      changes: { from: 0, insert: "\n" },
+    }).state);
+    assert.equal(markers()[0].number, 2);
+    assert.match(markers()[0].tooltip, /^Line 2\n/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
 
 test("event and delegate semantic tokens use callable highlighting", () => {
   assert.deepEqual(Object.keys(ondaSemanticTokenColors), [

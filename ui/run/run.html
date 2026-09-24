@@ -1481,7 +1481,7 @@
         <div class="params-title">MIDI Keyboard</div>
         <label class="midi-control">
           Octave
-          <input class="param-number" id="midi-octave" type="number" min="-1" max="7" value="4" />
+          <input class="param-number" id="midi-octave" type="number" min="-1" max="7" value="4" title="Z / X: octave down / up" />
         </label>
         <div class="midi-control">
           Velocity
@@ -1867,9 +1867,21 @@
         [13, 8], [15, 9], [18, 11], [20, 12], [22, 13],
       ];
 
+      function midiOctave() {
+        return Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0));
+      }
+
       function midiBaseNote() {
-        const octave = Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0));
-        return (octave + 1) * 12;
+        return (midiOctave() + 1) * 12;
+      }
+
+      function shiftMidiOctave(delta) {
+        const octave = midiOctave();
+        const next = Math.max(-1, Math.min(7, octave + delta));
+        if (next === octave) return;
+        releaseAllVirtualMidiNotes();
+        midiOctaveNode.value = String(next);
+        renderVirtualMidiNotes();
       }
 
       function midiVelocity() {
@@ -1965,11 +1977,18 @@
 
       midiOctaveNode.addEventListener("change", () => {
         releaseAllVirtualMidiNotes();
-        midiOctaveNode.value = String(Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0)));
+        midiOctaveNode.value = String(midiOctave());
         renderVirtualMidiNotes();
       });
       function handleComputerMidiKey(code, pressed) {
         if (state.midiKeyboardInteractive === false) return false;
+        if (code === "KeyZ" || code === "KeyX") {
+          if (!pressed) return true;
+          if (state.midi?.noteOn !== true
+            || state.currentMidiInputDevice !== "Computer Keyboard") return false;
+          shiftMidiOctave(code === "KeyZ" ? -1 : 1);
+          return true;
+        }
         const offset = COMPUTER_MIDI_KEYS.get(code);
         if (offset === undefined) return false;
         const source = "key:" + code;

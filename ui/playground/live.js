@@ -646,6 +646,39 @@ async function smokeEditorBindings() {
     && decodedSession.active === project.active
     && JSON.stringify(decodedSession.sources) === JSON.stringify(project.sources);
 
+  const hadDiagnostics = projectEditor.diagnostics.has(initialPath);
+  const previousDiagnostics = projectEditor.diagnostics.get(initialPath) ?? [];
+  let smokeLine = view.state.doc.line(1);
+  while (!smokeLine.text.trim() && smokeLine.number < view.state.doc.lines) {
+    smokeLine = view.state.doc.line(smokeLine.number + 1);
+  }
+  const smokeColumn = Math.max(0, smokeLine.text.search(/\S/));
+  view.dispatch({ selection: { anchor: smokeLine.from + smokeColumn }, scrollIntoView: true });
+  await nextAnimationFrame();
+  projectEditor.setDocumentDiagnostics(initialPath, [{
+    range: {
+      start: { line: smokeLine.number - 1, character: smokeColumn },
+      end: { line: smokeLine.number - 1, character: smokeColumn + 1 },
+    },
+    severity: 1,
+    message: "Browser diagnostic smoke test",
+  }]);
+  const diagnosticNumber = view.dom.querySelector(
+    ".cm-lineNumbers .cm-onda-diagnostic-error span[title]",
+  );
+  const diagnosticRange = view.dom.querySelector(".cm-lintRange-error");
+  const diagnosticLineNumberVisible = Boolean(diagnosticNumber)
+    && diagnosticNumber.title.includes("Browser diagnostic smoke test")
+    && !view.dom.querySelector(".cm-gutter-lint");
+  const diagnosticUnderlineVisible = Boolean(diagnosticRange)
+    && getComputedStyle(diagnosticRange).textDecorationLine.includes("underline");
+  projectEditor.setDocumentDiagnostics(initialPath, []);
+  const diagnosticLineNumberCleared = !view.dom.querySelector(
+    ".cm-lineNumbers .cm-onda-diagnostic-error",
+  );
+  projectEditor.setDocumentDiagnostics(initialPath, previousDiagnostics);
+  if (!hadDiagnostics) projectEditor.diagnostics.delete(initialPath);
+
   return {
     tabInsertedText: tabCanceled && tabInsertedText,
     tabKeptFocus,
@@ -667,6 +700,8 @@ async function smokeEditorBindings() {
     ctrlPeriodHandled,
     runViewShortcutsHandled,
     shareRoundTripHandled,
+    diagnosticLineNumberHandled: diagnosticLineNumberVisible
+      && diagnosticLineNumberCleared && diagnosticUnderlineVisible,
   };
 }
 

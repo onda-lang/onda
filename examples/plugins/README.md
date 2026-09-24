@@ -3,8 +3,9 @@
 These patches are shared with `onda-plugin` and exercise the canonical host-event surfaces now
 supported by `onda run`:
 
-- `instruments/poly_saw.onda` is an eight-voice saw, filter, and saturation instrument with MIDI
-  note on/off and per-channel pitch bend.
+- `instruments/poly_saw.onda` is an eight-voice saw instrument with independent amplitude and
+  filter ADSR envelopes per voice, stereo saturation and reverb, MIDI note on/off, and per-channel
+  pitch bend.
 - `instruments/fm_bells.onda` is an eight-voice velocity-sensitive FM bell bank with ADSR
   articulation, an inharmonic partial, a filtered strike transient, and cross-fed stereo ambience.
 - `effects/tempo_ping_pong.onda` is a filtered cross-feedback delay. Its optional canonical

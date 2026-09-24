@@ -8,15 +8,17 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { setDiagnostics } from "@codemirror/lint";
-import { EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
+import { EditorState, Prec, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
+  GutterMarker,
   gutters,
   highlightActiveLine,
   highlightActiveLineGutter,
   hoverTooltip,
   keymap,
+  lineNumberMarkers,
   lineNumbers,
 } from "@codemirror/view";
 import { minimalSetup } from "codemirror";
@@ -47,6 +49,85 @@ const constantWords = new Set([
   "SAMPLERATE", "HOST_SR", "HOST_SAMPLE_RATE", "HOST_SAMPLERATE",
   "BS", "BLOCK_SIZE", "BLOCKSIZE",
 ]);
+class DiagnosticLineMarker extends GutterMarker {
+  constructor(severity, number, messages) {
+    super();
+    this.startSide = this.endSide = 1;
+    this.severity = severity;
+    this.number = number;
+    this.messages = messages;
+    this.tooltip = `Line ${number}\n${messages.join("\n")}`;
+    this.elementClass = `cm-onda-diagnostic-${severity}`;
+  }
+
+  eq(other) {
+    return this.severity === other.severity
+      && this.number === other.number
+      && this.tooltip === other.tooltip;
+  }
+
+  toDOM() {
+    const number = document.createElement("span");
+    number.textContent = String(this.number);
+    number.title = this.tooltip;
+    number.setAttribute("aria-label", this.tooltip);
+    return number;
+  }
+}
+
+const diagnosticPriority = { error: 4, warning: 3, info: 2, hint: 1 };
+const setDiagnosticLineMarkers = StateEffect.define();
+function markerSetForLines(byLine) {
+  return RangeSet.of(
+    [...byLine].map(([from, entry]) => new DiagnosticLineMarker(
+      entry.severity, entry.number, entry.messages,
+    ).range(from)),
+    true,
+  );
+}
+function lineMarkersForDiagnostics(doc, diagnostics) {
+  const byLine = new Map();
+  for (const diagnostic of diagnostics) {
+    const line = doc.lineAt(diagnostic.from);
+    const severity = diagnosticPriority[diagnostic.severity]
+      ? diagnostic.severity : "error";
+    let entry = byLine.get(line.from);
+    if (!entry) {
+      entry = { number: line.number, severity, messages: [] };
+      byLine.set(line.from, entry);
+    } else if (diagnosticPriority[severity] > diagnosticPriority[entry.severity]) {
+      entry.severity = severity;
+    }
+    entry.messages.push(`${severity}: ${diagnostic.message}`);
+  }
+  return markerSetForLines(byLine);
+}
+const diagnosticLineMarkers = StateField.define({
+  create: () => RangeSet.empty,
+  update(markers, transaction) {
+    markers = markers.map(transaction.changes);
+    if (transaction.docChanged) {
+      const byLine = new Map();
+      markers.between(0, transaction.state.doc.length, (from, _to, marker) => {
+        const line = transaction.state.doc.lineAt(from);
+        let entry = byLine.get(line.from);
+        if (!entry) {
+          entry = { number: line.number, severity: marker.severity, messages: [] };
+          byLine.set(line.from, entry);
+        } else if (diagnosticPriority[marker.severity] > diagnosticPriority[entry.severity]) {
+          entry.severity = marker.severity;
+        }
+        entry.messages.push(...marker.messages);
+      });
+      markers = markerSetForLines(byLine);
+    }
+    for (const effect of transaction.effects) {
+      if (effect.is(setDiagnosticLineMarkers)) markers = effect.value;
+    }
+    return markers;
+  },
+  provide: (field) => lineNumberMarkers.from(field),
+});
 
 const ondaLanguage = StreamLanguage.define({
   name: "onda",
@@ -244,6 +325,14 @@ const ondaEditorTheme = EditorView.theme({
     border: 0,
   },
   ".cm-lineNumbers": { color: "color-mix(in srgb, var(--muted) 50%, var(--code-bg))" },
+  ".cm-lineNumbers .cm-onda-diagnostic-error": { color: "#f06b78" },
+  ".cm-lineNumbers .cm-onda-diagnostic-warning": { color: "#e4b45d" },
+  ".cm-lineNumbers .cm-onda-diagnostic-info, .cm-lineNumbers .cm-onda-diagnostic-hint": {
+    color: "var(--code-ink)",
+  },
+  ".cm-lineNumbers .cm-onda-diagnostic-error, .cm-lineNumbers .cm-onda-diagnostic-warning, .cm-lineNumbers .cm-onda-diagnostic-info, .cm-lineNumbers .cm-onda-diagnostic-hint": {
+    cursor: "help",
+  },
   ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--soft) 58%, transparent)" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
     backgroundColor: "color-mix(in srgb, var(--ink) 24%, transparent) !important",
@@ -276,7 +365,14 @@ const ondaEditorTheme = EditorView.theme({
   ),
   ".cm-panels input": { color: "var(--ink)", backgroundColor: "var(--bg)" },
   ".cm-diagnostic-error": { borderLeftColor: "#f06b78" },
-  ".cm-lintRange-error": { backgroundImage: "none", borderBottom: "2px wavy #f06b78" },
+  ".cm-lintRange-error": {
+    backgroundImage: "none",
+    textDecorationLine: "underline",
+    textDecorationStyle: "wavy",
+    textDecorationColor: "#f06b78",
+    textDecorationThickness: "1px",
+    textUnderlineOffset: "2px",
+  },
   ".cm-onda-hover": { maxWidth: "38rem", padding: ".65rem .8rem", whiteSpace: "pre-wrap" },
   ...Object.fromEntries(
     Object.entries(ondaSemanticTokenColors).map(([type, color]) => [
@@ -491,6 +587,7 @@ export class OndaProjectEditor {
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
+        diagnosticLineMarkers,
         ondaLanguage,
         syntaxHighlighting(ondaHighlightStyle),
         semanticTokenField,
@@ -705,21 +802,31 @@ export class OndaProjectEditor {
     this.diagnostics.set(path, diagnostics);
     const state = this.states.get(path);
     if (!state) return;
-    const codemirrorDiagnostics = diagnostics.map((diagnostic) => ({
-      from: lspPositionToOffset(state.doc, diagnostic.range?.start),
-      to: Math.max(
-        lspPositionToOffset(state.doc, diagnostic.range?.start),
-        lspPositionToOffset(state.doc, diagnostic.range?.end),
-      ),
-      severity: lspSeverity(diagnostic.severity),
-      message: diagnostic.message ?? "Onda analysis error",
-      source: diagnostic.source ?? "onda",
-    }));
-    const transaction = setDiagnostics(state, codemirrorDiagnostics);
+    const codemirrorDiagnostics = diagnostics.map((diagnostic) => {
+      let from = lspPositionToOffset(state.doc, diagnostic.range?.start);
+      let to = Math.max(from, lspPositionToOffset(state.doc, diagnostic.range?.end));
+      if (from === to) {
+        const line = state.doc.lineAt(from);
+        if (from < line.to) to += 1;
+        else if (from > line.from) from -= 1;
+      }
+      return {
+        from,
+        to,
+        severity: lspSeverity(diagnostic.severity),
+        message: diagnostic.message ?? "Onda analysis error",
+        source: diagnostic.source ?? "onda",
+      };
+    });
+    const markers = lineMarkersForDiagnostics(state.doc, codemirrorDiagnostics);
     if (path === this.active) {
-      this.view.dispatch(transaction);
+      this.view.dispatch(setDiagnostics(state, codemirrorDiagnostics));
+      this.view.dispatch({ effects: setDiagnosticLineMarkers.of(markers) });
     } else {
-      this.states.set(path, state.update(transaction).state);
+      const diagnosed = state.update(setDiagnostics(state, codemirrorDiagnostics)).state;
+      this.states.set(path, diagnosed.update({
+        effects: setDiagnosticLineMarkers.of(markers),
+      }).state);
     }
     this.scheduleSemanticTokens(path);
     this.renderFiles();

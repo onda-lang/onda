@@ -5,6 +5,13 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.10]
+
+### Added
+
+- Added Z/X shortcuts to move the computer MIDI keyboard down or up an octave in the egui run
+  host, native webview, and online editor preview. Changing octaves releases held virtual notes.
+
 ## [0.8.9]
 
 ### Changed
@@ -858,6 +865,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.10]: https://github.com/onda-lang/onda/compare/0.8.9...0.8.10
 [0.8.9]: https://github.com/onda-lang/onda/compare/0.8.8...0.8.9
 [0.8.8]: https://github.com/onda-lang/onda/compare/0.8.7...0.8.8
 [0.8.7]: https://github.com/onda-lang/onda/compare/0.8.6...0.8.7

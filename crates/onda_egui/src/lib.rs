@@ -274,6 +274,21 @@ impl RunApp {
             else {
                 continue;
             };
+            if matches!(key, egui::Key::Z | egui::Key::X) {
+                if pressed
+                    && !repeat
+                    && accepts_new_notes
+                    && !computer_key_press_blocked(pressed, modifiers)
+                {
+                    let delta = if key == egui::Key::Z { -1 } else { 1 };
+                    let next = (self.keyboard_octave + delta).clamp(-1, 7);
+                    if next != self.keyboard_octave {
+                        self.release_virtual_notes();
+                        self.keyboard_octave = next;
+                    }
+                }
+                continue;
+            }
             let Some(offset) = computer_key_offset(key) else {
                 continue;
             };
@@ -308,7 +323,8 @@ impl RunApp {
                 egui::DragValue::new(&mut app.keyboard_octave)
                     .range(-1..=7)
                     .speed(0.1),
-            );
+            )
+            .on_hover_text("Z / X: octave down / up");
             ui.label("Octave");
         };
         let velocity = |ui: &mut egui::Ui, app: &mut Self, slider_width| {
