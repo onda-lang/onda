@@ -184,7 +184,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .copy-button { position: absolute; top: .55rem; right: .55rem; padding: .25rem .45rem; border: 1px solid #2d5278; border-radius: 3px; background: #102943; color: #c9dbf2; font: .68rem var(--mono); cursor: pointer; opacity: 0; }
 .prose pre:hover .copy-button, .copy-button:focus { opacity: 1; }
 
-.home-main { width: min(1100px, calc(100% - 2.5rem)); margin: 0 auto; padding: 1.75rem 0 3rem; }
+.home-main { width: min(1240px, calc(100% - 2.5rem)); margin: 0 auto; padding: 1.75rem 0 3rem; }
 .home-example { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .home-docs { margin-top: 2rem; }
 .home-intro { width: 100%; }
@@ -352,9 +352,13 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .status.playing { --status-color: var(--syntax-string); }
 .status.fail { --status-color: #a64856; color: #a64856; }
 
-@media (max-width: 1050px) {
+@media (max-width: 1340px) {
   .docs-shell { grid-template-columns: 170px minmax(0, 1fr); }
+  .docs-content { max-width: 760px; }
   .page-toc { display: none; }
+}
+
+@media (max-width: 1050px) {
   .play-workspace { grid-template-columns: minmax(0, 1fr) 380px; }
 }
 
