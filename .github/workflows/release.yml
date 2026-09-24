@@ -3,7 +3,7 @@ name: Build Onda Releases
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   LLVM_VERSION: 21.1.2
-  MACOSX_DEPLOYMENT_TARGET: "15.0"
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 on:
   workflow_dispatch:
