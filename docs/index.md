@@ -27,6 +27,9 @@ ports, and events.
 
 [Precompiled releases](https://github.com/onda-lang/onda/releases/latest) are available for Linux x64, macOS arm64, and Windows x64. The [CLI and editor guide]({{ '/docs/tooling/' | relative_url }}) explains compilation, real-time playback, offline rendering, diagnostics, VS Code, Neovim, and the C embedding API.
 
+The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
+`OndaSynth` and `OndaFX` for using Onda instruments and effects in a DAW.
+
 The [C API reference]({{ '/docs/api/' | relative_url }}) documents the complete `libonda` surface,
 including compilation, metadata, instances, processing, events, delegates, printing, snapshots,
 ownership, and release-SDK linking.

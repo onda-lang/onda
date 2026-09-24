@@ -49,6 +49,11 @@ Check the installation:
 onda --help
 ```
 
+## Use Onda in a DAW
+
+The [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides `OndaSynth`
+for instruments and `OndaFX` for effects.
+
 ## Install the WebAssembly compiler
 
 Browser and Node.js applications can install the source-to-WebAssembly compiler from its release

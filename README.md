@@ -289,6 +289,11 @@ Already-compiled native processor objects do not require `libonda`: include
 entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
 interface layouts. See the native raw-object example for a complete link command.
 
+## VST3 plugin
+
+The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
+`OndaSynth` and `OndaFX` for running Onda instruments and effects in a DAW.
+
 ## Editor support
 
 ### VS Code

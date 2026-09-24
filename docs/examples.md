@@ -76,10 +76,10 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 
 ## MIDI and plug-in host surfaces
 
-These patches are shared with `onda-plugin`. The instruments use the exact canonical MIDI events,
-so opening either patch with `onda run` reveals the bottom piano and MIDI Input selector. The
-computer keyboard is active by default; in the browser, choose **Connect MIDI device…** for hardware
-MIDI or play the on-screen keys.
+These patches are shared with the [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin).
+The instruments use the exact canonical MIDI events, so opening either patch with `onda run`
+reveals the bottom piano and MIDI Input selector. The computer keyboard is active by default;
+in the browser, choose **Connect MIDI device…** for hardware MIDI or play the on-screen keys.
 
 | Example | Description |
 | --- | --- |

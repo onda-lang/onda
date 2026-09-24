@@ -86,6 +86,9 @@ events. Their names require the exact signatures offered by language-server comp
 hosts dispatch declared MIDI events, but do not synthesize DAW transport or timeline context for
 `plugin_host` events.
 
+To run Onda inside a DAW, see the separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin)
+repository. It provides `OndaSynth` for instruments and `OndaFX` for effects.
+
 For playback without the standalone UI:
 
 ```bash

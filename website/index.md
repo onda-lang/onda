@@ -33,6 +33,7 @@ description: Expressive and performant JIT-compiled audio programming language
       <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules</span></a>
       <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Musical instruments, effects, soundscapes, embedded-buffer projects, advanced DSP, and focused language references</span></a>
       <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Compilation, playback, rendering, language-server support, and embedding</span></a>
+      <a href="https://github.com/onda-lang/onda-plugin"><strong>VST3 plugins</strong><span>Run Onda instruments and effects in a DAW with OndaSynth and OndaFX</span></a>
     </div>
   </nav>
 </main>
