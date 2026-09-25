@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-run-view-pending>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -139,6 +139,7 @@
         overflow-x: hidden;
         overflow-y: auto;
       }
+      html[data-run-view-pending] .shell { visibility: hidden; }
 
       .file-picker {
         display: grid;
@@ -1766,6 +1767,7 @@
       let lastViewStateJson = "";
       let scrollPublishTimer = 0;
       let pendingEventViewState = null;
+      let pendingEventSchemaReceived = false;
       let viewRestoreGeneration = 0;
 
       function eventViewKey(event) {
@@ -1814,8 +1816,24 @@
         }, 100);
       }
 
-      function restoreViewState(snapshot) {
+      function finishViewStateRestore(generation, readyId) {
+        requestAnimationFrame(() => {
+          if (generation !== viewRestoreGeneration) return;
+          if (pendingEventViewState) return;
+          restoringViewState = false;
+          lastViewStateJson = JSON.stringify(captureViewState());
+          document.documentElement.removeAttribute("data-run-view-pending");
+          hostBridge.postMessage({ type: "runViewReady", readyId });
+        });
+      }
+
+      function isCompiling() {
+        return typeof state.status === "string" && state.status.startsWith("Compiling");
+      }
+
+      function restoreViewState(snapshot, eventSchemaReceived = false) {
         if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return;
+        const readyId = snapshot.readyId;
         const reset = snapshot.reset === true;
         if (reset) {
           snapshot = {
@@ -1829,6 +1847,7 @@
           };
         }
         restoringViewState = true;
+        document.documentElement.setAttribute("data-run-view-pending", "");
         const generation = ++viewRestoreGeneration;
         let pendingScroll = false;
         try {
@@ -1850,10 +1869,12 @@
           const savedEvents = new Map((Array.isArray(snapshot.events) ? snapshot.events : [])
             .filter(item => typeof item?.key === "string")
             .map(item => [item.key, item]));
-          pendingEventViewState = snapshot.path === state.path && savedEvents.size > 0
-            && (state.status === "Compiling" || (!state.connected
+          pendingEventViewState = !state.error && state.status !== "Stopped"
+            && snapshot.path === state.path && savedEvents.size > 0
+            && (isCompiling() || (!state.connected
               && !state.events.some(event => savedEvents.has(eventViewKey(event)))))
             ? snapshot : null;
+          pendingEventSchemaReceived = Boolean(pendingEventViewState && eventSchemaReceived);
           for (const event of state.events) {
             const saved = savedEvents.get(eventViewKey(event));
             if (reset) {
@@ -1919,14 +1940,14 @@
             requestAnimationFrame(() => requestAnimationFrame(() => {
               if (generation !== viewRestoreGeneration) return;
               shellNode.scrollTop = snapshot.scrollY;
-              restoringViewState = false;
-              lastViewStateJson = JSON.stringify(captureViewState());
+              finishViewStateRestore(generation, readyId);
             }));
             return;
           }
-          lastViewStateJson = JSON.stringify(captureViewState());
         } finally {
-          if (!pendingScroll) restoringViewState = false;
+          if (!pendingScroll && generation === viewRestoreGeneration) {
+            finishViewStateRestore(generation, readyId);
+          }
         }
       }
 
@@ -3138,19 +3159,38 @@
         }
         const hadViewState = viewStateReady;
         const savedViewState = incoming.viewState;
+        const pathChanged = incoming.path !== undefined && incoming.path !== state.path;
+        const supersededRestore = pathChanged && restoringViewState;
+        if (supersededRestore) viewRestoreGeneration++;
         delete incoming.viewState;
         Object.assign(state, incoming);
         if (pendingEventViewState && pendingEventViewState.path !== state.path) {
           pendingEventViewState = null;
+          pendingEventSchemaReceived = false;
+        }
+        // Schema and connection may arrive together or in separate state updates.
+        const eventSchemaReceived = Array.isArray(incoming.events);
+        if (pendingEventViewState && eventSchemaReceived) {
+          pendingEventSchemaReceived = true;
         }
         render();
+        if (pathChanged && !savedViewState) {
+          shellNode.scrollTop = 0;
+          logOutputNode.scrollTop = 0;
+        }
         viewStateReady = true;
-        if (savedViewState) restoreViewState(savedViewState);
-        else if (pendingEventViewState && incoming.events && state.connected
-          && state.status !== "Compiling") {
+        if (savedViewState) restoreViewState(savedViewState, eventSchemaReceived);
+        else if (pendingEventViewState && ((pendingEventSchemaReceived && state.connected
+          && !isCompiling()) || state.error || state.status === "Stopped")) {
           restoreViewState(pendingEventViewState);
+        } else if (supersededRestore) {
+          const generation = viewRestoreGeneration;
+          requestAnimationFrame(() => finishViewStateRestore(generation));
         } else if (hadViewState && incoming.resetEventArguments === true) {
           publishViewState();
+        }
+        if (!restoringViewState) {
+          document.documentElement.removeAttribute("data-run-view-pending");
         }
       });
 

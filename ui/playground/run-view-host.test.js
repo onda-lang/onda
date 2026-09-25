@@ -390,6 +390,7 @@ test("allows browser playback while buffers are unbound", async () => {
     src: "https://onda.test/play/run.html",
     contentWindow: { postMessage() {} },
     addEventListener() {},
+    style: {},
   };
 
   try {
@@ -480,7 +481,7 @@ test("allows browser playback while buffers are unbound", async () => {
   }
 });
 
-test("forwards MIDI activity to the shared run view", () => {
+test("browser run view waits for reset readiness and forwards MIDI activity", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
   const previousMutationObserver = globalThis.MutationObserver;
@@ -499,10 +500,35 @@ test("forwards MIDI activity to the shared run view", () => {
     src: "https://onda.test/play/run.html",
     contentWindow: { postMessage: (message) => messages.push(message) },
     addEventListener() {},
+    style: {},
   };
 
   try {
     const host = new BrowserRunViewHost(iframe);
+    assert.equal(iframe.style.opacity, "0");
+    host.setPath("main.onda");
+    assert.equal(messages.length, 0);
+    await host.handleMessage({ type: "webviewReady" });
+    assert.deepEqual(messages.at(-1).message.state.viewState, { reset: true, readyId: 1 });
+    await host.handleMessage({ type: "runViewReady", readyId: 1 });
+    assert.equal(iframe.style.opacity, "");
+    host.setPath("next.onda");
+    assert.equal(iframe.style.opacity, "0");
+    assert.deepEqual(messages.at(-1).message.state.viewState, { reset: true, readyId: 2 });
+    await host.handleMessage({ type: "runViewReady", readyId: 1 });
+    assert.equal(iframe.style.opacity, "0");
+    host.setState({ status: "Running" });
+    assert.equal(messages.at(-1).message.state.viewState, undefined);
+    await host.handleMessage({ type: "runViewReady", readyId: 2 });
+    assert.equal(iframe.style.opacity, "");
+    host.clearArtifact("next.onda");
+    assert.equal(iframe.style.opacity, "0");
+    assert.deepEqual(messages.findLast(({ message }) => message.type === "state")
+      .message.state.viewState, { reset: true, readyId: 3 });
+    await host.handleMessage({ type: "runViewReady", readyId: 2 });
+    assert.equal(iframe.style.opacity, "0");
+    await host.handleMessage({ type: "runViewReady", readyId: 3 });
+    assert.equal(iframe.style.opacity, "");
     host.setMidiActivity([60, 64, 127]);
     assert.deepEqual(messages.at(-1), {
       __ondaRunHost: true,

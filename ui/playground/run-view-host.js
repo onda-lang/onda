@@ -9,6 +9,9 @@ export class BrowserRunViewHost {
     this.targetOrigin = new URL(iframe.src, window.location.href).origin;
     this.handlers = handlers;
     this.ready = false;
+    this.pendingViewReset = true;
+    this.viewResetId = 0;
+    this.iframe.style.opacity = "0";
     this.state = {
       running: false,
       connected: false,
@@ -55,14 +58,26 @@ export class BrowserRunViewHost {
       attributes: true,
       attributeFilter: ["data-theme"],
     });
-    this.iframe.addEventListener("load", () => this.postState());
+    this.iframe.addEventListener("load", () => {
+      this.ready = false;
+      this.requestViewReset();
+    });
   }
 
   setPath(path) {
     this.setState({ path });
   }
 
-  setState(update) {
+  requestViewReset() {
+    this.pendingViewReset = true;
+    this.viewResetId += 1;
+    this.iframe.style.opacity = "0";
+  }
+
+  setState(update, { resetViewState = false } = {}) {
+    if (resetViewState || (update.path !== undefined && update.path !== this.state.path)) {
+      this.requestViewReset();
+    }
     Object.assign(this.state, update);
     this.postState();
   }
@@ -114,7 +129,7 @@ export class BrowserRunViewHost {
       events: [],
       midi: { available: false, noteOn: false, noteOff: false },
       params: [],
-    });
+    }, { resetViewState: true });
     this.handlers.midiEventsChanged?.(new Set());
     this.postScope(0, []);
   }
@@ -207,7 +222,11 @@ export class BrowserRunViewHost {
   }
 
   postState() {
-    this.post({ type: "state", state: this.state });
+    if (!this.ready) return;
+    this.post({ type: "state", state: this.pendingViewReset
+      ? { ...this.state, viewState: { reset: true, readyId: this.viewResetId } }
+      : this.state });
+    this.pendingViewReset = false;
   }
 
   postScope(channels, samples) {
@@ -228,6 +247,9 @@ export class BrowserRunViewHost {
         case "webviewReady":
           this.ready = true;
           this.postState();
+          break;
+        case "runViewReady":
+          if (message.readyId === this.viewResetId) this.iframe.style.opacity = "";
           break;
         case "start":
           await this.handlers.start?.();

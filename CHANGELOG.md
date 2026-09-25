@@ -5,6 +5,15 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.13]
+
+### Fixed
+
+- The shared web run view now signals embedding hosts after the latest host state and restored
+  scroll position have painted, waiting for deferred event controls when available, so hosts
+  can keep a loading overlay visible until the view is ready. The native and browser hosts reset
+  and hide their view until it is ready.
+
 ## [0.8.12]
 
 ### Added
@@ -880,6 +889,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.13]: https://github.com/onda-lang/onda/compare/0.8.12...0.8.13
 [0.8.12]: https://github.com/onda-lang/onda/compare/0.8.11...0.8.12
 [0.8.11]: https://github.com/onda-lang/onda/compare/0.8.10...0.8.11
 [0.8.10]: https://github.com/onda-lang/onda/compare/0.8.9...0.8.10

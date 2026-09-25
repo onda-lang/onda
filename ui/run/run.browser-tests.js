@@ -7,6 +7,11 @@ function check(condition, message) {
 function send(state) {
   window._onHostMessage({ type: "state", state: structuredClone(state) });
 }
+async function waitFrames(count) {
+  for (let index = 0; index < count; index++) {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+  }
+}
 function edit(input, value) {
   input.focus();
   input.value = value;
@@ -29,8 +34,13 @@ const params = [
   { name: "offset", type: "f32", value: 2, default: 2 },
 ];
 try {
+  const shell = document.querySelector(".shell");
+  check(getComputedStyle(shell).visibility === "hidden",
+    "run view stays hidden until its first host state");
   send({ running: true, connected: true, path: "test.onda", status: "Active",
     supportsTransport: false, supportsViewState: true, events, params });
+  check(getComputedStyle(shell).visibility === "visible",
+    "a first host state without view state reveals the run view");
   const midiVelocity = document.getElementById("midi-velocity");
   check(midiVelocity?.getAttribute("role") === "slider",
     "MIDI velocity uses the shared slider control");
@@ -245,7 +255,6 @@ try {
   velocitySlider.dispatchEvent(new KeyboardEvent("keydown", {
     key: "ArrowRight", bubbles: true, cancelable: true,
   }));
-  const shell = document.querySelector(".shell");
   shell.style.height = "300px";
   shell.scrollTop = 200;
   await new Promise(resolve => setTimeout(resolve, 130));
@@ -256,8 +265,25 @@ try {
   send({ events: structuredEvents, resetEventArguments: true });
   octaveInput.value = "4";
   document.getElementById("events-toggle").click();
-  send({ viewState: savedView });
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const restoreCount = () => window.__testMessages.filter(
+    message => message.type === "runViewReady").length;
+  const restoresBefore = restoreCount();
+  send({ viewState: savedView, status: "Ready marker" });
+  send({ viewState: savedView, status: "Ready marker" });
+  check(restoreCount() === restoresBefore,
+    "view restore does not report ready before scroll settles");
+  check(getComputedStyle(shell).visibility === "hidden",
+    "run view content stays hidden while its scroll is being restored");
+  await waitFrames(2);
+  check(restoreCount() === restoresBefore,
+    "view restore waits for a frame with the restored scroll position");
+  await waitFrames(1);
+  check(restoreCount() === restoresBefore + 1,
+    "run view reports ready after scroll settles");
+  check(getComputedStyle(shell).visibility === "visible",
+    "run view content appears when restoration is ready");
+  check(document.getElementById("status").textContent.includes("Ready marker"),
+    "view readiness follows the host state render");
   check(octaveInput.value === "2"
     && document.querySelector("#midi-velocity-value").textContent === "0.82"
     && document.querySelector("#events textarea").value === '{"unfinished":'
@@ -270,9 +296,11 @@ try {
     "view restore recovers folds and scroll position");
   shell.style.height = "";
 
-  send({ viewState: { reset: true }, events: structuredEvents,
+  send({ viewState: { reset: true, readyId: 42 }, events: structuredEvents,
     resetEventArguments: true });
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  await waitFrames(3);
+  check(window.__testMessages.findLast(message => message.type === "runViewReady")?.readyId === 42,
+    "view readiness identifies the reset it completed");
   check(octaveInput.value === "4"
     && document.querySelector("#midi-velocity-value").textContent === "0.80"
     && document.querySelector(".event-structured-arg").open
@@ -280,12 +308,46 @@ try {
     && document.getElementById("events-toggle").getAttribute("aria-expanded") === "true",
     "loading a project without view state restores view defaults");
 
-  send({ connected: false, events: [], viewState: savedView });
-  send({ connected: true, events: structuredEvents, resetEventArguments: true });
+  const beforeDeferred = restoreCount();
+  send({ connected: false, events: [], status: "Compiling", viewState: savedView });
+  await waitFrames(3);
+  check(restoreCount() === beforeDeferred,
+    "view readiness waits for the event schema needed to restore saved drafts");
+  send({ events: structuredEvents, resetEventArguments: true });
+  send({ connected: true, status: "Active" });
+  await waitFrames(3);
+  check(restoreCount() === beforeDeferred + 1,
+    "view readiness follows separately delivered schema and connection updates");
   check(document.querySelector("#events textarea").value === '{"unfinished":'
     && document.querySelector(".event-trigger").disabled,
     "event drafts restore after the compiler publishes the event schema");
-  send({ connected: true, status: "Compiling", events: structuredEvents,
+
+  const beforeCoDeliveredSchema = restoreCount();
+  send({ connected: false, status: "Compiling...", events: structuredEvents,
+    resetEventArguments: true, viewState: savedView });
+  await waitFrames(3);
+  check(restoreCount() === beforeCoDeliveredSchema,
+    "a schema delivered with saved view state waits for connection");
+  send({ connected: true, status: "Active" });
+  await waitFrames(3);
+  check(restoreCount() === beforeCoDeliveredSchema + 1
+    && document.querySelector("#events textarea").value === '{"unfinished":',
+    "a co-delivered schema restores drafts when connection arrives separately");
+
+  const beforeRetainedSchema = restoreCount();
+  send({ connected: false, status: "Compiling...", events: structuredEvents,
+    viewState: savedView });
+  await waitFrames(3);
+  check(restoreCount() === beforeRetainedSchema,
+    "compilation waits for a fresh event schema even when old controls remain");
+  send({ connected: true, status: "Active", events: structuredEvents,
+    resetEventArguments: true });
+  await waitFrames(3);
+  check(restoreCount() === beforeRetainedSchema + 1
+    && document.querySelector("#events textarea").value === '{"unfinished":',
+    "readiness follows restoration against the new event schema");
+
+  send({ connected: true, status: "Compiling...", events: structuredEvents,
     viewState: savedView });
   send({ connected: true, status: "Active", events: structuredEvents,
     resetEventArguments: true });
@@ -299,6 +361,58 @@ try {
     "disconnect disables retained event controls");
   send({ connected: true, events: [] });
   check(!document.querySelector(".event-trigger"), "unload removes event controls");
+
+  await waitFrames(3);
+  const beforeSuperseded = restoreCount();
+  shell.style.height = "300px";
+  send({ path: "test.onda", connected: true, status: "Active",
+    events: structuredEvents, viewState: savedView });
+  await waitFrames(2);
+  check(shell.scrollTop > 0 && restoreCount() === beforeSuperseded,
+    "the prior file can scroll before its readiness callback runs");
+  send({ path: "next.onda", connected: true, status: "Next",
+    events: structuredEvents });
+  await waitFrames(3);
+  check(shell.scrollTop === 0 && restoreCount() === beforeSuperseded + 1,
+    "a newer file resets prior scroll and reports only its own readiness");
+  shell.scrollTop = 200;
+  check(shell.scrollTop > 0, "the current file can scroll after its restore completes");
+  const beforeOrdinarySwitch = restoreCount();
+  send({ path: "third.onda", status: "Third", events: structuredEvents });
+  check(shell.scrollTop === 0 && restoreCount() === beforeOrdinarySwitch,
+    "a later file switch also starts at the top without reporting another restore");
+
+  const beforeFailure = restoreCount();
+  shell.scrollTop = 0;
+  send({ path: "test.onda", connected: false, status: "Compiling",
+    error: "", events: [], viewState: savedView });
+  send({ connected: false, status: "Stopped", error: "Compile failed" });
+  await waitFrames(2);
+  check(restoreCount() === beforeFailure,
+    "an immediate compilation failure waits for the saved scroll position");
+  await waitFrames(1);
+  check(shell.scrollTop > 0 && restoreCount() === beforeFailure + 1,
+    "an immediate failure restores scroll before reporting readiness");
+  const viewStatesBeforeFailureEdit = window.__testMessages.filter(
+    message => message.type === "viewState").length;
+  octaveInput.value = "3";
+  octaveInput.dispatchEvent(new Event("change", { bubbles: true }));
+  const viewStatesAfterFailureEdit = window.__testMessages.filter(
+    message => message.type === "viewState");
+  check(viewStatesAfterFailureEdit.length === viewStatesBeforeFailureEdit + 1
+    && viewStatesAfterFailureEdit.at(-1).state.octave === 3,
+    "a terminal view publishes edits after abandoning the missing event schema");
+
+  const beforeDeferredStop = restoreCount();
+  send({ connected: false, status: "Compiling", error: "",
+    events: [], viewState: savedView });
+  await waitFrames(3);
+  check(restoreCount() === beforeDeferredStop,
+    "a compilation remains pending until its terminal state arrives");
+  send({ connected: false, status: "Stopped", error: "" });
+  await waitFrames(3);
+  check(restoreCount() === beforeDeferredStop + 1,
+    "a stopped view reports readiness without waiting for a missing schema");
   await fetch("/result", { method: "POST", body: JSON.stringify({ results }) });
 } catch (error) {
   await fetch("/result", { method: "POST",

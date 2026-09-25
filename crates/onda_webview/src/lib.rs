@@ -118,6 +118,8 @@ mod platform {
         let mut load_error = None;
         let mut pending_state_sync = true;
         let mut pending_scope_sync = true;
+        let mut page_ready = false;
+        let mut last_synced_path: Option<String> = None;
 
         event_loop.run(move |event, _target, control_flow| {
             let controller_was_active = controller.is_some();
@@ -165,6 +167,13 @@ mod platform {
                 }
                 Event::UserEvent(UserEvent::WebviewMessage(raw)) => {
                     if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        if !page_ready
+                            && msg.get("type").and_then(|value| value.as_str())
+                                == Some("webviewReady")
+                        {
+                            page_ready = true;
+                            pending_state_sync = true;
+                        }
                         if handle_webview_message(
                             &msg,
                             &webview,
@@ -230,17 +239,24 @@ mod platform {
                 _ => {}
             }
 
-            if pending_state_sync {
+            if page_ready && pending_state_sync {
+                let path = controller
+                    .as_ref()
+                    .map(|controller| controller.state().path.clone())
+                    .unwrap_or_default();
+                let reset_view_state = last_synced_path.as_ref() != Some(&path);
                 sync_host_state(
                     &webview,
                     controller.as_ref(),
                     load_error.as_deref(),
                     &options,
                     theme_mode,
+                    reset_view_state,
                 );
+                last_synced_path = Some(path);
                 pending_state_sync = false;
                 pending_scope_sync = false;
-            } else if pending_scope_sync {
+            } else if page_ready && pending_scope_sync {
                 if let Some(controller) = controller.as_ref() {
                     sync_scope_state(&webview, controller.state());
                 }
@@ -312,16 +328,7 @@ mod platform {
             .and_then(|value| value.as_str())
             .unwrap_or("");
         match msg_type {
-            "webviewReady" => {
-                sync_host_state(
-                    webview,
-                    controller.as_ref(),
-                    load_error.as_deref(),
-                    options,
-                    theme_mode,
-                );
-                false
-            }
+            "webviewReady" => false,
             "chooseOndaFile" => {
                 let dialog_proxy = proxy.clone();
                 std::thread::spawn(move || {
@@ -508,9 +515,16 @@ mod platform {
         load_error: Option<&str>,
         options: &RunHostOptions,
         theme_mode: &str,
+        reset_view_state: bool,
     ) {
         if let Some(controller) = controller {
-            sync_panel_state(webview, controller.state(), options, theme_mode);
+            sync_panel_state(
+                webview,
+                controller.state(),
+                options,
+                theme_mode,
+                reset_view_state,
+            );
             return;
         }
         let panel_state = serde_json::json!({
@@ -548,7 +562,7 @@ mod platform {
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,
         });
-        send_to_webview(webview, "state", &panel_state);
+        send_panel_state(webview, panel_state, reset_view_state);
         send_empty_scope_state(webview);
     }
 
@@ -557,6 +571,7 @@ mod platform {
         state: &RunState,
         options: &RunHostOptions,
         theme_mode: &str,
+        reset_view_state: bool,
     ) {
         let panel_state = serde_json::json!({
             "running": state.running,
@@ -593,7 +608,7 @@ mod platform {
             "blockFrames": options.block_frames,
             "themeMode": theme_mode,
         });
-        send_to_webview(webview, "state", &panel_state);
+        send_panel_state(webview, panel_state, reset_view_state);
 
         sync_scope_state(webview, state);
     }
@@ -631,6 +646,17 @@ mod platform {
             webview,
             &format!("if(window._onHostMessage)window._onHostMessage({msg})"),
         );
+    }
+
+    fn send_panel_state(
+        webview: &wry::WebView,
+        mut state: serde_json::Value,
+        reset_view_state: bool,
+    ) {
+        if reset_view_state {
+            state["viewState"] = serde_json::json!({ "reset": true });
+        }
+        send_to_webview(webview, "state", &state);
     }
 
     fn eval_js(webview: &wry::WebView, script: &str) {

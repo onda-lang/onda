@@ -20,6 +20,7 @@ import {
   keymap,
   lineNumberMarkers,
   lineNumbers,
+  scrollPastEnd,
 } from "@codemirror/view";
 import { minimalSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
@@ -441,6 +442,8 @@ export class OndaProjectEditor {
     this.tabs.addEventListener("dragover", (event) => this.dragTabOver(event));
     this.tabs.addEventListener("drop", (event) => this.dropTab(event));
     this.view = new EditorView({ state: this.states.get(this.active), parent });
+    this.displayedPath = this.active;
+    this.scrollSnapshots = new Map();
     // Automatic caret scrolling should prefer the start of a line, but a
     // horizontal gesture is an explicit request to preserve the viewport.
     this.userScrolledHorizontally = false;
@@ -570,9 +573,24 @@ export class OndaProjectEditor {
     this.view.requestMeasure();
   }
 
-  setViewState(state) {
+  setViewState(state, { resetScroll = false } = {}) {
+    const switchingFile = this.displayedPath !== this.active;
+    if (resetScroll) {
+      this.scrollSnapshots.clear();
+    } else if (switchingFile && this.states.has(this.displayedPath)) {
+      this.scrollSnapshots.set(this.displayedPath, this.view.scrollSnapshot());
+    }
+    cancelAnimationFrame(this.caretVisibilityFrame);
     this.userScrolledHorizontally = false;
     this.view.setState(state);
+    this.displayedPath = this.active;
+    const snapshot = !resetScroll && switchingFile && this.scrollSnapshots.get(this.active);
+    if (snapshot) {
+      this.view.dispatch({ effects: snapshot });
+    } else if (resetScroll || switchingFile) {
+      this.view.scrollDOM.scrollTop = 0;
+      this.view.scrollDOM.scrollLeft = 0;
+    }
   }
 
   createState(path, source, { readOnly = false } = {}) {
@@ -605,6 +623,7 @@ export class OndaProjectEditor {
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.scrollMargins.of(visibleEditorMargins),
+        scrollPastEnd(),
         EditorView.updateListener.of((update) => {
           this.states.set(path, update.state);
           if (update.docChanged) {
@@ -704,7 +723,7 @@ export class OndaProjectEditor {
       this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
       this.states.set(path, this.createState(path, source));
     }
-    this.setViewState(this.states.get(this.active));
+    this.setViewState(this.states.get(this.active), { resetScroll: true });
     this.renderFiles();
     this.onChange?.(this.project());
     this.onActiveFile?.(this.active);
@@ -725,7 +744,7 @@ export class OndaProjectEditor {
       const offset = lspPositionToOffset(this.view.state.doc, position);
       this.view.dispatch({
         selection: { anchor: offset },
-        scrollIntoView: true,
+        effects: EditorView.scrollIntoView(offset, { y: "center" }),
       });
     }
     this.view.focus();
@@ -751,6 +770,8 @@ export class OndaProjectEditor {
     this.states = new Map(entries);
     this.documentInfo.delete(previous);
     this.documentInfo.set(path, { kind: "project", label: path, readOnly: false });
+    this.scrollSnapshots.delete(previous);
+    this.scrollSnapshots.set(path, this.view.scrollSnapshot());
     this.active = path;
     if (this.entry === previous) this.entry = path;
     this.setViewState(this.states.get(path));
@@ -773,6 +794,7 @@ export class OndaProjectEditor {
     this.states.delete(path);
     this.documentInfo.delete(path);
     this.diagnostics.delete(path);
+    this.scrollSnapshots.delete(path);
 
     if (deletesProjectFile && this.entry === path) {
       this.entry = this.paths()[0];
