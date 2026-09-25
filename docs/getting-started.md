@@ -41,6 +41,9 @@ also includes `Onda.app`, and Windows packages include a console-free `Onda.exe`
 the Windows launcher in the extracted package and create a shortcut when moving it to the desktop
 or Start menu, because it launches the bundled `bin\onda.exe`.
 
+The precompiled macOS binaries, including `Onda.app`, are not signed. macOS may block them when you
+first try to open them.
+
 Releases also contain portable npm tarballs for the WebAssembly compiler and Web Audio packages.
 
 Check the installation:

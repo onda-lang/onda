@@ -167,6 +167,8 @@ Use the pre-built shared and static libraries or build them from source with:
 cargo build -p onda_api --release
 ```
 
+The pre-built macOS release libraries are not signed.
+
 CMake hosts can consume either library without reproducing platform-specific
 link requirements:
 
