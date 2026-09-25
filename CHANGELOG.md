@@ -5,6 +5,14 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.12]
+
+### Added
+
+- Added opt-in view-state snapshots to the shared web run view. Embedding hosts can now restore
+  scroll position, keyboard octave and velocity, expanded sections, and event values and drafts
+  when recreating the editor.
+
 ## [0.8.11]
 
 ### Changed
@@ -872,6 +880,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.12]: https://github.com/onda-lang/onda/compare/0.8.11...0.8.12
 [0.8.11]: https://github.com/onda-lang/onda/compare/0.8.10...0.8.11
 [0.8.10]: https://github.com/onda-lang/onda/compare/0.8.9...0.8.10
 [0.8.9]: https://github.com/onda-lang/onda/compare/0.8.8...0.8.9

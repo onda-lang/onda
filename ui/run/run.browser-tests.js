@@ -30,7 +30,7 @@ const params = [
 ];
 try {
   send({ running: true, connected: true, path: "test.onda", status: "Active",
-    supportsTransport: false, events, params });
+    supportsTransport: false, supportsViewState: true, events, params });
   const midiVelocity = document.getElementById("midi-velocity");
   check(midiVelocity?.getAttribute("role") === "slider",
     "MIDI velocity uses the shared slider control");
@@ -68,6 +68,9 @@ try {
   })), resetEventArguments: true });
   check(document.querySelector("#events input").value === "0.25",
     "new program or explicit argument reset restores defaults");
+  check(window.__testMessages.findLast(message => message.type === "viewState")
+    ?.state.events[0].values[0] === 0.25,
+    "argument resets replace the retained view snapshot");
 
   document.querySelector('[aria-label="Add element"]').click();
   let arrayInput = document.querySelector(".event-array-element input");
@@ -228,6 +231,68 @@ try {
   key("KeyX", "keydown", octaveInput);
   check(octaveInput.value === "-1", "octave shortcuts leave editable controls alone");
 
+  send({ events: structuredEvents, params: arrayParams });
+  const savedPatch = document.querySelector("#events textarea");
+  edit(savedPatch, '{"unfinished":');
+  document.querySelector(".event-structured-arg summary").click();
+  if (document.querySelector(".param-array").open) {
+    document.querySelector(".param-array summary").click();
+  }
+  document.getElementById("events-toggle").click();
+  octaveInput.value = "2";
+  octaveInput.dispatchEvent(new Event("change", { bubbles: true }));
+  const velocitySlider = document.getElementById("midi-velocity");
+  velocitySlider.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "ArrowRight", bubbles: true, cancelable: true,
+  }));
+  const shell = document.querySelector(".shell");
+  shell.style.height = "300px";
+  shell.scrollTop = 200;
+  await new Promise(resolve => setTimeout(resolve, 130));
+  const savedView = window.__testMessages.findLast(message => message.type === "viewState")?.state;
+  check(savedView?.octave === 2 && savedView.events[0].drafts[0][0] === '{"unfinished":'
+    && savedView.sections.events === false,
+    "view snapshot includes keyboard, event draft, and section state");
+  send({ events: structuredEvents, resetEventArguments: true });
+  octaveInput.value = "4";
+  document.getElementById("events-toggle").click();
+  send({ viewState: savedView });
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  check(octaveInput.value === "2"
+    && document.querySelector("#midi-velocity-value").textContent === "0.82"
+    && document.querySelector("#events textarea").value === '{"unfinished":'
+    && document.querySelector(".event-trigger").disabled,
+    "view restore recovers keyboard controls and incomplete event drafts");
+  check(!document.querySelector(".event-structured-arg").open
+    && !document.querySelector(".param-array").open
+    && document.getElementById("events-toggle").getAttribute("aria-expanded") === "false"
+    && shell.scrollTop > 0,
+    "view restore recovers folds and scroll position");
+  shell.style.height = "";
+
+  send({ viewState: { reset: true }, events: structuredEvents,
+    resetEventArguments: true });
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  check(octaveInput.value === "4"
+    && document.querySelector("#midi-velocity-value").textContent === "0.80"
+    && document.querySelector(".event-structured-arg").open
+    && document.querySelector(".param-array").open
+    && document.getElementById("events-toggle").getAttribute("aria-expanded") === "true",
+    "loading a project without view state restores view defaults");
+
+  send({ connected: false, events: [], viewState: savedView });
+  send({ connected: true, events: structuredEvents, resetEventArguments: true });
+  check(document.querySelector("#events textarea").value === '{"unfinished":'
+    && document.querySelector(".event-trigger").disabled,
+    "event drafts restore after the compiler publishes the event schema");
+  send({ connected: true, status: "Compiling", events: structuredEvents,
+    viewState: savedView });
+  send({ connected: true, status: "Active", events: structuredEvents,
+    resetEventArguments: true });
+  check(document.querySelector("#events textarea").value === '{"unfinished":',
+    "event drafts survive a retained engine being replaced after compilation");
+
+  send({ events });
   send({ connected: false });
   check(document.querySelector(".event-trigger").disabled
     && document.querySelector("#events input").disabled,
@@ -237,5 +302,5 @@ try {
   await fetch("/result", { method: "POST", body: JSON.stringify({ results }) });
 } catch (error) {
   await fetch("/result", { method: "POST",
-    body: JSON.stringify({ results, error: error.stack }) });
+    body: JSON.stringify({ results, error: `${error.message}\n${error.stack}` }) });
 }

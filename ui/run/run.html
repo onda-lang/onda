@@ -1672,10 +1672,12 @@
         supportsDeviceSelection: false,
         supportsRunSettings: false,
         supportsScope: false,
+        supportsViewState: false,
         sampleRateHz: 48_000,
         blockFrames: 256,
       };
 
+      const shellNode = document.querySelector(".shell");
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
       const resetParamsButton = document.getElementById("reset-params");
@@ -1758,6 +1760,175 @@
         params: true,
       };
       let paramLayout = restoreParamLayout();
+      let midiVelocityControl = null;
+      let viewStateReady = false;
+      let restoringViewState = false;
+      let lastViewStateJson = "";
+      let scrollPublishTimer = 0;
+      let pendingEventViewState = null;
+      let viewRestoreGeneration = 0;
+
+      function eventViewKey(event) {
+        return JSON.stringify([state.path, event.name,
+          (event.args || []).map(arg => [arg.name, arg.type])]);
+      }
+
+      function captureViewState() {
+        const cards = [...eventsNode.querySelectorAll(".event-card")];
+        return {
+          path: state.path,
+          scrollY: shellNode.scrollTop,
+          logScrollY: logOutputNode.scrollTop,
+          octave: midiOctave(),
+          velocity: midiVelocityValue,
+          sections: { ...sectionState },
+          paramFolds: [...paramsNode.querySelectorAll(".param-array")]
+            .map(group => [group.dataset.name, group.open]),
+          structuredFolds: [...eventsNode.querySelectorAll(".event-structured-arg")]
+            .map(group => [group.dataset.foldKey, group.open]),
+          events: state.events.map((event, index) => ({
+            key: eventViewKey(event),
+            values: (event.args || []).map(arg => arg.value),
+            drafts: [...(cards[index]?.querySelectorAll(".event-arg") || [])]
+              .map(setting => [...setting.querySelectorAll("input, textarea")]
+                .map(input => input.type === "checkbox" ? input.checked : input.value)),
+          })),
+        };
+      }
+
+      function publishViewState() {
+        if (!viewStateReady || !state.supportsViewState
+          || restoringViewState || pendingEventViewState) return;
+        const snapshot = captureViewState();
+        const json = JSON.stringify(snapshot);
+        if (json === lastViewStateJson) return;
+        lastViewStateJson = json;
+        hostBridge.postMessage({ type: "viewState", state: snapshot });
+      }
+
+      function scheduleScrollViewState() {
+        clearTimeout(scrollPublishTimer);
+        scrollPublishTimer = setTimeout(() => {
+          scrollPublishTimer = 0;
+          publishViewState();
+        }, 100);
+      }
+
+      function restoreViewState(snapshot) {
+        if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return;
+        const reset = snapshot.reset === true;
+        if (reset) {
+          snapshot = {
+            path: state.path,
+            scrollY: 0,
+            logScrollY: 0,
+            octave: 4,
+            velocity: 0.8,
+            sections: Object.fromEntries(Object.keys(sectionState).map(name => [name, true])),
+            events: [],
+          };
+        }
+        restoringViewState = true;
+        const generation = ++viewRestoreGeneration;
+        let pendingScroll = false;
+        try {
+          if (Number.isInteger(snapshot.octave)) {
+            releaseAllVirtualMidiNotes();
+            midiOctaveNode.value = String(clamp(snapshot.octave, -1, 7));
+            renderVirtualMidiNotes();
+          }
+          if (typeof snapshot.velocity === "number" && Number.isFinite(snapshot.velocity)) {
+            midiVelocityValue = clamp(snapshot.velocity, 0, 1);
+            midiVelocityValueNode.textContent = midiVelocityValue.toFixed(2);
+            midiVelocityControl?.setValue(midiVelocityValue);
+          }
+          for (const name of Object.keys(sectionState)) {
+            if (typeof snapshot.sections?.[name] === "boolean") {
+              setSectionOpen(name, snapshot.sections[name]);
+            }
+          }
+          const savedEvents = new Map((Array.isArray(snapshot.events) ? snapshot.events : [])
+            .filter(item => typeof item?.key === "string")
+            .map(item => [item.key, item]));
+          pendingEventViewState = snapshot.path === state.path && savedEvents.size > 0
+            && (state.status === "Compiling" || (!state.connected
+              && !state.events.some(event => savedEvents.has(eventViewKey(event)))))
+            ? snapshot : null;
+          for (const event of state.events) {
+            const saved = savedEvents.get(eventViewKey(event));
+            if (reset) {
+              for (const arg of event.args || []) arg.value = initialEventArgValue(arg);
+              continue;
+            }
+            if (!Array.isArray(saved?.values)) continue;
+            for (let index = 0; index < (event.args || []).length; index += 1) {
+              const arg = event.args[index];
+              const value = saved.values[index];
+              if (isStructuredEventArg(arg)) {
+                if (value !== null && typeof value === "object") arg.value = value;
+              } else if (isArrayEventArg(arg)) {
+                if (Array.isArray(value)) {
+                  arg.value = value.map(item => eventScalarValue(eventArrayScalarType(arg), item));
+                }
+              } else if (value !== undefined) {
+                arg.value = eventScalarValue(arg.type, value);
+              }
+            }
+          }
+          renderedEvents = null;
+          render();
+          const restoreFolds = (container, selector, key, folds) => {
+            const saved = new Map((Array.isArray(folds) ? folds : [])
+              .filter(item => Array.isArray(item) && item.length === 2));
+            for (const group of container.querySelectorAll(selector)) {
+              if (typeof saved.get(group.dataset[key]) === "boolean") {
+                group.open = saved.get(group.dataset[key]);
+              }
+            }
+          };
+          restoreFolds(paramsNode, ".param-array", "name", snapshot.paramFolds);
+          restoreFolds(eventsNode, ".event-structured-arg", "foldKey", snapshot.structuredFolds);
+          if (reset) {
+            for (const group of paramsNode.querySelectorAll(".param-array")) group.open = true;
+            for (const group of eventsNode.querySelectorAll(".event-structured-arg")) group.open = true;
+          }
+          if (Number.isFinite(snapshot.logScrollY) && snapshot.logScrollY >= 0) {
+            logOutputNode.scrollTop = snapshot.logScrollY;
+          }
+          const cards = [...eventsNode.querySelectorAll(".event-card")];
+          state.events.forEach((event, eventIndex) => {
+            const saved = savedEvents.get(eventViewKey(event));
+            const settings = [...(cards[eventIndex]?.querySelectorAll(".event-arg") || [])];
+            settings.forEach((setting, argIndex) => {
+              const drafts = saved?.drafts?.[argIndex];
+              if (!Array.isArray(drafts)) return;
+              [...setting.querySelectorAll("input, textarea")].forEach((input, index) => {
+                const value = drafts[index];
+                if (input.type === "checkbox" && typeof value === "boolean") {
+                  input.checked = value;
+                  input.dispatchEvent(new Event("change", { bubbles: true }));
+                } else if (typeof value === "string") {
+                  input.value = value;
+                  input.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+              });
+            });
+          });
+          if (Number.isFinite(snapshot.scrollY) && snapshot.scrollY >= 0) {
+            pendingScroll = true;
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              if (generation !== viewRestoreGeneration) return;
+              shellNode.scrollTop = snapshot.scrollY;
+              restoringViewState = false;
+              lastViewStateJson = JSON.stringify(captureViewState());
+            }));
+            return;
+          }
+          lastViewStateJson = JSON.stringify(captureViewState());
+        } finally {
+          if (!pendingScroll) restoringViewState = false;
+        }
+      }
 
       let bridgeThemePreference =
         typeof window.__ondaForcedTheme === "string" && window.__ondaForcedTheme
@@ -1777,6 +1948,19 @@
       hostBridge.postMessage({ type: "webviewReady" });
       window.addEventListener("load", () => {
         hostBridge.postMessage({ type: "webviewReady" });
+      });
+      const publishEditedViewState = event => {
+        if (!paramsNode.contains(event.target)) publishViewState();
+      };
+      document.addEventListener("input", publishEditedViewState);
+      document.addEventListener("change", publishEditedViewState);
+      document.addEventListener("click", publishViewState);
+      document.addEventListener("toggle", publishViewState, true);
+      shellNode.addEventListener("scroll", scheduleScrollViewState, { passive: true });
+      logOutputNode.addEventListener("scroll", scheduleScrollViewState, { passive: true });
+      window.addEventListener("pagehide", () => {
+        clearTimeout(scrollPublishTimer);
+        publishViewState();
       });
 
       startButton.addEventListener("click", () => {
@@ -1882,6 +2066,7 @@
         releaseAllVirtualMidiNotes();
         midiOctaveNode.value = String(next);
         renderVirtualMidiNotes();
+        queueMicrotask(publishViewState);
       }
 
       function midiVelocity() {
@@ -2520,8 +2705,9 @@
         const update = value => {
           midiVelocityValue = value;
           midiVelocityValueNode.textContent = value.toFixed(2);
+          publishViewState();
         };
-        const { control } = createSliderControl(
+        const { control, setValue } = createSliderControl(
           param,
           midiVelocityValue,
           param.step,
@@ -2531,6 +2717,7 @@
         );
         control.id = midiVelocityMountNode.id;
         midiVelocityMountNode.replaceWith(control);
+        midiVelocityControl = { setValue };
       }
 
       function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
@@ -2921,6 +3108,10 @@
           scheduleScopeDraw(message.channels, message.samples);
           return;
         }
+        if (message.type === "viewState") {
+          restoreViewState(message.state);
+          return;
+        }
         if (message.type !== "state") {
           return;
         }
@@ -2945,8 +3136,22 @@
           releaseAllVirtualMidiNotes();
           setMonitoredMidiNotes([]);
         }
+        const hadViewState = viewStateReady;
+        const savedViewState = incoming.viewState;
+        delete incoming.viewState;
         Object.assign(state, incoming);
+        if (pendingEventViewState && pendingEventViewState.path !== state.path) {
+          pendingEventViewState = null;
+        }
         render();
+        viewStateReady = true;
+        if (savedViewState) restoreViewState(savedViewState);
+        else if (pendingEventViewState && incoming.events && state.connected
+          && state.status !== "Compiling") {
+          restoreViewState(pendingEventViewState);
+        } else if (hadViewState && incoming.resetEventArguments === true) {
+          publishViewState();
+        }
       });
 
       // ---------------------------------------------------------------------------
