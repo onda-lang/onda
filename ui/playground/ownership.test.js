@@ -44,13 +44,13 @@ test("the shared MIDI keyboard uses themed keys without a computer-key legend", 
   assert.match(runView, /\.piano-key\.white:hover:not\(\.active\)/);
   assert.match(runView, /\.piano-key\.black\.active/);
   assert.doesNotMatch(runView, /computer-key-hint|Keys: A W S E D/);
-  assert.match(runView, /body \{[\s\S]*?grid-template-rows: minmax\(0, 1fr\) auto;[\s\S]*?overflow: hidden/);
-  assert.match(runView, /\.shell \{[\s\S]*?overflow-y: auto/);
+  assert.match(runView, /body \{[^}]*grid-template-rows: minmax\(0, 1fr\) auto;[^}]*min-height: 100vh/);
+  assert.doesNotMatch(runView, /\.shell \{[^}]*overflow-y: auto/);
   assert.match(
     runView,
     /<\/div>\s*<section class="midi-keyboard" id="midi-keyboard" hidden>/,
   );
-  assert.match(runView, /\.midi-keyboard \{[\s\S]*?border-radius: 0/);
+  assert.match(runView, /\.midi-keyboard \{[^}]*position: sticky;[^}]*bottom: 0;[^}]*border-radius: 0/);
   assert.match(runView, /\.io-settings\.midi-only[\s\S]*?justify-content: center/);
   assert.match(
     runView,

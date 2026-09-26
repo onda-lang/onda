@@ -5,6 +5,15 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.14]
+
+### Fixed
+
+- The shared web run view now scrolls the document instead of a nested panel, fixing misplaced
+  scope graphics and missing controls when embedded editors reopen at a saved scroll position on
+  macOS. The MIDI keyboard remains pinned to the bottom of the viewport.
+- Buttons no longer flash the initial dark palette while the run view loads in a light theme.
+
 ## [0.8.13]
 
 ### Fixed
@@ -889,6 +898,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.14]: https://github.com/onda-lang/onda/compare/0.8.13...0.8.14
 [0.8.13]: https://github.com/onda-lang/onda/compare/0.8.12...0.8.13
 [0.8.12]: https://github.com/onda-lang/onda/compare/0.8.11...0.8.12
 [0.8.11]: https://github.com/onda-lang/onda/compare/0.8.10...0.8.11

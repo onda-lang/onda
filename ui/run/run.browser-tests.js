@@ -35,12 +35,26 @@ const params = [
 ];
 try {
   const shell = document.querySelector(".shell");
+  const scrollNode = document.scrollingElement;
+  const resetButton = document.getElementById("reset-params");
   check(getComputedStyle(shell).visibility === "hidden",
     "run view stays hidden until its first host state");
+  check(getComputedStyle(resetButton).transitionDuration === "0s",
+    "buttons do not animate the initial theme while the view is pending");
   send({ running: true, connected: true, path: "test.onda", status: "Active",
     supportsTransport: false, supportsViewState: true, events, params });
   check(getComputedStyle(shell).visibility === "visible",
     "a first host state without view state reveals the run view");
+  check(getComputedStyle(resetButton).transitionDuration === "0.12s, 0.12s, 0.12s",
+    "button transitions resume after the view is ready");
+  check(document.getElementById("midi-keyboard").hidden,
+    "the run view starts without a MIDI keyboard");
+  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  scrollNode.scrollTop = 160;
+  check(scrollNode.scrollTop > 0 && shell.scrollTop === 0,
+    "the document scrolls when no MIDI keyboard is shown");
+  scrollNode.scrollTop = 0;
+  shell.style.minHeight = "";
   const midiVelocity = document.getElementById("midi-velocity");
   check(midiVelocity?.getAttribute("role") === "slider",
     "MIDI velocity uses the shared slider control");
@@ -255,8 +269,11 @@ try {
   velocitySlider.dispatchEvent(new KeyboardEvent("keydown", {
     key: "ArrowRight", bubbles: true, cancelable: true,
   }));
-  shell.style.height = "300px";
-  shell.scrollTop = 200;
+  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  check(scrollNode.scrollHeight > scrollNode.clientHeight
+    && getComputedStyle(shell).overflowY !== "auto",
+    "the document owns run view scrolling");
+  scrollNode.scrollTop = 200;
   await new Promise(resolve => setTimeout(resolve, 130));
   const savedView = window.__testMessages.findLast(message => message.type === "viewState")?.state;
   check(savedView?.octave === 2 && savedView.events[0].drafts[0][0] === '{"unfinished":'
@@ -292,9 +309,9 @@ try {
   check(!document.querySelector(".event-structured-arg").open
     && !document.querySelector(".param-array").open
     && document.getElementById("events-toggle").getAttribute("aria-expanded") === "false"
-    && shell.scrollTop > 0,
+    && scrollNode.scrollTop > 0,
     "view restore recovers folds and scroll position");
-  shell.style.height = "";
+  shell.style.minHeight = "";
 
   send({ viewState: { reset: true, readyId: 42 }, events: structuredEvents,
     resetEventArguments: true });
@@ -364,26 +381,26 @@ try {
 
   await waitFrames(3);
   const beforeSuperseded = restoreCount();
-  shell.style.height = "300px";
+  shell.style.minHeight = `${window.innerHeight + 400}px`;
   send({ path: "test.onda", connected: true, status: "Active",
     events: structuredEvents, viewState: savedView });
   await waitFrames(2);
-  check(shell.scrollTop > 0 && restoreCount() === beforeSuperseded,
+  check(scrollNode.scrollTop > 0 && restoreCount() === beforeSuperseded,
     "the prior file can scroll before its readiness callback runs");
   send({ path: "next.onda", connected: true, status: "Next",
     events: structuredEvents });
   await waitFrames(3);
-  check(shell.scrollTop === 0 && restoreCount() === beforeSuperseded + 1,
+  check(scrollNode.scrollTop === 0 && restoreCount() === beforeSuperseded + 1,
     "a newer file resets prior scroll and reports only its own readiness");
-  shell.scrollTop = 200;
-  check(shell.scrollTop > 0, "the current file can scroll after its restore completes");
+  scrollNode.scrollTop = 200;
+  check(scrollNode.scrollTop > 0, "the current file can scroll after its restore completes");
   const beforeOrdinarySwitch = restoreCount();
   send({ path: "third.onda", status: "Third", events: structuredEvents });
-  check(shell.scrollTop === 0 && restoreCount() === beforeOrdinarySwitch,
+  check(scrollNode.scrollTop === 0 && restoreCount() === beforeOrdinarySwitch,
     "a later file switch also starts at the top without reporting another restore");
 
   const beforeFailure = restoreCount();
-  shell.scrollTop = 0;
+  scrollNode.scrollTop = 0;
   send({ path: "test.onda", connected: false, status: "Compiling",
     error: "", events: [], viewState: savedView });
   send({ connected: false, status: "Stopped", error: "Compile failed" });
@@ -391,7 +408,7 @@ try {
   check(restoreCount() === beforeFailure,
     "an immediate compilation failure waits for the saved scroll position");
   await waitFrames(1);
-  check(shell.scrollTop > 0 && restoreCount() === beforeFailure + 1,
+  check(scrollNode.scrollTop > 0 && restoreCount() === beforeFailure + 1,
     "an immediate failure restores scroll before reporting readiness");
   const viewStatesBeforeFailureEdit = window.__testMessages.filter(
     message => message.type === "viewState").length;

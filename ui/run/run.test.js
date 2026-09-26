@@ -28,7 +28,7 @@ test("run view preserves editing across host updates", { timeout: 30_000 }, asyn
     await rm(profile, { recursive: true, force: true });
   });
   const bridge = `<script>
-    window.__hostBridge = { mode: "wry" };
+    window.__hostBridge = { mode: "wry", theme: "light" };
     window.__testMessages = [];
     window.ipc = { postMessage(message) {
       window.__testMessages.push(JSON.parse(message));

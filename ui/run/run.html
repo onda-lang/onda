@@ -120,10 +120,8 @@
         margin: 0;
         display: grid;
         grid-template-rows: minmax(0, 1fr) auto;
-        height: 100vh;
-        min-height: 0;
+        min-height: 100vh;
         padding: 0;
-        overflow: hidden;
         background: transparent;
         color: var(--text);
         font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
@@ -136,8 +134,6 @@
         width: 100%;
         margin: 0 auto;
         padding: 18px;
-        overflow-x: hidden;
-        overflow-y: auto;
       }
       html[data-run-view-pending] .shell { visibility: hidden; }
 
@@ -291,6 +287,10 @@
         font-weight: 700;
         cursor: pointer;
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+
+      html[data-run-view-pending] button {
+        transition: none;
       }
 
       button.primary {
@@ -812,7 +812,8 @@
       }
 
       .midi-keyboard {
-        position: relative;
+        position: sticky;
+        bottom: 0;
         z-index: 5;
         box-sizing: border-box;
         width: 100%;
@@ -1678,7 +1679,7 @@
         blockFrames: 256,
       };
 
-      const shellNode = document.querySelector(".shell");
+      const scrollNode = document.scrollingElement;
       const startButton = document.getElementById("start");
       const stopButton = document.getElementById("stop");
       const resetParamsButton = document.getElementById("reset-params");
@@ -1779,7 +1780,7 @@
         const cards = [...eventsNode.querySelectorAll(".event-card")];
         return {
           path: state.path,
-          scrollY: shellNode.scrollTop,
+          scrollY: scrollNode.scrollTop,
           logScrollY: logOutputNode.scrollTop,
           octave: midiOctave(),
           velocity: midiVelocityValue,
@@ -1939,7 +1940,7 @@
             pendingScroll = true;
             requestAnimationFrame(() => requestAnimationFrame(() => {
               if (generation !== viewRestoreGeneration) return;
-              shellNode.scrollTop = snapshot.scrollY;
+              scrollNode.scrollTop = snapshot.scrollY;
               finishViewStateRestore(generation, readyId);
             }));
             return;
@@ -1977,7 +1978,7 @@
       document.addEventListener("change", publishEditedViewState);
       document.addEventListener("click", publishViewState);
       document.addEventListener("toggle", publishViewState, true);
-      shellNode.addEventListener("scroll", scheduleScrollViewState, { passive: true });
+      window.addEventListener("scroll", scheduleScrollViewState, { passive: true });
       logOutputNode.addEventListener("scroll", scheduleScrollViewState, { passive: true });
       window.addEventListener("pagehide", () => {
         clearTimeout(scrollPublishTimer);
@@ -3175,7 +3176,7 @@
         }
         render();
         if (pathChanged && !savedViewState) {
-          shellNode.scrollTop = 0;
+          scrollNode.scrollTop = 0;
           logOutputNode.scrollTop = 0;
         }
         viewStateReady = true;
