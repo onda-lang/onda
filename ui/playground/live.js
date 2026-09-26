@@ -63,6 +63,7 @@ let context = null;
 let audioProcessor = null;
 let projectEditor = null;
 let compiling = false;
+let rerunRequested = false;
 let processingRequested = false;
 let runGeneration = 0;
 let projectSaveTimer = 0;
@@ -234,7 +235,13 @@ function handlePlaygroundShortcut(event) {
 }
 
 async function runProject() {
-  if (!compiler || compiling) return;
+  if (!compiler) return;
+  if (compiling) {
+    rerunRequested = true;
+    runGeneration += 1;
+    return;
+  }
+  rerunRequested = false;
   processingRequested = true;
   let options;
   const generation = ++runGeneration;
@@ -317,12 +324,28 @@ async function runProject() {
       ...editorBindings,
     });
   } catch (error) {
+    if (generation !== runGeneration) return;
     await closeAudioContext();
     runView.setError(error);
     setErrorStatus();
     reportSmokeResult({ ok: false, error: errorMessage(error) });
   } finally {
     compiling = false;
+    if (rerunRequested && processingRequested) void runProject();
+  }
+}
+
+async function applyCompileOptions() {
+  try {
+    const options = compileOptions();
+    saveCompileOptions(options);
+    const analysisUpdate = languageServer?.setAnalysisOptions(options);
+    const compilation = compiler ? runProject() : null;
+    await analysisUpdate;
+    await compilation;
+  } catch (error) {
+    runView.setError(error);
+    setErrorStatus();
   }
 }
 
@@ -1178,12 +1201,7 @@ newFileButton.addEventListener("click", () => {
 shareProjectButton.addEventListener("click", () => void shareProject());
 
 for (const select of [sampleRateEl, blockSizeEl]) {
-  select.addEventListener("change", () => {
-    const options = compileOptions();
-    saveCompileOptions(options);
-    languageServer?.setAnalysisOptions(options);
-    setStatus("Ready", "ready");
-  });
+  select.addEventListener("change", () => void applyCompileOptions());
 }
 editorFontSizeEl.addEventListener("input", () => {
   const fontSize = validEditorFontSize(editorFontSizeEl.value);

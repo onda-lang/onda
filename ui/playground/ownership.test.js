@@ -201,7 +201,7 @@ test("the empty native run view owns its compile settings", async () => {
   assert.match(runView, /id="run-block-size"/);
   assert.match(runView, /filePickerSettingsNode\.hidden = !supportsRunSettings/);
   assert.match(webview, /"supportsRunSettings": true/);
-  assert.match(runView, /blockFrames: 256/);
+  assert.match(runView, /blockFrames: 512/);
   assert.match(runView, /type: "setRunSettings"/);
 });
 
@@ -322,6 +322,33 @@ test("the browser editor starts loaded projects as soon as the compiler is ready
   assert.match(
     playground,
     /async function openProjectFile[\s\S]*?setStatus\("Project loaded", "ready"\);\s+await runProject\(\);/,
+  );
+});
+
+test("browser compile settings default to 1024 frames and recompile on change", async () => {
+  const [playground, examplePage, websitePage, runViewHost] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
+    readFile(resolve(repoRoot, "examples/web/onda_wasm_playground/index.html"), "utf8"),
+    readFile(resolve(repoRoot, "website/playground/index.html"), "utf8"),
+    readFile(resolve(repoRoot, "ui/playground/run-view-host.js"), "utf8"),
+  ]);
+
+  for (const page of [examplePage, websitePage]) {
+    assert.match(page, /<option value="1024" selected>1024 frames<\/option>/);
+    assert.doesNotMatch(page, /<option value="512" selected>/);
+  }
+  assert.match(runViewHost, /blockFrames: 1024/);
+  assert.match(
+    playground,
+    /async function applyCompileOptions\(\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,
+  );
+  assert.match(
+    playground,
+    /if \(compiling\) \{\s+rerunRequested = true;\s+runGeneration \+= 1;/,
+  );
+  assert.match(
+    playground,
+    /select\.addEventListener\("change", \(\) => void applyCompileOptions\(\)\)/,
   );
 });
 

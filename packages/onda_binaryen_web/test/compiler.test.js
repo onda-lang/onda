@@ -2132,6 +2132,248 @@ test("wraps i32 and full-domain i64 MIR ranges exactly", async () => {
   assert.equal(view.getBigInt64(state + 8, true), -1n);
 });
 
+test("elides singleton range-wrap slow paths before Binaryen optimization", async () => {
+  const mir = executableMir();
+  mir.state.push({
+    name: "singleton",
+    ty: 2,
+    persistence: "snapshot",
+    authored: true,
+  });
+  const thenStatements =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  thenStatements.unshift(assign(place("state", 1), {
+    kind: "intrinsic",
+    data: {
+      intrinsic: "range_wrap",
+      args: [local(0), constant("i32", 42), constant("i32", 42)],
+    },
+  }));
+
+  const artifact = compileMir(mir, { emitText: true, optimize: false });
+  assert.doesNotMatch(artifact.wat, /i32\.rem_u/);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+  const output = outputTable + 4;
+  new DataView(memory.buffer).setUint32(outputTable, output, true);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+  callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
+  assert.equal(new DataView(memory.buffer).getInt32(state + 4, true), 42);
+});
+
+test("optimizes power-of-two range wraps to source-width masks", async () => {
+  const mir = executableMir();
+  mir.types.push(type("scalar", "i64"));
+  mir.state.push(
+    { name: "narrow", ty: 2, persistence: "snapshot", authored: true },
+    { name: "wide", ty: 3, persistence: "snapshot", authored: true },
+  );
+  mir.functions[1].locals.push({ name: "wide_frame", ty: 3 });
+  const thenStatements =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  thenStatements.unshift(
+    assign(place("local", 6), {
+      kind: "cast",
+      data: { value: local(0), to: "i64" },
+    }),
+    assign(place("state", 1), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [local(0), constant("i32", 100), constant("i32", 107)],
+      },
+    }),
+    assign(place("state", 2), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [local(6), constant("i64", "100"), constant("i64", "107")],
+      },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true });
+  assert.doesNotMatch(artifact.wat, /i(?:32|64)\.rem_u/);
+  assert.match(artifact.wat, /i32\.and/);
+  assert.match(artifact.wat, /i64\.and/);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+  const output = outputTable + 4;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+  callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
+  assert.equal(view.getInt32(state + 4, true), 104);
+  assert.equal(view.getBigInt64(state + 8, true), 104n);
+});
+
+test("preserves integer range-wrap edge cases through optimization", async () => {
+  const mir = executableMir();
+  mir.types.push(type("scalar", "i64"));
+  mir.state.push(
+    {
+      name: "wrapped_i32",
+      ty: 2,
+      persistence: "snapshot",
+      authored: true,
+    },
+    {
+      name: "wrapped_i64",
+      ty: 3,
+      persistence: "snapshot",
+      authored: true,
+    },
+    {
+      name: "singleton_i32",
+      ty: 2,
+      persistence: "snapshot",
+      authored: true,
+    },
+    {
+      name: "power_of_two_i32",
+      ty: 2,
+      persistence: "snapshot",
+      authored: true,
+    },
+    {
+      name: "almost_full_i64",
+      ty: 3,
+      persistence: "snapshot",
+      authored: true,
+    },
+  );
+  mir.functions[1].locals.push(
+    { name: "negative_i32_index", ty: 2 },
+    { name: "wide_frame", ty: 3 },
+    { name: "negative_i64_index", ty: 3 },
+    { name: "positive_i32_index", ty: 2 },
+    { name: "maximum_i64_index", ty: 3 },
+  );
+  const thenStatements =
+    mir.functions[1].body.statements[3].kind.data.body.statements[1].kind.data
+      .then_block.statements;
+  thenStatements.unshift(
+    assign(place("local", 6), {
+      kind: "binary",
+      data: {
+        op: "add",
+        lhs: constant("i32", -13_920),
+        rhs: local(0),
+      },
+    }),
+    assign(place("local", 7), {
+      kind: "cast",
+      data: { value: local(0), to: "i64" },
+    }),
+    assign(place("local", 8), {
+      kind: "binary",
+      data: {
+        op: "add",
+        lhs: constant("i64", "-13920"),
+        rhs: local(7),
+      },
+    }),
+    assign(place("local", 9), {
+      kind: "binary",
+      data: {
+        op: "add",
+        lhs: constant("i32", 95_999),
+        rhs: local(0),
+      },
+    }),
+    assign(place("local", 10), {
+      kind: "binary",
+      data: {
+        op: "add",
+        lhs: constant("i64", "9223372036854775807"),
+        rhs: local(7),
+      },
+    }),
+    assign(place("state", 1), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [
+          local(6),
+          constant("i32", 0),
+          constant("i32", 95_999),
+        ],
+      },
+    }),
+    assign(place("state", 2), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [
+          local(8),
+          constant("i64", "0"),
+          constant("i64", "95999"),
+        ],
+      },
+    }),
+    assign(place("state", 3), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [local(6), constant("i32", 42), constant("i32", 42)],
+      },
+    }),
+    assign(place("state", 4), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [local(9), constant("i32", 100), constant("i32", 107)],
+      },
+    }),
+    assign(place("state", 5), {
+      kind: "intrinsic",
+      data: {
+        intrinsic: "range_wrap",
+        args: [
+          local(10),
+          constant("i64", "-9223372036854775808"),
+          constant("i64", "9223372036854775806"),
+        ],
+      },
+    }),
+  );
+
+  const artifact = compileMir(mir, { emitText: true });
+  assert.match(artifact.wat, /i32\.rem_u/);
+  assert.match(artifact.wat, /i64\.rem_u/);
+  const { instance } = await WebAssembly.instantiate(artifact.wasm);
+  const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+  const params = Number(__heap_base.value);
+  const state = params + artifact.metadata.runtime.param_size_bytes;
+  const outputTable = state + artifact.metadata.runtime.state_size_bytes;
+  const output = outputTable + 4;
+  const view = new DataView(memory.buffer);
+  view.setUint32(outputTable, output, true);
+  onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+  callProcess(onda_process, 0, outputTable, 0, 1, 3, params, state, 0, 0, 0, 0);
+  const stateValue = (name) => {
+    const entry = artifact.metadata.metadata.states.find((candidate) => candidate.name === name);
+    assert.ok(entry, `missing state '${name}'`);
+    const offset = state + entry.physical_state_byte_offset;
+    return entry.scalar === "i64"
+      ? view.getBigInt64(offset, true)
+      : view.getInt32(offset, true);
+  };
+  assert.equal(stateValue("wrapped_i32"), 82_080);
+  assert.equal(stateValue("wrapped_i64"), 82_080n);
+  assert.equal(stateValue("singleton_i32"), 42);
+  assert.equal(stateValue("power_of_two_i32"), 103);
+  assert.equal(stateValue("almost_full_i64"), -9_223_372_036_854_775_808n);
+});
+
 test("makes repeated source local names unique for Binaryen", () => {
   const mir = executableMir();
   mir.functions[1].locals[0].name = "reused";

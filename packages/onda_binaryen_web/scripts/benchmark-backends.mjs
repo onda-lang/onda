@@ -10,6 +10,7 @@ import {
   compileTrustedMir as compileMir,
   createDefaultImports,
 } from "../src/index.js";
+import { scalarSize, writeParameterDefaults } from "./wasm-memory.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -506,55 +507,6 @@ function flattenPorts(ports) {
   );
 }
 
-function writeParameterDefaults(memory, paramsPointer, params) {
-  for (const param of params) {
-    const values = (param.default_reprs ?? []).map((value) => ({
-      type: param.scalar,
-      value: JSON.parse(value),
-    }));
-    const elementSize = scalarSize(param.scalar);
-    for (const [index, value] of values.entries()) {
-      writeScalar(
-        memory,
-        paramsPointer + param.byte_offset + index * elementSize,
-        value.type,
-        value.value,
-      );
-    }
-  }
-}
-
-function flattenConstants(value) {
-  if (value.kind === "scalar") return [value.data];
-  if (value.kind === "aggregate") return value.data.flatMap(flattenConstants);
-  throw new Error(`unsupported MIR constant kind '${String(value.kind)}'`);
-}
-
-function writeScalar(memory, pointer, scalar, value) {
-  const view = new DataView(memory.buffer);
-  switch (scalar) {
-    case "bool": view.setUint8(pointer, value ? 1 : 0); break;
-    case "i32": view.setInt32(pointer, value, true); break;
-    case "i64": view.setBigInt64(pointer, BigInt(value), true); break;
-    case "f32": view.setFloat32(pointer, decodeFloat(value, 32), true); break;
-    case "f64": view.setFloat64(pointer, decodeFloat(value, 64), true); break;
-    default: throw new Error(`unsupported scalar type '${String(scalar)}'`);
-  }
-}
-
-function decodeFloat(value, width) {
-  if (typeof value === "number") return value;
-  const digits = value.startsWith("0x") ? value.slice(2) : "";
-  const bytes = new ArrayBuffer(width / 8);
-  const view = new DataView(bytes);
-  if (width === 32) {
-    view.setUint32(0, Number.parseInt(digits, 16), false);
-    return view.getFloat32(0, false);
-  }
-  view.setBigUint64(0, BigInt(`0x${digits}`), false);
-  return view.getFloat64(0, false);
-}
-
 function readScalars(memory, pointer, scalar, length) {
   switch (scalar) {
     case "bool":
@@ -570,13 +522,6 @@ function readScalars(memory, pointer, scalar, length) {
     default:
       throw new Error(`unsupported scalar type '${String(scalar)}'`);
   }
-}
-
-function scalarSize(scalar) {
-  if (scalar === "bool") return 1;
-  if (scalar === "i32" || scalar === "f32") return 4;
-  if (scalar === "i64" || scalar === "f64") return 8;
-  throw new Error(`unsupported scalar type '${String(scalar)}'`);
 }
 
 function benchmarkBufferChannelCount(buffer) {

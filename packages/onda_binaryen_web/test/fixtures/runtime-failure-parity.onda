@@ -1,0 +1,24 @@
+init:
+  i32_divisor: i32 = 1
+  i64_divisor: i64 = 1
+
+event set_i32_divisor(value: i32):
+  i32_divisor = value
+
+event set_i64_divisor(value: i64):
+  i64_divisor = value
+
+event divide_i32_now(value: i32):
+  i32_divisor = i32(1) / value
+
+event divide_i64_now(value: i64):
+  i64_divisor = i64(1) / value
+
+event remainder_i32_now(value: i32):
+  i32_divisor = i32(1) % value
+
+event remainder_i64_now(value: i64):
+  i64_divisor = i64(1) % value
+
+sample:
+  out1 = f32(i32(1) / i32_divisor) + f32(i64(1) / i64_divisor)

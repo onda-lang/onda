@@ -1,3 +1,41 @@
+outs:
+  out1
+  out2
+  out3
+  out4
+  out5
+  out6
+  out7
+  out8
+  out9
+  out10
+  out11
+  out12
+  out13
+  out14
+  out15
+  out16
+  out17
+  out18
+  out19
+  out20
+  out21
+  out22
+  out23
+  out24
+  out25
+  out26
+  out27
+  out28
+  out29
+  out30
+  out31
+  out32
+  out33
+  out34
+  out35
+  out36
+
 init:
   phase = 0.125
 
@@ -5,7 +43,41 @@ sample:
   phase = phase + 0.03125
   phase = phase - floor(phase)
   x = phase
-  narrow = sin(x) + cos(x) + tan(x) + tanh(x) + atan(x) + atan2(x, f32(0.5)) + exp(x) + log(f32(1.0) + x) + sqrt(x) + pow(x, f32(2.0)) + abs(-x) + floor(x) + ceil(x) + round(x) + trunc(x) + min(x, f32(0.5)) + max(x, f32(0.5)) + fma(x, f32(2.0), f32(0.125))
+  out1 = sin(x)
+  out2 = cos(x)
+  out3 = tan(x)
+  out4 = tanh(x)
+  out5 = atan(x)
+  out6 = atan2(x, f32(0.5))
+  out7 = exp(x)
+  out8 = log(f32(1.0) + x)
+  out9 = sqrt(x)
+  out10 = pow(x, f32(2.0))
+  out11 = abs(-x)
+  out12 = floor(x)
+  out13 = ceil(x)
+  out14 = round(x)
+  out15 = trunc(x)
+  out16 = min(x, f32(0.5))
+  out17 = max(x, f32(0.5))
+  out18 = fma(x, f32(2.0), f32(0.125))
+
   y: f64 = f64(x)
-  wide: f64 = sin(y) + cos(y) + tan(y) + tanh(y) + atan(y) + atan2(y, f64(0.5)) + exp(y) + log(f64(1.0) + y) + sqrt(y) + pow(y, f64(2.0)) + abs(-y) + floor(y) + ceil(y) + round(y) + trunc(y) + min(y, f64(0.5)) + max(y, f64(0.5)) + fma(y, f64(2.0), f64(0.125))
-  out1 = narrow + f32(wide)
+  out19 = f32(sin(y))
+  out20 = f32(cos(y))
+  out21 = f32(tan(y))
+  out22 = f32(tanh(y))
+  out23 = f32(atan(y))
+  out24 = f32(atan2(y, f64(0.5)))
+  out25 = f32(exp(y))
+  out26 = f32(log(f64(1.0) + y))
+  out27 = f32(sqrt(y))
+  out28 = f32(pow(y, f64(2.0)))
+  out29 = f32(abs(-y))
+  out30 = f32(floor(y))
+  out31 = f32(ceil(y))
+  out32 = f32(round(y))
+  out33 = f32(trunc(y))
+  out34 = f32(min(y, f64(0.5)))
+  out35 = f32(max(y, f64(0.5)))
+  out36 = f32(fma(y, f64(2.0), f64(0.125)))

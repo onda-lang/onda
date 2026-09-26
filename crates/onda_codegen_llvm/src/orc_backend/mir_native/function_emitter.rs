@@ -1577,19 +1577,22 @@ impl FunctionEmitter<'_, '_> {
                 ));
             }
             let scalar_ty = llvm_scalar_type(self.module.context, scalar);
-            let full_domain = match (args[1], args[2]) {
+            let (full_domain, singleton) = match (args[1], args[2]) {
                 (
                     onda_mir::Value::Constant(onda_mir::ScalarValue::I32(lower)),
                     onda_mir::Value::Constant(onda_mir::ScalarValue::I32(upper)),
-                ) => lower == i32::MIN && upper == i32::MAX,
+                ) => (lower == i32::MIN && upper == i32::MAX, lower == upper),
                 (
                     onda_mir::Value::Constant(onda_mir::ScalarValue::I64(lower)),
                     onda_mir::Value::Constant(onda_mir::ScalarValue::I64(upper)),
-                ) => lower == i64::MIN && upper == i64::MAX,
+                ) => (lower == i64::MIN && upper == i64::MAX, lower == upper),
                 _ => unreachable!("range_wrap bounds were validated as matching constants"),
             };
             if full_domain {
                 return Ok(lowered[0]);
+            }
+            if singleton {
+                return Ok(lowered[1]);
             }
             // In two's-complement arithmetic, this unsigned distance check is
             // equivalent to `lower <= value && value <= upper`, including
@@ -1660,15 +1663,19 @@ impl FunctionEmitter<'_, '_> {
             LLVMBuildCondBr(self.builder, below, below_block, above_block);
 
             LLVMPositionBuilderAtEnd(self.builder, below_block);
-            let distance_below = LLVMBuildSub(
+            // `lower - 1 - value` is the exact unsigned distance from a value
+            // below the range. Keep it in the equivalent `lower + ~value`
+            // form used by the Wasm backend so optimizer reassociation cannot
+            // move source-width wrapping across the unsigned remainder.
+            let complement = LLVMBuildNot(
                 self.builder,
-                LLVMBuildSub(
-                    self.builder,
-                    lowered[1],
-                    one,
-                    c_name("range_wrap_before_lower")?.as_ptr(),
-                ),
                 lowered[0],
+                c_name("range_wrap_complement")?.as_ptr(),
+            );
+            let distance_below = LLVMBuildAdd(
+                self.builder,
+                lowered[1],
+                complement,
                 c_name("range_wrap_distance_below")?.as_ptr(),
             );
             let below_remainder = LLVMBuildURem(

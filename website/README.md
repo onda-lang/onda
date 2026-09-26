@@ -20,7 +20,8 @@ During staging, the homepage includes `examples/basic/saw_filter_saturator.onda`
 displayed source and playground target cannot drift. The link does not load the compiler or start
 audio. The `/playground/` route loads the same `wasm-opt -O4` frontend and Binaryen
 backend, runs the real `onda lsp` implementation in the compiler worker, and offers only 44100/48000 Hz
-sample rates and 128/256/512/1024/2048-frame compile blocks (defaulting to 512). The editor keeps a
+sample rates and 128/256/512/1024/2048-frame compile blocks (defaulting to 1024). Changing either
+compile setting recompiles and restarts the current project. The editor keeps a
 multi-file virtual project in local storage and uses the same shared run webview as `onda-vscode`
 for audio, scope, parameters, events, and typed buffers. Declared buffers and fixed-array slots may
 remain unbound; they use neutral one-frame storage until the user selects a WAV or `.ondabuffer`.

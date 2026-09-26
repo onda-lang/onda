@@ -1,0 +1,97 @@
+init:
+  i32_negate: i32 = 0
+  i32_bit_not: i32 = 0
+  i32_add: i32 = 0
+  i32_subtract: i32 = 0
+  i32_multiply: i32 = 0
+  i32_divide: i32 = 0
+  i32_remainder: i32 = 0
+  i32_bit_and: i32 = 0
+  i32_bit_or: i32 = 0
+  i32_bit_xor: i32 = 0
+  i32_shift_left: i32 = 0
+  i32_shift_right: i32 = 0
+  i32_abs: i32 = 0
+  i32_minimum: i32 = 0
+  i32_maximum: i32 = 0
+  i32_equal = false
+  i32_not_equal = false
+  i32_less = false
+  i32_less_equal = false
+  i32_greater = false
+  i32_greater_equal = false
+  i32_cast_wide: i64 = 0
+
+  i64_negate: i64 = 0
+  i64_bit_not: i64 = 0
+  i64_add: i64 = 0
+  i64_subtract: i64 = 0
+  i64_multiply: i64 = 0
+  i64_divide: i64 = 0
+  i64_remainder: i64 = 0
+  i64_bit_and: i64 = 0
+  i64_bit_or: i64 = 0
+  i64_bit_xor: i64 = 0
+  i64_shift_left: i64 = 0
+  i64_shift_right: i64 = 0
+  i64_abs: i64 = 0
+  i64_minimum: i64 = 0
+  i64_maximum: i64 = 0
+  i64_equal = false
+  i64_not_equal = false
+  i64_less = false
+  i64_less_equal = false
+  i64_greater = false
+  i64_greater_equal = false
+  i64_cast_narrow: i32 = 0
+
+event exercise_i32(lhs: i32, rhs: i32, shift: i32):
+  i32_negate = -lhs
+  i32_bit_not = ~lhs
+  i32_add = lhs + rhs
+  i32_subtract = lhs - rhs
+  i32_multiply = lhs * rhs
+  i32_divide = lhs / rhs
+  i32_remainder = lhs % rhs
+  i32_bit_and = lhs & rhs
+  i32_bit_or = lhs | rhs
+  i32_bit_xor = lhs ^ rhs
+  i32_shift_left = lhs << shift
+  i32_shift_right = lhs >> shift
+  i32_abs = abs(lhs)
+  i32_minimum = min(lhs, rhs)
+  i32_maximum = max(lhs, rhs)
+  i32_equal = lhs == rhs
+  i32_not_equal = lhs != rhs
+  i32_less = lhs < rhs
+  i32_less_equal = lhs <= rhs
+  i32_greater = lhs > rhs
+  i32_greater_equal = lhs >= rhs
+  i32_cast_wide = i64(lhs)
+
+event exercise_i64(lhs: i64, rhs: i64, shift: i64):
+  i64_negate = -lhs
+  i64_bit_not = ~lhs
+  i64_add = lhs + rhs
+  i64_subtract = lhs - rhs
+  i64_multiply = lhs * rhs
+  i64_divide = lhs / rhs
+  i64_remainder = lhs % rhs
+  i64_bit_and = lhs & rhs
+  i64_bit_or = lhs | rhs
+  i64_bit_xor = lhs ^ rhs
+  i64_shift_left = lhs << shift
+  i64_shift_right = lhs >> shift
+  i64_abs = abs(lhs)
+  i64_minimum = min(lhs, rhs)
+  i64_maximum = max(lhs, rhs)
+  i64_equal = lhs == rhs
+  i64_not_equal = lhs != rhs
+  i64_less = lhs < rhs
+  i64_less_equal = lhs <= rhs
+  i64_greater = lhs > rhs
+  i64_greater_equal = lhs >= rhs
+  i64_cast_narrow = i32(lhs)
+
+sample:
+  out1 = 0.0

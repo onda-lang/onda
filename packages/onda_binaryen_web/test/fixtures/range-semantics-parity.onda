@@ -1,0 +1,69 @@
+init:
+  i32_non_power: i32 = 0 {range = 0..=95999, mode = wrap}
+  i32_signed: i32 = 0 {range = -3..=3, mode = wrap}
+  i32_power_two: i32 = 100 {range = 100..=107, mode = wrap}
+  i32_negative_power_two: i32 = -8 {range = -8..=-1, mode = wrap}
+  i32_cross_zero_power_two: i32 = -4 {range = -4..=3, mode = wrap}
+  i32_singleton: i32 = 42 {range = 42..=42, mode = wrap}
+  i32_singleton_min: i32 = -2147483648 {range = -2147483648..=-2147483648, mode = wrap}
+  i32_singleton_max: i32 = 2147483647 {range = 2147483647..=2147483647, mode = wrap}
+  i32_min_window: i32 = -2147483648 {range = -2147483648..=-2147483642, mode = wrap}
+  i32_max_window: i32 = 2147483641 {range = 2147483641..=2147483647, mode = wrap}
+  i32_large_non_power: i32 = 0 {range = -2000000000..=2000000000, mode = wrap}
+  i32_without_max: i32 = 0 {range = -2147483648..=2147483646, mode = wrap}
+  i32_without_min: i32 = 0 {range = -2147483647..=2147483647, mode = wrap}
+  i32_full: i32 = 0 {range = -2147483648..=2147483647, mode = wrap}
+  i32_clamped: i32 = 0 {range = -100..=100, mode = clamp}
+
+  i64_non_power: i64 = 0 {range = 0..=95999, mode = wrap}
+  i64_signed: i64 = 0 {range = -3..=3, mode = wrap}
+  i64_power_two: i64 = 100 {range = 100..=107, mode = wrap}
+  i64_negative_power_two: i64 = -8 {range = -8..=-1, mode = wrap}
+  i64_cross_zero_power_two: i64 = -4 {range = -4..=3, mode = wrap}
+  i64_singleton: i64 = 42 {range = 42..=42, mode = wrap}
+  i64_singleton_min: i64 = -9223372036854775808 {range = -9223372036854775808..=-9223372036854775808, mode = wrap}
+  i64_singleton_max: i64 = 9223372036854775807 {range = 9223372036854775807..=9223372036854775807, mode = wrap}
+  i64_min_window: i64 = -9223372036854775808 {range = -9223372036854775808..=-9223372036854775802, mode = wrap}
+  i64_max_window: i64 = 9223372036854775801 {range = 9223372036854775801..=9223372036854775807, mode = wrap}
+  i64_large_non_power: i64 = 0 {range = -5000000000000000000..=5000000000000000000, mode = wrap}
+  i64_without_max: i64 = 0 {range = -9223372036854775808..=9223372036854775806, mode = wrap}
+  i64_without_min: i64 = 0 {range = -9223372036854775807..=9223372036854775807, mode = wrap}
+  i64_full: i64 = 0 {range = -9223372036854775808..=9223372036854775807, mode = wrap}
+  i64_clamped: i64 = 0 {range = -100..=100, mode = clamp}
+
+event set_i32(value: i32):
+  i32_non_power = value
+  i32_signed = value
+  i32_power_two = value
+  i32_negative_power_two = value
+  i32_cross_zero_power_two = value
+  i32_singleton = value
+  i32_singleton_min = value
+  i32_singleton_max = value
+  i32_min_window = value
+  i32_max_window = value
+  i32_large_non_power = value
+  i32_without_max = value
+  i32_without_min = value
+  i32_full = value
+  i32_clamped = value
+
+event set_i64(value: i64):
+  i64_non_power = value
+  i64_signed = value
+  i64_power_two = value
+  i64_negative_power_two = value
+  i64_cross_zero_power_two = value
+  i64_singleton = value
+  i64_singleton_min = value
+  i64_singleton_max = value
+  i64_min_window = value
+  i64_max_window = value
+  i64_large_non_power = value
+  i64_without_max = value
+  i64_without_min = value
+  i64_full = value
+  i64_clamped = value
+
+sample:
+  out1 = 0.0

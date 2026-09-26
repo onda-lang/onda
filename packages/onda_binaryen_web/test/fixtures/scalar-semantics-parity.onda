@@ -1,0 +1,262 @@
+params:
+  i32_min: i32 = -2147483648
+  i32_max: i32 = 2147483647
+  i32_negative_one: i32 = -1
+  i32_shift: i32 = 35
+  i64_min: i64 = -9223372036854775808
+  i64_max: i64 = 9223372036854775807
+  i64_negative_one: i64 = -1
+  i64_shift: i64 = 67
+  narrow_zero: f32 = 0.0
+  narrow_value: f32 = -5.5
+  wide_zero: f64 = 0.0
+  wide_value: f64 = -5.5
+
+init:
+  i32_negate: i32 = 0
+  i32_bit_not: i32 = 0
+  i32_add: i32 = 0
+  i32_subtract: i32 = 0
+  i32_multiply: i32 = 0
+  i32_divide_overflow: i32 = 0
+  i32_remainder_overflow: i32 = 0
+  i32_divide_signed: i32 = 0
+  i32_remainder_signed: i32 = 0
+  i32_bit_and: i32 = 0
+  i32_bit_or: i32 = 0
+  i32_bit_xor: i32 = 0
+  i32_shift_left: i32 = 0
+  i32_shift_right: i32 = 0
+  i32_abs: i32 = 0
+  i32_minimum: i32 = 0
+  i32_maximum: i32 = 0
+  i32_equal = false
+  i32_not_equal = false
+  i32_less = false
+  i32_less_equal = false
+  i32_greater = false
+  i32_greater_equal = false
+
+  i64_negate: i64 = 0
+  i64_bit_not: i64 = 0
+  i64_add: i64 = 0
+  i64_subtract: i64 = 0
+  i64_multiply: i64 = 0
+  i64_divide_overflow: i64 = 0
+  i64_remainder_overflow: i64 = 0
+  i64_divide_signed: i64 = 0
+  i64_remainder_signed: i64 = 0
+  i64_bit_and: i64 = 0
+  i64_bit_or: i64 = 0
+  i64_bit_xor: i64 = 0
+  i64_shift_left: i64 = 0
+  i64_shift_right: i64 = 0
+  i64_abs: i64 = 0
+  i64_minimum: i64 = 0
+  i64_maximum: i64 = 0
+  i64_equal = false
+  i64_not_equal = false
+  i64_less = false
+  i64_less_equal = false
+  i64_greater = false
+  i64_greater_equal = false
+
+  cast_i32_to_i64: i64 = 0
+  cast_i64_to_i32: i32 = 0
+  cast_i32_to_f32: f32 = 0.0
+  cast_i32_to_f64: f64 = 0.0
+  cast_i64_to_f32: f32 = 0.0
+  cast_i64_to_f64: f64 = 0.0
+  cast_f32_to_f64: f64 = 0.0
+  cast_f64_to_f32: f32 = 0.0
+  cast_f32_to_i64: i64 = 0
+  cast_f64_to_i32: i32 = 0
+  cast_nan_to_i32: i32 = 1
+  cast_nan_to_i64: i64 = 1
+  cast_positive_infinity_to_i32: i32 = 0
+  cast_negative_infinity_to_i64: i64 = 0
+
+  narrow_negate: f32 = 0.0
+  narrow_add: f32 = 0.0
+  narrow_subtract: f32 = 0.0
+  narrow_multiply: f32 = 0.0
+  narrow_divide: f32 = 0.0
+  narrow_remainder: f32 = 0.0
+  narrow_abs: f32 = 0.0
+  narrow_floor: f32 = 0.0
+  narrow_ceil: f32 = 0.0
+  narrow_round: f32 = 0.0
+  narrow_trunc: f32 = 0.0
+  narrow_minimum_zero: f32 = 0.0
+  narrow_maximum_zero: f32 = 0.0
+  narrow_fma: f32 = 0.0
+  narrow_range_clamp: f32 = 0.0
+  narrow_nan_equal = true
+  narrow_nan_not_equal = false
+  narrow_nan_less = true
+  narrow_minimum_nan_is_nan = false
+  narrow_maximum_nan_is_nan = false
+  narrow_equal = false
+  narrow_not_equal = false
+  narrow_less = false
+  narrow_less_equal = false
+  narrow_greater = false
+  narrow_greater_equal = false
+
+  wide_negate: f64 = 0.0
+  wide_add: f64 = 0.0
+  wide_subtract: f64 = 0.0
+  wide_multiply: f64 = 0.0
+  wide_divide: f64 = 0.0
+  wide_remainder: f64 = 0.0
+  wide_abs: f64 = 0.0
+  wide_floor: f64 = 0.0
+  wide_ceil: f64 = 0.0
+  wide_round: f64 = 0.0
+  wide_trunc: f64 = 0.0
+  wide_minimum_zero: f64 = 0.0
+  wide_maximum_zero: f64 = 0.0
+  wide_fma: f64 = 0.0
+  wide_range_clamp: f64 = 0.0
+  wide_nan_equal = true
+  wide_nan_not_equal = false
+  wide_nan_less = true
+  wide_minimum_nan_is_nan = false
+  wide_maximum_nan_is_nan = false
+  wide_equal = false
+  wide_not_equal = false
+  wide_less = false
+  wide_less_equal = false
+  wide_greater = false
+  wide_greater_equal = false
+  logical_not = false
+  bool_equal = false
+  bool_not_equal = false
+
+sample:
+  i32_negate = -i32_min
+  i32_bit_not = ~i32_min
+  i32_add = i32_max + 1
+  i32_subtract = i32_min - 1
+  i32_multiply = i32_max * 3
+  i32_divide_overflow = i32_min / i32_negative_one
+  i32_remainder_overflow = i32_min % i32_negative_one
+  i32_divide_signed = i32(-17) / i32(5)
+  i32_remainder_signed = i32(-17) % i32(5)
+  i32_bit_and = i32_max & i32(1437226410)
+  i32_bit_or = i32_min | i32(1437226410)
+  i32_bit_xor = i32_min ^ i32_max
+  i32_shift_left = i32(1) << i32_shift
+  i32_shift_right = i32_min >> i32_shift
+  i32_abs = abs(i32_min)
+  i32_minimum = min(i32_min, i32_max)
+  i32_maximum = max(i32_min, i32_max)
+  i32_equal = i32_min == i32_min
+  i32_not_equal = i32_min != i32_max
+  i32_less = i32_min < i32_max
+  i32_less_equal = i32_min <= i32_min
+  i32_greater = i32_max > i32_min
+  i32_greater_equal = i32_max >= i32_max
+
+  i64_negate = -i64_min
+  i64_bit_not = ~i64_min
+  i64_add = i64_max + i64(1)
+  i64_subtract = i64_min - i64(1)
+  i64_multiply = i64_max * i64(3)
+  i64_divide_overflow = i64_min / i64_negative_one
+  i64_remainder_overflow = i64_min % i64_negative_one
+  i64_divide_signed = i64(-17) / i64(5)
+  i64_remainder_signed = i64(-17) % i64(5)
+  i64_bit_and = i64_max & i64(6172840429334713770)
+  i64_bit_or = i64_min | i64(6172840429334713770)
+  i64_bit_xor = i64_min ^ i64_max
+  i64_shift_left = i64(1) << i64_shift
+  i64_shift_right = i64_min >> i64_shift
+  i64_abs = abs(i64_min)
+  i64_minimum = min(i64_min, i64_max)
+  i64_maximum = max(i64_min, i64_max)
+  i64_equal = i64_min == i64_min
+  i64_not_equal = i64_min != i64_max
+  i64_less = i64_min < i64_max
+  i64_less_equal = i64_min <= i64_min
+  i64_greater = i64_max > i64_min
+  i64_greater_equal = i64_max >= i64_max
+
+  cast_i32_to_i64 = i64(i32_min)
+  cast_i64_to_i32 = i32(i64_max)
+  cast_i32_to_f32 = f32(i32_max)
+  cast_i32_to_f64 = f64(i32_min)
+  cast_i64_to_f32 = f32(i64_min)
+  cast_i64_to_f64 = f64(i64_max)
+  cast_f32_to_f64 = f64(narrow_value)
+  cast_f64_to_f32 = f32(wide_value)
+  cast_f32_to_i64 = i64(narrow_value)
+  cast_f64_to_i32 = i32(wide_value)
+  narrow_nan = narrow_zero / narrow_zero
+  wide_nan = wide_zero / wide_zero
+  cast_nan_to_i32 = i32(narrow_nan)
+  cast_nan_to_i64 = i64(wide_nan)
+  cast_positive_infinity_to_i32 = i32(f32(1.0) / narrow_zero)
+  cast_negative_infinity_to_i64 = i64(-f64(1.0) / wide_zero)
+
+  narrow_negate = -narrow_zero
+  narrow_add = narrow_value + f32(2.0)
+  narrow_subtract = narrow_value - f32(2.0)
+  narrow_multiply = narrow_value * f32(2.0)
+  narrow_divide = narrow_value / f32(2.0)
+  narrow_remainder = narrow_value % f32(2.0)
+  narrow_abs = abs(narrow_value)
+  narrow_floor = floor(narrow_value)
+  narrow_ceil = ceil(narrow_value)
+  narrow_round = round(narrow_value)
+  narrow_trunc = trunc(narrow_value)
+  narrow_minimum_zero = min(-narrow_zero, narrow_zero)
+  narrow_maximum_zero = max(-narrow_zero, narrow_zero)
+  narrow_fma = fma(narrow_value, f32(2.0), f32(0.5))
+  narrow_range_clamp = clamp(narrow_nan, f32(-1.0), f32(1.0))
+  narrow_nan_equal = narrow_nan == narrow_nan
+  narrow_nan_not_equal = narrow_nan != narrow_nan
+  narrow_nan_less = narrow_nan < narrow_zero
+  narrow_minimum_nan = min(narrow_nan, f32(1.0))
+  narrow_maximum_nan = max(narrow_nan, f32(1.0))
+  narrow_minimum_nan_is_nan = narrow_minimum_nan != narrow_minimum_nan
+  narrow_maximum_nan_is_nan = narrow_maximum_nan != narrow_maximum_nan
+  narrow_equal = narrow_value == narrow_value
+  narrow_not_equal = narrow_value != narrow_zero
+  narrow_less = narrow_value < narrow_zero
+  narrow_less_equal = narrow_value <= narrow_value
+  narrow_greater = narrow_zero > narrow_value
+  narrow_greater_equal = narrow_zero >= narrow_zero
+
+  wide_negate = -wide_zero
+  wide_add = wide_value + f64(2.0)
+  wide_subtract = wide_value - f64(2.0)
+  wide_multiply = wide_value * f64(2.0)
+  wide_divide = wide_value / f64(2.0)
+  wide_remainder = wide_value % f64(2.0)
+  wide_abs = abs(wide_value)
+  wide_floor = floor(wide_value)
+  wide_ceil = ceil(wide_value)
+  wide_round = round(wide_value)
+  wide_trunc = trunc(wide_value)
+  wide_minimum_zero = min(-wide_zero, wide_zero)
+  wide_maximum_zero = max(-wide_zero, wide_zero)
+  wide_fma = fma(wide_value, f64(2.0), f64(0.5))
+  wide_range_clamp = clamp(wide_nan, f64(-1.0), f64(1.0))
+  wide_nan_equal = wide_nan == wide_nan
+  wide_nan_not_equal = wide_nan != wide_nan
+  wide_nan_less = wide_nan < wide_zero
+  wide_minimum_nan = min(wide_nan, f64(1.0))
+  wide_maximum_nan = max(wide_nan, f64(1.0))
+  wide_minimum_nan_is_nan = wide_minimum_nan != wide_minimum_nan
+  wide_maximum_nan_is_nan = wide_maximum_nan != wide_maximum_nan
+  wide_equal = wide_value == wide_value
+  wide_not_equal = wide_value != wide_zero
+  wide_less = wide_value < wide_zero
+  wide_less_equal = wide_value <= wide_value
+  wide_greater = wide_zero > wide_value
+  wide_greater_equal = wide_zero >= wide_zero
+  logical_not = !narrow_nan_equal
+  bool_equal = narrow_equal == wide_equal
+  bool_not_equal = narrow_equal != narrow_nan_equal
+  out1 = 0.0

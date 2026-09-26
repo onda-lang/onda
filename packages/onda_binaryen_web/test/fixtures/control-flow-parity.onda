@@ -1,0 +1,64 @@
+const I32_MIN = -2147483647 - 1
+const I32_MIN_PLUS_ONE = -2147483647
+
+outs:
+  out1
+  out2
+  out3
+  out4
+  out5
+  out6
+
+def choose(flag: bool, other: bool):
+  result = 0
+  if flag && other:
+    result += 1
+  if flag || other:
+    result += 2
+  return result
+
+def guarded_short_circuit():
+  result = 0
+  if false && i32(1) / i32(0) == 0:
+    result = 1
+  if true || i32(1) / i32(0) == 0:
+    result += 7
+  return result
+
+sample:
+  visits = 0
+  for i in 2147483647..=2147483647:
+    visits += 1
+    continue
+  for i @ 2 in 2147483646..=2147483647:
+    visits += 1
+    continue
+  for i @ -1 in I32_MIN..=I32_MIN:
+    visits += 1
+    continue
+  for i @ -2 in I32_MIN_PLUS_ONE..=I32_MIN:
+    visits += 1
+    continue
+
+  total = 0
+  for i @ 3 in 0..=10:
+    total += i
+  for i @ -3 in 10..=0:
+    total += i
+
+  count = 0
+  loop_sum = 0
+  while count < 6:
+    count += 1
+    if count == 2:
+      continue
+    if count == 5:
+      break
+    loop_sum += count
+
+  out1 = f32(visits)
+  out2 = f32(total)
+  out3 = f32(loop_sum)
+  out4 = f32(choose(true, false))
+  out5 = f32(choose(true, true))
+  out6 = f32(guarded_short_circuit())

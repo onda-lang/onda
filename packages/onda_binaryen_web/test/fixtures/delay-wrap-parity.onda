@@ -1,0 +1,9 @@
+import std/delay
+
+init:
+  delay = std::delay<8>::Integer(delay_samples = 3)
+  input = 1.0
+
+sample:
+  out1 = delay(input)
+  input += 1.0

@@ -2063,9 +2063,79 @@ sample:
 }
 
 #[test]
+fn singleton_range_wraps_eliminate_slow_paths_at_o0() {
+    let source = r#"
+params:
+  narrow: i32 = -2147483648
+  wide: i64 = 9223372036854775807
+
+init:
+  narrow_singleton: i32 = 42 {range = 42..=42, mode = wrap}
+  wide_singleton: i64 = -7 {range = -7..=-7, mode = wrap}
+
+sample:
+  narrow_singleton = narrow
+  wide_singleton = wide
+  out1 = f32(narrow_singleton)
+  out2 = f32(wide_singleton)
+"#;
+    let (_, mir) = source_program(source, 1);
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O0,
+        },
+    )
+    .expect("singleton range wraps should emit LLVM IR");
+    assert!(!ir.contains("range_wrap_slow"), "{ir}");
+    assert!(!ir.contains("urem"), "{ir}");
+
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let outputs = run_native_outputs_with_opt_level(source, 1, level);
+        assert_eq!(outputs[0], [42.0]);
+        assert_eq!(outputs[1], [-7.0]);
+    }
+}
+
+#[test]
+fn optimized_power_of_two_range_wraps_use_source_width_masks() {
+    let source = r#"
+params:
+  narrow: i32 = -2147483648
+  wide: i64 = 9223372036854775807
+
+init:
+  narrow_wrapped: i32 = 100 {range = 100..=107, mode = wrap}
+  wide_wrapped: i64 = 100 {range = 100..=107, mode = wrap}
+
+sample:
+  narrow_wrapped = narrow
+  wide_wrapped = wide
+  out1 = f32(narrow_wrapped)
+  out2 = f32(wide_wrapped)
+"#;
+    let (_, mir) = source_program(source, 1);
+    let ir = lower_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O3,
+        },
+    )
+    .expect("power-of-two range wraps should emit optimized LLVM IR");
+    assert!(!ir.contains("urem"), "{ir}");
+    assert!(ir.contains("and i32"), "{ir}");
+    assert!(ir.contains("and i64"), "{ir}");
+
+    let outputs = run_native_outputs_with_opt_level(source, 1, TargetOptLevel::O3);
+    assert_eq!(outputs[0], [104.0]);
+    assert_eq!(outputs[1], [103.0]);
+}
+
+#[test]
 fn range_wrap_slow_paths_preserve_inclusive_signed_semantics() {
-    let outputs = run_native_outputs(
-        r#"
+    let i32_source = r#"
 init:
   descending: i32 = -2 {-2..3, wrap}
   ascending: i32 = 2 {-2..3, wrap}
@@ -2075,14 +2145,9 @@ sample:
   ascending += 2
   out1 = f32(descending)
   out2 = f32(ascending)
-"#,
-        5,
-    );
-    assert_eq!(outputs[0], [1.0, -1.0, 2.0, 0.0, -2.0]);
-    assert_eq!(outputs[1], [-1.0, 1.0, -2.0, 0.0, 2.0]);
+"#;
 
-    let wide_outputs = run_native_outputs(
-        r#"
+    let i64_source = r#"
 params:
   below_step: i64 = -9223372036854775807
   above_step: i64 = 9223372036854775807
@@ -2096,11 +2161,17 @@ sample:
   above += above_step
   out1 = f32(below)
   out2 = f32(above)
-"#,
-        1,
-    );
-    assert_eq!(wide_outputs[0], [2.0]);
-    assert_eq!(wide_outputs[1], [-3.0]);
+"#;
+
+    for level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let outputs = run_native_outputs_with_opt_level(i32_source, 5, level);
+        assert_eq!(outputs[0], [1.0, -1.0, 2.0, 0.0, -2.0]);
+        assert_eq!(outputs[1], [-1.0, 1.0, -2.0, 0.0, 2.0]);
+
+        let wide_outputs = run_native_outputs_with_opt_level(i64_source, 1, level);
+        assert_eq!(wide_outputs[0], [2.0]);
+        assert_eq!(wide_outputs[1], [-3.0]);
+    }
 }
 
 #[test]

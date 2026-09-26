@@ -5,6 +5,27 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.16]
+
+### Changed
+
+- The browser editor now defaults to 1024-frame compile blocks and recompiles and restarts the
+  current project when its sample rate or block size changes. Rapid setting changes discard stale
+  in-flight compilations and apply the latest selection.
+- `onda run` and `onda run play` now default to 512-frame blocks.
+- Expanded native LLVM and optimized/unoptimized WebAssembly differential coverage across the
+  complete strict scalar operation, cast, and math-intrinsic surfaces; deterministic i32 and i64
+  stress cases; range edges; control flow; aggregate and slice mutation; parameter arrays;
+  snapshots; events; delegates; prints; runtime failures; and delay ring-buffer wrapping.
+
+### Fixed
+
+- Fixed optimized WebAssembly i32 and i64 range wrapping below the lower bound, including
+  singleton, power-of-two, almost-full, and full-domain ranges. Circular delay indices now remain
+  continuous instead of introducing clicks that the delay feedback path could repeat and amplify.
+- Preserved exact i64 and non-finite floating-point parameter defaults in the WebAssembly parity
+  and benchmark runners instead of rounding integers or parsing IEEE bit patterns as JSON.
+
 ## [0.8.15]
 
 ### Fixed
@@ -907,6 +928,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.16]: https://github.com/onda-lang/onda/compare/0.8.15...0.8.16
 [0.8.15]: https://github.com/onda-lang/onda/compare/0.8.14...0.8.15
 [0.8.14]: https://github.com/onda-lang/onda/compare/0.8.13...0.8.14
 [0.8.13]: https://github.com/onda-lang/onda/compare/0.8.12...0.8.13

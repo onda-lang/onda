@@ -1159,7 +1159,6 @@ export class MirCompiler extends MirCompilerLowering {
     const scalar = data.args.length
       ? this.valueScalarType(data.args[0], context)
       : expectedScalar;
-    const args = data.args.map((value) => this.compileValue(value, context));
     const isFloat = scalar === "f32" || scalar === "f64";
     const isInteger = scalar === "i32" || scalar === "i64";
     if (!isFloat && !isInteger) {
@@ -1212,37 +1211,45 @@ export class MirCompiler extends MirCompilerLowering {
           const bits = scalar === "i64" ? 64n : 32n;
           const width = upper - lower + 1n;
           if (width === (1n << bits)) return arg(0);
+          if (width === 1n) return arg(1);
           const encodedWidth = BigInt.asIntN(Number(bits), width);
-          const widthValue = scalar === "i64"
+          const widthValue = () => scalar === "i64"
             ? this.module.i64.const(encodedWidth)
             : this.module.i32.const(Number(encodedWidth));
           const encodedSpan = BigInt.asIntN(Number(bits), width - 1n);
-          const spanValue = scalar === "i64"
+          const spanValue = () => scalar === "i64"
             ? this.module.i64.const(encodedSpan)
             : this.module.i32.const(Number(encodedSpan));
           const one = scalar === "i64"
             ? this.module.i64.const(1n)
             : this.module.i32.const(1);
+          const allOnes = scalar === "i64"
+            ? this.module.i64.const(-1n)
+            : this.module.i32.const(-1);
           const distanceFromLower = lower === 0n
             ? arg(0)
             : wasm.sub(arg(0), arg(1));
           return this.module.if(
-            wasm.le_u(distanceFromLower, spanValue),
+            wasm.le_u(distanceFromLower, spanValue()),
             arg(0),
             this.module.if(
               wasm.lt_s(arg(0), arg(1)),
               wasm.sub(
                 arg(2),
                 wasm.rem_u(
-                  wasm.sub(wasm.sub(arg(1), one), arg(0)),
-                  widthValue,
+                  // `lower - 1 - value` is the exact unsigned distance from
+                  // a value below the range. Express it as `lower + ~value`
+                  // so optimization preserves the source-width wrap instead
+                  // of reassociating subtraction across the unsigned modulo.
+                  wasm.add(arg(1), wasm.xor(arg(0), allOnes)),
+                  widthValue(),
                 ),
               ),
               wasm.add(
                 arg(1),
                 wasm.rem_u(
                   wasm.sub(arg(0), wasm.add(arg(2), one)),
-                  widthValue,
+                  widthValue(),
                 ),
               ),
             ),
@@ -1253,6 +1260,7 @@ export class MirCompiler extends MirCompilerLowering {
       }
     }
 
+    const args = data.args.map((value) => this.compileValue(value, context));
     switch (data.intrinsic) {
       case "sqrt": return wasm.sqrt(args[0]);
       case "abs": return wasm.abs(args[0]);

@@ -13,13 +13,12 @@ mod run_cmd;
 use args::parse_args;
 use compile_cmd::run_compile;
 use onda_codegen_llvm::{TargetConfig, TargetOptLevel};
-use onda_run::{RunThemeMode, DEFAULT_REALTIME_BLOCK_FRAMES};
+use onda_run::RunThemeMode;
 use run_cmd::{run_daemon, run_run};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
 const DEFAULT_BLOCK_FRAMES: usize = 512;
-const DEFAULT_PLAY_BLOCK_FRAMES: usize = DEFAULT_REALTIME_BLOCK_FRAMES;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -74,7 +73,7 @@ const USAGE_BODY: &str = r#"Commands:
 Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
-  --block-size, -b       Block size in frames (default: 512; run/play: 256)
+  --block-size, -b       Block size in frames (default: 512)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command

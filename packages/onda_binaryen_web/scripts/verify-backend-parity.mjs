@@ -1,4 +1,13 @@
-import { PayloadPlan, writeEventInput } from "@onda-lang/processor-abi";
+import {
+  PayloadPlan,
+  decodeDelegateBatch,
+  formatPrintBatch,
+  resetExecutionOutput,
+  writeDelegateBatch,
+  writeEventInput,
+  writeExecutionOutput,
+  writePrintBatch,
+} from "@onda-lang/processor-abi";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -8,10 +17,12 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import {
+  PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   compileTrustedMir as compileMir,
   createDefaultImports,
 } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
+import { scalarSize, writeParameterDefaults } from "./wasm-memory.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -21,6 +32,10 @@ const sampleRate = 48_000;
 const blockSize = 4;
 const absoluteTolerance = 1e-6;
 const relativeTolerance = 1e-6;
+const wasmConfigurations = [
+  { name: "Binaryen O4", options: {} },
+  { name: "Binaryen unoptimized", options: { optimize: false } },
+];
 
 const scenarios = [
   {
@@ -31,6 +46,7 @@ const scenarios = [
   {
     name: "nested aggregate routing through proc events and delegates",
     source: join(packageDir, "test/fixtures/structured-message-routing.onda"),
+    expectedDelegateNames: ["configured", "configured"],
     actions: [
       { kind: "event", name: "exercise", values: [] },
       { kind: "render" },
@@ -54,6 +70,7 @@ const scenarios = [
   {
     name: "structured messages, tuple defaults, proc routing, and host publication",
     source: join(packageDir, "test/fixtures/structured-messages.onda"),
+    expectedDelegateNames: ["configured", "configured"],
     actions: [
       { kind: "event", name: "configure", values: [] },
       { kind: "render" },
@@ -61,6 +78,25 @@ const scenarios = [
       { kind: "event", name: "change", values: [[7, 11]] },
       { kind: "render" },
       { kind: "restore" },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "init, event, block, and sample print batches",
+    source: join(packageDir, "test/fixtures/execution-output-parity.onda"),
+    expectedDelegateNames: Array(8).fill("observed"),
+    expectedPrintText:
+      "init: -2147483648 -9223372036854775808 true 1 1 0.0\n"
+      + "init: -2147483648 -9223372036854775808 true 4 1 1.0\n"
+      + "init: -2147483648 -9223372036854775808 true 4 4 2.0\n"
+      + "event: 9223372036854775807 false\n"
+      + "block: 0\nsample: -0.0 1.25\n"
+      + "event: -9223372036854775808 false\n"
+      + "block: 4\n",
+    actions: [
+      { kind: "event", name: "report", values: ["9223372036854775807"] },
+      { kind: "render" },
+      { kind: "event", name: "report", values: ["-9223372036854775808"] },
       { kind: "render" },
     ],
   },
@@ -98,9 +134,42 @@ const scenarios = [
     blocks: 3,
   },
   {
+    name: "nested aggregate, fixed-array, and slice mutation semantics",
+    source: join(packageDir, "test/fixtures/slice-semantics.onda"),
+    actions: [
+      { kind: "event", name: "seed", values: [2, [1, 3, 5], 0.5] },
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "render" },
+    ],
+  },
+  {
     name: "params, calls, tuples, and persistent state",
     source: join(packageDir, "test/fixtures/language-slice.onda"),
     blocks: 2,
+  },
+  {
+    name: "loops, endpoint induction, branches, and short-circuit control flow",
+    source: join(packageDir, "test/fixtures/control-flow-parity.onda"),
+    blocks: 2,
+    expectedChannels: [
+      Array(8).fill(4),
+      Array(8).fill(40),
+      Array(8).fill(8),
+      Array(8).fill(2),
+      Array(8).fill(3),
+      Array(8).fill(7),
+    ],
+  },
+  {
+    name: "parameter arrays across initialization, events, and snapshots",
+    source: join(packageDir, "test/fixtures/param-array-snapshots.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "event", name: "capture", values: [] },
+      { kind: "render" },
+    ],
   },
   {
     name: "external buffer reads, writes, and metadata",
@@ -198,6 +267,72 @@ const scenarios = [
     blocks: 2,
   },
   {
+    name: "oracle-checked i32 and i64 operation semantics",
+    source: join(packageDir, "test/fixtures/integer-semantics-parity.onda"),
+    actions: integerSemanticsActions(),
+  },
+  {
+    name: "stdlib delay reads across ring-index wrap boundaries",
+    source: join(packageDir, "test/fixtures/delay-wrap-parity.onda"),
+    blocks: 5,
+    expectedChannels: [[0, 0, 0, ...Array.from({ length: 17 }, (_, index) => index + 1)]],
+  },
+  {
+    name: "process runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "event", name: "set_i32_divisor", values: [0] },
+      { kind: "render_failure" },
+    ],
+  },
+  {
+    name: "i64 process runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "event", name: "set_i64_divisor", values: ["0"] },
+      { kind: "render_failure" },
+    ],
+  },
+  {
+    name: "i32 division event runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "event_failure", name: "divide_i32_now", values: [0] },
+    ],
+  },
+  {
+    name: "i64 division event runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "event_failure", name: "divide_i64_now", values: ["0"] },
+    ],
+  },
+  {
+    name: "i32 remainder event runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "event_failure", name: "remainder_i32_now", values: [0] },
+    ],
+  },
+  {
+    name: "i64 remainder event runtime safety failures",
+    source: join(packageDir, "test/fixtures/runtime-failure-parity.onda"),
+    actions: [
+      { kind: "event_failure", name: "remainder_i64_now", values: ["0"] },
+    ],
+  },
+  {
+    name: "complete strict scalar operation and cast surface",
+    source: join(packageDir, "test/fixtures/scalar-semantics-parity.onda"),
+    actions: [{ kind: "render" }, { kind: "snapshot" }],
+  },
+  {
+    name: "i32 and i64 range normalization across signed-domain edges",
+    source: join(packageDir, "test/fixtures/range-semantics-parity.onda"),
+    actions: rangeSemanticsActions(),
+  },
+  {
     name: "strict float non-finite, signed-zero, and width-rounding behavior",
     source: join(packageDir, "test/fixtures/strict-float-parity.onda"),
     actions: [{ kind: "render" }, { kind: "snapshot" }],
@@ -218,27 +353,55 @@ try {
   for (const [scenarioIndex, scenario] of scenarios.entries()) {
     const mirPath = join(temporary, `scenario-${scenarioIndex}.mir.msgpack`);
     compileSourceToMir(scenario.source, mirPath);
-    const artifact = compileMir(readFileSync(mirPath));
-
-    const native = await renderNativeBlocks(scenario, artifact.metadata);
-    const wasm = await renderWasmBlocks(artifact, scenario);
-    const comparison = compareChannels(
-      scenario.name,
-      native,
-      wasm,
-      scenario.comparison ?? "exact",
+    const mir = readFileSync(mirPath);
+    const artifacts = wasmConfigurations.map((configuration) => ({
+      configuration,
+      artifact: compileMir(mir, configuration.options),
+    }));
+    const native = await renderNativeBlocks(scenario, artifacts[0].artifact.metadata);
+    verifyChannelExpectations(`${scenario.name} (LLVM)`, scenario, native);
+    verifySnapshotExpectations(
+      `${scenario.name} (LLVM)`,
+      artifacts[0].artifact.metadata,
+      scenario,
+      native.snapshots,
     );
-    compareSnapshots(scenario.name, native.snapshots, wasm.snapshots);
-    if (comparison.mode === "exact") exactSamples += comparison.samples;
-    else approximateSamples += comparison.samples;
-    maximumAbsoluteError = Math.max(
-      maximumAbsoluteError,
-      comparison.maximumAbsoluteError,
-    );
+    verifyExecutionExpectations(`${scenario.name} (LLVM)`, scenario, native);
+    for (const { configuration, artifact } of artifacts) {
+      const label = `${scenario.name} (${configuration.name})`;
+      const wasm = await renderWasmBlocks(artifact, scenario);
+      verifyChannelExpectations(label, scenario, wasm);
+      verifySnapshotExpectations(
+        label,
+        artifact.metadata,
+        scenario,
+        wasm.snapshots,
+      );
+      verifyExecutionExpectations(label, scenario, wasm);
+      const comparison = compareChannels(
+        label,
+        native,
+        wasm,
+        scenario.comparison ?? "exact",
+      );
+      compareSnapshots(
+        label,
+        native.snapshots,
+        wasm.snapshots,
+        artifact.metadata,
+      );
+      compareExecutionBatches(label, native, wasm);
+      if (comparison.mode === "exact") exactSamples += comparison.samples;
+      else approximateSamples += comparison.samples;
+      maximumAbsoluteError = Math.max(
+        maximumAbsoluteError,
+        comparison.maximumAbsoluteError,
+      );
+    }
   }
 
   process.stdout.write(
-    `Verified native LLVM/MIR-Binaryen parity: ${scenarios.length} scenarios, ${exactSamples} bit-exact samples, ${approximateSamples} approximate samples, max approximate abs error ${maximumAbsoluteError.toExponential(3)} (abs ${absoluteTolerance}, rel ${relativeTolerance})\n`,
+    `Verified native LLVM/MIR-Binaryen parity: ${scenarios.length} scenarios x ${wasmConfigurations.length} Binaryen configurations, ${exactSamples} bit-exact samples, ${approximateSamples} approximate samples, max approximate abs error ${maximumAbsoluteError.toExponential(3)} (abs ${absoluteTolerance}, rel ${relativeTolerance})\n`,
   );
 } finally {
   rmSync(temporary, { recursive: true, force: true });
@@ -268,10 +431,13 @@ async function renderNativeBlocks(scenario, metadata) {
   const actions = scenarioActions(scenario);
   const daemon = createNativeDaemon();
   let requestId = 0;
-  const request = (body) => daemon.request({ id: ++requestId, ...body });
+  const request = (body, options) =>
+    daemon.request({ id: ++requestId, ...body }, options);
   const renderedBlocks = [];
   const renderedBitBlocks = [];
   const snapshots = [];
+  const delegateBatches = [];
+  const printBatches = [];
   let savedSnapshot = null;
   try {
     await request({
@@ -280,10 +446,12 @@ async function renderNativeBlocks(scenario, metadata) {
       block_frames: blockSize,
       fast_math: false,
     });
-    await request({ command: "run_start", path: source });
+    const start = await request({ command: "run_start", path: source });
+    delegateBatches.push(emptyDelegateBatch());
+    printBatches.push(canonicalPrintBatch(start.result.print, metadata));
     for (const buffer of metadata.metadata.buffers) {
       const channels = bufferChannelCount(buffer);
-      await request({
+      const binding = await request({
         command: "run_bind_buffer",
         path: source,
         name: buffer.name,
@@ -291,6 +459,8 @@ async function renderNativeBlocks(scenario, metadata) {
         channels,
         sample_rate_hz: sampleRate,
       });
+      delegateBatches.push(emptyDelegateBatch());
+      printBatches.push(canonicalPrintBatch(binding.result.print, metadata));
     }
     for (const action of actions) {
       let response;
@@ -300,6 +470,19 @@ async function renderNativeBlocks(scenario, metadata) {
           path: source,
           include_sample_bits: (scenario.comparison ?? "exact") === "exact",
         });
+      } else if (action.kind === "render_failure") {
+        response = await request({
+          command: "run_render",
+          path: source,
+        }, { allowFailure: true });
+        requireNativeRuntimeSafetyFailure(response, "native LLVM render");
+        collectNativeExecutionBatches(
+          response,
+          metadata,
+          delegateBatches,
+          printBatches,
+        );
+        continue;
       } else if (action.kind === "segments") {
         response = await request({
           command: "run_render_segments",
@@ -308,12 +491,36 @@ async function renderNativeBlocks(scenario, metadata) {
           include_sample_bits: (scenario.comparison ?? "exact") === "exact",
         });
       } else if (action.kind === "event") {
-        await request({
+        response = await request({
           command: "run_trigger_event",
           path: source,
           name: action.name,
           values: action.values,
         });
+        collectNativeExecutionBatches(
+          response,
+          metadata,
+          delegateBatches,
+          printBatches,
+        );
+        continue;
+      } else if (action.kind === "event_failure") {
+        response = await request({
+          command: "run_trigger_event",
+          path: source,
+          name: action.name,
+          values: action.values,
+        }, { allowFailure: true });
+        requireNativeRuntimeSafetyFailure(
+          response,
+          `native LLVM event '${action.name}'`,
+        );
+        collectNativeExecutionBatches(
+          response,
+          metadata,
+          delegateBatches,
+          printBatches,
+        );
         continue;
       } else if (action.kind === "snapshot") {
         response = await request({ command: "run_snapshot", path: source });
@@ -333,6 +540,12 @@ async function renderNativeBlocks(scenario, metadata) {
       } else {
         throw new Error(`unknown native parity action '${String(action.kind)}'`);
       }
+      collectNativeExecutionBatches(
+        response,
+        metadata,
+        delegateBatches,
+        printBatches,
+      );
       const { channels, channel_bits: channelBits, frames } = response.result;
       const exact = (scenario.comparison ?? "exact") === "exact";
       if (
@@ -352,7 +565,17 @@ async function renderNativeBlocks(scenario, metadata) {
     channels: concatenateBlocks(renderedBlocks),
     channelBits: concatenateBlocks(renderedBitBlocks),
     snapshots,
+    delegateBatches,
+    printBatches,
   };
+}
+
+function collectNativeExecutionBatches(response, metadata, delegates, prints) {
+  delegates.push(canonicalDelegateBatch({
+    occurrences: response.result.delegate_occurrences ?? [],
+    overflowCount: response.result.delegate_overflow_count ?? 0,
+  }));
+  prints.push(canonicalPrintBatch(response.result.print, metadata));
 }
 
 function createNativeDaemon() {
@@ -362,12 +585,12 @@ function createNativeDaemon() {
   });
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   return {
-    async request(request) {
+    async request(request, { allowFailure = false } = {}) {
       child.stdin.write(`${JSON.stringify(request)}\n`);
       const next = await lines.next();
       if (next.done) throw new Error("native daemon closed before responding");
       const response = JSON.parse(next.value);
-      if (!response.ok) {
+      if (!response.ok && !allowFailure) {
         throw new Error(
           `native LLVM request ${response.id ?? "?"} failed: ${response.error ?? "unknown error"}`,
         );
@@ -439,6 +662,17 @@ async function renderWasmBlocks(artifact, scenario) {
     }
     return allocate(blockSize * bufferChannelCount(buffer) * 4);
   });
+  const delegateBatch = allocate(20, 4);
+  const delegateStorage = allocate(64 * 1024, 8);
+  const printBatch = allocate(20, 4);
+  const printStorage = allocate(64 * 1024, 8);
+  const executionOutput = allocate(12, 4);
+  const initExecutionOutput = allocate(12, 4);
+
+  writeDelegateBatch(memory, delegateBatch, delegateStorage, 64 * 1024);
+  writePrintBatch(memory, printBatch, printStorage, 64 * 1024);
+  writeExecutionOutput(memory, executionOutput, delegateBatch, printBatch);
+  writeExecutionOutput(memory, initExecutionOutput, 0, printBatch);
 
   writeParameterDefaults(memory, params, metadata.metadata.params);
   let view = new DataView(memory.buffer);
@@ -448,9 +682,9 @@ async function renderWasmBlocks(artifact, scenario) {
   outputPointers.forEach((pointer, index) =>
     view.setUint32(outputTable + index * 4, pointer, true),
   );
-  bufferDataPointers.forEach((pointer, index) => {
-    view.setUint32(bufferPointers + index * 4, pointer, true);
-    view.setInt32(bufferFrames + index * 4, blockSize, true);
+  bufferDataPointers.forEach((_, index) => {
+    view.setUint32(bufferPointers + index * 4, 0, true);
+    view.setInt32(bufferFrames + index * 4, 1, true);
     view.setInt32(
       bufferChannels + index * 4,
       bufferChannelCount(buffers[index]),
@@ -459,20 +693,37 @@ async function renderWasmBlocks(artifact, scenario) {
     view.setFloat32(bufferSampleRates + index * 4, sampleRate, true);
   });
 
-  requireExecutionSuccess(
-    onda_processor_init(
-      params,
-      state,
-      1,
-      bufferPointers,
-      bufferFrames,
-      bufferChannels,
-      bufferSampleRates,
-      0,
-    ),
-    "processor init",
-  );
-  const processSegment = (startFrame, frames, flags) => requireExecutionSuccess(
+  const delegateBatches = [];
+  const printBatches = [];
+  const initialize = () => {
+    resetExecutionOutput(memory, initExecutionOutput);
+    requireExecutionSuccess(
+      onda_processor_init(
+        params,
+        state,
+        1,
+        bufferPointers,
+        bufferFrames,
+        bufferChannels,
+        bufferSampleRates,
+        initExecutionOutput,
+      ),
+      "processor init",
+    );
+    delegateBatches.push(emptyDelegateBatch());
+    printBatches.push(canonicalPrintBatch(
+      formatPrintBatch(memory, printBatch, metadata),
+      metadata,
+    ));
+  };
+  initialize();
+  bufferDataPointers.forEach((pointer, index) => {
+    view.setUint32(bufferPointers + index * 4, pointer, true);
+    view.setInt32(bufferFrames + index * 4, blockSize, true);
+    initialize();
+  });
+  resetExecutionOutput(memory, executionOutput);
+  const processSegmentStatus = (startFrame, frames, flags) =>
     onda_process(
       state,
       params,
@@ -485,16 +736,21 @@ async function renderWasmBlocks(artifact, scenario) {
       bufferFrames,
       bufferChannels,
       bufferSampleRates,
-    ),
-    "processor process",
-  );
+      executionOutput,
+    );
+  const processSegment = (startFrame, frames, flags) =>
+    requireExecutionSuccess(
+      processSegmentStatus(startFrame, frames, flags),
+      "processor process",
+    );
   const renderedBlocks = [];
   const renderedBitBlocks = [];
   const snapshots = [];
   let savedSnapshot = null;
   for (const action of scenarioActions(scenario)) {
-    if (action.kind === "event") {
-      triggerWasmEvent({
+    resetExecutionOutput(memory, executionOutput);
+    if (action.kind === "event" || action.kind === "event_failure") {
+      const status = triggerWasmEvent({
         action,
         artifact,
         instance,
@@ -506,7 +762,21 @@ async function renderWasmBlocks(artifact, scenario) {
         bufferFrames,
         bufferChannels,
         bufferSampleRates,
+        executionOutput,
       });
+      if (action.kind === "event_failure") {
+        requireRuntimeSafetyFailure(status, `Wasm event '${action.name}'`);
+      } else {
+        requireExecutionSuccess(status, `processor event '${action.name}'`);
+      }
+      collectWasmExecutionBatches(
+        memory,
+        metadata,
+        delegateBatch,
+        printBatch,
+        delegateBatches,
+        printBatches,
+      );
       continue;
     }
     if (action.kind === "snapshot") {
@@ -537,10 +807,23 @@ async function renderWasmBlocks(artifact, scenario) {
     // Native render requests provide fresh zeroed output buffers. Match that
     // setup when a segmented request writes only part of the buffer.
     for (const [index, pointer] of outputPointers.entries()) {
-      new Uint8Array(memory.buffer, pointer, blockSize * scalarSize(outputChannels[index].scalar)).fill(0);
+      const bytes = blockSize * scalarSize(outputChannels[index].scalar);
+      new Uint8Array(memory.buffer, pointer, bytes).fill(0);
     }
     if (action.kind === "render") {
       processSegment(0, blockSize, 3);
+    } else if (action.kind === "render_failure") {
+      const status = processSegmentStatus(0, blockSize, 3);
+      requireRuntimeSafetyFailure(status, "Wasm render");
+      collectWasmExecutionBatches(
+        memory,
+        metadata,
+        delegateBatch,
+        printBatch,
+        delegateBatches,
+        printBatches,
+      );
+      continue;
     } else if (action.kind === "segments") {
       for (const segment of action.segments) {
         processSegment(segment.start_frame, segment.frames, segment.flags);
@@ -548,6 +831,14 @@ async function renderWasmBlocks(artifact, scenario) {
     } else {
       throw new Error(`unknown Wasm parity action '${String(action.kind)}'`);
     }
+    collectWasmExecutionBatches(
+      memory,
+      metadata,
+      delegateBatch,
+      printBatch,
+      delegateBatches,
+      printBatches,
+    );
     renderedBlocks.push(
       outputPointers.map((pointer, index) =>
         readScalars(
@@ -576,7 +867,26 @@ async function renderWasmBlocks(artifact, scenario) {
     channels: concatenateBlocks(renderedBlocks),
     channelBits: concatenateBlocks(renderedBitBlocks),
     snapshots,
+    delegateBatches,
+    printBatches,
   };
+}
+
+function collectWasmExecutionBatches(
+  memory,
+  metadata,
+  delegateBatch,
+  printBatch,
+  delegates,
+  prints,
+) {
+  delegates.push(canonicalDelegateBatch(
+    decodeDelegateBatch(memory, delegateBatch, metadata),
+  ));
+  prints.push(canonicalPrintBatch(
+    formatPrintBatch(memory, printBatch, metadata),
+    metadata,
+  ));
 }
 
 function scenarioActions(scenario) {
@@ -584,6 +894,248 @@ function scenarioActions(scenario) {
     { length: scenario.blocks },
     () => ({ kind: "render" }),
   );
+}
+
+function integerSemanticsActions() {
+  const cases = {
+    i32: [
+      [-2_147_483_648, -1, 0],
+      [2_147_483_647, 3, 31],
+      [-17, 5, 35],
+      [1_431_655_765, -1_431_655_766, -1],
+      [-1, -2_147_483_648, 32],
+    ].concat(integerStressCases(32, 24)),
+    i64: [
+      ["-9223372036854775808", "-1", "0"],
+      ["9223372036854775807", "3", "63"],
+      ["-17", "5", "67"],
+      ["6148914691236517205", "-6148914691236517206", "-1"],
+      ["-1", "-9223372036854775808", "64"],
+    ].concat(integerStressCases(64, 24)),
+  };
+  return Object.entries(cases).flatMap(([scalar, entries]) =>
+    entries.flatMap(([lhs, rhs, shift]) => [
+      { kind: "event", name: `exercise_${scalar}`, values: [lhs, rhs, shift] },
+      {
+        kind: "snapshot",
+        expected: integerOperationExpectations(
+          scalar,
+          BigInt(lhs),
+          BigInt(rhs),
+          BigInt(shift),
+        ),
+      },
+    ])
+  ).concat({ kind: "render" });
+}
+
+function integerStressCases(bits, count) {
+  const values = deterministicSignedIntegers(bits, count * 3);
+  return Array.from({ length: count }, (_, index) => {
+    const lhs = values[index * 3];
+    const rhs = values[index * 3 + 1] || 1n;
+    const shift = values[index * 3 + 2];
+    return bits === 64
+      ? [lhs.toString(), rhs.toString(), shift.toString()]
+      : [Number(lhs), Number(rhs), Number(shift)];
+  });
+}
+
+function deterministicSignedIntegers(bits, count) {
+  let state = 0x9e37_79b9_7f4a_7c15n;
+  return Array.from({ length: count }, () => {
+    state ^= state << 13n;
+    state ^= state >> 7n;
+    state ^= state << 17n;
+    state = BigInt.asUintN(64, state);
+    return BigInt.asIntN(bits, state);
+  });
+}
+
+function integerOperationExpectations(scalar, lhs, rhs, shift) {
+  const bits = scalar === "i64" ? 64 : 32;
+  const wrap = (value) => BigInt.asIntN(bits, value);
+  const shiftCount = BigInt.asUintN(bits, shift) & BigInt(bits - 1);
+  const prefix = `${scalar}_`;
+  return {
+    [`${prefix}negate`]: wrap(-lhs),
+    [`${prefix}bit_not`]: wrap(~lhs),
+    [`${prefix}add`]: wrap(lhs + rhs),
+    [`${prefix}subtract`]: wrap(lhs - rhs),
+    [`${prefix}multiply`]: wrap(lhs * rhs),
+    [`${prefix}divide`]: wrap(lhs / rhs),
+    [`${prefix}remainder`]: wrap(lhs % rhs),
+    [`${prefix}bit_and`]: wrap(lhs & rhs),
+    [`${prefix}bit_or`]: wrap(lhs | rhs),
+    [`${prefix}bit_xor`]: wrap(lhs ^ rhs),
+    [`${prefix}shift_left`]: wrap(lhs << shiftCount),
+    [`${prefix}shift_right`]: wrap(lhs >> shiftCount),
+    [`${prefix}abs`]: lhs < 0n ? wrap(-lhs) : lhs,
+    [`${prefix}minimum`]: lhs < rhs ? lhs : rhs,
+    [`${prefix}maximum`]: lhs > rhs ? lhs : rhs,
+    [`${prefix}equal`]: lhs === rhs ? 1n : 0n,
+    [`${prefix}not_equal`]: lhs !== rhs ? 1n : 0n,
+    [`${prefix}less`]: lhs < rhs ? 1n : 0n,
+    [`${prefix}less_equal`]: lhs <= rhs ? 1n : 0n,
+    [`${prefix}greater`]: lhs > rhs ? 1n : 0n,
+    [`${prefix}greater_equal`]: lhs >= rhs ? 1n : 0n,
+    [`${prefix}${scalar === "i64" ? "cast_narrow" : "cast_wide"}`]:
+      scalar === "i64" ? BigInt.asIntN(32, lhs) : lhs,
+  };
+}
+
+function rangeSemanticsActions() {
+  const cases = {
+    i32: {
+      values: [
+        -2_147_483_648,
+        -2_147_483_647,
+        -2_000_000_001,
+        -13_920,
+        -9,
+        -8,
+        -7,
+        -4,
+        -3,
+        -1,
+        0,
+        3,
+        4,
+        42,
+        99,
+        100,
+        107,
+        108,
+        95_999,
+        96_000,
+        2_000_000_001,
+        2_147_483_646,
+        2_147_483_647,
+      ].concat(rangeStressValues(32, 24)),
+      bounds: {
+        non_power: [0n, 95_999n, "wrap"],
+        signed: [-3n, 3n, "wrap"],
+        power_two: [100n, 107n, "wrap"],
+        negative_power_two: [-8n, -1n, "wrap"],
+        cross_zero_power_two: [-4n, 3n, "wrap"],
+        singleton: [42n, 42n, "wrap"],
+        singleton_min: [-2_147_483_648n, -2_147_483_648n, "wrap"],
+        singleton_max: [2_147_483_647n, 2_147_483_647n, "wrap"],
+        min_window: [-2_147_483_648n, -2_147_483_642n, "wrap"],
+        max_window: [2_147_483_641n, 2_147_483_647n, "wrap"],
+        large_non_power: [-2_000_000_000n, 2_000_000_000n, "wrap"],
+        without_max: [-2_147_483_648n, 2_147_483_646n, "wrap"],
+        without_min: [-2_147_483_647n, 2_147_483_647n, "wrap"],
+        full: [-2_147_483_648n, 2_147_483_647n, "wrap"],
+        clamped: [-100n, 100n, "clamp"],
+      },
+    },
+    i64: {
+      values: [
+        "-9223372036854775808",
+        "-9223372036854775807",
+        "-5000000000000000001",
+        "-13920",
+        "-9",
+        "-8",
+        "-7",
+        "-4",
+        "-3",
+        "-1",
+        "0",
+        "3",
+        "4",
+        "42",
+        "99",
+        "100",
+        "107",
+        "108",
+        "95999",
+        "96000",
+        "5000000000000000001",
+        "9223372036854775806",
+        "9223372036854775807",
+      ].concat(rangeStressValues(64, 24)),
+      bounds: {
+        non_power: [0n, 95_999n, "wrap"],
+        signed: [-3n, 3n, "wrap"],
+        power_two: [100n, 107n, "wrap"],
+        negative_power_two: [-8n, -1n, "wrap"],
+        cross_zero_power_two: [-4n, 3n, "wrap"],
+        singleton: [42n, 42n, "wrap"],
+        singleton_min: [
+          -9_223_372_036_854_775_808n,
+          -9_223_372_036_854_775_808n,
+          "wrap",
+        ],
+        singleton_max: [
+          9_223_372_036_854_775_807n,
+          9_223_372_036_854_775_807n,
+          "wrap",
+        ],
+        min_window: [
+          -9_223_372_036_854_775_808n,
+          -9_223_372_036_854_775_802n,
+          "wrap",
+        ],
+        max_window: [
+          9_223_372_036_854_775_801n,
+          9_223_372_036_854_775_807n,
+          "wrap",
+        ],
+        large_non_power: [
+          -5_000_000_000_000_000_000n,
+          5_000_000_000_000_000_000n,
+          "wrap",
+        ],
+        without_max: [
+          -9_223_372_036_854_775_808n,
+          9_223_372_036_854_775_806n,
+          "wrap",
+        ],
+        without_min: [
+          -9_223_372_036_854_775_807n,
+          9_223_372_036_854_775_807n,
+          "wrap",
+        ],
+        full: [
+          -9_223_372_036_854_775_808n,
+          9_223_372_036_854_775_807n,
+          "wrap",
+        ],
+        clamped: [-100n, 100n, "clamp"],
+      },
+    },
+  };
+  return Object.entries(cases).flatMap(([scalar, specification]) =>
+    specification.values.flatMap((value) => {
+      const integer = BigInt(value);
+      const expected = Object.fromEntries(
+        Object.entries(specification.bounds).map(
+          ([name, [lower, upper, mode]]) => [
+            `${scalar}_${name}`,
+            mode === "clamp"
+              ? (integer < lower ? lower : integer > upper ? upper : integer)
+              : wrapInteger(integer, lower, upper),
+          ],
+        ),
+      );
+      return [
+        { kind: "event", name: `set_${scalar}`, values: [value] },
+        { kind: "snapshot", expected },
+      ];
+    }),
+  ).concat({ kind: "render" });
+}
+
+function rangeStressValues(bits, count) {
+  const values = deterministicSignedIntegers(bits, count);
+  return bits === 64 ? values.map(String) : values.map(Number);
+}
+
+function wrapInteger(value, lower, upper) {
+  const width = upper - lower + 1n;
+  return lower + ((value - lower) % width + width) % width;
 }
 
 function triggerWasmEvent(context) {
@@ -599,24 +1151,48 @@ function triggerWasmEvent(context) {
   const workspaceBytes = plan.requiredWorkspace(bytes);
   const workspace = allocate(workspaceBytes, 8);
   const descriptor = allocate(16, 4);
-  writeEventInput(memory, descriptor, payload, bytes.length, workspace, workspaceBytes);
-  requireExecutionSuccess(
-    instance.exports[event.export](
-      descriptor,
-      context.params,
-      context.state,
-      context.bufferPointers,
-      context.bufferFrames,
-      context.bufferChannels,
-      context.bufferSampleRates,
-    ),
-    `processor event '${action.name}'`,
+  writeEventInput(
+    memory,
+    descriptor,
+    payload,
+    bytes.length,
+    workspace,
+    workspaceBytes,
+  );
+  return instance.exports[event.export](
+    descriptor,
+    context.params,
+    context.state,
+    context.bufferPointers,
+    context.bufferFrames,
+    context.bufferChannels,
+    context.bufferSampleRates,
+    context.executionOutput,
   );
 }
 
 function requireExecutionSuccess(status, operation) {
   if (status !== 0) {
     throw new Error(`${operation} failed with execution status ${status}`);
+  }
+}
+
+function requireRuntimeSafetyFailure(status, operation) {
+  if (status !== PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE) {
+    throw new Error(
+      `${operation} returned execution status ${status}, expected runtime safety failure ${PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE}`,
+    );
+  }
+}
+
+function requireNativeRuntimeSafetyFailure(response, operation) {
+  if (response.ok) throw new Error(`${operation} unexpectedly succeeded`);
+  const expected =
+    `runtime safety check (${PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE})`;
+  if (!String(response.error).includes(expected)) {
+    throw new Error(
+      `${operation} failed for an unexpected reason: ${response.error ?? "unknown error"}`,
+    );
   }
 }
 
@@ -664,80 +1240,6 @@ function restoreWasmState(memory, statePointer, metadata, snapshot) {
   }
 }
 
-function writeParameterDefaults(memory, paramsPointer, params) {
-  for (const param of params) {
-    if (param.default_reprs === null) continue;
-    const values = param.default_reprs.map((value) => ({
-      type: param.scalar,
-      value: JSON.parse(value),
-    }));
-    const elementSize = scalarSize(param.scalar);
-    if (values.length !== param.array_len) {
-      throw new Error(
-        `parameter '${param.name}' default has ${values.length} values, expected ${param.array_len}`,
-      );
-    }
-    for (const [index, value] of values.entries()) {
-      if (value.type !== param.scalar) {
-        throw new Error(
-          `parameter '${param.name}' default type '${value.type}' does not match '${param.scalar}'`,
-        );
-      }
-      writeScalar(
-        memory,
-        paramsPointer + param.byte_offset + index * elementSize,
-        value.type,
-        value.value,
-      );
-    }
-  }
-}
-
-function flattenConstants(value) {
-  if (value.kind === "scalar") return [value.data];
-  if (value.kind === "aggregate") return value.data.flatMap(flattenConstants);
-  throw new Error(`unsupported MIR constant kind '${String(value.kind)}'`);
-}
-
-function writeScalar(memory, pointer, scalar, value) {
-  const view = new DataView(memory.buffer);
-  switch (scalar) {
-    case "bool":
-      view.setUint8(pointer, value ? 1 : 0);
-      break;
-    case "i32":
-      view.setInt32(pointer, value, true);
-      break;
-    case "i64":
-      view.setBigInt64(pointer, BigInt(value), true);
-      break;
-    case "f32":
-      view.setFloat32(pointer, decodeFloat(value, 32), true);
-      break;
-    case "f64":
-      view.setFloat64(pointer, decodeFloat(value, 64), true);
-      break;
-    default:
-      throw new Error(`unsupported scalar type '${String(scalar)}'`);
-  }
-}
-
-function decodeFloat(value, width) {
-  if (typeof value === "number") return value;
-  const digits = value.startsWith("0x") ? value.slice(2) : "";
-  if (digits.length !== width / 4) {
-    throw new Error(`invalid f${width} bit-pattern scalar '${String(value)}'`);
-  }
-  const bytes = new ArrayBuffer(width / 8);
-  const view = new DataView(bytes);
-  if (width === 32) {
-    view.setUint32(0, Number.parseInt(digits, 16), false);
-    return view.getFloat32(0, false);
-  }
-  view.setBigUint64(0, BigInt(`0x${digits}`), false);
-  return view.getFloat64(0, false);
-}
-
 function readScalars(memory, pointer, scalar, length) {
   switch (scalar) {
     case "bool":
@@ -755,27 +1257,116 @@ function readScalars(memory, pointer, scalar, length) {
   }
 }
 
-function scalarSize(scalar) {
-  switch (scalar) {
-    case "bool":
-      return 1;
-    case "i32":
-    case "f32":
-      return 4;
-    case "i64":
-    case "f64":
-      return 8;
-    default:
-      throw new Error(`unsupported scalar type '${String(scalar)}'`);
-  }
-}
-
 function bufferChannelCount(buffer) {
   if (buffer.channels === "mono" || buffer.channels === "dynamic") return 1;
   if (buffer.channels === "static") return Math.max(buffer.static_channels, 1);
   throw new Error(
     `unsupported buffer channel shape '${String(buffer.channels)}'`,
   );
+}
+
+function emptyDelegateBatch() {
+  return { occurrences: [], overflowCount: 0 };
+}
+
+function canonicalDelegateBatch(batch) {
+  return {
+    occurrences: (batch?.occurrences ?? []).map((occurrence) => ({
+      sequence: occurrence.sequence,
+      index: occurrence.index ?? occurrence.delegateIndex,
+      name: occurrence.name,
+      values: canonicalValue(occurrence.values),
+    })),
+    overflowCount: batch?.overflowCount ?? 0,
+  };
+}
+
+function canonicalPrintBatch(batch, metadata) {
+  return {
+    text: batch?.text ?? "",
+    entries: (batch?.entries ?? []).map((entry) => ({
+      sequence: entry.sequence,
+      siteIndex: entry.site_index ?? entry.siteIndex,
+      label: entry.label,
+      source: canonicalPrintSource(entry.source, metadata),
+      lexicalOwner: entry.lexical_owner ?? entry.lexicalOwner,
+      declaration: entry.declaration,
+      values: canonicalValue(entry.values),
+    })),
+    overflowCount: batch?.overflow_count ?? batch?.overflowCount ?? 0,
+  };
+}
+
+function canonicalPrintSource(source, metadata) {
+  const canonical = { ...source };
+  if (Number.isInteger(canonical.file)) {
+    canonical.file = metadata.metadata.source_files[canonical.file]?.path ?? null;
+  }
+  return canonicalValue(canonical);
+}
+
+function canonicalValue(value) {
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    if (value === Infinity) return "Infinity";
+    if (value === -Infinity) return "-Infinity";
+    if (Object.is(value, -0)) return "-0.0";
+    return value;
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalValue(nested)]),
+    );
+  }
+  return value;
+}
+
+function compareExecutionBatches(label, native, wasm) {
+  compareCanonicalValue(
+    `${label}: delegate batches`,
+    native.delegateBatches,
+    wasm.delegateBatches,
+  );
+  compareCanonicalValue(
+    `${label}: print batches`,
+    native.printBatches,
+    wasm.printBatches,
+  );
+}
+
+function verifyExecutionExpectations(label, scenario, result) {
+  if (scenario.expectedDelegateNames !== undefined) {
+    const actual = result.delegateBatches.flatMap((batch) =>
+      batch.occurrences.map((occurrence) => occurrence.name)
+    );
+    compareCanonicalValue(
+      `${label}: expected delegate names`,
+      scenario.expectedDelegateNames,
+      actual,
+    );
+  }
+  if (scenario.expectedPrintText !== undefined) {
+    const actual = result.printBatches.map((batch) => batch.text).join("");
+    if (actual !== scenario.expectedPrintText) {
+      throw new Error(
+        `${label}: print text differs\nExpected: ${JSON.stringify(scenario.expectedPrintText)}\nActual: ${JSON.stringify(actual)}`,
+      );
+    }
+  }
+}
+
+function compareCanonicalValue(label, expected, actual) {
+  const expectedJson = JSON.stringify(expected);
+  const actualJson = JSON.stringify(actual);
+  if (expectedJson !== actualJson) {
+    throw new Error(
+      `${label} differ\nLLVM: ${expectedJson}\nWasm: ${actualJson}`,
+    );
+  }
 }
 
 function compareChannels(label, native, wasm, mode) {
@@ -786,6 +1377,30 @@ function compareChannels(label, native, wasm, mode) {
     throw new Error(`${label}: unknown comparison mode '${String(mode)}'`);
   }
   return compareApproximateChannels(label, native.channels, wasm.channels);
+}
+
+function verifyChannelExpectations(label, scenario, result) {
+  if (scenario.expectedChannels === undefined) return;
+  const expected = scenario.expectedChannels;
+  if (result.channels.length !== expected.length) {
+    throw new Error(
+      `${label}: returned ${result.channels.length} channels, expected ${expected.length}`,
+    );
+  }
+  for (let channel = 0; channel < expected.length; channel += 1) {
+    if (result.channels[channel].length !== expected[channel].length) {
+      throw new Error(
+        `${label}: channel ${channel} returned ${result.channels[channel].length} samples, expected ${expected[channel].length}`,
+      );
+    }
+    for (let frame = 0; frame < expected[channel].length; frame += 1) {
+      if (!Object.is(result.channels[channel][frame], expected[channel][frame])) {
+        throw new Error(
+          `${label}: channel ${channel}, frame ${frame} is ${result.channels[channel][frame]}, expected ${expected[channel][frame]}`,
+        );
+      }
+    }
+  }
 }
 
 function compareExactChannels(label, nativeChannels, wasmChannels) {
@@ -867,7 +1482,7 @@ function compareApproximateChannels(label, nativeChannels, wasmChannels) {
   return { mode: "approximate", samples, maximumAbsoluteError };
 }
 
-function compareSnapshots(label, nativeSnapshots, wasmSnapshots) {
+function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata) {
   if (nativeSnapshots.length !== wasmSnapshots.length) {
     throw new Error(
       `${label}: snapshot count differs (LLVM ${nativeSnapshots.length}, Wasm ${wasmSnapshots.length})`,
@@ -883,8 +1498,59 @@ function compareSnapshots(label, nativeSnapshots, wasmSnapshots) {
     }
     for (let byte = 0; byte < native.byteLength; byte += 1) {
       if (native[byte] !== wasm[byte]) {
+        const state = metadata.metadata.states.find((candidate) =>
+          byte >= candidate.packed_snapshot_byte_offset
+          && byte < candidate.packed_snapshot_byte_offset + candidate.byte_size,
+        );
+        const owner = state
+          ? ` in state '${state.name}' (${state.scalar}, byte ${byte - state.packed_snapshot_byte_offset})`
+          : "";
         throw new Error(
-          `${label}: snapshot ${snapshot} byte ${byte} differs (LLVM ${native[byte]}, Wasm ${wasm[byte]})`,
+          `${label}: snapshot ${snapshot} byte ${byte}${owner} differs (LLVM ${native[byte]}, Wasm ${wasm[byte]})`,
+        );
+      }
+    }
+  }
+}
+
+function verifySnapshotExpectations(label, metadata, scenario, snapshots) {
+  const expected = scenarioActions(scenario)
+    .filter((action) => action.kind === "snapshot")
+    .map((action) => action.expected ?? null);
+  if (expected.length !== snapshots.length) {
+    throw new Error(
+      `${label}: expected ${expected.length} snapshots, got ${snapshots.length}`,
+    );
+  }
+  const states = new Map(
+    metadata.metadata.states.map((state) => [state.name, state]),
+  );
+  for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+    if (expected[snapshotIndex] === null) continue;
+    const view = new DataView(
+      snapshots[snapshotIndex].buffer,
+      snapshots[snapshotIndex].byteOffset,
+      snapshots[snapshotIndex].byteLength,
+    );
+    for (const [name, expectedValue] of Object.entries(expected[snapshotIndex])) {
+      const state = states.get(name);
+      if (!state) throw new Error(`${label}: expected state '${name}' is missing`);
+      const offset = state.packed_snapshot_byte_offset;
+      const actual = state.scalar === "i32"
+        ? BigInt(view.getInt32(offset, true))
+        : state.scalar === "i64"
+          ? view.getBigInt64(offset, true)
+          : state.scalar === "bool"
+            ? BigInt(view.getUint8(offset))
+          : null;
+      if (actual === null) {
+        throw new Error(
+          `${label}: expected integer state '${name}', got '${state.scalar}'`,
+        );
+      }
+      if (actual !== expectedValue) {
+        throw new Error(
+          `${label}: snapshot ${snapshotIndex} state '${name}' is ${actual}, expected ${expectedValue}`,
         );
       }
     }

@@ -591,7 +591,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
 fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCommand, String> {
     let mut input = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
@@ -714,7 +714,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
 
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_PLAY_BLOCK_FRAMES;
+    let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;

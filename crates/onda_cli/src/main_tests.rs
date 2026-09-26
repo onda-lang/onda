@@ -1119,7 +1119,7 @@ fn parse_run_window_accepts_no_input_file() {
             ..
         }) => {
             assert_eq!(input, None);
-            assert_eq!(block_frames, 256);
+            assert_eq!(block_frames, 512);
         }
         _ => panic!("expected run window command"),
     }
@@ -1192,7 +1192,7 @@ fn parse_run_play_accepts_forever() {
             ..
         }) => {
             assert_eq!(dur_seconds, None);
-            assert_eq!(block_frames, 256);
+            assert_eq!(block_frames, 512);
         }
         _ => panic!("expected run play command"),
     }
