@@ -27,9 +27,10 @@ esac
 
 target_binary="$install_prefix/bin/onda"
 target_desktop="$data_home/applications/onda-run.desktop"
-target_icon="$data_home/icons/hicolor/512x512/apps/onda-run.png"
+target_raster_icon="$data_home/icons/hicolor/512x512/apps/onda-run.png"
+target_scalable_icon="$data_home/icons/hicolor/scalable/apps/onda-run.svg"
 
-rm -f "$target_binary" "$target_desktop" "$target_icon"
+rm -f "$target_binary" "$target_desktop" "$target_raster_icon" "$target_scalable_icon"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$(dirname -- "$target_desktop")" >/dev/null 2>&1 || true
@@ -41,4 +42,5 @@ fi
 printf 'Removed Onda:\n'
 printf '  executable: %s\n' "$target_binary"
 printf '  desktop entry: %s\n' "$target_desktop"
-printf '  icon: %s\n' "$target_icon"
+printf '  raster icon: %s\n' "$target_raster_icon"
+printf '  scalable icon: %s\n' "$target_scalable_icon"

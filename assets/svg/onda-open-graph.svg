@@ -1,0 +1,14 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Onda waveform logo</title>
+  <rect width="1200" height="630" fill="#0C1E33"/>
+  <g transform="translate(600 315) scale(1.19047619047619) translate(-256 -256)">
+    <circle cx="256" cy="256" r="156" stroke="#C9DBF2" stroke-width="24"/>
+    <path
+      d="M167 256C188 253 198 214 225 214C257 214 255 298 287 298C314 298 324 259 345 256"
+      stroke="#C9DBF2"
+      stroke-width="22"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </g>
+</svg>

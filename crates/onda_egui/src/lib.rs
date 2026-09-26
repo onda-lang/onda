@@ -13,8 +13,14 @@ const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
 const LOGO_LIGHT_URI: &str = "bytes://onda-logo-rect.svg";
 const LOGO_DARK_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-dark-rect.svg");
 const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-rect.svg");
-const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark.png");
-const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo.png");
+#[cfg(target_os = "macos")]
+const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-dark-1024.png");
+#[cfg(not(target_os = "macos"))]
+const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-dark.png");
+#[cfg(target_os = "macos")]
+const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-1024.png");
+#[cfg(not(target_os = "macos"))]
+const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon.png");
 const RUN_APP_ID: &str = "onda-run";
 const PARAM_LAYOUT_STORAGE_KEY: &str = "onda.run-view.param-layout.v1";
 const FLOAT_CONTROL_TARGET_STEPS: f64 = 2_000.0;
@@ -68,14 +74,12 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
                 RunThemeMode::Light => cc.egui_ctx.set_visuals(egui::Visuals::light()),
             }
             let initial_icon_dark = resolved_theme_is_dark(&cc.egui_ctx, theme_mode);
-            if let Ok(icon) = load_app_icon(initial_icon_dark) {
-                cc.egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
-            }
+            let current_icon_dark =
+                set_app_icon(&cc.egui_ctx, initial_icon_dark).then_some(initial_icon_dark);
             Ok(Box::new(RunApp::new(
                 controller,
                 options,
-                Some(initial_icon_dark),
+                current_icon_dark,
                 ParamLayout::load(cc.storage),
             )))
         }),
@@ -122,14 +126,46 @@ fn is_loadable_path(path: &Path) -> bool {
     is_onda_path(path) || is_project_path(path)
 }
 
-fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
-    let png_bytes = if is_dark {
+fn app_icon_png(is_dark: bool) -> &'static [u8] {
+    if is_dark {
         APP_ICON_DARK_PNG
     } else {
         APP_ICON_LIGHT_PNG
-    };
-    eframe::icon_data::from_png_bytes(png_bytes)
+    }
+}
+
+fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
+    eframe::icon_data::from_png_bytes(app_icon_png(is_dark))
         .map_err(|err| format!("failed to decode run app icon: {err}"))
+}
+
+fn set_app_icon(ctx: &egui::Context, is_dark: bool) -> bool {
+    let Ok(icon) = load_app_icon(is_dark) else {
+        return false;
+    };
+    ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+    #[cfg(target_os = "macos")]
+    set_macos_app_icon(app_icon_png(is_dark));
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_app_icon(png_bytes: &[u8]) {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    extern "C" {
+        static NSApp: Option<&'static NSApplication>;
+    }
+
+    let data = NSData::with_bytes(png_bytes);
+    let image = NSImage::initWithData(NSImage::alloc(), &data);
+    unsafe {
+        if let Some(app) = NSApp {
+            app.setApplicationIconImage(image.as_deref());
+        }
+    }
 }
 
 fn startup_icon_is_dark(theme_mode: RunThemeMode) -> bool {
@@ -778,8 +814,7 @@ impl RunApp {
         if self.current_icon_dark == Some(is_dark) {
             return;
         }
-        if let Ok(icon) = load_app_icon(is_dark) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+        if set_app_icon(ctx, is_dark) {
             self.current_icon_dark = Some(is_dark);
         }
     }

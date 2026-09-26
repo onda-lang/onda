@@ -21,11 +21,13 @@ esac
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 source_binary="$script_dir/bin/onda"
 source_desktop="$script_dir/share/applications/onda-run.desktop"
-source_icon="$script_dir/share/icons/hicolor/512x512/apps/onda-run.png"
+source_raster_icon="$script_dir/share/icons/hicolor/512x512/apps/onda-run.png"
+source_scalable_icon="$script_dir/share/icons/hicolor/scalable/apps/onda-run.svg"
 
 [ -x "$source_binary" ] || fail "missing executable: $source_binary"
 [ -f "$source_desktop" ] || fail "missing desktop entry: $source_desktop"
-[ -f "$source_icon" ] || fail "missing application icon: $source_icon"
+[ -f "$source_raster_icon" ] || fail "missing raster application icon: $source_raster_icon"
+[ -f "$source_scalable_icon" ] || fail "missing scalable application icon: $source_scalable_icon"
 
 install_prefix="$HOME/.local"
 data_home="${XDG_DATA_HOME:-$install_prefix/share}"
@@ -36,7 +38,8 @@ esac
 
 target_binary="$install_prefix/bin/onda"
 target_desktop="$data_home/applications/onda-run.desktop"
-target_icon="$data_home/icons/hicolor/512x512/apps/onda-run.png"
+target_raster_icon="$data_home/icons/hicolor/512x512/apps/onda-run.png"
+target_scalable_icon="$data_home/icons/hicolor/scalable/apps/onda-run.svg"
 
 case "$target_binary" in
     *'
@@ -61,10 +64,12 @@ escaped_try_exec=$(printf '%s' "$target_binary" | desktop_string_escape)
 mkdir -p \
     "$(dirname -- "$target_binary")" \
     "$(dirname -- "$target_desktop")" \
-    "$(dirname -- "$target_icon")"
+    "$(dirname -- "$target_raster_icon")" \
+    "$(dirname -- "$target_scalable_icon")"
 
 install -m 755 "$source_binary" "$target_binary"
-install -m 644 "$source_icon" "$target_icon"
+install -m 644 "$source_raster_icon" "$target_raster_icon"
+install -m 644 "$source_scalable_icon" "$target_scalable_icon"
 
 temporary_desktop=$(mktemp "$(dirname -- "$target_desktop")/.onda-run.desktop.XXXXXX")
 cleanup() {
@@ -92,4 +97,5 @@ fi
 printf 'Installed Onda:\n'
 printf '  executable: %s\n' "$target_binary"
 printf '  desktop entry: %s\n' "$target_desktop"
-printf '  icon: %s\n' "$target_icon"
+printf '  raster icon: %s\n' "$target_raster_icon"
+printf '  scalable icon: %s\n' "$target_scalable_icon"

@@ -342,9 +342,9 @@ jobs:
             mkdir "$iconset_dir"
             for size in 16 32 128 256 512; do
               double_size=$((size * 2))
-              sips -z "$size" "$size" assets/png/onda-logo-light-dark.png \
+              sips -z "$size" "$size" assets/png/onda-app-icon-dark-1024.png \
                 --out "$iconset_dir/icon_${size}x${size}.png"
-              sips -z "$double_size" "$double_size" assets/png/onda-logo-light-dark.png \
+              sips -z "$double_size" "$double_size" assets/png/onda-app-icon-dark-1024.png \
                 --out "$iconset_dir/icon_${size}x${size}@2x.png"
             done
             iconutil -c icns "$iconset_dir" -o "$app_resources/Onda.icns"
@@ -357,10 +357,13 @@ jobs:
             cp target/release/libonda.a "$lib_dir/"
             mkdir -p \
               "$package_root/share/applications" \
-              "$package_root/share/icons/hicolor/512x512/apps"
+              "$package_root/share/icons/hicolor/512x512/apps" \
+              "$package_root/share/icons/hicolor/scalable/apps"
             cp assets/linux/onda-run.desktop "$package_root/share/applications/"
-            cp assets/png/onda-logo-light-dark.png \
+            cp assets/png/onda-app-icon-dark.png \
               "$package_root/share/icons/hicolor/512x512/apps/onda-run.png"
+            cp assets/svg/onda-app-icon-dark.svg \
+              "$package_root/share/icons/hicolor/scalable/apps/onda-run.svg"
             cp assets/linux/install.sh assets/linux/uninstall.sh "$package_root/"
             chmod +x "$package_root/install.sh" "$package_root/uninstall.sh"
 
@@ -377,11 +380,14 @@ jobs:
             grep -F \
               "TryExec=$install_test_home/.local/bin/onda" \
               "$install_test_data/applications/onda-run.desktop"
+            test -f "$install_test_data/icons/hicolor/512x512/apps/onda-run.png"
+            test -f "$install_test_data/icons/hicolor/scalable/apps/onda-run.svg"
             HOME="$install_test_home" XDG_DATA_HOME="$install_test_data" \
               "$package_root/uninstall.sh"
             test ! -e "$install_test_home/.local/bin/onda"
             test ! -e "$install_test_data/applications/onda-run.desktop"
             test ! -e "$install_test_data/icons/hicolor/512x512/apps/onda-run.png"
+            test ! -e "$install_test_data/icons/hicolor/scalable/apps/onda-run.svg"
           fi
           cp include/onda.h "$include_dir/"
           cp include/onda_processor_abi.h "$include_dir/"

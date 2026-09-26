@@ -41,8 +41,15 @@ mod platform {
     const RUN_HTML: &str = include_str!("../../../ui/run/run.html");
     const PARAM_CONTROL_JS: &str =
         include_str!("../../../packages/onda_processor_abi/src/param-control.js");
-    const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo-dark.png");
-    const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-logo.png");
+    #[cfg(target_os = "macos")]
+    const APP_ICON_DARK_PNG: &[u8] =
+        include_bytes!("../../../assets/png/onda-app-icon-dark-1024.png");
+    #[cfg(target_os = "windows")]
+    const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-dark.png");
+    #[cfg(target_os = "macos")]
+    const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-1024.png");
+    #[cfg(target_os = "windows")]
+    const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon.png");
 
     #[derive(Debug)]
     enum UserEvent {

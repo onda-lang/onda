@@ -8,8 +8,8 @@ description: Expressive and performant JIT-compiled audio programming language
   <section class="home-intro">
     <div class="home-title">
       <div class="home-logo" aria-hidden="true">
-        <img class="theme-logo theme-logo-light" src="{{ '/assets/svg/onda-logo.svg' | relative_url }}" alt="">
-        <img class="theme-logo theme-logo-dark" src="{{ '/assets/svg/onda-logo-dark.svg' | relative_url }}" alt="">
+        <img class="theme-logo theme-logo-light" src="{{ '/assets/svg/onda-logo-circle.svg' | relative_url }}" alt="">
+        <img class="theme-logo theme-logo-dark" src="{{ '/assets/svg/onda-logo-dark-circle.svg' | relative_url }}" alt="">
       </div>
       <h1>Onda</h1>
     </div>

@@ -5,6 +5,17 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.18]
+
+### Changed
+
+- Refined the Linux, macOS, and Windows application icons with balanced transparent padding. Static
+  release icons now use the canonical dark artwork, Linux installs scalable and raster variants,
+  native run hosts use dedicated theme-matched app-icon assets, macOS uses native 1024-pixel
+  masters, and Windows executables include refreshed size-specific icon resources.
+- The website header, homepage, and favicon now use the full-size circular Onda brand mark, while
+  social previews use dedicated landscape artwork and complete Open Graph metadata.
+
 ## [0.8.17]
 
 ### Fixed
@@ -936,6 +947,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.18]: https://github.com/onda-lang/onda/compare/0.8.17...0.8.18
 [0.8.17]: https://github.com/onda-lang/onda/compare/0.8.16...0.8.17
 [0.8.16]: https://github.com/onda-lang/onda/compare/0.8.15...0.8.16
 [0.8.15]: https://github.com/onda-lang/onda/compare/0.8.14...0.8.15
