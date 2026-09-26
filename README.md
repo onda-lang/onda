@@ -304,7 +304,7 @@ The VS Code extension lives in the standalone [`onda-lang/onda-vscode`](https://
 It provides:
 - `.onda` and `.on` language registration
 - builtin LSP through `onda lsp`
-- `Onda: Run File` for launching the `onda run --webview` UI directly in-editor
+- `Onda: Run File` to launch the `onda run --webview` UI directly in-editor
 
 ### Neovim
 
@@ -312,4 +312,4 @@ The Neovim plugin lives in the standalone [`onda-lang/onda-nvim`](https://github
 It provides:
 - `.onda` and `.on` filetype detection
 - builtin LSP through `onda lsp`
-- `:OndaRunFile` for launching the standalone run window
+- `:OndaRunFile` to launch the standalone run window
