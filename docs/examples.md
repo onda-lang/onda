@@ -35,14 +35,14 @@ interaction is part of the instrument.
 
 | Example | Description |
 | --- | --- |
+| [Compressor]({{ '/playground/?example=effects/compressor.onda' | relative_url }}) | Stereo-linked soft-knee compression |
+| [FDN reverb]({{ '/playground/?example=effects/fdn_reverb.onda' | relative_url }}) | A dense eight-line matrix tail |
+| [Live tape looper]({{ '/playground/?example=effects/live_tape_looper.onda' | relative_url }}) | Capture, varispeed, reverse, and overdub on a virtual tape |
+| [Schroeder reverb]({{ '/playground/?example=effects/schroeder_reverb.onda' | relative_url }}) | A bright classic comb-and-allpass room |
+| [Shimmer echo]({{ '/playground/?example=effects/shimmer_echo.onda' | relative_url }}) | Cross-fed echoes with octave-shifted regeneration |
 | [Stereo chorus]({{ '/playground/?example=effects/stereo_chorus.onda' | relative_url }}) | Fractional-delay ensemble motion |
 | [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
-| [Live tape looper]({{ '/playground/?example=effects/live_tape_looper.onda' | relative_url }}) | Capture, varispeed, reverse, and overdub on a virtual tape |
-| [Shimmer echo]({{ '/playground/?example=effects/shimmer_echo.onda' | relative_url }}) | Cross-fed echoes with octave-shifted regeneration |
-| [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Animated folded harmonics |
-| [Compressor]({{ '/playground/?example=effects/compressor.onda' | relative_url }}) | Stereo-linked soft-knee compression |
-| [Schroeder reverb]({{ '/playground/?example=effects/schroeder_reverb.onda' | relative_url }}) | A bright classic comb-and-allpass room |
-| [FDN reverb]({{ '/playground/?example=effects/fdn_reverb.onda' | relative_url }}) | A dense eight-line matrix tail |
+| [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Wavefolded harmonics |
 
 Effects audition themselves by default. Set `live_input` to `true` to process `in1` and `in2`. The
 Schroeder and FDN wrappers are also compact, musical graph-syntax examples: their `graph` blocks
@@ -52,27 +52,27 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 
 | Example | Description |
 | --- | --- |
-| [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument |
-| [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
-| [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air |
-| [Deep-space drone]({{ '/playground/?example=soundscapes/deep_space_drone.onda' | relative_url }}) | A slowly changing low-frequency chord |
 | [Aurora Pad]({{ '/playground/?example=soundscapes/aurora_pad.onda' | relative_url }}) | A minor chord spread across a gently detuned stereo field and a slowly opening filter |
-| [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |
-| [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade |
-| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A recurrent nonlinear digital ecosystem |
-| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays |
-| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud |
+| [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument |
 | [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Burst-driven unstable resonances |
+| [Deep-space drone]({{ '/playground/?example=soundscapes/deep_space_drone.onda' | relative_url }}) | A slowly changing low-frequency chord |
+| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud |
+| [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
+| [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |
+| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A recurrent nonlinear digital ecosystem |
+| [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade |
+| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays |
+| [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air |
 
 ## Advanced DSP and graph syntax
 
 | Example | Description |
 | --- | --- |
-| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | A 1024-point streaming FFT, per-bin delay frames, spectral feedback, and stereo IFFT resynthesis |
-| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Phase-coherent spectral capture, smear, transpose, and overlap-add resynthesis |
-| [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | A host-bound recording with normalized scrubbing, stretched through an event/delegate chain carrying structured time, magnitude, and complex-spectrum frames |
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
+| [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | A host-bound recording with normalized scrubbing, stretched through an event/delegate chain carrying structured time, magnitude, and complex-spectrum frames |
+| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | A 1024-point streaming FFT, per-bin delay frames, spectral feedback, and stereo IFFT resynthesis |
+| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Phase-coherent spectral capture, smear, transpose, and overlap-add resynthesis |
 
 ## MIDI and plug-in host surfaces
 
@@ -85,10 +85,10 @@ in the browser, choose **Connect MIDI device…** for hardware MIDI or play the 
 | --- | --- |
 | [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
 | [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
-| [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
-| [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
-| [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
 | [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
+| [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
+| [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
+| [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
 
 The four effects require a selected audio input or browser microphone. Canonical `plugin_host`
 events are hidden but inactive in standalone hosts; a DAW supplies them through the plug-in.
@@ -99,9 +99,9 @@ Use `.ondaproject` when data is part of a patch's identity:
 
 | Project | Description |
 | --- | --- |
-| [Wavetable Garden](https://github.com/onda-lang/onda/blob/main/examples/projects/wavetable_garden/wavetable-garden.ondaproject) | Four inline wavetables and a local oscillator module |
-| [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
 | [Embedded Room](https://github.com/onda-lang/onda/blob/main/examples/projects/embedded_room/embedded-room.ondaproject) | A file-backed stereo `impulse.wav` cooperatively transformed into zero-latency convolution kernels, with an explicit FFT size and a configurable loading duration (0.5 seconds by default) |
+| [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
+| [Wavetable Garden](https://github.com/onda-lang/onda/blob/main/examples/projects/wavetable_garden/wavetable-garden.ondaproject) | Four inline wavetables and a local oscillator module |
 
 These links open the repository because the hosted `?example=` catalog contains source workspaces,
 not `.ondaproject` manifests and their buffer assets. To open a showcase in the browser playground,
@@ -126,7 +126,6 @@ See [Onda projects]({{ '/docs/projects/' | relative_url }}) for the manifest for
 
 ## Host integration
 
-- [Sample player](https://github.com/onda-lang/onda/blob/main/examples/buffers/sample_player.onda) — event-driven, sample-rate-correct external-buffer playback.
 - [Raw native processor object](https://github.com/onda-lang/onda/tree/main/examples/native/raw_processor_object) — compile and call an Onda processor from C.
 - [Embedded compiler playground](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) — compile editable Onda projects in the browser.
 - [AOT WebAssembly sample player](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_aot_sample_player) — host a precompiled processor without shipping a compiler.
