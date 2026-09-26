@@ -831,9 +831,19 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
       },
     },
   });
-  const definition = await compiler.sendLspMessage({
+  const stdlibImport = await compiler.sendLspMessage({
     jsonrpc: "2.0",
     id: 3,
+    method: "textDocument/definition",
+    params: {
+      textDocument: { uri: "file:///onda-project/stdlib.onda" },
+      position: { line: 0, character: 8 },
+    },
+  });
+  assert.equal(stdlibImport[0].result.uri, "onda-stdlib:///std/osc.onda");
+  const definition = await compiler.sendLspMessage({
+    jsonrpc: "2.0",
+    id: 4,
     method: "textDocument/definition",
     params: {
       textDocument: { uri: "file:///onda-project/stdlib.onda" },
@@ -843,7 +853,7 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
   assert.match(definition[0].result.uri, /^onda-stdlib:\/\/\/std\/osc\.onda$/);
   const virtualDocument = await compiler.sendLspMessage({
     jsonrpc: "2.0",
-    id: 4,
+    id: 5,
     method: "onda/virtualDocument",
     params: { uri: definition[0].result.uri },
   });
@@ -856,7 +866,7 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
   const beforePhasor = stdlibSource.slice(0, phasorUse + 1);
   const stdlibDefinition = await compiler.sendLspMessage({
     jsonrpc: "2.0",
-    id: 5,
+    id: 6,
     method: "textDocument/definition",
     params: {
       textDocument: { uri: virtualDocument[0].result.uri },
@@ -868,6 +878,80 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
   });
   assert.equal(stdlibDefinition[0].result.uri, "onda-stdlib:///std/osc.onda");
   assert.equal(stdlibDefinition[0].result.range.start.line, 1);
+});
+
+test("resolves imported playground files in the Wasm language server", async () => {
+  const compiler = await createCompiler();
+  const files = [
+    ["processors/wavefolder.onda", "../../../examples/effects/processors/wavefolder.onda"],
+    ["wavefolder.onda", "../../../examples/effects/wavefolder.onda"],
+  ];
+  for (const [path, fixture] of files) {
+    const text = await readFile(new URL(fixture, import.meta.url), "utf8");
+    const messages = await compiler.sendLspMessage({
+      jsonrpc: "2.0",
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri: `file:///onda-project/${path}`,
+          languageId: "onda",
+          version: 1,
+          text,
+        },
+      },
+    });
+    const publication = messages.find((message) =>
+      message.method === "textDocument/publishDiagnostics" &&
+      message.params.uri === `file:///onda-project/${path}`,
+    );
+    assert.ok(publication, `${path} should publish LSP diagnostics`);
+    assert.deepEqual(publication.params.diagnostics, [], `${path} should have no LSP diagnostics`);
+  }
+  const importedModule = await compiler.sendLspMessage({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "textDocument/definition",
+    params: {
+      textDocument: { uri: "file:///onda-project/wavefolder.onda" },
+      position: { line: 1, character: 10 },
+    },
+  });
+  assert.equal(
+    importedModule[0].result.uri,
+    "file:///onda-project/processors/wavefolder.onda",
+  );
+  for (const [index, module] of [
+    "./processors/wavefolder",
+    "processors/../processors/wavefolder",
+  ].entries()) {
+    const uri = `file:///onda-project/relative-${index}.onda`;
+    await compiler.sendLspMessage({
+      jsonrpc: "2.0",
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri,
+          languageId: "onda",
+          version: 1,
+          text: `import ${module}\n`,
+        },
+      },
+    });
+    const relativeImport = await compiler.sendLspMessage({
+      jsonrpc: "2.0",
+      id: index + 2,
+      method: "textDocument/definition",
+      params: {
+        textDocument: { uri },
+        position: { line: 0, character: 10 },
+      },
+    });
+    assert.equal(
+      relativeImport[0].result.uri,
+      "file:///onda-project/processors/wavefolder.onda",
+    );
+  }
+  compiler.dispose();
 });
 
 test("offers an asynchronous browser-worker client", async () => {

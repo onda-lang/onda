@@ -618,7 +618,7 @@ pub fn load_program_file_with_overlays(
     path: &Path,
     overlays: &HashMap<PathBuf, String>,
 ) -> LoadResult {
-    let loader = SourceLoader::filesystem(overlays);
+    let loader = SourceLoader::with_overlays(overlays);
     load_program_file_with_loader(path, &loader)
 }
 
@@ -1154,10 +1154,18 @@ struct SourceLoader {
 }
 
 impl SourceLoader {
-    fn filesystem(overlays: &HashMap<PathBuf, String>) -> Self {
+    fn with_overlays(overlays: &HashMap<PathBuf, String>) -> Self {
         Self {
             overlays: normalize_overlay_paths(overlays),
-            policy: SourcePolicy::Filesystem,
+            // Browser LSP documents have no host filesystem. Use the same
+            // lexical source resolution as an in-memory project for them.
+            policy: if cfg!(target_family = "wasm") {
+                SourcePolicy::Virtual {
+                    root: PathBuf::from("/"),
+                }
+            } else {
+                SourcePolicy::Filesystem
+            },
         }
     }
 
@@ -1479,7 +1487,8 @@ fn normalize_virtual_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(normalized)
 }
 
-fn normalize_path_lexically(path: &Path) -> PathBuf {
+/// Normalizes a path without consulting the host filesystem.
+pub fn normalize_path_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {

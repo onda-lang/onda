@@ -5,6 +5,15 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.15]
+
+### Fixed
+
+- The browser playground's language server now resolves imported project files from open editor
+  documents, removing the unsupported-platform error shown on imports such as the wavefolder example.
+- Go to Definition on imports now opens playground files and embedded standard-library modules.
+  Relative import paths containing `.` or `..` resolve to the correct editor document.
+
 ## [0.8.14]
 
 ### Fixed
@@ -898,6 +907,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.15]: https://github.com/onda-lang/onda/compare/0.8.14...0.8.15
 [0.8.14]: https://github.com/onda-lang/onda/compare/0.8.13...0.8.14
 [0.8.13]: https://github.com/onda-lang/onda/compare/0.8.12...0.8.13
 [0.8.12]: https://github.com/onda-lang/onda/compare/0.8.11...0.8.12

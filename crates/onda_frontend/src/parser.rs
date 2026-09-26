@@ -111,7 +111,7 @@ pub use module_loading::{
     absolute_lexical_path, ensure_no_symlink_components, inject_auto_std_math,
     inject_auto_std_prelude, load_program_file, load_program_file_from_snapshot,
     load_program_file_from_virtual_sources, load_program_file_with_overlays,
-    parse_namespace_ref_text_ast, parse_program, parse_program_file,
+    normalize_path_lexically, parse_namespace_ref_text_ast, parse_program, parse_program_file,
     parse_program_file_from_virtual_sources, parse_program_file_with_overlays,
     parse_program_with_path, parse_stdlib_module, rewrite_source_references, LoadError, LoadResult,
     LoadedProgram, SourceDocument, SourceManifest, SourceReferenceKind, SourceReferenceRewrite,

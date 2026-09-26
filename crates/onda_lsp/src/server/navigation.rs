@@ -155,7 +155,7 @@ pub(super) fn definition_for_document_with_parsed(
     position: NavigationPosition,
 ) -> Option<Value> {
     let token = source_token_at_position(source, position)?;
-    if let Some(location) = import_location_at_token(source, path, &token) {
+    if let Some(location) = import_location_at_token(source, path, overlays, &token) {
         return Some(location);
     }
     if let Some(location) =
@@ -3449,21 +3449,27 @@ fn nonempty_env_path(name: &str) -> Option<PathBuf> {
 fn import_location_at_token(
     source: &str,
     current_path: Option<&Path>,
+    overlays: &HashMap<PathBuf, String>,
     token: &SourceToken,
 ) -> Option<Value> {
     let module = import_module_at_token(source, token)?;
-    let path = if module.starts_with("std/") {
-        materialized_stdlib_path(&module)?
+    let uri = if module.starts_with("std/") {
+        #[cfg(target_family = "wasm")]
+        {
+            onda_frontend::stdlib_module_source(&module)?;
+            stdlib_virtual_uri(&module)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            path_to_file_uri(&materialized_stdlib_path(&module)?)
+        }
     } else {
         let current_path = current_path?;
         let base = current_path.parent().unwrap_or_else(|| Path::new("."));
-        resolve_local_module_path(base, &module)?
+        path_to_file_uri(&resolve_local_module_path(base, &module, overlays)?)
     };
-    if !path.exists() {
-        return None;
-    }
     Some(json!({
-        "uri": path_to_file_uri(&path),
+        "uri": uri,
         "range": {
             "start": { "line": 0, "character": 0 },
             "end": { "line": 0, "character": 0 },
@@ -3471,7 +3477,11 @@ fn import_location_at_token(
     }))
 }
 
-fn resolve_local_module_path(base: &Path, module: &str) -> Option<PathBuf> {
+fn resolve_local_module_path(
+    base: &Path,
+    module: &str,
+    overlays: &HashMap<PathBuf, String>,
+) -> Option<PathBuf> {
     let raw = PathBuf::from(module);
     let base = if raw.is_absolute() {
         raw
@@ -3480,6 +3490,11 @@ fn resolve_local_module_path(base: &Path, module: &str) -> Option<PathBuf> {
     };
     for ext in ["onda", "on"] {
         let candidate = base.with_extension(ext);
+        let candidate = onda_frontend::normalize_path_lexically(&candidate);
+        if let Some((path, _)) = overlays.get_key_value(&candidate) {
+            return Some(path.clone());
+        }
+        #[cfg(not(target_family = "wasm"))]
         if candidate.exists() {
             return Some(candidate);
         }
