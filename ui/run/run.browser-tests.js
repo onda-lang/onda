@@ -227,6 +227,20 @@ try {
 
   send({ midi: { noteOn: true }, currentMidiInputDevice: "Computer Keyboard" });
   const octaveInput = document.getElementById("midi-octave");
+  const piano = document.getElementById("piano");
+  piano.style.width = "210px";
+  await waitFrames(1);
+  const whiteKeys = [...piano.querySelectorAll(".piano-key.white")];
+  const blackKeys = [...piano.querySelectorAll(".piano-key.black")];
+  const blackKeyBoundaries = [1, 2, 4, 5, 6, 8, 9, 11, 12, 13];
+  check(blackKeys.every((blackKey, index) => {
+    const blackCenter = blackKey.getBoundingClientRect().left
+      + blackKey.getBoundingClientRect().width / 2;
+    const whiteBoundary = whiteKeys[blackKeyBoundaries[index] - 1]
+      .getBoundingClientRect().right;
+    return Math.abs(blackCenter - whiteBoundary) < 0.75;
+  }), "black piano keys remain aligned when the keyboard is narrow");
+  piano.style.width = "";
   const key = (code, type = "keydown", target = document) => target.dispatchEvent(
     new KeyboardEvent(type, { code, bubbles: true, cancelable: true }),
   );

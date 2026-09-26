@@ -83,8 +83,8 @@ in the browser, choose **Connect MIDI device…** for hardware MIDI or play the 
 
 | Example | Description |
 | --- | --- |
-| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
 | [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
+| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
 | [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
 | [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
 | [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |

@@ -369,6 +369,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 
 @media (max-width: 720px) {
   .site-header { height: 58px; padding: 0 1.25rem; }
+  .header-actions { margin-left: auto; }
   .menu-toggle { display: inline-block; }
   .main-nav { display: none; position: absolute; top: 57px; left: 0; right: 0; padding: .8rem 1rem 1rem; flex-direction: column; align-items: stretch; gap: 0; background: var(--bg); border-bottom: 1px solid var(--line); }
   .main-nav.open { display: flex; }

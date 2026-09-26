@@ -5,6 +5,14 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.17]
+
+### Fixed
+
+- The browser playground's piano now keeps its black keys aligned with the white keys at narrow
+  mobile widths.
+- The website header now keeps the theme and navigation buttons aligned to the right on mobile.
+
 ## [0.8.16]
 
 ### Changed
@@ -928,6 +936,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.17]: https://github.com/onda-lang/onda/compare/0.8.16...0.8.17
 [0.8.16]: https://github.com/onda-lang/onda/compare/0.8.15...0.8.16
 [0.8.15]: https://github.com/onda-lang/onda/compare/0.8.14...0.8.15
 [0.8.14]: https://github.com/onda-lang/onda/compare/0.8.13...0.8.14
