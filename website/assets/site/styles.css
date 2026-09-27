@@ -159,7 +159,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .page-toc a[data-level="3"] { padding-left: .75rem; font-size: .77rem; }
 .docs-content { min-width: 0; }
 .prose > h1:first-child { margin: 0 0 1rem; color: var(--ink); font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.15; letter-spacing: -.025em; }
-.prose h2 { margin: 3.25rem 0 .8rem; padding-top: .6rem; border-top: 1px solid var(--line); color: var(--ink); font-size: 1.55rem; line-height: 1.25; }
+.prose h2 { margin: 1.5rem 0 .8rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--ink); font-size: 1.55rem; line-height: 1.25; }
 .prose h3 { margin: 2rem 0 .6rem; color: var(--ink); font-size: 1.16rem; line-height: 1.35; }
 .prose h4 { margin-top: 1.6rem; color: var(--ink); }
 .prose p, .prose li { color: var(--text); }
@@ -185,7 +185,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .prose pre:hover .copy-button, .copy-button:focus { opacity: 1; }
 
 .home-main { width: min(1240px, calc(100% - 2.5rem)); margin: 0 auto; padding: 1.75rem 0 3rem; }
-.home-example { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.home-example { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .home-docs { margin-top: 2rem; }
 .home-intro { width: 100%; }
 .home-title { display: flex; align-items: center; gap: 1.25rem; margin-bottom: .8rem; }
@@ -201,6 +201,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .home-example-code pre { margin: 0; }
 .home-example-code .primary-button {
   position: absolute;
+  z-index: 1;
   top: .75rem;
   right: .75rem;
   border-color: #2d5278;
@@ -379,8 +380,10 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
   .prose table { display: block; overflow-x: auto; }
   .home-main { padding-top: 1.25rem; }
   .home-example-code .primary-button {
-    top: .5rem;
-    right: .5rem;
+    position: static;
+    display: flex;
+    width: max-content;
+    margin-bottom: .75rem;
     padding: .42rem .62rem;
     font-size: .78rem;
   }
@@ -425,6 +428,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 
 @media (max-width: 580px) {
   .play-intro { display: grid; grid-template-columns: 1fr; gap: .55rem; }
-  .play-intro-meta { min-width: 0; justify-content: flex-start; width: 100%; gap: .7rem; }
+  .play-intro-meta { min-width: 0; flex-direction: column; align-items: flex-start; width: 100%; gap: .25rem; }
+  .play-intro-divider { display: none; }
   .play-shortcuts { min-width: 0; gap: .8rem; }
 }

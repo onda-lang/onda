@@ -20,7 +20,6 @@ import {
   keymap,
   lineNumberMarkers,
   lineNumbers,
-  scrollPastEnd,
 } from "@codemirror/view";
 import { minimalSetup } from "codemirror";
 import { tags } from "@lezer/highlight";
@@ -319,7 +318,7 @@ const ondaEditorTheme = EditorView.theme({
     overflow: "auto",
     fontFamily: "inherit",
   },
-  ".cm-content": { minHeight: "100%", padding: "4px 0", caretColor: "var(--code-ink)" },
+  ".cm-content": { minHeight: "100%", padding: "4px 0 16px", caretColor: "var(--code-ink)" },
   ".cm-gutters": {
     color: "var(--muted)",
     backgroundColor: "var(--code-bg)",
@@ -623,7 +622,6 @@ export class OndaProjectEditor {
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.scrollMargins.of(visibleEditorMargins),
-        scrollPastEnd(),
         EditorView.updateListener.of((update) => {
           this.states.set(path, update.state);
           if (update.docChanged) {

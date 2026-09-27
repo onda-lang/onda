@@ -55,6 +55,20 @@ try {
     "the document scrolls when no MIDI keyboard is shown");
   scrollNode.scrollTop = 0;
   shell.style.minHeight = "";
+  send({ supportsScope: true });
+  for (const section of ["scope", "events", "params"]) {
+    document.getElementById(`${section}-toggle`).click();
+  }
+  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  await waitFrames(1);
+  check(["scope-section", "events-section", "params-section"].every(id =>
+    document.getElementById(id).getBoundingClientRect().height < 80),
+  "collapsed run sections stay at header height when the viewport has spare space");
+  shell.style.minHeight = "";
+  for (const section of ["scope", "events", "params"]) {
+    document.getElementById(`${section}-toggle`).click();
+  }
+  send({ supportsScope: false });
   const midiVelocity = document.getElementById("midi-velocity");
   check(midiVelocity?.getAttribute("role") === "slider",
     "MIDI velocity uses the shared slider control");

@@ -22,8 +22,8 @@ description: Expressive and performant JIT-compiled audio programming language
       <p>A stereo subtractive synth with resonant filters and oversampled saturation</p>
     </div>
     <div class="home-example-code">
-<pre><code class="language-onda">{% include home-example.onda %}</code></pre>
       <a class="primary-button" href="{{ '/playground/?example=basic/saw_filter_saturator.onda' | relative_url }}">Open in playground</a>
+<pre><code class="language-onda">{% include home-example.onda %}</code></pre>
     </div>
   </section>
 

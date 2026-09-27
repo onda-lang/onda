@@ -5,6 +5,18 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.19]
+
+### Fixed
+
+- Balanced section-divider spacing across the homepage and documentation, kept the homepage's
+  playground link clear of the code example on narrow screens, and prevented playground status and
+  shortcut hints from overflowing small viewports.
+- The browser playground editor now stops scrolling near the final source line, with a small amount
+  of bottom padding instead of an extra viewport of empty space.
+- Collapsed sections in the shared web run view now stay at header height when the viewport has
+  spare space, including in the browser playground and native webview.
+
 ## [0.8.18]
 
 ### Changed
@@ -947,6 +959,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.19]: https://github.com/onda-lang/onda/compare/0.8.18...0.8.19
 [0.8.18]: https://github.com/onda-lang/onda/compare/0.8.17...0.8.18
 [0.8.17]: https://github.com/onda-lang/onda/compare/0.8.16...0.8.17
 [0.8.16]: https://github.com/onda-lang/onda/compare/0.8.15...0.8.16

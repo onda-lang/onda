@@ -3274,9 +3274,9 @@ mod tests {
         computer_key_offset, computer_key_press_blocked, control_decimals, event_arg_signature,
         event_array_grid_columns, event_array_len, event_array_scalar_type, format_run_status,
         log_entry_context, param_grid_columns, prepared_param_domain,
-        render_compact_param_value_editor, scalar_drag_speed, scalar_step,
-        structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain, ParamLayout,
-        ParamScalarType, ParamScale, RunApp, RunTheme, PARAM_LAYOUT_STORAGE_KEY,
+        render_compact_param_value_editor, render_section_header, scalar_drag_speed, scalar_step,
+        section_box, structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain,
+        ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme, PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -3668,6 +3668,26 @@ mod tests {
             format_run_status("Running", 48_000, 256),
             "Running — 48 kHz · 256 frames"
         );
+    }
+
+    #[test]
+    fn collapsed_run_section_uses_only_its_header_height() {
+        egui::__run_test_ui(|ui| {
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                ui.make_persistent_id("collapsed-scope-test"),
+                false,
+            );
+            let top = ui.cursor().top();
+            section_box(ui, "", |ui| {
+                render_section_header(ui, &mut state, "Scope", |_| {});
+                state.show_body_unindented(ui, |ui| {
+                    ui.allocate_space(egui::vec2(1.0, 140.0));
+                });
+            });
+            assert!(!state.is_open());
+            assert!(ui.cursor().top() - top < 80.0);
+        });
     }
 
     #[test]
