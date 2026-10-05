@@ -41,7 +41,17 @@
 - `const` future follow-ups
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
   - Evaluate inferred array return types for const defs, such as `-> f32[]` and `-> []`, where each call site validates the returned compile-time array element type and inferred length.
-  - Consider local/proc-local const arrays if they prove useful.
+  - Support const arrays and const defs in generic scopes, including proc-local declarations that
+    inherit enclosing type parameters. See [Constants in generic scopes](compiler.md#constants-in-generic-scopes)
+    for lazy evaluation, specialization caching, and shared immutable data requirements.
+  - Support explicit type parameters on `const def` so coefficient/window generation can return
+    `T[N]` directly, sharing ordinary numeric typing and specialization rules.
+  - Evaluate bounded `while`, `break`, and `continue` in const defs with precise diagnostics and
+    evaluation limits. These currently work in runtime code but are rejected in const defs.
+  - Add diagnostics for unintended precision loss in compile-time calculations. The FFT coefficient
+    generator's context-free `value = 0.0` inferred f32 before assignment into an f64 array;
+    preserve first-assignment typing while making such narrowing easier to discover.
+  - Support scientific-notation numeric literals for small DSP coefficients and tolerances.
   - Consider const structs or structural compile-time values, including structured `const def`
     parameters and results, if stdlib/table generation starts needing them.
   - Improve forward-reference and cycle diagnostics if the strict lexical model becomes annoying.
@@ -215,6 +225,8 @@
     already-compatible rate domains.
 
 - Standard library follow-ups
+  - Defer the measured DSP optimization and validation work recorded in
+    [Standard library TODO](stdlib.md), using scalar Onda source and backend-selected SIMD.
   - Keep the built-in module inventory in sync as docs evolve across `README.md`,
     `docs/architecture.md`, and `docs/syntax.md`:
     `std/prelude`, `std/math`, `std/random`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
@@ -254,6 +266,10 @@
 
 - Generics follow-ups
   - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
+  - Evaluate compile-time integer value parameters on defs and controlled static loop expansion.
+    Replace manually enumerated FFT stage namespace specializations with concise generic code;
+    specify specialization, checking of selected bodies, and code-size limits without exposing
+    target vector widths or SIMD operations in Onda.
 
 - Range-analysis follow-ups
   - Add source syntax for refined integer function parameters. Ranged `i32`/`i64` locals and state,

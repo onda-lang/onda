@@ -27,9 +27,10 @@
   - Design a backend-neutral dot-product or multiply-reduction operation if cleaned-up scalar loops
     still do not vectorize reliably in both LLVM and Binaryen. Define its floating-point contract
     first: scalar-order preservation, a fixed reduction tree, or explicitly reassociated arithmetic.
-  - Add explicit vector DSL design only if portable reductions and auto-vectorization-oriented MIR
-    lowering do not cover real DSP workloads. Define stable semantics for vector math and
-    scalar/vector interoperability before exposing vector types in the language.
+  - Keep SIMD internal to compiler backends and ordinary Onda DSP source scalar. Improve shared
+    proofs and automatic vectorization rather than adding a source-level vector DSL. Follow-ups
+    are tracked in [compiler.md](compiler.md#dsp-loop-proofs-and-diagnostics) and
+    [backends.md](backends.md#optimization-follow-ups).
 
 - RT-safety verification suite
   - Add automated checks/assertions for callback-time allocation/lock regressions.

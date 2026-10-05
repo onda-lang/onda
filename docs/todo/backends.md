@@ -59,6 +59,17 @@ does not need LLVM, a server-side compiler, `wasm-ld`, or JavaScript math callba
 
 ## Optimization follow-ups
 
+- Keep Onda source scalar and select SIMD inside backends. Consume shared alignment, range, and
+  dependence facts from [compiler analyses](compiler.md#dsp-loop-proofs-and-diagnostics).
+- Improve native vectorization decisions for small strided kernels. The current f32 FFT's fused
+  8-point base stage lowers to extensive shuffles and register spills; evaluate vectorization
+  direction, width, interleaving, and register pressure with measured code quality rather than
+  assuming wider vectors are faster. Keep target-specific cost decisions in the LLVM backend.
+- Add automatic DSP loop vectorization to Binaryen/Wasm. Current SIMD support covers slice fills,
+  not general FFT butterfly loops. Start with independent contiguous and mirrored-range kernels,
+  preserving numerical and memory semantics with correct scalar handling where required.
+- Measure real-spectrum reconstruction separately: the native N=1024 fixture currently processes
+  255 bin pairs with scalar arithmetic. Use it as a general loop-dependence/vectorization case.
 - Continue the affinity-pinned LLVM/Binaryen matrix as MIR passes and backend versions change.
 - Evaluate targeted MIR analyses only when they expose facts that both LLVM and Binaryen cannot
   reliably recover; avoid encoding target-specific vector widths or loop policies in MIR.
