@@ -279,14 +279,14 @@ block:
         let mut nonzero = 0;
         for block in 0..320 {
             process_checked(&mut instance, 128, ExecutionOutput::none()).unwrap();
-            for i in 0..128 {
+            for (i, (&current, &original)) in outputs[0].iter().zip(outputs[1].iter()).enumerate() {
                 close(
-                    outputs[0][i],
-                    outputs[1][i],
+                    current,
+                    original,
                     if width == "f32" { 2e-6 } else { 2e-13 },
                     &format!("{width}, pitch block {block}, sample {i}"),
                 );
-                nonzero += usize::from(outputs[0][i].abs() > 0.01);
+                nonzero += usize::from(current.abs() > 0.01);
             }
         }
         assert!(
