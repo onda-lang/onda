@@ -79,8 +79,6 @@ mod const_dependencies;
 mod execution_and_runtime;
 #[path = "examples_suite/fft_accuracy.rs"]
 mod fft_accuracy;
-#[path = "examples_suite/stdlib_optimizations.rs"]
-mod stdlib_optimizations;
 #[path = "examples_suite/generic_defs.rs"]
 mod generic_defs;
 #[path = "examples_suite/language_core.rs"]
@@ -89,5 +87,7 @@ mod language_core;
 mod proc_local_defs;
 #[path = "examples_suite/slices_and_ports.rs"]
 mod slices_and_ports;
+#[path = "examples_suite/stdlib_optimizations.rs"]
+mod stdlib_optimizations;
 #[path = "examples_suite/tuples.rs"]
 mod tuples;

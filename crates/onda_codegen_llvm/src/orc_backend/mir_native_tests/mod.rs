@@ -1,7 +1,7 @@
 use super::*;
 
-mod structured_data;
 mod control_flow;
+mod structured_data;
 
 use onda_frontend::parse_program;
 use onda_semantics::{
