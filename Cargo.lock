@@ -3745,6 +3745,8 @@ dependencies = [
  "onda_realtime",
  "onda_runtime",
  "onda_semantics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

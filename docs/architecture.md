@@ -54,7 +54,8 @@ Non-crate directories of note:
 - `packages/onda_webaudio/` — optional metadata-driven Web Audio adapter for complete wasm32
   processor artifacts; it is not part of the processor ABI or code generator.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
-- `scripts/` — LLVM bootstrap and env-selection helpers.
+- `scripts/` — LLVM bootstrap and env-selection helpers; `scripts/bench/` provides bounded DSP
+  benchmarks, MIR replay, and IR/SIMD inspection.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
 
 ## Module map
