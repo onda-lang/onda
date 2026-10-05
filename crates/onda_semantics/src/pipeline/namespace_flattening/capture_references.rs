@@ -240,6 +240,7 @@ fn processor(proc: &ProcessorDef, visit: &mut Visitor<'_>) {
             for expr in [
                 &param.control.curve,
                 &param.control.step,
+                &param.control.smooth,
             ] {
                 optional(expr.as_ref(), visit);
             }

@@ -20,8 +20,8 @@ params:
   input_gain = 1.6 {0.25, 6.0}
   folds = 1.8 {1.0, 7.0}
   response = 4.0 {0.0, 12.0}
-  release_s = 0.12 {0.01, 1.0, log, "s"}
-  tone = 5200.0 {200.0, 16000.0, log, "Hz"}
+  release_s = 0.12 {0.01, 1.0, scale = log, unit = "s"}
+  tone = 5200.0 {200.0, 16000.0, scale = log, unit = "Hz"}
   resonance = 0.8 {0.5, 4.0}
   motion = 0.18 {0.0, 0.8}
   mix = 0.72 {0.0, 1.0}

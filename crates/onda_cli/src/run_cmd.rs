@@ -3,7 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use onda_codegen_llvm::TargetOptLevel;
-use onda_daemon::{DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions, RunPrintBatch};
+use onda_daemon::{
+    DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions, RunPrintBatch,
+    INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+};
 use onda_project::ProjectLimits;
 use onda_run::{
     append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
@@ -45,6 +48,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_frames,
+                default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -92,6 +96,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_frames,
+                default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -192,6 +197,7 @@ fn run_daemon_diagnose(
     let analysis_options = AnalysisOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
+        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
     };
     let compile_inputs = match project_input.project() {
         Some(project) if !project.manifest.constants.is_empty() => {
@@ -201,14 +207,12 @@ fn run_daemon_diagnose(
         }
         Some(_) | None => onda_semantics::CompileInputs::default(),
     };
-    let session = DaemonSession::new(DaemonConfig {
-        analysis: analysis_options,
-        run: RunOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-            ..RunOptions::default()
-        },
-    });
+    let session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
+        sample_rate: sample_rate_hz as f32,
+        block_size: block_frames,
+        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        ..RunOptions::default()
+    }));
     let snapshot =
         session
             .analysis()
@@ -253,19 +257,14 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         project_buffer_bindings,
         compile_inputs,
     } = request;
-    let mut session = DaemonSession::new(DaemonConfig {
-        analysis: AnalysisOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-        },
-        run: RunOptions {
-            sample_rate: sample_rate_hz as f32,
-            block_size: block_frames,
-            fast_math,
-            opt_level,
-            ..RunOptions::default()
-        },
-    });
+    let run_options = RunOptions {
+        sample_rate: sample_rate_hz as f32,
+        block_size: block_frames,
+        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        fast_math,
+        opt_level,
+    };
+    let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
 
     let mut initial_buffers =
         Vec::with_capacity(project_buffer_bindings.len() + buffer_bindings.len());
@@ -287,13 +286,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     session
         .start_run_with_options_inputs_and_initial_buffers(
             input,
-            RunOptions {
-                sample_rate: sample_rate_hz as f32,
-                block_size: block_frames,
-                fast_math,
-                opt_level,
-                ..RunOptions::default()
-            },
+            run_options,
             compile_inputs,
             initial_buffers,
         )

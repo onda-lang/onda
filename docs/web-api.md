@@ -83,7 +83,12 @@ The returned instance provides:
 - `sendLspMessage(message)` and `setLspAnalysisOptions(options?)` for the embedded language server.
 - `dispose()`, an idempotent terminal release of compiler and worker resources.
 
-Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
+Compile options accept `sampleRate`, `blockSize`, `defaultParamSmoothingSeconds`, typed
+compile-constant overrides, and `codegen`. `defaultParamSmoothingSeconds` defaults to `0` and must
+be finite and non-negative. It applies to floating-point top-level parameters that omit `smooth`;
+explicit metadata, including `smooth = 0`, takes precedence. Positive values specify block-rate
+linear ramp durations, rounded up to at least one host sample; the sample count must fit signed
+64-bit storage.
 Code generation can select optimization level `0..4`, shrink level `0..2`, strict or fast math,
 SIMD, loop-containing inlining, and optional WAT emission. A successful compilation returns an
 `OndaCompilationResult` containing the artifact, resolved source paths, and the exact source graph

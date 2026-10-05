@@ -149,6 +149,13 @@ fn validate_analysis_options(options: AnalysisOptions) -> Result<(), Vec<Diagnos
             "analysis option 'block_size' must be greater than zero",
         )]);
     }
+    if !options.default_param_smoothing_seconds.is_finite()
+        || options.default_param_smoothing_seconds < 0.0
+    {
+        return Err(vec![Diagnostic::internal(
+            "analysis option 'default_param_smoothing_seconds' must be finite and non-negative",
+        )]);
+    }
     Ok(())
 }
 
@@ -1852,6 +1859,10 @@ pub fn analyze_with_options_and_inputs(
     let param_ranges = typed_params
         .iter()
         .filter(|p| !p.name.contains('['))
+        // Smoothed parameters are constrained as targets by the shared MIR
+        // smoothing path. Rewriting their authored reads to per-entry clamp
+        // aliases would bypass the persistent effective value.
+        .filter(|p| p.control.smooth_seconds.is_none())
         .filter_map(|p| p.range.map(|r| (p.name.clone(), r)))
         .collect::<HashMap<_, _>>();
     let mut occupied_temp_names = HashSet::<String>::new();

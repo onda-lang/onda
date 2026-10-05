@@ -430,6 +430,7 @@ pub(crate) fn proc_runtime_analysis_options(
     AnalysisOptions {
         sample_rate: host_options.sample_rate * sample_oversample_factor as f32,
         block_size: host_options.block_size,
+        default_param_smoothing_seconds: host_options.default_param_smoothing_seconds,
     }
 }
 

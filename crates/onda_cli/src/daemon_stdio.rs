@@ -3,18 +3,20 @@ use std::path::Path;
 
 use onda_daemon::{
     DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunDelegateBatch, RunDelegateInfo,
-    RunOptions, RunParamInfo, RunPrintBatch,
+    RunOptions, RunParamInfo, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
 use onda_frontend::Diagnostic;
 use onda_run::{event_value_from_json, event_value_to_json};
-use onda_semantics::AnalysisOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub fn run_stdio_loop() -> Result<(), String> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    let mut session = DaemonSession::default();
+    let mut session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
+        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        ..RunOptions::default()
+    }));
     let mut writer = BufWriter::new(stdout.lock());
 
     for line in stdin.lock().lines() {
@@ -57,6 +59,8 @@ enum Request {
         sample_rate_hz: Option<u32>,
         #[serde(default)]
         block_frames: Option<usize>,
+        #[serde(default)]
+        default_param_smoothing_seconds: Option<f64>,
         #[serde(default)]
         fast_math: Option<bool>,
     },
@@ -177,27 +181,32 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
         Request::Initialize {
             sample_rate_hz,
             block_frames,
+            default_param_smoothing_seconds,
             fast_math,
         } => {
             let current = session.config();
+            let default_param_smoothing_seconds = default_param_smoothing_seconds
+                .unwrap_or(current.run.default_param_smoothing_seconds);
+            if !default_param_smoothing_seconds.is_finite() || default_param_smoothing_seconds < 0.0
+            {
+                return ResponseEnvelope::error(
+                    id,
+                    "default_param_smoothing_seconds must be finite and non-negative",
+                );
+            }
             let run = RunOptions {
                 sample_rate: sample_rate_hz.unwrap_or(current.run.sample_rate as u32) as f32,
                 block_size: block_frames.unwrap_or(current.run.block_size),
-                float_param_smoothing_ms: current.run.float_param_smoothing_ms,
+                default_param_smoothing_seconds,
                 fast_math: fast_math.unwrap_or(current.run.fast_math),
                 opt_level: current.run.opt_level,
             };
-            let config = DaemonConfig {
-                analysis: AnalysisOptions {
-                    sample_rate: run.sample_rate,
-                    block_size: run.block_size,
-                },
-                run,
-            };
+            let config = DaemonConfig::for_run(run);
             session.set_config(config);
             Ok(json!({
                 "sample_rate_hz": run.sample_rate,
                 "block_frames": run.block_size,
+                "default_param_smoothing_seconds": run.default_param_smoothing_seconds,
                 "fast_math": run.fast_math,
             }))
         }
@@ -607,6 +616,7 @@ mod tests {
                 request: Request::Initialize {
                     sample_rate_hz: Some(44_100),
                     block_frames: Some(256),
+                    default_param_smoothing_seconds: Some(0.03),
                     fast_math: Some(true),
                 },
             },
@@ -615,6 +625,10 @@ mod tests {
         assert!(response.ok);
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
+        assert_eq!(
+            session.config().analysis.default_param_smoothing_seconds,
+            0.03
+        );
         assert!(session.config().run.fast_math);
     }
 

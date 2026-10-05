@@ -3316,6 +3316,7 @@ fn param_domain_field_item(name: &str) -> CompletionItem {
         "max" => "max = $1".to_owned(),
         "curve" => "curve = $1".to_owned(),
         "step" => "step = $1".to_owned(),
+        "smooth" => "smooth = $1".to_owned(),
         _ => unreachable!("unknown parameter domain field"),
     };
     CompletionItem::new(name, COMPLETION_ITEM_KIND_PROPERTY)

@@ -7,9 +7,9 @@ import processors/tape_echo
 params:
   auto_play = true
   live_input = false
-  time_s = 0.36 {0.04, 1.2, log, "s"}
+  time_s = 0.36 {0.04, 1.2, scale = log, unit = "s"}
   feedback = 0.58 {0.0, 0.92}
-  tone = 3600.0 {250.0, 14000.0, log, "Hz"}
+  tone = 3600.0 {250.0, 14000.0, scale = log, unit = "Hz"}
   wow = 0.0025 {0.0, 0.015}
   drive = 1.2 {0.5, 3.0}
   mix = 0.42 {0.0, 1.0}

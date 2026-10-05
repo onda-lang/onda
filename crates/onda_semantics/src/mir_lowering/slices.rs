@@ -600,7 +600,7 @@ impl<'a> FunctionLowerer<'a> {
                 .get(base)
                 .map(|&(id, element, len)| {
                     (
-                        PlaceBase::Param(id),
+                        globals.effective_param_base(id),
                         element,
                         len,
                         onda_mir::AccessMode::ReadOnly,

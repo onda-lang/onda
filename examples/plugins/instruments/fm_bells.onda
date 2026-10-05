@@ -189,10 +189,10 @@ struct BellVoiceManager:
     return (mix_l, mix_r)
 
 params:
-  attack_s = 0.003 {0.001, 0.5, log, "s"}
-  decay_s = 1.8 {0.05, 6.0, log, "s"}
+  attack_s = 0.003 {0.001, 0.5, scale = log, unit = "s"}
+  decay_s = 1.8 {0.05, 6.0, scale = log, unit = "s"}
   sustain = 0.08 {0.0, 1.0}
-  release_s = 1.2 {0.02, 6.0, log, "s"}
+  release_s = 1.2 {0.02, 6.0, scale = log, unit = "s"}
   brightness = 0.65 {0.0, 1.0}
   ratio = 2.01 {0.5, 5.0}
   strike = 0.18 {0.0, 0.6}

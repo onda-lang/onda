@@ -194,6 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         AnalysisOptions {
             sample_rate: SAMPLE_RATE,
             block_size,
+            ..AnalysisOptions::default()
         },
     )
     .map_err(|errors| format!("semantic analysis failed: {errors:?}"))?;

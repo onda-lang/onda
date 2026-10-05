@@ -85,6 +85,7 @@ test("compiles Onda source to a complete processor artifact", async () => {
   const { artifact, sourceFiles } = await compiler.compileSource(SOURCE, {
     sampleRate: 48_000,
     blockSize: 128,
+    defaultParamSmoothingSeconds: 0.02,
   });
 
   const manifest = JSON.parse(
@@ -426,9 +427,19 @@ sample:
       "config const Values: f32[] = []\n",
       48_000,
       128,
+      0,
       JSON.stringify([{ name: "Values", element: "invalid", array: true, values: [] }]),
     ),
     (error) => String(error).includes("unknown element type 'invalid'"),
+  );
+  await compiler.dispose();
+});
+
+test("validates default parameter smoothing", async () => {
+  const compiler = await createCompiler();
+  await assert.rejects(
+    compiler.compileSource(SOURCE, { defaultParamSmoothingSeconds: -0.01 }),
+    /defaultParamSmoothingSeconds must be finite and non-negative/,
   );
   await compiler.dispose();
 });

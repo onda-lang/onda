@@ -545,6 +545,7 @@ const def forward() -> f32:
 "#;
     for body in [
         "sample:\n  out1 = forward()\n",
+        "params:\n  gain = 0.5 {0, 1, smooth = forward()}\nsample:\n  out1 = gain\n",
         "proc Voice:\n  outs:\n    out1\n  sample:\n    out1 = forward()\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n",
         "def select_voice(value: i32):\n  return forward()\ndef select_voice(value: f32):\n  return value\nsample:\n  out1 = select_voice(1)\n",
     ] {

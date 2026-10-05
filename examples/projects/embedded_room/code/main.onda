@@ -16,8 +16,8 @@ params:
   auto_play = true
   live_input = false
   mix = 1.0 {0.0, 1.0}
-  damping = 12000.0 {500.0, 20000.0, log, "Hz"}
-  impulse_gain = 0.02 {0.001, 1.0, log}
+  damping = 12000.0 {500.0, 20000.0, scale = log, unit = "Hz"}
+  impulse_gain = 0.02 {0.001, 1.0, scale = log}
   level = 0.8 {0.0, 1.0}
 
 init:

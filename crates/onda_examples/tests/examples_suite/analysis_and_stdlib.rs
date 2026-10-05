@@ -2351,6 +2351,7 @@ fn stdlib_convolution_zero_latency_large_const_namespace_args_analyze() {
             sample_rate: 44_100.0,
 
             block_size: 1024,
+            ..AnalysisOptions::default()
         },
     )
     .expect("semantic analysis should succeed");
@@ -2368,6 +2369,7 @@ fn stdlib_convolution_zero_latency_large_const_wrapper_namespace_analyze() {
             sample_rate: 44_100.0,
 
             block_size: 1024,
+            ..AnalysisOptions::default()
         },
     )
     .expect("semantic analysis should succeed");

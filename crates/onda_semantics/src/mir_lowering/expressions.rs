@@ -588,7 +588,7 @@ impl<'a> FunctionLowerer<'a> {
                     block,
                     ty,
                     Rvalue::Load(Place {
-                        base: PlaceBase::Param(param),
+                        base: globals.effective_param_base(param),
                         projections: Vec::new(),
                     }),
                     location,
@@ -926,7 +926,10 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 ty,
                 Rvalue::Load(Place {
-                    base: PlaceBase::Param(param),
+                    base: self
+                        .runtime_globals
+                        .expect("parameter arrays require runtime globals")
+                        .effective_param_base(param),
                     projections: vec![Projection::Index {
                         index: index_value.value,
                         bounds: BoundsMode::Clamp,

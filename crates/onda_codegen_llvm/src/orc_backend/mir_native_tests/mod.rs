@@ -15,6 +15,7 @@ fn source_program(source: &str, block_size: usize) -> (TypedProgram, Program) {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");

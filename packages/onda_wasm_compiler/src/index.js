@@ -107,6 +107,7 @@ class OndaCompiler {
         source,
         compile.sampleRate,
         compile.blockSize,
+        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -153,6 +154,7 @@ class OndaCompiler {
         JSON.stringify(workspace.sources),
         compile.sampleRate,
         compile.blockSize,
+        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -197,6 +199,7 @@ class OndaCompiler {
         bytes,
         compile.sampleRate,
         compile.blockSize,
+        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -619,6 +622,7 @@ function normalizeCompileOptions(options) {
   }
   return {
     ...compile,
+    defaultParamSmoothingSeconds: normalizeDefaultParamSmoothingSeconds(options),
     codegen: options.codegen ?? {},
   };
 }
@@ -636,6 +640,14 @@ function normalizeCompileInputOptions(options) {
     ...normalizeContextOptions(options),
     constantsJson: JSON.stringify(normalizeCompileConstants(options.constants ?? {})),
   };
+}
+
+function normalizeDefaultParamSmoothingSeconds(options) {
+  const value = options.defaultParamSmoothingSeconds ?? 0;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw configurationError("defaultParamSmoothingSeconds must be finite and non-negative");
+  }
+  return value;
 }
 
 function normalizeLspAnalysisOptions(options) {

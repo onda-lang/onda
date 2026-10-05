@@ -169,7 +169,7 @@ function compileOptions() {
   if (!supportedBlockSizes.has(blockSize)) {
     throw new Error("block size must be 128, 256, 512, 1024, or 2048 frames");
   }
-  return { sampleRate, blockSize };
+  return { sampleRate, blockSize, defaultParamSmoothingSeconds: 0.02 };
 }
 
 function validEditorFontSize(value) {
@@ -775,6 +775,7 @@ async function startAudio() {
       const options = {
         sampleRate: context.sampleRate,
         blockSize: Number(metadata.compile.block_size),
+        defaultParamSmoothingSeconds: 0.02,
       };
       await languageServer.setAnalysisOptions(options);
       const project = projectEditor.compilerProject();

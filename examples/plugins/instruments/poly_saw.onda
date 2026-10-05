@@ -241,16 +241,16 @@ struct VoiceManager:
 
 params:
   detune = 0.08 {0.0, 0.35}
-  attack_s = 0.008 {0.001, 1.0, log, "s"}
-  decay_s = 0.16 {0.01, 2.0, log, "s"}
+  attack_s = 0.008 {0.001, 1.0, scale = log, unit = "s"}
+  decay_s = 0.16 {0.01, 2.0, scale = log, unit = "s"}
   sustain = 0.68 {0.0, 1.0}
-  release_s = 0.32 {0.01, 4.0, log, "s"}
-  cutoff = 800.0 {80.0, 12000.0, log, "Hz"}
+  release_s = 0.32 {0.01, 4.0, scale = log, unit = "s"}
+  cutoff = 800.0 {80.0, 12000.0, scale = log, unit = "Hz"}
   resonance = 2.0 {0.1, 8.0}
-  filter_attack_s = 0.012 {0.001, 1.0, log, "s"}
-  filter_decay_s = 0.28 {0.01, 3.0, log, "s"}
+  filter_attack_s = 0.012 {0.001, 1.0, scale = log, unit = "s"}
+  filter_decay_s = 0.28 {0.01, 3.0, scale = log, unit = "s"}
   filter_sustain = 0.18 {0.0, 1.0}
-  filter_release_s = 0.4 {0.01, 4.0, log, "s"}
+  filter_release_s = 0.4 {0.01, 4.0, scale = log, unit = "s"}
   filter_env_octaves = 3.0 {0.0, 6.0}
   spread = 0.72 {0.0, 1.0}
   drive = 1.0 {1.0, 8.0}

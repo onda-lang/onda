@@ -32,7 +32,7 @@ proc DroneVoice:
 params:
   root_note = 33 {21, 57}
   motion = 0.38 {0.0, 1.0}
-  brightness = 1900.0 {180.0, 9000.0, log, "Hz"}
+  brightness = 1900.0 {180.0, 9000.0, scale = log, unit = "Hz"}
   air = 0.08 {0.0, 0.4}
   space = 0.58 {0.0, 0.85}
   level = 1.0 {0.0, 1.0}

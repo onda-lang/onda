@@ -46,7 +46,7 @@ fn array_domains_validate_every_default_and_reject_invalid_shapes() {
         ("values: f32[2] = [0.0] {0, 1}", "expects 2 elements"),
         ("values: f32[2] = [0.0, 0.3] {0, 1, step = 0.5}", "step"),
         ("values: i32[2] = [0, 3] {0, 10, step = 2}", "step"),
-        ("values: f64[2] = 1.0 {0, 10, log}", "log"),
+        ("values: f64[2] = 1.0 {0, 10, scale = log}", "log"),
         ("values: i64[2] = 0 {0, 9007199254740992}", "exact"),
         ("values: bool[2] = true {0, 1}", "bool"),
     ] {

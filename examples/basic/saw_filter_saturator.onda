@@ -11,7 +11,7 @@ proc Saturator:
 
 params:
   note = 45 {24, 84}
-  cutoff = 1000.0 {80.0, 9000.0, log, "Hz"}
+  cutoff = 1000.0 {80.0, 9000.0, scale = log, unit = "Hz"}
   resonance = 1.5 {0.5, 10.0}
   motion = 0.5 {0.0, 1.0}
   drive = 2.0 {1.0, 6.0}

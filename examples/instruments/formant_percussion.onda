@@ -47,7 +47,7 @@ params:
   bpm = 104.0 {40.0, 190.0, unit = "BPM"}
   vowel = 0.48 {0.0, 1.0}
   resonance = 5.8 {1.0, 12.0}
-  decay_s = 0.48 {0.08, 2.5, log, unit = "s"}
+  decay_s = 0.48 {0.08, 2.5, scale = log, unit = "s"}
   space = 0.34 {0.0, 0.8}
   level = 0.5 {0.0, 1.0}
 

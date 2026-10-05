@@ -5,8 +5,8 @@ params:
   attack_db = 5.0 {-12.0, 12.0, unit = "dB"}
   sustain_db = -2.0 {-12.0, 12.0, unit = "dB"}
   response = 8.0 {1.0, 24.0}
-  slow_attack_s = 0.018 {0.003, 0.08, log, "s"}
-  release_s = 0.16 {0.02, 0.8, log, "s"}
+  slow_attack_s = 0.018 {0.003, 0.08, scale = log, unit = "s"}
+  release_s = 0.16 {0.02, 0.8, scale = log, unit = "s"}
   stereo_link = 0.8 {0.0, 1.0}
   mix = 1.0 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}

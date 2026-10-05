@@ -4,7 +4,7 @@ buffers:
   clip: f32[]
 
 params:
-  speed = 1.0 {0.25, 4.0, log, "x"}
+  speed = 1.0 {0.25, 4.0, scale = log, unit = "x"}
 
 delegate playback_finished()
 

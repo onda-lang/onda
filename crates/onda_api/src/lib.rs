@@ -508,6 +508,7 @@ pub struct onda_compile_options_t {
     pub fast_math: i32,
     pub sample_rate: f32,
     pub block_size: i32,
+    pub default_param_smoothing_seconds: f64,
     pub const_inputs: *const onda_compile_const_input_t,
     pub const_input_count: usize,
 }
@@ -778,6 +779,11 @@ fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'st
     if options.block_size <= 0 {
         return Err("compile options require block_size > 0");
     }
+    if !options.default_param_smoothing_seconds.is_finite()
+        || options.default_param_smoothing_seconds < 0.0
+    {
+        return Err("compile options require finite default_param_smoothing_seconds >= 0");
+    }
     if options.const_input_count > 0 && options.const_inputs.is_null() {
         return Err("compile options const_inputs is null with a nonzero count");
     }
@@ -787,6 +793,14 @@ fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'st
         return Err("compile options const_input_count is too large");
     }
     Ok(())
+}
+
+fn analysis_options_from_compile_options(options: &onda_compile_options_t) -> AnalysisOptions {
+    AnalysisOptions {
+        sample_rate: options.sample_rate,
+        block_size: options.block_size as usize,
+        default_param_smoothing_seconds: options.default_param_smoothing_seconds,
+    }
 }
 
 unsafe fn compile_inputs_from_options(
@@ -1048,10 +1062,7 @@ unsafe fn inspect_parsed_compile_constants(
     };
     let descriptors = match inspect_compile_constants(
         parsed,
-        AnalysisOptions {
-            sample_rate: options.sample_rate,
-            block_size: options.block_size as usize,
-        },
+        analysis_options_from_compile_options(options),
         &inputs,
     ) {
         Ok(descriptors) => descriptors,
@@ -1078,10 +1089,7 @@ unsafe fn merged_compile_inputs(
     options: &onda_compile_options_t,
     project: Option<&ProjectCompilation>,
 ) -> Result<CompileInputs, Diagnostic> {
-    let analysis_options = AnalysisOptions {
-        sample_rate: options.sample_rate,
-        block_size: options.block_size as usize,
-    };
+    let analysis_options = analysis_options_from_compile_options(options);
     let explicit = compile_inputs_from_options(options)?;
     let mut inputs = match project {
         Some(project) => compile_inputs_from_literals(
@@ -1684,10 +1692,7 @@ unsafe fn compile_parsed_program(
     };
     let typed = match analyze_with_options_and_inputs(
         parsed,
-        AnalysisOptions {
-            sample_rate: options.sample_rate,
-            block_size: options.block_size as usize,
-        },
+        analysis_options_from_compile_options(options),
         &compile_inputs,
     ) {
         Ok(t) => t,

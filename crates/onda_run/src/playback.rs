@@ -16,9 +16,9 @@ use onda_daemon::{
     DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
     RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
+    INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
 use onda_project::{BufferAsset, ProjectLimits};
-use onda_semantics::AnalysisOptions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -784,19 +784,14 @@ fn spawn_run_render_thread(
         configure_current_thread_fp_mode();
         let control_rx = control_rx;
         let mut buffer_worker = BufferWorker::new();
-        let mut session = DaemonSession::new(DaemonConfig {
-            analysis: AnalysisOptions {
-                sample_rate: launch.sample_rate_hz as f32,
-                block_size: launch.block_frames,
-            },
-            run: RunOptions {
-                sample_rate: launch.sample_rate_hz as f32,
-                block_size: launch.block_frames,
-                fast_math: launch.fast_math,
-                opt_level: launch.opt_level,
-                ..RunOptions::default()
-            },
-        });
+        let run_options = RunOptions {
+            sample_rate: launch.sample_rate_hz as f32,
+            block_size: launch.block_frames,
+            default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+            fast_math: launch.fast_math,
+            opt_level: launch.opt_level,
+        };
+        let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
         let mut midi_event_names = HashSet::new();
         let mut active_midi_notes = HashSet::<(i32, i32)>::new();
 
@@ -826,13 +821,7 @@ fn spawn_run_render_thread(
             session
                 .start_run_with_options_inputs_and_initial_buffers(
                     &launch.input,
-                    RunOptions {
-                        sample_rate: launch.sample_rate_hz as f32,
-                        block_size: launch.block_frames,
-                        fast_math: launch.fast_math,
-                        opt_level: launch.opt_level,
-                        ..RunOptions::default()
-                    },
+                    run_options,
                     &launch.compile_inputs,
                     initial_buffers,
                 )

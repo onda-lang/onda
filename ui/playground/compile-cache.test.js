@@ -32,4 +32,8 @@ test("compilation identity changes with source, entry, or compile options", () =
   assert.notEqual(key, compilationKey({ ...project, entry: "other.onda" }, options));
   assert.notEqual(key, compilationKey(project, { ...options, blockSize: 256 }));
   assert.notEqual(key, compilationKey(project, { ...options, sampleRate: 44_100 }));
+  assert.notEqual(
+    key,
+    compilationKey(project, { ...options, defaultParamSmoothingSeconds: 0.02 }),
+  );
 });

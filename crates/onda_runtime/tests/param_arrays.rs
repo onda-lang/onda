@@ -9,6 +9,7 @@ fn instance(source: &str) -> Instance {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 4,
+            ..AnalysisOptions::default()
         },
     )
     .unwrap();

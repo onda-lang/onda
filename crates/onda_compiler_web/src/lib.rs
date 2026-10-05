@@ -547,6 +547,7 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_inputs(
         image_bytes,
         sample_rate,
         block_size,
+        0.0,
         limits,
         CompileInputRequest::Typed(inputs),
     )
@@ -556,6 +557,7 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request
     image_bytes: &[u8],
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     limits: ProjectLimits,
     input_request: CompileInputRequest<'_>,
 ) -> Result<CompilationOutput<Vec<u8>>, CompilerFailure> {
@@ -579,8 +581,13 @@ fn compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request
     let source_files = virtual_paths(Path::new(""), &loaded.sources.files);
     let inputs = merged_project_compile_inputs(&loaded.program, &image, config, input_request)
         .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
-    let lowered = lower_parsed_program(loaded.program, config, CompileInputRequest::Typed(&inputs))
-        .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
+    let lowered = lower_parsed_program(
+        loaded.program,
+        config,
+        default_param_smoothing_seconds,
+        CompileInputRequest::Typed(&inputs),
+    )
+    .map_err(|diagnostics| CompilerFailure::with_sources(diagnostics, source_files.clone()))?;
     let mut declarations = Vec::new();
     let grouped_ids = lowered
         .interface
@@ -662,6 +669,7 @@ fn merged_project_compile_inputs(
         AnalysisOptions {
             sample_rate: config.sample_rate,
             block_size: config.block_size as usize,
+            ..AnalysisOptions::default()
         },
     )
     .map_err(|diagnostics| {
@@ -766,6 +774,7 @@ fn lower_source_to_mir_with_manifest_and_inputs(
         source,
         sample_rate,
         block_size,
+        0.0,
         CompileInputRequest::Typed(inputs),
     )
 }
@@ -774,6 +783,7 @@ fn lower_source_to_mir_with_manifest_and_request(
     source: &str,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     input_request: CompileInputRequest<'_>,
 ) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
     let config =
@@ -786,8 +796,13 @@ fn lower_source_to_mir_with_manifest_and_request(
                 .collect::<Vec<_>>(),
         )
     })?;
-    let output = lower_parsed_program(parsed, config, input_request)
-        .map_err(CompilerFailure::without_sources)?;
+    let output = lower_parsed_program(
+        parsed,
+        config,
+        default_param_smoothing_seconds,
+        input_request,
+    )
+    .map_err(CompilerFailure::without_sources)?;
     Ok(CompilationOutput {
         output,
         source_files: Vec::new(),
@@ -822,6 +837,7 @@ fn lower_project_sources_to_mir_with_manifest_and_inputs(
         sources,
         sample_rate,
         block_size,
+        0.0,
         CompileInputRequest::Typed(inputs),
     )
 }
@@ -831,15 +847,21 @@ fn lower_project_sources_to_mir_with_manifest_and_request(
     sources: &HashMap<String, String>,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     input_request: CompileInputRequest<'_>,
 ) -> Result<CompilationOutput<onda_mir::OptimizedProgram>, CompilerFailure> {
     let config =
         compile_config(sample_rate, block_size).map_err(CompilerFailure::without_sources)?;
     let loaded = load_project_sources(entry_path, sources)?;
-    let output =
-        lower_parsed_program(loaded.program, config, input_request).map_err(|diagnostics| {
-            CompilerFailure::with_sources(diagnostics, loaded.source_files.clone())
-        })?;
+    let output = lower_parsed_program(
+        loaded.program,
+        config,
+        default_param_smoothing_seconds,
+        input_request,
+    )
+    .map_err(|diagnostics| {
+        CompilerFailure::with_sources(diagnostics, loaded.source_files.clone())
+    })?;
     Ok(CompilationOutput {
         output,
         source_files: loaded.source_files,
@@ -959,6 +981,7 @@ fn checked_project_path(path: &str) -> Result<PathBuf, Vec<CompilerDiagnostic>> 
 fn lower_parsed_program(
     parsed: Program,
     config: onda_mir::CompileConfig,
+    default_param_smoothing_seconds: f64,
     input_request: CompileInputRequest<'_>,
 ) -> Result<onda_mir::OptimizedProgram, Vec<CompilerDiagnostic>> {
     let inputs = input_request.resolve(&parsed)?;
@@ -967,6 +990,7 @@ fn lower_parsed_program(
         AnalysisOptions {
             sample_rate: config.sample_rate,
             block_size: config.block_size as usize,
+            default_param_smoothing_seconds,
         },
         inputs.as_ref(),
     )
@@ -1006,6 +1030,7 @@ fn inspect_parsed_compile_constants(
         AnalysisOptions {
             sample_rate: config.sample_rate,
             block_size: config.block_size as usize,
+            ..AnalysisOptions::default()
         },
         inputs.as_ref(),
     )
@@ -1224,6 +1249,7 @@ impl OndaLsp {
         self.session.set_analysis_options(AnalysisOptions {
             sample_rate: config.sample_rate,
             block_size: config.block_size as usize,
+            ..AnalysisOptions::default()
         });
         Ok(())
     }
@@ -1810,12 +1836,14 @@ pub fn compile_to_mir_json(
     source: &str,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     constants_json: &str,
 ) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
     lower_source_to_mir_with_manifest_and_request(
         source,
         sample_rate,
         block_size,
+        default_param_smoothing_seconds,
         CompileInputRequest::Json(constants_json),
     )
     .and_then(|compiled| encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized))
@@ -1829,12 +1857,14 @@ pub fn compile_to_mir_messagepack(
     source: &str,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
     lower_source_to_mir_with_manifest_and_request(
         source,
         sample_rate,
         block_size,
+        default_param_smoothing_seconds,
         CompileInputRequest::Json(constants_json),
     )
     .and_then(|compiled| {
@@ -1855,6 +1885,7 @@ pub fn compile_source_workspace_to_mir_json(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     constants_json: &str,
 ) -> Result<FrontendJsonCompilation, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
@@ -1863,6 +1894,7 @@ pub fn compile_source_workspace_to_mir_json(
         &sources,
         sample_rate,
         block_size,
+        default_param_smoothing_seconds,
         CompileInputRequest::Json(constants_json),
     )
     .and_then(|compiled| encode_mir_compilation(compiled, "mir-json", onda_mir::to_json_optimized))
@@ -1877,6 +1909,7 @@ pub fn compile_source_workspace_to_mir_messagepack(
     sources_json: &str,
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
@@ -1885,6 +1918,7 @@ pub fn compile_source_workspace_to_mir_messagepack(
         &sources,
         sample_rate,
         block_size,
+        default_param_smoothing_seconds,
         CompileInputRequest::Json(constants_json),
     )
     .and_then(|compiled| {
@@ -1904,12 +1938,14 @@ pub fn compile_project_image_to_mir_messagepack(
     image_bytes: &[u8],
     sample_rate: f32,
     block_size: u32,
+    default_param_smoothing_seconds: f64,
     constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
     compile_project_image_to_mir_messagepack_with_manifest_and_limits_and_request(
         image_bytes,
         sample_rate,
         block_size,
+        default_param_smoothing_seconds,
         web_project_limits(),
         CompileInputRequest::Json(constants_json),
     )

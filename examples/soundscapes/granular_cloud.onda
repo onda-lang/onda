@@ -13,8 +13,8 @@ params:
   auto_play = true
   live_input = false
   freeze = false
-  density = 18.0 {2.0, 70.0, log, unit = "grains/s"}
-  grain_size = 0.34 {0.025, 1.4, log, unit = "s"}
+  density = 18.0 {2.0, 70.0, scale = log, unit = "grains/s"}
+  grain_size = 0.34 {0.025, 1.4, scale = log, unit = "s"}
   scatter = 0.76 {0.0, 1.0}
   pitch = 0.0 {-24.0, 24.0, unit = "st"}
   pitch_jitter = 0.08 {0.0, 0.5}

@@ -13,6 +13,7 @@ fn compile_test_program(source: &str, block_size: usize) -> JitProgram {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size,
+            ..AnalysisOptions::default()
         },
     )
     .expect("test source should analyze");
@@ -376,6 +377,7 @@ fn bufferless_instances_have_no_fallback_storage() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 64,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");
@@ -405,6 +407,7 @@ fn creation_defers_full_init_until_after_initial_parameter_configuration() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 1,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");
@@ -638,6 +641,7 @@ fn state_init_and_restore_preserve_validated_buffer_tables() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 64,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");
@@ -726,6 +730,7 @@ sample:
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 1,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");
@@ -956,6 +961,7 @@ sample:
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: BLOCK_SIZE,
+            ..AnalysisOptions::default()
         },
     )
     .expect("task source should analyze");
@@ -2055,6 +2061,7 @@ sample:
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: BLOCK_SIZE,
+            ..AnalysisOptions::default()
         },
     )
     .expect("loop task source should analyze");
@@ -2385,6 +2392,7 @@ sample:
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: BLOCK_SIZE,
+            ..AnalysisOptions::default()
         },
     )
     .expect("proc init task source should analyze");
@@ -3307,6 +3315,7 @@ sample:
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: BLOCK_SIZE,
+            ..AnalysisOptions::default()
         },
     )
     .expect("failing task source should analyze");
@@ -3357,6 +3366,7 @@ fn cloned_programs_process_concurrently_after_the_original_owner_is_dropped() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: BLOCK_SIZE,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");

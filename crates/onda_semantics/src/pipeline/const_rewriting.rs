@@ -100,6 +100,7 @@ pub(super) fn reject_forward_const_refs_param_decl(
     for expr in [
         &decl.control.curve,
         &decl.control.step,
+        &decl.control.smooth,
     ]
     .into_iter()
     .flatten()
@@ -1184,6 +1185,7 @@ pub(super) fn substitute_scalar_const_param_decl(
     for expr in [
         &mut decl.control.curve,
         &mut decl.control.step,
+        &mut decl.control.smooth,
     ]
     .into_iter()
     .flatten()

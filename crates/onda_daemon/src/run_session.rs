@@ -22,7 +22,7 @@ use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 pub struct RunOptions {
     pub sample_rate: f32,
     pub block_size: usize,
-    pub float_param_smoothing_ms: f64,
+    pub default_param_smoothing_seconds: f64,
     pub fast_math: bool,
     pub opt_level: TargetOptLevel,
 }
@@ -32,7 +32,7 @@ impl Default for RunOptions {
         Self {
             sample_rate: 48_000.0,
             block_size: 512,
-            float_param_smoothing_ms: 20.0,
+            default_param_smoothing_seconds: 0.0,
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         }
@@ -44,6 +44,7 @@ impl RunOptions {
         AnalysisOptions {
             sample_rate: self.sample_rate,
             block_size: self.block_size,
+            default_param_smoothing_seconds: self.default_param_smoothing_seconds,
         }
     }
 
@@ -265,7 +266,6 @@ pub struct RunSession {
     jit: JitProgram,
     instance: Instance,
     param_values: HashMap<String, f64>,
-    param_runtime_values: HashMap<String, f64>,
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
@@ -423,7 +423,6 @@ impl RunSession {
             buffer_bindings[index] = Some(binding);
         }
         let param_values = HashMap::new();
-        let param_runtime_values = HashMap::new();
         let delegate_storage = if jit.delegate_count() == 0 {
             Vec::new()
         } else {
@@ -443,7 +442,6 @@ impl RunSession {
             &mut buffer_bindings,
             None,
             &param_values,
-            &param_runtime_values,
             ExecutionOutput {
                 delegate_batch: None,
                 print_batch: prints.as_mut(),
@@ -498,7 +496,6 @@ impl RunSession {
             jit,
             instance,
             param_values,
-            param_runtime_values,
             buffer_bindings,
             input_buffers,
             output_buffers,
@@ -693,24 +690,13 @@ impl RunSession {
                 .unwrap_or(value)
         };
         self.param_values.insert(name.to_owned(), value);
-        if should_smooth_run_param(desc.elem_ty())
-            && desc
-                .param_domain()
-                .is_none_or(|domain| domain.step_count().is_none())
-        {
-            self.param_runtime_values
-                .entry(name.to_owned())
-                .or_insert_with(|| default_run_param_element(desc, element));
-        } else {
-            let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
-            onda_runtime::set_param_element_by_index(
-                &mut self.instance,
-                index,
-                element,
-                bytes.as_slice(),
-            )?;
-            self.param_runtime_values.insert(name.to_owned(), value);
-        }
+        let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
+        onda_runtime::set_param_element_by_index(
+            &mut self.instance,
+            index,
+            element,
+            bytes.as_slice(),
+        )?;
         Ok(())
     }
 
@@ -885,7 +871,6 @@ impl RunSession {
                 0,
             ));
         }
-        self.apply_smoothed_params()?;
         self.begin_delegate_batch();
         self.begin_print_batch();
         for buffer in &mut self.output_buffers {
@@ -1170,15 +1155,13 @@ impl RunSession {
             set_param_by_index(&mut self.instance, index, default)?;
         }
         self.param_values.clear();
-        self.param_runtime_values.clear();
         Ok(())
     }
 
     /// Creates a new runtime instance from the already-compiled JIT program.
     /// Host-owned parameter targets and buffer bindings are retained, while all
-    /// processor state and parameter-smoothing history start fresh.
+    /// processor state starts fresh.
     pub fn restart(&mut self) -> Result<(), Diagnostic> {
-        self.param_runtime_values = self.param_values.clone();
         self.rebuild_instance()?;
         self.begin_delegate_batch();
         Ok(())
@@ -1298,7 +1281,6 @@ impl RunSession {
             &mut self.buffer_bindings,
             replacement,
             &self.param_values,
-            &self.param_runtime_values,
             ExecutionOutput {
                 delegate_batch: None,
                 print_batch: prints.as_mut(),
@@ -1309,77 +1291,6 @@ impl RunSession {
         });
         self.finish_print_batch(print_result);
         result
-    }
-
-    fn apply_smoothed_params(&mut self) -> Result<(), Diagnostic> {
-        if self.options.float_param_smoothing_ms <= 0.0 {
-            for (name, &target_value) in &self.param_values {
-                let Some((index, element)) = param_element_address(&self.jit, name) else {
-                    continue;
-                };
-                let Some(desc) = self.jit.param_descriptor(index) else {
-                    continue;
-                };
-                if !should_smooth_run_param(desc.elem_ty())
-                    || desc
-                        .param_domain()
-                        .is_some_and(|domain| domain.step_count().is_some())
-                {
-                    continue;
-                }
-                let bytes = scalar_param_bytes(desc.elem_ty(), target_value)?;
-                onda_runtime::set_param_element_by_index(
-                    &mut self.instance,
-                    index,
-                    element,
-                    bytes.as_slice(),
-                )?;
-                *self
-                    .param_runtime_values
-                    .get_mut(name)
-                    .expect("smoothed run params have initialized runtime values") = target_value;
-            }
-            return Ok(());
-        }
-        let block_ms = (self.options.block_size as f64 * 1000.0)
-            / f64::from(self.options.sample_rate.max(1.0));
-        let alpha = (block_ms / self.options.float_param_smoothing_ms).clamp(0.0, 1.0);
-        for (name, &target_value) in &self.param_values {
-            let Some((index, element)) = param_element_address(&self.jit, name) else {
-                continue;
-            };
-            let Some(desc) = self.jit.param_descriptor(index) else {
-                continue;
-            };
-            if !should_smooth_run_param(desc.elem_ty())
-                || desc
-                    .param_domain()
-                    .is_some_and(|domain| domain.step_count().is_some())
-            {
-                continue;
-            }
-            let current_value = self
-                .param_runtime_values
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| default_run_param_element(desc, element));
-            let mut next_value = current_value + (target_value - current_value) * alpha;
-            if (target_value - next_value).abs() <= f64::max(0.0001, target_value.abs() * 0.001) {
-                next_value = target_value;
-            }
-            let bytes = scalar_param_bytes(desc.elem_ty(), next_value)?;
-            onda_runtime::set_param_element_by_index(
-                &mut self.instance,
-                index,
-                element,
-                bytes.as_slice(),
-            )?;
-            *self
-                .param_runtime_values
-                .get_mut(name)
-                .expect("smoothed run params have initialized runtime values") = next_value;
-        }
-        Ok(())
     }
 }
 
@@ -1511,7 +1422,6 @@ fn create_bound_instance(
     buffer_bindings: &mut [Option<RunBufferBinding>],
     mut replacement: Option<BufferBindingReplacement<'_>>,
     param_values: &HashMap<String, f64>,
-    param_runtime_values: &HashMap<String, f64>,
     output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
     let config = InstanceConfig {
@@ -1567,18 +1477,13 @@ fn create_bound_instance(
         let Some(desc) = jit.param_descriptor(index) else {
             continue;
         };
-        let runtime_value = param_runtime_values.get(name).copied().unwrap_or(*value);
-        let bytes = scalar_param_bytes(desc.elem_ty(), runtime_value)?;
+        let bytes = scalar_param_bytes(desc.elem_ty(), *value)?;
         onda_runtime::set_param_element_by_index(&mut instance, index, element, bytes.as_slice())?;
     }
 
     init_checked_with_output(&mut instance, InitMode::Full, output)?;
     prepare_unchecked_process(&mut instance)?;
     Ok(instance)
-}
-
-fn should_smooth_run_param(ty: PrimitiveType) -> bool {
-    matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
 }
 
 fn run_print_value(value: PrintValue) -> RunPrintValue {

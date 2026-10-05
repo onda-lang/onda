@@ -223,6 +223,9 @@ Non-crate directories of note:
     maximum across each active call path; overflow uses lifetime-reused instance scratch.
     Struct helper tensors use strided slice descriptors;
     fixed-data returns use caller-owned result storage.
+  - `mir_lowering/param_smoothing.rs` — block-rate linear parameter ramps with
+    per-element endpoint/elapsed snapshot state, compile-time reciprocal durations,
+    and one shared counter of actual host frames processed across segments.
   - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process
     snapshots persist across segments, init/event snapshots are invocation-local, and helpers
     receive read-only references to the calling boundary’s snapshot. Logical host array

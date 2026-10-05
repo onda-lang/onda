@@ -29,10 +29,11 @@ impl CompileContext {
         }
     }
 
-    pub(crate) fn options(self, _host: AnalysisOptions) -> AnalysisOptions {
+    pub(crate) fn options(self, host: AnalysisOptions) -> AnalysisOptions {
         AnalysisOptions {
             sample_rate: f32::from_bits(self.sample_rate_bits),
             block_size: self.block_size,
+            ..host
         }
     }
 

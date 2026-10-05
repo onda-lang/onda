@@ -191,6 +191,11 @@ All compilation and configuration-inspection entry points use `onda_compile_opti
 - `fast_math != 0` enables LLVM fast-math lowering.
 - `sample_rate` must be finite and positive.
 - `block_size` must be positive.
+- `default_param_smoothing_seconds` must be finite and non-negative. It applies only to
+  floating-point top-level parameters that omit `smooth`; explicit `smooth`, including
+  `smooth = 0`, takes precedence. Positive values specify block-rate linear ramp
+  durations, rounded up to at least one host sample; the sample count must fit signed
+  64-bit storage. Its zero-initialized default emits no smoothing code.
 - `const_inputs` is `NULL` when `const_input_count` is zero.
 
 The resulting program captures these values; instances do not choose another sample rate or block

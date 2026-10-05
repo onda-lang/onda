@@ -14,7 +14,7 @@ outs 2
 
 params:
   note = 45.0 {24.0, 84.0, step = 1.0}
-  cutoff = 920.0 {80.0, 9000.0, log, "Hz"}
+  cutoff = 920.0 {80.0, 9000.0, scale = log, unit = "Hz"}
   resonance = 1.4 {0.5, 6.0}
   motion = 0.52 {0.0, 1.0}
   drive = 1.8 {1.0, 6.0}

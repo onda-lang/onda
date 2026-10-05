@@ -3882,6 +3882,7 @@ sample {
             sample_rate: 48_000.0,
 
             block_size: 64,
+            ..AnalysisOptions::default()
         },
     )
     .expect("semantic analysis");

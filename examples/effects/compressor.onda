@@ -9,8 +9,8 @@ params:
   live_input = false
   threshold_db = -18.0 {-48.0, 0.0, unit = "dB"}
   ratio = 4.0 {1.0, 20.0}
-  attack_ms = 8.0 {0.1, 100.0, log, "ms"}
-  release_ms = 120.0 {10.0, 1000.0, log, "ms"}
+  attack_ms = 8.0 {0.1, 100.0, scale = log, unit = "ms"}
+  release_ms = 120.0 {10.0, 1000.0, scale = log, unit = "ms"}
   knee_db = 6.0 {0.0, 18.0, unit = "dB"}
   makeup_db = 2.0 {0.0, 18.0, unit = "dB"}
   mix = 1.0 {0.0, 1.0}

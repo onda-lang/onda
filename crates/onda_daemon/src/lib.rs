@@ -1,5 +1,9 @@
 mod run_session;
 
+/// Default smoothing used by Onda's interactive hosts for floating-point
+/// parameters that omit explicit `smooth` metadata.
+pub const INTERACTIVE_PARAM_SMOOTHING_SECONDS: f64 = 0.02;
+
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{
     InitialBufferBinding, PreparedRunBuffer, RetiredRunBuffer, RunBufferChannels, RunBufferInfo,
@@ -22,6 +26,15 @@ use onda_semantics::normalize_session_path;
 pub struct DaemonConfig {
     pub analysis: AnalysisOptions,
     pub run: RunOptions,
+}
+
+impl DaemonConfig {
+    pub fn for_run(run: RunOptions) -> Self {
+        Self {
+            analysis: run.analysis_options(),
+            run,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -356,13 +369,7 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_run_with_options(
-                &main,
-                RunOptions {
-                    float_param_smoothing_ms: 0.0,
-                    ..RunOptions::default()
-                },
-            )
+            .start_run_with_options(&main, RunOptions::default())
             .expect("run should compile and start");
 
         let param_info = session.run(&main).expect("active run").param_info();
@@ -1046,13 +1053,7 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_run_with_options(
-                &main,
-                RunOptions {
-                    float_param_smoothing_ms: 0.0,
-                    ..RunOptions::default()
-                },
-            )
+            .start_run_with_options(&main, RunOptions::default())
             .expect("run should compile and start");
         session
             .run_mut(&main)
@@ -1091,13 +1092,7 @@ mod tests {
 
         let mut session = DaemonSession::default();
         session
-            .start_run_with_options(
-                &main,
-                RunOptions {
-                    float_param_smoothing_ms: 0.0,
-                    ..RunOptions::default()
-                },
-            )
+            .start_run_with_options(&main, RunOptions::default())
             .expect("run should compile and start");
         session
             .run_mut(&main)

@@ -13,10 +13,16 @@ const compiler = await createCompiler();
 const { artifact, sourceFiles } = await compiler.compileSource(source, {
   sampleRate: 48_000,
   blockSize: 128,
+  defaultParamSmoothingSeconds: 0.02,
 });
 
 console.log(artifact.wasm, artifact.metadata, sourceFiles);
 ```
+
+`defaultParamSmoothingSeconds` is optional and defaults to `0`. A positive value applies compiled
+block-rate linear ramps to floating-point top-level parameters that omit `smooth`; explicit source
+metadata, including `smooth = 0`, takes precedence. Durations round up to at least one host sample;
+values exceeding the supported signed 64-bit sample count are rejected.
 
 Source may expose explicitly typed `config const` declarations. Supply optional partial overrides
 on any source, workspace, or project-image compilation:

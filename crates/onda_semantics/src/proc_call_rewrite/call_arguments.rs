@@ -1385,6 +1385,15 @@ fn expand_proc_value_specs(
     let mut field_array_slots = HashMap::<String, Vec<String>>::new();
 
     for param in params {
+        if param.control.smooth.is_some() {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "processor '{proc_name}' {kind} '{}' uses smooth, but smooth is only supported on top-level parameters",
+                    param.name
+                ),
+                param.loc,
+            ));
+        }
         match param.ty.as_ref() {
             Some(DeclType::Slice(_)) => {
                 push_semantic(

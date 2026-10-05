@@ -114,14 +114,14 @@ proc Benjolin:
     out2 = signals[output_signal_r]
 
 params:
-  frequency_a = 70.0 {20.0, 14000.0, log, "Hz"}
-  frequency_b = 4.0 {0.1, 14000.0, log, "Hz"}
+  frequency_a = 70.0 {20.0, 14000.0, scale = log, unit = "Hz"}
+  frequency_b = 4.0 {0.1, 14000.0, scale = log, unit = "Hz"}
   scale = 0.78 {0.0, 1.0}
   rungler_a = 0.16 {0.0, 1.0}
   rungler_b = 0.03 {0.0, 1.0}
   rungler_filter = 0.58 {0.0, 1.0}
   feedback_loop = 0.82 {0.0, 0.95}
-  filter_frequency = 90.0 {20.0, 20000.0, log, "Hz"}
+  filter_frequency = 90.0 {20.0, 20000.0, scale = log, unit = "Hz"}
   resonance = 3.7 {0.5, 8.0}
   filter_mode = 0 {0, 5}
   output_signal_l = 6 {0, 6}

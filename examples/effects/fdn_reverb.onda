@@ -5,7 +5,7 @@ params:
   auto_play = true
   live_input = 0.0 {0.0, 1.0, step = 1.0}
   mix = 0.56 {0.0, 1.0}
-  decay = 4.8 {0.2, 16.0, log, "s"}
+  decay = 4.8 {0.2, 16.0, scale = log, unit = "s"}
   damping = 0.46 {0.0, 0.98}
   predelay = 0.018 {0.0, 0.1, unit = "s"}
   diffusion = 0.64 {0.0, 0.95}

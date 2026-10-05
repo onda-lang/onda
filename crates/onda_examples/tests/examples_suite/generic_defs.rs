@@ -7,6 +7,7 @@ fn lower_test_mir(src: &str) -> onda_mir::Program {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 4,
+            ..AnalysisOptions::default()
         },
     )
     .expect("analysis should succeed");

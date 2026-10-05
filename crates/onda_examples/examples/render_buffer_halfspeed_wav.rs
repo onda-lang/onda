@@ -44,6 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         AnalysisOptions {
             sample_rate: sample_rate_hz as f32,
             block_size: BLOCK_FRAMES,
+            ..AnalysisOptions::default()
         },
     )
     .map_err(|d| format_diagnostics("semantic analysis failed", &d))?;

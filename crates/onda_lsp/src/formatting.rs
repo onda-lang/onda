@@ -1428,6 +1428,10 @@ pub fn format_param_decl(param: &ParamDecl) -> String {
             text.push_str(", ");
         }
         text.push_str(&format_expr(&range.max));
+        if let Some(smooth) = &param.control.smooth {
+            text.push_str(", smooth = ");
+            text.push_str(&format_expr(smooth));
+        }
         if param.control.scale != ParamScale::Linear {
             text.push_str(", scale = ");
             text.push_str(param.control.scale.name());
@@ -1588,8 +1592,8 @@ sample:
     fn formatting_preserves_parameter_control_domains() {
         let source = r#"
 params:
-  cutoff = 440.0 {20, 20000, log, "Hz"}
-  mix = 0.5 {0, 1, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25}
+  cutoff = 440.0 {20, 20000, 0.02, log, unit = "Hz"}
+  mix = 0.5 {0, 1, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25, smooth = 0.05}
 
 outs:
   out1
@@ -1601,16 +1605,19 @@ sample:
         let formatted = format_program(&program);
 
         assert!(
-            formatted.contains(r#"cutoff = 440.0 {20, 20000, scale = log, unit = "Hz"}"#),
+            formatted
+                .contains(r#"cutoff = 440.0 {20, 20000, smooth = 0.02, scale = log, unit = "Hz"}"#),
             "formatted logarithmic domain was {formatted:?}"
         );
         assert!(
             formatted.contains(
-                r#"mix = 0.5 {0, 1, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25}"#
+                r#"mix = 0.5 {0, 1, smooth = 0.05, curve = -4, unit = "gain \"curve\"\\\n", step = 0.25}"#
             ),
             "formatted curved stepped domain was {formatted:?}"
         );
-        parse_program(&formatted).expect("formatted parameter domains should remain parseable");
+        let reparsed =
+            parse_program(&formatted).expect("formatted parameter domains should remain parseable");
+        assert_eq!(formatted, format_program(&reparsed));
     }
 
     #[test]
