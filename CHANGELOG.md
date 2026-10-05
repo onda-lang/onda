@@ -5,6 +5,73 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.20]
+
+### Added
+
+- Floating-point top-level parameters and parameter arrays support `smooth = seconds`
+  for compiled block-rate linear ramps, reaching the target at the first block
+  boundary at or after the requested duration. Compiler APIs default to no smoothing;
+  `onda run` (including `play` and `render`) and the website editor use 20 ms unless
+  the source specifies a value. `smooth = 0` disables smoothing.
+- Compiler APIs accept a default smoothing duration through
+  `default_param_smoothing_seconds` in native options and
+  `defaultParamSmoothingSeconds` in JavaScript options. Explicit source metadata
+  takes precedence, including `smooth = 0`.
+- Native and browser compiler APIs expose the Onda version, which is also
+  displayed in the native hosts and website editor.
+- Added `std::pitch::ratio_from_semitones` and `std::pitch::semitones_from_ratio`
+  for converting between semitone intervals and frequency ratios.
+
+### Changed
+
+- Parameter domains accept positional `min, max, smooth, scale` fields;
+  `curve`, `unit`, and `step` are named-only. `{max}` remains a shorthand.
+- Native run hosts use compiled linear parameter ramps with a defined completion
+  time in place of their previous host-side smoothing.
+- Const arrays evaluate on demand, so importing a library no longer runs
+  unused array generators. Scalar const declarations remain eager. Known
+  array lengths are available without evaluating elements, unused array defaults
+  remain unevaluated, and arrays used only for compile-time calculations are
+  omitted from the compiled program. Configuration inspection evaluates selected values.
+- Const declarations and const defs are limited to root and namespace scope.
+  Unused declarations receive static name, type, and shape checks without
+  executing array generators. Const defs share ordinary expression and
+  binding rules with runtime code.
+- Runtime scalar expressions composed entirely of constants and literals,
+  including explicit casts and builtins, evaluate at compile time and embed
+  their results. Evaluation preserves numeric widths and integer wrapping.
+  Integer division and modulo by zero report compile-time errors even in
+  branches guarded by runtime conditions. Unused const-array payloads remain
+  unevaluated.
+- `std::osc::Sine` and `KSine` use a shared 8,192-point interpolated wavetable
+  generated only when needed. Both are now non-generic, with `f32` parameters
+  and outputs, wrapping 32-bit phase accumulators, and precomputed increments.
+  Their accuracy is limited by the table, interpolation, and phase resolution;
+  use `sin()` for direct mathematical sine evaluation.
+- Standard oscillators produce normalized waveforms without an `amp`
+  parameter; callers apply gain explicitly.
+- `Phasor` and standard oscillators output their current state before advancing,
+  making initialization and reset consistent across audio and control rates.
+- Optimized standard-library FFT processing with radix-4 stages and specialized
+  real-input transforms, and reduced repeated calculations in the compressor,
+  dual-window pitch shifter, and pitch and level conversion helpers.
+
+### Removed
+
+- Removed `std::pitch::LN_2_OVER_12`, `std::pitch::INV_LN_2_OVER_12`, and
+  `std::levels::DB_TO_GAIN_SCALE`. Use the pitch and level conversion functions.
+
+### Fixed
+
+- Const evaluation preserves numeric types, integer wrapping, `f32` precision,
+  and exact `i64` comparisons consistently with runtime arithmetic.
+- Const references, defaults, and array dimensions resolve in their lexical
+  scope and compile context, including specialized namespaces and oversampling.
+- Const-def locals support inferred array literals, copies, slices, and
+  array-returning calls through the ordinary array initializer checks.
+- Semantic highlighting recognizes both keywords in `const def` declarations.
+
 ## [0.8.19]
 
 ### Fixed
