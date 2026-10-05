@@ -3577,7 +3577,10 @@ init:
         let labels = completion_labels_for(&mut server, &main, source, "sine.");
 
         assert!(labels.contains(&"freq".to_owned()), "labels: {labels:?}");
-        assert!(labels.contains(&"amp".to_owned()), "labels: {labels:?}");
+        assert!(
+            labels.contains(&"phase_offset".to_owned()),
+            "labels: {labels:?}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

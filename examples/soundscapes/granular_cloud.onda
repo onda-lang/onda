@@ -35,9 +35,9 @@ init:
   next_grain = 0
   spawn_clock = 0
 
-  source_a = std::osc::Sine(amp = 0.62)
-  source_b = std::osc::Sine(amp = 0.24)
-  source_c = std::osc::Sine(amp = 0.14)
+  source_a = std::osc::Sine()
+  source_b = std::osc::Sine()
+  source_c = std::osc::Sine()
   source_envelope = std::env::DecayEnv(decay_s = 0.32)
   source_clock = 0
   source_step = 0
@@ -66,9 +66,9 @@ sample:
   if live_input:
     source = in1
   else:
-    audition = source_a(freq = source_frequency)
-    audition = audition + source_b(freq = source_frequency * 1.4983)
-    audition = audition + source_c(freq = source_frequency * 2.006)
+    audition = source_a(freq = source_frequency) * 0.62
+    audition = audition + source_b(freq = source_frequency * 1.4983) * 0.24
+    audition = audition + source_c(freq = source_frequency * 2.006) * 0.14
     source = audition * source_envelope() * 0.42
 
   if !freeze:

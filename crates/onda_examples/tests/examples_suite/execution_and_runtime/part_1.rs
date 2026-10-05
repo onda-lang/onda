@@ -465,11 +465,11 @@ import std/osc
 outs { out1 }
 
 init {
-  osc = std::osc::Square<f64>(freq = f64(220.0), amp = f64(0.25))
+  osc = std::osc::Square<f64>(freq = f64(220.0))
 }
 
 sample {
-  out1 = f32(osc())
+  out1 = f32(osc()) * 0.25
 }
 "#;
 
@@ -479,14 +479,13 @@ import std/osc
 outs { out1 }
 
 init {
-  lfo = std::osc::KSine<f64>(
-    freq = f64(SR) / f64(BS * 4),
-    amp = f64(0.25)
+  lfo = std::osc::KSine(
+    freq = SR / (BS * 4)
   )
 }
 
 block {
-  held = f32(lfo())
+  held = lfo() * 0.25
 
   sample {
     out1 = held
@@ -494,17 +493,75 @@ block {
 }
 "#;
 
-const STDLIB_OSC_SAW_AMP_EXAMPLE: &str = r#"
+const STDLIB_OSC_SINE_REFERENCE_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1, out2, out3, out4 }
+
+init {
+  sine = std::osc::Sine(
+    freq = SR * 0.0137,
+    phase_offset = 0.123
+  )
+  ksine = std::osc::KSine(
+    freq = SR / (BS * 7),
+    phase_offset = -0.27
+  )
+  frame = 0
+  blocks = 0
+}
+
+block {
+  control = ksine() * 0.5
+  control_reference = f32(sin(f64(blocks) / 7.0 * TWO_PI - 0.27)) * 0.5
+  blocks += 1
+
+  sample {
+    out1 = sine() * 0.75
+    out2 = f32(sin(f64(frame) * 0.0137 * TWO_PI + 0.123)) * 0.75
+    out3 = control
+    out4 = control_reference
+    frame += 1
+  }
+}
+"#;
+
+const STDLIB_OSC_SINE_STATE_EXAMPLE: &str = r#"
+import std/osc
+
+outs { out1, out2, out3 }
+events { reset() { resettable.reset() } }
+
+init {
+  dynamic = std::osc::Sine(freq = 0.0)
+  reverse = std::osc::Sine(freq = -SR * 0.25)
+  resettable = std::osc::Sine(freq = SR * 0.25)
+  frame = 0
+}
+
+sample {
+  if frame == 0 {
+    dynamic.freq = SR * 0.25
+    dynamic.phase_offset = PI * 0.5
+  }
+  out1 = dynamic()
+  out2 = reverse()
+  out3 = resettable()
+  frame += 1
+}
+"#;
+
+const STDLIB_OSC_SAW_EXPLICIT_GAIN_EXAMPLE: &str = r#"
 import std/osc
 
 outs { out1 }
 
 init {
-  osc = std::osc::Saw(freq = 220.0, amp = 0.25)
+  osc = std::osc::Saw(freq = 220.0)
 }
 
 sample {
-  out1 = osc()
+  out1 = osc() * 0.25
 }
 "#;
 
@@ -623,11 +680,11 @@ import std/osc
 outs { out1 }
 
 init {
-  osc = std::osc::Triangle<f64>(freq = f64(220.0), amp = f64(0.25))
+  osc = std::osc::Triangle<f64>(freq = f64(220.0))
 }
 
 sample {
-  out1 = f32(osc())
+  out1 = f32(osc()) * 0.25
 }
 "#;
 
@@ -720,14 +777,14 @@ import std/osc
 outs 3
 
 init {
-  src = std::osc::Saw(freq = 220.0, amp = 0.25)
+  src = std::osc::Saw(freq = 220.0)
   notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_NOTCH)
   peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_PEAK)
   allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_ALLPASS)
 }
 
 sample {
-  x = src()
+  x = src() * 0.25
   out1 = notch(x)
   out2 = peak(x)
   out3 = allpass(x)
@@ -1669,12 +1726,12 @@ fn stdlib_square_supports_f64_and_stays_bounded() {
     );
     assert!(
         output.iter().all(|sample| sample.abs() <= 0.3),
-        "expected square output to stay within amp bounds, got {output:?}"
+        "expected explicitly scaled square output to stay bounded, got {output:?}"
     );
 }
 
 #[test]
-fn stdlib_ksine_supports_f64_and_advances_once_per_block() {
+fn stdlib_ksine_advances_once_per_block() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -1697,6 +1754,141 @@ fn stdlib_ksine_supports_f64_and_advances_once_per_block() {
 }
 
 #[test]
+fn stdlib_sines_track_mathematical_references_and_emit_the_table_on_demand() {
+    let frames = 64;
+    let parsed = parse_program(STDLIB_OSC_SINE_REFERENCE_EXAMPLE).expect("source should parse");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 48_000.0,
+            block_size: frames,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("sine source should analyze");
+    let wavetable = typed
+        .const_arrays
+        .iter()
+        .find(|array| array.name.ends_with("_SineWavetable"))
+        .expect("reachable sine should demand its wavetable");
+    assert_eq!(wavetable.len, 8192 * 2);
+
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_SINE_REFERENCE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 4);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    let mut max_error = [0.0_f32; 2];
+    for _ in 0..9 {
+        process_interleaved(&mut instance, &[], &mut output, frames)
+            .expect("process should succeed");
+        for frame in output.chunks_exact(out_channels) {
+            for (pair, error) in [(0, 1), (2, 3)].into_iter().zip(&mut max_error) {
+                *error = error.max((frame[pair.0] - frame[pair.1]).abs());
+            }
+        }
+    }
+    // References use ideal phases computed from frame counts. The oscillators
+    // use f32 parameters, quantize frequency and phase to 32 bits, and
+    // interpolate an f32 table. Audio-rate frequency rounding accumulates
+    // over 576 samples, requiring a wider tolerance than the nine control steps.
+    assert!(
+        max_error[0] <= 5e-6 && max_error[1] <= 1e-6,
+        "maximum sine errors: {max_error:?}"
+    );
+}
+
+#[test]
+fn stdlib_sine_fixed_phase_preserves_updates_direction_and_reset() {
+    let frames = 3;
+    let (mut instance, in_channels, out_channels) =
+        compile_instance(STDLIB_OSC_SINE_STATE_EXAMPLE, frames);
+    assert_eq!(in_channels, 0);
+    assert_eq!(out_channels, 3);
+
+    let mut output = vec![0.0_f32; frames * out_channels];
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process first block");
+    let expected = [[1.0, 0.0, 0.0], [0.0, -1.0, 1.0], [-1.0, 0.0, 0.0]];
+    for (actual, expected) in output.chunks_exact(out_channels).zip(expected) {
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_near(*actual, expected, 1e-6);
+        }
+    }
+
+    let reset = instance.event_index("reset").expect("reset event");
+    trigger_event_by_index_checked(
+        &mut instance,
+        reset,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("reset should succeed");
+    process_interleaved(&mut instance, &[], &mut output, frames).expect("process after reset");
+    let resettable = output
+        .chunks_exact(out_channels)
+        .map(|frame| frame[2])
+        .collect::<Vec<_>>();
+    for (actual, expected) in resettable.iter().zip([0.0, 1.0, 0.0]) {
+        assert_near(*actual, expected, 1e-6);
+    }
+}
+
+#[test]
+fn stdlib_sine_sample_kernel_avoids_float_range_reduction() {
+    let frames = 64;
+    let parsed =
+        parse_program("import std/osc\ninit { osc = std::osc::Sine() }\nsample { out1 = osc() }")
+            .expect("source should parse");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 48_000.0,
+            block_size: frames,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("sine source should analyze");
+    let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
+        .expect("sine source should lower to MIR");
+    let ir = lower_optimized_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions {
+            fast_math: false,
+            opt_level: TargetOptLevel::O3,
+        },
+    )
+    .expect("sine source should lower to LLVM IR");
+    assert!(!ir.contains("llvm.floor"));
+    assert!(ir.contains("add i32"));
+}
+
+#[test]
+fn stdlib_osc_import_without_sines_does_not_demand_the_wavetable() {
+    let parsed = parse_program(
+        "import std/osc\ninit { osc = std::osc::Phasor() }\nsample { out1 = sin(osc() * TWO_PI) }",
+    )
+    .expect("source should parse");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            sample_rate: 48_000.0,
+            block_size: 4,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("intrinsic sine source should analyze");
+
+    assert!(
+        typed
+            .const_arrays
+            .iter()
+            .all(|array| !array.name.ends_with("_SineWavetable")),
+        "using other oscillators must not compile the sine wavetable"
+    );
+}
+
+#[test]
 
 fn stdlib_osc_phasor_param_call_updates_within_block() {
     let frames = 4;
@@ -1713,13 +1905,13 @@ fn stdlib_osc_phasor_param_call_updates_within_block() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     assert_near(output[0], 0.0, 1e-6);
-    assert_near(output[1], 0.25, 1e-6);
-    assert_near(output[2], 0.5, 1e-6);
-    assert_near(output[3], 0.75, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
+    assert_near(output[2], 0.25, 1e-6);
+    assert_near(output[3], 0.5, 1e-6);
 }
 
 #[test]
-fn stdlib_osc_parent_param_hooks_update_child_oscillators() {
+fn stdlib_osc_sine_param_hook_updates_within_block() {
     let source = r#"
 import std/osc
 
@@ -1740,8 +1932,8 @@ sample:
 
     let mut output = [0.0_f32; 2];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process sine hook");
-    assert_near(output[0], 1.0, 1e-6);
-    assert_near(output[1], 0.0, 1e-6);
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 1.0, 1e-6);
 }
 
 #[test]
@@ -1805,11 +1997,11 @@ fn explicit_oversampled_proc_from_oversampled_context_is_rejected() {
 
 #[test]
 
-fn stdlib_saw_applies_amp_to_the_full_waveform() {
+fn stdlib_saw_supports_explicit_output_gain() {
     let frames = 256;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_OSC_SAW_AMP_EXAMPLE, frames);
+        compile_instance(STDLIB_OSC_SAW_EXPLICIT_GAIN_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -1826,7 +2018,7 @@ fn stdlib_saw_applies_amp_to_the_full_waveform() {
     assert!(peak >= 0.15, "expected audible saw output, got {output:?}");
     assert!(
         peak <= 0.3,
-        "expected amp-scaled saw output near 0.25 peak, got peak {peak} from {output:?}"
+        "expected explicitly scaled saw output near 0.25 peak, got peak {peak} from {output:?}"
     );
 }
 
@@ -1856,7 +2048,7 @@ fn stdlib_triangle_supports_f64_and_stays_bounded() {
     );
     assert!(
         output.iter().all(|sample| sample.abs() <= 0.3),
-        "expected triangle output to stay within amp bounds, got {output:?}"
+        "expected explicitly scaled triangle output to stay bounded, got {output:?}"
     );
 }
 

@@ -2688,6 +2688,21 @@ std/noise std/pitch std/smoothing
 
 `std/prelude` currently imports `std/math`, `std/lookup`, and `std/random`.
 
+`std::osc::Sine` produces audio-rate sine waves; `std::osc::KSine` produces
+block-rate sine waves. Both use a shared 8,192-point `f32` wavetable with linear
+interpolation and a wrapping 32-bit phase accumulator. Both are non-generic,
+with `f32` parameters and outputs; accuracy is limited by the table,
+interpolation, and phase resolution. The table is evaluated and included
+only when used. Use the `sin()` builtin for direct mathematical sine evaluation.
+
+The fixed-point frequency grid is spaced at `SR / 2^32` Hz for `Sine` and
+`SR / (BS * 2^32)` Hz for `KSine`; parameter calculations use `f32` precision.
+`phase_offset` is in radians; `reset(phase_cycles)` takes cycles.
+`Phasor` and the standard oscillators produce their current phase/state before
+advancing for the next call. Their first output uses the initialized or reset
+phase; frequency controls the advance toward the next output. `KSine` advances
+once per block.
+
 ### Includes
 
 `include` inserts another source file by quoted path:

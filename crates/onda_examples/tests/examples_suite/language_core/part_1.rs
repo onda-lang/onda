@@ -2983,7 +2983,7 @@ def initVoices(voices, freq):
 
     h = f32(i + 1)
 
-    voices[i].init(freq = freq * h, amp = 0.12 / h)
+    voices[i].init(freq = freq * h)
 
 
 
@@ -3001,7 +3001,9 @@ sample:
 
   for i in 0..NumOsc:
 
-    mix = mix + voices[i]()
+    h = f32(i + 1)
+
+    mix = mix + voices[i]() * (0.12 / h)
 
   out1 = mix
 
@@ -3031,7 +3033,7 @@ init:
 
     h = f32(i + 1)
 
-    voices[i].init(freq = freq * h, amp = 0.12 / h)
+    voices[i].init(freq = freq * h)
 
 
 
@@ -3041,7 +3043,9 @@ sample:
 
   for i in 0..NumOsc:
 
-    mix = mix + voices[i]()
+    h = f32(i + 1)
+
+    mix = mix + voices[i]() * (0.12 / h)
 
   out1 = mix
 
@@ -3098,7 +3102,7 @@ def initVoices(voices, freq):
 
     voice = voices[i]
 
-    voice.init(freq = freq * h, amp = 0.12 / h)
+    voice.init(freq = freq * h)
 
 
 
@@ -3116,7 +3120,9 @@ sample:
 
   for i in 0..NumOsc:
 
-    mix = mix + voices[i]()
+    h = f32(i + 1)
+
+    mix = mix + voices[i]() * (0.12 / h)
 
   out1 = mix
 
@@ -3148,7 +3154,7 @@ init:
 
     voice = voices[i]
 
-    voice.init(freq = freq * h, amp = 0.12 / h)
+    voice.init(freq = freq * h)
 
 
 
@@ -3158,7 +3164,9 @@ sample:
 
   for i in 0..NumOsc:
 
-    mix = mix + voices[i]()
+    h = f32(i + 1)
+
+    mix = mix + voices[i]() * (0.12 / h)
 
   out1 = mix
 

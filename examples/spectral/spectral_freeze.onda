@@ -16,7 +16,7 @@ params:
 
 init:
   freezer = SpectralFreeze<1024>::Engine()
-  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.16)
+  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0))
   filter = std::filter::OnePole(cutoff = 2100.0)
   space_l = std::delay::Delay(delay_s = 0.31, feedback = 0.34, mix = 1.0)
   space_r = std::delay::Delay(delay_s = 0.43, feedback = 0.31, mix = 1.0)
@@ -33,7 +33,7 @@ block:
     dry_l = in1
     dry_r = in2
     if !live_input:
-      source = filter(saw())
+      source = filter(saw() * 0.16)
       dry_l = source
       dry_r = source
 

@@ -107,6 +107,23 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("compiles the demand-driven sine wavetable", async () => {
+  const compiler = await createCompiler();
+  const { artifact } = await compiler.compileSource(`
+import std/osc
+init:
+  oscillator = std::osc::Sine(freq = 220.0)
+  lfo = std::osc::KSine(freq = 1.0)
+block:
+  control = lfo()
+  sample:
+    out1 = oscillator()
+    out2 = control
+`);
+  assert.equal(WebAssembly.validate(artifact.wasm), true);
+  await compiler.dispose();
+});
+
 test("initialization observes bound buffers in top-level and proc init", async () => {
   const compiler = await createCompiler();
   const { artifact } = await compiler.compileSource(`proc Reader:
@@ -888,7 +905,10 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
     },
   });
   assert.equal(stdlibDefinition[0].result.uri, "onda-stdlib:///std/osc.onda");
-  assert.equal(stdlibDefinition[0].result.range.start.line, 1);
+  const phasorDeclarationLine = stdlibSource
+    .slice(0, stdlibSource.indexOf("proc Phasor"))
+    .split("\n").length - 1;
+  assert.equal(stdlibDefinition[0].result.range.start.line, phasorDeclarationLine);
 });
 
 test("resolves imported playground files in the Wasm language server", async () => {

@@ -26,6 +26,27 @@ fn array_initializers_follow_required_functions_and_metadata() {
 }
 
 #[test]
+fn sine_tables_are_built_once_only_for_required_processors() {
+    for (body, builds) in [
+        ("sample:\n  out1 = 0.0\n", 0),
+        ("init:\n  oscillator = std::osc::Saw<f32>()\nsample:\n  out1 = oscillator()\n", 0),
+        ("init:\n  audio = std::osc::Sine()\n  control = std::osc::KSine()\nsample:\n  out1 = audio() + control.kout1\n", 1),
+        ("init:\n  voices: std::osc::Sine[3] = std::osc::Sine()\nsample:\n  out1 = voices[0]() + voices[1]() + voices[2]()\n", 1),
+    ] {
+        let source = format!("import std/osc\n{body}");
+        BODY_EVALUATIONS.with(|counts| counts.borrow_mut().clear());
+        let typed = crate::analyze(onda_frontend::parse_program(&source).unwrap())
+            .unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
+        let mir = crate::lower_program_to_optimized_mir(&typed).unwrap();
+        BODY_EVALUATIONS.with(|counts| {
+            assert_eq!(counts.borrow().get("std::osc::_sine_wavetable").copied().unwrap_or(0), builds, "{source}");
+        });
+        assert_eq!(typed.const_arrays.len(), builds, "{source}");
+        assert_eq!(mir.const_data.len(), builds, "{source}");
+    }
+}
+
+#[test]
 fn pipeline_evaluates_each_reached_condition_once() {
     let prefix = "const def enabled() -> bool:\n  total: i32 = 0\n  for i in 0..2:\n    total += 1\n  return total == 2\ndef identity(x: f32) -> f32:\n  return x\n";
     for body in [

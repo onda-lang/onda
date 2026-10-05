@@ -1,4 +1,88 @@
 namespace std::osc:
+  # Sine and KSine share an 8,192-point f32 wavetable with linear interpolation.
+  # Both use a wrapping 32-bit phase and f32 parameters and outputs.
+  # Generic variants require generic const defs and arrays.
+  const _SineTableSize = 8192
+  const _SineTableBits = 13
+  const _SinePhaseBits = 32
+  const _SineFractionBits = _SinePhaseBits - _SineTableBits
+  const _SineFractionScale = 1 << _SineFractionBits
+  const _SineFractionMask = _SineFractionScale - 1
+  const _SinePhaseScale = 1 << _SinePhaseBits
+
+  const def _sine_wavetable() -> f32[_SineTableSize * 2]:
+    table: f32[_SineTableSize * 2]
+    for i in 0.._SineTableSize:
+      value = f32(sin(TWO_PI * f64(i) / _SineTableSize))
+      next = f32(sin(TWO_PI * f64((i + 1) % _SineTableSize) / _SineTableSize))
+      table[i << 1] = value
+      table[(i << 1) + 1] = next - value
+    return table
+
+  const _SineWavetable = _sine_wavetable()
+
+  def _sine_phase(cycles) -> i32:
+    # Float-to-i32 casts saturate; convert through i64, then keep the low 32 bits
+    # so phases beyond half a cycle wrap correctly.
+    return i32(i64(cycles * _SinePhaseScale))
+
+  def _sine_radians(radians):
+    return _sine_phase(radians / TWO_PI)
+
+  def _sine_lookup(phase: i32):
+    index = (phase >> _SineFractionBits) & (_SineTableSize - 1)
+    fraction = f32(phase & _SineFractionMask) / _SineFractionScale
+    pair = index << 1
+    value = _SineWavetable.read_unsafe(pair)
+    delta = _SineWavetable.read_unsafe(pair + 1)
+    return value + delta * fraction
+
+  proc Sine:
+    params:
+      freq = 440.0 => update_freq
+      phase_offset = 0.0 => update_phase_offset
+
+    init:
+      phase = 0
+      incr = 0
+      offset = 0
+
+    def update_freq():
+      incr = _sine_phase(freq / SR)
+
+    def update_phase_offset():
+      offset = _sine_radians(phase_offset)
+
+    event reset(phase_cycles = 0.0):
+      phase = _sine_phase(phase_cycles)
+
+    sample:
+      out1 = _sine_lookup(phase + offset)
+      phase += incr
+
+  proc KSine:
+    params:
+      freq = 1.0 => update_freq
+      phase_offset = 0.0 => update_phase_offset
+
+    init:
+      phase = 0
+      incr = 0
+      offset = 0
+
+    def update_freq():
+      incr = _sine_phase(freq * BS / SR)
+
+    def update_phase_offset():
+      offset = _sine_radians(phase_offset)
+
+    event reset(phase_cycles = 0.0):
+      phase = _sine_phase(phase_cycles)
+
+    block:
+      kout1 = _sine_lookup(phase + offset)
+      phase += incr
+
   proc Phasor<T>:
     outs<T> 1
 
@@ -16,53 +100,12 @@ namespace std::osc:
       phase = wrap(phase_cycles, T(0.0), T(1.0))
 
     sample:
+      out1 = phase
       phase += incr
       if phase >= 1.0 || phase < 0.0:
         phase = wrap(phase, T(0.0), T(1.0))
-      out1 = phase
 
-  proc Sine<T>:
-    outs<T> 1
 
-    params<T>:
-      freq = 440.0 => update_freq
-      amp = 1.0
-      phase_offset = 0.0
-
-    init:
-      phasor = Phasor(freq = freq)
-
-    def update_freq():
-      phasor.freq = freq
-
-    event reset(phase_cycles: T = 0.0):
-      phasor.reset(phase_cycles)
-
-    sample:
-      out1 = sin(phasor() * TWO_PI + phase_offset) * amp
-
-  proc KSine<T>:
-    kouts<T> 1
-
-    params<T>:
-      freq = 1.0
-      amp = 1.0
-      phase_offset = 0.0
-
-    init<T>:
-      phase = 0.0
-
-    event reset(phase_cycles: T = 0.0):
-      phase = wrap(phase_cycles, T(0.0), T(1.0))
-
-    block:
-      kout1 = sin(phase * TWO_PI + phase_offset) * amp
-      phase = wrap(
-        phase + freq * T(BS) / T(SR),
-        T(0.0),
-        T(1.0)
-      )
-  
   def poly_blep<T>(t: T, dt: T) -> T:
     zero = dt - dt
     if dt <= zero:
@@ -81,7 +124,6 @@ namespace std::osc:
 
     params<T>:
       freq = 440.0 => update_freq
-      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -97,14 +139,13 @@ namespace std::osc:
     sample:
       phase = phasor()
       base = phase + phase - 1.0
-      out1 = (base - std::osc::poly_blep<T>(phase, dt)) * amp
+      out1 = (base - poly_blep<T>(phase, dt))
 
   proc SawDown<T>:
     outs<T> 1
 
     params<T>:
       freq = 440.0 => update_freq
-      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -120,7 +161,7 @@ namespace std::osc:
     sample:
       phase = phasor()
       base = 1.0 - phase - phase
-      out1 = (base + std::osc::poly_blep<T>(phase, dt)) * amp
+      out1 = (base + poly_blep<T>(phase, dt))
 
   proc Pulse<T>:
     outs<T> 1
@@ -128,7 +169,6 @@ namespace std::osc:
     params<T>:
       freq = 440.0 => update_freq
       width = 0.5 {0.001, 0.999} => update_width
-      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -156,25 +196,21 @@ namespace std::osc:
       if phase2 < 0.0:
         phase2 += 1.0
 
-      wave += std::osc::poly_blep<T>(phase, dt)
-      wave -= std::osc::poly_blep<T>(phase2, dt)
-      out1 = wave * amp
+      wave += poly_blep<T>(phase, dt)
+      wave -= poly_blep<T>(phase2, dt)
+      out1 = wave
 
   proc Square<T>:
     outs<T> 1
 
     params<T>:
       freq = 440.0 => update_freq
-      amp = 1.0 => update_amp
 
     init:
-      pulse = Pulse(freq = freq, width = 0.5, amp = amp)
+      pulse = Pulse(freq = freq, width = 0.5)
 
     def update_freq():
       pulse.freq = freq
-
-    def update_amp():
-      pulse.amp = amp
 
     event reset(phase_cycles: T = 0.0):
       pulse.reset(phase_cycles)
@@ -187,10 +223,9 @@ namespace std::osc:
 
     params<T>:
       freq = 440.0 => update_freq
-      amp = 1.0
 
     init<T>:
-      pulse = Pulse(freq = freq, width = 0.5, amp = 1.0)
+      pulse = Pulse(freq = freq, width = 0.5)
       tri = -1.0
       dt = 0.0
 
@@ -205,5 +240,5 @@ namespace std::osc:
         tri = T(2.0) - tri
 
     sample:
+      out1 = tri
       tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))
-      out1 = tri * amp

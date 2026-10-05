@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+    jit_program_from_optimized_mir_with_options, lower_optimized_mir_to_llvm_ir_with_options,
+    MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{

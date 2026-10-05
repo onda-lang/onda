@@ -12,9 +12,9 @@ proc EffectAudition:
     decay_s = 0.3
 
   init:
-    fundamental = std::osc::Sine(amp = 0.64)
-    upper = std::osc::Sine(amp = 0.25)
-    shimmer = std::osc::Sine(amp = 0.11)
+    fundamental = std::osc::Sine()
+    upper = std::osc::Sine()
+    shimmer = std::osc::Sine()
     envelope = std::env::DecayEnv(decay_s = decay_s)
     clock = 0
     step = 0
@@ -39,7 +39,9 @@ proc EffectAudition:
       pending_bang = false
     clock = (clock + 1) % period
 
-    source = (fundamental(freq = frequency) + upper(freq = frequency * 1.4983) + shimmer(freq = frequency * 2.006))
+    source = fundamental(freq = frequency) * 0.64
+    source = source + upper(freq = frequency * 1.4983) * 0.25
+    source = source + shimmer(freq = frequency * 2.006) * 0.11
     source = source * envelope(decay_s = decay_s) * 0.52
     out1 = source
     out2 = source

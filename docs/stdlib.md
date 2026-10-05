@@ -159,6 +159,28 @@ Namespace: `std::osc`.
 def poly_blep<T>(t: T, dt: T) -> T:
 ```
 
+### Processor `Sine`
+
+```onda
+proc Sine:
+  params:
+    freq = 440.0 => update_freq
+    phase_offset = 0.0 => update_phase_offset
+  events:
+    reset(phase_cycles: f32 = 0.0):
+```
+
+### Processor `KSine`
+
+```onda
+proc KSine:
+  params:
+    freq = 1.0 => update_freq
+    phase_offset = 0.0 => update_phase_offset
+  events:
+    reset(phase_cycles: f32 = 0.0):
+```
+
 ### Processor `Phasor<T>`
 
 ```onda
@@ -170,32 +192,6 @@ proc Phasor<T>:
     reset(phase_cycles: T = 0.0):
 ```
 
-### Processor `Sine<T>`
-
-```onda
-proc Sine<T>:
-  outs<T> 1
-  params:
-    freq: T = 440.0 => update_freq
-    amp: T = 1.0
-    phase_offset: T = 0.0
-  events:
-    reset(phase_cycles: T = 0.0):
-```
-
-### Processor `KSine<T>`
-
-```onda
-proc KSine<T>:
-  kouts<T> 1
-  params:
-    freq: T = 1.0
-    amp: T = 1.0
-    phase_offset: T = 0.0
-  events:
-    reset(phase_cycles: T = 0.0):
-```
-
 ### Processor `Saw<T>`
 
 ```onda
@@ -203,7 +199,6 @@ proc Saw<T>:
   outs<T> 1
   params:
     freq: T = 440.0 => update_freq
-    amp: T = 1.0
   events:
     reset(phase_cycles: T = 0.0):
 ```
@@ -215,7 +210,6 @@ proc SawDown<T>:
   outs<T> 1
   params:
     freq: T = 440.0 => update_freq
-    amp: T = 1.0
   events:
     reset(phase_cycles: T = 0.0):
 ```
@@ -228,7 +222,6 @@ proc Pulse<T>:
   params:
     freq: T = 440.0 => update_freq
     width: T = 0.5 {0.001, 0.999} => update_width
-    amp: T = 1.0
   events:
     reset(phase_cycles: T = 0.0):
 ```
@@ -240,7 +233,6 @@ proc Square<T>:
   outs<T> 1
   params:
     freq: T = 440.0 => update_freq
-    amp: T = 1.0 => update_amp
   events:
     reset(phase_cycles: T = 0.0):
 ```
@@ -252,7 +244,6 @@ proc Triangle<T>:
   outs<T> 1
   params:
     freq: T = 440.0 => update_freq
-    amp: T = 1.0
   events:
     reset(phase_cycles: T = 0.0):
 ```

@@ -2051,7 +2051,7 @@ namespace DSP:
         );
 
         let source = document["text"].as_str().expect("stdlib source").to_owned();
-        let position = position_after(&source, "Phasor");
+        let position = position_after(&source, "proc Phasor");
         let messages = session
             .handle_message(json!({
                 "jsonrpc": "2.0",
@@ -2068,5 +2068,8 @@ namespace DSP:
             .expect("virtual stdlib definition request should succeed");
         let definition = &messages[0]["result"];
         assert_eq!(definition["uri"], json!("onda-stdlib:///std/osc.onda"));
-        assert_eq!(definition["range"]["start"]["line"], json!(1));
+        assert_eq!(
+            definition["range"]["start"]["line"],
+            json!(position.line)
+        );
     }

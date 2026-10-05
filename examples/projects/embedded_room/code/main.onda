@@ -23,9 +23,9 @@ params:
 init:
   room = ConvolutionRoom(room_ir = room_ir)
   audition_frequency = std::pitch::note_to_hz(f32(AuditionNotes[0]))
-  audition_osc_1 = std::osc::Sine(freq = audition_frequency, amp = 0.7)
-  audition_osc_2 = std::osc::Sine(freq = audition_frequency * 1.5, amp = 0.25)
-  audition_osc_3 = std::osc::Sine(freq = audition_frequency * 2, amp = 0.125)
+  audition_osc_1 = std::osc::Sine(freq = audition_frequency)
+  audition_osc_2 = std::osc::Sine(freq = audition_frequency * 1.5)
+  audition_osc_3 = std::osc::Sine(freq = audition_frequency * 2)
   audition_env = std::env::DecayEnv(decay_s = 0.18, trigger = 0.0)
   audition_period = max(i32(SR * 0.5), 1)
   audition_clock = 0
@@ -52,7 +52,10 @@ block:
     audition_osc_1.freq = audition_frequency
     audition_osc_2.freq = audition_frequency * 1.5
     audition_osc_3.freq = audition_frequency * 2
-    audition_source = (audition_osc_1() + audition_osc_2() + audition_osc_3()) * audition_env() * 0.5
+    audition_source = audition_osc_1() * 0.7
+    audition_source = audition_source + audition_osc_2() * 0.25
+    audition_source = audition_source + audition_osc_3() * 0.125
+    audition_source = audition_source * audition_env() * 0.5
     audition_env.trigger = 0.0
 
     if live_input:
