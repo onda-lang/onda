@@ -9,7 +9,7 @@ params:
   depth_ms = 5.0 {0.0, 12.0, unit = "ms"}
   width = 0.9 {0.0, 1.0}
   mix = 0.48 {0.0, 1.0}
-  level = 0.7 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   chorus = StereoChorus()

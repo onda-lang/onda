@@ -48,7 +48,7 @@ params:
   decay_s = 2.0 {0.1, 10.0, unit = "s"}
   hardness = 0.7 {0.0, 1.0}
   space = 0.5 {0.0, 1.0}
-  level = 0.5 {0.0, 0.7}
+  level = 1.0 {0.0, 1.0}
 
 init:
   voices: GlassVoice[VoiceCount] = GlassVoice()

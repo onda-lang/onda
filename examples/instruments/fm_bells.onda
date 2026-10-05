@@ -44,7 +44,7 @@ params:
   decay_s = 3.2 {0.3, 10.0, unit = "s"}
   brightness = 0.65 {0.0, 1.0}
   space = 0.36 {0.0, 0.75}
-  level = 0.5 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   voices: BellVoice[VoiceCount] = BellVoice()

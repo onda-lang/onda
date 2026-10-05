@@ -1007,7 +1007,14 @@
         padding: 3px 8px;
       }
 
-      #params[data-layout="sliders"] .param-bool .param-controls {
+      #params[data-layout="sliders"] .param:not(:has(.param-number)) {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "heading"
+          "control";
+      }
+
+      #params[data-layout="sliders"] .param:not(:has(.param-number)) .param-controls {
         display: grid;
         grid-area: control;
         align-self: center;
@@ -1481,8 +1488,8 @@
             </button>
           </div>
           <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
-            <button type="button" data-param-layout="sliders" aria-pressed="true">Sliders</button>
-            <button type="button" data-param-layout="knobs" aria-pressed="false">Knobs</button>
+            <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
+            <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
           </div>
         </div>
         <div class="section-body" id="params-body">
@@ -2409,16 +2416,16 @@
 
       function restoreParamLayout() {
         try {
-          return localStorage.getItem(PARAM_LAYOUT_STORAGE_KEY) === "knobs"
-            ? "knobs"
-            : "sliders";
+          return localStorage.getItem(PARAM_LAYOUT_STORAGE_KEY) === "sliders"
+            ? "sliders"
+            : "knobs";
         } catch {
-          return "sliders";
+          return "knobs";
         }
       }
 
       function setParamLayout(layout, persist = true) {
-        paramLayout = layout === "knobs" ? "knobs" : "sliders";
+        paramLayout = layout === "sliders" ? "sliders" : "knobs";
         applyParamLayout();
         if (persist) {
           try {

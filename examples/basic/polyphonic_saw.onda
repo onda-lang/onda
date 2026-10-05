@@ -46,7 +46,7 @@ params:
   decay_s = 0.35 {0.01, 4.0}
   amp = 1.0 {0.0, 1.0}
   bpm = 126.0 {45.0, 220.0, unit = "BPM"}
-  level = 0.34 {0.0, 0.8}
+  level = 1.0 {0.0, 1.0}
 
 init:
   voices: Voice[NumVoices] = Voice()

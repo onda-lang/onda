@@ -12,11 +12,6 @@ The examples are a collection of patches that showcase different ways of impleme
 algorithms and DSP code in Onda. The [language guide]({{ '/docs/language/' | relative_url }}) and
 [standard-library reference]({{ '/docs/stdlib/' | relative_url }}) cover isolated syntax and APIs.
 
-Examples with built-in sequencing expose an `auto_play` switch. It defaults to `true`; set it to `false`
-to stop scheduling new notes while existing voices and effect tails decay naturally. Each also
-exposes a no-argument `bang()` event that immediately triggers and advances the next sequencer
-state. Live-input processing and any additional instrument events remain available.
-
 ## Instruments
 
 | Example | Description |
@@ -59,7 +54,7 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 | [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud |
 | [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
 | [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |
-| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A recurrent nonlinear digital ecosystem |
+| [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A self-oscillating neural network with resonant feedback |
 | [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade |
 | [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays |
 | [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air |

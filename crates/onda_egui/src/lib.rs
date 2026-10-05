@@ -1746,16 +1746,16 @@ fn computer_key_press_blocked(pressed: bool, modifiers: egui::Modifiers) -> bool
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ParamLayout {
-    #[default]
     Sliders,
+    #[default]
     Knobs,
 }
 
 impl ParamLayout {
     fn load(storage: Option<&dyn eframe::Storage>) -> Self {
         match storage.and_then(|storage| storage.get_string(PARAM_LAYOUT_STORAGE_KEY)) {
-            Some(value) if value == Self::Knobs.as_str() => Self::Knobs,
-            _ => Self::Sliders,
+            Some(value) if value == Self::Sliders.as_str() => Self::Sliders,
+            _ => Self::default(),
         }
     }
 
@@ -3502,6 +3502,12 @@ mod tests {
     #[test]
     fn parameter_layout_restores_from_native_storage() {
         let mut storage = TestStorage::default();
+        assert_eq!(ParamLayout::default(), ParamLayout::Knobs);
+        assert_eq!(ParamLayout::load(None), ParamLayout::Knobs);
+        assert_eq!(ParamLayout::load(Some(&storage)), ParamLayout::Knobs);
+        storage.set_string(PARAM_LAYOUT_STORAGE_KEY, "invalid".to_owned());
+        assert_eq!(ParamLayout::load(Some(&storage)), ParamLayout::Knobs);
+        storage.set_string(PARAM_LAYOUT_STORAGE_KEY, "sliders".to_owned());
         assert_eq!(ParamLayout::load(Some(&storage)), ParamLayout::Sliders);
         storage.set_string(PARAM_LAYOUT_STORAGE_KEY, "knobs".to_owned());
         assert_eq!(ParamLayout::load(Some(&storage)), ParamLayout::Knobs);

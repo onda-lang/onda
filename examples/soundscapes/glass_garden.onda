@@ -60,7 +60,7 @@ params:
   pace = 0.72 {0.25, 2.0, unit = "s"}
   brightness = 0.68 {0.0, 1.0}
   space = 0.44 {0.0, 0.8}
-  level = 0.48 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 delegate bloom_faded(voice: i32, note: f32)
 

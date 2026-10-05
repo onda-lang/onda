@@ -9,7 +9,7 @@ params:
   damping = 0.46 {0.0, 0.98}
   predelay = 0.018 {0.0, 0.1, unit = "s"}
   diffusion = 0.64 {0.0, 0.95}
-  level = 0.7 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   audition = EffectAudition()

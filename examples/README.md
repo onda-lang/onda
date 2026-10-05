@@ -27,24 +27,3 @@ Project examples carry their source and data bindings together:
 ```bash
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```
-
-Explore parameter arrays with the sustained [additive synth](instruments/additive_synth.onda):
-
-```bash
-onda run examples/instruments/additive_synth.onda
-```
-
-Start with only the first partial enabled, then add harmonics using the `levels` controls.
-Each partial also has independent `ratios`, `detune_cents`, `pan`, and `enabled` controls.
-Mute the even harmonics for a hollow tone, or set two ratios equal and detune one slightly
-for beating. Non-integer ratios create inharmonic, metallic timbres.
-
-[Aurora Pad](soundscapes/aurora_pad.onda) spreads a minor chord across a gently detuned stereo field
-and sends it through a slowly opening state-variable filter. Its six saw voices form one processor
-array, its filter designer returns one coefficient struct per block, and independent memory structs
-preserve the two channel histories.
-
-[Orbital FM](soundscapes/orbital_fm.onda) is an evolving phase-modulation drone with detuned
-carriers, a sub-octave body, and an inharmonic shimmer orbiting through the stereo field. Its
-`configure` event installs a nested `Constellation` patch atomically and publishes the accepted
-patch through a structured delegate; expand the event argument to reshape the sound live.

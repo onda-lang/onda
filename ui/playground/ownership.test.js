@@ -230,8 +230,8 @@ test("the loaded run view includes active compile settings in its status", async
 test("the shared run view offers a device-cached knob layout", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
-  assert.match(runView, /data-param-layout="sliders" aria-pressed="true">Sliders/);
-  assert.match(runView, /data-param-layout="knobs" aria-pressed="false">Knobs/);
+  assert.match(runView, /data-param-layout="sliders" aria-pressed="false">Sliders/);
+  assert.match(runView, /data-param-layout="knobs" aria-pressed="true">Knobs/);
   assert.match(runView, /onda\.run-view\.param-layout\.v1/);
   assert.match(runView, /localStorage\.setItem\(PARAM_LAYOUT_STORAGE_KEY, paramLayout\)/);
   assert.match(runView, /function createKnobControl\(/);

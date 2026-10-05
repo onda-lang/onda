@@ -98,7 +98,7 @@ params:
   feedback = 0.42 {0.0, 0.9}
   stereo = 0.68 {0.0, 1.0}
   mix = 0.72 {0.0, 1.0}
-  level = 0.8 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   spectral_delay = SpectralDelay::Engine()

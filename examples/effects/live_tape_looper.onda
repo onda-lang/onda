@@ -14,7 +14,7 @@ params:
   overdub = 0.0 {0.0, 0.92}
   wow = 0.0025 {0.0, 0.02}
   mix = 0.82 {0.0, 1.0}
-  level = 0.8 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   tape_l: f32[TapeCapacity]

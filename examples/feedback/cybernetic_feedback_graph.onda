@@ -11,7 +11,7 @@ params:
   tone = 4200.0 {180.0, 16000.0}
   spread = 0.42 {0.0, 1.0}
   wet = 1.0 {0.0, 1.0}
-  level = 0.72 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
   
 proc CyberCell<T>:
   ins<T>:

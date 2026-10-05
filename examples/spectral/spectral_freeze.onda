@@ -12,7 +12,7 @@ params:
   width = 0.72 {0.0, 1.0}
   mix = 0.86 {0.0, 1.0}
   space = 0.28 {0.0, 0.72}
-  level = 0.8 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   freezer = SpectralFreeze<1024>::Engine()

@@ -7,7 +7,7 @@ params:
   bias = 0.0 {-1.0, 1.0}
   movement = 0.38 {0.0, 1.0}
   mix = 0.82 {0.0, 1.0}
-  level = 0.5 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   wavefolder = StereoWavefolder()

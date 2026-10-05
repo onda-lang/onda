@@ -47,6 +47,10 @@ try {
   send({ running: true, connected: true, path: "test.onda", status: "Active",
     ondaVersion: "0.0.1-browser", supportsTransport: false, supportsViewState: true,
     events, params });
+  check(document.getElementById("params").dataset.layout === "knobs"
+    && document.querySelector('[data-param-layout="knobs"]').getAttribute("aria-pressed") === "true"
+    && document.querySelector("#params .param-knob"),
+    "the run view defaults to knobs without a saved layout preference");
   check(getComputedStyle(shell).visibility === "visible",
     "a first host state without view state reveals the run view");
   check(ondaVersion.textContent === "Onda 0.0.1-browser",
@@ -150,6 +154,43 @@ try {
     check(Math.abs(Number(input.value) - 0.6) < 0.001,
       `field ${index} reconciles host state when focus leaves without an edit`);
   }
+
+  const paramsNode = document.getElementById("params");
+  const longName = "a_boolean_parameter_name_that_exceeds_the_card_width";
+  send({ params: [
+    ...["autoplay", "limiter", longName].map(name =>
+      ({ name, type: "bool", value: false, default: false })),
+    params[0],
+    { name: "enabled[0]", type: "bool", value: false, default: false,
+      array: { name: "enabled", length: 1, index: 0 } },
+  ] });
+  for (const width of [408, 476]) {
+    paramsNode.style.width = `${width}px`;
+    for (const layout of ["sliders", "knobs"]) {
+      document.querySelector(`[data-param-layout="${layout}"]`).click();
+      await waitFrames(1);
+      const boolCards = [...paramsNode.querySelectorAll(".param-bool")];
+      for (const card of boolCards) {
+        const name = card.querySelector(".param-name");
+        const type = card.querySelector(".param-type");
+        const head = card.querySelector(".param-head");
+        check(name.textContent === longName
+          ? name.scrollWidth > name.clientWidth
+          : name.scrollWidth <= name.clientWidth,
+        `${layout} at ${width}px truncates ${name.textContent} only when it exceeds the available width`);
+        check(type.getBoundingClientRect().right <= head.getBoundingClientRect().right + 1,
+          `${layout} at ${width}px keeps ${name.textContent}'s type inside its heading`);
+      }
+      const number = paramsNode.querySelector('input[type="number"]');
+      const numericCard = number.closest(".param");
+      check(number.clientWidth > 0
+        && number.getBoundingClientRect().right <= numericCard.getBoundingClientRect().right
+        && (layout === "knobs" || numericCard.querySelector(".param-type")
+          .getBoundingClientRect().right <= number.getBoundingClientRect().left + 1),
+      `${layout} at ${width}px preserves the numeric value layout`);
+    }
+  }
+  paramsNode.style.width = "";
 
   const arrayParams = ["f32", "f64", "i32", "i64", "bool"].flatMap(type =>
     [0, 1].map(index => ({ name: `${type}Values[${index}]`, type,

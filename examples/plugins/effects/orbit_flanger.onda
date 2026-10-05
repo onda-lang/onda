@@ -13,7 +13,7 @@ params:
   tone = 7200.0 {500.0, 18000.0, scale = log, unit = "Hz"}
   drive = 1.25 {1.0, 3.0}
   mix = 0.5 {0.0, 1.0}
-  level = 0.9 {0.0, 1.0}
+  level = 1.0 {0.0, 1.0}
 
 init:
   line_l = std::delay<FlangerCapacity>::Line()
