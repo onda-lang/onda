@@ -64,7 +64,6 @@ Tagged releases attach portable tarballs and publish the four public npm package
 - [docs/syntax.md](docs/syntax.md): language syntax and semantics
 - [docs/stdlib.md](docs/stdlib.md): generated standard-library API reference
 - [docs/architecture.md](docs/architecture.md): compiler architecture and codebase navigation
-- [scripts/bench](scripts/bench/README.md): bounded DSP benchmarks, MIR replay, and IR/SIMD inspection
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
 - [docs/api.md](docs/api.md): complete hosted C API and library integration reference
