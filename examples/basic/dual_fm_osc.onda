@@ -29,7 +29,7 @@ proc DualOscillator:
 
 params:
   frequency = 110.0 {20.0, 1000.0, scale = log, unit = "Hz"}
-  mod_depth = 1.5 {0.0, 20.0}
+  mod_depth = 1.5 {0.0, 10.0}
   detune = 1.0 {0.0, 100.0, unit = "Hz"}
   level = 0.5 {0.0, 1.0}
 
