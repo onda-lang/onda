@@ -561,6 +561,11 @@ impl FunctionEmitter<'_, '_> {
             LLVMBuildBr(self.builder, body_bb);
         }
         LLVMPositionBuilderAtEnd(self.builder, exit_bb);
+        // Only emitted breaks can reach this block. A loop with no exit edge
+        // must remain terminating when nested in a branch or result function.
+        if LLVMGetFirstUse(LLVMBasicBlockAsValue(exit_bb)).is_null() {
+            LLVMBuildUnreachable(self.builder);
+        }
         Ok(())
     }
 
