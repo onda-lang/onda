@@ -11,6 +11,7 @@ use serde_json::{Number, Value};
 
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
 const LOGO_LIGHT_URI: &str = "bytes://onda-logo-rect.svg";
+const ONDA_VERSION_LABEL: &str = concat!("Onda ", env!("CARGO_PKG_VERSION"));
 const LOGO_DARK_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-dark-rect.svg");
 const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-rect.svg");
 #[cfg(target_os = "macos")]
@@ -681,6 +682,7 @@ impl RunApp {
             },
             egui::StrokeKind::Inside,
         );
+        paint_onda_version(ui, panel_rect.right_top() + egui::vec2(-12.0, 10.0));
 
         let content_height = if self.load_error.is_some() {
             276.0
@@ -1277,6 +1279,7 @@ impl eframe::App for RunApp {
                             .clone();
 
                         section_box(ui, "", |ui| {
+                            paint_onda_version(ui, ui.max_rect().right_top());
                             ui.allocate_ui_with_layout(
                                 egui::vec2(ui.available_width(), 258.0),
                                 egui::Layout::top_down(egui::Align::Center),
@@ -1837,6 +1840,16 @@ fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
             }
             add_contents(ui);
         });
+}
+
+fn paint_onda_version(ui: &egui::Ui, position: egui::Pos2) {
+    ui.painter().text(
+        position,
+        egui::Align2::RIGHT_TOP,
+        ONDA_VERSION_LABEL,
+        egui::FontId::monospace(10.0),
+        ui.visuals().weak_text_color(),
+    );
 }
 
 fn render_device_combo(

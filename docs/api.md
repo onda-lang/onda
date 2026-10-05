@@ -299,6 +299,7 @@ and later materialization into editable files.
 
 ### Versions and canonical assets
 
+- `onda_version` returns a process-lifetime string containing the Onda release version.
 - `onda_project_image_format_version` returns the supported project-image format version.
 - `onda_buffer_asset_format_version` returns the canonical `.ondabuffer` format version.
 - `onda_current_stdlib_digest` returns a process-lifetime string identifying the embedded standard
@@ -859,6 +860,7 @@ onda_source_manifest_destroy
 ### Project images and assets
 
 ```text
+onda_version
 onda_project_image_format_version
 onda_buffer_asset_format_version
 onda_current_stdlib_digest

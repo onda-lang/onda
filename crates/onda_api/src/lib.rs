@@ -3295,6 +3295,11 @@ unsafe fn copy_sized_result(bytes: &[u8], output: *mut c_void, capacity: usize) 
 }
 
 #[no_mangle]
+pub extern "C" fn onda_version() -> *const c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+}
+
+#[no_mangle]
 pub extern "C" fn onda_project_image_format_version() -> i32 {
     onda_project::ONDA_PROJECT_IMAGE_FORMAT_VERSION as i32
 }

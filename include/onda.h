@@ -574,7 +574,9 @@ const char* onda_source_manifest_unresolved_resolution_candidate_path(
    onda_compile_source_graph. NULL is accepted. */
 void onda_source_manifest_destroy(onda_source_manifest_t* manifest);
 
-/* Canonical binary project format capabilities. */
+/* Onda release and canonical binary project format capabilities. */
+/* Stable until process exit. */
+const char* onda_version(void);
 int onda_project_image_format_version(void);
 int onda_buffer_asset_format_version(void);
 /* Stable until process exit. */

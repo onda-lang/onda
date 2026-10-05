@@ -1,6 +1,6 @@
 // Shared browser IDE controller used by the website and standalone example.
 import { closeCompletion, startCompletion } from "@codemirror/autocomplete";
-import { createCompiler } from "@onda-lang/wasm-compiler";
+import { createCompiler, ONDA_VERSION } from "@onda-lang/wasm-compiler";
 import {
   compileOndaProcessorModule,
   createOndaAudioProcessorInitialized,
@@ -108,6 +108,7 @@ const runView = new BrowserRunViewHost(runViewFrame, {
     setErrorStatus();
   },
 });
+runView.setState({ ondaVersion: ONDA_VERSION });
 midiInputs = new BrowserMidiInputs({
   onState: ({ devices, current }) => runView.setMidiInputs(devices, current),
   onEvent: (name, values) => audioProcessor?.trigger(name, values),

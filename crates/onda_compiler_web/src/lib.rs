@@ -1216,6 +1216,12 @@ fn mir_encoding_error(stage: &'static str, error: impl ToString) -> Vec<Compiler
     }]
 }
 
+/// Returns the Onda compiler release version.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen)]
+pub fn onda_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn mir_schema_version() -> u32 {
@@ -1975,6 +1981,11 @@ fn compiler_failure_js(failure: CompilerFailure) -> wasm_bindgen::JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_the_onda_version() {
+        assert_eq!(onda_version(), env!("CARGO_PKG_VERSION"));
+    }
 
     #[test]
     fn compiles_in_memory_source_to_valid_deterministic_mir() {

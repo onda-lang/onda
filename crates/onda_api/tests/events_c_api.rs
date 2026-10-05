@@ -29,6 +29,16 @@ fn c_api_public_status_and_metadata_codes_are_stable() {
 }
 
 #[test]
+fn c_api_reports_the_onda_version() {
+    unsafe {
+        assert_eq!(
+            CStr::from_ptr(onda_version()).to_str().unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+}
+
+#[test]
 fn c_api_bindings_distinguish_malformed_arguments_from_program_rejection() {
     unsafe {
         let program = compile_program(

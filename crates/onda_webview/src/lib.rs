@@ -83,10 +83,12 @@ mod platform {
         set_app_icon(&window, resolved_window_icon_is_dark(&window, run_theme));
 
         let theme_mode = web_theme_mode(run_theme);
+        let onda_version = serde_json::to_string(env!("CARGO_PKG_VERSION"))
+            .expect("the package version is valid JSON text");
         let init_script = format!(
             r#"
             {PARAM_CONTROL_JS}
-            window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}" }};
+            window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}", ondaVersion: {onda_version} }};
             window.__ondaForcedTheme = "{theme_mode}";
             if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
                 document.documentElement.dataset.theme = "{theme_mode}";

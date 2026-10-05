@@ -37,14 +37,20 @@ try {
   const shell = document.querySelector(".shell");
   const scrollNode = document.scrollingElement;
   const resetButton = document.getElementById("reset-params");
+  const ondaVersion = document.getElementById("onda-version");
+  check(!ondaVersion.hidden && ondaVersion.textContent === "Onda 0.0.0-test",
+    "the run view shows the host-provided Onda version");
   check(getComputedStyle(shell).visibility === "hidden",
     "run view stays hidden until its first host state");
   check(getComputedStyle(resetButton).transitionDuration === "0s",
     "buttons do not animate the initial theme while the view is pending");
   send({ running: true, connected: true, path: "test.onda", status: "Active",
-    supportsTransport: false, supportsViewState: true, events, params });
+    ondaVersion: "0.0.1-browser", supportsTransport: false, supportsViewState: true,
+    events, params });
   check(getComputedStyle(shell).visibility === "visible",
     "a first host state without view state reveals the run view");
+  check(ondaVersion.textContent === "Onda 0.0.1-browser",
+    "the run view accepts the browser host's Onda version state");
   check(getComputedStyle(resetButton).transitionDuration === "0.12s, 0.12s, 0.12s",
     "button transitions resume after the view is ready");
   check(document.getElementById("midi-keyboard").hidden,

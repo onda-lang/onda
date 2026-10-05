@@ -22,6 +22,20 @@ test("the shared run view presents one Onda source and project importer", async 
   assert.doesNotMatch(runView, /chooseProjectFolder|supportsProjectDirectorySelection/);
 });
 
+test("the shared run view presents the browser compiler's Onda version", async () => {
+  const [runView, playground] = await Promise.all([
+    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
+  ]);
+
+  assert.match(runView, /id="onda-version" hidden/);
+  assert.match(runView, /window\.__hostBridge\?\.ondaVersion/);
+  assert.match(runView, /ondaVersionNode\.textContent = "Onda " \+ ondaVersion/);
+  assert.match(runView, /showOndaVersion\(incoming\.ondaVersion\)/);
+  assert.match(playground, /import \{ createCompiler, ONDA_VERSION \}/);
+  assert.match(playground, /runView\.setState\(\{ ondaVersion: ONDA_VERSION \}\)/);
+});
+
 test("the shared run view only shows its scope when supported and during playback", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 

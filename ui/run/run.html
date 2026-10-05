@@ -127,7 +127,17 @@
         font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
       }
 
+      .onda-version {
+        position: absolute;
+        z-index: 1;
+        top: 30px;
+        right: 32px;
+        color: var(--muted);
+        font: 10px/1.2 var(--mono-font);
+      }
+
       .shell {
+        position: relative;
         display: grid;
         grid-template-columns: minmax(0, 1fr);
         align-content: start;
@@ -1309,6 +1319,7 @@
   </head>
   <body>
     <div class="shell">
+      <div class="onda-version" id="onda-version" hidden></div>
       <section class="file-picker" id="file-picker" hidden>
         <div class="file-picker-content">
           <img class="file-picker-logo" id="file-picker-logo" alt="Onda logo" />
@@ -1601,6 +1612,14 @@
           },
         };
       })();
+
+      const ondaVersionNode = document.getElementById("onda-version");
+      const showOndaVersion = ondaVersion => {
+        if (typeof ondaVersion !== "string" || ondaVersion.length === 0) return;
+        ondaVersionNode.textContent = "Onda " + ondaVersion;
+        ondaVersionNode.hidden = false;
+      };
+      showOndaVersion(window.__hostBridge?.ondaVersion);
 
       // ---------------------------------------------------------------------------
       // State and DOM refs
@@ -3139,6 +3158,7 @@
           return;
         }
         const incoming = message.state || {};
+        showOndaVersion(incoming.ondaVersion);
         if (typeof incoming.themeMode === "string" && incoming.themeMode) {
           bridgeThemePreference = incoming.themeMode;
         }
