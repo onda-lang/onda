@@ -77,6 +77,8 @@ mod analysis_and_stdlib;
 mod const_dependencies;
 #[path = "examples_suite/execution_and_runtime.rs"]
 mod execution_and_runtime;
+#[path = "examples_suite/stdlib_optimizations.rs"]
+mod stdlib_optimizations;
 #[path = "examples_suite/generic_defs.rs"]
 mod generic_defs;
 #[path = "examples_suite/language_core.rs"]

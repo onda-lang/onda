@@ -1,3 +1,6 @@
+import std/levels
+import std/pitch
+
 namespace std::math:
   def clamp<T>(x: T, lo: T, hi: T) -> T:
     if (x < lo):
@@ -66,22 +69,22 @@ namespace std::math:
     return out_lo * pow(out_hi / out_lo, log(x / in_lo) / log(in_hi / in_lo))
 
   def dbamp(db):
-    return pow(10.0, db * 0.05)
+    return std::levels::db_to_gain(db)
 
   def ampdb(amp):
-    return log(max(abs(amp), 0.000000000001)) / log(10.0) * 20.0
+    return std::levels::gain_to_db(max(abs(amp), 0.000000000001))
 
   def midicps(note):
-    return 440.0 * pow(2.0, (note - 69.0) / 12.0)
+    return 440.0 * std::pitch::ratio_from_semitones(note - 69.0)
 
   def cpsmidi(freq):
-    return log(freq / 440.0) / log(2.0) * 12.0 + 69.0
+    return std::pitch::semitones_from_ratio(freq / 440.0) + 69.0
 
   def midiratio(semitones):
-    return pow(2.0, semitones / 12.0)
+    return std::pitch::ratio_from_semitones(semitones)
 
   def ratiomidi(ratio):
-    return log(ratio) / log(2.0) * 12.0
+    return std::pitch::semitones_from_ratio(ratio)
 
   def octcps(oct):
     return 440.0 * pow(2.0, oct - 4.75)

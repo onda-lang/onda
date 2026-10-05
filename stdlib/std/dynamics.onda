@@ -2,16 +2,18 @@ import std/levels
 import std/smoothing
 
 namespace std::dynamics:
-  def soft_knee_reduction_db<T>(level_db: T, threshold_db: T, ratio: T, knee_db: T):
-    over_db = level_db - threshold_db
-    slope = T(1.0) - T(1.0) / max(ratio, T(1.0))
-    half_knee = max(knee_db, T(0.0)) * T(0.5)
+  def _soft_knee_reduction_db<T>(over_db: T, slope: T, half_knee: T, knee_divisor: T):
     if over_db >= half_knee:
       return over_db * slope
     if over_db > -half_knee && half_knee > 0.0:
       knee_pos = over_db + half_knee
-      return slope * knee_pos * knee_pos / (T(4.0) * half_knee)
+      return slope * knee_pos * knee_pos / knee_divisor
     return T(0.0)
+
+  def soft_knee_reduction_db<T>(level_db: T, threshold_db: T, ratio: T, knee_db: T):
+    slope = T(1.0) - T(1.0) / max(ratio, T(1.0))
+    half_knee = max(knee_db, T(0.0)) * T(0.5)
+    return _soft_knee_reduction_db(level_db - threshold_db, slope, half_knee, T(4.0) * half_knee)
 
   proc PeakFollower<T>:
     ins<T> 1
@@ -78,17 +80,36 @@ namespace std::dynamics:
     outs<T> 2
 
     params<T>:
-      threshold_db = -18.0
-      ratio = 4.0
+      threshold_db = -18.0 => update_threshold
+      ratio = 4.0 => update_ratio
       attack_s = 0.01 => update_attack
       release_s = 0.1 => update_release
-      knee_db = 6.0
-      makeup_db = 0.0
+      knee_db = 6.0 => update_knee
+      makeup_db = 0.0 => update_makeup
 
     init<T>:
       detector = 0.0
       attack_coef = 0.0
       release_coef = 0.0
+      slope = 0.0
+      half_knee = 0.0
+      knee_divisor = 0.0
+      lower_knee = 0.0
+      makeup_gain = 1.0
+
+    def update_ratio():
+      slope = T(1.0) - T(1.0) / max(ratio, T(1.0))
+
+    def update_knee():
+      half_knee = max(knee_db, T(0.0)) * T(0.5)
+      knee_divisor = T(4.0) * half_knee
+      update_threshold()
+
+    def update_threshold():
+      lower_knee = std::levels::db_to_gain<T>(threshold_db - half_knee)
+
+    def update_makeup():
+      makeup_gain = std::levels::db_to_gain<T>(makeup_db)
 
     def update_attack():
       attack_coef = std::smoothing::time_coefficient<T>(attack_s)
@@ -106,14 +127,14 @@ namespace std::dynamics:
       else:
         detector = peak + (detector - peak) * release_coef
 
-      level_db = std::levels::gain_to_db<T>(detector)
-      reduction_db = std::dynamics::soft_knee_reduction_db<T>(
-        level_db,
-        threshold_db,
-        ratio,
-        knee_db
-      )
-      gain = std::levels::db_to_gain<T>(makeup_db - reduction_db)
+      gain = makeup_gain
+      # Keep the detector running while the curve needs no gain reduction.
+      if slope != 0.0 && max(detector, T(std::levels::MIN_FLOAT)) > lower_knee:
+        level_db = std::levels::gain_to_db<T>(detector)
+        reduction_db = std::dynamics::_soft_knee_reduction_db<T>(
+          level_db - threshold_db, slope, half_knee, knee_divisor
+        )
+        gain = std::levels::db_to_gain<T>(makeup_db - reduction_db)
       out1 = in1 * gain
       out2 = in2 * gain
 

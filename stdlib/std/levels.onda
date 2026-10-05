@@ -1,11 +1,11 @@
 namespace std::levels:
   const HALF_PI: f64 = PI / 2.0
-  const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
   const DB_PER_NAT: f64 = 8.685889638065037
   const MIN_FLOAT: f64 = 0.00000000000000000001
 
   def db_to_gain<T>(x: T):
-    return exp(x * T(DB_TO_GAIN_SCALE))
+    # ln(10) / 20; contextual typing also promotes integer inputs to floats.
+    return exp(x * 0.11512925464970229)
 
   def gain_to_db<T>(x: T):
     safe = max(x, T(MIN_FLOAT))

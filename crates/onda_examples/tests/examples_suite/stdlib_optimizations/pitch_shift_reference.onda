@@ -1,7 +1,7 @@
 import std/data
 import std/pitch
 
-namespace std::pitch_shift:
+namespace reference:
   const BufferSize = i32(SR / 2)
 
   proc DualWindow<T>:
@@ -30,7 +30,7 @@ namespace std::pitch_shift:
         read_a = T(write_index) - phase * window_samples
         read_b = T(write_index) - phase_b * window_samples
         gain_a = T(0.5) - T(0.5) * cos(phase * TWO_PI)
-        gain_b = T(1.0) - gain_a
+        gain_b = T(0.5) - T(0.5) * cos(phase_b * TWO_PI)
         shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
 
         write_index += 1

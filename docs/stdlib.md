@@ -24,10 +24,10 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/reverb`](#stdreverb) | `Schroeder` |
 | [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
-| [`std/levels`](#stdlevels) | `DB_PER_NAT`, `DB_TO_GAIN_SCALE`, `HALF_PI`, `MIN_FLOAT`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
+| [`std/levels`](#stdlevels) | `DB_PER_NAT`, `HALF_PI`, `MIN_FLOAT`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
 | [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
-| [`std/pitch`](#stdpitch) | `A4_HZ`, `INV_LN_2_OVER_12`, `LN_2_OVER_12`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between` |
+| [`std/pitch`](#stdpitch) | `A4_HZ`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between`, `ratio_from_semitones`, `semitones_from_ratio` |
 | [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew`, `time_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
 | [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
@@ -575,7 +575,6 @@ Namespace: `std::levels`.
 
 ```onda
 const HALF_PI: f64 = PI / 2.0
-const DB_TO_GAIN_SCALE: f64 = 0.11512925464970229
 const DB_PER_NAT: f64 = 8.685889638065037
 const MIN_FLOAT: f64 = 0.00000000000000000001
 ```
@@ -741,14 +740,14 @@ Namespace: `std::pitch`.
 ```onda
 const A4_HZ: f64 = 440.0
 const MIDI_A4: f64 = 69.0
-const LN_2_OVER_12: f64 = 0.05776226504666211
-const INV_LN_2_OVER_12: f64 = 17.31234049066756
 const MIN_FLOAT: f64 = 0.00000000000000000001
 ```
 
 ### Functions
 
 ```onda
+def ratio_from_semitones<T>(semitones: T):
+def semitones_from_ratio<T>(ratio: T):
 def note_to_hz<T>(note: T):
 def note_to_hz<T>(note: T, a4_hz: T):
 def hz_to_note<T>(hz: T):
@@ -851,12 +850,12 @@ proc Compressor<T>:
   ins<T> 2
   outs<T> 2
   params:
-    threshold_db: T = -18.0
-    ratio: T = 4.0
+    threshold_db: T = -18.0 => update_threshold
+    ratio: T = 4.0 => update_ratio
     attack_s: T = 0.01 => update_attack
     release_s: T = 0.1 => update_release
-    knee_db: T = 6.0
-    makeup_db: T = 0.0
+    knee_db: T = 6.0 => update_knee
+    makeup_db: T = 0.0 => update_makeup
   events:
     reset():
 ```
