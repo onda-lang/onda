@@ -13,7 +13,7 @@ pub(crate) use call_types::{
 pub(crate) use inference::*;
 pub(crate) use monomorphization::{
     monomorphize_calls_in_function, monomorphize_calls_in_stmts,
-    refresh_monomorphized_return_types, MonoOwnerContext, MonoParamKey,
+    refresh_monomorphized_return_types, MonoCache, MonoOwnerContext,
 };
 pub(crate) use overloads::{
     prepare_function_overloads, rewrite_overloaded_calls_in_function,

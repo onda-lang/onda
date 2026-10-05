@@ -91,6 +91,92 @@ Non-crate directories of note:
 - `pipeline.rs`, `pipeline/` — top-level analysis orchestration, with focused modules for
   compile-time evaluation, const rewriting, integer-range normalization, namespace flattening,
   and post-analysis validation.
+  `const_artifacts` checks and records scalar values, array descriptors, and const-def
+  signatures in declaration order. Scalar const initializers evaluate when registered;
+  named const arrays retain their initializer until a value is needed. This is array
+  payload laziness, independent of future module or declaration loading on demand.
+  Configuration arrays follow the same rule; configuration inspection explicitly
+  demands their values when constructing host descriptors.
+  `declaration_metadata` normalizes dimensions, storage domains, layouts, and required
+  defaults using ordinary declaration options. A required scalar initializer, dimension,
+  namespace argument, or shape proof can therefore demand an array. Length queries use
+  descriptors without demanding elements. Tuple selectors retain their checked index,
+  and closed runtime slice bounds retain the options used for their shape proofs.
+  Runtime values and direct const-def calls otherwise use their executable owner's
+  effective sample rate and block size; host-rate aliases remain fixed.
+  `const_validation` and `const_declaration_types` use the ordinary expression, binding,
+  and array checkers to report name, call, type, and known shape errors without running
+  array initializers or const-def bodies. Generic and slice-dependent checks complete
+  with concrete argument metadata. `const_call_validation` caches checked local types,
+  shapes, and failures by argument metadata; evaluation consumes those checked types.
+  Const declarations are restricted to root and namespace scope. Const defs bypass
+  runtime monomorphization; ordinary functions specialize by argument types and shapes.
+  Overload resolution and monomorphization share one lexical statement walker and
+  specialization fixed point. Defaults use that same solver in their declaration's
+  lexical environment; dependent call metadata defers specialization rather than
+  recursively traversing default dependencies.
+  `const_resolver` owns shared declaration nodes and caches each array payload or failure
+  once per concrete declaration and namespace specialization. Concrete array defaults
+  in const and runtime callables use the same catalog, including literal initializers,
+  with a separate cache for each used compile context. Cached initializer values retain
+  their owned-copy semantics through ordinary array constructors; references retain
+  their access permissions. Repeated metadata normalization reuses these handles.
+  Each declaration captures only direct lexical references; callees own their environments.
+  Registration never copies transitive dependency closures, and metadata never depends on
+  whether a value is cached. Namespace flattening shares the same nodes and caches while
+  keeping declaration catalogs separate from lexical visibility. Later declarations cannot
+  enter a captured initializer, function body, or default scope.
+  `const_interpreter` uses one heap continuation stack for expressions, declarations,
+  calls, and loops. A read suspends its consumer, evaluates the initializer, and resumes
+  without a dependency pre-walk or replay. Array bindings retain a declaration and slice
+  range through forwarding, arguments, aliases, copies, and length queries. Element reads
+  and writes demand the payload. Local aliases share a storage handle; explicit copies and
+  fixed-array returns capture independent values through copy-on-write payloads. Const
+  checking reuses runtime source resolution and transitive parameter permission analysis. Long
+  dependency and metadata chains also release their storage without recursive destruction.
+  `array_semantics` owns partial shape matching and initializer classification for static
+  checks, const execution, and MIR lowering. Unknown source metadata defers a required
+  check; array replacement checks the destination's concrete shape before mutation.
+  Defaults use ordinary argument permission checks after transitive writes are known,
+  and processor event arguments use the ordinary call checker.
+  Const-def branches and logical operands evaluate only executed dependencies. Ordinary
+  runtime statements retain the compiler's existing control-flow and checking behavior;
+  this feature adds no early branch pruning or deferred body admission.
+  `const_scalar` shares concrete scalar operations with MIR constant folding, including
+  integer wrapping, exact wide comparisons, float rounding, NaNs, and signed zero.
+  Scalar evaluation and MIR lowering defer literal operands until a destination or concrete
+  peer selects their arithmetic width. A bottom-up metadata pass records purity and natural
+  types; deferred operands borrow the AST and emit no wider intermediates. Explicit casts keep
+  their argument's own context, and integer-only subtrees retain integer arithmetic in
+  floating contexts.
+  Materialized calls, array elements, and length queries retain their checked numeric types.
+  Static slice lengths use the same i32 bound conversion and normalization as runtime views.
+  Closed slice bounds are materialized in the checked layout context; dynamic bounds
+  retain runtime evaluation.
+  Runtime array and slice length queries stay in MIR; const evaluation consults only
+  its own array bindings and declaration catalog. Checked scalar assignments retain
+  their storage type on the statement before materialization, so specialization and
+  cloning require no metadata keyed by diagnostic locations.
+  `runtime_materialization` selects the ordinary syntactic call graph before substituting
+  constants in roots and selected functions. Its late worklist preserves runtime sample-rate
+  and block-size variants through helpers and defaults without changing their checked types
+  or layouts. Unused function bodies do not demand array values. Additional variants clone
+  a body only when needed; the final variant moves it, and metadata and payloads stay shared.
+  `runtime_defaults` expands omitted arguments before call selection. Nested runtime defaults
+  use shared parameterless helpers to keep the call graph linear in source size; execution is
+  never memoized. Processor hooks retain ordinary ownership, ordering, and activation guards.
+  `compile_context` centralizes runtime call-context inheritance; MIR consumes the selected
+  variants without rediscovering contexts. Exported message defaults are required metadata.
+  MIR registers immutable array data only at its first actual load or view. Folded element
+  reads and metadata queries emit no data. Aliases share a data ID by payload identity without
+  hashing or copying contents. Shapes are checked per declaration; payload element types are
+  checked once per shared payload and expected type. Typed programs retain only payloads
+  referenced by materialized runtime code; aliases and clones share their immutable storage.
+  Read-only arguments backed by cached immutable values borrow their data directly;
+  mutable arguments copy into independent storage. Copies from mutable sources retain
+  their snapshot semantics before later arguments execute.
+  Const scopes borrow signatures from declaration nodes, and signature copies share default
+  expression trees until specialization requires a rewrite.
 - Analysis cores:
   - `expr_validation.rs`, `expr_typing.rs`, `expr_analysis/` — expression validation, typing, and environment construction.
   - `stmt_analysis/` — shared executable-flow statement analysis for defs, methods, events,
@@ -108,7 +194,8 @@ Non-crate directories of note:
   - `decl_symbols.rs` — declaration symbol tables.
 - `def`/generic machinery:
   - `def_semantics/` — thin `def` adapters over shared executable-flow analysis, `inference/`
-    (call + return), `monomorphization`, and `overloads`.
+    (call + return), `monomorphization`, and `overloads`. `call_types/scopes` owns their shared
+    lexical traversal, branch joins, loop bindings, and termination rules.
   - `generic_specialization.rs`, `generic_specialization/proc_specialization.rs` — generic owner specialization.
 - Processor lowering:
   - `task_lowering.rs` — owner-local task validation and lowering through a typed CFG, backwards

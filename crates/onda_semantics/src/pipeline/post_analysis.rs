@@ -244,220 +244,50 @@ pub(super) fn record_top_level_proc_array_arg_oversample_factor(
     }
 }
 
-pub(super) fn resolved_def_call_arg<'a>(
-    args: &'a [CallArg],
-    param_names: &[String],
-    param_idx: usize,
-) -> Option<&'a Expr> {
-    let param_name = param_names.get(param_idx)?;
-    if let Some(named) = args
-        .iter()
-        .find(|arg| arg.name.as_deref() == Some(param_name.as_str()))
-    {
-        return Some(&named.expr);
-    }
-    let mut positional_idx = 0usize;
-    for arg in args {
-        if arg.name.is_some() {
-            continue;
-        }
-        if positional_idx == param_idx {
-            return Some(&arg.expr);
-        }
-        positional_idx += 1;
-    }
-    None
-}
-
-pub(super) fn collect_def_proc_arg_oversample_factors_from_expr(
-    expr: &Expr,
-    sample_oversample_factor: usize,
-    defs_by_name: &HashMap<String, &TypedFunction>,
-    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
-    proc_api: &HashMap<String, ProcApi>,
-    out: &mut HashMap<String, usize>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    for expr in expr.walk() {
-        if let Expr::UserCall { name, args, .. } = expr {
-            if let Some(def) = defs_by_name.get(name) {
-                for (param_idx, kind) in def.param_kinds.iter().enumerate() {
-                    let Some(arg_expr) = resolved_def_call_arg(args, &def.params, param_idx) else {
-                        continue;
-                    };
-                    match (kind, arg_expr) {
-                        (TypedFnParam::ProcArray { .. }, Expr::Var { name: base, .. }) => {
-                            record_top_level_proc_array_arg_oversample_factor(
-                                base,
-                                sample_oversample_factor,
-                                top_level_proc_rewrite,
-                                proc_api,
-                                out,
-                                errors,
-                            );
-                        }
-                        (TypedFnParam::Struct { struct_name }, Expr::Var { name, .. }) => {
-                            let Some(instance) =
-                                top_level_proc_rewrite.global_proc_instances.get(name)
-                            else {
-                                continue;
-                            };
-                            if &instance.proc_name == struct_name {
-                                record_top_level_proc_arg_oversample_factor(
-                                    name,
-                                    sample_oversample_factor,
-                                    top_level_proc_rewrite,
-                                    proc_api,
-                                    out,
-                                    errors,
-                                );
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn collect_def_proc_arg_oversample_factors_from_stmts(
+/// Passing a physical processor into an oversampled root assigns its ownership
+/// context before any init/update or runtime body is checked. Parameter typing
+/// validates whether that argument is legal; it cannot change the receiver's
+/// identity. This follows ordinary syntactic call reachability.
+pub(super) fn collect_proc_argument_contexts(
     stmts: &[Stmt],
     sample_oversample_factor: usize,
-    defs_by_name: &HashMap<String, &TypedFunction>,
-    top_level_proc_rewrite: &TopLevelProcRewriteMeta,
+    rewrite: &TopLevelProcRewriteMeta,
     proc_api: &HashMap<String, ProcApi>,
     out: &mut HashMap<String, usize>,
     errors: &mut Vec<Diagnostic>,
 ) {
     for stmt in stmts {
-        match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    collect_def_proc_arg_oversample_factors_from_expr(
-                        value,
-                        sample_oversample_factor,
-                        defs_by_name,
-                        top_level_proc_rewrite,
-                        proc_api,
-                        out,
-                        errors,
-                    );
+        stmt.visit_exprs(|expr| {
+            for expr in expr.walk() {
+                let Expr::UserCall { args, .. } = expr else {
+                    continue;
+                };
+                for arg in args {
+                    let Expr::Var { name, .. } = &arg.expr else {
+                        continue;
+                    };
+                    if rewrite.global_proc_array_slots.contains_key(name) {
+                        record_top_level_proc_array_arg_oversample_factor(
+                            name,
+                            sample_oversample_factor,
+                            rewrite,
+                            proc_api,
+                            out,
+                            errors,
+                        );
+                    } else {
+                        record_top_level_proc_arg_oversample_factor(
+                            name,
+                            sample_oversample_factor,
+                            rewrite,
+                            proc_api,
+                            out,
+                            errors,
+                        );
+                    }
                 }
             }
-            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    expr,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    cond,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-                collect_def_proc_arg_oversample_factors_from_stmts(
-                    then_branch,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-                collect_def_proc_arg_oversample_factors_from_stmts(
-                    else_branch,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-            Stmt::For {
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    start,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    end,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-                if let Some(step) = step {
-                    collect_def_proc_arg_oversample_factors_from_expr(
-                        step,
-                        sample_oversample_factor,
-                        defs_by_name,
-                        top_level_proc_rewrite,
-                        proc_api,
-                        out,
-                        errors,
-                    );
-                }
-                collect_def_proc_arg_oversample_factors_from_stmts(
-                    body,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-            Stmt::While { cond, body, .. } => {
-                collect_def_proc_arg_oversample_factors_from_expr(
-                    cond,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-                collect_def_proc_arg_oversample_factors_from_stmts(
-                    body,
-                    sample_oversample_factor,
-                    defs_by_name,
-                    top_level_proc_rewrite,
-                    proc_api,
-                    out,
-                    errors,
-                );
-            }
-        }
+        });
     }
 }
 
@@ -569,49 +399,6 @@ pub(super) fn validate_generic_def_type_args_in_expr(
     }
 }
 
-pub(super) fn collect_reachable_typed_def_names(
-    init: &[Stmt],
-    block_pre: &[Stmt],
-    sample: &[Stmt],
-    block_post: &[Stmt],
-    events: &[TypedEvent],
-    defs: &[TypedFunction],
-) -> HashSet<String> {
-    let def_map = defs
-        .iter()
-        .map(|def| (def.name.clone(), def))
-        .collect::<HashMap<_, _>>();
-    let def_names = def_map.keys().cloned().collect::<HashSet<_>>();
-    let mut pending = Vec::<String>::new();
-    let mut seen_pending = HashSet::<String>::new();
-
-    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_pre, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(sample, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_post, &def_names, &mut pending, &mut seen_pending);
-    for event in events {
-        seed_called_typed_defs_from_stmts(&event.body, &def_names, &mut pending, &mut seen_pending);
-    }
-
-    let mut reachable = HashSet::<String>::new();
-    while let Some(name) = pending.pop() {
-        if !reachable.insert(name.clone()) {
-            continue;
-        }
-        let Some(def) = def_map.get(&name) else {
-            continue;
-        };
-        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut pending, &mut seen_pending);
-        seed_called_typed_defs_from_defaults(
-            &def.param_defaults,
-            &def_names,
-            &mut pending,
-            &mut seen_pending,
-        );
-    }
-    reachable
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum RuntimeCallVisit {
     Visiting,
@@ -662,7 +449,11 @@ pub(super) fn reject_recursive_runtime_defs(defs: &[TypedFunction], errors: &mut
                 errors,
                 format!(
                     "recursive runtime def cycle is not realtime-safe: {}",
-                    cycle.join(" -> ")
+                    cycle
+                        .iter()
+                        .map(|name| crate::compile_context::source_function_name(name).to_owned())
+                        .collect::<Vec<_>>()
+                        .join(" -> ")
                 ),
             );
             return;
@@ -824,12 +615,6 @@ pub(super) fn collect_proc_call_diags_from_stmts(
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { decl, .. } => collect_proc_call_diags_from_expr(
-                &decl.expr,
-                proc_api,
-                generated_proc_call_timing,
-                out,
-            ),
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Print { values, .. } => {
                 for value in values {
@@ -1034,7 +819,7 @@ pub(super) fn reject_non_sample_proc_operator_calls(
     let block_reachable_defs = collect_reachable_defs_for_phase(
         &[block_pre, block_post],
         |name| {
-            def_is_block_generated_root(name)
+            def_is_block_generated_root(crate::compile_context::source_function_name(name))
                 || lowered_proc_call_timing(name, proc_api, &generated_proc_call_timing)
                     == Some(OutputTiming::Block)
         },
@@ -1059,7 +844,9 @@ pub(super) fn reject_non_sample_proc_operator_calls(
     }
     let neither_reachable_defs = collect_reachable_defs_for_phase(
         &neither_roots,
-        def_is_neither_phase_generated_root,
+        |name| {
+            def_is_neither_phase_generated_root(crate::compile_context::source_function_name(name))
+        },
         defs,
         &def_names,
         &def_map,
@@ -1139,17 +926,7 @@ pub(super) fn try_indexed_proc_call_meta_in_def<'a>(
     let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
-    let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-        step_proc
-    } else if let Some((call_proc, out_idx_raw)) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX) {
-        if out_idx_raw.parse::<usize>().is_ok() {
-            call_proc
-        } else {
-            return None;
-        }
-    } else {
-        return None;
-    };
+    let proc_name = crate::processor_lowering::proc_name_for_lowered_proc_call(name)?;
     let api = proc_api.get(proc_name)?;
     if !api.has_block {
         return None;
@@ -1306,7 +1083,7 @@ pub(super) fn rewrite_stmt_for_def_proc_block_guards(
                 collect_guards(step, proc_api, proc_block_active_symbols, &mut guards);
             }
         }
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
     if guards.is_empty() {
         return match stmt {
@@ -1559,122 +1336,16 @@ pub(super) fn collect_typed_def_owner_proc_hook_params_from_stmts(
     out: &mut HashSet<usize>,
 ) {
     for stmt in stmts {
-        match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    collect_typed_def_owner_proc_hook_params_from_expr(
-                        value,
-                        def,
-                        def_map,
-                        known_requirements,
-                        proc_api,
-                        out,
-                    );
-                }
-            }
-            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    expr,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    cond,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-                collect_typed_def_owner_proc_hook_params_from_stmts(
-                    then_branch,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-                collect_typed_def_owner_proc_hook_params_from_stmts(
-                    else_branch,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-            Stmt::For {
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    start,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    end,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-                if let Some(step) = step {
-                    collect_typed_def_owner_proc_hook_params_from_expr(
-                        step,
-                        def,
-                        def_map,
-                        known_requirements,
-                        proc_api,
-                        out,
-                    );
-                }
-                collect_typed_def_owner_proc_hook_params_from_stmts(
-                    body,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-            Stmt::While { cond, body, .. } => {
-                collect_typed_def_owner_proc_hook_params_from_expr(
-                    cond,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-                collect_typed_def_owner_proc_hook_params_from_stmts(
-                    body,
-                    def,
-                    def_map,
-                    known_requirements,
-                    proc_api,
-                    out,
-                );
-            }
-        }
+        stmt.visit_exprs(|expr| {
+            collect_typed_def_owner_proc_hook_params_from_expr(
+                expr,
+                def,
+                def_map,
+                known_requirements,
+                proc_api,
+                out,
+            );
+        });
     }
 }
 
@@ -1748,7 +1419,7 @@ pub(super) fn stmt_has_proc_block_hook_for_instance(
     else {
         return false;
     };
-    if name != &format!("{proc_name}{suffix}") {
+    if crate::compile_context::lowered_function_origin(name) != format!("{proc_name}{suffix}") {
         return false;
     }
     let Some(self_arg) = args.first() else {
@@ -1808,111 +1479,15 @@ pub(super) fn collect_sample_owner_proc_hook_instances_from_stmts(
     out: &mut HashSet<String>,
 ) {
     for stmt in stmts {
-        match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    collect_sample_owner_proc_hook_instances_from_expr(
-                        value,
-                        def_map,
-                        requirements,
-                        global_proc_instances,
-                        out,
-                    );
-                }
-            }
-            Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    expr,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    cond,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-                collect_sample_owner_proc_hook_instances_from_stmts(
-                    then_branch,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-                collect_sample_owner_proc_hook_instances_from_stmts(
-                    else_branch,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-            Stmt::For {
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    start,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    end,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-                if let Some(step) = step {
-                    collect_sample_owner_proc_hook_instances_from_expr(
-                        step,
-                        def_map,
-                        requirements,
-                        global_proc_instances,
-                        out,
-                    );
-                }
-                collect_sample_owner_proc_hook_instances_from_stmts(
-                    body,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-            Stmt::While { cond, body, .. } => {
-                collect_sample_owner_proc_hook_instances_from_expr(
-                    cond,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-                collect_sample_owner_proc_hook_instances_from_stmts(
-                    body,
-                    def_map,
-                    requirements,
-                    global_proc_instances,
-                    out,
-                );
-            }
-        }
+        stmt.visit_exprs(|expr| {
+            collect_sample_owner_proc_hook_instances_from_expr(
+                expr,
+                def_map,
+                requirements,
+                global_proc_instances,
+                out,
+            );
+        });
     }
 }
 
@@ -2063,59 +1638,8 @@ pub(super) fn collect_called_typed_defs_in_stmt(
     pending: &mut Vec<String>,
     seen_pending: &mut HashSet<String>,
 ) {
-    match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-        Stmt::Print { values, .. } => {
-            for value in values {
-                collect_called_typed_defs_in_expr(value, def_names, pending, seen_pending);
-            }
-        }
-        Stmt::Assign { target, expr, .. } => {
-            collect_called_typed_defs_in_assign_target(target, def_names, pending, seen_pending);
-            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            collect_called_typed_defs_in_expr(cond, def_names, pending, seen_pending);
-            seed_called_typed_defs_from_stmts(then_branch, def_names, pending, seen_pending);
-            seed_called_typed_defs_from_stmts(else_branch, def_names, pending, seen_pending);
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            collect_called_typed_defs_in_expr(start, def_names, pending, seen_pending);
-            collect_called_typed_defs_in_expr(end, def_names, pending, seen_pending);
-            if let Some(step) = step {
-                collect_called_typed_defs_in_expr(step, def_names, pending, seen_pending);
-            }
-            seed_called_typed_defs_from_stmts(body, def_names, pending, seen_pending);
-        }
-        Stmt::While { cond, body, .. } => {
-            collect_called_typed_defs_in_expr(cond, def_names, pending, seen_pending);
-            seed_called_typed_defs_from_stmts(body, def_names, pending, seen_pending);
-        }
-    }
-}
-
-pub(super) fn collect_called_typed_defs_in_assign_target(
-    target: &AssignTarget,
-    def_names: &HashSet<String>,
-    pending: &mut Vec<String>,
-    seen_pending: &mut HashSet<String>,
-) {
-    target.visit_selectors(|selector| {
-        collect_called_typed_defs_in_expr(selector, def_names, pending, seen_pending)
+    stmt.visit_exprs(|expr| {
+        collect_called_typed_defs_in_expr(expr, def_names, pending, seen_pending);
     });
 }
 

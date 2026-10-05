@@ -25,7 +25,7 @@ fn long_expression_compiles_on_a_worker_stack() {
                 .collect::<Vec<_>>()
                 .join(" + ");
             let source = format!(
-                "def deep<T>(x: T) -> T:\n  const c = {const_expression}\n  return x + c\n\nsample:\n  out1 = deep(0.0)\n"
+                "def deep<T>(x: T) -> T:\n  c = {const_expression}\n  return x + c\n\nsample:\n  out1 = deep(0.0)\n"
             );
             let parsed = parse_program(&source).unwrap();
             let typed = analyze(parsed).unwrap();
@@ -216,6 +216,7 @@ fn print_literals_use_ordinary_defaults_and_explicit_types_are_preserved() {
 init:
   print("defaults", 3, 3.0)
   print("explicit", i64(3), f64(3.0), true)
+  print("context", (16777216.0 + 1.0) - 16777216.0, (16777216 + 1) - 16777216)
 sample:
   out1 = 0.0
 "#;
@@ -237,6 +238,23 @@ sample:
         ]
     );
     assert_eq!(mir.log_sites[1].payload_size, 17);
+    let init = &mir.functions[mir.entry_points.init.index()];
+    let arguments = init
+        .body
+        .statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            StatementKind::PublishLog { site, arguments } if site.index() == 2 => Some(arguments),
+            _ => None,
+        })
+        .expect("contextual print should remain observable");
+    assert_eq!(
+        arguments,
+        &[
+            Value::Constant(ScalarValue::F32(0.0)),
+            Value::Constant(ScalarValue::I32(1)),
+        ]
+    );
 }
 
 #[test]
@@ -972,6 +990,116 @@ sample:
 }
 
 #[test]
+fn closed_scalar_arithmetic_reports_constant_errors_consistently() {
+    for (expression, reason) in [
+        ("1 / 0", "division by zero"),
+        ("1 % 0", "modulo by zero"),
+        ("i32(1) / i32(0)", "division by zero"),
+        ("i64(1) % i64(0)", "modulo by zero"),
+        ("i32(1) / (i32(1) - i32(1))", "division by zero"),
+        ("i32(1) / abs(i32(0))", "division by zero"),
+        ("i32(1) / i32(false)", "division by zero"),
+        ("i32(1) / i32(i64(4294967296))", "division by zero"),
+        ("One / Zero", "division by zero"),
+        ("One % Zeros[0]", "modulo by zero"),
+    ] {
+        let source = format!(
+            "const One: i32 = 1\nconst Zero: i32 = 0\nconst Zeros: i32[1] = [0]\nparams:\n  enabled: bool = false\nsample:\n  if enabled:\n    out1 = f32({expression})\n  else:\n    out1 = 7.0\n"
+        );
+        let typed = analyze(parse_program(&source).unwrap()).expect(&source);
+        let errors = lower_program_to_raw_mir(&typed).expect_err(&source);
+        assert!(
+            errors.iter().any(|error| error.message.contains(reason)),
+            "{source}\n{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn closed_scalar_arithmetic_embeds_results_at_explicit_widths() {
+    for (ty, expression, expected) in [
+        (
+            "i32",
+            "i32(2147483647) + i32(1)",
+            ScalarValue::I32(i32::MIN),
+        ),
+        (
+            "i64",
+            "i64(9007199254740992) + i64(1)",
+            ScalarValue::I64(9_007_199_254_740_993),
+        ),
+        (
+            "i32",
+            "i32(-2147483648) / i32(-1)",
+            ScalarValue::I32(i32::MIN),
+        ),
+        ("i32", "abs(i32(-7)) + i32(2)", ScalarValue::I32(9)),
+        ("i32", "i32(f32(3.9)) + i32(true)", ScalarValue::I32(4)),
+        ("i32", "i32(i32(1) == i32(1)) + i32(2)", ScalarValue::I32(3)),
+        (
+            "f32",
+            "f32(16777216.0) + f32(1.0)",
+            ScalarValue::F32(16_777_216.0),
+        ),
+        (
+            "f64",
+            "f64(16777216.0) + f64(1.0)",
+            ScalarValue::F64(16_777_217.0),
+        ),
+        (
+            "f64",
+            "f64(f32(16777216.0) + f32(1.0))",
+            ScalarValue::F64(16_777_216.0),
+        ),
+        (
+            "f32",
+            "f32(1.0) / f32(0.0)",
+            ScalarValue::F32(f32::INFINITY),
+        ),
+    ] {
+        let source = format!(
+            "def take(value: {ty}) -> f32:\n  return f32(value)\nsample:\n  out1 = take({expression})\n"
+        );
+        let typed = analyze(parse_program(&source).unwrap()).expect(&source);
+        let mir = lower_program_to_raw_mir(&typed).expect(&source);
+        validate(&mir).expect(&source);
+        let take = FunctionId::new(
+            mir.functions
+                .iter()
+                .position(|function| function.name == "take")
+                .unwrap() as u32,
+        );
+        let mut calls = Vec::new();
+        collect_block_calls(
+            &mir.functions[mir.entry_points.process.index()].body,
+            &mut calls,
+        );
+        let (_, args) = calls
+            .into_iter()
+            .find(|(callee, _)| *callee == take)
+            .unwrap();
+        assert_eq!(
+            args,
+            [CallArgument::Value(Value::Constant(expected))],
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn closed_scalar_arithmetic_folds_subtrees_without_demanding_unused_arrays() {
+    let source = "const Unused: i32[1] = [i32(1) / i32(0)]\nparams:\n  value: i32 = 7\ndef take(value: i32) -> f32:\n  return f32(value)\nsample:\n  out1 = take(value + (i32(2147483647) + i32(1)))\n";
+    let typed = analyze(parse_program(source).unwrap()).unwrap();
+    assert!(typed.const_arrays.is_empty());
+    let mir = lower_program_to_raw_mir(&typed).unwrap();
+    validate(&mir).unwrap();
+    assert!(mir.const_data.is_empty());
+    let dump = format_program(&mir);
+    assert!(dump.contains("i32(-2147483648)"), "{dump}");
+    assert!(!dump.contains("i32(2147483647)"), "{dump}");
+}
+
+#[test]
 fn named_slice_arguments_prepare_bounds_in_source_order() {
     let source = r#"
 outs:
@@ -1191,6 +1319,25 @@ sample:
 }
 
 #[test]
+fn compile_time_only_const_array_use_does_not_emit_constant_data() {
+    let source = r#"
+const Table: f32[2] = [0.25, 0.75]
+
+outs:
+  out1
+
+sample:
+  out1 = Table[1]
+"#;
+    let parsed = parse_program(source).expect("source should parse");
+    let typed = analyze(parsed).expect("source should analyze");
+    assert!(typed.const_arrays.is_empty());
+
+    let mir = lower_test_program(&typed).expect("program should lower");
+    assert!(mir.const_data.is_empty());
+}
+
+#[test]
 fn retains_branch_local_types_and_lowers_short_circuit_control() {
     let source = r#"
 outs:
@@ -1215,10 +1362,22 @@ sample:
         .iter()
         .find(|function| function.name == "choose")
         .expect("choose should be reachable");
-    assert_eq!(
-        function.local_scalar_types.get("result"),
-        Some(&PrimitiveType::I32)
-    );
+    let mut binding_types = Vec::new();
+    for stmt in &function.body {
+        stmt.visit_statements(|stmt| {
+            if let Stmt::Assign {
+                target: AssignTarget::Var(name),
+                decl_ty: Some(onda_frontend::DeclType::Scalar(ty)),
+                ..
+            } = stmt
+            {
+                if name == "result" {
+                    binding_types.push(*ty);
+                }
+            }
+        });
+    }
+    assert_eq!(binding_types, vec![PrimitiveType::I32; 3]);
 
     let mut mir = empty_mir();
     lower_scalar_user_functions_to_mir(&typed, &mut mir)
@@ -1265,8 +1424,14 @@ sample:
 
 #[test]
 fn scoped_branch_and_loop_bindings_do_not_leak_into_later_bindings() {
-    let source = r#"
-def scoped(flag: bool) -> f32:
+    for declaration in [
+        "scoped(flag: bool, ignored: f32)",
+        "scoped<T>(flag: bool, ignored: T)",
+        "scoped(flag: bool, ignored)",
+    ] {
+        let source = format!(
+            r#"
+def {declaration} -> f32:
   if flag:
     temp = 0.0
   for i in 0..1:
@@ -1281,32 +1446,34 @@ outs:
   out1
 
 sample:
-  out1 = scoped(in1 > 0.0)
-"#;
-    let parsed = parse_program(source).expect("source should parse");
-    let typed = analyze(parsed).expect("source should analyze");
-    let mir = lower_program_to_raw_mir(&typed).expect("scoped locals should lower");
-    validate(&mir).expect("scoped-local MIR should validate");
+  out1 = scoped(in1 > 0.0, 0.0)
+"#
+        );
+        let parsed = parse_program(&source).expect("source should parse");
+        let typed = analyze(parsed).expect("source should analyze");
+        let mir = lower_program_to_raw_mir(&typed).expect("scoped locals should lower");
+        validate(&mir).expect("scoped-local MIR should validate");
 
-    let scoped = mir
-        .functions
-        .iter()
-        .find(|function| function.name == "scoped")
-        .expect("scoped helper should lower");
-    let temp_types = scoped
-        .locals
-        .iter()
-        .filter(|local| local.name.as_deref() == Some("temp"))
-        .filter_map(|local| match mir.types[local.ty.index()] {
-            MirType::Scalar(ty) => Some(ty),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        temp_types,
-        vec![ScalarType::F32, ScalarType::F32, ScalarType::Bool],
-        "branch, loop, and outer bindings with the same spelling need distinct MIR locals"
-    );
+        let scoped = mir
+            .functions
+            .iter()
+            .find(|function| function.name.starts_with("scoped"))
+            .expect("scoped helper should lower");
+        let temp_types = scoped
+            .locals
+            .iter()
+            .filter(|local| local.name.as_deref() == Some("temp"))
+            .filter_map(|local| match mir.types[local.ty.index()] {
+                MirType::Scalar(ty) => Some(ty),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            temp_types,
+            vec![ScalarType::F32, ScalarType::F32, ScalarType::Bool],
+            "branch, loop, and outer bindings with the same spelling need distinct MIR locals"
+        );
+    }
 }
 
 #[test]
@@ -1957,7 +2124,14 @@ sample 2:
   out1 = relay_rate()
 "#;
     let parsed = parse_program(source).expect("source should parse");
-    let typed = analyze(parsed).expect("source should analyze");
+    let typed = analyze_with_options(
+        parsed,
+        AnalysisOptions {
+            block_size: 64,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("source should analyze");
     let mut mir = empty_mir();
     let ids = lower_scalar_user_functions_to_mir(&typed, &mut mir)
         .expect("contextual scalar functions should specialize");
@@ -2030,6 +2204,7 @@ block:
         AnalysisOptions {
             sample_rate: 44_100.0,
             block_size: 32,
+            ..AnalysisOptions::default()
         },
     )
     .expect("source should analyze");

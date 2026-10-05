@@ -568,7 +568,6 @@ pub(crate) fn specialize_generic_proc_template(
         loc: template.loc,
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
-        consts: template.consts.clone(),
         ins,
         ins_deferred_count: None,
         ins_deferred_default_ty: None,

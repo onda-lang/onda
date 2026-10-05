@@ -1,5 +1,8 @@
 use super::*;
-use crate::{PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_EXPR_ARG};
+use crate::{
+    untyped_literal_type, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
+    PROC_INDEX_EXPR_ARG,
+};
 use onda_frontend::SourceLoc;
 
 pub(super) fn infer_stmt_calls(
@@ -14,7 +17,6 @@ pub(super) fn infer_stmt_calls(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context(stmt, |_diag| match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             target.visit_selectors(|index| {
                 infer_expr_calls(
@@ -478,12 +480,7 @@ fn infer_array_binding_from_assignment(expr: &Expr) -> Option<InferredArrayParam
 
 fn infer_array_literal_elem_ty(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
-        Expr::Number { .. } => Some(PrimitiveType::F32),
-        Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
-            PrimitiveType::I32
-        } else {
-            PrimitiveType::I64
-        }),
+        Expr::Number { .. } | Expr::Int { .. } => untyped_literal_type(expr),
         Expr::Bool { .. } => Some(PrimitiveType::Bool),
         Expr::Cast { to, .. } => Some(*to),
         Expr::Var { name, .. } => builtin_constant_type(name),
@@ -539,7 +536,69 @@ pub(crate) fn resolve_call_args_at<'a>(
     loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Option<&'a Expr>> {
-    let mut resolved: Vec<Option<&Expr>> = vec![None; param_names.len()];
+    resolve_call_args_by(
+        args,
+        param_names.len(),
+        |index| &param_names[index],
+        |index| matches!(param_defaults.get(index), Some(Some(_))),
+        forbid_self_named,
+        named_only,
+        context,
+        loc,
+        errors,
+        |_| {},
+    )
+}
+
+/// Binding order and evaluation order are distinct: supplied expressions run
+/// in source order, followed by omitted defaults in parameter order.
+pub(crate) struct BoundCallArgs<'a> {
+    pub(crate) by_param: Vec<Option<&'a Expr>>,
+    pub(crate) evaluation_order: Vec<usize>,
+}
+
+pub(crate) fn bind_call_args_at<'a>(
+    args: &'a [CallArg],
+    param_names: &[String],
+    param_defaults: &[Option<Expr>],
+    forbid_self_named: bool,
+    named_only: bool,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> BoundCallArgs<'a> {
+    let mut evaluation_order = Vec::with_capacity(param_names.len());
+    let by_param = resolve_call_args_by(
+        args,
+        param_names.len(),
+        |index| &param_names[index],
+        |index| matches!(param_defaults.get(index), Some(Some(_))),
+        forbid_self_named,
+        named_only,
+        context,
+        loc,
+        errors,
+        |index| evaluation_order.push(index),
+    );
+    BoundCallArgs {
+        by_param,
+        evaluation_order,
+    }
+}
+
+fn resolve_call_args_by<'a, 'p>(
+    args: &'a [CallArg],
+    param_count: usize,
+    param_name: impl Fn(usize) -> &'p str,
+    has_default: impl Fn(usize) -> bool,
+    forbid_self_named: bool,
+    named_only: bool,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+    mut visit_bound: impl FnMut(usize),
+) -> Vec<Option<&'a Expr>> {
+    let mut resolved: Vec<Option<&Expr>> = vec![None; param_count];
     let mut next_pos = 0usize;
     let mut seen_named = HashSet::new();
     let mut saw_named = false;
@@ -554,14 +613,14 @@ pub(crate) fn resolve_call_args_at<'a>(
                 ));
                 continue;
             }
-            if !seen_named.insert(name.clone()) {
+            if !seen_named.insert(name) {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: duplicate named argument '{name}'"),
                     loc,
                 ));
                 continue;
             }
-            let Some(idx) = param_names.iter().position(|p| p == name) else {
+            let Some(idx) = (0..param_count).find(|&index| param_name(index) == name) else {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown named argument '{name}'"),
                     loc,
@@ -576,6 +635,7 @@ pub(crate) fn resolve_call_args_at<'a>(
                 continue;
             }
             resolved[idx] = Some(&arg.expr);
+            visit_bound(idx);
         } else {
             if named_only {
                 errors.push(Diagnostic::semantic_span(
@@ -598,27 +658,27 @@ pub(crate) fn resolve_call_args_at<'a>(
                 errors.push(Diagnostic::semantic_span(
                     format!(
                         "{context}: too many positional arguments (expected at most {})",
-                        param_names.len()
+                        param_count
                     ),
                     loc,
                 ));
                 continue;
             }
             resolved[next_pos] = Some(&arg.expr);
+            visit_bound(next_pos);
             next_pos += 1;
         }
     }
 
-    for idx in 0..resolved.len() {
-        let has_default = matches!(param_defaults.get(idx), Some(Some(_)));
-        if resolved[idx].is_none() && !has_default {
+    for (idx, supplied) in resolved.iter().enumerate() {
+        let has_default = has_default(idx);
+        if supplied.is_none() && !has_default {
             errors.push(Diagnostic::semantic_span(
-                format!(
-                    "{context}: missing required argument '{}'",
-                    param_names[idx]
-                ),
+                format!("{context}: missing required argument '{}'", param_name(idx)),
                 loc,
             ));
+        } else if supplied.is_none() {
+            visit_bound(idx);
         }
     }
 

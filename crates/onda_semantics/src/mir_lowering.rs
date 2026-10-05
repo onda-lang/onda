@@ -7,7 +7,9 @@ mod param_arrays;
 mod aggregates;
 mod audio_outputs;
 mod calls;
+mod const_data;
 mod control_flow;
+use const_data::ConstDataCatalog;
 mod data;
 mod data_slices;
 #[cfg(test)]
@@ -47,13 +49,15 @@ use crate::internal_names::{
     runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
     PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
+use crate::mir_scalar::{
+    map_binary, map_compare, map_intrinsic, mir_scalar, scalar_type, source_scalar_type,
+};
 use crate::{
-    adapt_binary_operand_types, adapt_numeric_argument_types, builtin_constant_type,
-    builtin_constant_value_f64, can_assign_expr_to_type, can_eval_const_expr_exact_int,
-    effective_untyped_assignment_type, eval_const_expr_i64_exact, intrinsic_result_type,
-    merge_inferred_return_types, merge_numeric_types, parse_array_len_instance_base,
-    parse_buffer_bound_instance_base, parse_buffer_chans_instance_base,
-    parse_buffer_samplerate_instance_base, resolve_call_args_at, AggregateLayoutTable,
+    bind_call_args_at, builtin_constant_type, builtin_constant_value_f64, can_assign_expr_to_type,
+    can_eval_const_expr_exact_int, effective_untyped_assignment_type, eval_const_expr_i64_exact,
+    intrinsic_result_type, merge_inferred_return_types, merge_numeric_types,
+    parse_array_len_instance_base, parse_buffer_bound_instance_base,
+    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, AggregateLayoutTable,
     AggregatePathComponent, AnalysisOptions, DataType, IndexAccess, ProcSincStageStateFields,
     ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
     TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
@@ -150,31 +154,31 @@ fn lower_user_functions_to_mir(
     mir: &mut onda_mir::Program,
     runtime_globals: Option<&RuntimeGlobals>,
 ) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
+    let local_catalog = runtime_globals
+        .is_none()
+        .then(|| ConstDataCatalog::new(program, std::mem::take(&mut mir.const_data)));
+    let catalog = runtime_globals
+        .and_then(|globals| globals.const_arrays)
+        .or(local_catalog.as_ref())
+        .expect("constant catalog");
+    let result = lower_user_functions_with_const_data(program, mir, runtime_globals, catalog);
+    if let Some(catalog) = local_catalog {
+        mir.const_data = catalog.take_data(result.is_ok());
+    }
+    result
+}
+
+fn lower_user_functions_with_const_data(
+    program: &TypedProgram,
+    mir: &mut onda_mir::Program,
+    runtime_globals: Option<&RuntimeGlobals<'_>>,
+    const_arrays: &ConstDataCatalog<'_>,
+) -> Result<Vec<FunctionId>, Vec<MirLoweringError>> {
     let function_base = mir.functions.len();
-    let mut function_indices = HashMap::<String, usize>::new();
+    let function_indices = runtime_function_indices(program)?;
     let mut errors = Vec::new();
 
-    for (index, function) in program.defs.iter().enumerate() {
-        if function_indices
-            .insert(function.name.clone(), index)
-            .is_some()
-        {
-            errors.push(MirLoweringError::new(
-                format!("duplicate specialized function name '{}'", function.name),
-                function_location(function),
-            ));
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    let contexts = discover_function_contexts(program, mir.config, &function_indices);
-    for (index, function) in program.defs.iter().enumerate() {
-        if !contexts.contains_key(&index) {
-            continue;
-        }
+    for function in &program.defs {
         if !function.type_params.is_empty() {
             errors.push(MirLoweringError::new(
                 format!(
@@ -227,78 +231,7 @@ fn lower_user_functions_to_mir(
         return Err(errors);
     }
 
-    let mut specializations = Vec::<(usize, CompileContext)>::new();
-    for index in 0..program.defs.len() {
-        let Some(mut function_contexts) = contexts.get(&index).cloned() else {
-            continue;
-        };
-        function_contexts.sort_by_key(|context| (context.sample_rate_bits, context.block_size));
-        specializations.extend(
-            function_contexts
-                .into_iter()
-                .map(|context| (index, context)),
-        );
-    }
-
-    let mut function_ids = HashMap::<FunctionKey, FunctionId>::new();
-    for (offset, (function_index, context)) in specializations.iter().copied().enumerate() {
-        function_ids.insert(
-            FunctionKey {
-                function_index,
-                context,
-            },
-            FunctionId::new((function_base + offset) as u32),
-        );
-    }
-
     let mut types = mir.types.clone();
-    let mut pending_const_data = Vec::new();
-    let mut const_arrays = HashMap::new();
-    for array in &program.const_arrays {
-        let len = u32::try_from(array.len).map_err(|_| {
-            vec![MirLoweringError::new(
-                format!("constant array '{}' length does not fit u32", array.name),
-                SourceLoc::ZERO,
-            )]
-        })?;
-        let existing = mir
-            .const_data
-            .iter()
-            .position(|candidate| candidate.name == array.name)
-            .map(|index| (index, &mir.const_data[index]))
-            .or_else(|| {
-                pending_const_data
-                    .iter()
-                    .position(|candidate: &onda_mir::ConstData| candidate.name == array.name)
-                    .map(|index| (mir.const_data.len() + index, &pending_const_data[index]))
-            });
-        let index = if let Some((index, existing)) = existing {
-            if existing.element != scalar_type(array.elem_ty)
-                || !typed_and_mir_scalar_values_exact_equal(&array.values, &existing.values)
-            {
-                return Err(vec![MirLoweringError::new(
-                    format!(
-                        "constant data '{}' already exists in MIR with different contents",
-                        array.name
-                    ),
-                    SourceLoc::ZERO,
-                )]);
-            }
-            index
-        } else {
-            let index = mir.const_data.len() + pending_const_data.len();
-            pending_const_data.push(onda_mir::ConstData {
-                name: array.name.clone(),
-                element: scalar_type(array.elem_ty),
-                values: array.values.iter().copied().map(mir_scalar).collect(),
-            });
-            index
-        };
-        const_arrays.insert(
-            array.name.clone(),
-            (onda_mir::ConstDataId::new(index as u32), array.elem_ty, len),
-        );
-    }
     let mut source_files = mir.source_files.clone();
     let mut log_sites = mir.log_sites.clone();
     let structs = program
@@ -306,18 +239,12 @@ fn lower_user_functions_to_mir(
         .iter()
         .map(|structure| (structure.name.clone(), structure.fields.clone()))
         .collect::<HashMap<_, _>>();
-    let mut functions = Vec::with_capacity(specializations.len());
-    for (function_index, context) in &specializations {
-        let function = &program.defs[*function_index];
-        let function_context_count = contexts.get(function_index).map(Vec::len).unwrap_or(1);
-        let emitted_name = if function_context_count > 1 {
-            format!(
-                "{}.__ctx_sr_{:08x}_bs_{:08x}",
-                function.name, context.sample_rate_bits, context.block_size
-            )
-        } else {
-            function.name.clone()
-        };
+    let mut functions = Vec::with_capacity(program.defs.len());
+    for function in &program.defs {
+        let config = function
+            .compile_context
+            .map_or(mir.config, |context| context.config());
+        let emitted_name = function.name.clone();
         let lowerer = if function.runtime_context {
             let globals = runtime_globals.ok_or_else(|| {
                 vec![MirLoweringError::new(
@@ -331,12 +258,11 @@ fn lower_user_functions_to_mir(
             FunctionLowerer::new_runtime(
                 function,
                 &program.defs,
-                &function_ids,
+                function_base,
                 &function_indices,
                 &program.def_sample_oversample_factors,
-                &program.proc_instance_oversample_factors,
                 mir.config,
-                context.config(),
+                config,
                 emitted_name,
                 globals,
                 &mut types,
@@ -347,17 +273,16 @@ fn lower_user_functions_to_mir(
             FunctionLowerer::new(
                 function,
                 &program.defs,
-                &function_ids,
+                function_base,
                 &function_indices,
                 &program.def_sample_oversample_factors,
-                &program.proc_instance_oversample_factors,
                 program.proc_step_oversample_meta.get(&function.name),
                 &structs,
                 &program.aggregate_layouts,
                 &program.nested_proc_arrays,
-                &const_arrays,
+                const_arrays,
                 mir.config,
-                context.config(),
+                config,
                 emitted_name,
                 &mut types,
                 &mut source_files,
@@ -370,11 +295,10 @@ fn lower_user_functions_to_mir(
         }
     }
 
-    let ids = (0..specializations.len())
+    let ids = (0..program.defs.len())
         .map(|index| FunctionId::new((function_base + index) as u32))
         .collect::<Vec<_>>();
     mir.types = types;
-    mir.const_data.extend(pending_const_data);
     mir.source_files = source_files;
     mir.log_sites = log_sites;
     mir.functions.extend(functions);
@@ -451,9 +375,11 @@ fn lower_program_to_mir(
     populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
     populate_runtime_interface_views(program, &mut globals)?;
-    populate_constant_data(program, &mut mir, &mut globals)?;
+    let const_arrays = ConstDataCatalog::new(program, std::mem::take(&mut mir.const_data));
+    globals.const_arrays = Some(&const_arrays);
 
-    let (function_indices, function_ids) = runtime_function_ids(program, config, 2);
+    let function_indices = runtime_function_indices(program)?;
+    let function_base = mir.functions.len();
 
     let init_locations = declared_binding_locations(&program.init);
     let init_views = program
@@ -470,10 +396,9 @@ fn lower_program_to_mir(
     let mut init_lowerer = FunctionLowerer::new_runtime(
         &init_function,
         &program.defs,
-        &function_ids,
+        function_base,
         &function_indices,
         &program.def_sample_oversample_factors,
-        &program.proc_instance_oversample_factors,
         config,
         config,
         "onda_init".to_owned(),
@@ -508,10 +433,9 @@ fn lower_program_to_mir(
     let (mut process, block_region) = FunctionLowerer::new_runtime(
         &process_function,
         &program.defs,
-        &function_ids,
+        function_base,
         &function_indices,
         &program.def_sample_oversample_factors,
-        &program.proc_instance_oversample_factors,
         config,
         config,
         "onda_process".to_owned(),
@@ -524,7 +448,6 @@ fn lower_program_to_mir(
         &program.block_pre,
         &program.sample,
         &program.block_post,
-        config.block_size,
         program.sample_oversample_factor,
     )
     .map_err(|error| vec![error])?;
@@ -545,9 +468,10 @@ fn lower_program_to_mir(
         &mut mir,
         &globals,
         &function_indices,
-        &function_ids,
+        function_base,
     )?;
     param_arrays::clamp_parameter_arrays(&mut mir);
+    mir.const_data = const_arrays.take_data(true);
     if prune_before_range_analysis {
         // Processor lowering intentionally begins with uniform flattened ABIs.
         // Prune unused leaves before whole-program range propagation so every
@@ -813,42 +737,7 @@ fn mir_program_boundary_errors(program: &TypedProgram) -> Vec<MirLoweringError> 
             ));
         }
     }
-    for array in &program.const_arrays {
-        if array.len == 0 || array.len > i32::MAX as usize {
-            errors.push(MirLoweringError::new(
-                format!(
-                    "constant array '{}' length must be between 1 and i32::MAX for MIR indexing",
-                    array.name
-                ),
-                SourceLoc::ZERO,
-            ));
-        }
-        if array.values.len() != array.len {
-            errors.push(MirLoweringError::new(
-                format!(
-                    "constant array '{}' declares {} elements but contains {} values",
-                    array.name,
-                    array.len,
-                    array.values.len()
-                ),
-                SourceLoc::ZERO,
-            ));
-        }
-        if array
-            .values
-            .iter()
-            .any(|value| mir_scalar(*value).ty() != scalar_type(array.elem_ty))
-        {
-            errors.push(MirLoweringError::new(
-                format!(
-                    "constant array '{}' contains a value that does not match element type {}",
-                    array.name,
-                    array.elem_ty.name()
-                ),
-                SourceLoc::ZERO,
-            ));
-        }
-    }
+    errors.extend(const_data::validate_const_arrays(&program.const_arrays));
     for buffer in &program.buffers {
         if let TypedBufferChannels::Static(channels) = &buffer.channels {
             let maximum = crate::builtins::max_buffer_static_channels(buffer.elem_ty);
@@ -1226,6 +1115,7 @@ fn populate_interface(
                 range: program.params[index].range.map(mir_range),
                 control: mir_param_control(&program.params[index].control),
             });
+
             globals
                 .param_arrays
                 .insert(name.clone(), (id, info.elem_ty, len));
@@ -1242,6 +1132,7 @@ fn populate_interface(
             range: param.range.map(mir_range),
             control: mir_param_control(&param.control),
         });
+
         globals.params.insert(param.name.clone(), (id, param.ty));
         index += 1;
     }
@@ -1508,22 +1399,21 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
-            let clamped = program
-                .dynamic_param_range_aliases
-                .get(&slot.root)
-                .map(|alias| {
+            let base = if let Some(alias) = program.dynamic_param_range_aliases.get(&slot.root) {
+                PlaceBase::State(
                     globals
                         .states
                         .get(alias)
                         .map(|(state, _)| *state)
-                        .ok_or_else(missing)
-                })
-                .transpose()?;
+                        .ok_or_else(missing)?,
+                )
+            } else {
+                PlaceBase::Param(param)
+            };
             Ok((
                 RuntimeInterfaceEndpoint::Param {
-                    param,
+                    base,
                     element: None,
-                    clamped,
                 },
                 ty,
             ))
@@ -1536,9 +1426,8 @@ fn resolve_runtime_interface_endpoint(
                 .ok_or_else(missing)?;
             Ok((
                 RuntimeInterfaceEndpoint::Param {
-                    param,
+                    base: PlaceBase::Param(param),
                     element: Some(checked_element(element, len)?),
-                    clamped: None,
                 },
                 ty,
             ))
@@ -1856,31 +1745,6 @@ fn append_mir_sinc_stages(
         .collect()
 }
 
-fn populate_constant_data(
-    program: &TypedProgram,
-    mir: &mut onda_mir::Program,
-    globals: &mut RuntimeGlobals,
-) -> Result<(), Vec<MirLoweringError>> {
-    for array in &program.const_arrays {
-        let len = u32::try_from(array.len).map_err(|_| {
-            vec![MirLoweringError::new(
-                format!("constant array '{}' length does not fit u32", array.name),
-                SourceLoc::ZERO,
-            )]
-        })?;
-        let id = onda_mir::ConstDataId::new(mir.const_data.len() as u32);
-        mir.const_data.push(onda_mir::ConstData {
-            name: array.name.clone(),
-            element: scalar_type(array.elem_ty),
-            values: array.values.iter().copied().map(mir_scalar).collect(),
-        });
-        globals
-            .const_arrays
-            .insert(array.name.clone(), (id, array.elem_ty, len));
-    }
-    Ok(())
-}
-
 fn populate_delegates(
     program: &TypedProgram,
     mir: &mut onda_mir::Program,
@@ -1933,7 +1797,7 @@ fn lower_events(
     mir: &mut onda_mir::Program,
     globals: &RuntimeGlobals,
     function_indices: &HashMap<String, usize>,
-    function_ids: &HashMap<FunctionKey, FunctionId>,
+    function_base: usize,
 ) -> Result<(), Vec<MirLoweringError>> {
     for event in &program.events {
         let event_id = onda_mir::EventId::new(mir.interface.events.len() as u32);
@@ -2028,10 +1892,9 @@ fn lower_events(
         let mut lowerer = FunctionLowerer::new_runtime(
             &synthetic,
             &program.defs,
-            function_ids,
+            function_base,
             function_indices,
             &program.def_sample_oversample_factors,
-            &program.proc_instance_oversample_factors,
             mir.config,
             mir.config,
             function_name,
@@ -2050,41 +1913,29 @@ fn lower_events(
     Ok(())
 }
 
-fn runtime_function_ids(
+fn runtime_function_indices(
     program: &TypedProgram,
-    config: onda_mir::CompileConfig,
-    function_base: usize,
-) -> (HashMap<String, usize>, HashMap<FunctionKey, FunctionId>) {
-    let function_indices = program
-        .defs
-        .iter()
-        .enumerate()
-        .map(|(index, function)| (function.name.clone(), index))
-        .collect::<HashMap<_, _>>();
-    let contexts = discover_function_contexts(program, config, &function_indices);
-    let mut function_ids = HashMap::new();
-    let mut offset = 0;
-    for index in 0..program.defs.len() {
-        let Some(mut function_contexts) = contexts.get(&index).cloned() else {
-            continue;
-        };
-        function_contexts.sort_by_key(|context| (context.sample_rate_bits, context.block_size));
-        for context in function_contexts {
-            function_ids.insert(
-                FunctionKey {
-                    function_index: index,
-                    context,
-                },
-                FunctionId::new((function_base + offset) as u32),
-            );
-            offset += 1;
+) -> Result<HashMap<String, usize>, Vec<MirLoweringError>> {
+    let mut indices = HashMap::with_capacity(program.defs.len());
+    let mut errors = Vec::new();
+    for (index, function) in program.defs.iter().enumerate() {
+        if indices.insert(function.name.clone(), index).is_some() {
+            errors.push(MirLoweringError::new(
+                format!("duplicate specialized function name '{}'", function.name),
+                function_location(function),
+            ));
         }
     }
-    (function_indices, function_ids)
+    if errors.is_empty() {
+        Ok(indices)
+    } else {
+        Err(errors)
+    }
 }
 
 fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
+        compile_context: None,
         name: name.to_owned(),
         runtime_context: false,
         publishes_print: false,
@@ -2097,7 +1948,6 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
         integer_range_params: HashMap::new(),
         return_ty: ReturnType::Scalar(PrimitiveType::F32),
         returns_value: false,
-        local_scalar_types: HashMap::new(),
         body,
     }
 }
@@ -2149,16 +1999,6 @@ fn missing_interface_type(kind: &str, name: &str) -> MirLoweringError {
     )
 }
 
-fn mir_scalar(value: TypedConstValue) -> ScalarValue {
-    match value {
-        TypedConstValue::F32(value) => ScalarValue::F32(value),
-        TypedConstValue::F64(value) => ScalarValue::F64(value),
-        TypedConstValue::I32(value) => ScalarValue::I32(value),
-        TypedConstValue::I64(value) => ScalarValue::I64(value),
-        TypedConstValue::Bool(value) => ScalarValue::Bool(value),
-    }
-}
-
 fn typed_and_mir_scalar_values_exact_equal(lhs: &[TypedConstValue], rhs: &[ScalarValue]) -> bool {
     lhs.len() == rhs.len()
         && lhs.iter().zip(rhs).all(|(lhs, rhs)| match (lhs, rhs) {
@@ -2196,28 +2036,6 @@ fn mir_param_control(control: &TypedParamControl) -> onda_mir::ParamControl {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-struct CompileContext {
-    sample_rate_bits: u32,
-    block_size: u32,
-}
-
-impl CompileContext {
-    fn from_config(config: onda_mir::CompileConfig) -> Self {
-        Self {
-            sample_rate_bits: config.sample_rate.to_bits(),
-            block_size: config.block_size,
-        }
-    }
-
-    fn config(self) -> onda_mir::CompileConfig {
-        onda_mir::CompileConfig {
-            sample_rate: f32::from_bits(self.sample_rate_bits),
-            block_size: self.block_size,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 enum DynamicInterfaceKind {
     Inputs,
     AudioOutputs,
@@ -2241,9 +2059,8 @@ enum RuntimeInterfaceEndpoint {
         element: Option<u32>,
     },
     Param {
-        param: onda_mir::ParamId,
+        base: PlaceBase,
         element: Option<u32>,
-        clamped: Option<onda_mir::StateId>,
     },
 }
 
@@ -2253,21 +2070,15 @@ struct RuntimeInterfaceView {
     slots: Vec<RuntimeInterfaceEndpoint>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-struct FunctionKey {
-    function_index: usize,
-    context: CompileContext,
-}
-
 #[derive(Debug, Default)]
-struct RuntimeGlobals {
+struct RuntimeGlobals<'a> {
     retained_init: Option<retained_bindings::RetainedBindings>,
     states: HashMap<String, (onda_mir::StateId, PrimitiveType)>,
     integer_ranges: HashMap<String, onda_mir::IntegerRangeInvariant>,
     state_tuples: HashMap<String, Vec<(onda_mir::StateId, PrimitiveType)>>,
     state_arrays: HashMap<String, (onda_mir::StateId, PrimitiveType, u32)>,
     array_struct_roots: HashMap<String, (String, u32)>,
-    const_arrays: HashMap<String, (onda_mir::ConstDataId, PrimitiveType, u32)>,
+    const_arrays: Option<&'a ConstDataCatalog<'a>>,
     inputs: HashMap<String, (onda_mir::InputId, PrimitiveType)>,
     input_arrays: HashMap<String, (onda_mir::InputId, PrimitiveType, u32)>,
     outputs: HashMap<String, (onda_mir::OutputId, PrimitiveType)>,
@@ -2293,255 +2104,9 @@ struct TopLevelOversamplingState {
 }
 
 #[derive(Debug, Clone)]
-struct DiscoveredCall {
-    name: String,
-    receiver: Option<Expr>,
-}
-
-#[derive(Debug, Clone)]
 struct MirSincStageState {
     ty: PrimitiveType,
     taps: [onda_mir::StateId; 8],
-}
-
-fn discover_function_contexts(
-    program: &TypedProgram,
-    host_config: onda_mir::CompileConfig,
-    function_indices: &HashMap<String, usize>,
-) -> HashMap<usize, Vec<CompileContext>> {
-    let host_context = CompileContext::from_config(host_config);
-    let sample_context = CompileContext::from_config(onda_mir::CompileConfig {
-        sample_rate: host_config.sample_rate * program.sample_oversample_factor.max(1) as f32,
-        block_size: host_config.block_size,
-    });
-    let mut contexts = HashMap::<usize, Vec<CompileContext>>::new();
-    let mut queue = VecDeque::<(usize, CompileContext)>::new();
-
-    let mut host_calls = Vec::new();
-    collect_calls_in_statements(&program.init, &mut host_calls);
-    collect_calls_in_statements(&program.block_pre, &mut host_calls);
-    collect_calls_in_statements(&program.block_post, &mut host_calls);
-    for event in &program.events {
-        collect_calls_in_statements(&event.body, &mut host_calls);
-    }
-    for call in host_calls {
-        record_function_context(
-            &call,
-            host_context,
-            program,
-            host_config,
-            function_indices,
-            &mut contexts,
-            &mut queue,
-        );
-    }
-
-    let mut sample_calls = Vec::new();
-    collect_calls_in_statements(&program.sample, &mut sample_calls);
-    for call in sample_calls {
-        record_function_context(
-            &call,
-            sample_context,
-            program,
-            host_config,
-            function_indices,
-            &mut contexts,
-            &mut queue,
-        );
-    }
-
-    drain_context_queue(
-        program,
-        host_config,
-        function_indices,
-        &mut contexts,
-        &mut queue,
-    );
-
-    contexts
-}
-
-fn drain_context_queue(
-    program: &TypedProgram,
-    host_config: onda_mir::CompileConfig,
-    function_indices: &HashMap<String, usize>,
-    contexts: &mut HashMap<usize, Vec<CompileContext>>,
-    queue: &mut VecDeque<(usize, CompileContext)>,
-) {
-    while let Some((function_index, context)) = queue.pop_front() {
-        let function = &program.defs[function_index];
-        let mut calls = Vec::new();
-        collect_calls_in_statements(&function.body, &mut calls);
-        // Defaults execute in the caller's compilation context. Scanning every
-        // default may create an unused specialization, but never changes
-        // executable behavior and keeps discovery independent of call order.
-        for default in function.param_defaults.iter().flatten() {
-            collect_calls_in_expr(default, &mut calls);
-        }
-        for call in calls {
-            record_function_context(
-                &call,
-                context,
-                program,
-                host_config,
-                function_indices,
-                contexts,
-                queue,
-            );
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_function_context(
-    call: &DiscoveredCall,
-    caller_context: CompileContext,
-    program: &TypedProgram,
-    host_config: onda_mir::CompileConfig,
-    function_indices: &HashMap<String, usize>,
-    contexts: &mut HashMap<usize, Vec<CompileContext>>,
-    queue: &mut VecDeque<(usize, CompileContext)>,
-) {
-    let Some(function_index) = function_indices.get(&call.name).copied() else {
-        return;
-    };
-    let context = effective_call_context(
-        &call.name,
-        call.receiver.as_ref(),
-        caller_context,
-        host_config,
-        &program.def_sample_oversample_factors,
-        &program.proc_instance_oversample_factors,
-    );
-    let entries = contexts.entry(function_index).or_default();
-    if !entries.contains(&context) {
-        entries.push(context);
-        queue.push_back((function_index, context));
-    }
-}
-
-fn effective_function_context(
-    name: &str,
-    caller_context: CompileContext,
-    host_config: onda_mir::CompileConfig,
-    oversample_factors: &HashMap<String, usize>,
-) -> CompileContext {
-    let Some(factor) = oversample_factors.get(name).copied() else {
-        return caller_context;
-    };
-    if factor <= 1 {
-        return caller_context;
-    }
-    CompileContext::from_config(onda_mir::CompileConfig {
-        sample_rate: host_config.sample_rate * factor as f32,
-        block_size: host_config.block_size,
-    })
-}
-
-fn proc_instance_oversample_key_for_expr(
-    expression: &Expr,
-    factors: &HashMap<String, usize>,
-) -> Option<String> {
-    match expression {
-        Expr::Var { name, .. } => factors.contains_key(name).then(|| name.clone()),
-        Expr::Index { base, index, .. } => {
-            if let Expr::Int { value, .. } = index.as_ref() {
-                let slot = format!("{base}[{value}]");
-                if factors.contains_key(&slot) {
-                    return Some(slot);
-                }
-            }
-            factors.contains_key(base).then(|| base.clone())
-        }
-        _ => None,
-    }
-}
-
-fn effective_call_context(
-    name: &str,
-    receiver: Option<&Expr>,
-    caller_context: CompileContext,
-    host_config: onda_mir::CompileConfig,
-    oversample_factors: &HashMap<String, usize>,
-    proc_instance_oversample_factors: &HashMap<String, usize>,
-) -> CompileContext {
-    let instance_context = if name.contains(".__onda_proc_") {
-        receiver
-            .and_then(|expression| {
-                proc_instance_oversample_key_for_expr(expression, proc_instance_oversample_factors)
-            })
-            .and_then(|key| proc_instance_oversample_factors.get(&key).copied())
-            .filter(|factor| *factor > 1)
-            .map(|factor| {
-                CompileContext::from_config(onda_mir::CompileConfig {
-                    sample_rate: host_config.sample_rate * factor as f32,
-                    block_size: host_config.block_size,
-                })
-            })
-            .unwrap_or(caller_context)
-    } else {
-        caller_context
-    };
-    effective_function_context(name, instance_context, host_config, oversample_factors)
-}
-
-fn collect_calls_in_statements(statements: &[Stmt], calls: &mut Vec<DiscoveredCall>) {
-    for statement in statements {
-        match statement {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
-            Stmt::Assign { target, expr, .. } => {
-                target.visit_selectors(|selector| collect_calls_in_expr(selector, calls));
-                collect_calls_in_expr(expr, calls);
-            }
-            Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-                collect_calls_in_expr(expr, calls);
-            }
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    collect_calls_in_expr(value, calls);
-                }
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                collect_calls_in_expr(cond, calls);
-                collect_calls_in_statements(then_branch, calls);
-                collect_calls_in_statements(else_branch, calls);
-            }
-            Stmt::For {
-                step,
-                start,
-                end,
-                body,
-                ..
-            } => {
-                if let Some(step) = step {
-                    collect_calls_in_expr(step, calls);
-                }
-                collect_calls_in_expr(start, calls);
-                collect_calls_in_expr(end, calls);
-                collect_calls_in_statements(body, calls);
-            }
-            Stmt::While { cond, body, .. } => {
-                collect_calls_in_expr(cond, calls);
-                collect_calls_in_statements(body, calls);
-            }
-        }
-    }
-}
-
-fn collect_calls_in_expr(expression: &Expr, calls: &mut Vec<DiscoveredCall>) {
-    for expression in expression.walk() {
-        if let Expr::UserCall { name, args, .. } = expression {
-            calls.push(DiscoveredCall {
-                name: name.clone(),
-                receiver: args.first().map(|arg| arg.expr.clone()),
-            });
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2804,22 +2369,21 @@ enum ContinueMode {
 struct FunctionLowerer<'a> {
     function: &'a TypedFunction,
     functions: &'a [TypedFunction],
-    function_ids: &'a HashMap<FunctionKey, FunctionId>,
+    function_base: usize,
     function_indices: &'a HashMap<String, usize>,
     oversample_factors: &'a HashMap<String, usize>,
-    proc_instance_oversample_factors: &'a HashMap<String, usize>,
     proc_step_oversample_meta: Option<&'a ProcStepOversampleMeta>,
     structs: &'a HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: &'a AggregateLayoutTable,
     nested_proc_arrays: &'a [TypedNestedProcArray],
-    const_arrays: &'a HashMap<String, (onda_mir::ConstDataId, PrimitiveType, u32)>,
+    const_arrays: &'a ConstDataCatalog<'a>,
     host_config: onda_mir::CompileConfig,
     config: onda_mir::CompileConfig,
     emitted_name: String,
     types: &'a mut Vec<MirType>,
     source_files: &'a mut Vec<SourceFile>,
     log_sites: &'a mut Vec<onda_mir::LogSite>,
-    runtime_globals: Option<&'a RuntimeGlobals>,
+    runtime_globals: Option<&'a RuntimeGlobals<'a>>,
     current_frame: Option<Value>,
     oversampled_inputs: HashMap<String, (LocalId, PrimitiveType)>,
     audio_output_caches: HashMap<String, (LocalId, PrimitiveType)>,
@@ -2913,26 +2477,6 @@ fn function_location(function: &TypedFunction) -> SourceLoc {
 
 fn event_location(event: &TypedEvent) -> SourceLoc {
     event.body.first().map(Stmt::loc).unwrap_or(SourceLoc::ZERO)
-}
-
-fn scalar_type(ty: PrimitiveType) -> ScalarType {
-    match ty {
-        PrimitiveType::F32 => ScalarType::F32,
-        PrimitiveType::F64 => ScalarType::F64,
-        PrimitiveType::I32 => ScalarType::I32,
-        PrimitiveType::I64 => ScalarType::I64,
-        PrimitiveType::Bool => ScalarType::Bool,
-    }
-}
-
-fn source_scalar_type(ty: ScalarType) -> PrimitiveType {
-    match ty {
-        ScalarType::F32 => PrimitiveType::F32,
-        ScalarType::F64 => PrimitiveType::F64,
-        ScalarType::I32 => PrimitiveType::I32,
-        ScalarType::I64 => PrimitiveType::I64,
-        ScalarType::Bool => PrimitiveType::Bool,
-    }
 }
 
 fn integer_range_invariant(
@@ -3514,30 +3058,7 @@ fn scalar_from_f64(value: f64, ty: PrimitiveType) -> ScalarValue {
 }
 
 fn cast_scalar_constant(value: ScalarValue, to: PrimitiveType) -> Option<ScalarValue> {
-    use PrimitiveType::{F32, F64, I32, I64};
-    use ScalarValue::{
-        Bool as BoolValue, F32 as F32Value, F64 as F64Value, I32 as I32Value, I64 as I64Value,
-    };
-
-    match (value, to) {
-        (BoolValue(_), _) | (_, PrimitiveType::Bool) => None,
-        (F32Value(value), F32) => Some(F32Value(value)),
-        (F32Value(value), F64) => Some(F64Value(value as f64)),
-        (F32Value(value), I32) => Some(I32Value(value as i32)),
-        (F32Value(value), I64) => Some(I64Value(value as i64)),
-        (F64Value(value), F32) => Some(F32Value(value as f32)),
-        (F64Value(value), F64) => Some(F64Value(value)),
-        (F64Value(value), I32) => Some(I32Value(value as i32)),
-        (F64Value(value), I64) => Some(I64Value(value as i64)),
-        (I32Value(value), F32) => Some(F32Value(value as f32)),
-        (I32Value(value), F64) => Some(F64Value(value as f64)),
-        (I32Value(value), I32) => Some(I32Value(value)),
-        (I32Value(value), I64) => Some(I64Value(value as i64)),
-        (I64Value(value), F32) => Some(F32Value(value as f32)),
-        (I64Value(value), F64) => Some(F64Value(value as f64)),
-        (I64Value(value), I32) => Some(I32Value(value as i32)),
-        (I64Value(value), I64) => Some(I64Value(value)),
-    }
+    onda_mir::constant_eval::cast(value, scalar_type(to))
 }
 
 fn merge_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
@@ -3547,65 +3068,6 @@ fn merge_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<Primiti
         | (PrimitiveType::I64, PrimitiveType::I32)
         | (PrimitiveType::I64, PrimitiveType::I64) => Some(PrimitiveType::I64),
         _ => None,
-    }
-}
-
-fn map_binary(op: AstBinaryOp) -> MirBinaryOp {
-    match op {
-        AstBinaryOp::Add => MirBinaryOp::Add,
-        AstBinaryOp::Sub => MirBinaryOp::Subtract,
-        AstBinaryOp::Mul => MirBinaryOp::Multiply,
-        AstBinaryOp::Div => MirBinaryOp::Divide,
-        AstBinaryOp::Mod => MirBinaryOp::Remainder,
-        AstBinaryOp::BitAnd => MirBinaryOp::BitAnd,
-        AstBinaryOp::BitOr => MirBinaryOp::BitOr,
-        AstBinaryOp::BitXor => MirBinaryOp::BitXor,
-        AstBinaryOp::ShiftLeft => MirBinaryOp::ShiftLeft,
-        AstBinaryOp::ShiftRight => MirBinaryOp::ShiftRight,
-    }
-}
-
-fn map_compare(op: CmpOp) -> CompareOp {
-    match op {
-        CmpOp::Eq => CompareOp::Equal,
-        CmpOp::Ne => CompareOp::NotEqual,
-        CmpOp::Lt => CompareOp::Less,
-        CmpOp::Le => CompareOp::LessEqual,
-        CmpOp::Gt => CompareOp::Greater,
-        CmpOp::Ge => CompareOp::GreaterEqual,
-    }
-}
-
-fn map_intrinsic(function: BuiltinFn) -> Intrinsic {
-    match function {
-        BuiltinFn::Sin => Intrinsic::Sin,
-        BuiltinFn::Cos => Intrinsic::Cos,
-        BuiltinFn::Tan => Intrinsic::Tan,
-        BuiltinFn::Tanh => Intrinsic::Tanh,
-        BuiltinFn::Atan => Intrinsic::Atan,
-        BuiltinFn::Atan2 => Intrinsic::Atan2,
-        BuiltinFn::Exp => Intrinsic::Exp,
-        BuiltinFn::Log => Intrinsic::Log,
-        BuiltinFn::Sqrt => Intrinsic::Sqrt,
-        BuiltinFn::Pow => Intrinsic::Pow,
-        BuiltinFn::Abs => Intrinsic::Abs,
-        BuiltinFn::Floor => Intrinsic::Floor,
-        BuiltinFn::Ceil => Intrinsic::Ceil,
-        BuiltinFn::Round => Intrinsic::Round,
-        BuiltinFn::Trunc => Intrinsic::Trunc,
-        BuiltinFn::Min => Intrinsic::Min,
-        BuiltinFn::Max => Intrinsic::Max,
-        BuiltinFn::Fma => Intrinsic::Fma,
-        BuiltinFn::RangeClamp => Intrinsic::RangeClamp,
-        BuiltinFn::RangeWrap => Intrinsic::RangeWrap,
-        BuiltinFn::BindingCountClamp
-        | BuiltinFn::BindingRangeClamp
-        | BuiltinFn::BindingRangeInclusiveClamp
-        | BuiltinFn::BindingCountWrap
-        | BuiltinFn::BindingRangeWrap
-        | BuiltinFn::BindingRangeInclusiveWrap => {
-            unreachable!("binding ranges must be canonicalized before MIR lowering")
-        }
     }
 }
 

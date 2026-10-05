@@ -828,8 +828,8 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
     ) -> Result<PreparedCallArgument, MirLoweringError> {
         match kind {
-            TypedFnParam::Scalar { .. } => Ok(PreparedCallArgument::Scalar(
-                self.lower_expr(expression, block)?,
+            TypedFnParam::Scalar { ty } => Ok(PreparedCallArgument::Scalar(
+                self.lower_expr_for_type(expression, ty.unwrap_or(PrimitiveType::F32), block)?,
             )),
             TypedFnParam::Array { elem_ty, .. } => {
                 let access = if readonly_data_params.contains(param_name) {
@@ -869,8 +869,8 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 Ok(PreparedCallArgument::Array(slice))
             }
-            TypedFnParam::Tuple { .. } => Ok(PreparedCallArgument::Tuple(
-                self.lower_value_expr(expression, block)?,
+            TypedFnParam::Tuple { elem_tys } => Ok(PreparedCallArgument::Tuple(
+                self.lower_value_expr_for_types(expression, elem_tys, block)?,
             )),
             TypedFnParam::Struct { struct_name } => {
                 if matches!(expression, Expr::UserCall { .. })
@@ -1136,31 +1136,12 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         };
-        let callee_context = effective_call_context(
-            name,
-            args.first().map(|arg| &arg.expr),
-            CompileContext::from_config(self.config),
-            self.host_config,
-            self.oversample_factors,
-            self.proc_instance_oversample_factors,
-        );
-        let function_key = FunctionKey {
-            function_index,
-            context: callee_context,
-        };
-        let Some(function_id) = self.function_ids.get(&function_key).copied() else {
-            return Err(self.error(
-                format!(
-                    "missing contextual specialization for call to '{name}' at sample rate {:?} and block size {}",
-                    callee_context.config().sample_rate,
-                    callee_context.block_size
-                ),
-                location,
-            ));
-        };
+        // Semantic specialization fixes one body per name; MIR IDs follow
+        // that same dense order after the caller's existing functions.
+        let function_id = FunctionId::new((self.function_base + function_index) as u32);
         let callee = &self.functions[function_index];
         let mut diagnostics = Vec::<Diagnostic>::new();
-        let resolved = resolve_call_args_at(
+        let resolved = bind_call_args_at(
             args,
             &callee.params,
             &callee.param_defaults,
@@ -1180,9 +1161,10 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        let mut ordered_args = Vec::<Expr>::with_capacity(callee.params.len());
+        let mut ordered_args = Vec::with_capacity(callee.params.len());
         for index in 0..callee.params.len() {
             let expression = resolved
+                .by_param
                 .get(index)
                 .and_then(|value| *value)
                 .or_else(|| callee.param_defaults.get(index).and_then(Option::as_ref))
@@ -1195,11 +1177,11 @@ impl<'a> FunctionLowerer<'a> {
                         location,
                     )
                 })?;
-            ordered_args.push(expression.clone());
+            ordered_args.push(expression);
         }
-        let param_kinds = callee.param_kinds.clone();
-        let param_names = callee.params.clone();
-        let readonly_data_params = callee.readonly_data_params.clone();
+        let param_kinds = &callee.param_kinds;
+        let param_names = &callee.params;
+        let readonly_data_params = &callee.readonly_data_params;
         let returns_value = callee.returns_value;
         let data_result = match &callee.return_ty {
             ReturnType::Data(data) => Some(data.clone()),
@@ -1211,67 +1193,17 @@ impl<'a> FunctionLowerer<'a> {
             ReturnType::Data(_) => Vec::new(),
         };
 
-        // Argument binding determines ABI order, but it must not determine
-        // expression evaluation order. Prepare every supplied argument exactly
-        // once in textual source order, then evaluate omitted defaults in
-        // parameter order. The prepared scalar/tuple/slice/indexed-reference
-        // representation can subsequently be marshalled into ABI order without
-        // invoking user code again.
-        let mut source_param_indices = Vec::with_capacity(args.len());
-        let mut next_positional = 0usize;
-        for argument in args {
-            let parameter_index = if let Some(argument_name) = argument.name.as_deref() {
-                param_names
-                    .iter()
-                    .position(|parameter| parameter == argument_name)
-                    .ok_or_else(|| {
-                        self.error(
-                            format!(
-                                "call to '{name}' references unknown named argument '{argument_name}' after semantic analysis"
-                            ),
-                            argument.expr.loc(),
-                        )
-                    })?
-            } else {
-                let index = next_positional;
-                next_positional += 1;
-                index
-            };
-            source_param_indices.push(parameter_index);
-        }
-
+        // Prepare once in evaluation order, then marshal into ABI order.
         let mut prepared_args = std::iter::repeat_with(|| None)
             .take(param_kinds.len())
             .collect::<Vec<Option<PreparedCallArgument>>>();
-        for (argument, parameter_index) in args.iter().zip(source_param_indices) {
-            let prepared = self.prepare_call_argument(
-                name,
-                &param_names[parameter_index],
-                &param_kinds[parameter_index],
-                &readonly_data_params,
-                &argument.expr,
-                block,
-            )?;
-            if prepared_args[parameter_index].replace(prepared).is_some() {
-                return Err(self.error(
-                    format!(
-                        "call to '{name}' prepared parameter '{}' more than once after semantic argument normalization",
-                        param_names[parameter_index]
-                    ),
-                    argument.expr.loc(),
-                ));
-            }
-        }
-        for parameter_index in 0..param_kinds.len() {
-            if prepared_args[parameter_index].is_some() {
-                continue;
-            }
+        for parameter_index in resolved.evaluation_order {
             prepared_args[parameter_index] = Some(self.prepare_call_argument(
                 name,
                 &param_names[parameter_index],
                 &param_kinds[parameter_index],
-                &readonly_data_params,
-                &ordered_args[parameter_index],
+                readonly_data_params,
+                ordered_args[parameter_index],
                 block,
             )?);
         }
@@ -1281,6 +1213,7 @@ impl<'a> FunctionLowerer<'a> {
         let mut indexed_struct_selection = None::<LocalId>;
         for (parameter_index, ((expression, kind), param_name)) in ordered_args
             .iter()
+            .copied()
             .zip(param_kinds.iter())
             .zip(param_names.iter())
             .enumerate()
@@ -1304,8 +1237,12 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     };
-                    let inferred = effective_untyped_assignment_type(expression, Some(value.ty))
-                        .unwrap_or(value.ty);
+                    let inferred = effective_untyped_assignment_type(
+                        expression,
+                        Some(value.ty),
+                        &crate::decl_symbols::DeclaredSymbolMap::new(),
+                    )
+                    .unwrap_or(value.ty);
                     if ty.is_none() && inferred != PrimitiveType::F32 {
                         return Err(self.error(
                             format!(
@@ -1316,7 +1253,12 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     }
-                    if !can_assign_expr_to_type(expression, value.ty, param_ty) {
+                    if !can_assign_expr_to_type(
+                        expression,
+                        value.ty,
+                        param_ty,
+                        &crate::decl_symbols::DeclaredSymbolMap::new(),
+                    ) {
                         return Err(self.error(
                             format!(
                                 "call to '{name}' parameter '{param_name}' cannot implicitly convert {} to {} after semantic analysis",
@@ -2031,7 +1973,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
             let call_args =
-                self.message_publication_arguments(&param_kinds, call_args, block, location)?;
+                self.message_publication_arguments(param_kinds, call_args, block, location)?;
             self.push_statement(
                 block,
                 StatementKind::PublishDelegate {
@@ -2455,29 +2397,25 @@ impl<'a> FunctionLowerer<'a> {
                     ty: PrimitiveType::I32,
                 }));
             }
-            let array_len = self
-                .const_arrays
-                .get(base)
-                .map(|(_, _, len)| *len)
-                .or_else(|| {
-                    self.runtime_globals_for_unbound(base).and_then(|globals| {
-                        globals
-                            .state_arrays
-                            .get(base)
-                            .map(|(_, _, len)| *len)
-                            .or_else(|| globals.array_struct_roots.get(base).map(|(_, len)| *len))
-                            .or_else(|| globals.input_arrays.get(base).map(|(_, _, len)| *len))
-                            .or_else(|| globals.output_arrays.get(base).map(|(_, _, len)| *len))
-                            .or_else(|| {
-                                globals
-                                    .control_output_arrays
-                                    .get(base)
-                                    .map(|(_, _, len)| *len)
-                            })
-                            .or_else(|| globals.param_arrays.get(base).map(|(_, _, len)| *len))
-                            .or_else(|| globals.buffer_arrays.get(base).map(|(_, _, len)| *len))
-                    })
-                });
+            let array_len = self.const_arrays.length(base).or_else(|| {
+                self.runtime_globals_for_unbound(base).and_then(|globals| {
+                    globals
+                        .state_arrays
+                        .get(base)
+                        .map(|(_, _, len)| *len)
+                        .or_else(|| globals.array_struct_roots.get(base).map(|(_, len)| *len))
+                        .or_else(|| globals.input_arrays.get(base).map(|(_, _, len)| *len))
+                        .or_else(|| globals.output_arrays.get(base).map(|(_, _, len)| *len))
+                        .or_else(|| {
+                            globals
+                                .control_output_arrays
+                                .get(base)
+                                .map(|(_, _, len)| *len)
+                        })
+                        .or_else(|| globals.param_arrays.get(base).map(|(_, _, len)| *len))
+                        .or_else(|| globals.buffer_arrays.get(base).map(|(_, _, len)| *len))
+                })
+            });
             if let Some(len) = array_len {
                 if !args.is_empty() {
                     return Err(self.error(
@@ -2734,7 +2672,7 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 )));
             }
-            if let Some((data, ty, _)) = self.const_arrays.get(&base).copied() {
+            if let Some((data, ty, _)) = self.const_arrays.resolve(&base, location)? {
                 return Ok(Some(self.emit_temp(
                     block,
                     ty,
@@ -2786,15 +2724,17 @@ impl<'a> FunctionLowerer<'a> {
                 .runtime_globals
                 .and_then(|globals| globals.param_arrays.get(&base).copied())
             {
-                return Ok(Some(self.emit_temp(
-                    block,
-                    ty,
-                    Rvalue::Load(Place {
-                        base: PlaceBase::Param(param),
-                        projections: vec![Projection::Index { index, bounds }],
-                    }),
-                    location,
-                )));
+                return Ok(Some(
+                    self.emit_temp(
+                        block,
+                        ty,
+                        Rvalue::Load(Place {
+                            base: PlaceBase::Param(param),
+                            projections: vec![Projection::Index { index, bounds }],
+                        }),
+                        location,
+                    ),
+                ));
             }
             if let Some((output, ty, _)) = self
                 .runtime_globals

@@ -2188,6 +2188,60 @@ init:
     }
 
     #[test]
+    fn library_const_diagnostics_keep_array_payloads_lazy_and_scalars_eager() {
+        let dir = mk_temp_dir("library_const_diagnostics");
+        let path = dir.join("library.onda");
+        write_file(&path, "");
+        let mut server = LspServer::default();
+        let cases = [
+            ("const Value: i32 = Missing\n", Some("Missing")),
+            ("const Values: i32[2] = [1]\n", Some("expects 2 elements")),
+            ("const def bad() -> i32:\n  return Missing\n", Some("Missing")),
+            ("const Value: i32 = 1 / 0\ndef helper() -> i32:\n  Local = Value\n  return Local\n", Some("division by zero")),
+            ("const Value: i32[1] = [1 / 0]\ndef helper() -> i32:\n  return Value[0]\n", None),
+            ("const Value: i32 = 1 / 0\ndef helper() -> i32:\n  Local = Value\n  return Local\nsample:\n  out1 = f32(helper())\n", Some("division by zero")),
+            ("const def first(xs: []) -> i32:\n  return xs[0]\nconst Unused: i32 = first([true])\n", Some("cannot assign Bool to I32")),
+            ("const Table: i32[1] = [1 / 0]\nconst def first(xs: []) -> i32:\n  return xs[0]\nconst Unused: i32 = first(Table)\nsample:\n  out1 = 0.0\n", Some("division by zero")),
+            ("const Table: i32[1] = [1 / 0]\nconst def first(xs: []) -> i32:\n  return xs[0]\nconst Unused = [first(Table)]\nsample:\n  out1 = 0.0\n", None),
+            ("const def first(xs: []) -> i32:\n  return xs[0]\nsample:\n  out1 = f32(first([7]))\n", None),
+            ("const Broken: i32[1] = [1 / 0]\nsample:\n  if min(i32(0), i32(1)) > 0:\n    out1 = f32(Broken[0])\n  out1 = 0.0\n", Some("division by zero")),
+        ];
+        for (index, (source, expected)) in cases.into_iter().enumerate() {
+            let normalized = server.session.open_document(
+                &path,
+                onda_daemon::DocumentVersion(index as i32 + 1),
+                source,
+            );
+            let mut writer = Vec::new();
+            server
+                .publish_diagnostics_for_entry(&normalized, &mut writer)
+                .unwrap();
+            let notifications = decode_lsp_messages(writer);
+            let diagnostics = notifications
+                .iter()
+                .filter(|message| message["method"] == json!("textDocument/publishDiagnostics"))
+                .flat_map(|message| {
+                    message["params"]["diagnostics"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            if let Some(expected) = expected {
+                assert!(
+                    diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains(expected))),
+                    "{source}\n{diagnostics:?}"
+                );
+            } else {
+                assert!(diagnostics.is_empty(), "{source}\n{diagnostics:?}");
+            }
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn did_open_runs_diagnostics_even_when_diagnostics_are_deferred() {
         let dir = mk_temp_dir("did_open_deferred_runs_now");
         let main = dir.join("main.onda");

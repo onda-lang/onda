@@ -134,6 +134,24 @@ fn reserved_words_include_singular_event_keyword() {
 }
 
 #[test]
+fn semantic_tokens_highlight_both_const_def_keywords() {
+    let source = "const def twice(x: f32) -> f32:\n  return x * 2.0\n";
+    for tokens in [
+        semantic_tokens_for_document(source, None),
+        semantic_tokens_for_document_source_only(source, None),
+    ] {
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 0, "const"),
+            Some(SEMANTIC_TOKEN_TYPE_KEYWORD),
+        );
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, source, 0, "def"),
+            Some(SEMANTIC_TOKEN_TYPE_KEYWORD),
+        );
+    }
+}
+
+#[test]
 fn semantic_tokens_highlight_print_like_a_function_call() {
     let source = "init:\n  print(1, true)\nsample:\n  out1 = 0.0\n";
     for tokens in [

@@ -1,19 +1,30 @@
 use super::*;
 use crate::processor_lowering::validate_generic_proc_template_forwarded_type_args;
+use std::rc::Rc;
+
+#[cfg(test)]
+mod artifact_visibility;
+mod capture_references;
+mod const_validation;
+mod use_scope;
+use const_validation::validate_template_consts;
+use use_scope::collect_visible_use_candidates;
 
 mod path_helpers;
 use path_helpers::{
     format_call_args_as_type_suffix, looks_like_namespace_ref, namespace_candidates,
     namespace_join, namespace_of_symbol, namespace_parent, namespace_segments_key,
-    split_named_type_base_and_suffix, split_namespace_parent_leaf, strip_type_args_from_path,
+    split_named_type_base_and_suffix, split_namespace_parent_leaf, template_reference_target,
     RewriteNameScope,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct NamespaceTemplateRecord {
     decl: NamespaceDecl,
     captured_artifacts: SemanticConstArtifacts,
     captured_template_consts: HashMap<String, Expr>,
+    const_metadata: ConstCheck,
+    valid: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +51,7 @@ struct UseScope {
 
 #[derive(Debug, Default)]
 struct NamespaceFlattenState {
-    templates: HashMap<String, NamespaceTemplateRecord>,
+    templates: HashMap<String, Rc<NamespaceTemplateRecord>>,
     aliases: HashMap<String, NamespaceAliasRecord>,
     private_aliases: HashMap<(String, String), NamespaceAliasRecord>,
     public_uses: HashMap<String, UseScope>,
@@ -51,14 +62,30 @@ struct NamespaceFlattenState {
     scalar_const_names: HashSet<String>,
     const_symbols: HashSet<String>,
     instantiations: HashMap<String, String>,
-    next_instantiation_id: u64,
+    // Specializations can be reused outside the scope that first emitted them.
+    // Keep their shared declarations here; import only resolved references.
+    specialization_artifacts: SemanticConstArtifacts,
+    in_specialization: bool,
     artifacts: SemanticConstArtifacts,
+}
+
+impl NamespaceFlattenState {
+    fn with_artifacts<T>(
+        &mut self,
+        artifacts: SemanticConstArtifacts,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = std::mem::replace(&mut self.artifacts, artifacts);
+        let result = operation(self);
+        self.artifacts = saved;
+        result
+    }
 }
 
 pub(super) fn flatten_namespaces_for_semantics(
     program: &mut Program,
     options: AnalysisOptions,
-) -> Result<(), Vec<Diagnostic>> {
+) -> Result<SemanticConstArtifacts, Vec<Diagnostic>> {
     let mut state = NamespaceFlattenState::default();
     let mut errors = Vec::<Diagnostic>::new();
     let mut out = Vec::<Block>::new();
@@ -79,7 +106,9 @@ pub(super) fn flatten_namespaces_for_semantics(
 
     if errors.is_empty() {
         program.blocks = out;
-        Ok(())
+        // Include specializations emitted inside scopes that have been restored.
+        state.artifacts.import_all(&state.specialization_artifacts);
+        Ok(state.artifacts)
     } else {
         Err(errors)
     }
@@ -162,7 +191,6 @@ fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
 fn proc_value_name_scope(proc: &ProcessorDef) -> RewriteNameScope {
     let mut scope = RewriteNameScope::default();
     scope.extend(proc.type_params.iter().cloned());
-    scope.extend(proc.consts.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.ins.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.outs.iter().map(|decl| decl.name.clone()));
     scope.extend(proc.params.iter().map(|decl| decl.name.clone()));
@@ -219,6 +247,7 @@ fn register_member_for_item(
 
 fn register_const_def_artifact(
     def: &FunctionDef,
+    options: AnalysisOptions,
     state: &mut NamespaceFlattenState,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -229,14 +258,7 @@ fn register_const_def_artifact(
         ));
         return;
     }
-    state
-        .artifacts
-        .const_def_order
-        .insert(def.name.clone(), state.artifacts.const_def_order.len());
-    state
-        .artifacts
-        .const_defs
-        .insert(def.name.clone(), def.clone());
+    record_const_def_artifact(&mut state.artifacts, def.clone(), options, errors);
 }
 
 fn register_const_decl_artifact(
@@ -252,53 +274,22 @@ fn register_const_decl_artifact(
         ));
         return;
     }
-    let force_const_array = is_const_array_decl(decl)
-        || (decl.ty.is_none()
-            && is_known_const_array_initializer(
-                &decl.expr,
-                &state.artifacts.const_values,
-                &state.artifacts.const_defs,
-            ));
-    if force_const_array {
-        if let Some(array) = coerce_const_array(
-            decl,
-            options,
+    let inferred_const_array = decl.ty.is_none()
+        && is_known_const_array_initializer(
+            &decl.expr,
             &state.artifacts.const_values,
+            &state.artifacts.const_array_infos,
             &state.artifacts.const_defs,
-            &state.artifacts.const_def_order,
+        );
+    if is_const_array_decl(decl) || inferred_const_array {
+        record_const_array_artifact(
+            decl,
+            &mut state.artifacts,
+            ConstContext::Declaration(options),
             errors,
-        ) {
-            record_const_array_artifact(&mut state.artifacts, array);
-        }
+        );
     } else {
-        let inferred_const_array = if decl.ty.is_none() {
-            let mut probe_errors = Vec::new();
-            coerce_const_array(
-                decl,
-                options,
-                &state.artifacts.const_values,
-                &state.artifacts.const_defs,
-                &state.artifacts.const_def_order,
-                &mut probe_errors,
-            )
-        } else {
-            None
-        };
-        if let Some(array) = inferred_const_array {
-            record_const_array_artifact(&mut state.artifacts, array);
-        } else if let Some(value) = coerce_const_scalar(
-            decl,
-            options,
-            &state.artifacts.const_values,
-            &state.artifacts.const_defs,
-            &state.artifacts.const_def_order,
-            errors,
-        ) {
-            state
-                .artifacts
-                .const_values
-                .insert(decl.name.clone(), ConstValue::Scalar(value));
-        }
+        record_const_scalar_artifact(decl, &mut state.artifacts, options, errors);
     }
 }
 
@@ -308,50 +299,21 @@ fn register_artifact_for_block(
     state: &mut NamespaceFlattenState,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match block {
-        Block::Def(def) if def.is_const => register_const_def_artifact(def, state, errors),
-        Block::Const(decl) => register_const_decl_artifact(decl, options, state, errors),
-        _ => {}
-    }
-}
-
-fn merge_generated_namespace_artifacts(
-    target: &mut SemanticConstArtifacts,
-    emitted: SemanticConstArtifacts,
-    namespace: &str,
-) {
-    let prefix = format!("{namespace}::");
-    let mut generated_defs = emitted
-        .const_defs
-        .into_iter()
-        .filter(|(name, _)| name.starts_with(&prefix))
-        .collect::<Vec<_>>();
-    generated_defs.sort_by_key(|(name, _)| {
-        emitted
-            .const_def_order
-            .get(name)
-            .copied()
-            .unwrap_or(usize::MAX)
-    });
-    for (name, def) in generated_defs {
-        target
-            .const_def_order
-            .insert(name.clone(), target.const_def_order.len());
-        target.const_defs.insert(name, def);
-    }
-
-    for (name, value) in emitted.const_values {
-        if name.starts_with(&prefix) && matches!(value, ConstValue::Scalar(_)) {
-            target.const_values.insert(name, value);
+    let name = match block {
+        Block::Def(def) if def.is_const => {
+            register_const_def_artifact(def, options, state, errors);
+            &def.name
         }
-    }
-
-    for array in emitted
-        .const_arrays
-        .into_iter()
-        .filter(|array| array.name.starts_with(&prefix))
-    {
-        record_const_array_artifact(target, array);
+        Block::Const(decl) => {
+            register_const_decl_artifact(decl, options, state, errors);
+            &decl.name
+        }
+        _ => return,
+    };
+    if state.in_specialization {
+        state
+            .specialization_artifacts
+            .import(name, &state.artifacts);
     }
 }
 
@@ -426,15 +388,20 @@ fn process_namespace_decl(
             ));
             return;
         }
-        let validation_scope = namespace_template_validation_scope(&decl, None);
+        let error_start = errors.len();
+        let validation_scope = namespace_template_validation_scope(&decl, &full_ns, None);
         validate_namespace_template_proc_refs(&decl, &full_ns, state, &validation_scope, errors);
+        let (const_metadata, captured_artifacts) =
+            validate_template_consts(&decl, &full_ns, state, None, template_consts, errors);
         state.templates.insert(
             full_ns,
-            NamespaceTemplateRecord {
+            Rc::new(NamespaceTemplateRecord {
                 decl,
-                captured_artifacts: state.artifacts.clone(),
+                captured_artifacts,
                 captured_template_consts: template_consts.clone(),
-            },
+                const_metadata,
+                valid: errors.len() == error_start,
+            }),
         );
     }
 }
@@ -442,13 +409,20 @@ fn process_namespace_decl(
 #[derive(Debug, Clone, Default)]
 struct NamespaceTemplateValidationScope {
     static_names: HashSet<String>,
+    aliases: HashMap<String, String>,
+    member_paths: HashSet<String>,
+    uses: UseScope,
 }
 
 fn namespace_template_validation_scope(
     decl: &NamespaceDecl,
+    namespace: &str,
     parent: Option<&NamespaceTemplateValidationScope>,
 ) -> NamespaceTemplateValidationScope {
     let mut scope = parent.cloned().unwrap_or_default();
+    scope
+        .member_paths
+        .extend(const_validation::template_member_paths(decl, namespace));
     scope
         .static_names
         .extend(decl.params.iter().map(|param| param.name.clone()));
@@ -460,13 +434,29 @@ fn namespace_template_validation_scope(
             NamespaceItem::Def(def) if def.is_const => {
                 scope.static_names.insert(def.name.clone());
             }
+            NamespaceItem::Alias(alias) => {
+                scope
+                    .aliases
+                    .insert(alias.name.clone(), namespace_segments_key(&alias.target));
+            }
+            NamespaceItem::Use(use_decl) => {
+                let target = namespace_segments_key(&use_decl.target);
+                if use_decl.alias.is_none() {
+                    scope
+                        .uses
+                        .namespace(template_reference_target(&target, &scope.aliases));
+                }
+                let name = use_decl
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| split_namespace_parent_leaf(&target).1.to_owned());
+                scope.aliases.insert(name, target);
+            }
             NamespaceItem::Assert(_)
             | NamespaceItem::Struct(_)
             | NamespaceItem::Def(_)
             | NamespaceItem::Proc(_)
-            | NamespaceItem::Namespace(_)
-            | NamespaceItem::Alias(_)
-            | NamespaceItem::Use(_) => {}
+            | NamespaceItem::Namespace(_) => {}
         }
     }
     scope
@@ -489,7 +479,8 @@ fn validate_namespace_template_proc_refs(
             }
             NamespaceItem::Namespace(child) => {
                 let child_namespace = namespace_join(namespace, &child.name);
-                let child_scope = namespace_template_validation_scope(child, Some(scope));
+                let child_scope =
+                    namespace_template_validation_scope(child, &child_namespace, Some(scope));
                 validate_namespace_template_proc_refs(
                     child,
                     &child_namespace,
@@ -499,14 +490,16 @@ fn validate_namespace_template_proc_refs(
                 );
             }
             NamespaceItem::Const(decl) => {
-                validate_template_expr_refs(
-                    &decl.expr,
-                    namespace,
-                    state,
-                    scope,
-                    "namespace template const",
-                    errors,
-                );
+                for expr in std::iter::once(&decl.expr).chain(match &decl.ty {
+                    Some(ConstType::Array { size, .. }) => Some(size),
+                    _ => None,
+                }) {
+                    for node in expr.walk() {
+                        const_validation::validate_const_namespace_arguments(
+                            node, namespace, state, scope, errors,
+                        );
+                    }
+                }
             }
             NamespaceItem::Assert(assert_decl) => {
                 validate_template_static_expr_refs(
@@ -546,7 +539,15 @@ fn validate_namespace_template_proc_refs(
                     );
                 }
             }
+            NamespaceItem::Def(def) if def.is_const => {
+                visit_const_def_references(def, &mut |expr| {
+                    const_validation::validate_const_namespace_arguments(
+                        expr, namespace, state, scope, errors,
+                    );
+                });
+            }
             NamespaceItem::Def(def) => {
+                crate::callable_validation::validate_function_param_names(def, &def.name, errors);
                 let mut def_scope = scope.clone();
                 def_scope
                     .static_names
@@ -597,9 +598,6 @@ fn validate_template_proc_refs(
     proc_scope
         .static_names
         .extend(proc.type_params.iter().cloned());
-    proc_scope
-        .static_names
-        .extend(proc.consts.iter().map(|decl| decl.name.clone()));
 
     for decl in &proc.ins {
         validate_template_optional_expr_refs(
@@ -644,16 +642,6 @@ fn validate_template_proc_refs(
             state,
             &proc_scope,
             "processor parameter range",
-            errors,
-        );
-    }
-    for decl in &proc.consts {
-        validate_template_expr_refs(
-            &decl.expr,
-            current_ns,
-            state,
-            &proc_scope,
-            "processor const",
             errors,
         );
     }
@@ -804,20 +792,6 @@ fn validate_template_stmt_refs(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Const { decl, .. } => {
-            if let Some(ConstType::Array { size, .. }) = &decl.ty {
-                validate_template_static_expr_refs(
-                    size,
-                    current_ns,
-                    state,
-                    scope,
-                    &format!("{context} const array size"),
-                    errors,
-                );
-            }
-            validate_template_expr_refs(&decl.expr, current_ns, state, scope, context, errors);
-            scope.static_names.insert(decl.name.clone());
-        }
         Stmt::Assign {
             target,
             generic_decl_ty,
@@ -1113,7 +1087,7 @@ fn validate_template_static_expr_refs(
                     expr.loc().span(),
                     errors,
                 );
-            } else if !static_name_known(name, current_ns, state, scope) {
+            } else if !static_name_known(name, expr.loc(), current_ns, state, scope) {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown constant '{name}'"),
                     expr.loc(),
@@ -1238,15 +1212,10 @@ fn validate_template_namespace_ref_args(
     span: Span,
     errors: &mut Vec<Diagnostic>,
 ) {
-    for segment in segments {
-        if let Some(args) = &segment.args {
-            for arg in args {
-                validate_template_static_expr_refs(
-                    &arg.expr, current_ns, state, scope, context, errors,
-                );
-            }
-        }
-    }
+    const_validation::validate_namespace_arguments(
+        segments, current_ns, state, scope, context, errors,
+    );
+
     let clean = segments
         .iter()
         .map(|segment| segment.name.clone())
@@ -1272,19 +1241,16 @@ fn validate_template_namespace_ref_exists(
         Ok(segments) => segments,
         Err(_) => return,
     };
-    for segment in &segments {
-        if let Some(args) = &segment.args {
-            for arg in args {
-                validate_template_static_expr_refs(
-                    &arg.expr, current_ns, state, scope, context, errors,
-                );
-            }
-        }
-    }
+    const_validation::validate_namespace_arguments(
+        &segments, current_ns, state, scope, context, errors,
+    );
 
-    let clean = strip_type_args_from_path(name);
+    let clean = template_reference_target(name, &scope.aliases);
     for candidate in namespace_ref_candidates(&clean, current_ns, state) {
-        if template_or_member_path_exists(&candidate, state) {
+        if scope.member_paths.contains(&candidate)
+            || template_or_member_path_exists(&candidate, state)
+            || has_visible_namespace_prefix(&candidate, state)
+        {
             return;
         }
     }
@@ -1425,6 +1391,7 @@ fn existing_template_namespace_parent(
 
 fn static_name_known(
     name: &str,
+    loc: SourceLoc,
     current_ns: &str,
     state: &NamespaceFlattenState,
     scope: &NamespaceTemplateValidationScope,
@@ -1436,18 +1403,27 @@ fn static_name_known(
     {
         return true;
     }
-    for candidate_ns in namespace_candidates(current_ns) {
-        let candidate = namespace_join(&candidate_ns, name);
-        if matches!(
-            state.artifacts.const_values.get(&candidate),
-            Some(ConstValue::Scalar(_))
-        ) || state.artifacts.const_defs.contains_key(&candidate)
-            || state.scalar_const_names.contains(&candidate)
-        {
-            return true;
-        }
+    let target = template_reference_target(name, &scope.aliases);
+    let exists = |candidate: &str| {
+        namespace_ref_candidates(candidate, current_ns, state)
+            .iter()
+            .any(|candidate| {
+                state.artifacts.const_values.contains_key(candidate)
+                    || state.artifacts.const_defs.contains_key(candidate)
+                    || state.scalar_const_names.contains(candidate)
+                    || scope.member_paths.contains(candidate)
+                    || const_validation::template_const_metadata(candidate, state).is_some()
+            })
+    };
+    if exists(&target) {
+        return true;
     }
-    false
+    let mut candidates = Vec::new();
+    scope
+        .uses
+        .collect_candidates(&target, exists, &mut candidates);
+    collect_visible_use_candidates(&target, current_ns, loc, state, exists, &mut candidates);
+    !candidates.is_empty()
 }
 
 fn emit_namespace_items(
@@ -1766,11 +1742,7 @@ fn register_use_symbol(
     target: String,
     state: &mut NamespaceFlattenState,
 ) {
-    use_scope_mut(state, current_ns, loc, public)
-        .symbols
-        .entry(leaf.to_owned())
-        .or_default()
-        .push(UseBinding { target });
+    use_scope_mut(state, current_ns, loc, public).symbol(leaf, target);
 }
 
 fn register_use_namespace(
@@ -1780,14 +1752,7 @@ fn register_use_namespace(
     target: String,
     state: &mut NamespaceFlattenState,
 ) {
-    let scope = use_scope_mut(state, current_ns, loc, public);
-    if !scope
-        .namespaces
-        .iter()
-        .any(|binding| binding.target == target)
-    {
-        scope.namespaces.push(NamespaceUseBinding { target });
-    }
+    use_scope_mut(state, current_ns, loc, public).namespace(target);
 }
 
 fn use_scope_mut<'a>(
@@ -1854,7 +1819,9 @@ fn qualify_local_namespace_member_name(
     let (base, suffix) = split_named_type_base_and_suffix(name);
     for ns in namespace_candidates(current_ns) {
         let candidate = namespace_join(&ns, base);
-        if state.members.contains(&candidate) {
+        if state.members.contains(&candidate)
+            && (!state.const_symbols.contains(&candidate) || state.artifacts.contains(&candidate))
+        {
             return Some(format!("{candidate}{suffix}"));
         }
     }
@@ -1864,7 +1831,7 @@ fn qualify_local_namespace_member_name(
 fn resolve_visible_unqualified_member_name(
     name: &str,
     current_ns: &str,
-    state: &NamespaceFlattenState,
+    state: &mut NamespaceFlattenState,
     loc: impl Into<SourceLoc>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
@@ -1880,21 +1847,30 @@ fn resolve_visible_unqualified_member_name(
         candidates.push(local);
     }
 
-    let file = loc.file().unwrap_or_default();
-    for ns in namespace_candidates(current_ns) {
-        if let Some(scope) = state.public_uses.get(&ns) {
-            collect_use_scope_candidates(base, scope, state, &mut candidates);
-        }
-        if let Some(scope) = state.private_uses.get(&(ns.clone(), file.clone())) {
-            collect_use_scope_candidates(base, scope, state, &mut candidates);
-        }
-    }
+    collect_visible_use_candidates(
+        base,
+        current_ns,
+        loc,
+        state,
+        |name| {
+            state.members.contains(name)
+                && (!state.const_symbols.contains(name)
+                    || state.artifacts.contains(name)
+                    || state.specialization_artifacts.contains(name))
+        },
+        &mut candidates,
+    );
 
     candidates.sort();
     candidates.dedup();
     match candidates.as_slice() {
         [] => None,
-        [only] => Some(format!("{only}{suffix}")),
+        [only] => {
+            state
+                .artifacts
+                .import(only, &state.specialization_artifacts);
+            Some(format!("{only}{suffix}"))
+        }
         many => {
             errors.push(Diagnostic::semantic_span(
                 format!(
@@ -1930,15 +1906,14 @@ fn resolve_visible_unqualified_const_name(
         }
     }
 
-    let file = loc.file().unwrap_or_default();
-    for ns in namespace_candidates(current_ns) {
-        if let Some(scope) = state.public_uses.get(&ns) {
-            collect_use_scope_const_candidates(base, scope, state, &mut candidates);
-        }
-        if let Some(scope) = state.private_uses.get(&(ns.clone(), file.clone())) {
-            collect_use_scope_const_candidates(base, scope, state, &mut candidates);
-        }
-    }
+    collect_visible_use_candidates(
+        base,
+        current_ns,
+        loc,
+        state,
+        |name| is_const_member_name(name, state),
+        &mut candidates,
+    );
 
     candidates.sort();
     candidates.dedup();
@@ -1958,47 +1933,8 @@ fn resolve_visible_unqualified_const_name(
     }
 }
 
-fn collect_use_scope_const_candidates(
-    base: &str,
-    scope: &UseScope,
-    state: &NamespaceFlattenState,
-    candidates: &mut Vec<String>,
-) {
-    if let Some(bindings) = scope.symbols.get(base) {
-        candidates.extend(
-            bindings
-                .iter()
-                .filter(|binding| is_const_member_name(&binding.target, state))
-                .map(|binding| binding.target.clone()),
-        );
-    }
-    for binding in &scope.namespaces {
-        let target = namespace_join(&binding.target, base);
-        if is_const_member_name(&target, state) {
-            candidates.push(target);
-        }
-    }
-}
-
 fn is_const_member_name(name: &str, state: &NamespaceFlattenState) -> bool {
     state.scalar_const_names.contains(name) || state.const_array_names.contains(name)
-}
-
-fn collect_use_scope_candidates(
-    base: &str,
-    scope: &UseScope,
-    state: &NamespaceFlattenState,
-    candidates: &mut Vec<String>,
-) {
-    if let Some(bindings) = scope.symbols.get(base) {
-        candidates.extend(bindings.iter().map(|binding| binding.target.clone()));
-    }
-    for binding in &scope.namespaces {
-        let target = namespace_join(&binding.target, base);
-        if state.members.contains(&target) {
-            candidates.push(target);
-        }
-    }
 }
 
 fn resolve_visible_unqualified_namespace_root(
@@ -2441,6 +2377,9 @@ fn resolve_namespace_segments_internal(
             }
         }
     }
+    state
+        .artifacts
+        .import(&path, &state.specialization_artifacts);
     Some(path)
 }
 
@@ -2456,8 +2395,9 @@ fn instantiate_namespace_template(
     errors: &mut Vec<Diagnostic>,
     use_site_span: Span,
 ) -> Option<String> {
-    let template = match state.templates.get(full_template_name).cloned() {
-        Some(template) => template,
+    let template = match state.templates.get(full_template_name) {
+        Some(template) if template.valid => template.clone(),
+        Some(_) => return None,
         None => {
             errors.push(Diagnostic::semantic_span(
                 format!("unknown namespace template '{full_template_name}'"),
@@ -2503,19 +2443,22 @@ fn instantiate_namespace_template(
 
     let mut effective_template_consts = template.captured_template_consts.clone();
     let template_parent_ns = namespace_parent(full_template_name).unwrap_or("");
-    let mut param_values = Vec::<(String, TypedConstValue, Span)>::new();
+    let mut param_values = Vec::<TypedConstValue>::new();
     let mut pos_idx = 0usize;
     for param in &template.decl.params {
-        let (mut value_expr, value_span, use_captured_artifacts) =
-            if let Some((expr, span)) = named.remove(&param.name) {
-                (expr, span, false)
+        let (mut value_expr, use_captured_artifacts) =
+            if let Some((expr, _)) = named.remove(&param.name) {
+                (expr, false)
             } else if let Some(pos_expr) = positional.get(pos_idx) {
                 pos_idx += 1;
-                (pos_expr.clone(), pos_expr.loc().span(), false)
+                (pos_expr.clone(), false)
             } else {
-                let mut default = param.default.clone();
+                (param.default.clone(), true)
+            };
+        let mut evaluate = |state: &mut NamespaceFlattenState| {
+            if use_captured_artifacts {
                 rewrite_expr(
-                    &mut default,
+                    &mut value_expr,
                     template_parent_ns,
                     &effective_template_consts,
                     options,
@@ -2523,40 +2466,28 @@ fn instantiate_namespace_template(
                     generated,
                     errors,
                 );
-                let span = default.loc().span();
-                (default, span, true)
-            };
-        if !use_captured_artifacts {
-            rewrite_expr(
-                &mut value_expr,
-                current_ns,
-                template_consts,
+            }
+            eval_namespace_template_arg(
+                &value_expr,
+                &state.artifacts,
                 options,
-                state,
-                generated,
+                &format!(
+                    "namespace template '{}' argument '{}'",
+                    full_template_name, param.name
+                ),
                 errors,
-            );
-        }
-        let eval_artifacts = if use_captured_artifacts {
-            &template.captured_artifacts
-        } else {
-            &state.artifacts
+            )
         };
-        let value = eval_namespace_template_arg(
-            &value_expr,
-            eval_artifacts,
-            options,
-            &format!(
-                "namespace template '{}' argument '{}'",
-                full_template_name, param.name
-            ),
-            errors,
-        )?;
+        let value = if use_captured_artifacts {
+            state.with_artifacts(template.captured_artifacts.clone(), evaluate)
+        } else {
+            evaluate(state)
+        }?;
         effective_template_consts.insert(
             param.name.clone(),
             typed_const_expr_with_loc(value, value_expr.loc()),
         );
-        param_values.push((param.name.clone(), value, value_span));
+        param_values.push(value);
     }
 
     if pos_idx < positional.len() {
@@ -2596,35 +2527,33 @@ fn instantiate_namespace_template(
     let key = {
         let values = param_values
             .iter()
-            .map(|(_, value, _)| typed_const_value_key(*value))
+            .map(|value| typed_const_value_key(*value))
             .collect::<Vec<_>>()
             .join(",");
         format!("{full_template_name}[{values}]")
     };
-    if let Some(existing) = state.instantiations.get(&key) {
-        return Some(existing.clone());
+    if let Some(namespace) = state.instantiations.get(&key) {
+        return Some(namespace.clone());
     }
 
     let (parent, leaf) = split_namespace_parent_leaf(full_template_name);
-    let concrete_leaf = format!("{leaf}__nsinst{}", state.next_instantiation_id);
-    state.next_instantiation_id += 1;
+    let index = state.instantiations.len();
+    let concrete_leaf = format!("{leaf}__nsinst{index}");
     let concrete_ns = namespace_join(parent, &concrete_leaf);
     state.instantiations.insert(key, concrete_ns.clone());
-
-    let saved_artifacts =
-        std::mem::replace(&mut state.artifacts, template.captured_artifacts.clone());
-    emit_namespace_items(
-        &template.decl.items,
-        &concrete_ns,
-        &effective_template_consts,
-        options,
-        state,
-        generated,
-        errors,
-    );
-    let emitted_artifacts = std::mem::replace(&mut state.artifacts, saved_artifacts);
-    merge_generated_namespace_artifacts(&mut state.artifacts, emitted_artifacts, &concrete_ns);
-
+    let saved_specialization = std::mem::replace(&mut state.in_specialization, true);
+    state.with_artifacts(template.captured_artifacts.clone(), |state| {
+        emit_namespace_items(
+            &template.decl.items,
+            &concrete_ns,
+            &effective_template_consts,
+            options,
+            state,
+            generated,
+            errors,
+        );
+    });
+    state.in_specialization = saved_specialization;
     Some(concrete_ns)
 }
 
@@ -2646,7 +2575,7 @@ fn eval_namespace_template_arg(
         const_def_registry(artifacts),
         options,
         context,
-        &mut Vec::new(),
+        &[],
         errors,
     )
 }
@@ -3018,28 +2947,6 @@ fn rewrite_block_namespace_refs(
         Block::Proc(p) => {
             let proc_template_consts = template_consts.clone();
             let proc_scope = proc_value_name_scope(p);
-            for decl in &mut p.consts {
-                if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
-                    rewrite_expr(
-                        size,
-                        current_ns,
-                        &proc_template_consts,
-                        options,
-                        state,
-                        generated,
-                        errors,
-                    );
-                }
-                rewrite_expr(
-                    &mut decl.expr,
-                    current_ns,
-                    &proc_template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                );
-            }
             rewrite_deferred_proc_port_count(
                 &mut p.ins_deferred_count,
                 &mut p.ins_deferred_default_ty,
@@ -3629,9 +3536,12 @@ fn rewrite_param_decls(
             errors,
             decl.ty_loc.as_ref().or(decl.loc.as_ref()),
         );
-        for expr in [&mut decl.control.curve, &mut decl.control.step]
-            .into_iter()
-            .flatten()
+        for expr in [
+            &mut decl.control.curve,
+            &mut decl.control.step,
+        ]
+        .into_iter()
+        .flatten()
         {
             rewrite_expr(
                 expr,
@@ -3825,6 +3735,7 @@ fn rewrite_function_def_with_scope(
         );
     }
     let mut local_scope = parent_scope.clone();
+    local_scope.fresh_assignments_are_local = def.is_const;
     local_scope.extend(def.type_params.iter().cloned());
     local_scope.extend(def.params.iter().map(|param| param.name.clone()));
     rewrite_stmts_scoped(
@@ -4336,8 +4247,18 @@ fn rewrite_stmt_scoped(
     local_scope: &mut RewriteNameScope,
 ) {
     match stmt {
-        Stmt::Const { decl, .. } => {
-            if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
+        Stmt::Assign {
+            target,
+            decl_ty,
+            generic_decl_ty,
+            typed_decl_ty_loc,
+            target_loc,
+            expr,
+            ..
+        } => {
+            if let Some(DeclType::Array { size, .. } | DeclType::ArrayGeneric { size, .. }) =
+                decl_ty
+            {
                 rewrite_expr_scoped(
                     size,
                     current_ns,
@@ -4349,86 +4270,47 @@ fn rewrite_stmt_scoped(
                     local_scope,
                 );
             }
-            rewrite_expr_scoped(
-                &mut decl.expr,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                local_scope,
-            );
-            local_scope.insert_plain(decl.name.clone());
-        }
-        Stmt::Assign {
-            target,
-            generic_decl_ty,
-            typed_decl_ty_loc,
-            target_loc,
-            expr,
-            ..
-        } => {
-            match target {
-                AssignTarget::Var(name) => {
-                    if let Some(qualified) = resolve_visible_unqualified_const_name(
+            let target_name = match target {
+                AssignTarget::Var(name)
+                    if local_scope.fresh_assignments_are_local && !name.contains("::") =>
+                {
+                    None
+                }
+                AssignTarget::Var(name)
+                | AssignTarget::Index { base: name, .. }
+                | AssignTarget::IndexedMember { base: name, .. }
+                | AssignTarget::Slice { base: name, .. } => Some(name),
+                AssignTarget::Tuple(_) => None,
+            };
+            if let Some(name) = target_name.filter(|name| {
+                !local_scope.fresh_assignments_are_local || !local_scope.contains_value_name(name)
+            }) {
+                if let Some(qualified) = resolve_visible_unqualified_const_name(
+                    name,
+                    current_ns,
+                    state,
+                    target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
+                    errors,
+                ) {
+                    *name = qualified;
+                } else if looks_like_namespace_ref(name) {
+                    if let Some(resolved) = resolve_namespace_symbol_name(
                         name,
                         current_ns,
+                        template_consts,
+                        options,
                         state,
-                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
+                        generated,
                         errors,
+                        target_loc
+                            .as_ref()
+                            .map(SourceLoc::from)
+                            .unwrap_or_default()
+                            .span(),
                     ) {
-                        *name = qualified;
-                    } else if looks_like_namespace_ref(name) {
-                        if let Some(resolved) = resolve_namespace_symbol_name(
-                            name,
-                            current_ns,
-                            template_consts,
-                            options,
-                            state,
-                            generated,
-                            errors,
-                            target_loc
-                                .as_ref()
-                                .map(SourceLoc::from)
-                                .unwrap_or_default()
-                                .span(),
-                        ) {
-                            *name = resolved;
-                        }
+                        *name = resolved;
                     }
                 }
-                AssignTarget::Index { base, .. }
-                | AssignTarget::IndexedMember { base, .. }
-                | AssignTarget::Slice { base, .. } => {
-                    if let Some(qualified) = resolve_visible_unqualified_const_name(
-                        base,
-                        current_ns,
-                        state,
-                        target_loc.as_ref().map(SourceLoc::from).unwrap_or_default(),
-                        errors,
-                    ) {
-                        *base = qualified;
-                    } else if looks_like_namespace_ref(base) {
-                        if let Some(resolved) = resolve_namespace_symbol_name(
-                            base,
-                            current_ns,
-                            template_consts,
-                            options,
-                            state,
-                            generated,
-                            errors,
-                            target_loc
-                                .as_ref()
-                                .map(SourceLoc::from)
-                                .unwrap_or_default()
-                                .span(),
-                        ) {
-                            *base = resolved;
-                        }
-                    }
-                }
-                AssignTarget::Tuple(_) => {}
             }
             target.visit_selectors_mut(|selector| {
                 rewrite_expr_scoped(
@@ -4658,9 +4540,11 @@ fn rewrite_expr_scoped(
     expr.visit_mut(|expr| {
         let use_site_loc = expr.loc();
         if let Expr::Var { name, .. } = expr {
-            if let Some(value) = template_consts.get(name).cloned() {
-                *expr = value.with_loc(use_site_loc);
-                return false;
+            if !local_scope.contains_value_name(name) {
+                if let Some(value) = template_consts.get(name).cloned() {
+                    *expr = value.with_loc(use_site_loc);
+                    return false;
+                }
             }
         }
 

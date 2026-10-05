@@ -1303,9 +1303,6 @@ impl CompletionIndex {
         for type_param in &proc_def.type_params {
             items.push(type_param_item(type_param));
         }
-        for decl in &proc_def.consts {
-            items.push(const_item(&decl.name));
-        }
         for name in proc_port_names(&proc_def.ins, proc_def.ins_deferred_count.as_ref(), "in") {
             items.push(port_item(&name, "proc input"));
         }
@@ -1866,11 +1863,6 @@ impl CompletionIndex {
         let mut items = Vec::new();
         for stmt in stmts {
             match stmt {
-                Stmt::Const { loc, decl, .. } => {
-                    if self.span_start_is_visible(*loc) {
-                        push_completion_item_once(&mut items, const_item(&decl.name));
-                    }
-                }
                 Stmt::If {
                     loc,
                     then_branch,
@@ -1947,8 +1939,7 @@ impl CompletionIndex {
                         self.collect_stmt_scope(Some(parent), span, body);
                     }
                 }
-                Stmt::Const { .. }
-                | Stmt::Assign { .. }
+                Stmt::Assign { .. }
                 | Stmt::Expr { .. }
                 | Stmt::Print { .. }
                 | Stmt::Return { .. }
@@ -2061,8 +2052,7 @@ impl CompletionIndex {
                     }
                 }
                 Stmt::For { .. } | Stmt::While { .. } => {}
-                Stmt::Const { .. }
-                | Stmt::Expr { .. }
+                Stmt::Expr { .. }
                 | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
@@ -2918,11 +2908,6 @@ impl CompletionIndex {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Const { loc, decl, .. } => {
-                    if self.span_start_is_visible(*loc) {
-                        push_completion_item_once(out, const_item(&decl.name));
-                    }
-                }
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
@@ -3664,9 +3649,6 @@ fn span_for_init_scope(init: &InitBlock) -> Span {
 
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     let mut span = proc_def.loc;
-    for decl in &proc_def.consts {
-        span = Span::spanning(span, decl.loc);
-    }
     for decl in &proc_def.ins {
         span = Span::spanning(span, decl.loc);
     }

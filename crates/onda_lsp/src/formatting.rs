@@ -700,16 +700,6 @@ fn format_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
 
 fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix: &str) {
     match stmt {
-        Stmt::Const { decl, .. } => {
-            let mut text = format!("const {}", decl.name);
-            if let Some(ty) = &decl.ty {
-                text.push_str(": ");
-                text.push_str(&format_const_type(ty));
-            }
-            text.push_str(" = ");
-            text.push_str(&format_expr(&decl.expr));
-            push_line(out, indent, &text);
-        }
         Stmt::Assign {
             target,
             decl_ty,

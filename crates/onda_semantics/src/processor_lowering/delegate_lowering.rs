@@ -323,19 +323,6 @@ fn replace_when_bindings_stmt(
                 replace_when_bindings_stmt(nested, replacements, errors);
             }
         }
-        Stmt::Const { loc, decl } => {
-            if replacements.contains_key(&decl.name) {
-                push_semantic(
-                    DiagCtx::new(*loc),
-                    errors,
-                    format!(
-                        "const '{}' conflicts with a when payload binding",
-                        decl.name
-                    ),
-                );
-            }
-            replace_when_bindings_expr(&mut decl.expr, replacements);
-        }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
@@ -483,9 +470,6 @@ fn collect_source_calls(stmts: &[Stmt]) -> Vec<SourceCall> {
     fn visit(stmts: &[Stmt], calls: &mut Vec<SourceCall>) {
         for stmt in stmts {
             match stmt {
-                Stmt::Const { decl, .. } => {
-                    collect_source_calls_expr(&decl.expr, calls);
-                }
                 Stmt::Assign { target, expr, .. } => {
                     target.visit_selectors(|selector| collect_source_calls_expr(selector, calls));
                     collect_source_calls_expr(expr, calls);
@@ -578,11 +562,6 @@ fn collect_source_calls_with_aliases(
 
         for stmt in stmts {
             let flow = match stmt {
-                Stmt::Const { decl, .. } => {
-                    collect_expr(&decl.expr, aliases, calls);
-                    aliases.remove(&decl.name);
-                    StatementFlow::Continues
-                }
                 Stmt::Assign { target, expr, .. } => {
                     target.visit_selectors(|selector| collect_expr(selector, aliases, calls));
                     collect_expr(expr, aliases, calls);
@@ -769,9 +748,6 @@ fn validate_delegate_uses(
     fn visit(stmts: &[Stmt], names: &HashSet<String>, errors: &mut Vec<Diagnostic>) {
         for stmt in stmts {
             match stmt {
-                Stmt::Const { decl, .. } => {
-                    collect_delegate_value_uses_expr(&decl.expr, names, false, errors);
-                }
                 Stmt::Assign { target, expr, .. } => {
                     target.visit_selectors(|selector| {
                         collect_delegate_value_uses_expr(selector, names, false, errors)
@@ -1802,7 +1778,6 @@ fn validate_delegate_member_names(program: &Program, errors: &mut Vec<Diagnostic
             .chain(proc.outs.iter().map(|decl| (&decl.name, "output")))
             .chain(proc.params.iter().map(|decl| (&decl.name, "parameter")))
             .chain(proc.buffers.iter().map(|decl| (&decl.name, "buffer")))
-            .chain(proc.consts.iter().map(|decl| (&decl.name, "constant")))
         {
             members.insert(name.clone(), kind);
         }
@@ -2110,6 +2085,8 @@ fn bind_top_validation_surfaces(
     program: &Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
 ) {
     let mut ignored_errors = Vec::new();
     for (ports, kind) in program.blocks.iter().filter_map(|block| match block {
@@ -2139,7 +2116,7 @@ fn bind_top_validation_surfaces(
     }) {
         bind_source_buffer_types(env, buffers, options);
     }
-    bind_validation_arrays(env, const_arrays);
+    env.bind_constants(const_scalars, const_arrays, const_scope, options);
 }
 
 fn bind_validation_arrays(
@@ -2159,6 +2136,8 @@ fn bind_proc_validation_surfaces(
     proc: &ProcessorDef,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
 ) {
     let mut ignored_errors = Vec::new();
     let proc_options = proc_runtime_analysis_options(
@@ -2182,17 +2161,29 @@ fn bind_proc_validation_surfaces(
         },
     );
     let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-    let (_, in_types, _, in_arrays) =
-        expand_proc_port_specs(&proc.name, &ins, "input", proc_options, &mut ignored_errors);
+    let (_, in_types, _, in_arrays) = expand_proc_port_specs(
+        &proc.name,
+        &ins,
+        "input",
+        proc_options,
+        const_arrays,
+        &mut ignored_errors,
+    );
     let (_, out_types, _, out_arrays) = expand_proc_port_specs(
         &proc.name,
         &outs,
         "output",
         proc_options,
+        const_arrays,
         &mut ignored_errors,
     );
-    let (param_specs, _) =
-        expand_proc_param_specs(&proc.name, &params, proc_options, &mut ignored_errors);
+    let (param_specs, _) = expand_proc_param_specs(
+        &proc.name,
+        &params,
+        proc_options,
+        const_arrays,
+        &mut ignored_errors,
+    );
 
     env.scalar_types
         .extend(in_types.iter().map(|(name, ty)| (name.clone(), *ty)));
@@ -2207,7 +2198,7 @@ fn bind_proc_validation_surfaces(
     bind_validation_arrays(env, &array_infos_from_slot_map(&out_arrays, &out_types));
     bind_validation_arrays(env, &array_infos_from_param_specs(&param_specs));
     bind_source_buffer_types(env, &proc.buffers, proc_options);
-    bind_validation_arrays(env, const_arrays);
+    env.bind_constants(const_scalars, const_arrays, const_scope, proc_options);
 }
 
 fn rewrite_processor_source_overload_scopes(
@@ -2252,6 +2243,8 @@ pub(super) fn resolve_processor_source_overloads(
     proc: &mut ProcessorDef,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     top_return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
@@ -2259,7 +2252,14 @@ pub(super) fn resolve_processor_source_overloads(
     callable_symbols: &HashSet<String>,
 ) {
     let mut state_env = crate::def_semantics::CallTypeEnv::default();
-    bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+    bind_proc_validation_surfaces(
+        &mut state_env,
+        proc,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+    );
 
     let provisional_local_returns =
         source_overload_return_types(&proc.local_defs, &state_env, struct_defs);
@@ -2294,13 +2294,21 @@ pub(super) fn resolve_processor_source_overloads(
     loop {
         crate::proc_call_rewrite::desugar_processor_instance_method_calls(
             proc,
+            &state_env,
             &return_types,
             struct_defs,
             struct_method_symbols,
             callable_symbols,
         );
         let mut state_env = crate::def_semantics::CallTypeEnv::default();
-        bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+        bind_proc_validation_surfaces(
+            &mut state_env,
+            proc,
+            options,
+            const_arrays,
+            const_scalars,
+            const_scope,
+        );
         if rewrite_processor_source_overload_scopes(
             proc,
             &mut state_env,
@@ -2321,6 +2329,8 @@ pub(super) fn resolve_source_overloads(
     program: &mut Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
 ) {
     let raw_struct_defs = program
         .blocks
@@ -2375,7 +2385,14 @@ pub(super) fn resolve_source_overloads(
     let (top_overloads, _) = crate::def_semantics::prepare_function_overloads(&mut top_defs);
 
     let mut top_state_env = crate::def_semantics::CallTypeEnv::default();
-    bind_top_validation_surfaces(&mut top_state_env, program, options, const_arrays);
+    bind_top_validation_surfaces(
+        &mut top_state_env,
+        program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+    );
     let provisional_return_types =
         source_overload_return_types(&top_defs, &top_state_env, &struct_defs);
     if let Some(Block::Init(init)) = program
@@ -2511,7 +2528,14 @@ pub(super) fn resolve_source_overloads(
         overloads.extend(local_overloads);
 
         let mut state_env = crate::def_semantics::CallTypeEnv::default();
-        bind_proc_validation_surfaces(&mut state_env, proc, options, const_arrays);
+        bind_proc_validation_surfaces(
+            &mut state_env,
+            proc,
+            options,
+            const_arrays,
+            const_scalars,
+            const_scope,
+        );
         let provisional_return_types =
             source_overload_return_types(&proc.local_defs, &state_env, &struct_defs);
         rewrite_source_overload_stmts(
@@ -2618,7 +2642,6 @@ fn delegate_validation_program(program: &Program) -> Program {
                 | Block::Graph(_) => None,
                 Block::Proc(proc) => {
                     let mut proc = proc.clone();
-                    proc.consts.clear();
                     proc.graph = None;
                     Some(Block::Proc(proc))
                 }
@@ -2637,6 +2660,8 @@ pub(super) fn validate_delegate_source_model(
     program: &Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let uses_delegates = program.blocks.iter().any(|block| match block {
@@ -2652,7 +2677,13 @@ pub(super) fn validate_delegate_source_model(
     validate_delegate_member_names(program, errors);
     let resolved_program = delegate_validation_has_overloads(program).then(|| {
         let mut resolved = delegate_validation_program(program);
-        resolve_source_overloads(&mut resolved, options, const_arrays);
+        resolve_source_overloads(
+            &mut resolved,
+            options,
+            const_arrays,
+            const_scalars,
+            const_scope,
+        );
         resolved
     });
     let program = resolved_program.as_ref().unwrap_or(program);

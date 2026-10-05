@@ -218,7 +218,6 @@ pub(super) fn qualify_stmt_namespaced_symbols(
     context: &str,
 ) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             expr,

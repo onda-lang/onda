@@ -3244,7 +3244,7 @@ sample:
 }
 
 #[test]
-fn parses_and_rewrites_const_decls_in_top_level_namespace_and_local_scopes() {
+fn parses_root_and_namespace_consts_used_by_local_variables() {
     let src = r#"
 const N = 4
 
@@ -3258,7 +3258,7 @@ events {
   load(values: f32[N]) {}
 }
 sample {
-  const X = N
+  X = N
   out1 = f32(X) + NS::value()
 }
 "#;
@@ -3330,19 +3330,9 @@ sample {
     assert_eq!(
         sample.body.len(),
         2,
-        "local const should be retained for semantics"
+        "local assignments should be retained"
     );
-    assert!(matches!(
-        &sample.body[0],
-        Stmt::Const {
-            decl: ConstDecl {
-                name,
-                expr: Expr::Var { name: expr_name, .. },
-                ..
-            },
-            ..
-        } if name == "X" && expr_name == "N"
-    ));
+    assert!(matches!(&sample.body[0], Stmt::Assign { target: AssignTarget::Var(name), expr: Expr::Var { name: value, .. }, .. } if name == "X" && value == "N"));
     assert!(matches!(
         &sample.body[1],
         Stmt::Assign {
@@ -3631,33 +3621,31 @@ sample:
 }
 
 #[test]
-fn preserves_proc_local_const_arrays_for_semantic_rejection() {
-    let src = r#"
-proc Voice:
-  const Table = [1, 2]
-  outs:
-    out1
-  sample:
-    out1 = 0.0
-"#;
-
-    let program = parse_program(src).expect("proc-local const arrays should parse");
-    let proc = program
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            Block::Proc(proc) if proc.name == "Voice" => Some(proc),
-            _ => None,
-        })
-        .expect("Voice proc");
-    assert!(matches!(
-        proc.consts.as_slice(),
-        [ConstDecl {
-            name,
-            expr: Expr::ArrayLiteral { values, .. },
-            ..
-        }] if name == "Table" && values.len() == 2
-    ));
+fn rejects_const_declarations_outside_root_and_namespaces() {
+    for declaration in [
+        "const Value = 1",
+        "const Values: i32[2] = [1, 2]",
+        "const def value() -> i32:\n  return 1",
+    ] {
+        for owner in [
+            "proc Voice",
+            "struct Holder",
+            "init",
+            "block",
+            "sample",
+            "def helper()",
+            "const def helper() -> i32",
+            "event receive()",
+            "task work()",
+        ] {
+            let body = declaration
+                .lines()
+                .map(|line| format!("  {line}\n"))
+                .collect::<String>();
+            let source = format!("{owner}:\n{body}");
+            assert!(parse_program(&source).is_err(), "{source}");
+        }
+    }
 }
 
 #[test]
@@ -3757,7 +3745,7 @@ sample {
 
 fn stmt_contains_var_with_suffix(stmt: &Stmt, suffix: &str) -> bool {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
         Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             expr_contains_var_with_suffix(expr, suffix)
         }

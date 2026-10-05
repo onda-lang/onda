@@ -1,15 +1,14 @@
 use super::call_types::{
     const_positive_usize_for_call_type, infer_array_arg_type, infer_buffer_arg_info,
-    infer_scalar_expr_type, infer_struct_expr_type, infer_tuple_arg_types, join_branch_envs,
-    score_buffer_channels, update_call_type_env_after_assign, CallArrayElemType, CallArrayType,
-    CallTypeContext, CallTypeEnv, StatementFlow,
+    infer_scalar_expr_type, infer_struct_expr_type, infer_tuple_arg_types, score_buffer_channels,
+    CallArrayElemType, CallArrayType, CallTypeContext, CallTypeEnv, CallTypeRewriter,
 };
 use crate::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OverloadCandidate {
     internal_name: String,
-    signature: FnSignature,
+    signature: std::rc::Rc<FnSignature>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +114,7 @@ fn score_contextual_array_literal(
         let actual = infer_scalar_expr_type(value, env, context)?;
         if actual == expected {
             Some(score)
-        } else if can_assign_expr_to_type(value, actual, expected) {
+        } else if can_assign_expr_to_type(value, actual, expected, &env.const_symbols) {
             Some(score.max(1))
         } else {
             None
@@ -127,6 +126,7 @@ fn score_tuple_match(
     arg_expr: &Expr,
     actual: &[PrimitiveType],
     expected: &[PrimitiveType],
+    env: &CallTypeEnv,
 ) -> Option<i32> {
     if actual.len() != expected.len() {
         return None;
@@ -143,9 +143,9 @@ fn score_tuple_match(
         .zip(expected)
         .enumerate()
         .try_fold(0, |score, (index, (actual, expected))| {
-            let assignable = literal_values
-                .is_some_and(|values| can_assign_expr_to_type(&values[index], *actual, *expected))
-                || can_implicitly_assign(*actual, *expected);
+            let assignable = literal_values.is_some_and(|values| {
+                can_assign_expr_to_type(&values[index], *actual, *expected, &env.const_symbols)
+            }) || can_implicitly_assign(*actual, *expected);
             assignable.then_some(score.max(i32::from(actual != expected)))
         })
 }
@@ -218,7 +218,7 @@ fn score_overload_param_match(
             OverloadArgShape::Scalar(src) => {
                 if *src == *expected {
                     Some(plain_match(0))
-                } else if can_assign_expr_to_type(arg_expr, *src, *expected) {
+                } else if can_assign_expr_to_type(arg_expr, *src, *expected, &env.const_symbols) {
                     Some(plain_match(1))
                 } else {
                     None
@@ -370,7 +370,7 @@ fn score_overload_param_match(
         },
         Some(FnParamType::Tuple(expected)) => match arg_shape {
             OverloadArgShape::Tuple(actual) => {
-                score_tuple_match(arg_expr, actual, expected).map(plain_match)
+                score_tuple_match(arg_expr, actual, expected, env).map(plain_match)
             }
             OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
@@ -382,6 +382,7 @@ fn score_overload_param_match(
 fn generic_primitive_constraints_match(
     constraints: &HashMap<String, Vec<(PrimitiveType, bool, &Expr)>>,
     explicit_bindings: &HashMap<String, PrimitiveType>,
+    env: &CallTypeEnv,
 ) -> bool {
     constraints.iter().all(|(name, constraints)| {
         let exact_target = constraints
@@ -414,7 +415,7 @@ fn generic_primitive_constraints_match(
                 if *exact {
                     *actual == target
                 } else {
-                    can_assign_expr_to_type(expr, *actual, target)
+                    can_assign_expr_to_type(expr, *actual, target, &env.const_symbols)
                 }
             })
     })
@@ -521,8 +522,8 @@ fn resolve_overloaded_call_name(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<String> {
-    let all_candidates = overloads.get(public_name)?;
-    let candidates = all_candidates
+    let candidates = overloads
+        .get(public_name)?
         .iter()
         .filter(|candidate| {
             type_args.is_empty()
@@ -618,7 +619,9 @@ fn resolve_overloaded_call_name(
                 total_score += 1;
             }
         }
-        if viable && generic_primitive_constraints_match(&generic_constraints, &explicit_bindings) {
+        if viable
+            && generic_primitive_constraints_match(&generic_constraints, &explicit_bindings, env)
+        {
             scored.push((total_score, cand_idx));
         }
     }
@@ -710,6 +713,13 @@ fn rewrite_overloaded_calls_in_expr_impl(
     resolved: &mut usize,
 ) {
     expr.visit_mut_postorder(|expr| {
+        if let Expr::Index { base, index, .. } = expr {
+            super::call_types::normalize_tuple_index(base, index, env, context);
+        }
+        if let Some(len) = env.fixed_array_length_call(expr) {
+            *expr = typed_const_expr(TypedConstValue::I32(len)).with_loc(expr.loc());
+            return;
+        }
         with_expr_diag_context_mut(expr, |diag, expr| {
             if let Expr::UserCall {
                 name,
@@ -738,22 +748,6 @@ fn rewrite_overloaded_calls_in_expr_impl(
     });
 }
 
-fn rewrite_overloaded_calls_in_assign_target(
-    target: &mut AssignTarget,
-    env: &CallTypeEnv,
-    context: CallTypeContext<'_>,
-    owner: OverloadOwnerContext,
-    overloads: &HashMap<String, Vec<OverloadCandidate>>,
-    errors: &mut Vec<Diagnostic>,
-    resolved: &mut usize,
-) {
-    target.visit_selectors_mut(|selector| {
-        rewrite_overloaded_calls_in_expr_impl(
-            selector, env, context, owner, overloads, errors, resolved,
-        )
-    });
-}
-
 pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
     stmts: &mut [Stmt],
     env: &mut CallTypeEnv,
@@ -762,17 +756,15 @@ pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
     overloads: &HashMap<String, Vec<OverloadCandidate>>,
     errors: &mut Vec<Diagnostic>,
 ) -> usize {
-    let mut resolved = 0;
-    rewrite_overloaded_calls_in_stmt_list_impl(
-        stmts,
-        env,
+    let mut rewriter = OverloadRewriter {
         context,
         owner,
         overloads,
         errors,
-        &mut resolved,
-    );
-    resolved
+        resolved: 0,
+    };
+    rewriter.rewrite_stmts(stmts, env);
+    rewriter.resolved
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -785,7 +777,7 @@ pub(crate) fn rewrite_overloaded_calls_in_function(
     errors: &mut Vec<Diagnostic>,
 ) -> usize {
     let mut env = seed.clone();
-    env.set_owner_type_params(&def.type_params);
+    env.enter_function(&def.type_params);
     let mut resolved = 0;
     for param in &mut def.params {
         env.bind_function_param(param, &def.type_params);
@@ -811,151 +803,29 @@ pub(crate) fn rewrite_overloaded_calls_in_function(
         )
 }
 
-fn rewrite_overloaded_calls_in_stmt_list_impl(
-    stmts: &mut [Stmt],
-    env: &mut CallTypeEnv,
-    context: CallTypeContext<'_>,
+struct OverloadRewriter<'a> {
+    context: CallTypeContext<'a>,
     owner: OverloadOwnerContext,
-    overloads: &HashMap<String, Vec<OverloadCandidate>>,
-    errors: &mut Vec<Diagnostic>,
-    resolved: &mut usize,
-) -> StatementFlow {
-    for stmt in stmts {
-        let flow = with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-            Stmt::Const { .. } => StatementFlow::Continues,
-            Stmt::Assign {
-                target,
-                decl_ty,
-                generic_decl_ty,
-                expr,
-                ..
-            } => {
-                rewrite_overloaded_calls_in_assign_target(
-                    target, env, context, owner, overloads, errors, resolved,
-                );
-                rewrite_overloaded_calls_in_expr_impl(
-                    expr, env, context, owner, overloads, errors, resolved,
-                );
-                update_call_type_env_after_assign(
-                    target,
-                    decl_ty.as_ref(),
-                    generic_decl_ty.as_deref(),
-                    expr,
-                    env,
-                    context,
-                );
-                StatementFlow::Continues
-            }
-            Stmt::Expr { expr, .. } => {
-                rewrite_overloaded_calls_in_expr_impl(
-                    expr, env, context, owner, overloads, errors, resolved,
-                );
-                StatementFlow::Continues
-            }
-            Stmt::Return { expr, .. } => {
-                rewrite_overloaded_calls_in_expr_impl(
-                    expr, env, context, owner, overloads, errors, resolved,
-                );
-                StatementFlow::Terminates
-            }
-            Stmt::Print { values, .. } => {
-                for value in values {
-                    rewrite_overloaded_calls_in_expr_impl(
-                        value, env, context, owner, overloads, errors, resolved,
-                    );
-                }
-                StatementFlow::Continues
-            }
-            Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                rewrite_overloaded_calls_in_expr_impl(
-                    cond, env, context, owner, overloads, errors, resolved,
-                );
-                let mut then_env = env.clone();
-                let then_flow = rewrite_overloaded_calls_in_stmt_list_impl(
-                    then_branch,
-                    &mut then_env,
-                    context,
-                    owner,
-                    overloads,
-                    errors,
-                    resolved,
-                );
-                let mut else_env = env.clone();
-                let else_flow = rewrite_overloaded_calls_in_stmt_list_impl(
-                    else_branch,
-                    &mut else_env,
-                    context,
-                    owner,
-                    overloads,
-                    errors,
-                    resolved,
-                );
-                let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
-                *env = joined;
-                flow
-            }
-            Stmt::For {
-                var,
-                var_ty,
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
-                rewrite_overloaded_calls_in_expr_impl(
-                    start, env, context, owner, overloads, errors, resolved,
-                );
-                rewrite_overloaded_calls_in_expr_impl(
-                    end, env, context, owner, overloads, errors, resolved,
-                );
-                if let Some(step_expr) = step {
-                    rewrite_overloaded_calls_in_expr_impl(
-                        step_expr, env, context, owner, overloads, errors, resolved,
-                    );
-                }
-                let mut body_env = env.clone();
-                body_env.shadow_binding(var);
-                body_env.scalar_types.insert(var.clone(), *var_ty);
-                rewrite_overloaded_calls_in_stmt_list_impl(
-                    body,
-                    &mut body_env,
-                    context,
-                    owner,
-                    overloads,
-                    errors,
-                    resolved,
-                );
-                StatementFlow::Continues
-            }
-            Stmt::While { cond, body, .. } => {
-                rewrite_overloaded_calls_in_expr_impl(
-                    cond, env, context, owner, overloads, errors, resolved,
-                );
-                let mut body_env = env.clone();
-                rewrite_overloaded_calls_in_stmt_list_impl(
-                    body,
-                    &mut body_env,
-                    context,
-                    owner,
-                    overloads,
-                    errors,
-                    resolved,
-                );
-                StatementFlow::Continues
-            }
-            Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
-        });
-        if flow == StatementFlow::Terminates {
-            return flow;
-        }
+    overloads: &'a HashMap<String, Vec<OverloadCandidate>>,
+    errors: &'a mut Vec<Diagnostic>,
+    resolved: usize,
+}
+
+impl CallTypeRewriter for OverloadRewriter<'_> {
+    fn context(&self) -> CallTypeContext<'_> {
+        self.context
     }
-    StatementFlow::Continues
+    fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        rewrite_overloaded_calls_in_expr_impl(
+            expr,
+            env,
+            self.context,
+            self.owner,
+            self.overloads,
+            self.errors,
+            &mut self.resolved,
+        );
+    }
 }
 
 pub(crate) fn prepare_function_overloads(
@@ -984,27 +854,41 @@ pub(crate) fn prepare_function_overloads(
         }
     }
 
+    let overloads = function_overloads(defs, &internal_to_public);
+    for def in defs.iter() {
+        internal_to_public
+            .entry(def.name.clone())
+            .or_insert_with(|| def.name.clone());
+    }
+    (overloads, internal_to_public)
+}
+
+/// Candidates identify source declarations; concrete instances do not add overloads.
+pub(crate) fn function_overloads(
+    defs: &[FunctionDef],
+    public_names: &HashMap<String, String>,
+) -> HashMap<String, Vec<OverloadCandidate>> {
     let mut overloads = HashMap::<String, Vec<OverloadCandidate>>::new();
     for def in defs.iter() {
-        let public_name = internal_to_public
+        let public_name = public_names
             .get(&def.name)
             .cloned()
             .unwrap_or_else(|| def.name.clone());
-        internal_to_public
-            .entry(def.name.clone())
-            .or_insert_with(|| public_name.clone());
-        overloads
-            .entry(public_name.clone())
-            .or_default()
-            .push(OverloadCandidate {
-                internal_name: def.name.clone(),
-                signature: {
-                    let mut signature = FnSignature::from_def(def);
-                    signature.display_name = Some(public_name.clone());
-                    signature
-                },
-            });
+        let candidate = OverloadCandidate {
+            internal_name: def.name.clone(),
+            signature: std::rc::Rc::new({
+                let mut signature = FnSignature::from_def(def);
+                signature.display_name = Some(public_name.clone());
+                signature
+            }),
+        };
+        if def.name != public_name {
+            overloads
+                .entry(def.name.clone())
+                .or_default()
+                .push(candidate.clone());
+        }
+        overloads.entry(public_name).or_default().push(candidate);
     }
-
-    (overloads, internal_to_public)
+    overloads
 }

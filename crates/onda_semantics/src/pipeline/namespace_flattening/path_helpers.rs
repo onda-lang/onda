@@ -1,5 +1,23 @@
 use super::*;
 
+/// Expand lexical aliases without evaluating namespace arguments or instantiating a template.
+pub(super) fn template_reference_target(name: &str, aliases: &HashMap<String, String>) -> String {
+    let mut target = strip_type_args_from_path(name);
+    let mut seen = HashSet::new();
+    while seen.insert(target.clone()) {
+        let (head, tail) = target.split_once("::").unwrap_or((&target, ""));
+        let Some(alias) = aliases.get(head) else {
+            break;
+        };
+        target = if tail.is_empty() {
+            alias.clone()
+        } else {
+            namespace_join(alias, tail)
+        };
+    }
+    target
+}
+
 pub(super) fn namespace_parent(ns: &str) -> Option<&str> {
     ns.rsplit_once("::").map(|(parent, _)| parent)
 }
@@ -111,12 +129,14 @@ pub(super) fn strip_type_args_from_path(path: &str) -> String {
 #[derive(Debug, Clone, Default)]
 pub(super) struct RewriteNameScope {
     pub(super) names: HashSet<String>,
+    pub(super) fresh_assignments_are_local: bool,
 }
 
 impl RewriteNameScope {
     pub(super) fn from_names(names: impl IntoIterator<Item = String>) -> Self {
         Self {
             names: names.into_iter().collect(),
+            ..Self::default()
         }
     }
 

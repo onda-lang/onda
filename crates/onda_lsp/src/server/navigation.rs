@@ -1389,10 +1389,6 @@ impl NavigationIndex {
             let idx = self.add_type_param_definition(&owner, type_param, proc_def.loc);
             definitions.insert(type_param.clone(), idx);
         }
-        for decl in &proc_def.consts {
-            let idx = self.add_const_definition(&owner, decl);
-            definitions.insert(decl.name.clone(), idx);
-        }
         for decl in &proc_def.ins {
             let idx = self.add_port_definition(&owner, decl, DefinitionKind::Port, "proc input");
             definitions.insert(decl.name.clone(), idx);
@@ -1903,8 +1899,7 @@ impl NavigationIndex {
                         self.collect_stmt_scope(Some(parent), owner, span, body);
                     }
                 }
-                Stmt::Const { .. }
-                | Stmt::Assign { .. }
+                Stmt::Assign { .. }
                 | Stmt::Expr { .. }
                 | Stmt::Print { .. }
                 | Stmt::Return { .. }
@@ -2014,8 +2009,7 @@ impl NavigationIndex {
                     }
                 }
                 Stmt::For { .. } | Stmt::While { .. } => {}
-                Stmt::Const { .. }
-                | Stmt::Expr { .. }
+                Stmt::Expr { .. }
                 | Stmt::Print { .. }
                 | Stmt::Return { .. }
                 | Stmt::Break { .. }
@@ -2087,12 +2081,6 @@ impl NavigationIndex {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Const { loc, decl, .. } => {
-                    if !respect_position || self.span_start_is_visible(*loc) {
-                        let idx = self.add_const_definition(owner, decl);
-                        out.entry(decl.name.clone()).or_insert(idx);
-                    }
-                }
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
@@ -3055,11 +3043,6 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
 
 fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     let mut children = Vec::new();
-    children.extend(
-        proc_def.consts.iter().map(|decl| {
-            document_symbol(&decl.name, SYMBOL_KIND_CONSTANT, decl.loc, source, vec![])
-        }),
-    );
     children.extend(
         proc_def
             .ins
@@ -4469,9 +4452,6 @@ fn span_for_task_scope(task: &TaskDef) -> Span {
 
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     let mut span = proc_def.loc;
-    for decl in &proc_def.consts {
-        span = Span::spanning(span, decl.loc);
-    }
     for decl in &proc_def.ins {
         span = Span::spanning(span, decl.loc);
     }

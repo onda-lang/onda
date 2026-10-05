@@ -47,19 +47,6 @@ pub(crate) fn coerce_struct_fields(
                 let binding_range = default
                     .as_ref()
                     .and_then(|expr| crate::pipeline::integer_binding_range_expr(*prim, expr));
-                if let Some(expr) = &default {
-                    let value = match (binding_range.as_ref(), expr) {
-                        (Some(_), Expr::Call { args, .. }) if args.len() == 3 => &args[0],
-                        _ => expr,
-                    };
-                    with_loc_diag_context(field_loc, |_diag| {
-                        validate_default_expr(
-                            value,
-                            errors,
-                            &format!("struct field '{}.{}'", struct_name, field.name),
-                        );
-                    });
-                }
                 integer_range = binding_range.and_then(|mut range| {
                     if !crate::pipeline::canonicalize_integer_binding_range(
                         &mut range,
@@ -130,15 +117,6 @@ pub(crate) fn coerce_struct_fields(
                         }
                     })
                     .collect::<Vec<_>>();
-                if let Some(expr) = &field.default {
-                    with_loc_diag_context(field_loc, |_diag| {
-                        validate_default_expr(
-                            expr,
-                            errors,
-                            &format!("struct field '{}.{}'", struct_name, field.name),
-                        );
-                    });
-                }
                 (
                     TypedFieldType::Tuple(resolved_elem_tys),
                     field.default.clone(),
@@ -588,11 +566,14 @@ pub(crate) fn coerce_params(
                             with_loc_diag_context(param_loc, |_diag| {
                                 let expr_ty = infer_const_expr_type(
                                     expr,
-                                    options,
                                     &format!("param '{}.{}' default", "<top-level>", param.name),
                                     errors,
                                 );
-                                effective_untyped_assignment_type(expr, expr_ty)
+                                effective_untyped_assignment_type(
+                                    expr,
+                                    expr_ty,
+                                    &crate::decl_symbols::DeclaredSymbolMap::new(),
+                                )
                             })
                         })
                         .unwrap_or(PrimitiveType::F32),
@@ -606,7 +587,6 @@ pub(crate) fn coerce_params(
                             options,
                             &format!("param '{}.{}' default", "<top-level>", param.name),
                             is_float_type(ty),
-                            matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
                             errors,
                         )
                     })
@@ -654,7 +634,6 @@ pub(crate) fn coerce_params(
                             options,
                             &format!("param '{}.{}' default", "<top-level>", param.name),
                             true,
-                            false,
                             errors,
                         )
                     })
@@ -746,7 +725,6 @@ pub(crate) fn coerce_params(
                                                 "<top-level>", param.name
                                             ),
                                             true,
-                                            false,
                                             errors,
                                         )
                                     })
@@ -764,7 +742,6 @@ pub(crate) fn coerce_params(
                                 options,
                                 &format!("param '{}.{}' default", "<top-level>", param.name),
                                 true,
-                                false,
                                 errors,
                             )
                         })
@@ -865,7 +842,6 @@ fn coerce_top_level_param_control(
                 options,
                 &format!("{context} curve"),
                 false,
-                false,
                 errors,
             ) {
                 Some(TypedConstValue::F64(value)) => Some(value),
@@ -924,15 +900,7 @@ fn coerce_top_level_param_control(
 
     let explicit_step = param.control.step.as_ref().and_then(|step| {
         with_loc_diag_context(param.loc.as_ref(), |_diag| {
-            eval_typed_const_expr(
-                step,
-                ty,
-                options,
-                &format!("{context} step"),
-                false,
-                matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
-                errors,
-            )
+            eval_typed_const_expr(step, ty, options, &format!("{context} step"), false, errors)
         })
     });
     let step = explicit_step.or(match ty {

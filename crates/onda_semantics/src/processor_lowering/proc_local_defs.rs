@@ -292,7 +292,7 @@ fn collect_local_def_calls_in_stmt(
     calls: &mut Vec<String>,
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { expr, target, .. } => {
             collect_local_def_calls_in_expr(expr, def_map, calls);
             collect_local_def_calls_in_target(target, def_map, calls);
@@ -435,7 +435,7 @@ fn rewrite_stmt_local_calls(
     owner_proc: &str,
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             rewrite_target_local_calls(
                 target,
@@ -711,7 +711,7 @@ fn inject_owner_self_into_hidden_local_calls_in_stmt(
     receiver: &Expr,
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             inject_owner_self_into_hidden_local_calls_in_target(target, owner_proc, receiver);
             inject_owner_self_into_hidden_local_calls_in_expr(expr, owner_proc, receiver);
@@ -851,7 +851,7 @@ fn rewrite_nested_wrapper_local_calls_in_stmt(
     delegate_context_args: &[String],
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             rewrite_nested_wrapper_local_calls_in_target(
                 target,

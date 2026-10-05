@@ -1,5 +1,74 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssignmentBindingKind {
+    Scalar,
+    Data,
+}
+
+pub(crate) fn validate_array_write(
+    name: &str,
+    binding: &LocalArrayAliasInfo,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    if binding.writable {
+        return true;
+    }
+    errors.push(Diagnostic::semantic_span(
+        format!("cannot assign to immutable array alias '{name}'"),
+        target_loc,
+    ));
+    false
+}
+
+pub(crate) fn validate_array_binding_replacement(
+    name: &str,
+    binding: &LocalArrayAliasInfo,
+    expr: &Expr,
+    is_slice: bool,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    let message = if is_slice || matches!(expr, Expr::Slice { .. }) {
+        "slice binding cannot be rebound; use an explicit slice assignment to copy contents"
+            .to_owned()
+    } else {
+        return validate_array_write(name, binding, target_loc, errors);
+    };
+    errors.push(Diagnostic::semantic_span(message, target_loc));
+    false
+}
+
+/// Declarations introduce names; replacements preserve the binding's kind.
+/// Callers check the concrete type, shape, and write permission separately.
+pub(crate) fn validate_assignment_binding(
+    name: &str,
+    existing: Option<AssignmentBindingKind>,
+    assigned: AssignmentBindingKind,
+    is_declaration: bool,
+    target_loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> bool {
+    use AssignmentBindingKind::{Data, Scalar};
+    let message = match (existing, assigned) {
+        (None, _) => return true,
+        (Some(Scalar), Data) => {
+            format!("data declaration '{name}' conflicts with an existing binding")
+        }
+        (Some(_), Data) if is_declaration => {
+            format!("data declaration '{name}' must introduce a new name")
+        }
+        (Some(_), Scalar) if is_declaration => {
+            format!("typed declaration for '{name}' is only allowed on first assignment")
+        }
+        (Some(Data), Scalar) => format!("cannot assign a scalar value to data binding '{name}'"),
+        _ => return true,
+    };
+    errors.push(Diagnostic::semantic_span(message, target_loc));
+    false
+}
+
 pub(crate) fn infer_data_initializer_type(
     expr: &Expr,
     declared: Option<&DeclType>,
@@ -21,7 +90,7 @@ pub(crate) fn validate_primitive_array_literal_replacement(
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
     let (
-        Expr::ArrayLiteral { values, .. },
+        Expr::ArrayLiteral { .. },
         Some(DataType::Array {
             element: ArrayElemType::Primitive(element),
             len,
@@ -30,23 +99,32 @@ pub(crate) fn validate_primitive_array_literal_replacement(
     else {
         return false;
     };
-    if is_declaration {
-        errors.push(Diagnostic::semantic_span(
-            format!("data declaration '{name}' must introduce a new name"),
+    validate_assignment_binding(
+        name,
+        Some(AssignmentBindingKind::Data),
+        AssignmentBindingKind::Data,
+        is_declaration,
+        target_loc,
+        errors,
+    );
+    if let Some(binding) = env.local_array_aliases.get(name) {
+        validate_array_binding_replacement(
+            name,
+            binding,
+            expr,
+            binding.static_len.is_none(),
             target_loc,
-        ));
+            errors,
+        );
     }
-    if env
-        .local_array_aliases
-        .get(name)
-        .is_some_and(|alias| !alias.writable)
-    {
-        errors.push(Diagnostic::semantic_span(
-            format!("cannot assign to immutable array alias '{name}'"),
-            target_loc,
-        ));
-    }
-    validate_primitive_array_values(values, element, len, expr, env, errors);
+    crate::expr_validation::validate_array_initializer(
+        expr,
+        Some(ArrayElemType::Primitive(element)),
+        Some(len),
+        &format!("array initializer for symbol '{name}'"),
+        env,
+        errors,
+    );
     true
 }
 
@@ -66,15 +144,8 @@ pub(crate) fn validate_data_element_replacement(
     let Some(data @ DataType::Struct(_)) = infer_fixed_data_type(&selection, env) else {
         return false;
     };
-    if env
-        .local_array_aliases
-        .get(base)
-        .is_some_and(|alias| !alias.writable)
-    {
-        errors.push(Diagnostic::semantic_span(
-            format!("cannot assign to immutable array alias '{base}'"),
-            target_loc,
-        ));
+    if let Some(binding) = env.local_array_aliases.get(base) {
+        validate_array_write(base, binding, target_loc, errors);
     }
     let actual = infer_data_value_type(expr, env);
     if actual.as_ref() != Some(&data) {

@@ -958,7 +958,7 @@ impl FunctionLowerer<'_> {
             match &field.ty {
                 TypedFieldType::Scalar(ty) => {
                     let value = if let Some(expr) = expr {
-                        self.lower_expr(expr, block)?
+                        self.lower_expr_for_type(expr, *ty, block)?
                     } else {
                         LoweredValue {
                             value: Value::Constant(zero_scalar(*ty)),
@@ -970,7 +970,7 @@ impl FunctionLowerer<'_> {
                 }
                 TypedFieldType::Tuple(types) => {
                     let values = if let Some(expr) = expr {
-                        self.lower_value_expr(expr, block)?
+                        self.lower_value_expr_for_types(expr, types, block)?
                     } else {
                         types
                             .iter()

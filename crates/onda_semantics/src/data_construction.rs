@@ -45,7 +45,11 @@ pub(crate) fn scalar_default(value: TypedConstValue) -> PayloadDefault {
     })
 }
 
+pub(crate) type DefaultExpressionResolver<'a> =
+    dyn FnMut(&Expr, &mut Vec<onda_frontend::Diagnostic>) -> Option<Expr> + 'a;
+
 pub(crate) struct DefaultEvaluator<'a> {
+    resolver: &'a mut DefaultExpressionResolver<'a>,
     pub structs: &'a HashMap<String, Vec<TypedStructField>>,
     pub options: AnalysisOptions,
     pub errors: &'a mut Vec<Diagnostic>,
@@ -54,9 +58,11 @@ impl<'a> DefaultEvaluator<'a> {
     pub fn new(
         structs: &'a HashMap<String, Vec<TypedStructField>>,
         options: AnalysisOptions,
+        resolver: &'a mut DefaultExpressionResolver<'a>,
         errors: &'a mut Vec<Diagnostic>,
     ) -> Self {
         Self {
+            resolver,
             structs,
             options,
             errors,
@@ -72,8 +78,9 @@ impl<'a> DefaultEvaluator<'a> {
     }
     fn scalar(&mut self, ty: PrimitiveType, expr: Option<&Expr>) -> Option<PayloadDefault> {
         let value = if let Some(expr) = expr {
+            let expr = (self.resolver)(expr, self.errors)?;
             crate::processor_lowering::coerce_scalar_event_default(
-                expr,
+                &expr,
                 ty,
                 "data default",
                 self.options,
@@ -169,5 +176,82 @@ pub(crate) fn populate_schema_defaults(
             populate_schema_defaults(element, evaluator)
         }
         PayloadType::Scalar { .. } | PayloadType::Tuple { .. } => {}
+    }
+}
+
+/// Make omitted constructor defaults ordinary operands before value reach.
+/// The caller's expression traversal visits inserted operands as well.
+pub(crate) fn expand_constructor_defaults(
+    expr: &mut Expr,
+    structs: &HashMap<String, Vec<TypedStructField>>,
+) {
+    let constructor = |name: &str, loc| Expr::UserCall {
+        loc,
+        name: name.to_owned(),
+        args: Vec::new(),
+        type_args: Vec::new(),
+    };
+    if let Expr::ArrayCtor {
+        spec,
+        init,
+        init_is_value,
+        initialize: true,
+        loc,
+    } = expr
+    {
+        if init.is_none() {
+            if let ArrayElemType::Struct(name) = &spec.elem {
+                *init = Some(vec![constructor(name, *loc)]);
+                *init_is_value = true;
+            }
+        }
+        return;
+    }
+    let Expr::UserCall {
+        name, args, loc, ..
+    } = expr
+    else {
+        return;
+    };
+    let Some(fields) = structs.get(name) else {
+        return;
+    };
+    // Argument errors were reported during body checking.
+    let Ok(supplied) = constructor_fields(fields, args) else {
+        return;
+    };
+    let supplied = supplied.into_iter().collect::<HashSet<_>>();
+    for (index, field) in fields.iter().enumerate() {
+        if supplied.contains(&index) {
+            continue;
+        }
+        let default = field.default.clone().or_else(|| match &field.ty {
+            TypedFieldType::Struct => field
+                .struct_name
+                .as_deref()
+                .map(|name| constructor(name, *loc)),
+            TypedFieldType::Array(len) => {
+                field
+                    .array_elem_struct
+                    .as_ref()
+                    .map(|name| Expr::ArrayCtor {
+                        loc: *loc,
+                        spec: onda_frontend::ArrayTypeSpec {
+                            elem: ArrayElemType::Struct(name.clone()),
+                            size: Box::new(Expr::int(*len as i64)),
+                        },
+                        init: None,
+                        init_is_value: false,
+                        initialize: true,
+                    })
+            }
+            _ => None,
+        });
+        if let Some(expr) = default {
+            args.push(onda_frontend::CallArg {
+                name: Some(field.name.clone()),
+                expr,
+            });
+        }
     }
 }

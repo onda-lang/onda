@@ -1064,8 +1064,11 @@ sample:
 config const Size: i32 = 2
 namespace LUT<N = 2>:
   const Table: i32[N] = [10, 20, 30, 40]
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(LUT<Size>::Table[3])
+  out1 = f32(LUT<Size>::Table[runtime_index + 3])
 "#;
         let program = parse_program(source).expect("source should parse");
         let mut inputs = CompileInputs::default();
@@ -1218,7 +1221,7 @@ sample:
             inspect_compile_constants(program.clone(), AnalysisOptions::default(), &inputs)
                 .expect_err("the source default must match the selected fixed shape");
         assert!(default_errors.iter().any(|diagnostic| {
-            diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
+            diagnostic.message.contains("expects 8") || diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
         }));
 
         inputs.constants.insert(
@@ -1233,7 +1236,7 @@ sample:
             inspect_compile_constants(program.clone(), AnalysisOptions::default(), &inputs)
                 .expect_err("a host array must match the selected fixed shape");
         assert!(override_errors.iter().any(|diagnostic| {
-            diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
+            diagnostic.message.contains("expects 8") || diagnostic.message.contains("expected 8") || diagnostic.message.contains("length 8")
         }));
 
         inputs.constants.insert(
@@ -1784,10 +1787,10 @@ def helper():
   return
 
 sample:
-  const helper = 1
+  helper = 1
   out1 = 0.0
 "#,
-                "local constant 'helper' conflicts with owner-local function 'helper'",
+                "binding 'helper' conflicts with owner-local function 'helper'",
             ),
             (
                 r#"

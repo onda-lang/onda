@@ -133,7 +133,6 @@ pub(crate) fn rewrite_binding_stmts(
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { decl, .. } => rewrite_binding_expr(&mut decl.expr, names),
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -294,7 +293,6 @@ pub(crate) fn collect_stmt_uses(stmts: &[Stmt], uses: &mut HashSet<String>) {
                 target.visit_selectors(|selector| collect_expr_uses(selector, uses));
             }
             Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => collect_expr_uses(expr, uses),
-            Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, uses),
             Stmt::Print { values, .. } => {
                 for value in values {
                     collect_expr_uses(value, uses);

@@ -250,9 +250,6 @@ fn substitute_call_type_args_with_bindings_stmt_in_scope(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
-        Stmt::Const { decl, .. } => {
-            substitute_call_type_args_with_bindings_expr_in_scope(&mut decl.expr, scope, errors);
-        }
         Stmt::Assign {
             target,
             decl_ty,
@@ -718,7 +715,7 @@ pub(crate) fn generic_inference_seed_for_function(
     base: &GenericInferenceLocals,
 ) -> GenericInferenceLocals {
     let mut locals = base.clone();
-    locals.types.set_owner_type_params(&def.type_params);
+    locals.types.enter_function(&def.type_params);
     for param in &def.params {
         locals.types.bind_function_param(param, &def.type_params);
     }
@@ -1423,7 +1420,6 @@ fn rewrite_generic_ctor_stmt(
     rewriter: &mut impl GenericCtorRewriter,
 ) {
     with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             decl_ty,
@@ -1610,7 +1606,7 @@ pub(crate) fn infer_scalar_type_for_generic_binding(
     locals: &GenericInferenceLocals,
 ) -> Option<PrimitiveType> {
     let inferred = infer_call_scalar_expr_type(expr, &locals.types, locals.call_context());
-    effective_untyped_assignment_type(expr, inferred).or(inferred)
+    effective_untyped_assignment_type(expr, inferred, &locals.types.const_symbols).or(inferred)
 }
 
 pub(crate) fn infer_array_elem_type_for_generic_binding(

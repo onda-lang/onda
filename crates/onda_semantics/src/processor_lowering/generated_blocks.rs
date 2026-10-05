@@ -874,7 +874,6 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
     }
 
     match stmt {
-        Stmt::Const { .. } => Vec::new(),
         Stmt::If {
             loc,
             mut cond,

@@ -3,6 +3,9 @@ use super::*;
 pub(crate) fn lower_graph_blocks(
     program: &mut Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let error_count = errors.len();
@@ -11,9 +14,11 @@ pub(crate) fn lower_graph_blocks(
     if errors.len() != error_count {
         return;
     }
-    let proc_surfaces = build_graph_proc_surfaces(program, options, errors);
-    lower_proc_graph_blocks(program, &proc_surfaces, options, errors);
-    lower_top_level_graph_block(program, &proc_surfaces, options, errors);
+    let proc_surfaces = build_graph_proc_surfaces(program, options, const_arrays, errors);
+    let mut constants = crate::def_semantics::CallTypeEnv::default();
+    constants.bind_constants(const_scalars, const_arrays, const_scope, options);
+    lower_proc_graph_blocks(program, &proc_surfaces, &constants, options, errors);
+    lower_top_level_graph_block(program, &proc_surfaces, &constants, options, errors);
 }
 
 fn reject_block_timed_graph_outputs(program: &Program, errors: &mut Vec<Diagnostic>) {
@@ -49,6 +54,7 @@ fn reject_block_timed_graph_outputs(program: &Program, errors: &mut Vec<Diagnost
 fn lower_proc_graph_blocks(
     program: &mut Program,
     proc_surfaces: &HashMap<String, GraphProcSurface>,
+    constants: &crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -70,7 +76,7 @@ fn lower_proc_graph_blocks(
             continue;
         }
 
-        let owner = graph_owner_surface_from_proc(proc, options, errors);
+        let owner = graph_owner_surface_from_proc(proc, constants, options, errors);
         let nodes = collect_graph_nodes_from_init(
             &proc.init.body,
             proc_surfaces,
@@ -101,6 +107,7 @@ fn lower_proc_graph_blocks(
 fn lower_top_level_graph_block(
     program: &mut Program,
     proc_surfaces: &HashMap<String, GraphProcSurface>,
+    constants: &crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -149,7 +156,7 @@ fn lower_top_level_graph_block(
         Some(Block::Init(init)) => init.body.clone(),
         _ => Vec::new(),
     };
-    let owner = graph_owner_surface_from_program(program, options, errors);
+    let owner = graph_owner_surface_from_program(program, constants, options, errors);
     let nodes =
         collect_graph_nodes_from_init(&init_body, proc_surfaces, options, "top-level", errors);
     let lowered = lower_graph(

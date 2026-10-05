@@ -718,7 +718,6 @@ pub(super) fn rewrite_nested_proc_calls_in_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { expr, .. } => rewrite_nested_proc_calls_in_expr(
             expr,
             owner_proc,

@@ -301,7 +301,6 @@ pub(super) fn parse_struct_method_decl(
 
 pub(super) fn parse_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
     match pair.as_rule() {
-        Rule::const_decl => parse_const_stmt(pair),
         Rule::assign_stmt => parse_assign_stmt(pair),
         Rule::pinned_assign_stmt => Err(vec![syntax_at_pair(
             &pair,
@@ -488,12 +487,6 @@ fn parse_const_type(pair: Pair<'_, Rule>) -> Result<ConstType, Vec<Diagnostic>> 
         }
         _ => Err(vec![syntax_at_loc(loc.as_ref(), "unsupported const type")]),
     }
-}
-
-fn parse_const_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {
-    let loc = stmt_loc_from_pair(&pair);
-    let decl = parse_const_decl(pair)?;
-    Ok(Stmt::Const { loc, decl })
 }
 
 pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagnostic>> {

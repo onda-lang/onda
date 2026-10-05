@@ -22,7 +22,8 @@ pub(super) struct GraphProcSurface {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct GraphOwnerSurface {
+pub(super) struct GraphOwnerSurface<'a> {
+    pub(super) constants: &'a crate::def_semantics::CallTypeEnv,
     pub(super) input_value_types: HashMap<String, GraphValueType>,
     pub(super) param_value_types: HashMap<String, GraphValueType>,
     pub(super) output_value_types: HashMap<String, GraphValueType>,
@@ -30,9 +31,23 @@ pub(super) struct GraphOwnerSurface {
     pub(super) output_aliases: HashMap<String, String>,
 }
 
+impl GraphOwnerSurface<'_> {
+    pub(super) fn const_value_type(&self, name: &str) -> Option<GraphValueType> {
+        if let Some(ty) = self.constants.scalar_types.get(name) {
+            return Some(GraphValueType::Scalar(*ty));
+        }
+        let array = self.constants.array_types.get(name)?;
+        Some(GraphValueType::Array {
+            elem_ty: array.primitive_elem()?,
+            len: array.len?,
+        })
+    }
+}
+
 pub(super) fn build_graph_proc_surfaces(
     program: &Program,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, GraphProcSurface> {
     let mut out = HashMap::<String, GraphProcSurface>::new();
@@ -46,11 +61,17 @@ pub(super) fn build_graph_proc_surfaces(
         let (graph_outs, out_aliases) =
             graph_port_decls_with_numbered_aliases(&proc.outs, "out", inferred_io.max_out);
         let (_ins, _in_types, in_ports, _) =
-            expand_proc_port_specs(&proc.name, &graph_ins, "ins", options, errors);
-        let (outs, _, _, out_array_slots) =
-            expand_proc_port_specs(&proc.name, &graph_outs, "outs", options, errors);
+            expand_proc_port_specs(&proc.name, &graph_ins, "ins", options, const_arrays, errors);
+        let (outs, _, _, out_array_slots) = expand_proc_port_specs(
+            &proc.name,
+            &graph_outs,
+            "outs",
+            options,
+            const_arrays,
+            errors,
+        );
         let (param_specs, param_array_slots) =
-            expand_proc_param_specs(&proc.name, &proc.params, options, errors);
+            expand_proc_param_specs(&proc.name, &proc.params, options, const_arrays, errors);
         let params = param_specs
             .iter()
             .filter(|spec| !spec.is_private())
@@ -114,11 +135,12 @@ pub(super) fn build_graph_proc_surfaces(
     out
 }
 
-pub(super) fn graph_owner_surface_from_program(
+pub(super) fn graph_owner_surface_from_program<'a>(
     program: &Program,
+    constants: &'a crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> GraphOwnerSurface {
+) -> GraphOwnerSurface<'a> {
     let sample_body = match program.block(BlockKind::Sample) {
         Some(Block::Sample(sample)) => sample.body.clone(),
         _ => Vec::new(),
@@ -137,6 +159,7 @@ pub(super) fn graph_owner_surface_from_program(
     let (graph_outs, output_aliases) =
         graph_port_decls_with_numbered_aliases(&raw_outs, "out", inferred_io.max_out);
     GraphOwnerSurface {
+        constants,
         input_value_types: value_types_from_ports(
             &graph_ins,
             options,
@@ -162,17 +185,19 @@ pub(super) fn graph_owner_surface_from_program(
     }
 }
 
-pub(super) fn graph_owner_surface_from_proc(
+pub(super) fn graph_owner_surface_from_proc<'a>(
     proc: &ProcessorDef,
+    constants: &'a crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> GraphOwnerSurface {
+) -> GraphOwnerSurface<'a> {
     let inferred_io = infer_numbered_io_from_sample(&proc.sample);
     let (graph_ins, input_aliases) =
         graph_port_decls_with_numbered_aliases(&proc.ins, "in", inferred_io.max_in);
     let (graph_outs, output_aliases) =
         graph_port_decls_with_numbered_aliases(&proc.outs, "out", inferred_io.max_out);
     GraphOwnerSurface {
+        constants,
         input_value_types: value_types_from_ports(&graph_ins, options, errors, &proc.name, "input"),
         param_value_types: value_types_from_params(&proc.params, options, errors, &proc.name, true),
         output_value_types: value_types_from_ports(

@@ -1,9 +1,55 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{
     AssignTarget, Block, Diagnostic, EventDef, EventParamDecl, FunctionDef, Program, Span, Stmt,
     WhenDef,
 };
+
+use crate::builtins::is_builtin_constant_name;
+
+/// Parameter names follow the same rules for runtime and const functions.
+pub(crate) fn validate_function_param_names(
+    def: &FunctionDef,
+    display_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let mut names = HashSet::with_capacity(def.params.len());
+    for param in &def.params {
+        let loc = param.ty_loc.or(param.loc);
+        if is_builtin_constant_name(&param.name) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "function parameter '{}' in '{}' is reserved as a builtin constant",
+                    param.name, def.name
+                ),
+                loc,
+            ));
+        }
+        if !names.insert(param.name.as_str()) {
+            errors.push(Diagnostic::semantic_span(
+                format!(
+                    "duplicate function parameter '{}' in '{}'",
+                    param.name, display_name
+                ),
+                loc,
+            ));
+        }
+    }
+}
+
+pub(crate) fn reject_borrowed_param_default(
+    param: &onda_frontend::FnParamDecl,
+    display_name: &str,
+    errors: &mut Vec<Diagnostic>,
+) {
+    errors.push(Diagnostic::semantic_span(
+        format!(
+            "function parameter '{}.{}' borrows storage and cannot have a default value",
+            display_name, param.name
+        ),
+        param.ty_loc.or(param.loc),
+    ));
+}
 
 const TOP_LEVEL_OWNER: &str = "the top-level owner";
 
@@ -65,16 +111,6 @@ fn validate_stmts(
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { decl, .. } => {
-                reject_binding(
-                    "local constant",
-                    &decl.name,
-                    decl.loc,
-                    owner,
-                    callables,
-                    errors,
-                );
-            }
             Stmt::Assign {
                 target, target_loc, ..
             } => match target {

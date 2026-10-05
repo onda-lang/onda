@@ -8,7 +8,8 @@ fn is_proc_operator_helper_name(name: &str) -> bool {
             && (name.ends_with("_step") || name.contains("_call_out")))
 }
 
-fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
+pub(crate) fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
+    let name = crate::compile_context::lowered_function_origin(name);
     if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
         return Some(step_proc);
     }
@@ -187,7 +188,7 @@ fn collect_proc_operator_helper_diags_from_stmt(
     out: &mut Vec<(DiagCtx, OutputTiming)>,
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
             collect_proc_operator_helper_diags_from_expr(
                 expr,
@@ -438,7 +439,7 @@ fn collect_non_sample_proc_operator_diags_from_stmts(
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign { target, expr, .. } => {
                 collect_non_sample_proc_operator_diags_from_target(
                     target,
@@ -727,7 +728,7 @@ fn seed_called_proc_local_defs_from_stmts(
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign { target, expr, .. } => {
                 seed_called_proc_local_defs_from_target(target, def_names, pending, seen_pending);
                 seed_called_proc_local_defs_from_expr(expr, def_names, pending, seen_pending);
@@ -1193,8 +1194,7 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
             ..
         } => stmt_list_contains_return(then_branch) || stmt_list_contains_return(else_branch),
         Stmt::For { body, .. } | Stmt::While { body, .. } => stmt_list_contains_return(body),
-        Stmt::Const { .. }
-        | Stmt::Assign { .. }
+        Stmt::Assign { .. }
         | Stmt::Expr { .. }
         | Stmt::Print { .. }
         | Stmt::Break { .. }
@@ -1262,6 +1262,7 @@ fn proc_options_for_shape(
 fn build_child_proc_surfaces(
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
 ) -> HashMap<String, ChildProcSurface> {
     let mut out = HashMap::<String, ChildProcSurface>::new();
     for proc in proc_defs_by_name.values() {
@@ -1286,6 +1287,7 @@ fn build_child_proc_surfaces(
             &ins_ports,
             "input",
             proc_options,
+            const_arrays,
             &mut scratch_errors,
         );
         let (outs, _, _, out_array_slots) = expand_proc_port_specs(
@@ -1293,10 +1295,16 @@ fn build_child_proc_surfaces(
             &outs_ports,
             "output",
             proc_options,
+            const_arrays,
             &mut scratch_errors,
         );
-        let (param_specs, _) =
-            expand_proc_param_specs(&proc.name, &params, proc_options, &mut scratch_errors);
+        let (param_specs, _) = expand_proc_param_specs(
+            &proc.name,
+            &params,
+            proc_options,
+            const_arrays,
+            &mut scratch_errors,
+        );
 
         let mut surface = ChildProcSurface::default();
         surface.inputs.extend(ins);
@@ -2018,10 +2026,6 @@ fn validate_hook_safe_stmts(
     for stmt in stmts {
         let diag = DiagCtx::new(stmt.loc().cloned().unwrap_or_default());
         match stmt {
-            Stmt::Const { decl, .. } => {
-                validate_hook_safe_expr(&decl.expr, ctx, frame, visiting, validated, errors);
-                frame.add_local(decl.name.clone());
-            }
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
             Stmt::Assign {
                 target,
@@ -2258,8 +2262,7 @@ fn reject_dynamic_bound_param_assignments(proc: &ProcessorDef, errors: &mut Vec<
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
                     check_stmts(proc_name, body, errors);
                 }
-                Stmt::Const { .. }
-                | Stmt::Assign { .. }
+                Stmt::Assign { .. }
                 | Stmt::Expr { .. }
                 | Stmt::Print { .. }
                 | Stmt::Return { .. }
@@ -2361,7 +2364,7 @@ fn validate_proc_local_def_surface_stmt(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Assign {
             target,
             target_loc,
@@ -2565,11 +2568,13 @@ pub(super) fn compute_proc_shape(
     fn_defs_full: &[FunctionDef],
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcBaseShape {
     let struct_symbols = struct_defs.keys().cloned().collect::<HashSet<_>>();
     let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
-    let child_proc_surfaces = build_child_proc_surfaces(proc_defs_by_name, options);
+    let child_proc_surfaces = build_child_proc_surfaces(proc_defs_by_name, options, const_arrays);
     check_local_param_duplicates(&proc.params, errors);
     let inferred_io = infer_numbered_io_from_sample(&proc.sample);
     let inferred_names = infer_numbered_names_from_proc(proc);
@@ -2584,12 +2589,24 @@ pub(super) fn compute_proc_shape(
         out_inferred_max,
     );
     let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-    let (ins, in_types, in_ports, mut in_array_slots) =
-        expand_proc_port_specs(&proc.name, &ins_ports, "input", proc_options, errors);
-    let (outs, out_types, _out_ports, out_array_slots) =
-        expand_proc_port_specs(&proc.name, &out_ports, "output", proc_options, errors);
+    let (ins, in_types, in_ports, mut in_array_slots) = expand_proc_port_specs(
+        &proc.name,
+        &ins_ports,
+        "input",
+        proc_options,
+        const_arrays,
+        errors,
+    );
+    let (outs, out_types, _out_ports, out_array_slots) = expand_proc_port_specs(
+        &proc.name,
+        &out_ports,
+        "output",
+        proc_options,
+        const_arrays,
+        errors,
+    );
     let (param_specs, mut field_array_slots) =
-        expand_proc_param_specs(&proc.name, &params, proc_options, errors);
+        expand_proc_param_specs(&proc.name, &params, proc_options, const_arrays, errors);
     let port_index_params = uniform_port_index_info_from_types(
         true,
         param_specs.iter().map(|spec| spec.slots.len()).sum(),
@@ -2731,6 +2748,7 @@ pub(super) fn compute_proc_shape(
     let typed_events = coerce_typed_events(
         &proc.events,
         true,
+        false,
         &format!("processor '{}'", proc.name),
         &typed_struct_defs,
         proc_options,
@@ -2740,9 +2758,13 @@ pub(super) fn compute_proc_shape(
     reserved.extend(param_names.iter().cloned());
     reserved.extend(ins_names.iter().cloned());
     reserved.extend(out_names.iter().cloned());
+    reserved.extend(const_scalars.keys().cloned());
 
     let mut state_type_hints = HashMap::<String, PrimitiveType>::new();
     let mut declared_symbols = DeclaredSymbolMap::new();
+    crate::decl_symbols::bind_const_symbols(&mut declared_symbols, const_scalars, const_arrays);
+    declared_symbols.const_scope = const_scope.cloned();
+    declared_symbols.options = proc_options;
     set_declared_symbol_types(
         &mut state_type_hints,
         &mut declared_symbols,
@@ -2938,6 +2960,8 @@ pub(super) fn compute_proc_shape(
         },
         &proc_state_array_struct_roots,
         &typed_struct_defs,
+        &proc_declared_symbols,
+        proc_options,
         errors,
     );
     for def in &mut proc.local_defs {
@@ -2945,6 +2969,7 @@ pub(super) fn compute_proc_shape(
             &mut def.body,
             &proc_state_array_struct_roots,
             &typed_struct_defs,
+            &proc_declared_symbols,
             errors,
         );
     }
@@ -3060,6 +3085,7 @@ pub(super) fn compute_proc_shape(
                 &target_proc.name,
                 &target_proc.params,
                 target_proc_options,
+                const_arrays,
                 errors,
             );
             let mut params: Vec<String> = target_ins.iter().map(|p| p.name.clone()).collect();
@@ -3072,10 +3098,11 @@ pub(super) fn compute_proc_shape(
             proc_fn_signatures.insert(
                 instance_name.clone(),
                 FnSignature {
+                    defaults_validated: false,
                     display_name: None,
                     requires_call_specialization: false,
                     params,
-                    defaults,
+                    defaults: defaults.into(),
                     param_types: Vec::new(),
                     type_params: Vec::new(),
                     return_type: None,
@@ -3107,6 +3134,7 @@ pub(super) fn compute_proc_shape(
                 &nested_out_ports,
                 "output",
                 target_proc_options,
+                const_arrays,
                 errors,
             );
             for port in &nested_out_ports {
@@ -3432,7 +3460,9 @@ pub(super) fn compute_proc_shape(
                 name: slot.name.clone(),
                 ty: FieldType::Scalar(slot.ty),
                 ty_loc: Default::default(),
-                default: slot.default.clone(),
+                // The generated init event assigns every parameter. Keeping a
+                // field default would evaluate it even when init overrides it.
+                default: None,
             });
         }
     }

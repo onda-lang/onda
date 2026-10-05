@@ -7,11 +7,55 @@ mod common;
 mod indexed_binding;
 mod init_analysis;
 mod runtime_stmt_analysis;
+mod slice_lengths;
 pub(crate) use alias_support::*;
 pub(crate) use common::*;
 pub(crate) use indexed_binding::*;
 pub(crate) use init_analysis::*;
 pub(crate) use runtime_stmt_analysis::*;
+pub(crate) use slice_lengths::*;
+
+/// The checked scope delta applied when executing a branch in a const def.
+#[derive(Debug, Default)]
+pub(crate) struct CheckedBranchScope {
+    discarded: HashSet<String>,
+    pub(crate) widened: Vec<(String, ReturnType)>,
+}
+
+impl CheckedBranchScope {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.discarded.is_empty() && self.widened.is_empty()
+    }
+
+    pub(crate) fn discard_bindings<T>(&self, bindings: &mut HashMap<String, T>) {
+        if self.discarded.is_empty() {
+            return;
+        }
+        // Aggregate roots also own flattened field/index aliases. Hashing each
+        // ancestor avoids comparing every binding with every discarded root.
+        bindings.retain(|name, _| {
+            !self.discarded.contains(name)
+                && !name.char_indices().any(|(index, ch)| {
+                    matches!(ch, '.' | '[') && self.discarded.contains(&name[..index])
+                })
+        });
+    }
+}
+
+/// Assignment types collected while checking an immutable body, then written
+/// onto those statements before the body is moved or cloned.
+pub(crate) type ScalarBindingTypes = HashMap<*const Stmt, PrimitiveType>;
+
+pub(crate) fn retain_scalar_binding_types(stmts: &mut [Stmt], types: ScalarBindingTypes) {
+    for stmt in stmts {
+        stmt.visit_statements_mut(|stmt| {
+            let ty = types.get(&(stmt as *const Stmt)).copied();
+            if let (Some(ty), Stmt::Assign { decl_ty, .. }) = (ty, stmt) {
+                *decl_ty = Some(DeclType::Scalar(ty));
+            }
+        });
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct StmtExprAnalysisEnv<'a> {
@@ -38,6 +82,32 @@ pub(crate) struct ScopeFlowState {
 }
 
 impl ScopeFlowState {
+    pub(crate) fn join_branches(
+        &mut self,
+        then_state: Self,
+        then_flow: crate::def_semantics::call_types::StatementFlow,
+        else_state: Self,
+        else_flow: crate::def_semantics::call_types::StatementFlow,
+        location: SourceLoc,
+        errors: &mut Vec<Diagnostic>,
+    ) -> CheckedBranchScope {
+        merge_reachable_branch_scope_flow_state(
+            &mut self.known_scalars,
+            &mut self.local_aliases,
+            &mut self.integer_ranges,
+            &mut self.local_array_aliases,
+            &mut self.local_proc_aliases,
+            &mut self.local_struct_aliases,
+            &mut self.local_buffer_aliases,
+            &mut self.tuple_vars,
+            then_state,
+            then_flow,
+            else_state,
+            else_flow,
+            location,
+            errors,
+        )
+    }
     pub(crate) fn shadow_binding(&mut self, root: &str) {
         self.known_scalars
             .retain(|name| !path_is_within_root(name, root));
@@ -165,7 +235,8 @@ pub(crate) fn merge_branch_scope_flow_state(
     else_state: ScopeFlowState,
     location: SourceLoc,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> CheckedBranchScope {
+    let mut widened = Vec::new();
     let base_known_scalars = known_scalars.clone();
     let base_local_aliases = local_aliases.clone();
     let base_integer_ranges = integer_ranges.clone();
@@ -250,6 +321,9 @@ pub(crate) fn merge_branch_scope_flow_state(
                     continue;
                 };
                 local_aliases.insert(name.clone(), ty);
+                if ty != then_ty || ty != else_ty {
+                    widened.push((name.clone(), ReturnType::Scalar(ty)));
+                }
                 if let Some(range) = then_range {
                     integer_ranges.insert(name.clone(), *range);
                 }
@@ -266,6 +340,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                     continue;
                 }
                 let mut element_types = Vec::with_capacity(then_arity);
+                let mut needs_widening = false;
                 for index in 0..then_arity {
                     let element = format!("{name}[{index}]");
                     let Some((then_ty, else_ty)) = then_state
@@ -280,6 +355,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                         element_types.clear();
                         break;
                     };
+                    needs_widening |= ty != *then_ty || ty != *else_ty;
                     element_types.push(ty);
                 }
                 if element_types.len() != then_arity {
@@ -287,6 +363,9 @@ pub(crate) fn merge_branch_scope_flow_state(
                     continue;
                 }
                 set_tracked_tuple_types(tuple_vars, local_aliases, &name, &element_types);
+                if needs_widening {
+                    widened.push((name.clone(), ReturnType::Tuple(element_types)));
+                }
                 true
             }
             Some(TrackedBranchBindingKind::Array) => {
@@ -304,9 +383,8 @@ pub(crate) fn merge_branch_scope_flow_state(
                 }
                 let mut info = then_info.clone();
                 info.len = then_info.len.max(else_info.len);
-                info.proven_len = then_info
-                    .proven_len
-                    .filter(|len| Some(*len) == else_info.proven_len);
+                info.proven_len =
+                    SliceLength::join(then_info.proven_len.as_ref(), else_info.proven_len.as_ref());
                 info.writable = then_info.writable && else_info.writable;
                 local_array_aliases.insert(name.clone(), info);
                 true
@@ -364,6 +442,20 @@ pub(crate) fn merge_branch_scope_flow_state(
             known_scalars.insert(name);
         }
     }
+    widened.sort_by(|a, b| a.0.cmp(&b.0));
+    let discarded = then_binding_names
+        .union(&else_binding_names)
+        .filter(|name| {
+            !known_scalars.contains(*name)
+                && !local_array_aliases.contains_key(*name)
+                && !local_proc_aliases.contains_key(*name)
+                && !local_struct_aliases.contains_key(*name)
+                && !local_buffer_aliases.contains_key(*name)
+                && !tuple_vars.contains_key(*name)
+        })
+        .cloned()
+        .collect();
+    CheckedBranchScope { discarded, widened }
 }
 
 fn tracked_branch_binding_names(state: &ScopeFlowState) -> HashSet<String> {
@@ -455,7 +547,7 @@ pub(crate) fn merge_reachable_branch_scope_flow_state(
     else_flow: crate::def_semantics::call_types::StatementFlow,
     location: SourceLoc,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> CheckedBranchScope {
     use crate::def_semantics::call_types::StatementFlow;
 
     let continuing_state = match (then_flow, else_flow) {
@@ -487,6 +579,7 @@ pub(crate) fn merge_reachable_branch_scope_flow_state(
     *local_struct_aliases = continuing_state.local_struct_aliases;
     *local_buffer_aliases = continuing_state.local_buffer_aliases;
     *tuple_vars = continuing_state.tuple_vars;
+    CheckedBranchScope::default()
 }
 
 pub(crate) fn track_integer_range_declaration(
@@ -656,13 +749,14 @@ pub(crate) fn infer_tracked_tuple_types(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     fn_return_types: &HashMap<String, ReturnType>,
     mut infer_scalar: impl FnMut(&Expr) -> Option<PrimitiveType>,
+    constants: &DeclaredSymbolMap,
 ) -> Option<Vec<PrimitiveType>> {
     match expr {
         Expr::Tuple { values, .. } => values
             .iter()
             .map(|value| {
                 let inferred = infer_scalar(value);
-                effective_untyped_assignment_type(value, inferred).or(inferred)
+                effective_untyped_assignment_type(value, inferred, constants).or(inferred)
             })
             .collect(),
         Expr::UserCall { name, .. } => match fn_return_types.get(name) {
@@ -738,6 +832,7 @@ pub(crate) fn require_tuple_expr_assignable_types(
     expr: &Expr,
     source_types: &[PrimitiveType],
     target_types: &[PrimitiveType],
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
     if source_types.len() != target_types.len() {
@@ -761,7 +856,7 @@ pub(crate) fn require_tuple_expr_assignable_types(
         let component_expr = tuple_values
             .and_then(|values| values.get(index))
             .unwrap_or(expr);
-        if !can_assign_expr_to_type(component_expr, *source, *target) {
+        if !can_assign_expr_to_type(component_expr, *source, *target, constants) {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "tuple assignment to '{name}' element {index} type mismatch: cannot assign {:?} to {:?}",
@@ -783,6 +878,7 @@ pub(crate) fn resolve_tuple_assignment_types(
     existing_types: Option<&[PrimitiveType]>,
     allow_typed_existing: bool,
     errors: &mut Vec<Diagnostic>,
+    constants: &DeclaredSymbolMap,
 ) -> Option<Vec<PrimitiveType>> {
     if let (Some(declared), Some(existing)) = (declared_types, existing_types) {
         if declared != existing {
@@ -809,7 +905,7 @@ pub(crate) fn resolve_tuple_assignment_types(
         source_types
     };
 
-    require_tuple_expr_assignable_types(name, expr, source_types, target_types, errors);
+    require_tuple_expr_assignable_types(name, expr, source_types, target_types, constants, errors);
     Some(target_types.to_vec())
 }
 
@@ -863,6 +959,7 @@ pub(crate) fn analyze_tuple_destructuring_expr(
         env.expr_env.struct_defs,
         fn_return_types,
         |value| infer_stmt_expr_type(value, env, errors),
+        env.expr_env.declared_symbols,
     );
     let arity = types
         .as_ref()
@@ -1128,75 +1225,48 @@ pub(crate) fn require_validated_numeric_stmt_expr(
 
 pub(crate) fn validate_for_loop_step_expr(
     step_expr: Option<&Expr>,
+    var_ty: PrimitiveType,
     env: StmtExprAnalysisEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
     if let Some(step_expr) = step_expr {
         require_validated_numeric_stmt_expr(step_expr, "for loop step", env, errors);
-        if matches!(step_expr, Expr::Int { value: 0, .. })
-            || matches!(step_expr, Expr::Number { value: v, .. } if *v == 0.0)
-        {
-            errors.push(Diagnostic::semantic_span(
-                "for loop step cannot be zero",
-                step_expr.loc(),
-            ));
-        }
+        validate_constant_loop_step(
+            step_expr,
+            var_ty,
+            env.expr_env.declared_symbols.options,
+            errors,
+        );
     }
 }
 
-pub(crate) fn prove_static_slice_len(
-    total_len: Option<usize>,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-) -> Option<usize> {
-    let total_len = total_len?;
-    for bound in [start, end].into_iter().flatten() {
-        i32::try_from(const_slice_bound_i64(bound)?).ok()?;
-    }
-    let start = normalize_static_slice_bound(start, total_len, false);
-    let end = normalize_static_slice_bound(end, total_len, true);
-    Some(end.saturating_sub(start))
-}
-
-pub(crate) fn infer_static_slice_len_hint(
-    total_len: Option<usize>,
-    start: Option<&Expr>,
-    end: Option<&Expr>,
-) -> usize {
-    let Some(total_len) = total_len else {
-        return 1;
-    };
-    let start = normalize_static_slice_bound(start, total_len, false);
-    let end = normalize_static_slice_bound(end, total_len, true);
-    end.saturating_sub(start).max(1)
-}
-
-fn normalize_static_slice_bound(
-    expr: Option<&Expr>,
-    total_len: usize,
-    default_to_len: bool,
-) -> usize {
-    let Some(expr) = expr else {
-        return if default_to_len { total_len } else { 0 };
-    };
-    let raw =
-        const_slice_bound_i64(expr).unwrap_or(if default_to_len { total_len as i64 } else { 0 });
-    let adjusted = if raw < 0 { total_len as i64 + raw } else { raw };
-    adjusted.clamp(0, total_len as i64) as usize
-}
-
-fn const_slice_bound_i64(expr: &Expr) -> Option<i64> {
-    match expr {
-        Expr::Int { value: v, .. } => Some(*v),
-        Expr::Number { value: v, .. } => {
-            let truncated = v.trunc();
-            if (v - truncated).abs() <= 1e-6 {
-                Some(truncated as i64)
-            } else {
-                None
-            }
-        }
-        _ => None,
+pub(crate) fn validate_constant_loop_step(
+    step: &Expr,
+    var_ty: PrimitiveType,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let value = crate::const_scalar::eval_const_scalar(
+        step,
+        None,
+        options,
+        "for loop step",
+        &mut Vec::new(),
+    )
+    .and_then(|value| {
+        onda_mir::constant_eval::cast(
+            crate::mir_scalar::mir_scalar(value),
+            crate::mir_scalar::scalar_type(var_ty),
+        )
+    });
+    if matches!(
+        value,
+        Some(onda_mir::ScalarValue::I32(0) | onda_mir::ScalarValue::I64(0))
+    ) {
+        errors.push(Diagnostic::semantic_span(
+            "for loop step cannot be zero",
+            step.loc(),
+        ));
     }
 }
 

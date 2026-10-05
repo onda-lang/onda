@@ -1,17 +1,8 @@
 use super::*;
 use crate::def_semantics::call_types::StatementFlow;
+use crate::loop_range::{static_for_plan, StaticForPlan};
 use crate::{flatten_indexed_member_target, is_bare_return_expr};
 use onda_frontend::DeclType;
-
-#[derive(Clone, Copy)]
-enum StaticForPlan {
-    Empty,
-    NonEmpty {
-        min: ScalarValue,
-        max: ScalarValue,
-        last: ScalarValue,
-    },
-}
 
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_statements(
@@ -22,12 +13,6 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<StatementFlow, MirLoweringError> {
         for statement in statements {
             let flow = match statement {
-                Stmt::Const { .. } => {
-                    return Err(self.error(
-                        "runtime local const declaration survived semantic constant folding",
-                        statement.loc(),
-                    ));
-                }
                 Stmt::Print {
                     label,
                     values,
@@ -38,16 +23,12 @@ impl<'a> FunctionLowerer<'a> {
                     let mut argument_types = Vec::with_capacity(values.len());
                     let mut payload_size = 0_u32;
                     for expression in values {
-                        let lowered = self.lower_expr(expression, block)?;
                         // Unlike an ordinary call, `print` has no parameter type
                         // that can provide literal context. Give pure numeric
                         // literals the same f32/i32 defaults as an untyped
                         // assignment; explicit casts and typed expressions retain
                         // their concrete type.
-                        let print_ty =
-                            effective_untyped_assignment_type(expression, Some(lowered.ty))
-                                .unwrap_or(lowered.ty);
-                        let lowered = self.coerce(lowered, print_ty, block, expression.loc())?;
+                        let lowered = self.lower_untyped_expr(expression, block)?;
                         payload_size += match lowered.ty {
                             PrimitiveType::F32 | PrimitiveType::I32 => 4,
                             PrimitiveType::F64 | PrimitiveType::I64 => 8,
@@ -284,7 +265,12 @@ impl<'a> FunctionLowerer<'a> {
                     } else {
                         None
                     };
-                    let values = self.lower_value_expr(expr, block)?;
+                    let types = self.assignment_value_types(target, decl_ty.as_ref(), expr)?;
+                    let values = if let Some(types) = types {
+                        self.lower_value_expr_for_types(expr, &types, block)?
+                    } else {
+                        self.lower_value_expr(expr, block)?
+                    };
                     match target {
                         AssignTarget::Var(name) => {
                             if !self.assign_runtime_global(
@@ -400,7 +386,7 @@ impl<'a> FunctionLowerer<'a> {
                             return Ok(StatementFlow::Terminates);
                         }
                     };
-                    let values = self.lower_value_expr(expr, block)?;
+                    let values = self.lower_value_expr_for_types(expr, &result_types, block)?;
                     if values.len() != result_types.len() {
                         return Err(self.error(
                             format!(
@@ -502,15 +488,19 @@ impl<'a> FunctionLowerer<'a> {
                     self.nested_proc_aliases = outer_nested_proc_aliases;
                     let mut else_block = MirBlock::default();
                     self.push_statement(&mut else_block, StatementKind::Break, (*loc).into());
-                    self.push_statement(
-                        &mut loop_body,
-                        StatementKind::If {
-                            condition: condition.value,
-                            then_block,
-                            else_block,
-                        },
-                        (*loc).into(),
-                    );
+                    if condition.value == Value::Constant(ScalarValue::Bool(true)) {
+                        loop_body.statements.extend(then_block.statements);
+                    } else {
+                        self.push_statement(
+                            &mut loop_body,
+                            StatementKind::If {
+                                condition: condition.value,
+                                then_block,
+                                else_block,
+                            },
+                            (*loc).into(),
+                        );
+                    }
                     self.push_statement(
                         block,
                         StatementKind::Loop { body: loop_body },
@@ -609,12 +599,12 @@ impl<'a> FunctionLowerer<'a> {
         };
         let forward_unit_step = step_value.value == Value::Constant(unit_step);
 
-        let static_plan = static_for_plan(
-            start_value.value,
-            end_value.value,
-            step_value.value,
-            end_inclusive,
-        );
+        let static_plan = match (start_value.value, end_value.value, step_value.value) {
+            (Value::Constant(start), Value::Constant(end), Value::Constant(step)) => {
+                static_for_plan(start, end, step, end_inclusive)
+            }
+            _ => None,
+        };
         if matches!(static_plan, Some(StaticForPlan::Empty)) {
             return Ok(());
         }
@@ -1118,66 +1108,4 @@ impl<'a> FunctionLowerer<'a> {
             location,
         );
     }
-}
-
-fn static_for_plan(
-    start: Value,
-    end: Value,
-    step: Value,
-    inclusive: bool,
-) -> Option<StaticForPlan> {
-    let (ty, start, end, step) = match (start, end, step) {
-        (
-            Value::Constant(ScalarValue::I32(start)),
-            Value::Constant(ScalarValue::I32(end)),
-            Value::Constant(ScalarValue::I32(step)),
-        ) => (
-            PrimitiveType::I32,
-            i128::from(start),
-            i128::from(end),
-            i128::from(step),
-        ),
-        (
-            Value::Constant(ScalarValue::I64(start)),
-            Value::Constant(ScalarValue::I64(end)),
-            Value::Constant(ScalarValue::I64(step)),
-        ) => (
-            PrimitiveType::I64,
-            i128::from(start),
-            i128::from(end),
-            i128::from(step),
-        ),
-        _ => return None,
-    };
-    if step == 0 {
-        return None;
-    }
-
-    let last = if step > 0 {
-        let upper = if inclusive { end } else { end - 1 };
-        if start > upper {
-            return Some(StaticForPlan::Empty);
-        }
-        start + ((upper - start) / step) * step
-    } else {
-        let lower = if inclusive { end } else { end + 1 };
-        if start < lower {
-            return Some(StaticForPlan::Empty);
-        }
-        start - ((start - lower) / -step) * -step
-    };
-    let scalar = |value| match ty {
-        PrimitiveType::I32 => ScalarValue::I32(
-            i32::try_from(value).expect("an i32-bounded loop has an i32 iteration value"),
-        ),
-        PrimitiveType::I64 => ScalarValue::I64(
-            i64::try_from(value).expect("an i64-bounded loop has an i64 iteration value"),
-        ),
-        _ => unreachable!("static for plans are restricted to integers"),
-    };
-    Some(StaticForPlan::NonEmpty {
-        min: scalar(start.min(last)),
-        max: scalar(start.max(last)),
-        last: scalar(last),
-    })
 }

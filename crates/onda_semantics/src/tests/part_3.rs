@@ -1861,7 +1861,7 @@ sample:
 
     fn def_stmt_contains_proc_index_sentinel(stmt: &Stmt) -> bool {
         match stmt {
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+            Stmt::Break { .. } | Stmt::Continue { .. } => false,
             Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                 expr_contains_proc_index_sentinel(expr)
             }
@@ -1993,7 +1993,7 @@ sample:
                         .iter()
                         .any(|stmt| stmt_contains_index_base(stmt, expected_base))
             }
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => false,
+            Stmt::Break { .. } | Stmt::Continue { .. } => false,
         }
     }
 
@@ -3549,35 +3549,35 @@ sample:
     }
 
     #[test]
-    fn generic_casts_in_local_consts_resolve_in_every_generic_executable_owner() {
+    fn generic_casts_in_locals_resolve_in_every_generic_executable_owner() {
         let src = r#"
 struct Box<T>:
   value: T
   def shifted(self) -> T:
-    const One = T(1)
+    One = T(1)
     return self.value + One
 
 def shifted<T>(value: T) -> T:
-  const One = T(1)
-  const Two = One + One
+  One = T(1)
+  Two = One + One
   return value + Two
 
 def generic_one<T>():
-  const One = T(1)
+  One = T(1)
   return One
 
 proc Holder<T>:
   outs:
     out1
   init:
-    const Two = T(2)
+    Two = T(2)
     stored: T = Two
   events:
     set(value: T):
-      const One = T(1)
+      One = T(1)
       stored = value + One
   def shifted(value: T) -> T:
-    const One = T(1)
+    One = T(1)
     return value + One
   sample:
     out1 = f32(shifted(stored))
@@ -3590,11 +3590,11 @@ sample:
   box = Box<f64>(4.0)
   out1 = f32(box.shifted()) + f32(shifted<f64>(5.0)) + f32(generic_one<f64>()) + holder()
 "#;
-        let program = parse_program(src).expect("generic local const source should parse");
+        let program = parse_program(src).expect("generic local variable source should parse");
         let typed = analyze(program)
-            .expect("generic local consts should resolve after owner specialization");
+            .expect("generic locals should resolve after owner specialization");
         lower_program_to_optimized_mir(&typed)
-            .expect("resolved generic local consts should lower to MIR");
+            .expect("resolved generic locals should lower to MIR");
     }
 
     #[test]

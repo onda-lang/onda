@@ -11,7 +11,7 @@ pub(crate) struct DefStmtAnalysisCtx<'a> {
     pub struct_array_roots: &'a HashMap<String, ArrayStructRootInfo>,
     pub proc_array_roots: &'a HashMap<String, ProcNestedArrayState>,
     pub state_scalars: &'a HashMap<String, PrimitiveType>,
-    pub resolved_scalar_locals: &'a RefCell<LocalAliasTypes>,
+    pub resolved_scalar_bindings: &'a RefCell<ScalarBindingTypes>,
 }
 
 pub(crate) type DefStmtAnalysisState = ScopeFlowState;
@@ -45,7 +45,8 @@ pub(crate) fn analyze_def_stmt_list(
         event_policy: None,
         state_tuples: &state_tuples,
         registered_state_tuples: &registration_names,
-        resolved_scalar_locals: Some(ctx.resolved_scalar_locals),
+        resolved_scalar_locals: None,
+        resolved_scalar_bindings: Some(ctx.resolved_scalar_bindings),
         resolved_array_locals: None,
         resolved_tuple_locals: None,
         resolved_struct_locals: None,

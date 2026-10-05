@@ -337,7 +337,6 @@ impl<'a> FunctionLowerer<'a> {
         block_pre: &[Stmt],
         sample: &[Stmt],
         block_post: &[Stmt],
-        _block_size: u32,
         sample_oversample_factor: usize,
     ) -> Result<(onda_mir::Function, retained_storage::BlockRegion), MirLoweringError> {
         let mut body = self.retained_entry();
@@ -371,7 +370,6 @@ impl<'a> FunctionLowerer<'a> {
             load_process_param(onda_mir::PROCESS_FLAGS_PARAM_INDEX),
             process_location,
         );
-
         let begin_bits = self.emit_temp(
             &mut body,
             PrimitiveType::I32,

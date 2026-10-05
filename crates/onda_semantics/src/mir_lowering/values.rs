@@ -1,6 +1,118 @@
 use super::*;
 
 impl<'a> FunctionLowerer<'a> {
+    /// Reuse checked annotations and existing storage metadata for the RHS's
+    /// numeric context. Resolving a type never evaluates the assignment place.
+    pub(super) fn assignment_value_types(
+        &self,
+        target: &AssignTarget,
+        declared: Option<&onda_frontend::DeclType>,
+        expression: &Expr,
+    ) -> Result<Option<Vec<PrimitiveType>>, MirLoweringError> {
+        if let Some(ty) = declared.and_then(onda_frontend::DeclType::scalar) {
+            return Ok(Some(vec![ty]));
+        }
+        if let Some(types) = declared.and_then(onda_frontend::DeclType::tuple) {
+            return Ok(Some(types.to_vec()));
+        }
+        let (name, index) = match target {
+            AssignTarget::Var(name) => (name.as_str(), None),
+            AssignTarget::Index { base, index } => (base.as_str(), Some(index)),
+            AssignTarget::Tuple(targets) => {
+                let types = targets
+                    .iter()
+                    .map(|target| {
+                        self.assignment_binding_types(target.binding()?, false)?
+                            .first()
+                            .copied()
+                    })
+                    .collect::<Option<Vec<_>>>();
+                return Ok(types);
+            }
+            _ => return Ok(None),
+        };
+        if let Some(mut types) = self.assignment_binding_types(name, index.is_some()) {
+            if let Some(index) = index {
+                if types.len() > 1 {
+                    let component = self.constant_tuple_index(name, index, types.len())?;
+                    types = vec![types[component]];
+                }
+            }
+            return Ok(Some(types));
+        }
+        // First assignment has the ordinary literal defaults. Non-literal
+        // values retain the type inferred by ordinary expression lowering.
+        if index.is_none() {
+            return Ok(
+                crate::expr_typing::default_numeric_literal_type(expression).map(|ty| vec![ty])
+            );
+        }
+        Ok(None)
+    }
+
+    fn assignment_binding_types(&self, name: &str, indexed: bool) -> Option<Vec<PrimitiveType>> {
+        match self.bindings.get(name) {
+            Some(
+                Binding::Local(_, ty)
+                | Binding::PlaceAlias(_, ty)
+                | Binding::ReferenceParameter(_, ty),
+            ) if !indexed => return Some(vec![*ty]),
+            Some(Binding::SliceElementAlias { element, .. }) if !indexed => {
+                return Some(vec![*element])
+            }
+            Some(Binding::Tuple(components)) => {
+                return Some(components.iter().map(|(_, ty)| *ty).collect())
+            }
+            Some(Binding::TupleReferenceParameter(components)) => {
+                return Some(components.iter().map(|(_, ty)| *ty).collect())
+            }
+            Some(Binding::TupleSliceElementAlias(components)) => {
+                return Some(components.iter().map(|(_, ty, _)| *ty).collect())
+            }
+            Some(
+                Binding::Array(_, ty, _)
+                | Binding::ArrayParameter(_, ty, _)
+                | Binding::Slice(_, ty, _, _),
+            ) if indexed => return Some(vec![*ty]),
+            Some(Binding::BufferParameter(_, ty) | Binding::BufferAlias(_, ty)) if indexed => {
+                return Some(vec![*ty])
+            }
+            _ => {}
+        }
+        if let Some(components) = self.data_tuple_components(name) {
+            return components
+                .iter()
+                .map(|name| self.assignment_binding_types(name, false)?.first().copied())
+                .collect();
+        }
+        let globals = self.runtime_globals_for_unbound(name)?;
+        if let Some(components) = globals.state_tuples.get(name) {
+            return Some(components.iter().map(|(_, ty)| *ty).collect());
+        }
+        let ty = if indexed {
+            globals
+                .state_arrays
+                .get(name)
+                .map(|(_, ty, _)| *ty)
+                .or_else(|| globals.output_arrays.get(name).map(|(_, ty, _)| *ty))
+                .or_else(|| {
+                    globals
+                        .control_output_arrays
+                        .get(name)
+                        .map(|(_, ty, _)| *ty)
+                })
+                .or_else(|| globals.buffers.get(name).map(|(_, ty)| *ty))
+        } else {
+            globals
+                .states
+                .get(name)
+                .map(|(_, ty)| *ty)
+                .or_else(|| globals.outputs.get(name).map(|(_, ty)| *ty))
+                .or_else(|| globals.control_outputs.get(name).map(|(_, ty)| *ty))
+        }?;
+        Some(vec![ty])
+    }
+
     pub(super) fn single_global_value(
         &self,
         name: &str,
@@ -245,36 +357,10 @@ impl<'a> FunctionLowerer<'a> {
                 )),
             };
         }
-        let same_named_local_already_lowered = self
-            .locals
-            .iter()
-            .any(|local| local.name.as_deref() == Some(name));
-        let ty = if same_named_local_already_lowered {
-            // `local_scalar_types` is keyed by source spelling, while nested
-            // branch/loop locals with the same spelling are distinct bindings.
-            // Once one such binding has been lowered, the current assignment
-            // context is the authoritative type for a fresh sibling/outer
-            // binding.
-            inferred_ty
-        } else {
-            self.function
-                .local_scalar_types
-                .get(name)
-                .copied()
-                .or_else(|| self.runtime_globals.map(|_| inferred_ty))
-                .ok_or_else(|| {
-                    self.error(
-                        format!(
-                            "semantic analysis did not retain a scalar type for local '{name}'"
-                        ),
-                        location,
-                    )
-                })?
-        };
-        let local = self.new_local(Some(name.to_owned()), ty);
+        let local = self.new_local(Some(name.to_owned()), inferred_ty);
         self.bindings
-            .insert(name.to_owned(), Binding::Local(local, ty));
-        Ok((local, ty))
+            .insert(name.to_owned(), Binding::Local(local, inferred_ty));
+        Ok((local, inferred_ty))
     }
 
     pub(super) fn lower_explicit_cast(
@@ -391,7 +477,7 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) -> Result<PrimitiveType, MirLoweringError> {
         let mut diagnostics = Vec::new();
-        merge_numeric_types(lhs, rhs, context, &mut diagnostics).ok_or_else(|| {
+        merge_numeric_types(lhs, rhs, context, location, &mut diagnostics).ok_or_else(|| {
             let detail = diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.as_str())

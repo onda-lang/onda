@@ -1,12 +1,11 @@
-use std::collections::HashSet;
-
 use onda_frontend::{
-    BinaryOp, BuiltinFn, CmpOp, Diagnostic, Expr, LogicalOp, PrimitiveType, SourceLoc,
-    INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN,
-    INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN,
-    READ_UNSAFE_FN, WRITE_UNSAFE_FN,
+    BinaryOp, BuiltinFn, Diagnostic, Expr, PrimitiveType, SourceLoc, INTERNAL_BUFFER_READ2_FN,
+    INTERNAL_BUFFER_READ3_FN, INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN,
+    INTERNAL_BUFFER_WRITE3_FN, INTERNAL_BUFFER_WRITE_CHANNEL_FN, READ_UNSAFE_FN, WRITE_UNSAFE_FN,
 };
 
+use crate::const_scalar::eval_const_scalar;
+use crate::expr_typing::merge_numeric_types_without_diagnostics as merge_const_numeric_types;
 use crate::AnalysisOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,36 +302,26 @@ fn merge_const_integer_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<P
     }
 }
 
-fn merge_const_numeric_types(lhs: PrimitiveType, rhs: PrimitiveType) -> Option<PrimitiveType> {
-    use PrimitiveType::*;
-    match (lhs, rhs) {
-        (F64, I32)
-        | (I32, F64)
-        | (F64, I64)
-        | (I64, F64)
-        | (F64, F32)
-        | (F32, F64)
-        | (F64, F64) => Some(F64),
-        (F32, I32) | (I32, F32) | (F32, F32) | (F32, I64) | (I64, F32) => Some(F32),
-        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
-        (I32, I32) => Some(I32),
-        _ => None,
-    }
-}
-
+/// Types materialized scalar expressions using the ordinary arithmetic and
+/// intrinsic rules. Const references and calls are resolved before this check.
 pub(crate) fn infer_const_expr_type(
     expr: &Expr,
-    _options: AnalysisOptions,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
     expr.try_fold(
         |node, children| match node {
-            Expr::UnaryBitNot { .. } | Expr::Binary { .. } => node.children(children),
+            Expr::UnaryBitNot { .. } | Expr::Binary { .. } | Expr::Call { .. } => node.children(children),
             _ => {}
         },
         |node, children| {
-            Ok::<_, ()>(match node {
+            let pure = match node {
+                Expr::Number { .. } | Expr::Int { .. } | Expr::Var { .. } => true,
+                Expr::UnaryBitNot { .. } | Expr::Binary { .. } | Expr::Call { .. } =>
+                    children.as_slice().iter().all(|(_, pure)| *pure),
+                _ => false,
+            };
+            let ty = match node {
                 Expr::Number { .. } => PrimitiveType::F64,
                 Expr::Int { .. } => PrimitiveType::I64,
                 Expr::Bool { .. } => PrimitiveType::Bool,
@@ -342,12 +331,27 @@ pub(crate) fn infer_const_expr_type(
                         node.loc(),
                     ));
                 })?,
+                Expr::Index { base, .. } => {
+                    errors.push(Diagnostic::semantic_span(format!("{context} uses non-constant array '{base}'"), node.loc()));
+                    return Err(());
+                }
+                Expr::UserCall { name, .. } => {
+                    errors.push(Diagnostic::semantic_span(format!("{context} uses unknown const def '{name}'"), node.loc()));
+                    return Err(());
+                }
+                Expr::Call { func, .. } => {
+                    let (types, pure): (Vec<_>, Vec<_>) = children.unzip();
+                    let types = crate::expr_typing::adapt_numeric_argument_types_from_purity(&types, &pure);
+                    crate::intrinsic_result_type(*func, &types).ok_or_else(|| {
+                        errors.push(Diagnostic::semantic_span(format!("{context}: builtin '{}' has incompatible argument types", builtin_name(*func)), node.loc()));
+                    })?
+                }
                 Expr::Cast { to, .. } => *to,
                 Expr::UnaryNot { .. } | Expr::Logical { .. } | Expr::Compare { .. } => {
                     PrimitiveType::Bool
                 }
                 Expr::UnaryBitNot { expr, .. } => {
-                    let inner = children.next().expect("bitwise-not operand type");
+                    let (inner, _) = children.next().expect("bitwise-not operand type");
                     merge_const_integer_types(inner, inner).ok_or_else(|| {
                         errors.push(Diagnostic::semantic_span(
                             format!(
@@ -359,8 +363,9 @@ pub(crate) fn infer_const_expr_type(
                     })?
                 }
                 Expr::Binary { op, .. } => {
-                    let lhs_ty = children.next().expect("left binary operand type");
-                    let rhs_ty = children.next().expect("right binary operand type");
+                    let (lhs_ty, lhs_pure) = children.next().expect("left binary operand type");
+                    let (rhs_ty, rhs_pure) = children.next().expect("right binary operand type");
+                    let (lhs_ty, rhs_ty) = crate::expr_typing::adapt_binary_types_from_purity(lhs_ty, rhs_ty, lhs_pure, rhs_pure);
                     match op {
                         BinaryOp::BitAnd
                         | BinaryOp::BitOr
@@ -397,54 +402,119 @@ pub(crate) fn infer_const_expr_type(
                     ));
                     return Err(());
                 }
-            })
+            };
+            Ok::<_, ()>((ty, pure))
         },
     )
     .ok()
+    .map(|(ty, _)| ty)
 }
 
-fn fold_const_expr_exactness(expr: &Expr, mut on_exact: impl FnMut(&Expr)) -> bool {
-    expr.try_fold(
-        Expr::children,
-        |node, children| -> Result<bool, std::convert::Infallible> {
-            let mut child = || children.next().expect("const expression exactness child");
-            let exact = match node {
-                Expr::Int { .. } | Expr::Bool { .. } => true,
-                Expr::Var { name, .. } => matches!(
-                    builtin_constant_type(name),
-                    Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
-                ),
-                Expr::Cast { to, .. } => {
-                    matches!(
-                        to,
-                        PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool
-                    ) && child()
-                }
-                Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => child(),
-                Expr::Logical { .. } | Expr::Compare { .. } | Expr::Binary { .. } => {
-                    child() && child()
-                }
-                _ => false,
-            };
-            if exact {
-                on_exact(node);
-            }
-            Ok(exact)
-        },
-    )
-    .unwrap()
+fn fold_const_expr_exactness(
+    expr: &Expr,
+    constants: Option<&crate::decl_symbols::DeclaredSymbolMap>,
+) -> bool {
+    // Keep constant availability separate from integer results: an explicit
+    // integer cast may consume a constant floating expression without losing
+    // its integer result type or exact arithmetic in the surrounding tree.
+    let (_, exact) = expr
+        .try_fold(
+            Expr::children,
+            |node, children| -> Result<(bool, bool), std::convert::Infallible> {
+                let mut child = || children.next().expect("const expression exactness child");
+                let (constant, exact) = match node {
+                    Expr::Int { .. } | Expr::Bool { .. } => (true, true),
+                    Expr::Number { .. } => (true, false),
+                    Expr::Var { name, .. } => {
+                        let ty = builtin_constant_type(name).or_else(|| {
+                            match constants.and_then(|symbols| symbols.get(name)) {
+                                Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                                    ty,
+                                    ..
+                                }) => Some(*ty),
+                                _ => None,
+                            }
+                        });
+                        (
+                            ty.is_some(),
+                            matches!(
+                                ty,
+                                Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
+                            ),
+                        )
+                    }
+                    Expr::Index { base, .. } => {
+                        let (_, index_exact) = child();
+                        let ty = match constants.and_then(|symbols| symbols.get(base)) {
+                            Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
+                                elem_ty,
+                            }) => Some(*elem_ty),
+                            _ => None,
+                        };
+                        (
+                            ty.is_some() && index_exact,
+                            matches!(
+                                ty,
+                                Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
+                            ) && index_exact,
+                        )
+                    }
+                    Expr::Cast { to, .. } => {
+                        let (constant, _) = child();
+                        (
+                            constant,
+                            constant
+                                && matches!(
+                                    to,
+                                    PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool
+                                ),
+                        )
+                    }
+                    Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => child(),
+                    Expr::Logical { .. } | Expr::Compare { .. } | Expr::Binary { .. } => {
+                        let (lhs_const, lhs_exact) = child();
+                        let (rhs_const, rhs_exact) = child();
+                        (lhs_const && rhs_const, lhs_exact && rhs_exact)
+                    }
+                    Expr::Call { func, .. } => {
+                        let (constant, integers) = children.fold(
+                            (true, true),
+                            |(constant, integers), (arg_const, arg_int)| {
+                                (constant && arg_const, integers && arg_int)
+                            },
+                        );
+                        (
+                            constant,
+                            integers
+                                && matches!(
+                                    func,
+                                    BuiltinFn::Abs
+                                        | BuiltinFn::Min
+                                        | BuiltinFn::Max
+                                        | BuiltinFn::RangeClamp
+                                        | BuiltinFn::RangeWrap
+                                ),
+                        )
+                    }
+                    _ => (false, false),
+                };
+                Ok((constant, exact))
+            },
+        )
+        .unwrap();
+    exact
 }
 
 pub(crate) fn can_eval_const_expr_exact_int(expr: &Expr) -> bool {
-    fold_const_expr_exactness(expr, |_| {})
+    fold_const_expr_exactness(expr, None)
 }
 
-pub(crate) fn exact_const_expr_nodes(expr: &Expr) -> HashSet<*const Expr> {
-    let mut nodes = HashSet::new();
-    fold_const_expr_exactness(expr, |expr| {
-        nodes.insert(expr as *const Expr);
-    });
-    nodes
+/// Proves the same exact integer forms before deferred constants have values.
+pub(crate) fn can_eval_const_expr_exact_int_with_symbols(
+    expr: &Expr,
+    constants: &crate::decl_symbols::DeclaredSymbolMap,
+) -> bool {
+    fold_const_expr_exactness(expr, Some(constants))
 }
 
 pub(crate) fn eval_const_expr_i64_exact(
@@ -453,183 +523,16 @@ pub(crate) fn eval_const_expr_i64_exact(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    type Eval = Result<(i64, PrimitiveType), Diagnostic>;
-    let result = expr
-        .try_fold(
-            Expr::children,
-            |node, children| -> Result<Eval, std::convert::Infallible> {
-                let mut child = || children.next().expect("integer constant expression child");
-                let diagnostic = |message| Diagnostic::semantic_span(message, node.loc());
-                Ok((|| -> Eval {
-                    match node {
-                    Expr::Int { value, .. } => Ok((*value, PrimitiveType::I64)),
-                    Expr::Bool { value, .. } => {
-                        Ok((i64::from(*value), PrimitiveType::Bool))
-                    }
-                    Expr::Var { name, .. } => match builtin_constant_type(name) {
-                        Some(PrimitiveType::I32) => {
-                            Ok((options.block_size as i64, PrimitiveType::I32))
-                        }
-                        Some(ty @ (PrimitiveType::I64 | PrimitiveType::Bool)) => {
-                            builtin_constant_value_f64(name, options)
-                                .map(|value| (value as i64, ty))
-                                .ok_or_else(|| {
-                                    diagnostic(format!(
-                                        "{context} uses non-constant symbol '{name}'"
-                                    ))
-                                })
-                        }
-                        _ => Err(diagnostic(format!(
-                            "{context} uses non-constant symbol '{name}'"
-                        ))),
-                    },
-                    Expr::Cast { to, expr, .. } => {
-                        let (value, _) = child()?;
-                        match to {
-                            PrimitiveType::I32 => Ok(((value as i32) as i64, *to)),
-                            PrimitiveType::I64 => Ok((value, *to)),
-                            PrimitiveType::Bool => Ok((i64::from(value != 0), *to)),
-                            _ => Err(Diagnostic::semantic_span(
-                                format!(
-                                    "{context} must evaluate to an integer constant expression"
-                                ),
-                                expr.loc(),
-                            )),
-                        }
-                    }
-                    Expr::UnaryNot { .. } => {
-                        let (value, _) = child()?;
-                        Ok((i64::from(value == 0), PrimitiveType::Bool))
-                    }
-                    Expr::UnaryBitNot { expr, .. } => {
-                        let (value, ty) = child()?;
-                        match ty {
-                            PrimitiveType::I32 => Ok(((!(value as i32)) as i64, ty)),
-                            PrimitiveType::I64 => Ok((!value, ty)),
-                            _ => Err(Diagnostic::semantic_span(
-                                format!(
-                                    "{context} bitwise not requires integer operand, got {:?}",
-                                    ty
-                                ),
-                                expr.loc(),
-                            )),
-                        }
-                    }
-                    Expr::Logical { op, .. } => {
-                        let lhs = child();
-                        let rhs = child();
-                        let (lhs, _) = lhs?;
-                        let value = match op {
-                            LogicalOp::And if lhs == 0 => false,
-                            LogicalOp::Or if lhs != 0 => true,
-                            _ => rhs?.0 != 0,
-                        };
-                        Ok((i64::from(value), PrimitiveType::Bool))
-                    }
-                    Expr::Compare { op, .. } => {
-                        let (lhs, _) = child()?;
-                        let (rhs, _) = child()?;
-                        let value = match op {
-                            CmpOp::Eq => lhs == rhs,
-                            CmpOp::Ne => lhs != rhs,
-                            CmpOp::Lt => lhs < rhs,
-                            CmpOp::Le => lhs <= rhs,
-                            CmpOp::Gt => lhs > rhs,
-                            CmpOp::Ge => lhs >= rhs,
-                        };
-                        Ok((i64::from(value), PrimitiveType::Bool))
-                    }
-                    Expr::Binary { op, .. } => {
-                        let (lhs, lhs_ty) = child()?;
-                        let (rhs, rhs_ty) = child()?;
-                        let bitwise = matches!(
-                            op,
-                            BinaryOp::BitAnd
-                                | BinaryOp::BitOr
-                                | BinaryOp::BitXor
-                                | BinaryOp::ShiftLeft
-                                | BinaryOp::ShiftRight
-                        );
-                        let ty = if bitwise {
-                            merge_const_integer_types(lhs_ty, rhs_ty).ok_or_else(|| {
-                                diagnostic(format!(
-                                    "{context} bitwise expression requires integer operands, got {:?} and {:?}",
-                                    lhs_ty, rhs_ty
-                                ))
-                            })?
-                        } else {
-                            merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
-                                diagnostic(format!(
-                                    "{context} requires numeric operands, got {:?} and {:?}",
-                                    lhs_ty, rhs_ty
-                                ))
-                            })?
-                        };
-                        if !matches!(ty, PrimitiveType::I32 | PrimitiveType::I64) {
-                            return Err(diagnostic(format!(
-                                "{context} must evaluate to an integer constant expression, got {:?}",
-                                ty
-                            )));
-                        }
-                        let zero_error = |operation| {
-                            diagnostic(format!("{context} {operation} by zero"))
-                        };
-                        let value = match ty {
-                            PrimitiveType::I32 => {
-                                let lhs = lhs as i32;
-                                let rhs = rhs as i32;
-                                match op {
-                                    BinaryOp::Add => lhs.wrapping_add(rhs) as i64,
-                                    BinaryOp::Sub => lhs.wrapping_sub(rhs) as i64,
-                                    BinaryOp::Mul => lhs.wrapping_mul(rhs) as i64,
-                                    BinaryOp::Div => {
-                                        if rhs == 0 {
-                                            return Err(zero_error("division"));
-                                        }
-                                        lhs.wrapping_div(rhs) as i64
-                                    }
-                                    BinaryOp::Mod => (rhs != 0)
-                                        .then(|| lhs.wrapping_rem(rhs) as i64)
-                                        .ok_or_else(|| zero_error("modulo"))?,
-                                    BinaryOp::BitAnd => (lhs & rhs) as i64,
-                                    BinaryOp::BitOr => (lhs | rhs) as i64,
-                                    BinaryOp::BitXor => (lhs ^ rhs) as i64,
-                                    BinaryOp::ShiftLeft => lhs.wrapping_shl(rhs as u32) as i64,
-                                    BinaryOp::ShiftRight => lhs.wrapping_shr(rhs as u32) as i64,
-                                }
-                            }
-                            PrimitiveType::I64 => match op {
-                                BinaryOp::Add => lhs.wrapping_add(rhs),
-                                BinaryOp::Sub => lhs.wrapping_sub(rhs),
-                                BinaryOp::Mul => lhs.wrapping_mul(rhs),
-                                BinaryOp::Div => (rhs != 0)
-                                    .then(|| lhs.wrapping_div(rhs))
-                                    .ok_or_else(|| zero_error("division"))?,
-                                BinaryOp::Mod => (rhs != 0)
-                                    .then(|| lhs.wrapping_rem(rhs))
-                                    .ok_or_else(|| zero_error("modulo"))?,
-                                BinaryOp::BitAnd => lhs & rhs,
-                                BinaryOp::BitOr => lhs | rhs,
-                                BinaryOp::BitXor => lhs ^ rhs,
-                                BinaryOp::ShiftLeft => lhs.wrapping_shl(rhs as u32),
-                                BinaryOp::ShiftRight => lhs.wrapping_shr(rhs as u32),
-                            },
-                            _ => unreachable!(),
-                        };
-                        Ok((value, ty))
-                    }
-                        _ => Err(diagnostic(format!(
-                            "{context} must be a compile-time integer constant expression"
-                        ))),
-                    }
-                })())
-            },
-        )
-        .unwrap();
-    match result {
-        Ok((value, _)) => Some(value),
-        Err(error) => {
-            errors.push(error);
+    let value = eval_const_scalar(expr, None, options, context, errors)?;
+    match value {
+        crate::TypedConstValue::I32(value) => Some(i64::from(value)),
+        crate::TypedConstValue::I64(value) => Some(value),
+        crate::TypedConstValue::Bool(value) => Some(i64::from(value)),
+        _ => {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} must evaluate to an integer constant expression"),
+                expr.loc(),
+            ));
             None
         }
     }
@@ -641,166 +544,56 @@ pub(crate) fn eval_const_expr_f64(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    type Eval = Result<(f64, PrimitiveType), Diagnostic>;
-    let result = expr
-        .try_fold(
-            Expr::children,
-            |node, children| -> Result<Eval, std::convert::Infallible> {
-                let mut child = || children.next().expect("constant expression child");
-                let diagnostic = |message| Diagnostic::semantic_span(message, node.loc());
-                Ok((|| -> Eval {
-                    match node {
-                        Expr::Number { value, .. } => Ok((*value, PrimitiveType::F64)),
-                        Expr::Int { value, .. } => Ok((*value as f64, PrimitiveType::I64)),
-                        Expr::Bool { value, .. } => {
-                            Ok((if *value { 1.0 } else { 0.0 }, PrimitiveType::Bool))
-                        }
-                        Expr::Var { name, .. } => builtin_constant_value_f64(name, options)
-                            .zip(builtin_constant_type(name))
-                            .ok_or_else(|| {
-                                diagnostic(format!(
-                                    "{context} uses non-constant symbol '{name}'"
-                                ))
-                            }),
-                        Expr::Cast { to, .. } => {
-                            let (value, _) = child()?;
-                            Ok((
-                                match to {
-                                    PrimitiveType::F32 | PrimitiveType::F64 => value,
-                                    PrimitiveType::I32 => (value as i32) as f64,
-                                    PrimitiveType::I64 => (value as i64) as f64,
-                                    PrimitiveType::Bool => {
-                                        if value != 0.0 { 1.0 } else { 0.0 }
-                                    }
-                                },
-                                *to,
-                            ))
-                        }
-                        Expr::UnaryNot { .. } => {
-                            let (value, _) = child()?;
-                            Ok((
-                                if value == 0.0 { 1.0 } else { 0.0 },
-                                PrimitiveType::Bool,
-                            ))
-                        }
-                        Expr::UnaryBitNot { expr, .. } => {
-                            let (value, ty) = child()?;
-                            match ty {
-                                PrimitiveType::I32 => Ok(((!(value as i32)) as f64, ty)),
-                                PrimitiveType::I64 => Ok(((!(value as i64)) as f64, ty)),
-                                _ => Err(Diagnostic::semantic_span(
-                                    format!(
-                                        "{context} bitwise not requires integer operand, got {:?}",
-                                        ty
-                                    ),
-                                    expr.loc(),
-                                )),
-                            }
-                        }
-                        Expr::Logical { op, .. } => {
-                            let lhs = child();
-                            let rhs = child();
-                            let (lhs, _) = lhs?;
-                            let value = match op {
-                                LogicalOp::And if lhs == 0.0 => false,
-                                LogicalOp::Or if lhs != 0.0 => true,
-                                _ => rhs?.0 != 0.0,
-                            };
-                            Ok((
-                                if value { 1.0 } else { 0.0 },
-                                PrimitiveType::Bool,
-                            ))
-                        }
-                        Expr::Compare { op, .. } => {
-                            let (lhs, _) = child()?;
-                            let (rhs, _) = child()?;
-                            let value = match op {
-                                CmpOp::Eq => lhs == rhs,
-                                CmpOp::Ne => lhs != rhs,
-                                CmpOp::Lt => lhs < rhs,
-                                CmpOp::Le => lhs <= rhs,
-                                CmpOp::Gt => lhs > rhs,
-                                CmpOp::Ge => lhs >= rhs,
-                            };
-                            Ok((
-                                if value { 1.0 } else { 0.0 },
-                                PrimitiveType::Bool,
-                            ))
-                        }
-                        Expr::Binary { op, .. } => {
-                            let (lhs, lhs_ty) = child()?;
-                            let (rhs, rhs_ty) = child()?;
-                            let bitwise = matches!(
-                                op,
-                                BinaryOp::BitAnd
-                                    | BinaryOp::BitOr
-                                    | BinaryOp::BitXor
-                                    | BinaryOp::ShiftLeft
-                                    | BinaryOp::ShiftRight
-                            );
-                            let ty = if bitwise {
-                                merge_const_integer_types(lhs_ty, rhs_ty).ok_or_else(|| {
-                                    diagnostic(format!(
-                                        "{context} bitwise expression requires integer operands, got {:?} and {:?}",
-                                        lhs_ty, rhs_ty
-                                    ))
-                                })?
-                            } else {
-                                merge_const_numeric_types(lhs_ty, rhs_ty).ok_or_else(|| {
-                                    diagnostic(format!(
-                                        "{context} requires numeric operands, got {:?} and {:?}",
-                                        lhs_ty, rhs_ty
-                                    ))
-                                })?
-                            };
-                            let value = match op {
-                                BinaryOp::Add => lhs + rhs,
-                                BinaryOp::Sub => lhs - rhs,
-                                BinaryOp::Mul => lhs * rhs,
-                                BinaryOp::Div => lhs / rhs,
-                                BinaryOp::Mod => lhs % rhs,
-                                BinaryOp::BitAnd if ty == PrimitiveType::I32 => {
-                                    ((lhs as i32) & (rhs as i32)) as f64
-                                }
-                                BinaryOp::BitAnd => ((lhs as i64) & (rhs as i64)) as f64,
-                                BinaryOp::BitOr if ty == PrimitiveType::I32 => {
-                                    ((lhs as i32) | (rhs as i32)) as f64
-                                }
-                                BinaryOp::BitOr => ((lhs as i64) | (rhs as i64)) as f64,
-                                BinaryOp::BitXor if ty == PrimitiveType::I32 => {
-                                    ((lhs as i32) ^ (rhs as i32)) as f64
-                                }
-                                BinaryOp::BitXor => ((lhs as i64) ^ (rhs as i64)) as f64,
-                                BinaryOp::ShiftLeft if ty == PrimitiveType::I32 => {
-                                    (lhs as i32).wrapping_shl(rhs as u32) as f64
-                                }
-                                BinaryOp::ShiftLeft => {
-                                    (lhs as i64).wrapping_shl(rhs as u32) as f64
-                                }
-                                BinaryOp::ShiftRight if ty == PrimitiveType::I32 => {
-                                    (lhs as i32).wrapping_shr(rhs as u32) as f64
-                                }
-                                BinaryOp::ShiftRight => {
-                                    (lhs as i64).wrapping_shr(rhs as u32) as f64
-                                }
-                            };
-                            Ok((value, ty))
-                        }
-                        _ => Err(diagnostic(format!(
-                            "{context} must be a compile-time constant expression"
-                        ))),
-                    }
-                })())
-            },
-        )
-        .unwrap();
-    match result {
-        Ok((value, _)) => Some(value),
-        Err(error) => {
-            errors.push(error);
-            None
+    eval_const_scalar(expr, None, options, context, errors).map(crate::TypedConstValue::to_f64)
+}
+
+/// Const slices accept exact integers and finite, integral floating bounds.
+/// All bounds convert to i32 before normalization, as in runtime lowering.
+pub(crate) fn eval_const_slice_integer(
+    expr: &Expr,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    let value = eval_const_scalar(expr, None, options, context, errors)?;
+    if matches!(
+        value,
+        crate::TypedConstValue::F32(_) | crate::TypedConstValue::F64(_)
+    ) {
+        let float = value.to_f64();
+        if !float.is_finite() {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context}: expression must be finite"),
+                expr.loc(),
+            ));
+            return None;
+        }
+        if (float - float.round()).abs() > 1e-6 {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context}: expression is not a compile-time integer"),
+                expr.loc(),
+            ));
+            return None;
         }
     }
+    coerce_slice_integer(value).or_else(|| {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context}: slice bound requires numeric type"),
+            expr.loc(),
+        ));
+        None
+    })
+}
+
+pub(crate) fn coerce_slice_integer(value: crate::TypedConstValue) -> Option<i64> {
+    let onda_mir::ScalarValue::I32(value) = onda_mir::constant_eval::cast(
+        crate::mir_scalar::mir_scalar(value),
+        onda_mir::ScalarType::I32,
+    )?
+    else {
+        unreachable!()
+    };
+    Some(i64::from(value))
 }
 
 pub(crate) fn eval_const_bool_expr(
@@ -809,19 +602,19 @@ pub(crate) fn eval_const_bool_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<bool> {
-    let ty = infer_const_expr_type(expr, options, context, errors)?;
-    if ty != PrimitiveType::Bool {
+    let value = eval_const_scalar(expr, None, options, context, errors)?;
+    if let crate::TypedConstValue::Bool(value) = value {
+        Some(value)
+    } else {
         errors.push(Diagnostic::semantic_span(
             format!(
                 "{context} must evaluate to a compile-time bool, got {:?}",
-                ty
+                value.primitive_type()
             ),
             expr.loc(),
         ));
-        return None;
+        None
     }
-    let value = eval_const_expr_f64(expr, options, context, errors)?;
-    Some(value != 0.0)
 }
 
 pub(crate) fn eval_data_size_expr(
@@ -830,6 +623,23 @@ pub(crate) fn eval_data_size_expr(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<usize> {
+    if matches!(
+        expr,
+        Expr::Bool { .. }
+            | Expr::Compare { .. }
+            | Expr::Logical { .. }
+            | Expr::UnaryNot { .. }
+            | Expr::Cast {
+                to: PrimitiveType::Bool,
+                ..
+            }
+    ) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} requires an integer size, got Bool"),
+            expr.loc(),
+        ));
+        return None;
+    }
     if can_eval_const_expr_exact_int(expr) {
         let value = eval_const_expr_i64_exact(expr, options, context, errors)?;
         if value <= 0 {
@@ -884,6 +694,34 @@ pub(crate) fn eval_data_size_expr(
     Some(truncated as usize)
 }
 
+/// Array lengths and indices use i32, including lengths read only as metadata.
+/// Zero is valid for a slice; storage-size evaluation checks positivity first.
+pub(crate) fn checked_array_length(
+    len: usize,
+    context: &str,
+    loc: SourceLoc,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<i32> {
+    i32::try_from(len).ok().or_else(|| {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} exceeds i32::MAX array length"),
+            loc,
+        ));
+        None
+    })
+}
+
+pub(crate) fn eval_array_size_expr(
+    expr: &Expr,
+    options: AnalysisOptions,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    let len = eval_data_size_expr(expr, options, context, errors)?;
+    checked_array_length(len, context, expr.loc(), errors)?;
+    Some(len)
+}
+
 pub(crate) const fn primitive_storage_bytes(ty: PrimitiveType) -> usize {
     match ty {
         PrimitiveType::F32 | PrimitiveType::I32 => 4,
@@ -920,6 +758,55 @@ pub(crate) fn validate_buffer_static_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use onda_frontend::LogicalOp;
+
+    #[test]
+    fn deeply_nested_literal_builtins_infer_and_evaluate_on_a_worker_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut expr = Expr::Binary {
+                    loc: Default::default(),
+                    op: BinaryOp::Add,
+                    lhs: Box::new(Expr::int(i64::from(i32::MAX))),
+                    rhs: Box::new(Expr::int(1)),
+                };
+                for _ in 0..15_000 {
+                    expr = Expr::Call {
+                        loc: Default::default(),
+                        func: BuiltinFn::Abs,
+                        args: vec![expr],
+                    };
+                }
+                let mut visits = 0;
+                let literals = crate::expr_typing::scalar_const_kinds(&expr, |node, children| {
+                    visits += 1;
+                    node.children(children);
+                });
+                let mut errors = Vec::new();
+                let inferred = infer_const_expr_type(&expr, "deep literals", &mut errors);
+                let evaluated = eval_const_scalar(
+                    &expr,
+                    Some(PrimitiveType::I32),
+                    AnalysisOptions::default(),
+                    "deep literals",
+                    &mut errors,
+                );
+                // This synthetic tree is much deeper than parsed builtin calls.
+                // Release its owned argument vectors without recursive AST drop.
+                while let Expr::Call { mut args, .. } = expr {
+                    expr = args.pop().unwrap();
+                }
+                assert_eq!(visits, 15_003);
+                assert_eq!(literals.len(), visits);
+                assert_eq!(inferred, Some(PrimitiveType::I64));
+                assert_eq!(evaluated, Some(crate::TypedConstValue::I32(i32::MIN)));
+                assert!(errors.is_empty(), "{errors:?}");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn unsafe_index_operations_are_internal_receiver_methods() {

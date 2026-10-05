@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use onda_frontend::{BuiltinFn, Diagnostic, Expr, PrimitiveType};
@@ -23,11 +24,15 @@ use crate::{
 
 /// Returns the appropriate type for a literal in an untyped assignment context.
 /// Float literals default to F32, int literals fitting in i32 default to I32,
-/// and larger ints default to I64. Typed literals elsewhere retain their
+/// and larger ints default to I64. Folded integer constants retain their type.
+/// Typed literals elsewhere retain their
 /// full-precision F64/I64 representation until a context selects a type.
 pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
     match expr {
         Expr::Number { .. } => Some(PrimitiveType::F32),
+        Expr::Int {
+            const_ty: Some(ty), ..
+        } => Some(*ty),
         Expr::Int { value: v, .. } => Some(if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
             PrimitiveType::I32
         } else {
@@ -41,33 +46,67 @@ pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
 /// literal expression to its ordinary first-assignment default. Float
 /// expressions default to F32. Integer literals are handled above with an
 /// exact range check. Pure integer expressions default to I32 only when none
-/// of their literal leaves already requires I64.
+/// of their literal leaves or referenced constants requires I64.
 pub(crate) fn effective_untyped_assignment_type(
     expr: &Expr,
     expr_ty: Option<PrimitiveType>,
+    constants: &DeclaredSymbolMap,
 ) -> Option<PrimitiveType> {
-    // Bare literals use the ordinary F32/I32 defaults.
+    // Source literals use ordinary defaults; folded integer constants retain their type.
     if let Some(lit_ty) = untyped_literal_type(expr) {
         return Some(lit_ty);
     }
     // Pure numeric expressions (e.g. 0.5 + 0.5, PI * 2.0) use the ordinary
-    // F32/I32 defaults. Preserve I64 when a literal leaf itself is outside the
-    // i32 range; such a value must not be made narrow merely by wrapping it in
-    // a larger constant expression.
-    if is_pure_numeric_literal_expr(expr) {
+    // F32/I32 defaults. Preserve I64 for wide literals and I64 constants,
+    // including folded constants, independently of when their values evaluate.
+    if is_pure_numeric_literal_expr(expr, constants) {
         return expr_ty.map(|ty| match ty {
             PrimitiveType::F64 => PrimitiveType::F32,
-            PrimitiveType::I64 if !contains_wide_integer_literal(expr) => PrimitiveType::I32,
+            PrimitiveType::I64 if !requires_wide_integer_type(expr, constants) => {
+                PrimitiveType::I32
+            }
             other => other,
         });
     }
     expr_ty
 }
 
-fn contains_wide_integer_literal(expr: &Expr) -> bool {
-    expr.walk().any(|expr| {
-        matches!(expr, Expr::Int { value, .. }
-        if *value < i32::MIN as i64 || *value > i32::MAX as i64)
+/// Pure numerics need no symbol environment to select their ordinary defaults.
+pub(crate) fn default_numeric_literal_type(expr: &Expr) -> Option<PrimitiveType> {
+    let constants = DeclaredSymbolMap::new();
+    if !is_pure_numeric_literal_expr(expr, &constants) {
+        return None;
+    }
+    let inferred = if crate::builtins::can_eval_const_expr_exact_int(expr) {
+        PrimitiveType::I64
+    } else {
+        PrimitiveType::F64
+    };
+    effective_untyped_assignment_type(expr, Some(inferred), &constants)
+}
+
+// Integer constants retain their width through both metadata and value folding.
+fn requires_wide_integer_type(expr: &Expr, constants: &DeclaredSymbolMap) -> bool {
+    expr.walk().any(|expr| match expr {
+        Expr::Int {
+            const_ty: Some(PrimitiveType::I64),
+            ..
+        } => true,
+        Expr::Int { value, .. } => i32::try_from(*value).is_err(),
+        Expr::Var { name, .. } => matches!(
+            constants.get(name),
+            Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                ty: PrimitiveType::I64,
+                ..
+            })
+        ),
+        Expr::Index { base, .. } => matches!(
+            constants.get(base),
+            Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
+                elem_ty: PrimitiveType::I64
+            })
+        ),
+        _ => false,
     })
 }
 
@@ -78,16 +117,127 @@ fn contains_wide_integer_literal(expr: &Expr) -> bool {
 ///
 /// Used to allow implicit narrowing (F64→F32, I64→I32) at assignment sites
 /// when the entire RHS is a compile-time numeric constant expression.
-pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr) -> bool {
-    expr.walk().all(|expr| match expr {
-        Expr::Number { .. }
-        | Expr::Int { .. }
-        | Expr::UnaryBitNot { .. }
-        | Expr::Binary { .. }
-        | Expr::Call { .. } => true,
-        Expr::Var { name, .. } => builtin_constant_type(name).is_some(),
-        _ => false,
-    })
+pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr, constants: &DeclaredSymbolMap) -> bool {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match expr {
+            Expr::Number { .. } | Expr::Int { .. } => {}
+            Expr::UnaryBitNot { .. } | Expr::Binary { .. } | Expr::Call { .. } => {
+                expr.children(&mut pending)
+            }
+            Expr::Var { name, .. }
+                if builtin_constant_type(name).is_some()
+                    || matches!(
+                        constants.get(name),
+                        Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                            ty: PrimitiveType::F64 | PrimitiveType::I64,
+                            ..
+                        })
+                    ) => {}
+            Expr::Index { base, index, .. }
+                if matches!(
+                    constants.get(base),
+                    Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
+                        elem_ty: PrimitiveType::F64 | PrimitiveType::I64
+                    })
+                ) && crate::builtins::can_eval_const_expr_exact_int_with_symbols(
+                    index, constants,
+                ) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ScalarConstKind {
+    Literal(PrimitiveType),
+    Concrete,
+}
+
+impl ScalarConstKind {
+    pub(crate) fn literal_type(self) -> Option<PrimitiveType> {
+        match self {
+            Self::Literal(ty) => Some(ty),
+            Self::Concrete => None,
+        }
+    }
+}
+
+/// Classify closed scalar expressions once, bottom-up. Literal arithmetic
+/// waits for a destination or concrete peer to supply its width; other closed
+/// trees preserve their own types. Lowering evaluates each maximal constant
+/// subtree without rescanning nested trees.
+pub(crate) fn scalar_const_kinds<'a>(
+    expr: &'a Expr,
+    descend: impl FnMut(&'a Expr, &mut Vec<&'a Expr>),
+) -> HashMap<*const Expr, ScalarConstKind> {
+    let mut constants = HashMap::new();
+    expr.try_fold(
+        descend,
+        |node, children| -> Result<Option<ScalarConstKind>, std::convert::Infallible> {
+            let closed = match node {
+                Expr::Bool { .. } => true,
+                Expr::Binary { .. }
+                | Expr::Compare { .. }
+                | Expr::Cast { .. }
+                | Expr::UnaryNot { .. }
+                | Expr::UnaryBitNot { .. }
+                | Expr::Call { .. } => children.as_slice().iter().all(Option::is_some),
+                _ => false,
+            };
+            let ty = match node {
+                Expr::Int { .. } => Some(PrimitiveType::I64),
+                Expr::Number { .. } => Some(PrimitiveType::F64),
+                Expr::Var { name, .. } => builtin_constant_type(name),
+                Expr::Binary { op, .. } => {
+                    let left = children
+                        .next()
+                        .expect("left constant kind")
+                        .and_then(ScalarConstKind::literal_type);
+                    let right = children
+                        .next()
+                        .expect("right constant kind")
+                        .and_then(ScalarConstKind::literal_type);
+                    left.zip(right).and_then(|(left, right)| {
+                        let ty = merge_numeric_types_without_diagnostics(left, right)?;
+                        if matches!(
+                            op,
+                            onda_frontend::BinaryOp::BitAnd
+                                | onda_frontend::BinaryOp::BitOr
+                                | onda_frontend::BinaryOp::BitXor
+                                | onda_frontend::BinaryOp::ShiftLeft
+                                | onda_frontend::BinaryOp::ShiftRight
+                        ) && !matches!(ty, PrimitiveType::I32 | PrimitiveType::I64)
+                        {
+                            None
+                        } else {
+                            Some(ty)
+                        }
+                    })
+                }
+                Expr::UnaryBitNot { .. } => children
+                    .next()
+                    .expect("constant operand kind")
+                    .and_then(ScalarConstKind::literal_type)
+                    .filter(|ty| matches!(ty, PrimitiveType::I32 | PrimitiveType::I64)),
+                Expr::Call { func, .. } => children
+                    .map(|kind| kind.and_then(ScalarConstKind::literal_type))
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(|types| intrinsic_result_type(*func, &types)),
+                _ => None,
+            };
+            let kind = ty
+                .map(ScalarConstKind::Literal)
+                .or_else(|| closed.then_some(ScalarConstKind::Concrete));
+            if let Some(kind) = kind {
+                constants.insert(node as *const Expr, kind);
+            }
+            Ok::<_, std::convert::Infallible>(kind)
+        },
+    )
+    .unwrap();
+    constants
 }
 
 /// When one operand of a binary expression is a pure numeric literal expression
@@ -99,14 +249,26 @@ pub(crate) fn adapt_binary_operand_types(
     rhs: &Expr,
     lhs_ty: PrimitiveType,
     rhs_ty: PrimitiveType,
+    constants: &DeclaredSymbolMap,
 ) -> (PrimitiveType, PrimitiveType) {
     // Context cannot change operands that already agree. Avoid rescanning
     // their subtrees at every node of a long, uniformly typed expression.
     if lhs_ty == rhs_ty {
         return (lhs_ty, rhs_ty);
     }
-    let l_pure = is_pure_numeric_literal_expr(lhs);
-    let r_pure = is_pure_numeric_literal_expr(rhs);
+    let l_pure = is_pure_numeric_literal_expr(lhs, constants);
+    let r_pure = is_pure_numeric_literal_expr(rhs, constants);
+    adapt_binary_types_from_purity(lhs_ty, rhs_ty, l_pure, r_pure)
+}
+
+/// The constant evaluator carries purity alongside values to avoid repeatedly
+/// walking operand trees. Both paths use this same literal adaptation rule.
+pub(crate) fn adapt_binary_types_from_purity(
+    lhs_ty: PrimitiveType,
+    rhs_ty: PrimitiveType,
+    l_pure: bool,
+    r_pure: bool,
+) -> (PrimitiveType, PrimitiveType) {
     match (l_pure, r_pure) {
         // One pure-literal, one non-literal: adapt literal to match the non-literal's type.
         // Never narrow a floating literal to an integer variable: `i / 10.0`
@@ -115,20 +277,14 @@ pub(crate) fn adapt_binary_operand_types(
         // non-literal width.
         (true, false) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
             if is_float_type(lhs_ty) && !is_float_type(rhs_ty) {
-                (
-                    effective_untyped_assignment_type(lhs, Some(lhs_ty)).unwrap_or(lhs_ty),
-                    rhs_ty,
-                )
+                (PrimitiveType::F32, rhs_ty)
             } else {
                 (rhs_ty, rhs_ty)
             }
         }
         (false, true) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
             if is_float_type(rhs_ty) && !is_float_type(lhs_ty) {
-                (
-                    lhs_ty,
-                    effective_untyped_assignment_type(rhs, Some(rhs_ty)).unwrap_or(rhs_ty),
-                )
+                (lhs_ty, PrimitiveType::F32)
             } else {
                 (lhs_ty, lhs_ty)
             }
@@ -147,14 +303,28 @@ pub(crate) fn adapt_binary_operand_types(
 pub(crate) fn adapt_numeric_argument_types(
     args: &[Expr],
     arg_types: &[PrimitiveType],
+    constants: &DeclaredSymbolMap,
 ) -> Vec<PrimitiveType> {
     if args.len() != arg_types.len() {
         return arg_types.to_vec();
     }
+    let pure = args
+        .iter()
+        .map(|arg| is_pure_numeric_literal_expr(arg, constants))
+        .collect::<Vec<_>>();
+    adapt_numeric_argument_types_from_purity(arg_types, &pure)
+}
 
+/// Constant evaluation carries literal purity with each value instead of
+/// repeatedly walking the expression. Keep its builtin adaptation identical.
+pub(crate) fn adapt_numeric_argument_types_from_purity(
+    arg_types: &[PrimitiveType],
+    pure: &[bool],
+) -> Vec<PrimitiveType> {
+    debug_assert_eq!(arg_types.len(), pure.len());
     let mut concrete_ty = None;
-    for (arg, ty) in args.iter().zip(arg_types.iter().copied()) {
-        if is_pure_numeric_literal_expr(arg) {
+    for (&is_pure, ty) in pure.iter().zip(arg_types.iter().copied()) {
+        if is_pure {
             continue;
         }
         concrete_ty = Some(match concrete_ty {
@@ -173,17 +343,14 @@ pub(crate) fn adapt_numeric_argument_types(
         return arg_types.to_vec();
     };
 
-    args.iter()
+    pure.iter()
         .zip(arg_types.iter().copied())
-        .map(|(arg, ty)| {
-            if !is_pure_numeric_literal_expr(arg)
-                || ty == PrimitiveType::Bool
-                || concrete_ty == PrimitiveType::Bool
-            {
+        .map(|(&is_pure, ty)| {
+            if !is_pure || ty == PrimitiveType::Bool || concrete_ty == PrimitiveType::Bool {
                 return ty;
             }
             if is_float_type(ty) && !is_float_type(concrete_ty) {
-                effective_untyped_assignment_type(arg, Some(ty)).unwrap_or(ty)
+                PrimitiveType::F32
             } else {
                 concrete_ty
             }
@@ -325,6 +492,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     errors: &mut Vec<Diagnostic>,
+    check_children: bool,
 ) -> Option<PrimitiveType> {
     let mut infer_node =
         |expr: &Expr, children: &mut std::vec::Drain<'_, Option<PrimitiveType>>| {
@@ -335,6 +503,9 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 Expr::ArrayLiteral { .. } => None,
                 Expr::Tuple { .. } => None,
                 Expr::Var { name, .. } => {
+                    if declared_symbols.unresolved_types.contains(name) {
+                        return None;
+                    }
                     if let Some(ty) = builtin_constant_type(name) {
                         return Some(ty);
                     }
@@ -391,10 +562,18 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 .unwrap_or(PrimitiveType::F32),
                         )
                     } else {
-                        None
+                        match declared_symbols.get(name) {
+                            Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                                ty, ..
+                            }) => Some(*ty),
+                            _ => None,
+                        }
                     }
                 }
                 Expr::Index { base, index, .. } => {
+                    if declared_symbols.unresolved_types.contains(base) {
+                        return None;
+                    }
                     let lexical_root = base.split('.').next().unwrap_or(base);
                     if has_scalar_value_binding(lexical_root, locals, local_aliases) {
                         return None;
@@ -404,7 +583,13 @@ fn infer_scalar_expr_type_with_proc_arrays(
                             return Some(alias.elem_ty);
                         }
                     }
-                    if let Expr::Int { value, .. } = index.as_ref() {
+                    let tuple_binding = local_aliases.contains_key(&format!("{base}[0]"))
+                        || state_scalars.contains_key(&format!("{base}.__0"))
+                        || state_scalars.contains_key(&format!("{base}[0]"));
+                    if let Some(value) = tuple_binding
+                        .then(|| declared_symbols.constant_integer(index, errors))
+                        .flatten()
+                    {
                         if let Some(ty) = local_aliases
                             .get(&format!("{base}[{value}]"))
                             .or_else(|| state_scalars.get(&format!("{base}.__{value}")))
@@ -447,10 +632,9 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                         }
                                     }
                                     TypedFieldType::Tuple(elem_types) => {
-                                        let Expr::Int { value, .. } = index.as_ref() else {
-                                            return None;
-                                        };
-                                        return usize::try_from(*value)
+                                        let value =
+                                            declared_symbols.constant_integer(index, errors)?;
+                                        return usize::try_from(value)
                                             .ok()
                                             .and_then(|index| elem_types.get(index).copied());
                                     }
@@ -510,7 +694,8 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         return None;
                     }
                     let arg_types = arg_types.into_iter().flatten().collect::<Vec<_>>();
-                    let arg_types = adapt_numeric_argument_types(args, &arg_types);
+                    let arg_types =
+                        adapt_numeric_argument_types(args, &arg_types, declared_symbols);
 
                     match func {
                         BuiltinFn::Abs => {
@@ -532,6 +717,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 lhs,
                                 rhs,
                                 &format!("builtin '{}'", builtin_name(*func)),
+                                expr.loc(),
                                 errors,
                             )
                         }
@@ -550,6 +736,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                     merged,
                                     rhs,
                                     "compiler-generated integer range normalization",
+                                    expr.loc(),
                                     errors,
                                 )?;
                             }
@@ -609,6 +796,9 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     }
                 }
                 Expr::UserCall { name, args, .. } => {
+                    if declared_symbols.unresolved_types.contains(name) {
+                        return None;
+                    }
                     if name == crate::proc_state_rewrite::STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
                         let (base, _, field, field_index) =
                             crate::array_structs::extract_safi_args(args)?;
@@ -752,7 +942,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     if let (Some(l), Some(r)) = (l, r) {
                         // Adapt literal types to the non-literal operand's type so that
                         // e.g. `x_f32 + 0.5` stays F32 rather than widening to F64.
-                        let (el, er) = adapt_binary_operand_types(lhs, rhs, l, r);
+                        let (el, er) = adapt_binary_operand_types(lhs, rhs, l, r, declared_symbols);
                         match op {
                             onda_frontend::BinaryOp::BitAnd
                             | onda_frontend::BinaryOp::BitOr
@@ -765,7 +955,9 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 "bitwise expression",
                                 errors,
                             ),
-                            _ => merge_numeric_types(el, er, "binary expression", errors),
+                            _ => {
+                                merge_numeric_types(el, er, "binary expression", expr.loc(), errors)
+                            }
                         }
                     } else {
                         None
@@ -774,12 +966,21 @@ fn infer_scalar_expr_type_with_proc_arrays(
             }
         };
     expr.try_fold(
-        |expr, children| match expr {
-            Expr::Cast { .. }
-            | Expr::UnaryBitNot { .. }
-            | Expr::Binary { .. }
-            | Expr::Call { .. } => expr.children(children),
-            _ => {}
+        |expr, children| {
+            // Validation checks every subexpression. Metadata queries only need
+            // operands that determine the result; signatures and boolean result
+            // types do not require traversing their arguments again.
+            if check_children
+                || matches!(
+                    expr,
+                    Expr::Cast { .. }
+                        | Expr::UnaryBitNot { .. }
+                        | Expr::Binary { .. }
+                        | Expr::Call { .. }
+                )
+            {
+                expr.children(children);
+            }
         },
         |expr, children| Ok::<_, std::convert::Infallible>(infer_node(expr, children)),
     )
@@ -869,26 +1070,7 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
-    let merged_struct_instances;
-    let struct_instance_ctx = if let Some(param_structs) = param_structs {
-        if struct_instances.is_empty() {
-            param_structs
-        } else if param_structs.is_empty() {
-            struct_instances
-        } else {
-            merged_struct_instances = {
-                let mut merged = struct_instances.clone();
-                for (name, struct_name) in param_structs {
-                    merged.insert(name.clone(), struct_name.clone());
-                }
-                merged
-            };
-            &merged_struct_instances
-        }
-    } else {
-        struct_instances
-    };
-
+    let struct_instances = scalar_struct_instances(param_structs, struct_instances);
     infer_scalar_expr_type_with_proc_arrays(
         expr,
         state_scalars,
@@ -899,10 +1081,55 @@ pub(crate) fn infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
         input_names,
         output_names,
         param_names,
-        struct_instance_ctx,
+        &struct_instances,
         struct_defs,
         proc_array_roots,
         errors,
+        true,
+    )
+}
+
+fn scalar_struct_instances<'a>(
+    params: Option<&'a HashMap<String, String>>,
+    instances: &'a HashMap<String, String>,
+) -> Cow<'a, HashMap<String, String>> {
+    match params {
+        None => Cow::Borrowed(instances),
+        Some(params) if params.is_empty() => Cow::Borrowed(instances),
+        Some(params) if instances.is_empty() => Cow::Borrowed(params),
+        Some(params) => {
+            let mut merged = instances.clone();
+            merged.extend(params.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+            Cow::Owned(merged)
+        }
+    }
+}
+
+/// Infer a scalar type without evaluating values. With diagnostics, also check
+/// subexpressions whose types are not needed to determine the parent's type.
+pub(crate) fn infer_scalar_expr_type(
+    expr: &Expr,
+    env: crate::expr_analysis::ExprEnv<'_>,
+    errors: Option<&mut Vec<Diagnostic>>,
+) -> Option<PrimitiveType> {
+    let check_children = errors.is_some();
+    let mut discarded = Vec::new();
+    let struct_instances = scalar_struct_instances(Some(env.param_structs), env.struct_instances);
+    infer_scalar_expr_type_with_proc_arrays(
+        expr,
+        env.state_scalars,
+        env.declared_symbols,
+        env.local_aliases,
+        env.local_array_aliases,
+        env.locals,
+        env.input_names,
+        env.output_names,
+        env.param_names,
+        &struct_instances,
+        env.struct_defs,
+        env.proc_array_roots,
+        errors.unwrap_or(&mut discarded),
+        check_children,
     )
 }
 
@@ -912,9 +1139,10 @@ pub(crate) fn require_expr_assignable_type(
     dst: PrimitiveType,
     context: &str,
     errors: &mut Vec<Diagnostic>,
+    constants: &DeclaredSymbolMap,
 ) {
     if let Some(src) = src {
-        if !can_assign_expr_to_type(expr, src, dst) {
+        if !can_assign_expr_to_type(expr, src, dst, constants) {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "{context} type mismatch: cannot assign {:?} to {:?}",
@@ -932,11 +1160,23 @@ pub(crate) fn require_expr_assignable_type(
 /// Concrete runtime values follow the ordinary widening relation. Pure
 /// numeric literal expressions additionally adapt once at their contextual
 /// boundary, retaining their wide compile-time representation until then.
-pub(crate) fn can_assign_expr_to_type(expr: &Expr, src: PrimitiveType, dst: PrimitiveType) -> bool {
+pub(crate) fn can_assign_expr_to_type(
+    expr: &Expr,
+    src: PrimitiveType,
+    dst: PrimitiveType,
+    constants: &DeclaredSymbolMap,
+) -> bool {
     if src == dst || can_implicitly_assign(src, dst) {
         return true;
     }
-    if !is_pure_numeric_literal_expr(expr) {
+    // Const conversion checks the computed value's range in the interpreter.
+    // Checking its numeric family does not require computing that value.
+    if constants.constant_context {
+        return src != PrimitiveType::Bool
+            && dst != PrimitiveType::Bool
+            && (is_float_type(dst) || !is_float_type(src));
+    }
+    if !is_pure_numeric_literal_expr(expr, constants) {
         return false;
     }
     matches!(

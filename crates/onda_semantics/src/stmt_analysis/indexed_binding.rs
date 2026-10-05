@@ -171,6 +171,7 @@ pub(crate) fn validate_struct_array_member_assignment(
                     expected,
                     &format!("assignment to '{base}[...].{field}[...]'"),
                     errors,
+                    env.declared_symbols,
                 );
             }
         }
@@ -236,6 +237,7 @@ pub(crate) fn validate_struct_array_member_assignment(
                 Some(types),
                 false,
                 errors,
+                env.declared_symbols,
             );
         }
         (None, TypedFieldType::Scalar(_)) => unreachable!(),
@@ -295,14 +297,14 @@ fn validate_tuple_field_element_assignment(
     errors: &mut Vec<Diagnostic>,
 ) {
     validate_expr(index, env, errors);
-    let Expr::Int { value: raw, .. } = index else {
+    let Some(raw) = env.declared_symbols.constant_integer(index, errors) else {
         errors.push(Diagnostic::semantic_span(
             "tuple field index must be a compile-time integer constant",
             index.loc(),
         ));
         return;
     };
-    let Some(expected) = usize::try_from(*raw)
+    let Some(expected) = usize::try_from(raw)
         .ok()
         .and_then(|index| types.get(index))
         .copied()
@@ -323,21 +325,7 @@ fn validate_tuple_field_element_assignment(
         expected,
         &format!("assignment to '{field}[{raw}]'"),
         errors,
-    );
-}
-
-fn validate_numeric_selector(
-    selector: &Expr,
-    context: &str,
-    env: ExprEnv<'_>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    validate_expr(selector, env, errors);
-    require_expr_numeric_type(
-        selector,
-        infer_call_argument_scalar_type(selector, env),
-        context,
-        errors,
+        env.declared_symbols,
     );
 }
 

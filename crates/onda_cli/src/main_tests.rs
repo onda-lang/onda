@@ -316,6 +316,55 @@ fn parse_compile_rejects_duplicate_constant_overrides() {
 }
 
 #[test]
+fn compile_library_checks_constants_without_evaluating_unused_arrays() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "onda-library-const-source-{}-{stamp}.onda",
+        std::process::id()
+    ));
+    for (source, expected_error) in [
+        ("const X: i32 = Missing\n", Some("Missing")),
+        ("const def bad() -> i32:\n  return Missing\n", Some("Missing")),
+        ("const X: i32[2] = [1]\n", Some("expects 2 elements")),
+        (
+            "const X: i32[1] = [1 / 0]\nconst def first() -> i32:\n  return X[0]\ndef helper() -> i32:\n  Local = first()\n  return Local\n",
+            None,
+        ),
+        (
+            "const X: i32[1] = [1 / 0]\nconst def first() -> i32:\n  return X[0]\nsample:\n  out1 = f32(first())\n",
+            Some("division by zero"),
+        ),
+    ] {
+        std::fs::write(&source_path, source).expect("write library source");
+        let result = run_compile(compile_cmd::CompileRequest {
+            input: &source_path,
+            emit: CompileEmit::Check,
+            output: None,
+            meta_out: None,
+            sample_rate_hz: 48_000,
+            block_frames: 32,
+            dump_graph: false,
+            const_overrides: &[],
+            list_consts: false,
+            show_meta: false,
+            fast_math: false,
+            target: TargetConfig::host(),
+        });
+        std::fs::remove_file(&source_path).expect("remove library source");
+        match expected_error {
+            Some(expected) => {
+                let error = result.expect_err(source);
+                assert!(error.contains(expected), "{source}\n{error}");
+            }
+            None => result.expect("valid unused library values should remain unevaluated"),
+        }
+    }
+}
+
+#[test]
 fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -737,7 +786,7 @@ fn compile_emits_complete_portable_mir_slice() {
     ));
     std::fs::write(
         &source_path,
-        "const Table: f32[2] = [0.25, 0.5]\ninit:\n  taps: f32[2] = [1.0, 2.0]\n  phase = 0.0\nevent reset(values: f32[2] = [0.0, 0.0]):\n  phase = values[0]\nsample:\n  phase = phase + Table[0]\n  taps[0] = phase\n  out1 = taps[0]\n",
+        "const Table: f32[2] = [0.25, 0.5]\ninit:\n  taps: f32[2] = [1.0, 2.0]\n  phase = 0.0\nevent reset(values: f32[2] = [0.0, 0.0]):\n  phase = values[0]\nsample:\n  phase = phase + Table[i32(phase)]\n  taps[0] = phase\n  out1 = taps[0]\n",
     )
     .expect("source should write");
 
@@ -1413,8 +1462,8 @@ sample:
 fn format_program_preserves_proc_deferred_count_shorthand_sections() {
     let program = parse_program(
         r#"
+const N = 2
 proc Voice:
-  const N = 2
   ins<f64> N
   outs<i32> 1
   params<bool> N

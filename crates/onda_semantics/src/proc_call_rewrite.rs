@@ -608,10 +608,10 @@ fn resolve_proc_array_base_key(
     None
 }
 
-fn canonicalize_indexed_proc_receiver_call(
+pub(crate) fn canonicalize_indexed_proc_receiver_call(
     name: &mut String,
     args: &mut Vec<CallArg>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    is_proc_array: impl Fn(&str) -> bool,
 ) {
     if name.starts_with(PROC_INDEX_CALL_SENTINEL) {
         return;
@@ -629,7 +629,7 @@ fn canonicalize_indexed_proc_receiver_call(
     if receiver_marker != METHOD_RECEIVER_ARG {
         return;
     }
-    if resolve_proc_array_base_key(base, proc_array_slots).is_none() {
+    if !is_proc_array(base) {
         return;
     }
     let base = base.clone();
@@ -784,36 +784,6 @@ pub(super) fn expand_expr_to_slots(
                 ),
             );
             vec![expr.clone(); slot_count]
-        }
-    }
-}
-
-fn validate_fixed_array_event_arg(
-    expr: &Expr,
-    len: usize,
-    context: &str,
-    errors: &mut Vec<Diagnostic>,
-) {
-    match expr {
-        Expr::ArrayLiteral { values, .. } => {
-            if values.len() != len {
-                push_semantic(
-                    DiagCtx::default(),
-                    errors,
-                    format!(
-                        "{context}: expected array argument with {len} elements, got {}",
-                        values.len()
-                    ),
-                );
-            }
-        }
-        Expr::Var { .. } => {}
-        _ => {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!("{context}: array argument requires an array literal or array symbol expression"),
-            );
         }
     }
 }
@@ -1184,7 +1154,9 @@ fn resolve_proc_output_tuple_call(
     let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
-    canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
+    canonicalize_indexed_proc_receiver_call(name, args, |base| {
+        resolve_proc_array_base_key(base, proc_array_slots).is_some()
+    });
 
     if name == PROC_INDEX_CALL_SENTINEL {
         let mut resolution_args = args.clone();
@@ -2466,8 +2438,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     temp_counter,
                 );
             }
-            Stmt::Const { .. }
-            | Stmt::Assign { .. }
+            Stmt::Assign { .. }
             | Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }
@@ -2627,7 +2598,6 @@ pub(super) fn normalize_proc_output_aliases_in_stmt(
     proc_api: &HashMap<String, ProcApi>,
 ) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
             normalize_proc_output_aliases_in_expr(expr, proc_vars, proc_api);
@@ -2719,7 +2689,6 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
     errors: &mut Vec<Diagnostic>,
 ) {
     with_stmt_diag_context_mut(stmt, |diag, stmt| match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
                 if let Some(alias) = proc_array_alias_from_index_expr(expr, proc_array_slots) {
@@ -2746,7 +2715,9 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
-                canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
+                canonicalize_indexed_proc_receiver_call(name, args, |base| {
+                    resolve_proc_array_base_key(base, proc_array_slots).is_some()
+                });
                 for arg in args.iter_mut() {
                     rewrite_proc_calls_in_expr(
                         &mut arg.expr,
@@ -3250,7 +3221,7 @@ pub(super) fn rewrite_proc_array_param_field_reads(
                     rewrite_stmt(nested, proc_arrays, proc_api);
                 }
             }
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
 
@@ -3359,7 +3330,6 @@ fn collect_called_proc_instances_in_stmt(
     out: &mut HashSet<String>,
 ) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             let mut expr_for_collect = expr.clone();
             rewrite_proc_alias_call_sites_in_expr(&mut expr_for_collect, aliases);
@@ -3747,7 +3717,6 @@ fn desugar_instance_method_calls_in_stmts(
 ) -> StatementFlow {
     for stmt in stmts {
         let flow = match stmt {
-            Stmt::Const { .. } => StatementFlow::Continues,
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -3962,7 +3931,7 @@ pub(crate) fn desugar_function_instance_method_calls(
     callable_symbols: &HashSet<String>,
 ) {
     let mut env = env_seed.clone();
-    env.set_owner_type_params(&def.type_params);
+    env.enter_function(&def.type_params);
     for param in &def.params {
         env.bind_function_param(param, &def.type_params);
     }
@@ -4092,13 +4061,12 @@ pub(crate) fn desugar_executable_owner_instance_method_calls(
 
 pub(super) fn desugar_processor_instance_method_calls(
     proc: &mut ProcessorDef,
+    constants: &CallTypeEnv,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     struct_method_symbols: &HashSet<String>,
     callable_symbols: &HashSet<String>,
 ) {
-    let state_seed = CallTypeEnv::default();
-    let function_seed = CallTypeEnv::default();
     let state_env = desugar_executable_owner_instance_method_calls(
         &mut proc.init,
         [
@@ -4108,8 +4076,8 @@ pub(super) fn desugar_processor_instance_method_calls(
         ],
         &mut proc.events,
         &mut [],
-        &state_seed,
-        &function_seed,
+        constants,
+        constants,
         return_types,
         struct_defs,
         &namespace_of_symbol(&proc.name),

@@ -2088,11 +2088,11 @@ fn aggregate_constructor_and_primitive_default_errors_keep_element_and_shape_che
         ),
         (
             "def f(a: f32[2] = [1.0]):\n  return a[0]\nsample:\n  out1 = f()\n",
-            "expects array length 2",
+            "expects 2 elements",
         ),
         (
             "def f(a: f32[2] = [unknown, 1.0]):\n  return a[0]\nsample:\n  out1 = f()\n",
-            "non-constant symbol",
+            "unknown symbol",
         ),
     ] {
         let parsed = onda_frontend::parse_program(source).unwrap();

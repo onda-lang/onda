@@ -28,6 +28,7 @@ pub(crate) use graph_lowering::*;
 pub(crate) use nested_paths::*;
 use nested_proc_lowering::*;
 use proc_local_defs::*;
+pub(crate) use shape_helpers::proc_name_for_lowered_proc_call;
 use shape_helpers::*;
 
 pub(crate) fn delegate_publish_index(name: &str) -> Option<usize> {
@@ -115,14 +116,13 @@ pub(crate) fn coerce_scalar_event_default(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<TypedConstValue> {
-    validate_default_expr(default_expr, errors, context);
+    validate_default_expr(default_expr, errors, context, &DeclaredSymbolMap::new());
     eval_typed_const_expr(
         default_expr,
         ty,
         options,
         context,
         is_float_type(ty),
-        matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
         errors,
     )
 }
@@ -241,50 +241,21 @@ fn coerce_typed_event_default(
 
 fn validate_proc_event_default_expr(
     param: &EventParamDecl,
-    len: Option<usize>,
     context: &str,
-    options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<Expr> {
-    let default_expr = param.default.as_ref()?;
-    match &param.ty {
-        EventParamType::Tuple(types) => {
-            coerce_tuple_event_default(default_expr, types, context, options, errors)?;
-            Some(default_expr.clone())
-        }
-        EventParamType::Scalar(ty) => {
-            coerce_scalar_event_default(default_expr, *ty, context, options, errors)?;
-            Some(default_expr.clone())
-        }
-        EventParamType::GenericScalar { .. } => {
-            push_semantic(
-                DiagCtx::new(default_expr.loc()),
-                errors,
-                format!("{context} default cannot be checked before generic specialization"),
-            );
-            None
-        }
-        EventParamType::Array { elem, .. } => {
-            let len = len?;
-            coerce_fixed_array_event_default(default_expr, *elem, len, context, options, errors)?;
-            Some(default_expr.clone())
-        }
-        EventParamType::GenericArray { .. } => {
-            push_semantic(
-                DiagCtx::new(default_expr.loc()),
-                errors,
-                format!("{context} default cannot be checked before generic specialization"),
-            );
-            None
-        }
-        EventParamType::Slice { .. } | EventParamType::GenericSlice { .. } => {
-            push_semantic(
-                DiagCtx::new(default_expr.loc()),
-                errors,
-                format!("{context} default is not supported for slice event params"),
-            );
-            None
-        }
+    let default = param.default.as_ref()?;
+    if matches!(
+        param.ty,
+        EventParamType::Slice { .. } | EventParamType::GenericSlice { .. }
+    ) {
+        errors.push(Diagnostic::semantic_span(
+            format!("{context} default is not supported for slice event params"),
+            default.loc(),
+        ));
+        None
+    } else {
+        Some(default.clone())
     }
 }
 
@@ -496,10 +467,11 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
     }
 
     FnSignature {
+        defaults_validated: false,
         display_name: None,
         requires_call_specialization: false,
         params,
-        defaults,
+        defaults: defaults.into(),
         param_types,
         type_params: Vec::new(),
         return_type: None,
@@ -510,6 +482,7 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
 pub(crate) fn coerce_typed_events(
     events: &[EventDef],
     allow_slices: bool,
+    materialize_defaults: bool,
     event_owner_desc: &str,
     structs: &HashMap<String, Vec<TypedStructField>>,
     options: AnalysisOptions,
@@ -639,13 +612,23 @@ pub(crate) fn coerce_typed_events(
                     }
                 }
             };
-            let default = coerce_typed_event_default(
-                param,
-                &typed,
-                &format!("event '{}.{}'", event.name, param.name),
-                options,
-                errors,
-            );
+            let default = if materialize_defaults
+                || matches!(
+                    typed,
+                    TypedEventParamType::Data(_)
+                        | TypedEventParamType::Slice { .. }
+                        | TypedEventParamType::StructSlice { .. }
+                ) {
+                coerce_typed_event_default(
+                    param,
+                    &typed,
+                    &format!("event '{}.{}'", event.name, param.name),
+                    options,
+                    errors,
+                )
+            } else {
+                None
+            };
             typed_params.push(TypedEventParam {
                 name: param.name.clone(),
                 ty: typed,
@@ -676,7 +659,7 @@ pub(crate) fn coerce_typed_delegates(
             body: Vec::new(),
         })
         .collect::<Vec<_>>();
-    coerce_typed_events(&adapters, true, "top-level", structs, options, errors)
+    coerce_typed_events(&adapters, true, true, "top-level", structs, options, errors)
         .into_iter()
         .map(|event| TypedDelegate {
             name: event.name,
@@ -792,12 +775,10 @@ fn expand_proc_event_specs(
                     ty: ProcEventParamTypeSpec::Scalar { ty: *ty },
                     default: validate_proc_event_default_expr(
                         param,
-                        None,
                         &format!(
                             "processor '{}.{}' event parameter '{}'",
                             proc.name, event.name, param.name
                         ),
-                        options,
                         errors,
                     ),
                 }),
@@ -832,13 +813,7 @@ fn expand_proc_event_specs(
                             elem_ty: *elem,
                             len,
                         },
-                        default: validate_proc_event_default_expr(
-                            param,
-                            Some(len),
-                            &context,
-                            options,
-                            errors,
-                        ),
+                        default: validate_proc_event_default_expr(param, &context, errors),
                     });
                 }
                 EventParamType::GenericArray { elem, size } => {
@@ -864,12 +839,10 @@ fn expand_proc_event_specs(
                         ty: ProcEventParamTypeSpec::Slice { elem_ty: *elem },
                         default: validate_proc_event_default_expr(
                             param,
-                            None,
                             &format!(
                                 "processor '{}.{}' event parameter '{}'",
                                 proc.name, event.name, param.name
                             ),
-                            options,
                             errors,
                         ),
                     });
@@ -881,12 +854,10 @@ fn expand_proc_event_specs(
                         ty: ProcEventParamTypeSpec::StructSlice { name: elem.clone() },
                         default: validate_proc_event_default_expr(
                             param,
-                            None,
                             &format!(
                                 "processor '{}.{}' event parameter '{}'",
                                 proc.name, event.name, param.name
                             ),
-                            options,
                             errors,
                         ),
                     });
@@ -921,6 +892,8 @@ fn build_proc_lowering_env(
     program: &Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcLoweringEnv> {
     let mut proc_defs = program
@@ -1096,15 +1069,14 @@ fn build_proc_lowering_env(
                 .map(move |method| format!("{name}.{}", method.name))
         })
         .collect::<HashSet<_>>();
-    let method_resolution_return_types = infer_instance_method_return_types(
-        &pre_desugar_defs,
-        &crate::def_semantics::CallTypeEnv::default(),
-        &typed_struct_defs,
-    );
+    let mut const_type_env = crate::def_semantics::CallTypeEnv::default();
+    const_type_env.bind_constants(const_scalars, const_arrays, const_scope, options);
+    let method_resolution_return_types =
+        infer_instance_method_return_types(&pre_desugar_defs, &const_type_env, &typed_struct_defs);
     for def in &mut pre_desugar_defs {
         desugar_function_instance_method_calls(
             def,
-            &crate::def_semantics::CallTypeEnv::default(),
+            &const_type_env,
             &method_resolution_return_types,
             &typed_struct_defs,
             &struct_method_symbols,
@@ -1112,8 +1084,17 @@ fn build_proc_lowering_env(
         );
     }
     for proc in &mut proc_defs {
+        let mut proc_constants = const_type_env.clone();
+        proc_constants.const_symbols.options = proc_runtime_analysis_options(
+            options,
+            proc_sample_oversample_factors
+                .get(&proc.name)
+                .copied()
+                .unwrap_or(1),
+        );
         desugar_processor_instance_method_calls(
             proc,
+            &proc_constants,
             &method_resolution_return_types,
             &typed_struct_defs,
             &struct_method_symbols,
@@ -1129,28 +1110,27 @@ fn build_proc_lowering_env(
     let provisional_return_types = infer_def_return_types(
         &pre_desugar_defs,
         &provisional_signatures,
-        &crate::def_semantics::CallTypeEnv::default(),
+        &const_type_env,
         &HashMap::new(),
     );
     for def in &mut pre_desugar_defs {
         rewrite_source_overload_function(
             def,
-            &crate::def_semantics::CallTypeEnv::default(),
+            &const_type_env,
             &pre_desugar_overloads,
             &provisional_return_types,
             &typed_struct_defs,
         );
     }
-    let top_return_types = source_overload_return_types(
-        &pre_desugar_defs,
-        &crate::def_semantics::CallTypeEnv::default(),
-        &typed_struct_defs,
-    );
+    let top_return_types =
+        source_overload_return_types(&pre_desugar_defs, &const_type_env, &typed_struct_defs);
     for proc in &mut proc_defs {
         resolve_processor_source_overloads(
             proc,
             options,
             const_arrays,
+            const_scalars,
+            const_scope,
             &pre_desugar_overloads,
             &top_return_types,
             &typed_struct_defs,
@@ -1204,10 +1184,17 @@ fn build_proc_lowering_env(
         .iter()
         .map(|def| (def.name.clone(), FnSignature::from_def(def)))
         .collect::<HashMap<_, _>>();
+    if let Some(scope) = const_scope {
+        pre_desugar_fn_signatures.extend(
+            scope
+                .signatures()
+                .map(|(name, signature)| (name.clone(), signature.clone())),
+        );
+    }
     let pre_desugar_def_return_types = infer_def_return_types(
         &pre_desugar_defs,
         &pre_desugar_fn_signatures,
-        &crate::def_semantics::CallTypeEnv::default(),
+        &const_type_env,
         &typed_struct_defs,
     );
     FnSignature::resolve_returns(
@@ -1351,6 +1338,8 @@ fn build_proc_lowering_env(
             &pre_desugar_defs,
             &proc_defs_by_name,
             const_arrays,
+            const_scalars,
+            const_scope,
             errors,
         );
         if !proc.delegates.is_empty() {
@@ -1510,7 +1499,9 @@ fn desugar_processors_impl(
     mut program: Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
     materialize_generics: bool,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
     if materialize_generics {
@@ -1518,10 +1509,30 @@ fn desugar_processors_impl(
     }
     rewrite_source_task_and_when_generic_structs(&mut program, errors);
     inject_builtin_proc_init_events(&mut program, errors);
-    lower_graph_blocks(&mut program, options, errors);
-    validate_delegate_source_model(&program, options, const_arrays, errors);
-    let mut runtime_def_names =
-        crate::task_lowering::lower_tasks(&mut program, options, const_arrays, errors);
+    lower_graph_blocks(
+        &mut program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+        errors,
+    );
+    validate_delegate_source_model(
+        &program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+        errors,
+    );
+    let mut runtime_def_names = crate::task_lowering::lower_tasks(
+        &mut program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+        errors,
+    );
     let prepared_delegates = prepare_delegate_source(&mut program, errors);
     runtime_def_names.extend(prepared_delegates.runtime_defs.iter().cloned());
     if let Some(Block::Init(init)) = program
@@ -1545,7 +1556,14 @@ fn desugar_processors_impl(
         proc_api,
         proc_order,
         lowering_shapes,
-    }) = build_proc_lowering_env(&program, options, const_arrays, errors)
+    }) = build_proc_lowering_env(
+        &program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+        errors,
+    )
     else {
         return ProcessorDesugarResult {
             program,
@@ -1663,18 +1681,38 @@ pub(crate) fn desugar_processors(
     program: Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: &std::rc::Rc<crate::pipeline::ConstScope>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
-    desugar_processors_impl(program, options, const_arrays, true, errors)
+    desugar_processors_impl(
+        program,
+        options,
+        const_arrays,
+        const_scalars,
+        true,
+        Some(const_scope),
+        errors,
+    )
 }
 
 pub(crate) fn desugar_materialized_processors(
     program: Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
-    desugar_processors_impl(program, options, const_arrays, false, errors)
+    desugar_processors_impl(
+        program,
+        options,
+        const_arrays,
+        const_scalars,
+        false,
+        const_scope,
+        errors,
+    )
 }
 
 #[cfg(test)]
@@ -1707,11 +1745,12 @@ sample:
     {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
-        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
             program,
             AnalysisOptions::default(),
         )
         .expect("const preprocessing should succeed");
+        let mut program = inputs.program;
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
@@ -1764,22 +1803,24 @@ sample:
     fn build_proc_lowering_env_tracks_zero_latency_child_procs_through_wrapper_namespace() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
-        let mut program = crate::pipeline::preprocess_const_semantics_for_lowering(
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
             program,
             AnalysisOptions::default(),
         )
         .expect("const preprocessing should succeed");
+        let mut program = inputs.program;
         let mut errors = Vec::new();
         rewrite_and_materialize_generic_processors(&mut program, &mut errors);
         assert!(
             errors.is_empty(),
             "generic proc rewrite should not emit errors: {errors:?}"
         );
-        let const_arrays = HashMap::new();
         let env = build_proc_lowering_env(
             &program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            Some(&inputs.scope),
             &mut errors,
         )
         .expect("proc lowering env should exist");
@@ -1815,17 +1856,19 @@ sample:
     fn desugar_processors_accepts_wrapper_namespace_zero_latency_repro() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
-        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
             program,
             AnalysisOptions::default(),
         )
         .expect("const preprocessing should succeed");
+        let program = inputs.program;
         let mut errors = Vec::new();
-        let const_arrays = HashMap::new();
         let _desugared = desugar_processors(
             program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            &inputs.scope,
             &mut errors,
         );
         assert!(
@@ -1838,17 +1881,19 @@ sample:
     fn desugared_wrapper_namespace_program_has_no_raw_nested_proc_event_calls_left() {
         let program =
             parse_program(WRAPPER_CONST_ZERO_LATENCY_REPRO).expect("parse should succeed");
-        let program = crate::pipeline::preprocess_const_semantics_for_lowering(
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
             program,
             AnalysisOptions::default(),
         )
         .expect("const preprocessing should succeed");
+        let program = inputs.program;
         let mut errors = Vec::new();
-        let const_arrays = HashMap::new();
         let desugared = desugar_processors(
             program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            &inputs.scope,
             &mut errors,
         );
         assert!(
@@ -1926,12 +1971,19 @@ sample:
   out1 = bank()
 "#;
         let program = parse_program(src).expect("parse should succeed");
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
+        let program = inputs.program;
         let mut errors = Vec::new();
-        let const_arrays = HashMap::new();
         let desugared = desugar_processors(
             program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            &inputs.scope,
             &mut errors,
         );
         assert!(
@@ -1993,12 +2045,19 @@ sample:
   out1 = voice()
 "#;
         let program = parse_program(src).expect("parse should succeed");
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
+        let program = inputs.program;
         let mut errors = Vec::new();
-        let const_arrays = HashMap::new();
         let desugared = desugar_processors(
             program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            &inputs.scope,
             &mut errors,
         );
         assert!(
@@ -2118,9 +2177,9 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("short proc.init array argument should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains(
-                "processor event call 'voice.init(...)' argument 'gains': expected array argument with 2 elements, got 1"
-            )),
+            errors.iter().any(|diag| diag
+                .message
+                .contains("parameter 'gains' expects array length 2, got 1")),
             "expected proc.init array length diagnostic, got {errors:?}"
         );
     }
@@ -2150,9 +2209,9 @@ sample:
         let errors =
             analyze(program).expect_err("scalar proc.init argument for array param should fail");
         assert!(
-            errors.iter().any(|diag| diag.message.contains(
-                "processor event call 'voice.init(...)' argument 'gains': array argument requires an array literal or array symbol expression"
-            )),
+            errors.iter().any(|diag| diag
+                .message
+                .contains("parameter 'gains' expects an array value")),
             "expected proc.init array argument diagnostic, got {errors:?}"
         );
     }
@@ -2177,12 +2236,19 @@ sample:
   out1 = voice()
 "#;
         let program = parse_program(src).expect("parse should succeed");
+        let inputs = crate::pipeline::preprocess_const_semantics_for_lowering(
+            program,
+            AnalysisOptions::default(),
+        )
+        .expect("const preprocessing should succeed");
+        let program = inputs.program;
         let mut errors = Vec::new();
-        let const_arrays = HashMap::new();
         let desugared = desugar_processors(
             program,
             AnalysisOptions::default(),
-            &const_arrays,
+            &inputs.arrays,
+            &inputs.scalars,
+            &inputs.scope,
             &mut errors,
         );
         assert!(
@@ -4168,7 +4234,7 @@ graph:
                     collect_offending_proc_event_calls_in_stmt(stmt, owner, offending);
                 }
             }
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
 

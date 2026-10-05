@@ -46,6 +46,7 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     pub registered_state_tuples: &'a HashMap<String, SourceLoc>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
+    pub resolved_scalar_bindings: Option<&'a std::cell::RefCell<ScalarBindingTypes>>,
     pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
     pub resolved_struct_locals: Option<&'a std::cell::RefCell<HashMap<String, String>>>,
     pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
@@ -216,6 +217,7 @@ pub(super) fn build_runtime_stmt_analysis_ctx<'a>(
         state_tuples,
         registered_state_tuples,
         resolved_scalar_locals: None,
+        resolved_scalar_bindings: None,
         resolved_array_locals: None,
         resolved_tuple_locals: None,
         resolved_struct_locals: None,
@@ -729,7 +731,6 @@ fn analyze_flow_stmt(
             proc_array_roots,
         );
         match stmt {
-            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target_loc,
                 target,
@@ -802,6 +803,13 @@ fn analyze_flow_stmt(
                     errors,
                 );
                 record_resolved_local_bindings(ctx, state);
+                if let (Some(types), AssignTarget::Var(name)) =
+                    (ctx.resolved_scalar_bindings, target)
+                {
+                    if let Some(ty) = state.local_aliases.get(name) {
+                        types.borrow_mut().insert(stmt, *ty);
+                    }
+                }
             }
             Stmt::Expr { expr, .. } => {
                 if matches!(common.policy, ScopePolicy::Task)
@@ -938,15 +946,7 @@ fn analyze_flow_stmt(
                     scope_depth + 1,
                     errors,
                 );
-                merge_reachable_branch_scope_flow_state(
-                    &mut state.known_scalars,
-                    &mut state.local_aliases,
-                    &mut state.integer_ranges,
-                    &mut state.local_array_aliases,
-                    &mut state.local_proc_aliases,
-                    &mut state.local_struct_aliases,
-                    &mut state.local_buffer_aliases,
-                    &mut state.tuple_vars,
+                state.join_branches(
                     then_state,
                     then_flow,
                     else_state,
@@ -991,6 +991,7 @@ fn analyze_flow_stmt(
                 });
                 validate_for_loop_step_expr(
                     rewritten_step.as_ref(),
+                    *var_ty,
                     build_flow_stmt_expr_env(expr_inputs, state, &array_vars, scope),
                     errors,
                 );
@@ -1257,8 +1258,7 @@ fn analyze_flow_assignment(
                 }
             }
             if let Some(alias) = local_array_aliases.get(base) {
-                if !alias.writable {
-                    target_error!(format!("cannot assign to immutable array alias '{base}'"),);
+                if !validate_array_write(base, alias, target_loc, errors) {
                     return;
                 }
                 if alias.elem_struct.is_some() {
@@ -1316,9 +1316,9 @@ fn analyze_flow_assignment(
             }
             if let Some(elem_tys) = state_tuples.get(base) {
                 // Tuple state element write: pair[0] = value
-                match index {
-                    Expr::Int { value, .. } => {
-                        let idx = *value as usize;
+                match declared_symbols.constant_integer(index, errors) {
+                    Some(value) => {
+                        let idx = value as usize;
                         if idx >= elem_tys.len() {
                             target_error!(format!(
                                 "tuple element index {idx} is out of bounds for tuple '{base}' with {} elements",
@@ -1404,7 +1404,14 @@ fn analyze_flow_assignment(
                 .or_else(|| declared_symbol_scalar_type(declared_symbols, base))
                 .or(aggregate_target_ty)
                 .unwrap_or(PrimitiveType::F32);
-            require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
+            require_expr_assignable_type(
+                expr,
+                expr_ty,
+                expected_ty,
+                "array/buffer write",
+                errors,
+                declared_symbols,
+            );
         }
         AssignTarget::Slice {
             base,
@@ -1491,17 +1498,12 @@ fn analyze_flow_assignment(
                 base,
                 start.as_deref(),
                 end.as_deref(),
-                declared_symbols,
-                state_arrays,
-                local_array_aliases,
-                struct_instances,
-                struct_defs,
+                scope_expr_env!(),
                 errors,
             ) else {
                 return;
             };
-            if !target_info.writable {
-                target_error!(format!("cannot assign to immutable array alias '{base}'"),);
+            if !validate_array_write(base, &target_info, target_loc, errors) {
                 return;
             }
             if let Some(start) = start {
@@ -1550,17 +1552,7 @@ fn analyze_flow_assignment(
                     expected,
                     target_loc,
                     stmt_expr_env(scope),
-                    |errors| {
-                        resolve_executable_data_like_info(
-                            expr,
-                            declared_symbols,
-                            state_arrays,
-                            local_array_aliases,
-                            struct_instances,
-                            struct_defs,
-                            errors,
-                        )
-                    },
+                    |errors| resolve_executable_data_like_info(expr, scope_expr_env!(), errors),
                     errors,
                 );
                 return;
@@ -1569,11 +1561,7 @@ fn analyze_flow_assignment(
                 validate_data_like_value_expr(&expr_for_validation, stmt_expr_env(scope), errors);
                 if let Some(src_info) = resolve_executable_data_like_info(
                     &expr_for_validation,
-                    declared_symbols,
-                    state_arrays,
-                    local_array_aliases,
-                    struct_instances,
-                    struct_defs,
+                    scope_expr_env!(),
                     errors,
                 ) {
                     require_expr_assignable_type(
@@ -1582,6 +1570,7 @@ fn analyze_flow_assignment(
                         target_info.elem_ty,
                         "slice copy assignment",
                         errors,
+                        declared_symbols,
                     );
                 }
             } else {
@@ -1608,6 +1597,7 @@ fn analyze_flow_assignment(
                     target_info.elem_ty,
                     "slice fill assignment",
                     errors,
+                    declared_symbols,
                 );
             }
         }
@@ -1760,36 +1750,48 @@ fn analyze_flow_assignment(
                 }
                 let existing = infer_fixed_data_type(&Expr::var(name), scope_expr_env!());
                 if let Some(existing) = existing {
-                    if is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some() {
-                        target_error!(format!(
-                            "data declaration '{name}' must introduce a new name"
-                        ));
-                    } else if existing != data {
+                    if validate_assignment_binding(
+                        name,
+                        Some(AssignmentBindingKind::Data),
+                        AssignmentBindingKind::Data,
+                        is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                        target_loc,
+                        errors,
+                    ) && existing != data
+                    {
                         target_error!(format!(
                             "data replacement for '{name}' {}",
                             data_type_mismatch(&existing, Some(&data)),
                         ));
                     }
-                    if local_array_aliases
-                        .get(name)
-                        .is_some_and(|alias| !alias.writable)
-                    {
-                        target_error!(format!("cannot assign to immutable array alias '{name}'"));
+                    if let Some(binding) = local_array_aliases.get(name) {
+                        validate_array_binding_replacement(
+                            name,
+                            binding,
+                            expr,
+                            binding.static_len.is_none(),
+                            target_loc,
+                            errors,
+                        );
                     }
                     validate_fixed_data_expr(expr, scope_expr_env!(), errors);
                     return;
                 }
-                if known_scalars.contains(name)
+                let existing_binding = known_scalars.contains(name)
                     || local_aliases.contains_key(name)
                     || local_array_aliases.contains_key(name)
                     || state_scalars.contains_key(name)
                     || input_names.contains(name)
                     || output_names.contains(name)
-                    || param_names.contains(name)
-                {
-                    target_error!(format!(
-                        "data declaration '{name}' conflicts with an existing binding"
-                    ));
+                    || param_names.contains(name);
+                if !validate_assignment_binding(
+                    name,
+                    existing_binding.then_some(AssignmentBindingKind::Scalar),
+                    AssignmentBindingKind::Data,
+                    is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
+                    target_loc,
+                    errors,
+                ) {
                     return;
                 }
                 validate_fixed_data_expr(expr, scope_expr_env!(), errors);
@@ -1811,16 +1813,8 @@ fn analyze_flow_assignment(
                     DataType::Array { element, len } => {
                         let writable = is_typed_decl
                             || matches!(expr, Expr::UserCall { .. } | Expr::ArrayLiteral { .. })
-                            || resolve_executable_data_like_info(
-                                expr,
-                                declared_symbols,
-                                state_arrays,
-                                local_array_aliases,
-                                struct_instances,
-                                struct_defs,
-                                errors,
-                            )
-                            .is_some_and(|source| source.writable);
+                            || resolve_executable_data_like_info(expr, scope_expr_env!(), errors)
+                                .is_some_and(|source| source.writable);
                         let (elem_ty, elem_struct) = match element {
                             ArrayElemType::Primitive(ty) => (ty, None),
                             ArrayElemType::Struct(name) => (PrimitiveType::F32, Some(name)),
@@ -1931,7 +1925,7 @@ fn analyze_flow_assignment(
                         diagnostic_scope
                     );
                     let Some(size_value) = with_expr_diag_context(&spec.size, |_diag| {
-                        eval_data_size_expr(&spec.size, options, &size_context, errors)
+                        scope_expr_env!().data_size(&spec.size, options, &size_context, errors)
                     }) else {
                         return;
                     };
@@ -1977,7 +1971,7 @@ fn analyze_flow_assignment(
                     return;
                 }
             }
-            if let Expr::ArrayLiteral { values, .. } = expr {
+            if let Expr::ArrayLiteral { .. } = expr {
                 if decl_ty.is_some() {
                     target_error!(
                         format!(
@@ -2006,68 +2000,20 @@ fn analyze_flow_assignment(
                     ),);
                     return;
                 }
-                if values.is_empty() {
-                    with_expr_diag_context(expr, |expr_diag| {
-                        push_semantic(
-                            expr_diag,
-                            errors,
-                            format!("array initializer for symbol '{name}' cannot be empty"),
-                        );
-                    });
-                    return;
-                }
-                for value in values {
-                    validate_expr(value, scope_expr_env!(), errors);
-                }
-                let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                    &values[0],
-                    state_scalars,
-                    declared_symbols,
-                    None,
-                    local_aliases,
-                    local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    struct_instances,
-                    struct_defs,
-                    proc_array_roots,
+                let Some((elem_ty, len)) = crate::expr_validation::check_primitive_array_literal(
+                    expr,
+                    &format!("array initializer for symbol '{name}'"),
+                    scope_expr_env!(),
                     errors,
-                );
-                let elem_ty = effective_untyped_assignment_type(&values[0], inferred_first)
-                    .unwrap_or(PrimitiveType::F32);
-                for (idx, value) in values.iter().enumerate() {
-                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                        value,
-                        state_scalars,
-                        declared_symbols,
-                        None,
-                        local_aliases,
-                        local_array_aliases,
-                        locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        struct_instances,
-                        struct_defs,
-                        proc_array_roots,
-                        errors,
-                    );
-                    require_expr_assignable_type(
-                        value,
-                        value_ty,
-                        elem_ty,
-                        &format!("array initializer assignment to '{name}[{idx}]'"),
-                        errors,
-                    );
-                }
+                ) else {
+                    return;
+                };
                 local_array_aliases.insert(
                     name.clone(),
                     LocalArrayAliasInfo {
                         proven_len: None,
-                        len: values.len(),
-                        static_len: Some(values.len()),
+                        len,
+                        static_len: Some(len),
                         elem_ty,
                         elem_struct: None,
                         writable: true,
@@ -2124,11 +2070,7 @@ fn analyze_flow_assignment(
                     base,
                     start.as_deref(),
                     end.as_deref(),
-                    declared_symbols,
-                    state_arrays,
-                    local_array_aliases,
-                    struct_instances,
-                    struct_defs,
+                    scope_expr_env!(),
                     errors,
                 ) {
                     local_array_aliases.insert(name.clone(), alias);
@@ -2170,6 +2112,7 @@ fn analyze_flow_assignment(
                     *local_aliases.get(name).unwrap_or(&PrimitiveType::F32),
                     &format!("alias assignment to '{name}'"),
                     errors,
+                    declared_symbols,
                 );
                 known_scalars.insert(name.clone());
                 return;
@@ -2240,6 +2183,7 @@ fn analyze_flow_assignment(
                                 prim,
                                 &format!("{diagnostic_scope} assignment to '{flat}'"),
                                 errors,
+                                declared_symbols,
                             );
                         }
                         TypedFieldType::Array(_) => {
@@ -2284,6 +2228,7 @@ fn analyze_flow_assignment(
                                         errors,
                                     )
                                 },
+                                declared_symbols,
                             );
                             if let Some(assigned_types) = assigned_types {
                                 resolve_tuple_assignment_types(
@@ -2294,6 +2239,7 @@ fn analyze_flow_assignment(
                                     Some(field_types),
                                     false,
                                     errors,
+                                    declared_symbols,
                                 );
                             } else {
                                 target_error!(format!(
@@ -2462,10 +2408,18 @@ fn analyze_flow_assignment(
             let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
             let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
             if let Some(declared_ty) = declared_scalar_ty {
-                if output_names.contains(name) || local_aliases.contains_key(name) {
-                    target_error!(format!(
-                        "typed declaration for '{name}' is only allowed on first assignment"
-                    ),);
+                if output_names.contains(name)
+                    || local_aliases.contains_key(name)
+                    || (policy == ScopePolicy::Def && known_scalars.contains(name))
+                {
+                    validate_assignment_binding(
+                        name,
+                        Some(AssignmentBindingKind::Scalar),
+                        AssignmentBindingKind::Scalar,
+                        true,
+                        target_loc,
+                        errors,
+                    );
                 } else if let Some(existing_ty) = state_scalars.get(name).copied() {
                     if existing_ty != declared_ty {
                         target_error!(
@@ -2517,6 +2471,7 @@ fn analyze_flow_assignment(
                         errors,
                     )
                 },
+                declared_symbols,
             );
             let existing_tuple_types = state_tuples
                 .get(name)
@@ -2551,6 +2506,7 @@ fn analyze_flow_assignment(
                         .get(name)
                         .is_some_and(|registered_loc| *registered_loc == target_loc),
                     errors,
+                    declared_symbols,
                 ) else {
                     return;
                 };
@@ -2601,7 +2557,7 @@ fn analyze_flow_assignment(
             } else if let Some(declared) = declared_scalar_ty {
                 Some(declared)
             } else {
-                let untyped_ty = effective_untyped_assignment_type(expr, expr_ty);
+                let untyped_ty = effective_untyped_assignment_type(expr, expr_ty, declared_symbols);
                 Some(untyped_ty.unwrap_or(PrimitiveType::F32))
             };
             if let Some(target_ty) = target_ty {
@@ -2611,6 +2567,7 @@ fn analyze_flow_assignment(
                     target_ty,
                     &format!("{diagnostic_scope} assignment to '{name}'"),
                     errors,
+                    declared_symbols,
                 );
                 if can_track_local {
                     local_aliases.entry(name.clone()).or_insert(target_ty);

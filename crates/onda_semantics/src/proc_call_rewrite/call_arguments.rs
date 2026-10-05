@@ -554,7 +554,9 @@ fn lower_named_proc_param_call_expr(
     };
     // Proc-array slots are known here, so classify receiver syntax before the
     // named-argument pass can interpret the internal receiver marker.
-    canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
+    canonicalize_indexed_proc_receiver_call(name, args, |base| {
+        resolve_proc_array_base_key(base, proc_array_slots).is_some()
+    });
 
     let Some(mut target) = proc_named_arg_call_target_from_parts(
         name,
@@ -948,7 +950,6 @@ fn lower_named_proc_param_calls_in_stmt(
 ) -> Vec<Stmt> {
     let mut prelude = Vec::<Stmt>::new();
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             rewrite_proc_alias_calls_in_expr(expr, aliases);
             lower_named_proc_param_calls_in_expr(
@@ -1236,23 +1237,10 @@ pub(crate) fn expand_proc_event_call_args(
             }
         };
         match param.ty {
-            ProcEventParamTypeSpec::FixedArray { len, .. } => {
-                validate_fixed_array_event_arg(
-                    &resolved_expr,
-                    len,
-                    &format!(
-                        "processor event call '{call_display_name}(...)' argument '{}'",
-                        param.name
-                    ),
-                    errors,
-                );
-                expanded.push(CallArg {
-                    name: None,
-                    expr: resolved_expr,
-                });
-                continue;
-            }
-            ProcEventParamTypeSpec::Tuple(_)
+            // Retain array values intact. The ordinary call checker owns shape
+            // and permission checks, including constructors and const defaults.
+            ProcEventParamTypeSpec::FixedArray { .. }
+            | ProcEventParamTypeSpec::Tuple(_)
             | ProcEventParamTypeSpec::Struct { .. }
             | ProcEventParamTypeSpec::StructArray { .. }
             | ProcEventParamTypeSpec::StructSlice { .. }
@@ -1293,57 +1281,104 @@ pub(crate) fn expand_proc_port_specs(
     ports: &[PortDecl],
     kind: &str,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> ExpandedProcPortSpecs {
-    let (flat, flat_types, arrays, defaults, ranges) = expand_port_decls(
-        ports,
-        &format!("processor '{proc_name}' {kind}"),
-        options,
-        errors,
-    );
-    let mut port_specs = Vec::<ProcPortSpec>::new();
-    let mut array_slots = HashMap::<String, Vec<String>>::new();
-    for port in ports {
-        match port.ty.as_ref() {
-            Some(DeclType::Array { .. }) | Some(DeclType::ArrayGeneric { .. }) => {
-                let len = arrays.get(&port.name).map(|i| i.len).unwrap_or(0);
-                let slots = (0..len)
-                    .map(|idx| format!("{}[{idx}]", port.name))
-                    .collect::<Vec<_>>();
-                let slot_defaults = slots
-                    .iter()
-                    .map(|slot| defaults.get(slot).copied().map(typed_const_expr))
-                    .collect::<Vec<_>>();
-                array_slots.insert(port.name.clone(), slots.clone());
-                port_specs.push(ProcPortSpec {
-                    name: port.name.clone(),
-                    slots,
-                    defaults: slot_defaults,
-                    ranges: vec![None; len],
-                });
+    let params = ports
+        .iter()
+        .map(|port| ParamDecl {
+            loc: port.loc,
+            name: port.name.clone(),
+            private: false,
+            ty: Some(
+                port.ty
+                    .clone()
+                    .unwrap_or(DeclType::Scalar(PrimitiveType::F32)),
+            ),
+            ty_loc: port.ty_loc,
+            default: port.default.clone(),
+            range: port.range.clone(),
+            bind: None,
+            control: Default::default(),
+        })
+        .collect::<Vec<_>>();
+    let (specs, arrays) =
+        expand_proc_value_specs(proc_name, kind, &params, options, const_arrays, errors);
+    let mut flat = Vec::new();
+    let mut types = HashMap::new();
+    let specs = specs
+        .into_iter()
+        .zip(ports)
+        .map(|(spec, port)| {
+            let mut slots = Vec::new();
+            let mut defaults = Vec::new();
+            let mut ranges = Vec::new();
+            for slot in spec.slots {
+                flat.push(slot.name.clone());
+                types.insert(slot.name.clone(), slot.ty);
+                slots.push(slot.name);
+                defaults.push(port.default.as_ref().and(slot.default));
+                ranges.push(slot.range);
             }
-            _ => {
-                let default = if port.default.is_some() {
-                    defaults.get(&port.name).copied().map(typed_const_expr)
-                } else {
-                    None
-                };
-                port_specs.push(ProcPortSpec {
-                    name: port.name.clone(),
-                    slots: vec![port.name.clone()],
-                    defaults: vec![default],
-                    ranges: vec![ranges.get(&port.name).copied()],
-                });
+            ProcPortSpec {
+                name: spec.name,
+                slots,
+                defaults,
+                ranges,
             }
-        }
-    }
-    (flat, flat_types, port_specs, array_slots)
+        })
+        .collect();
+    (flat, types, specs, arrays)
 }
 
 pub(crate) fn expand_proc_param_specs(
     proc_name: &str,
     params: &[ParamDecl],
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    errors: &mut Vec<Diagnostic>,
+) -> (Vec<ProcParamSpec>, HashMap<String, Vec<String>>) {
+    expand_proc_value_specs(proc_name, "param", params, options, const_arrays, errors)
+}
+
+// Array values supply one element per slot; scalar values broadcast. Named
+// arrays stay compact in declarations and expand only with the owner layout.
+fn array_default_element(
+    mut expr: &Expr,
+    index: usize,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) -> Option<Expr> {
+    while let Expr::ArrayCtor {
+        init,
+        init_is_value,
+        ..
+    } = expr
+    {
+        match crate::array_semantics::ArrayInitializer::new(init.as_deref(), *init_is_value) {
+            crate::array_semantics::ArrayInitializer::Value(source) => expr = source,
+            crate::array_semantics::ArrayInitializer::Elements(values) => {
+                return values.get(index).cloned()
+            }
+            crate::array_semantics::ArrayInitializer::Zero => return Some(Expr::int(0)),
+        }
+    }
+    match expr {
+        Expr::ArrayLiteral { values, .. } => values.get(index).cloned(),
+        Expr::Var { name, .. } if const_arrays.contains_key(name) => Some(Expr::Index {
+            loc: expr.loc().span(),
+            base: name.clone(),
+            index: Box::new(Expr::int(index as i64)),
+        }),
+        _ => Some(expr.clone()),
+    }
+}
+
+fn expand_proc_value_specs(
+    proc_name: &str,
+    kind: &str,
+    params: &[ParamDecl],
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<ProcParamSpec>, HashMap<String, Vec<String>>) {
     let mut specs = Vec::<ProcParamSpec>::new();
@@ -1368,51 +1403,49 @@ pub(crate) fn expand_proc_param_specs(
                             with_expr_diag_context(expr, |_diag| {
                                 let expr_ty = infer_const_expr_type(
                                     expr,
-                                    options,
                                     &format!(
-                                        "processor '{proc_name}' param '{}' default",
+                                        "processor '{proc_name}' {kind} '{}' default",
                                         param.name
                                     ),
                                     errors,
                                 );
-                                effective_untyped_assignment_type(expr, expr_ty)
+                                effective_untyped_assignment_type(
+                                    expr,
+                                    expr_ty,
+                                    &crate::decl_symbols::DeclaredSymbolMap::new(),
+                                )
                             })
                         })
                         .unwrap_or(PrimitiveType::F32),
                     _ => PrimitiveType::F32,
                 };
-                let raw_default = match &param.default {
-                    Some(expr) => eval_typed_const_expr(
-                        expr,
-                        ty,
-                        options,
-                        &format!("processor '{proc_name}' param '{}' default", param.name),
-                        is_float_type(ty),
-                        matches!(ty, PrimitiveType::I32 | PrimitiveType::I64),
-                        errors,
-                    )
-                    .unwrap_or_else(|| coerce_const_default_to_typed(0.0, ty)),
-                    None => coerce_const_default_to_typed(0.0, ty),
-                };
+                let raw_default = param
+                    .default
+                    .clone()
+                    .unwrap_or_else(|| typed_const_expr(coerce_const_default_to_typed(0.0, ty)));
                 let range = param.range.as_ref().and_then(|r| {
                     eval_decl_range_for_type(
                         r,
                         ty,
                         options,
-                        &format!("processor '{proc_name}' param '{}'", param.name),
+                        &format!("processor '{proc_name}' {kind} '{}'", param.name),
                         errors,
                     )
                 });
-                let default = range
-                    .map(|r| clamp_typed_const_to_range(raw_default, r))
-                    .unwrap_or(raw_default);
+                let default = cast_expr_to_primitive(
+                    match range {
+                        Some(range) => clamp_expr_to_range(raw_default, range),
+                        None => raw_default,
+                    },
+                    ty,
+                );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
                         private: param.private,
                         ty,
-                        default: Some(typed_const_expr(default)),
+                        default: Some(default),
                         range,
                         bind: param.bind.clone(),
                     }],
@@ -1421,53 +1454,17 @@ pub(crate) fn expand_proc_param_specs(
             Some(DeclType::Generic(param_ty)) => {
                 errors.push(Diagnostic::semantic_span(
                     format!(
-                        "processor '{proc_name}' param '{}' uses unresolved generic type '{}'",
+                        "processor '{proc_name}' {kind} '{}' uses unresolved generic type '{}'",
                         param.name, param_ty
                     ),
                     param.ty_loc.or(param.loc),
                 ));
-                let raw_default = match &param.default {
-                    Some(expr) => eval_typed_const_expr(
-                        expr,
-                        PrimitiveType::F32,
-                        options,
-                        &format!("processor '{proc_name}' param '{}' default", param.name),
-                        true,
-                        false,
-                        errors,
-                    )
-                    .unwrap_or(TypedConstValue::F32(0.0)),
-                    None => TypedConstValue::F32(0.0),
-                };
-                let range = param.range.as_ref().and_then(|r| {
-                    eval_decl_range_for_type(
-                        r,
-                        PrimitiveType::F32,
-                        options,
-                        &format!("processor '{proc_name}' param '{}'", param.name),
-                        errors,
-                    )
-                });
-                let default = range
-                    .map(|r| clamp_typed_const_to_range(raw_default, r))
-                    .unwrap_or(raw_default);
-                specs.push(ProcParamSpec {
-                    name: param.name.clone(),
-                    slots: vec![ProcParamSlotSpec {
-                        name: param.name.clone(),
-                        private: param.private,
-                        ty: PrimitiveType::F32,
-                        default: Some(typed_const_expr(default)),
-                        range,
-                        bind: param.bind.clone(),
-                    }],
-                });
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
                 if let Some(bind) = &param.bind {
                     errors.push(Diagnostic::semantic_span(
                         format!(
-                            "processor '{proc_name}' param '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
+                            "processor '{proc_name}' {kind} '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
                             param.name
                         ),
                         param.loc.as_ref(),
@@ -1475,13 +1472,13 @@ pub(crate) fn expand_proc_param_specs(
                 }
                 errors.push(Diagnostic::semantic_span(
                     format!(
-                        "processor '{proc_name}' param '{}' uses unresolved generic array element type '{}'",
+                        "processor '{proc_name}' {kind} '{}' uses unresolved generic array element type '{}'",
                         param.name, elem
                     ),
                     param.loc.as_ref(),
                 ));
                 let size_context =
-                    format!("processor '{proc_name}' param '{}' array size", param.name);
+                    format!("processor '{proc_name}' {kind} '{}' array size", param.name);
                 let Some(len) = with_expr_diag_context(size, |_diag| {
                     eval_data_size_expr(size, options, &size_context, errors)
                 }) else {
@@ -1501,7 +1498,7 @@ pub(crate) fn expand_proc_param_specs(
                                     expr_diag,
                                     errors,
                                     format!(
-                                        "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
+                                        "processor '{proc_name}' {kind} '{}' default expects {len} elements, got {}",
                                         param.name,
                                         values.len()
                                     ),
@@ -1513,8 +1510,8 @@ pub(crate) fn expand_proc_param_specs(
                         }
                     }
                     Some(expr) => {
-                        for _ in 0..len {
-                            slot_defaults.push(Some(expr.clone()));
+                        for index in 0..len {
+                            slot_defaults.push(array_default_element(expr, index, const_arrays));
                         }
                     }
                 }
@@ -1542,7 +1539,7 @@ pub(crate) fn expand_proc_param_specs(
                 if let Some(bind) = &param.bind {
                     errors.push(Diagnostic::semantic_span(
                         format!(
-                            "processor '{proc_name}' param '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
+                            "processor '{proc_name}' {kind} '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
                             param.name
                         ),
                         param.loc.as_ref(),
@@ -1550,7 +1547,7 @@ pub(crate) fn expand_proc_param_specs(
                 }
                 errors.push(Diagnostic::semantic_span(
                     format!(
-                        "processor '{proc_name}' param '{}' tuple type is not supported",
+                        "processor '{proc_name}' {kind} '{}' tuple type is not supported",
                         param.name
                     ),
                     param.ty_loc.or(param.loc),
@@ -1561,14 +1558,14 @@ pub(crate) fn expand_proc_param_specs(
                 if let Some(bind) = &param.bind {
                     errors.push(Diagnostic::semantic_span(
                         format!(
-                            "processor '{proc_name}' param '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
+                            "processor '{proc_name}' {kind} '{}' uses bind hook '=> {bind}', but binds are only supported on primitive scalar params",
                             param.name
                         ),
                         param.loc.as_ref(),
                     ));
                 }
                 let size_context =
-                    format!("processor '{proc_name}' param '{}' array size", param.name);
+                    format!("processor '{proc_name}' {kind} '{}' array size", param.name);
                 let Some(len) = with_expr_diag_context(size, |_diag| {
                     eval_data_size_expr(size, options, &size_context, errors)
                 }) else {
@@ -1578,7 +1575,7 @@ pub(crate) fn expand_proc_param_specs(
                     if values.len() != len {
                         errors.push(Diagnostic::semantic_span(
                             format!(
-                                "processor '{proc_name}' param '{}' default expects {len} elements, got {}",
+                                "processor '{proc_name}' {kind} '{}' default expects {len} elements, got {}",
                                 param.name, values.len()
                             ),
                             param.loc.as_ref(),
@@ -1594,18 +1591,25 @@ pub(crate) fn expand_proc_param_specs(
                         element.name = format!("{}[{index}]", param.name);
                         element.ty = Some(DeclType::Scalar(*elem));
                         element.bind = None;
-                        element.default = match &param.default {
-                            Some(Expr::ArrayLiteral { values, .. }) => Some(values[index].clone()),
-                            default => default.clone(),
-                        };
+                        element.default = param
+                            .default
+                            .as_ref()
+                            .and_then(|expr| array_default_element(expr, index, const_arrays));
                         element
                     })
                     .collect::<Vec<_>>();
-                let slots = expand_proc_param_specs(proc_name, &elements, options, errors)
-                    .0
-                    .into_iter()
-                    .flat_map(|spec| spec.slots)
-                    .collect::<Vec<_>>();
+                let slots = expand_proc_value_specs(
+                    proc_name,
+                    kind,
+                    &elements,
+                    options,
+                    const_arrays,
+                    errors,
+                )
+                .0
+                .into_iter()
+                .flat_map(|spec| spec.slots)
+                .collect::<Vec<_>>();
                 field_array_slots.insert(
                     param.name.clone(),
                     slots.iter().map(|slot| slot.name.clone()).collect(),
@@ -1736,7 +1740,9 @@ pub(crate) fn rewrite_proc_calls_in_expr(
             }
         }
         Expr::UserCall { name, args, .. } => {
-            canonicalize_indexed_proc_receiver_call(name, args, proc_array_slots);
+            canonicalize_indexed_proc_receiver_call(name, args, |base| {
+                resolve_proc_array_base_key(base, proc_array_slots).is_some()
+            });
             for arg in args.iter_mut() {
                 rewrite_proc_calls_in_expr(
                     &mut arg.expr,

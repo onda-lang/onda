@@ -5,13 +5,17 @@ use crate::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FnSignature {
+    /// Declaration checking has already validated defaults in lexical scope.
+    pub(crate) defaults_validated: bool,
     /// Stable source-level name used after internal call rewrites.
     pub(crate) display_name: Option<String>,
     /// The source declaration has no lowerable standalone ABI and must be
     /// replaced by a concrete call-site specialization before MIR lowering.
     pub(crate) requires_call_specialization: bool,
     pub(crate) params: Vec<String>,
-    pub(crate) defaults: Vec<Option<Expr>>,
+    /// Signature copies share default expression trees. Specialization uses
+    /// copy-on-write only when it actually rewrites a default.
+    pub(crate) defaults: std::rc::Rc<[Option<Expr>]>,
     pub(crate) param_types: Vec<Option<FnParamType>>,
     pub(crate) type_params: Vec<String>,
     pub(crate) return_type: Option<ReturnType>,
@@ -32,6 +36,7 @@ impl FnSignature {
 
     pub(crate) fn from_def(def: &FunctionDef) -> Self {
         Self {
+            defaults_validated: false,
             display_name: None,
             requires_call_specialization: false,
             params: def.params.iter().map(|param| param.name.clone()).collect(),
@@ -42,7 +47,7 @@ impl FnSignature {
                 .collect(),
             param_types: def.params.iter().map(|param| param.ty.clone()).collect(),
             type_params: def.type_params.clone(),
-            return_type: None,
+            return_type: crate::def_semantics::call_types::declared_call_return_type(def),
             readonly_data_params: def
                 .params
                 .iter()
@@ -73,6 +78,7 @@ impl FnSignature {
             .map(|param| param.name.clone())
             .collect();
         Self {
+            defaults_validated: false,
             display_name: None,
             requires_call_specialization: false,
             params: params.iter().map(|param| param.name.clone()).collect(),
@@ -90,6 +96,72 @@ impl FnSignature {
             .iter()
             .map(|param| param.default.clone())
             .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature_defaults_share_storage_and_isolate_specialization() {
+        let program =
+            onda_frontend::parse_program("def f(value: f32 = 7.0):\n  return value\n").unwrap();
+        let Block::Def(def) = &program.blocks[0] else {
+            panic!("expected function")
+        };
+        let original = FnSignature::from_def(def);
+        let mut specialized = original.clone();
+        assert!(std::rc::Rc::ptr_eq(
+            &original.defaults,
+            &specialized.defaults
+        ));
+        std::rc::Rc::make_mut(&mut specialized.defaults)[0] = Some(Expr::number(9.0));
+        assert_eq!(original.defaults[0], def.params[0].default);
+        assert_eq!(specialized.defaults[0], Some(Expr::number(9.0)));
+    }
+}
+
+/// Expression checking only needs borrowed signature lookup. Const scopes can
+/// share declaration signatures without copying defaults at every reference.
+pub(crate) trait SignatureLookup {
+    fn get(&self, name: &str) -> Option<&FnSignature>;
+    /// Const bodies have no runtime specialization. Check their concrete
+    /// argument metadata through the shared declaration catalog instead.
+    fn validate_const_call(
+        &self,
+        name: &str,
+        args: &[Option<&Expr>],
+        env: ExprEnv<'_>,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        if let Some(scope) = &env.declared_symbols.const_scope {
+            scope.validate_call(name, args, env, errors);
+        }
+    }
+    /// Element metadata is available even when a dependent length is not yet known.
+    fn array_return(&self, name: &str) -> Option<(ArrayElemType, Option<usize>)> {
+        match self.get(name)?.return_type.as_ref()? {
+            ReturnType::Data(DataType::Array { element, len }) => {
+                Some((element.clone(), Some(*len)))
+            }
+            _ => None,
+        }
+    }
+    fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+}
+
+impl SignatureLookup for HashMap<String, FnSignature> {
+    fn get(&self, name: &str) -> Option<&FnSignature> {
+        HashMap::get(self, name)
+    }
+}
+
+impl SignatureLookup for HashMap<String, &FnSignature> {
+    fn get(&self, name: &str) -> Option<&FnSignature> {
+        HashMap::get(self, name).copied()
     }
 }
 
@@ -115,8 +187,9 @@ pub(crate) struct ExprEnv<'a> {
     pub(crate) param_structs: &'a HashMap<String, String>,
     pub(crate) struct_instances: &'a HashMap<String, String>,
     pub(crate) struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
-    pub(crate) fn_signatures: &'a HashMap<String, FnSignature>,
+    pub(crate) fn_signatures: &'a dyn SignatureLookup,
     pub(crate) allow_array_ctor: bool,
+    pub(crate) deferred_type_params: &'a HashSet<String>,
     pub(crate) scope: ScopeKind,
     pub(crate) diagnostic_scope: &'static str,
     pub(crate) port_index_ins: Option<PortIndexInfo>,
@@ -130,6 +203,20 @@ pub(crate) struct ExprEnv<'a> {
 }
 
 impl<'a> ExprEnv<'a> {
+    /// Required layouts use the same lazy catalog and selected context as reads.
+    pub(crate) fn data_size(
+        self,
+        expr: &Expr,
+        options: AnalysisOptions,
+        context: &str,
+        errors: &mut Vec<Diagnostic>,
+    ) -> Option<usize> {
+        match &self.declared_symbols.const_scope {
+            Some(scope) => scope.data_size(expr, self.declared_symbols, options, context, errors),
+            None => eval_data_size_expr(expr, options, context, errors),
+        }
+    }
+
     pub(crate) fn has_scalar_binding(self, root: &str) -> bool {
         has_scalar_value_binding(root, self.locals, self.local_aliases)
     }
@@ -253,7 +340,7 @@ pub(crate) fn build_expr_env<'a>(
     param_structs: &'a HashMap<String, String>,
     struct_instances: &'a HashMap<String, String>,
     struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
-    fn_signatures: &'a HashMap<String, FnSignature>,
+    fn_signatures: &'a dyn SignatureLookup,
     scope: ScopeKind,
 ) -> ExprEnv<'a> {
     ExprEnv {
@@ -279,6 +366,7 @@ pub(crate) fn build_expr_env<'a>(
         struct_defs,
         fn_signatures,
         allow_array_ctor: false,
+        deferred_type_params: &EMPTY_IO_SURFACES,
         scope,
         diagnostic_scope: scope.label(),
         port_index_ins: None,

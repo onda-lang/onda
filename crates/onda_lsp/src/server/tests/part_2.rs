@@ -1098,15 +1098,15 @@ sample:
     }
 
     #[test]
-    fn definition_resolves_runtime_scope_consts() {
+    fn definition_resolves_root_consts_from_executable_code() {
         let dir = mk_temp_dir("definition_runtime_const");
         let main = dir.join("main.onda");
         let source = r#"
 outs:
   out1
 
+const Bias = 0.5
 sample:
-  const Bias = 0.5
   out1 = Bias
 "#;
         write_file(&main, source);
@@ -1115,7 +1115,7 @@ sample:
         let definition = definition_for(&mut server, &main, source, "Bias");
 
         assert_ne!(definition, json!(null), "runtime const should resolve");
-        assert_eq!(definition["range"]["start"]["line"], json!(5));
+        assert_eq!(definition["range"]["start"]["line"], json!(4));
 
         fs::remove_dir_all(&dir).ok();
     }

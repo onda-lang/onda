@@ -1064,8 +1064,8 @@ sample:
     fn oversampled_bind_hooks_accept_sr_dependent_consts() {
         let cases = [
             "const INV_SR = 1.0 / SR\nproc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    cached = gain * INV_SR\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
-            "proc Voice:\n  const INV_SR = 1.0 / SR\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    cached = gain * INV_SR\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
-            "proc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    const INV_SR = 1.0 / SR\n    cached = gain * INV_SR\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
+            "const def inv_sr() -> f32:\n  return 1.0 / SR\nproc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    cached = gain * inv_sr()\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
+            "proc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    cached = gain * (1.0 / SR)\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
             "const def inv_sr() -> f32:\n  return 1.0 / SR\nproc Voice:\n  params:\n    gain = 0.0 => update\n  init:\n    cached = 0.0\n  def update():\n    cached = gain * inv_sr()\n  outs:\n    out1\n  sample 2:\n    out1 = cached\nouts:\n  out1\ninit:\n  v = Voice()\nsample:\n  out1 = v()\n",
         ];
 
@@ -1079,9 +1079,8 @@ sample:
     fn oversampled_proc_state_shapes_use_runtime_sr() {
         let src = r#"
 proc Voice:
-  const Len = SR
   init:
-    table: f32[Len] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    table: f32[SR] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   outs:
     out1
   sample 2:
@@ -1102,6 +1101,7 @@ sample:
             AnalysisOptions {
                 sample_rate: 4.0,
                 block_size: 4,
+                ..AnalysisOptions::default()
             },
         )
         .expect("proc-local SR should size proc state arrays with effective runtime SR");
@@ -1117,11 +1117,10 @@ proc Child:
     out1 = 0.0
 
 proc Voice:
-  const Len = SR
   params:
-    gains: f32[Len] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    gains: f32[SR] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
   init:
-    children: Child[Len] = Child()
+    children: Child[SR] = Child()
   outs:
     out1
   sample 2:
@@ -1142,6 +1141,7 @@ sample:
             AnalysisOptions {
                 sample_rate: 4.0,
                 block_size: 4,
+                ..AnalysisOptions::default()
             },
         )
         .expect("proc param arrays and child proc arrays should use effective runtime SR");
@@ -1176,6 +1176,7 @@ sample:
             AnalysisOptions {
                 sample_rate: 4.0,
                 block_size: 4,
+                ..AnalysisOptions::default()
             },
         )
         .expect("namespace SR constants should keep the host-rate value where they are defined");
@@ -1185,24 +1186,16 @@ sample:
     fn host_sr_builtin_stays_host_in_oversampled_proc_contexts() {
         let src = r#"
 proc Voice:
-  const HostLen = HOST_SR
-  const HostLenFromSampleRate = HOST_SAMPLE_RATE
-  const HostLenFromSamplerate = HOST_SAMPLERATE
-  const HostLenLowerSampleRate = host_sample_rate
-  const HostLenLowerSamplerate = host_samplerate
-  const RuntimeLen = SR
   params:
-    gains: f32[HostLen] = [0.0, 0.0, 0.0, 1.0]
-    more: f32[HostLenFromSampleRate] = [0.0, 0.0, 0.0, 1.0]
+    gains: f32[HOST_SR] = [0.0, 0.0, 0.0, 1.0]
+    more: f32[HOST_SAMPLE_RATE] = [0.0, 0.0, 0.0, 1.0]
   init:
-    table: f32[RuntimeLen] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-    table_host_samplerate: f32[HostLenFromSamplerate] = [0.0, 0.0, 0.0, 1.0]
+    table: f32[SR] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    table_host_samplerate: f32[HOST_SAMPLERATE] = [0.0, 0.0, 0.0, 1.0]
   outs:
     out1
   sample 2:
-    const LocalHostLen = host_sample_rate
-    const LocalHostLen2 = host_samplerate
-    out1 = gains[LocalHostLen - 1] + more[HostLenLowerSampleRate - 1] + table_host_samplerate[LocalHostLen2 - 1] + table[RuntimeLen - 1] + f32(HostLenLowerSamplerate)
+    out1 = gains[host_sample_rate - 1] + more[host_sample_rate - 1] + table_host_samplerate[host_samplerate - 1] + table[SR - 1] + f32(host_samplerate)
 
 outs:
   out1
@@ -1219,6 +1212,7 @@ sample:
             AnalysisOptions {
                 sample_rate: 4.0,
                 block_size: 4,
+                ..AnalysisOptions::default()
             },
         )
         .expect("HOST_SR should keep the host sample rate inside oversampled proc contexts");
@@ -1639,8 +1633,11 @@ const Table: f32[3] = [0.25, 0.5, 1.0]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = Table[1]
+  out1 = Table[runtime_index + 1]
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("const array read should analyze");
@@ -1726,13 +1723,13 @@ sample:
     }
 
     #[test]
-    fn proc_local_scalar_consts_expand_counts_in_semantics() {
+    fn root_scalar_consts_expand_processor_counts() {
         let src = r#"
 const def count() -> i32:
   return 2
 
+const N = count()
 proc Voice:
-  const N = count()
   ins N
   outs N
   sample:
@@ -1747,14 +1744,14 @@ sample:
   outs[0] = v.out1
   outs[1] = v.out2
 "#;
-        let program = parse_program(src).expect("parse should preserve proc local consts");
-        let typed = analyze(program).expect("proc local const counts should analyze");
+        let program = parse_program(src).expect("parse should preserve root consts");
+        let typed = analyze(program).expect("root const processor counts should analyze");
 
         assert_eq!(typed.outs, vec!["out1", "out2"]);
     }
 
     #[test]
-    fn statement_local_scalar_consts_call_const_defs_in_semantics() {
+    fn root_scalar_consts_call_const_defs() {
         let src = r#"
 const def gain() -> f32:
   return 0.5
@@ -1762,57 +1759,14 @@ const def gain() -> f32:
 outs:
   out1
 
+const G = gain()
 sample:
-  const G = gain()
   out1 = G
 "#;
-        let program = parse_program(src).expect("parse should preserve local consts");
-        let typed = analyze(program).expect("statement local const should analyze");
+        let program = parse_program(src).expect("parse should preserve root consts");
+        let typed = analyze(program).expect("root const should analyze");
 
         assert_eq!(typed.sample.len(), 1);
-        assert!(!matches!(typed.sample[0], Stmt::Const { .. }));
-    }
-
-    #[test]
-    fn assignment_to_statement_local_const_is_rejected_in_semantics() {
-        let src = r#"
-outs:
-  out1
-
-sample:
-  const X = 1
-  X = 2
-  out1 = 0.0
-"#;
-        let program = parse_program(src).expect("parse should preserve local consts");
-        let errors = analyze(program).expect_err("assignment to local const should fail");
-        assert!(errors
-            .iter()
-            .any(|diag| diag.message.contains("cannot assign to constant 'X'")));
-    }
-
-    #[test]
-    fn proc_local_const_arrays_are_rejected_in_semantics() {
-        let src = r#"
-proc Voice:
-  const Table = [1, 2]
-  outs:
-    out1
-  sample:
-    out1 = 0.0
-
-outs:
-  out1
-init:
-  v = Voice()
-sample:
-  out1 = v.out1
-"#;
-        let program = parse_program(src).expect("parse should preserve proc local const array");
-        let errors = analyze(program).expect_err("proc local const array should fail");
-        assert!(errors.iter().any(|diag| diag
-            .message
-            .contains("const arrays are only supported at top-level and namespace scope")));
     }
 
     #[test]
@@ -1833,7 +1787,7 @@ sample:
         let errors = analyze(program).expect_err("forward count const def should fail");
         assert!(errors.iter().any(|diag| {
             diag.message
-                .contains("ins count expression uses non-constant symbol 'N'")
+                .contains("constant 'N' is not visible before its declaration")
         }));
     }
 
@@ -1886,7 +1840,7 @@ sample:
             .iter()
             .find(|diag| {
                 diag.message
-                    .contains("const scalar 'X' uses non-constant symbol 'foo'")
+                    .contains("unknown symbol 'foo' in expression")
             })
             .expect("missing const validation diagnostic");
 
@@ -1978,8 +1932,10 @@ const Table: f32[count()] = values([0.25, 0.5, 0.75])
 outs:
   out1
 
+params:
+  index: i32 = 2
 sample:
-  out1 = Table[2]
+  out1 = Table[index]
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("const def signature sizes should analyze");
@@ -2008,8 +1964,11 @@ namespace LUT<N = 2>:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(LUT<Size>::Value)
+  out1 = f32(LUT<Size>::Value + LUT<Size>::Table[runtime_index + 3])
 "#;
         let program = parse_program(src).expect("parse should preserve semantic template arg");
         let typed = analyze(program).expect("semantic namespace template arg should analyze");
@@ -2060,8 +2019,11 @@ namespace Picked = LUT<Size>
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Picked::Table[2])
+  out1 = f32(Picked::Table[runtime_index + 2])
 "#;
         let program = parse_program(src).expect("parse should preserve semantic alias arg");
         let typed = analyze(program).expect("semantic namespace alias arg should analyze");
@@ -2559,8 +2521,11 @@ namespace Picked = LUT<count()>
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Picked::Table[2])
+  out1 = f32(Picked::Table[runtime_index + 2])
 "#;
         let program = parse_program(src).expect("parse should preserve direct const def arg");
         let typed = analyze(program).expect("direct const def namespace arg should analyze");
@@ -2587,8 +2552,11 @@ namespace Outer:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Outer::Inner::Table[2])
+  out1 = f32(Outer::Inner::Table[runtime_index + 2])
 "#;
         let program = parse_program(src).expect("parse should preserve direct const def default");
         let typed = analyze(program).expect("direct const def namespace default should analyze");
@@ -2617,8 +2585,11 @@ namespace Outer:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Outer::Inner::Table[2])
+  out1 = f32(Outer::Inner::Table[runtime_index + 2])
 "#;
         let program = parse_program(src).expect("parse should preserve semantic nested default");
         let typed = analyze(program).expect("semantic namespace default should analyze");
@@ -2647,8 +2618,11 @@ namespace Consumer:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Consumer::Picked[0])
+  out1 = f32(Consumer::Picked[runtime_index])
 "#;
         let program = parse_program(src).expect("parse should preserve namespace default");
         let typed = analyze(program).expect("definition-scoped namespace default should analyze");
@@ -2658,7 +2632,7 @@ sample:
             .iter()
             .find(|array| array.name == "Consumer::Picked")
             .expect("typed const array");
-        assert_eq!(table.values, vec![TypedConstValue::I32(3)]);
+        assert_eq!(*table.values, vec![TypedConstValue::I32(3)]);
     }
 
     #[test]
@@ -2680,8 +2654,11 @@ namespace Outer<A = 2>:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = Outer<2>::Inner<3>::Leaf::Value + Outer<2>::Inner<3>::Table[2]
+  out1 = Outer<2>::Inner<3>::Leaf::Value + Outer<2>::Inner<3>::Table[runtime_index + 2]
 "#;
         let program = parse_program(src).expect("parse should preserve nested namespace use");
         let typed = analyze(program).expect("nested namespace consts should analyze");
@@ -2693,7 +2670,7 @@ sample:
             .expect("nested namespace const table");
         assert_eq!(table.len, 3);
         assert_eq!(
-            table.values,
+            *table.values,
             vec![
                 TypedConstValue::F32(2.0),
                 TypedConstValue::F32(3.0),
@@ -2714,8 +2691,11 @@ namespace LUT<N = 2>:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(LUT<3>::Table[0] + LUT<count()>::Table[2])
+  out1 = f32(LUT<3>::Table[runtime_index] + LUT<count()>::Table[runtime_index + 2])
 "#;
         let program = parse_program(src).expect("parse should preserve namespace instantiations");
         let typed = analyze(program).expect("deduped namespace instantiations should analyze");
@@ -2760,8 +2740,11 @@ import lib
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = Imported::Tables::Table[1]
+  out1 = Imported::Tables::Table[runtime_index + 1]
 "#,
         );
 
@@ -2777,9 +2760,54 @@ sample:
             .expect("imported namespace const table");
         assert_eq!(table.len, 2);
         assert_eq!(
-            table.values,
+            *table.values,
             vec![TypedConstValue::F32(2.0), TypedConstValue::F32(3.0)]
         );
+    }
+
+    #[test]
+    fn imported_unused_const_arrays_remain_unevaluated() {
+        let dir = mk_temp_dir("imported_unused_const_array");
+        let main = dir.join("main.onda");
+        let lib = dir.join("lib.onda");
+
+        write_file(
+            &lib,
+            r#"
+namespace Osc:
+  const def build_table() -> f32[1]:
+    loop 1000001:
+      x = _
+    return [0.0]
+
+  const Table: f32[1] = build_table()
+  const Unused = Table
+
+  def sine_fast(index: i32) -> f32:
+    return Table[index]
+
+  def passthrough(value: f32) -> f32:
+    return value
+"#,
+        );
+        write_file(
+            &main,
+            r#"
+import lib
+
+outs:
+  out1
+
+sample:
+  out1 = Osc::passthrough(0.25)
+"#,
+        );
+
+        let program = parse_program_file(&main).expect("program with import should parse");
+        let typed = analyze(program).expect("unused imported table should not be evaluated");
+        fs::remove_dir_all(&dir).ok();
+
+        assert!(typed.const_arrays.is_empty());
     }
 
     #[test]
@@ -2824,11 +2852,12 @@ sample:
         let program = parse_program(src).expect("parse should preserve template body");
         let errors = analyze(program).expect_err("template body should not see later scalar const");
         assert!(
-            errors.iter().any(|diag| diag.message.contains(
-                "const array 'LUT__nsinst0::Table' element 0 uses non-constant symbol 'Gain'"
-            )),
+            errors
+                .iter()
+                .any(|diag| diag.message.contains("unknown symbol 'Gain'")),
             "expected definition-scope diagnostic, got {errors:?}"
         );
+        assert_eq!(errors.iter().filter(|diag| diag.message.contains("Gain")).count(), 1);
     }
 
     #[test]
@@ -3357,8 +3386,11 @@ const Table: f32[2] = [twice(0.5), twice(1.0)]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = Table[1]
+  out1 = Table[runtime_index + 1]
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("const def call in const array should analyze");
@@ -3369,7 +3401,7 @@ sample:
             .find(|array| array.name == "Table")
             .expect("typed const array");
         assert_eq!(
-            table.values,
+            *table.values,
             vec![TypedConstValue::F32(1.0), TypedConstValue::F32(2.0)]
         );
         assert!(
@@ -3392,8 +3424,11 @@ const Table = [doubled()]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Table[0])
+  out1 = f32(Table[runtime_index])
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("const def calling earlier const def should analyze");
@@ -3404,7 +3439,7 @@ sample:
             .find(|array| array.name == "Table")
             .expect("typed const array");
         assert_eq!(table.elem_ty, PrimitiveType::I32);
-        assert_eq!(table.values, vec![TypedConstValue::I32(42)]);
+        assert_eq!(*table.values, vec![TypedConstValue::I32(42)]);
     }
 
     #[test]
@@ -3712,13 +3747,13 @@ outs:
   out1
 
 sample:
-  out1 = 0.0
+  out1 = f32(Table[0])
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("wrong scalar return type should fail");
         assert!(errors.iter().any(|diag| diag
             .message
-            .contains("const def 'bad_scalar' return must be an integer constant")));
+            .contains("const def 'bad_scalar' type mismatch: cannot assign F64 to I32")));
 
         let src = r#"
 const def bad_array() -> f32[2]:
@@ -3730,14 +3765,14 @@ outs:
   out1
 
 sample:
-  out1 = 0.0
+  out1 = Table[0]
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let errors = analyze(program).expect_err("wrong array return shape should fail");
         assert!(
             errors.iter().any(|diag| diag
                 .message
-                .contains("const def 'bad_array' return: expected array length 2, got 1")),
+                .contains("fixed array initializer expects 2 elements, got 1")),
             "expected const def return shape diagnostic, got {errors:?}"
         );
     }
@@ -3766,55 +3801,6 @@ sample:
     }
 
     #[test]
-    fn const_def_local_consts_are_immutable() {
-        let src = r#"
-const def bad() -> i32:
-  const X = 1
-  X = 2
-  return X
-
-outs:
-  out1
-
-sample:
-  out1 = 0.0
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("local const reassignment should fail");
-        assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("const def 'bad' cannot assign to local const 'X'")),
-            "expected local const reassignment diagnostic, got {errors:?}"
-        );
-    }
-
-    #[test]
-    fn unused_const_def_loop_vars_cannot_rebind_local_consts() {
-        let src = r#"
-const def bad() -> i32:
-  const X = 1
-  for X in 0..2:
-    const Y = X
-  return X
-
-outs:
-  out1
-
-sample:
-  out1 = 0.0
-"#;
-        let program = parse_program(src).expect("parse should succeed");
-        let errors = analyze(program).expect_err("loop var local const reassignment should fail");
-        assert!(
-            errors.iter().any(|diag| diag
-                .message
-                .contains("const def 'bad' cannot assign to local const 'X'")),
-            "expected loop var local const diagnostic, got {errors:?}"
-        );
-    }
-
-    #[test]
     fn scalar_const_defs_can_initialize_scalar_consts() {
         let src = r#"
 const def curve_gain(x: f64) -> f64:
@@ -3826,8 +3812,11 @@ const Table: f64[1] = [Gain]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(Gain)
+  out1 = f32(Table[runtime_index])
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("const def scalar const should analyze");
@@ -3839,7 +3828,7 @@ sample:
             .expect("typed const array");
         assert_eq!(table.elem_ty, PrimitiveType::F64);
         assert_eq!(
-            table.values,
+            *table.values,
             vec![TypedConstValue::F64(
                 0.5_f64 * 0.5_f64 + 0.12345678901234568
             )]
@@ -3858,8 +3847,11 @@ const Table: i64[1] = [Big]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = 0.0
+  out1 = f32(Table[runtime_index])
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("i64 const def scalar const should analyze");
@@ -3870,7 +3862,7 @@ sample:
             .find(|array| array.name == "Table")
             .expect("typed const array");
         assert_eq!(table.elem_ty, PrimitiveType::I64);
-        assert_eq!(table.values, vec![TypedConstValue::I64(9007199254740993)]);
+        assert_eq!(*table.values, vec![TypedConstValue::I64(9007199254740993)]);
     }
 
     #[test]
@@ -3893,8 +3885,11 @@ const F64Values: f64[1] = [F64Value]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(I32Value >> 3) + f32(I64Value >> 53) + F32Value + f32(F64Value)
+  out1 = f32(I32Value >> 3) + f32(I64Value >> 53) + F32Value + f32(F64Value) + f32(I32Values[runtime_index]) * 0.0 + f32(I64Values[runtime_index]) * 0.0 + F32Values[runtime_index] * 0.0 + f32(F64Values[runtime_index]) * 0.0
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("typed intrinsic constants should analyze");
@@ -3906,6 +3901,7 @@ sample:
                 .find(|array| array.name == name)
                 .unwrap_or_else(|| panic!("missing const array '{name}'"))
                 .values
+                .as_ref()
                 .clone()
         };
         assert_eq!(
@@ -3947,8 +3943,11 @@ const Table: f64[1] = [B]
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = f32(B)
+  out1 = f32(Table[runtime_index])
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("dependent semantic scalar consts should analyze");
@@ -3958,7 +3957,7 @@ sample:
             .iter()
             .find(|array| array.name == "Table")
             .expect("typed const array");
-        assert_eq!(table.values, vec![TypedConstValue::F64(0.375)]);
+        assert_eq!(*table.values, vec![TypedConstValue::F64(0.375)]);
     }
 
     #[test]
@@ -3974,8 +3973,11 @@ namespace LUT:
 outs:
   out1
 
+params:
+  runtime_index: i32 = 0
+
 sample:
-  out1 = LUT::Table[0]
+  out1 = LUT::Table[runtime_index]
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("namespaced semantic scalar const should analyze");
@@ -3985,5 +3987,5 @@ sample:
             .iter()
             .find(|array| array.name.ends_with("::Table"))
             .expect("typed const array");
-        assert_eq!(table.values, vec![TypedConstValue::F32(0.25)]);
+        assert_eq!(*table.values, vec![TypedConstValue::F32(0.25)]);
     }

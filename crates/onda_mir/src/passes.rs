@@ -1,3 +1,6 @@
+use crate::constant_eval::{
+    binary as fold_binary, cast as fold_cast, compare as fold_compare, unary as fold_unary,
+};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
@@ -1608,239 +1611,26 @@ fn constant(value: Value) -> Option<ScalarValue> {
     }
 }
 
-fn fold_unary(op: crate::UnaryOp, value: ScalarValue) -> Option<ScalarValue> {
-    match (op, value) {
-        (crate::UnaryOp::Negate, ScalarValue::F32(value)) => Some(ScalarValue::F32(-value)),
-        (crate::UnaryOp::Negate, ScalarValue::F64(value)) => Some(ScalarValue::F64(-value)),
-        (crate::UnaryOp::Negate, ScalarValue::I32(value)) => {
-            Some(ScalarValue::I32(value.wrapping_neg()))
-        }
-        (crate::UnaryOp::Negate, ScalarValue::I64(value)) => {
-            Some(ScalarValue::I64(value.wrapping_neg()))
-        }
-        (crate::UnaryOp::LogicalNot, ScalarValue::Bool(value)) => Some(ScalarValue::Bool(!value)),
-        (crate::UnaryOp::BitNot, ScalarValue::I32(value)) => Some(ScalarValue::I32(!value)),
-        (crate::UnaryOp::BitNot, ScalarValue::I64(value)) => Some(ScalarValue::I64(!value)),
-        _ => None,
-    }
-}
-
-macro_rules! fold_integer_binary {
-    ($op:expr, $lhs:expr, $rhs:expr, $variant:path) => {{
-        let value = match $op {
-            BinaryOp::Add => $lhs.wrapping_add($rhs),
-            BinaryOp::Subtract => $lhs.wrapping_sub($rhs),
-            BinaryOp::Multiply => $lhs.wrapping_mul($rhs),
-            BinaryOp::Divide if $rhs != 0 => $lhs.wrapping_div($rhs),
-            BinaryOp::Remainder if $rhs != 0 => $lhs.wrapping_rem($rhs),
-            BinaryOp::BitAnd => $lhs & $rhs,
-            BinaryOp::BitOr => $lhs | $rhs,
-            BinaryOp::BitXor => $lhs ^ $rhs,
-            BinaryOp::ShiftLeft => $lhs.wrapping_shl($rhs as u32),
-            BinaryOp::ShiftRight => $lhs.wrapping_shr($rhs as u32),
-            BinaryOp::Divide | BinaryOp::Remainder => return None,
-        };
-        Some($variant(value))
-    }};
-}
-
-fn fold_binary(op: BinaryOp, lhs: ScalarValue, rhs: ScalarValue) -> Option<ScalarValue> {
-    match (lhs, rhs) {
-        (ScalarValue::I32(lhs), ScalarValue::I32(rhs)) => {
-            fold_integer_binary!(op, lhs, rhs, ScalarValue::I32)
-        }
-        (ScalarValue::I64(lhs), ScalarValue::I64(rhs)) => {
-            fold_integer_binary!(op, lhs, rhs, ScalarValue::I64)
-        }
-        (ScalarValue::F32(lhs), ScalarValue::F32(rhs)) => Some(ScalarValue::F32(match op {
-            BinaryOp::Add => lhs + rhs,
-            BinaryOp::Subtract => lhs - rhs,
-            BinaryOp::Multiply => lhs * rhs,
-            BinaryOp::Divide => lhs / rhs,
-            BinaryOp::Remainder => lhs % rhs,
-            _ => return None,
-        })),
-        (ScalarValue::F64(lhs), ScalarValue::F64(rhs)) => Some(ScalarValue::F64(match op {
-            BinaryOp::Add => lhs + rhs,
-            BinaryOp::Subtract => lhs - rhs,
-            BinaryOp::Multiply => lhs * rhs,
-            BinaryOp::Divide => lhs / rhs,
-            BinaryOp::Remainder => lhs % rhs,
-            _ => return None,
-        })),
-        _ => None,
-    }
-}
-
-macro_rules! compare_values {
-    ($op:expr, $lhs:expr, $rhs:expr) => {
-        Some(match $op {
-            CompareOp::Equal => $lhs == $rhs,
-            CompareOp::NotEqual => $lhs != $rhs,
-            CompareOp::Less => $lhs < $rhs,
-            CompareOp::LessEqual => $lhs <= $rhs,
-            CompareOp::Greater => $lhs > $rhs,
-            CompareOp::GreaterEqual => $lhs >= $rhs,
-        })
-    };
-}
-
-fn fold_compare(op: CompareOp, lhs: ScalarValue, rhs: ScalarValue) -> Option<bool> {
-    match (lhs, rhs) {
-        (ScalarValue::F32(lhs), ScalarValue::F32(rhs)) => compare_values!(op, lhs, rhs),
-        (ScalarValue::F64(lhs), ScalarValue::F64(rhs)) => compare_values!(op, lhs, rhs),
-        (ScalarValue::I32(lhs), ScalarValue::I32(rhs)) => compare_values!(op, lhs, rhs),
-        (ScalarValue::I64(lhs), ScalarValue::I64(rhs)) => compare_values!(op, lhs, rhs),
-        (ScalarValue::Bool(lhs), ScalarValue::Bool(rhs)) => match op {
-            CompareOp::Equal => Some(lhs == rhs),
-            CompareOp::NotEqual => Some(lhs != rhs),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn fold_cast(value: ScalarValue, to: ScalarType) -> Option<ScalarValue> {
-    macro_rules! cast_from {
-        ($value:expr) => {
-            Some(match to {
-                ScalarType::F32 => ScalarValue::F32($value as f32),
-                ScalarType::F64 => ScalarValue::F64($value as f64),
-                ScalarType::I32 => ScalarValue::I32($value as i32),
-                ScalarType::I64 => ScalarValue::I64($value as i64),
-                ScalarType::Bool => return None,
-            })
-        };
-    }
-    match value {
-        ScalarValue::F32(value) => cast_from!(value),
-        ScalarValue::F64(value) => cast_from!(value),
-        ScalarValue::I32(value) => cast_from!(value),
-        ScalarValue::I64(value) => cast_from!(value),
-        ScalarValue::Bool(_) => None,
-    }
-}
-
 fn fold_intrinsic(intrinsic: Intrinsic, args: &[ScalarValue]) -> Option<ScalarValue> {
-    match (intrinsic, args) {
-        (Intrinsic::Abs, [ScalarValue::I32(value)]) => Some(ScalarValue::I32(value.wrapping_abs())),
-        (Intrinsic::Abs, [ScalarValue::I64(value)]) => Some(ScalarValue::I64(value.wrapping_abs())),
-        (Intrinsic::Min, [ScalarValue::I32(lhs), ScalarValue::I32(rhs)]) => {
-            Some(ScalarValue::I32((*lhs).min(*rhs)))
-        }
-        (Intrinsic::Min, [ScalarValue::I64(lhs), ScalarValue::I64(rhs)]) => {
-            Some(ScalarValue::I64((*lhs).min(*rhs)))
-        }
-        (Intrinsic::Max, [ScalarValue::I32(lhs), ScalarValue::I32(rhs)]) => {
-            Some(ScalarValue::I32((*lhs).max(*rhs)))
-        }
-        (Intrinsic::Max, [ScalarValue::I64(lhs), ScalarValue::I64(rhs)]) => {
-            Some(ScalarValue::I64((*lhs).max(*rhs)))
-        }
-        (Intrinsic::Abs, [ScalarValue::F32(value)]) if value.is_finite() => Some(ScalarValue::F32(
-            f32::from_bits(value.to_bits() & !(1_u32 << 31)),
-        )),
-        (Intrinsic::Abs, [ScalarValue::F64(value)]) if value.is_finite() => Some(ScalarValue::F64(
-            f64::from_bits(value.to_bits() & !(1_u64 << 63)),
-        )),
-        (Intrinsic::Floor, [ScalarValue::F32(value)]) if value.is_finite() => {
-            Some(ScalarValue::F32(value.floor()))
-        }
-        (Intrinsic::Floor, [ScalarValue::F64(value)]) if value.is_finite() => {
-            Some(ScalarValue::F64(value.floor()))
-        }
-        (Intrinsic::Ceil, [ScalarValue::F32(value)]) if value.is_finite() => {
-            Some(ScalarValue::F32(value.ceil()))
-        }
-        (Intrinsic::Ceil, [ScalarValue::F64(value)]) if value.is_finite() => {
-            Some(ScalarValue::F64(value.ceil()))
-        }
-        (Intrinsic::Round, [ScalarValue::F32(value)]) if value.is_finite() => {
-            Some(ScalarValue::F32(value.round()))
-        }
-        (Intrinsic::Round, [ScalarValue::F64(value)]) if value.is_finite() => {
-            Some(ScalarValue::F64(value.round()))
-        }
-        (Intrinsic::Trunc, [ScalarValue::F32(value)]) if value.is_finite() => {
-            Some(ScalarValue::F32(value.trunc()))
-        }
-        (Intrinsic::Trunc, [ScalarValue::F64(value)]) if value.is_finite() => {
-            Some(ScalarValue::F64(value.trunc()))
-        }
-        (Intrinsic::Min, [ScalarValue::F32(lhs), ScalarValue::F32(rhs)])
-            if lhs.is_finite() && rhs.is_finite() =>
-        {
-            Some(ScalarValue::F32(fold_f32_minimum(*lhs, *rhs)))
-        }
-        (Intrinsic::Min, [ScalarValue::F64(lhs), ScalarValue::F64(rhs)])
-            if lhs.is_finite() && rhs.is_finite() =>
-        {
-            Some(ScalarValue::F64(fold_f64_minimum(*lhs, *rhs)))
-        }
-        (Intrinsic::Max, [ScalarValue::F32(lhs), ScalarValue::F32(rhs)])
-            if lhs.is_finite() && rhs.is_finite() =>
-        {
-            Some(ScalarValue::F32(fold_f32_maximum(*lhs, *rhs)))
-        }
-        (Intrinsic::Max, [ScalarValue::F64(lhs), ScalarValue::F64(rhs)])
-            if lhs.is_finite() && rhs.is_finite() =>
-        {
-            Some(ScalarValue::F64(fold_f64_maximum(*lhs, *rhs)))
-        }
-        _ => None,
+    // Keep MIR's conservative folding policy; operation semantics are shared
+    // with source const evaluation, including NaN and signed zero behavior.
+    if !matches!(
+        intrinsic,
+        Intrinsic::Abs
+            | Intrinsic::Floor
+            | Intrinsic::Ceil
+            | Intrinsic::Round
+            | Intrinsic::Trunc
+            | Intrinsic::Min
+            | Intrinsic::Max
+    ) || args.iter().any(|value| match value {
+        ScalarValue::F32(value) => !value.is_finite(),
+        ScalarValue::F64(value) => !value.is_finite(),
+        _ => false,
+    }) {
+        return None;
     }
-}
-
-fn fold_f32_minimum(lhs: f32, rhs: f32) -> f32 {
-    if lhs == rhs {
-        if lhs == 0.0 {
-            return f32::from_bits(lhs.to_bits() | rhs.to_bits());
-        }
-        lhs
-    } else if lhs < rhs {
-        lhs
-    } else {
-        rhs
-    }
-}
-
-fn fold_f32_maximum(lhs: f32, rhs: f32) -> f32 {
-    if lhs == rhs {
-        if lhs == 0.0 {
-            return f32::from_bits(lhs.to_bits() & rhs.to_bits());
-        }
-        lhs
-    } else if lhs > rhs {
-        lhs
-    } else {
-        rhs
-    }
-}
-
-fn fold_f64_minimum(lhs: f64, rhs: f64) -> f64 {
-    if lhs == rhs {
-        if lhs == 0.0 {
-            return f64::from_bits(lhs.to_bits() | rhs.to_bits());
-        }
-        lhs
-    } else if lhs < rhs {
-        lhs
-    } else {
-        rhs
-    }
-}
-
-fn fold_f64_maximum(lhs: f64, rhs: f64) -> f64 {
-    if lhs == rhs {
-        if lhs == 0.0 {
-            return f64::from_bits(lhs.to_bits() & rhs.to_bits());
-        }
-        lhs
-    } else if lhs > rhs {
-        lhs
-    } else {
-        rhs
-    }
+    crate::constant_eval::intrinsic(intrinsic, args)
 }
 
 fn remove_dead_pure_locals(types: &[crate::Type], function: &mut Function, stats: &mut PassStats) {

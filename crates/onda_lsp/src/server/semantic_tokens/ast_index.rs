@@ -631,9 +631,6 @@ fn span_for_task_scope(task: &TaskDef) -> Span {
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
     let mut span = proc_def.loc;
 
-    for decl in &proc_def.consts {
-        span = Span::spanning(span, decl.loc);
-    }
     for decl in &proc_def.ins {
         span = Span::spanning(span, decl.loc);
     }
@@ -728,9 +725,6 @@ fn prune_shadowed_variables(
 fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { decl, .. } => {
-                scope.consts.insert(decl.name.clone());
-            }
             Stmt::Assign { target, .. } => {
                 collect_target_symbols(target, scope);
             }
@@ -757,9 +751,6 @@ fn collect_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope) {
 fn collect_state_stmt_symbols(stmts: &[Stmt], scope: &mut SemanticScope, scope_depth: usize) {
     for stmt in stmts {
         match stmt {
-            Stmt::Const { decl, .. } => {
-                scope.consts.insert(decl.name.clone());
-            }
             Stmt::Assign { target, .. } => {
                 if scope_depth == 0 {
                     collect_state_target_symbols(target, scope);

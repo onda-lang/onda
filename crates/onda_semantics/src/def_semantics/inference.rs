@@ -4,19 +4,22 @@ use super::call_types::const_positive_usize_for_call_type;
 
 use onda_frontend::{
     ArrayElemType, AssignTarget, BufferChannels, BufferElemType, CallArg, DiagCtx, Diagnostic,
-    Expr, FnParamType, FunctionDef, PrimitiveType, Stmt,
+    Expr, FnParamType, FunctionDef, PrimitiveType, SourceLoc, Stmt,
 };
 
 mod return_inference;
 pub(crate) use return_inference::*;
 mod call_inference;
 use call_inference::infer_stmt_calls;
-pub(crate) use call_inference::{resolve_call_args, resolve_call_args_at};
+pub(crate) use call_inference::{
+    bind_call_args_at, resolve_call_args, resolve_call_args_at, BoundCallArgs,
+};
 
 use crate::builtins::{
     builtin_constant_type, eval_data_size_expr, is_builtin_constant_name,
     validate_buffer_static_channels,
 };
+use crate::decl_symbols::{DeclaredSymbolInfo, DeclaredSymbolMap};
 use crate::{
     push_semantic, resolve_struct_field_decl, with_expr_diag_context, with_stmt_diag_context,
     AnalysisOptions, DataType, FnSignature, ProcNestedArrayState, TypedBufferChannels, TypedEvent,
@@ -892,6 +895,15 @@ pub(crate) fn infer_def_param_kinds(
             }
         }
 
+        for (param, kind) in def.params.iter().zip(&typed) {
+            if param.default.is_some() && kind.default_return_type().is_none() {
+                crate::callable_validation::reject_borrowed_param_default(
+                    param,
+                    display_name,
+                    errors,
+                );
+            }
+        }
         out.insert(def.name.clone(), typed);
     }
 
@@ -996,7 +1008,6 @@ fn propagate_stmt_callee_buffer_requirements_to_params(
     kinds: &mut HashMap<String, Vec<InferredFnParam>>,
 ) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             target.visit_selectors(|index| {
                 propagate_expr_callee_buffer_requirements_to_params(
@@ -1399,7 +1410,6 @@ fn collect_stmt_field_usage(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => collect_expr_field_usage(
@@ -2109,24 +2119,60 @@ fn infer_untyped_array_from_observations(
     })
 }
 
-pub(crate) fn validate_default_expr(expr: &Expr, errors: &mut Vec<Diagnostic>, context: &str) {
+pub(crate) fn validate_default_expr(
+    expr: &Expr,
+    errors: &mut Vec<Diagnostic>,
+    context: &str,
+    constants: &DeclaredSymbolMap,
+) {
     for expr in expr.walk() {
-        with_expr_diag_context(expr, |expr_diag| match expr {
-            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. }
-            | Expr::Tuple { .. } | Expr::ArrayLiteral { .. }
-            | Expr::ArrayCtor { .. }
-            | Expr::Cast { .. } | Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. }
-            | Expr::Logical { .. } | Expr::Binary { .. } | Expr::Compare { .. }
-            // Constructors and generic casts are resolved during monomorphization.
-            | Expr::UserCall { .. } => {}
-            Expr::Var { name, .. } => {
-                if !is_builtin_constant_name(name) {
-                    push_semantic(expr_diag, errors,
-                        format!("{context} default expression uses non-constant symbol '{name}'"));
+        with_expr_diag_context(expr, |expr_diag| {
+            match expr {
+                Expr::Number { .. }
+                | Expr::Int { .. }
+                | Expr::Bool { .. }
+                | Expr::Tuple { .. }
+                | Expr::ArrayLiteral { .. }
+                | Expr::ArrayCtor { .. }
+                | Expr::Cast { .. }
+                | Expr::UnaryNot { .. }
+                | Expr::UnaryBitNot { .. }
+                | Expr::Logical { .. }
+                | Expr::Binary { .. }
+                | Expr::Compare { .. }
+                | Expr::Call { .. } => {}
+                // Constructors and generic casts are resolved during monomorphization.
+                Expr::UserCall { .. } => {}
+                Expr::Var { name, .. } => {
+                    if !is_builtin_constant_name(name)
+                        && !matches!(
+                            constants.get(name),
+                            Some(
+                                DeclaredSymbolInfo::Constant { .. }
+                                    | DeclaredSymbolInfo::ConstArray { .. }
+                            )
+                        )
+                    {
+                        push_semantic(
+                            expr_diag,
+                            errors,
+                            format!(
+                                "{context} default expression uses non-constant symbol '{name}'"
+                            ),
+                        );
+                    }
                 }
+                Expr::Index { base, .. } | Expr::Slice { base, .. }
+                    if matches!(
+                        constants.get(base),
+                        Some(DeclaredSymbolInfo::ConstArray { .. })
+                    ) => {}
+                _ => push_semantic(
+                    expr_diag,
+                    errors,
+                    format!("{context} default expression must be constant"),
+                ),
             }
-            _ => push_semantic(expr_diag, errors,
-                format!("{context} default expression must be constant")),
         });
     }
 }
@@ -2149,32 +2195,20 @@ pub(crate) fn merge_numeric_types(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
     context: &str,
+    loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<PrimitiveType> {
-    use PrimitiveType::*;
-    match (lhs, rhs) {
-        (F64, I32)
-        | (I32, F64)
-        | (F64, I64)
-        | (I64, F64)
-        | (F64, F32)
-        | (F32, F64)
-        | (F64, F64) => Some(F64),
-        (F32, I32) | (I32, F32) | (F32, F32) | (F32, I64) | (I64, F32) => Some(F32),
-        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
-        (I32, I32) => Some(I32),
-        _ => {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!(
-                    "{context} requires numeric operands, got {:?} and {:?}",
-                    lhs, rhs
-                ),
-            );
-            None
-        }
-    }
+    crate::expr_typing::merge_numeric_types_without_diagnostics(lhs, rhs).or_else(|| {
+        push_semantic(
+            DiagCtx::new(loc),
+            errors,
+            format!(
+                "{context} requires numeric operands, got {:?} and {:?}",
+                lhs, rhs
+            ),
+        );
+        None
+    })
 }
 
 pub(crate) fn merge_inferred_return_types(

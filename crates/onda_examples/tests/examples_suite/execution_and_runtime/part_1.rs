@@ -303,9 +303,9 @@ struct Voice:
 init:
   voices: Voice[2]
 
+const Outer = -5
+const Tap = 99
 sample:
-  const Outer = -5
-  const Tap = 99
   replacement: f32[4] = [0.1, 0.2, 0.3, 0.4]
   voices[Outer].taps[Tap] = 0.75
   voices[1].taps = replacement
@@ -1135,7 +1135,6 @@ sample:
         frame(&mut instance, 0.0, 3.0);
     }
 }
-
 
 #[test]
 fn stdlib_delay_lines_use_wrapped_cursors_and_zero_delay_is_direct() {

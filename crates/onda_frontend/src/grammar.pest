@@ -86,7 +86,7 @@ task_block = { task_kw ~ task_decl ~ NEWLINE* }
 task_list = { task_decl ~ (stmt_sep+ ~ task_decl)* ~ stmt_sep* }
 task_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
@@ -191,7 +191,7 @@ struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ N
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
 
 stmt_list = { stmt ~ (stmt_sep+ ~ stmt)* ~ stmt_sep* }
-stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | print_stmt | const_decl | pinned_assign_stmt | assign_stmt | call_stmt }
+stmt = _{ if_stmt | for_stmt | while_stmt | loop_stmt | break_stmt | continue_stmt | return_stmt | yield_stmt | await_stmt | print_stmt | pinned_assign_stmt | assign_stmt | call_stmt }
 assign_stmt = { typed_assign_stmt | compound_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }
 binding_pin = @{ "pin" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 pinnable_assign_stmt = { typed_assign_stmt | inferred_ranged_assign_stmt | plain_assign_stmt }

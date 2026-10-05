@@ -74,10 +74,13 @@ fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
 
 pub mod aggregate_layout;
 mod analysis_session;
+mod array_semantics;
 mod array_structs;
 mod assignment_places;
 pub mod builtins;
 mod callable_validation;
+mod compile_context;
+mod const_scalar;
 mod data_construction;
 mod decl_symbols;
 mod declaration_coercion;
@@ -92,7 +95,9 @@ mod generic_specialization;
 mod index_access;
 pub mod internal_names;
 mod io_state_helpers;
+mod loop_range;
 mod mir_lowering;
+mod mir_scalar;
 mod namespacing;
 mod pipeline;
 mod port_coercion;
@@ -171,6 +176,8 @@ pub struct TypedProgram {
     /// `kouts[i]`, and `params[i]`). Each slot names one concrete scalar ABI
     /// location, including an explicit element for declared array ports.
     pub interface_views: ResolvedInterfaceViews,
+    /// Immutable arrays referenced by materialized executable code.
+    /// Payloads used only during compile-time evaluation are not retained.
     pub const_arrays: Vec<TypedConstArray>,
     pub params: Vec<TypedParam>,
     pub buffers: Vec<TypedBufferDecl>,
@@ -252,7 +259,8 @@ pub struct TypedConstArray {
     pub name: String,
     pub elem_ty: PrimitiveType,
     pub len: usize,
-    pub values: Vec<TypedConstValue>,
+    /// Immutable payload shared by aliases and cloned typed programs.
+    pub values: std::sync::Arc<Vec<TypedConstValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -521,6 +529,8 @@ impl ReturnType {
 
 #[derive(Debug, Clone)]
 pub struct TypedFunction {
+    /// Context in which this concrete body was materialized.
+    pub(crate) compile_context: Option<compile_context::CompileContext>,
     pub name: String,
     /// Compiler-owned helpers that execute with access to the program's
     /// runtime state and interface rather than in the lexical `def` scope.
@@ -545,11 +555,7 @@ pub struct TypedFunction {
     /// `return_ty`. Functions with no `return` are represented as no-result
     /// functions; `return_ty` is meaningful only when this flag is true.
     pub returns_value: bool,
-    /// Scalar local types resolved by semantic analysis. The table is keyed by
-    /// source spelling, so MIR uses it for the first unique binding and retains
-    /// the current assignment context when the same spelling denotes distinct
-    /// nested or later bindings.
-    pub local_scalar_types: HashMap<String, PrimitiveType>,
+    /// Checked scalar assignments retain their storage type in `decl_ty`.
     pub body: Vec<Stmt>,
 }
 
@@ -619,6 +625,25 @@ pub enum TypedFnParam {
     Tuple {
         elem_tys: Vec<PrimitiveType>,
     },
+}
+
+impl TypedFnParam {
+    /// Defaults can supply values and fixed primitive arrays. Other parameter
+    /// kinds borrow storage whose lifetime must be established by the caller.
+    pub(crate) fn default_return_type(&self) -> Option<ReturnType> {
+        match self {
+            Self::Scalar { ty } => Some(ReturnType::Scalar(ty.unwrap_or(PrimitiveType::F32))),
+            Self::Tuple { elem_tys } => Some(ReturnType::Tuple(elem_tys.clone())),
+            Self::Array {
+                elem_ty,
+                len: Some(len),
+            } => Some(ReturnType::Data(DataType::Array {
+                element: ArrayElemType::Primitive(*elem_ty),
+                len: *len,
+            })),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -805,8 +830,8 @@ pub(crate) struct LocalArrayAliasInfo {
     /// separate from `len` prevents lowering placeholders from satisfying a
     /// fixed-array call contract.
     pub(crate) static_len: Option<usize>,
-    /// Exact length proven for a slice initializer, without changing its view contract.
-    pub(crate) proven_len: Option<usize>,
+    /// Known or deferred initializer length, without changing the view contract.
+    pub(crate) proven_len: Option<SliceLength>,
     pub(crate) elem_ty: PrimitiveType,
     pub(crate) elem_struct: Option<String>,
     pub(crate) writable: bool,

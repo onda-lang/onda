@@ -15,7 +15,7 @@ struct ReferenceEnv {
 }
 
 struct PermissionAnalysis<'a> {
-    signatures: &'a HashMap<String, FnSignature>,
+    signatures: &'a dyn crate::expr_analysis::SignatureLookup,
     readonly: &'a HashMap<String, Origins>,
     proc_types: &'a HashSet<String>,
     receiver_fields: &'a HashMap<String, Origins>,
@@ -53,7 +53,7 @@ impl ReferenceEnv {
             origins: HashMap::new(),
             receiver_owner,
         };
-        env.types.set_owner_type_params(&signature.type_params);
+        env.types.enter_function(&signature.type_params);
         for (index, name) in signature.params.iter().enumerate() {
             env.types.bind_function_param_type(
                 name,
@@ -225,10 +225,16 @@ impl PermissionAnalysis<'_> {
                                     infer_struct_expr_type(expr, &env.types, self.types).is_some()
                                         || infer_array_arg_type(expr, &env.types, self.types)
                                             .is_some();
+                                let origins = self.reference_origins(expr, env);
+                                // An untyped slice still has reference identity
+                                // before its element type is specialized.
+                                let reference = reference
+                                    || matches!(expr, Expr::Var { .. } | Expr::Slice { .. })
+                                        && !origins.is_empty();
                                 let origins = if copied || !reference {
                                     Origins::new()
                                 } else {
-                                    self.reference_origins(expr, env)
+                                    origins
                                 };
                                 env.origins.insert(name.clone(), origins);
                             }
@@ -264,7 +270,6 @@ impl PermissionAnalysis<'_> {
                         self.expression(expr, env);
                     }
                 }
-                Stmt::Const { decl, .. } => self.expression(&decl.expr, env),
                 Stmt::If {
                     cond,
                     then_branch,
@@ -314,6 +319,39 @@ impl PermissionAnalysis<'_> {
     }
 }
 
+/// Const defs form a declaration-ordered DAG, so callee permissions are already
+/// known. Reuse the runtime alias analysis without a second permission walker.
+pub(super) fn const_readonly_data_params(
+    def: &FunctionDef,
+    signature: &FnSignature,
+    signatures: &dyn crate::expr_analysis::SignatureLookup,
+) -> HashSet<String> {
+    let candidates = signature
+        .params
+        .iter()
+        .zip(&signature.param_types)
+        .filter(|(_, ty)| is_reference(ty.as_ref()))
+        .map(|(name, _)| name.clone())
+        .collect::<Origins>();
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let mut env = ReferenceEnv::for_parameters(&CallTypeEnv::default(), signature, &candidates);
+    let mut analysis = PermissionAnalysis {
+        signatures,
+        readonly: &HashMap::new(),
+        proc_types: &HashSet::new(),
+        receiver_fields: &HashMap::new(),
+        types: CallTypeContext {
+            return_types: &HashMap::new(),
+            struct_defs: &HashMap::new(),
+        },
+        writes: Origins::new(),
+    };
+    analysis.statements(&def.body, &mut env);
+    candidates.difference(&analysis.writes).cloned().collect()
+}
+
 pub(super) fn update_readonly_data_param_signatures(
     defs: &[FunctionDef],
     events: &[EventDef],
@@ -322,6 +360,7 @@ pub(super) fn update_readonly_data_param_signatures(
     owner_seed: &CallTypeEnv,
     runtime_def_names: &HashSet<String>,
     structs: &HashMap<String, Vec<TypedStructField>>,
+    artifacts: &SemanticConstArtifacts,
     errors: &mut Vec<Diagnostic>,
 ) {
     let candidates = defs
@@ -444,5 +483,32 @@ pub(super) fn update_readonly_data_param_signatures(
     }
     for (name, params) in readonly {
         signatures.get_mut(&name).unwrap().readonly_data_params = params;
+    }
+    // A default is an argument in its declaration's lexical scope. Apply the
+    // same access check as explicit arguments after transitive writes are known.
+    for def in defs {
+        let signature = &signatures[&def.name];
+        for (index, param) in def.params.iter().enumerate() {
+            if !is_reference(signature.param_types.get(index).and_then(Option::as_ref)) {
+                continue;
+            }
+            let Some(default) = param
+                .default
+                .as_ref()
+                .filter(|expr| crate::array_semantics::is_array_reference(expr))
+            else {
+                continue;
+            };
+            let check = ConstCheck::for_expression(default, artifacts);
+            crate::expr_validation::reject_immutable_array_call_arg(
+                signature.display_name.as_deref().unwrap_or(&def.name),
+                &param.name,
+                signature.readonly_data_params.contains(&param.name),
+                default,
+                check.env(),
+                default.loc(),
+                errors,
+            );
+        }
     }
 }

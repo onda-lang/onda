@@ -5,6 +5,7 @@
 //! source-level meaning from names or frontend AST nodes.
 
 mod analysis;
+pub mod constant_eval;
 mod format;
 mod ids;
 mod ir;

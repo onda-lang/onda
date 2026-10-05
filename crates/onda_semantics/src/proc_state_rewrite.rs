@@ -825,7 +825,6 @@ pub(crate) fn rewrite_proc_stmt_symbols(
     with_stmt_diag_context(stmt, |diag| {
         let source_loc = stmt.loc().cloned();
         match stmt {
-            Stmt::Const { .. } => None,
             Stmt::Print {
                 label,
                 values,

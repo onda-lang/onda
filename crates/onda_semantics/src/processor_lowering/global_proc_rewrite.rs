@@ -322,7 +322,6 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
     }
 
     match stmt {
-        Stmt::Const { .. } => Vec::new(),
         Stmt::If {
             loc,
             mut cond,
@@ -723,23 +722,13 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
             }
             Block::Init(init) => {
                 for stmt in &init.body {
-                    match stmt {
-                        Stmt::Const { decl, .. }
-                            if matches!(
-                                decl.ty,
-                                Some(ConstType::Array { .. } | ConstType::Slice { .. })
-                            ) || matches!(decl.expr, Expr::ArrayLiteral { .. }) =>
-                        {
-                            symbols.insert(decl.name.clone());
-                        }
-                        Stmt::Assign {
-                            target: AssignTarget::Var(name),
-                            expr: Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. },
-                            ..
-                        } => {
-                            symbols.insert(name.clone());
-                        }
-                        _ => {}
+                    if let Stmt::Assign {
+                        target: AssignTarget::Var(name),
+                        expr: Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. },
+                        ..
+                    } = stmt
+                    {
+                        symbols.insert(name.clone());
                     }
                 }
             }

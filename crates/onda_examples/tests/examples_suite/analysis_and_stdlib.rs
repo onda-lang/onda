@@ -712,7 +712,7 @@ sample:
 
 #[test]
 
-fn proc_level_consts_using_namespace_consts_compile_and_run() {
+fn namespace_consts_size_processors_and_compile_and_run() {
     let src = r#"
 
 namespace Synth<N = 2>:
@@ -721,9 +721,9 @@ namespace Synth<N = 2>:
 
 
 
-  proc Voice:
+  const Count = Base + 1
 
-    const Count = Base + 1
+  proc Voice:
 
     ins Count
 
@@ -3710,6 +3710,9 @@ fn top_level_consts_can_drive_event_sizes_and_proc_apis() {
 const CONST_SCOPE_COMPILE_AND_RUN_EXAMPLE: &str = r#"
 
 const N = 3
+const X = 0.5
+const BASE: i32 = 1
+const SCALE: f32 = 2.0
 
 
 
@@ -3719,7 +3722,6 @@ outs { out1 }
 
 def bonus() {
 
-  const X = 0.5
 
   return X
 
@@ -3729,7 +3731,6 @@ def bonus() {
 
 init {
 
-  const BASE: i32 = 1
 
   vals: f32[N] = [0.0, 0.0, 0.0]
 
@@ -3743,7 +3744,6 @@ init {
 
 sample {
 
-  const SCALE: f32 = 2.0
 
   out1 = seed + bonus() + SCALE
 
@@ -3753,7 +3753,7 @@ sample {
 
 #[test]
 
-fn consts_work_in_def_init_and_sample_scopes() {
+fn root_consts_work_in_def_init_and_sample_scopes() {
     let frames = 4;
 
     let (mut instance, _, _) = compile_instance(CONST_SCOPE_COMPILE_AND_RUN_EXAMPLE, frames);
@@ -3769,11 +3769,11 @@ fn consts_work_in_def_init_and_sample_scopes() {
 
 const CONST_ASSIGN_ERROR_EXAMPLE: &str = r#"
 
+const X = 1
+
 outs { out1 }
 
 sample {
-
-  const X = 1
 
   X = 2
 
@@ -3799,13 +3799,14 @@ sample {
 
 const CONST_RUNTIME_INIT_ERROR_EXAMPLE: &str = r#"
 
+const BAD = x
+
 outs { out1 }
 
 sample {
 
   x = 1.0
 
-  const BAD = x
 
   out1 = 0.0
 
@@ -3869,9 +3870,8 @@ fn consts_reject_assignment_reserved_names_and_runtime_initializers() {
     let errs = analyze(program).expect_err("runtime initializer should be rejected");
 
     assert!(
-        errs.iter().any(|d| {
-            d.message.contains("const 'BAD'") && d.message.contains("non-constant symbol 'x'")
-        }),
+        errs.iter()
+            .any(|d| d.message.contains("unknown symbol 'x' in expression")),
         "expected compile-time const initializer error, got {:?}",
         errs
     );

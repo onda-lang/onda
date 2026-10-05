@@ -1,4 +1,5 @@
 use super::*;
+use crate::array_semantics::{check_array_shape, ArrayInitializer, ArrayShape};
 
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn slice_access(&self, local: LocalId) -> onda_mir::AccessMode {
@@ -150,6 +151,7 @@ impl<'a> FunctionLowerer<'a> {
                     AnalysisOptions {
                         sample_rate: self.config.sample_rate,
                         block_size: self.config.block_size as usize,
+                        ..AnalysisOptions::default()
                     },
                     "array value length during MIR lowering",
                     &mut diagnostics,
@@ -172,9 +174,9 @@ impl<'a> FunctionLowerer<'a> {
                         spec.size.loc(),
                     )
                 })?;
-                if init.as_ref().is_some_and(|values| {
-                    values.len() != len && !(*init_is_value && values.len() == 1)
-                }) {
+                if matches!(ArrayInitializer::new(init.as_deref(), *init_is_value),
+                    ArrayInitializer::Elements(values) if values.len() != len)
+                {
                     return Err(self.error(
                         format!(
                             "array value initializer expected {len} elements, got {}",
@@ -196,39 +198,52 @@ impl<'a> FunctionLowerer<'a> {
                     expression.loc(),
                 )
             })?;
-        let local = self.new_array_local(None, element, len);
-        if broadcast && values.is_some_and(|values| values.len() == 1) {
-            let expression = &values.unwrap()[0];
-            let data = DataType::Array {
-                element: ArrayElemType::Primitive(element),
-                len: len as usize,
-            };
-            if self.is_slice_expression(expression)
-                || matches!(
-                    expression,
-                    Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. }
-                )
-                || matches!(self.data_type_of(expression), Some(DataType::Array { .. }))
-            {
-                let source = self.lower_data_expr(expression, &data, block)?;
-                let destination = self.fresh_data_name();
-                self.bindings
-                    .insert(destination.clone(), Binding::Array(local, element, len));
-                self.copy_data(&destination, &source, &data, block, expression.loc())?;
-            } else {
-                let value = self.lower_expr(expression, block)?;
-                let value = self.coerce(value, element, block, expression.loc())?;
-                self.emit_array_value_fill(
-                    Place::local(local),
-                    element,
-                    value.value,
-                    len,
-                    block,
-                    expression.loc(),
-                );
+        let initializer = ArrayInitializer::new(values, broadcast);
+        // A read-only consumer can use immutable cached contents directly.
+        // Mutable sources still need a snapshot before later arguments run.
+        if access == onda_mir::AccessMode::ReadOnly {
+            if let ArrayInitializer::Value(source @ Expr::Var { name, .. }) = initializer {
+                if self.const_arrays.shape(name).is_some_and(|shape| {
+                    check_array_shape(shape, ArrayShape::fixed(element, len as usize)).is_ok()
+                }) {
+                    return self
+                        .lower_slice_expression(source, Some(access), block)
+                        .map(Some);
+                }
             }
-        } else {
-            if values.is_none() {
+        }
+        let local = self.new_array_local(None, element, len);
+        match initializer {
+            ArrayInitializer::Value(expression) => {
+                let data = DataType::Array {
+                    element: ArrayElemType::Primitive(element),
+                    len: len as usize,
+                };
+                if self.is_slice_expression(expression)
+                    || matches!(
+                        expression,
+                        Expr::ArrayLiteral { .. } | Expr::ArrayCtor { .. }
+                    )
+                    || matches!(self.data_type_of(expression), Some(DataType::Array { .. }))
+                {
+                    let source = self.lower_data_expr(expression, &data, block)?;
+                    let destination = self.fresh_data_name();
+                    self.bindings
+                        .insert(destination.clone(), Binding::Array(local, element, len));
+                    self.copy_data(&destination, &source, &data, block, expression.loc())?;
+                } else {
+                    let value = self.lower_expr_for_type(expression, element, block)?;
+                    self.emit_array_value_fill(
+                        Place::local(local),
+                        element,
+                        value.value,
+                        len,
+                        block,
+                        expression.loc(),
+                    );
+                }
+            }
+            ArrayInitializer::Zero => {
                 self.emit_array_value_fill(
                     Place::local(local),
                     element,
@@ -238,25 +253,24 @@ impl<'a> FunctionLowerer<'a> {
                     expression.loc(),
                 );
             }
-            for (index, expression) in values.into_iter().flatten().enumerate() {
-                let lowered = self.lower_expr(expression, block)?;
-                let value = self
-                    .coerce(lowered, element, block, expression.loc())?
-                    .value;
-                self.push_statement(
-                    block,
-                    StatementKind::Assign {
-                        destination: Place {
-                            base: PlaceBase::Local(local),
-                            projections: vec![Projection::Index {
-                                index: Value::Constant(ScalarValue::I32(index as i32)),
-                                bounds: BoundsMode::Unchecked,
-                            }],
+            ArrayInitializer::Elements(values) => {
+                for (index, expression) in values.iter().enumerate() {
+                    let value = self.lower_expr_for_type(expression, element, block)?.value;
+                    self.push_statement(
+                        block,
+                        StatementKind::Assign {
+                            destination: Place {
+                                base: PlaceBase::Local(local),
+                                projections: vec![Projection::Index {
+                                    index: Value::Constant(ScalarValue::I32(index as i32)),
+                                    bounds: BoundsMode::Unchecked,
+                                }],
+                            },
+                            value: Rvalue::Use(value),
                         },
-                        value: Rvalue::Use(value),
-                    },
-                    expression.loc(),
-                );
+                        expression.loc(),
+                    );
+                }
             }
         }
         Ok(Some(self.emit_slice_temp(
@@ -623,7 +637,7 @@ impl<'a> FunctionLowerer<'a> {
                 access,
             ));
         }
-        if let Some((data, element, len)) = self.const_arrays.get(base).copied() {
+        if let Some((data, element, len)) = self.const_arrays.resolve(base, location)? {
             if selector.is_some() || channel.is_some() {
                 return Err(self.error(
                     format!("constant array '{base}' does not support buffer coordinates"),
@@ -914,8 +928,7 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             );
         } else {
-            let value = self.lower_expr(expression, block)?;
-            let value = self.coerce(value, destination.element, block, expression.loc())?;
+            let value = self.lower_expr_for_type(expression, destination.element, block)?;
             self.push_statement(
                 block,
                 StatementKind::SliceFill {

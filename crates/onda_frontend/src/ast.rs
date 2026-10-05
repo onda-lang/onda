@@ -594,7 +594,6 @@ pub struct ProcessorDef {
     pub loc: Span,
     pub name: String,
     pub type_params: Vec<String>,
-    pub consts: Vec<ConstDecl>,
     pub ins: Vec<PortDecl>,
     pub ins_deferred_count: Option<Expr>,
     pub ins_deferred_default_ty: Option<DeclType>,
@@ -1047,7 +1046,7 @@ impl AssignTarget {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default)]
 pub struct Span {
     pub line: u32,
     pub column: u16,
@@ -1481,10 +1480,6 @@ impl SourceLoc {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    Const {
-        loc: Span,
-        decl: ConstDecl,
-    },
     Assign {
         loc: Span,
         target_loc: Span,
@@ -1548,56 +1543,100 @@ pub struct PrintSourceOrigin {
 }
 
 impl Stmt {
-    /// Visits every expression owned by this statement tree in source
-    /// evaluation order. Nested expressions remain owned by their root and can
-    /// be traversed with [`Expr::walk`].
-    pub fn visit_exprs(&self, mut visitor: impl FnMut(&Expr)) {
+    /// Visits this statement and its nested statements in source order.
+    pub fn visit_statements(&self, mut visitor: impl FnMut(&Stmt)) {
         let mut pending = vec![self];
         while let Some(statement) = pending.pop() {
+            visitor(statement);
             match statement {
-                Self::Const { decl, .. } => visitor(&decl.expr),
-                Self::Assign { target, expr, .. } => {
-                    target.visit_selectors(&mut visitor);
-                    visitor(expr);
-                }
-                Self::Expr { expr, .. } | Self::Return { expr, .. } => visitor(expr),
-                Self::Print { values, .. } => values.iter().for_each(&mut visitor),
                 Self::If {
-                    cond,
                     then_branch,
                     else_branch,
                     ..
                 } => {
-                    visitor(cond);
                     pending.extend(else_branch.iter().rev());
                     pending.extend(then_branch.iter().rev());
                 }
-                Self::For {
-                    step,
-                    start,
-                    end,
-                    body,
-                    ..
-                } => {
-                    visitor(start);
-                    visitor(end);
-                    if let Some(step) = step {
-                        visitor(step);
-                    }
+                Self::For { body, .. } | Self::While { body, .. } => {
                     pending.extend(body.iter().rev());
                 }
-                Self::While { cond, body, .. } => {
-                    visitor(cond);
-                    pending.extend(body.iter().rev());
-                }
-                Self::Break { .. } | Self::Continue { .. } => {}
+                _ => {}
             }
         }
     }
 
+    /// Mutable counterpart of [`Self::visit_statements`].
+    pub fn visit_statements_mut(&mut self, mut visitor: impl FnMut(&mut Stmt)) {
+        let mut pending = vec![self];
+        while let Some(statement) = pending.pop() {
+            visitor(statement);
+            match statement {
+                Self::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    pending.extend(else_branch.iter_mut().rev());
+                    pending.extend(then_branch.iter_mut().rev());
+                }
+                Self::For { body, .. } | Self::While { body, .. } => {
+                    pending.extend(body.iter_mut().rev());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Visits executable expression roots in source evaluation order. Type
+    /// annotations remain declaration metadata. Traverse nested expressions
+    /// with [`Expr::walk`].
+    pub fn visit_exprs(&self, mut visitor: impl FnMut(&Expr)) {
+        self.visit_statements(|statement| match statement {
+            Self::Assign { target, expr, .. } => {
+                target.visit_selectors(&mut visitor);
+                visitor(expr);
+            }
+            Self::Expr { expr, .. } | Self::Return { expr, .. } => visitor(expr),
+            Self::Print { values, .. } => values.iter().for_each(&mut visitor),
+            Self::If { cond, .. } | Self::While { cond, .. } => visitor(cond),
+            Self::For {
+                step, start, end, ..
+            } => {
+                visitor(start);
+                visitor(end);
+                if let Some(step) = step {
+                    visitor(step);
+                }
+            }
+            Self::Break { .. } | Self::Continue { .. } => {}
+        });
+    }
+
+    /// Mutable counterpart of [`Self::visit_exprs`].
+    pub fn visit_exprs_mut(&mut self, mut visitor: impl FnMut(&mut Expr)) {
+        self.visit_statements_mut(|statement| match statement {
+            Self::Assign { target, expr, .. } => {
+                target.visit_selectors_mut(&mut visitor);
+                visitor(expr);
+            }
+            Self::Expr { expr, .. } | Self::Return { expr, .. } => visitor(expr),
+            Self::Print { values, .. } => values.iter_mut().for_each(&mut visitor),
+            Self::If { cond, .. } | Self::While { cond, .. } => visitor(cond),
+            Self::For {
+                step, start, end, ..
+            } => {
+                visitor(start);
+                visitor(end);
+                if let Some(step) = step {
+                    visitor(step);
+                }
+            }
+            Self::Break { .. } | Self::Continue { .. } => {}
+        });
+    }
+
     pub fn loc(&self) -> SourceLoc {
         match self {
-            Self::Const { loc, .. } => (*loc).into(),
             Self::Assign { loc, .. } => (*loc).into(),
             Self::Expr { loc, .. } => (*loc).into(),
             Self::Print { loc, .. } => (*loc).into(),
@@ -1652,6 +1691,9 @@ pub enum Expr {
     Int {
         loc: Span,
         value: i64,
+        /// Folded constants retain their integer type for default inference.
+        /// Source literals leave this unset for ordinary magnitude-based defaults.
+        const_ty: Option<PrimitiveType>,
     },
     Bool {
         loc: Span,
@@ -1804,6 +1846,7 @@ impl Expr {
         Self::Int {
             loc: Span::ZERO,
             value,
+            const_ty: None,
         }
     }
 
@@ -1833,7 +1876,18 @@ impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Number { value: lhs, .. }, Self::Number { value: rhs, .. }) => lhs == rhs,
-            (Self::Int { value: lhs, .. }, Self::Int { value: rhs, .. }) => lhs == rhs,
+            (
+                Self::Int {
+                    value: lhs,
+                    const_ty: lhs_ty,
+                    ..
+                },
+                Self::Int {
+                    value: rhs,
+                    const_ty: rhs_ty,
+                    ..
+                },
+            ) => lhs == rhs && lhs_ty == rhs_ty,
             (Self::Bool { value: lhs, .. }, Self::Bool { value: rhs, .. }) => lhs == rhs,
             (Self::ArrayLiteral { values: lhs, .. }, Self::ArrayLiteral { values: rhs, .. }) => {
                 lhs == rhs

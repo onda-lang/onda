@@ -191,6 +191,7 @@ impl AggregateLayoutTable {
         params: impl Iterator<Item = &'a crate::TypedEventParam>,
         structs: &HashMap<String, Vec<crate::TypedStructField>>,
         options: crate::AnalysisOptions,
+        resolver: &mut crate::data_construction::DefaultExpressionResolver<'_>,
         errors: &mut Vec<onda_frontend::Diagnostic>,
     ) {
         let names = params
@@ -205,7 +206,7 @@ impl AggregateLayoutTable {
             })
             .collect::<HashSet<_>>();
         let mut evaluator =
-            crate::data_construction::DefaultEvaluator::new(structs, options, errors);
+            crate::data_construction::DefaultEvaluator::new(structs, options, resolver, errors);
         for layout in &mut self.layouts {
             if names.contains(&layout.struct_name) {
                 crate::data_construction::populate_schema_defaults(

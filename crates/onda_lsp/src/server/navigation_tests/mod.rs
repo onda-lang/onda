@@ -218,7 +218,7 @@ fn hover_shows_control_domains_for_top_level_and_proc_param_references() {
 
 params:
   mix = 0.5 {0.0, 1.0, curve = -4, unit = "%", step = 0.25}
-  cutoff = 440.0 {20.0, 20000.0, log, "Hz"}
+  cutoff = 440.0 {20.0, 20000.0, scale = log, unit = "Hz"}
 outs:
   out1
 init:

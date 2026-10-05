@@ -581,60 +581,15 @@ fn register_struct_array_param_bindings_inner(
 /// proc dispatch rewrite path.
 pub(crate) fn rewrite_struct_array_inline_field_stmts(
     stmts: &mut [Stmt],
-    state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    errors: &mut Vec<Diagnostic>,
-) {
-    for stmt in stmts.iter_mut() {
-        rewrite_struct_array_inline_field_stmt(stmt, state_array_struct_roots, struct_defs, errors);
-    }
-}
-
-fn rewrite_struct_array_inline_field_stmt(
-    stmt: &mut Stmt,
     roots: &HashMap<String, ArrayStructRootInfo>,
     defs: &HashMap<String, Vec<TypedStructField>>,
+    symbols: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match stmt {
-        Stmt::Const { .. } => {}
-        Stmt::Assign { expr, .. } | Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_struct_array_inline_field_expr(expr, roots, defs, errors);
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_struct_array_inline_field_expr(value, roots, defs, errors);
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_struct_array_inline_field_expr(cond, roots, defs, errors);
-            rewrite_struct_array_inline_field_stmts(then_branch, roots, defs, errors);
-            rewrite_struct_array_inline_field_stmts(else_branch, roots, defs, errors);
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_struct_array_inline_field_expr(start, roots, defs, errors);
-            rewrite_struct_array_inline_field_expr(end, roots, defs, errors);
-            if let Some(s) = step {
-                rewrite_struct_array_inline_field_expr(s, roots, defs, errors);
-            }
-            rewrite_struct_array_inline_field_stmts(body, roots, defs, errors);
-        }
-        Stmt::While { cond, body, .. } => {
-            rewrite_struct_array_inline_field_expr(cond, roots, defs, errors);
-            rewrite_struct_array_inline_field_stmts(body, roots, defs, errors);
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    for stmt in stmts {
+        stmt.visit_exprs_mut(|expr| {
+            rewrite_struct_array_inline_field_expr(expr, roots, defs, symbols, errors)
+        });
     }
 }
 
@@ -642,6 +597,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
     expr: &mut Expr,
     roots: &HashMap<String, ArrayStructRootInfo>,
     defs: &HashMap<String, Vec<TypedStructField>>,
+    symbols: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
     expr.visit_mut(|expr| {
@@ -768,7 +724,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
                 // element and inner fixed-array selector independently.
                 TypedFieldType::Array(_) => return true,
                 TypedFieldType::Tuple(types) => {
-                    let Expr::Int { value, .. } = fidx else {
+                    let Some(value) = symbols.constant_integer(&fidx, errors) else {
                         errors.push(Diagnostic::semantic_span(
                             "tuple field index must be a compile-time integer constant",
                             loc,

@@ -1,44 +1,192 @@
 use super::*;
+use crate::expr_typing::{
+    adapt_binary_types_from_purity, adapt_numeric_argument_types_from_purity, scalar_const_kinds,
+    ScalarConstKind,
+};
+
+#[derive(Clone, Copy)]
+enum Operand<'a> {
+    Concrete(LoweredValue),
+    Literal(&'a Expr, PrimitiveType),
+}
+
+impl Operand<'_> {
+    fn ty(self) -> PrimitiveType {
+        match self {
+            Self::Concrete(value) => value.ty,
+            Self::Literal(_, ty) => ty,
+        }
+    }
+
+    fn pure(self) -> bool {
+        matches!(self, Self::Literal(..))
+    }
+}
+
+fn scalar_children<'a>(expr: &'a Expr, children: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Binary { .. }
+        | Expr::Compare { .. }
+        | Expr::Cast { .. }
+        | Expr::UnaryNot { .. }
+        | Expr::UnaryBitNot { .. }
+        | Expr::Call { .. } => expr.children(children),
+        // Logical operators own control-flow blocks; user calls and indexed
+        // references have context-dependent argument preparation.
+        _ => {}
+    }
+}
 
 impl<'a> FunctionLowerer<'a> {
+    pub(super) fn lower_untyped_expr(
+        &mut self,
+        expression: &Expr,
+        block: &mut MirBlock,
+    ) -> Result<LoweredValue, MirLoweringError> {
+        if let Some(ty) = crate::expr_typing::default_numeric_literal_type(expression) {
+            self.lower_expr_for_type(expression, ty, block)
+        } else {
+            self.lower_expr(expression, block)
+        }
+    }
+
+    /// Literal arithmetic executes at the destination's numeric width. Use
+    /// the same evaluator as const definitions, before emitting wider MIR.
+    pub(super) fn lower_expr_for_type(
+        &mut self,
+        expression: &Expr,
+        ty: PrimitiveType,
+        block: &mut MirBlock,
+    ) -> Result<LoweredValue, MirLoweringError> {
+        let value = self.lower_expr_with_context(expression, Some(ty), block)?;
+        self.coerce(value, ty, block, expression.loc())
+    }
+
+    pub(super) fn lower_value_expr_for_types(
+        &mut self,
+        expression: &Expr,
+        types: &[PrimitiveType],
+        block: &mut MirBlock,
+    ) -> Result<Vec<LoweredValue>, MirLoweringError> {
+        match expression {
+            Expr::Tuple { values, .. } if values.len() == types.len() => values
+                .iter()
+                .zip(types)
+                .map(|(value, ty)| self.lower_expr_for_type(value, *ty, block))
+                .collect(),
+            _ if types.len() == 1 => {
+                Ok(vec![self.lower_expr_for_type(expression, types[0], block)?])
+            }
+            _ => self.lower_value_expr(expression, block),
+        }
+    }
+
     pub(super) fn lower_expr(
         &mut self,
         expression: &Expr,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
-        expression.try_fold(
-            |expr, children| match expr {
-                Expr::Binary { .. }
-                | Expr::Compare { .. }
-                | Expr::Cast { .. }
-                | Expr::UnaryNot { .. }
-                | Expr::UnaryBitNot { .. } => expr.children(children),
-                // Logical operators own control-flow blocks; calls and indexed
-                // references have context-dependent argument preparation.
-                _ => {}
+        self.lower_expr_with_context(expression, None, block)
+    }
+
+    fn lower_expr_with_context(
+        &mut self,
+        expression: &Expr,
+        target: Option<PrimitiveType>,
+        block: &mut MirBlock,
+    ) -> Result<LoweredValue, MirLoweringError> {
+        let constants = scalar_const_kinds(expression, scalar_children);
+        let operand = expression.try_fold(
+            |expr, children| {
+                if !constants.contains_key(&(expr as *const Expr)) {
+                    scalar_children(expr, children);
+                }
             },
-            |expression, children| self.lower_expr_node(expression, children, block),
-        )
+            |expression, children| match constants.get(&(expression as *const Expr)) {
+                Some(ScalarConstKind::Literal(ty)) => Ok(Operand::Literal(expression, *ty)),
+                Some(ScalarConstKind::Concrete) => self
+                    .lower_constant(expression, None, false)
+                    .map(Operand::Concrete),
+                None => self
+                    .lower_expr_node(expression, children, block)
+                    .map(Operand::Concrete),
+            },
+        )?;
+        match operand {
+            Operand::Literal(expr, _) => self.lower_constant(expr, target, true),
+            Operand::Concrete(value) => Ok(value),
+        }
+    }
+
+    fn lower_constant(
+        &self,
+        expression: &Expr,
+        target: Option<PrimitiveType>,
+        checked: bool,
+    ) -> Result<LoweredValue, MirLoweringError> {
+        let mut diagnostics = Vec::new();
+        let options = AnalysisOptions {
+            sample_rate: self.config.sample_rate,
+            block_size: self.config.block_size as usize,
+            ..AnalysisOptions::default()
+        };
+        let context = "constant expression during MIR lowering";
+        // Destinations check representability; operands use the operation's
+        // numeric conversions, including wrapping integer narrowing.
+        let value = if let Some(ty) = target.filter(|_| checked) {
+            crate::port_coercion::eval_typed_const_expr(
+                expression,
+                ty,
+                options,
+                context,
+                true,
+                &mut diagnostics,
+            )
+        } else {
+            crate::const_scalar::eval_const_scalar(
+                expression,
+                target,
+                options,
+                context,
+                &mut diagnostics,
+            )
+        }
+        .ok_or_else(|| self.error(diagnostics[0].message.clone(), expression.loc()))?;
+        Ok(LoweredValue {
+            value: Value::Constant(mir_scalar(value)),
+            ty: value.primitive_type(),
+        })
+    }
+
+    fn resolve_operand(
+        &mut self,
+        operand: Operand<'_>,
+        target: Option<PrimitiveType>,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<LoweredValue, MirLoweringError> {
+        let value = match operand {
+            Operand::Concrete(value) => value,
+            Operand::Literal(expr, _) => self.lower_constant(expr, target, false)?,
+        };
+        if let Some(ty) = target {
+            self.coerce(value, ty, block, location)
+        } else {
+            Ok(value)
+        }
     }
 
     fn lower_expr_node(
         &mut self,
         expression: &Expr,
-        children: &mut std::vec::Drain<'_, LoweredValue>,
+        children: &mut std::vec::Drain<'_, Operand<'_>>,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
         if let Some(field) = self.lower_indexed_data_field(expression, block)? {
             return self.lower_expr(&field, block);
         }
         match expression {
-            Expr::Number { value, .. } => Ok(LoweredValue {
-                value: Value::Constant(ScalarValue::F64(*value)),
-                ty: PrimitiveType::F64,
-            }),
-            Expr::Int { value, .. } => Ok(LoweredValue {
-                value: Value::Constant(ScalarValue::I64(*value)),
-                ty: PrimitiveType::I64,
-            }),
+            Expr::Number { .. } | Expr::Int { .. } => unreachable!("numeric literals are deferred"),
             Expr::Bool { value, .. } => Ok(LoweredValue {
                 value: Value::Constant(ScalarValue::Bool(*value)),
                 ty: PrimitiveType::Bool,
@@ -67,7 +215,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
             ),
             Expr::Call { func, args, .. } => {
-                self.lower_intrinsic(*func, args, expression.loc(), block)
+                self.lower_intrinsic(*func, args, children, expression.loc(), block)
             }
             Expr::UserCall {
                 name,
@@ -105,11 +253,17 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::Cast { to, .. } => {
                 let value = children.next().expect("unary operand");
+                let value = self.resolve_operand(value, None, block, expression.loc())?;
                 self.lower_explicit_cast(value, *to, block, expression.loc())
             }
             Expr::UnaryNot { .. } => {
                 let operand = children.next().expect("unary operand");
-                let operand = self.coerce(operand, PrimitiveType::Bool, block, expression.loc())?;
+                let operand = self.resolve_operand(
+                    operand,
+                    Some(PrimitiveType::Bool),
+                    block,
+                    expression.loc(),
+                )?;
                 Ok(self.emit_temp(
                     block,
                     PrimitiveType::Bool,
@@ -122,6 +276,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::UnaryBitNot { .. } => {
                 let operand = children.next().expect("unary operand");
+                let operand = self.resolve_operand(operand, None, block, expression.loc())?;
                 if !matches!(operand.ty, PrimitiveType::I32 | PrimitiveType::I64) {
                     return Err(self.error(
                         "bitwise not operand is not an integer after semantic analysis",
@@ -475,6 +630,7 @@ impl<'a> FunctionLowerer<'a> {
         let options = AnalysisOptions {
             sample_rate: self.config.sample_rate,
             block_size: self.config.block_size as usize,
+            ..AnalysisOptions::default()
         };
         let Some(value) = builtin_constant_value_f64(name, options) else {
             return Err(self.error(
@@ -542,6 +698,7 @@ impl<'a> FunctionLowerer<'a> {
             AnalysisOptions {
                 sample_rate: self.config.sample_rate,
                 block_size: self.config.block_size as usize,
+                ..AnalysisOptions::default()
             },
             "tuple index during MIR lowering",
             &mut diagnostics,
@@ -806,7 +963,7 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         }
-        let const_array = self.const_arrays.get(base).copied();
+        let const_array = self.const_arrays.resolve(base, location)?;
         if let Some((data, ty, _)) = const_array {
             let index_value = self.lower_expr(index, block)?;
             let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
@@ -1068,46 +1225,34 @@ impl<'a> FunctionLowerer<'a> {
             RuntimeInterfaceEndpoint::AudioOutput { .. } => {
                 Err(self.error("audio output endpoints are write-only", location))
             }
-            RuntimeInterfaceEndpoint::Param {
-                param,
-                element,
-                clamped,
-            } => {
-                if let Some(state) = clamped {
-                    debug_assert!(element.is_none());
-                    return Ok(Rvalue::Load(Place {
-                        base: PlaceBase::State(state),
-                        projections: Vec::new(),
-                    }));
-                }
-                Ok(Rvalue::Load(Place {
-                    base: PlaceBase::Param(param),
-                    projections: element
-                        .map(|element| Projection::Index {
-                            index: Value::Constant(ScalarValue::I32(element as i32)),
-                            bounds: BoundsMode::Unchecked,
-                        })
-                        .into_iter()
-                        .collect(),
-                }))
-            }
+            RuntimeInterfaceEndpoint::Param { base, element } => Ok(Rvalue::Load(Place {
+                base,
+                projections: element
+                    .map(|element| Projection::Index {
+                        index: Value::Constant(ScalarValue::I32(element as i32)),
+                        bounds: BoundsMode::Unchecked,
+                    })
+                    .into_iter()
+                    .collect(),
+            })),
             RuntimeInterfaceEndpoint::ControlOutput { .. } => {
                 Err(self.error("control output endpoints are write-only", location))
             }
         }
     }
 
-    pub(super) fn lower_binary(
+    fn lower_binary(
         &mut self,
         op: AstBinaryOp,
         lhs: &Expr,
         rhs: &Expr,
-        operands: [LoweredValue; 2],
+        operands: [Operand<'_>; 2],
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
         let [left, right] = operands;
-        let (left_ty, right_ty) = adapt_binary_operand_types(lhs, rhs, left.ty, right.ty);
+        let (left_ty, right_ty) =
+            adapt_binary_types_from_purity(left.ty(), right.ty(), left.pure(), right.pure());
         let result_ty = if matches!(
             op,
             AstBinaryOp::BitAnd
@@ -1125,8 +1270,8 @@ impl<'a> FunctionLowerer<'a> {
         } else {
             self.merge_numeric(left_ty, right_ty, "binary expression", location)?
         };
-        let left = self.coerce(left, result_ty, block, lhs.loc())?;
-        let right = self.coerce(right, result_ty, block, rhs.loc())?;
+        let left = self.resolve_operand(left, Some(result_ty), block, lhs.loc())?;
+        let right = self.resolve_operand(right, Some(result_ty), block, rhs.loc())?;
         Ok(self.emit_temp(
             block,
             result_ty,
@@ -1139,24 +1284,25 @@ impl<'a> FunctionLowerer<'a> {
         ))
     }
 
-    pub(super) fn lower_compare(
+    fn lower_compare(
         &mut self,
         op: CmpOp,
         lhs: &Expr,
         rhs: &Expr,
-        operands: [LoweredValue; 2],
+        operands: [Operand<'_>; 2],
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
         let [left, right] = operands;
-        let (left_ty, right_ty) = adapt_binary_operand_types(lhs, rhs, left.ty, right.ty);
+        let (left_ty, right_ty) =
+            adapt_binary_types_from_purity(left.ty(), right.ty(), left.pure(), right.pure());
         let operand_ty = if left_ty == PrimitiveType::Bool && right_ty == PrimitiveType::Bool {
             PrimitiveType::Bool
         } else {
             self.merge_numeric(left_ty, right_ty, "comparison", location)?
         };
-        let left = self.coerce(left, operand_ty, block, lhs.loc())?;
-        let right = self.coerce(right, operand_ty, block, rhs.loc())?;
+        let left = self.resolve_operand(left, Some(operand_ty), block, lhs.loc())?;
+        let right = self.resolve_operand(right, Some(operand_ty), block, rhs.loc())?;
         Ok(self.emit_temp(
             block,
             PrimitiveType::Bool,
@@ -1223,20 +1369,25 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
-    pub(super) fn lower_intrinsic(
+    fn lower_intrinsic(
         &mut self,
         function: BuiltinFn,
         args: &[Expr],
+        lowered: &mut std::vec::Drain<'_, Operand<'_>>,
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
-        let mut lowered = Vec::with_capacity(args.len());
-        for arg in args {
-            lowered.push(self.lower_expr(arg, block)?);
-        }
-        let adapted_types = adapt_numeric_argument_types(
-            args,
-            &lowered.iter().map(|value| value.ty).collect::<Vec<_>>(),
+        let adapted_types = adapt_numeric_argument_types_from_purity(
+            &lowered
+                .as_slice()
+                .iter()
+                .map(|value| value.ty())
+                .collect::<Vec<_>>(),
+            &lowered
+                .as_slice()
+                .iter()
+                .map(|value| value.pure())
+                .collect::<Vec<_>>(),
         );
 
         let result_ty = intrinsic_result_type(function, &adapted_types).ok_or_else(|| {
@@ -1248,29 +1399,10 @@ impl<'a> FunctionLowerer<'a> {
 
         let mut values = Vec::with_capacity(lowered.len());
         for (arg, value) in args.iter().zip(lowered) {
-            values.push(self.coerce(value, result_ty, block, arg.loc())?.value);
-        }
-        if matches!(function, BuiltinFn::RangeClamp | BuiltinFn::RangeWrap)
-            && matches!(result_ty, PrimitiveType::I32 | PrimitiveType::I64)
-        {
-            for index in 1..=2 {
-                let mut diagnostics = Vec::new();
-                if let Some(value) = eval_const_expr_i64_exact(
-                    &args[index],
-                    AnalysisOptions {
-                        sample_rate: self.config.sample_rate,
-                        block_size: self.config.block_size as usize,
-                    },
-                    "integer binding range bound during MIR lowering",
-                    &mut diagnostics,
-                ) {
-                    values[index] = Value::Constant(match result_ty {
-                        PrimitiveType::I32 => ScalarValue::I32(value as i32),
-                        PrimitiveType::I64 => ScalarValue::I64(value),
-                        _ => unreachable!(),
-                    });
-                }
-            }
+            values.push(
+                self.resolve_operand(value, Some(result_ty), block, arg.loc())?
+                    .value,
+            );
         }
         let integer_range = match (function, values.get(1), values.get(2)) {
             (
@@ -1292,7 +1424,8 @@ impl<'a> FunctionLowerer<'a> {
             block,
             result_ty,
             Rvalue::Intrinsic {
-                intrinsic: map_intrinsic(function),
+                intrinsic: map_intrinsic(function)
+                    .expect("binding ranges must be canonicalized before MIR lowering"),
                 args: values,
             },
             location,

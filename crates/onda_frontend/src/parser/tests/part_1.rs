@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{
     ArrayElemType, AssignTarget, BinaryOp, Block, BufferElemType, BuiltinFn, CallArg, CallTypeArg,
-    ConstDecl, ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
+    ConstType, DeclType, EventParamType, Expr, FieldType, FnParamType,
     FnReturnScalarType, FnReturnType, GraphEndpoint, GraphRate, LogicalOp, NamespaceItem,
     OutputTiming, ParamScale, PrimitiveType, Stmt, TupleAssignTarget, INTERNAL_BARE_RETURN_FN,
     INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN, ScalarTypeRef,
@@ -2089,11 +2089,11 @@ sample { out1 = p(0.5) }
 }
 
 #[test]
-fn preserves_proc_level_consts_for_semantics() {
+fn root_consts_remain_available_to_processor_metadata() {
     let src = r#"
+const N = 2
+const Z = 1
 proc Voice {
-  const N = 2
-  const Z = 1
   ins N
   outs N
   sample {
@@ -2115,9 +2115,6 @@ sample { out1 = 0.0 }
         })
         .expect("expected a proc block");
 
-    assert_eq!(proc.consts.len(), 2, "proc consts should be retained");
-    assert_eq!(proc.consts[0].name, "N");
-    assert_eq!(proc.consts[1].name, "Z");
     assert!(proc.ins.is_empty());
     assert!(proc.outs.is_empty());
     assert!(matches!(
@@ -2143,13 +2140,13 @@ sample { out1 = 0.0 }
 }
 
 #[test]
-fn preserves_proc_level_consts_using_namespace_consts_for_semantics() {
+fn namespace_consts_remain_available_to_processor_metadata() {
     let src = r#"
 namespace Synth<N = 2> {
   const Base = N + 1
+  const Count = Base + 1
 
   proc Voice {
-    const Count = Base + 1
     ins Count
     outs Count
     sample {
@@ -2184,14 +2181,6 @@ sample {
         })
         .expect("expected namespaced proc block");
 
-    assert_eq!(proc.consts.len(), 1, "proc consts should be retained");
-    assert_eq!(proc.consts[0].name, "Count");
-    assert!(matches!(
-        &proc.consts[0].expr,
-        Expr::Binary { op: BinaryOp::Add, lhs, rhs, .. }
-            if matches!(lhs.as_ref(), Expr::Var { name, .. } if name == "Base")
-                && matches!(rhs.as_ref(), Expr::Int { value: 1, .. })
-    ));
     assert!(proc.ins.is_empty());
     assert!(proc.outs.is_empty());
     assert!(matches!(
@@ -2204,7 +2193,7 @@ sample {
     ));
     assert!(
         stmt_contains_var_with_suffix(&proc.sample[2], "Count"),
-        "instantiated proc body should retain proc-local const symbols for semantics"
+        "instantiated proc body should retain namespace const symbols for semantics"
     );
     assert!(
         stmt_contains_var_with_suffix(&proc.sample[3], "Base"),
@@ -2428,7 +2417,7 @@ sample:
 fn parses_top_level_parameter_domains() {
     let src = r#"
 params {
-  cutoff = 440.0 {20, 20000, log, "Hz"}
+  cutoff = 440.0 {20, 20000, scale = log, unit = "Hz"}
   voices: i32 = 4 {0, 10, step = 2, unit = "voices"}
   mix = 0.5 {unit = "%", curve = -4, scale = linear, max = 1, min = 0}
   ceiling = 1.0 {max = 2}

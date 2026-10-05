@@ -12,7 +12,7 @@ pub(crate) enum BufferChannelInfo {
     Dynamic,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DeclaredSymbolInfo {
     Input {
         ty: PrimitiveType,
@@ -22,6 +22,14 @@ pub(crate) enum DeclaredSymbolInfo {
     },
     Param {
         ty: PrimitiveType,
+    },
+    Constant {
+        ty: PrimitiveType,
+        /// Already evaluated in declaration context; never demands a payload.
+        value: Option<crate::TypedConstValue>,
+    },
+    ConstArray {
+        elem_ty: PrimitiveType,
     },
     DataArray {
         elem_ty: PrimitiveType,
@@ -38,7 +46,101 @@ pub(crate) enum DeclaredSymbolInfo {
     InvalidPlaceholder,
 }
 
-pub(crate) type DeclaredSymbolMap = HashMap<String, DeclaredSymbolInfo>;
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DeclaredSymbolMap {
+    /// All values in this expression are computed before executable lowering.
+    pub(crate) constant_context: bool,
+    /// Bindings that exist but whose scalar or array element type needs specialization.
+    pub(crate) unresolved_types: HashSet<String>,
+    symbols: std::rc::Rc<HashMap<String, DeclaredSymbolInfo>>,
+    pub(crate) const_scope: Option<std::rc::Rc<crate::pipeline::ConstScope>>,
+    pub(crate) options: crate::AnalysisOptions,
+}
+
+impl DeclaredSymbolMap {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn constant_integer(
+        &self,
+        expr: &crate::Expr,
+        errors: &mut Vec<crate::Diagnostic>,
+    ) -> Option<i64> {
+        if let crate::Expr::Int { value, .. } = expr {
+            return Some(*value);
+        }
+        if crate::builtins::can_eval_const_expr_exact_int(expr) {
+            return crate::builtins::eval_const_expr_i64_exact(
+                expr,
+                self.options,
+                "constant selector",
+                errors,
+            );
+        }
+        self.const_scope
+            .as_ref()?
+            .integer(expr, self, self.options, errors)
+    }
+}
+
+impl std::ops::Deref for DeclaredSymbolMap {
+    type Target = HashMap<String, DeclaredSymbolInfo>;
+    fn deref(&self) -> &Self::Target {
+        &self.symbols
+    }
+}
+impl std::ops::DerefMut for DeclaredSymbolMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::rc::Rc::make_mut(&mut self.symbols)
+    }
+}
+impl IntoIterator for DeclaredSymbolMap {
+    type Item = (String, DeclaredSymbolInfo);
+    type IntoIter = std::collections::hash_map::IntoIter<String, DeclaredSymbolInfo>;
+    fn into_iter(self) -> Self::IntoIter {
+        std::rc::Rc::unwrap_or_clone(self.symbols).into_iter()
+    }
+}
+impl<'a> IntoIterator for &'a DeclaredSymbolMap {
+    type Item = (&'a String, &'a DeclaredSymbolInfo);
+    type IntoIter = std::collections::hash_map::Iter<'a, String, DeclaredSymbolInfo>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.symbols.iter()
+    }
+}
+impl FromIterator<(String, DeclaredSymbolInfo)> for DeclaredSymbolMap {
+    fn from_iter<T: IntoIterator<Item = (String, DeclaredSymbolInfo)>>(iter: T) -> Self {
+        Self {
+            symbols: std::rc::Rc::new(iter.into_iter().collect()),
+            ..Self::default()
+        }
+    }
+}
+
+pub(crate) fn bind_const_symbols(
+    symbols: &mut DeclaredSymbolMap,
+    scalars: &HashMap<String, PrimitiveType>,
+    arrays: &HashMap<String, crate::TypedArrayInfo>,
+) {
+    symbols.extend(scalars.iter().map(|(name, ty)| {
+        (
+            name.clone(),
+            DeclaredSymbolInfo::Constant {
+                ty: *ty,
+                value: None,
+            },
+        )
+    }));
+    symbols.extend(arrays.iter().map(|(name, info)| {
+        (
+            name.clone(),
+            DeclaredSymbolInfo::ConstArray {
+                elem_ty: info.elem_ty,
+            },
+        )
+    }));
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalBufferAliasInfo {
@@ -118,8 +220,10 @@ pub(crate) fn declared_symbol_scalar_type(
         Some(DeclaredSymbolInfo::Input { ty })
         | Some(DeclaredSymbolInfo::Output { ty })
         | Some(DeclaredSymbolInfo::Param { ty })
+        | Some(DeclaredSymbolInfo::Constant { ty, .. })
         | Some(DeclaredSymbolInfo::FunctionReturn { ty }) => Some(*ty),
-        Some(DeclaredSymbolInfo::DataArray { elem_ty }) => Some(*elem_ty),
+        Some(DeclaredSymbolInfo::DataArray { elem_ty })
+        | Some(DeclaredSymbolInfo::ConstArray { elem_ty }) => Some(*elem_ty),
         Some(DeclaredSymbolInfo::Buffer { elem_ty, .. }) => Some(*elem_ty),
         Some(DeclaredSymbolInfo::InvalidPlaceholder) | None => None,
     }
@@ -204,7 +308,7 @@ pub(crate) fn is_declared_data_array_symbol(
 ) -> bool {
     matches!(
         declared_symbols.get(name),
-        Some(DeclaredSymbolInfo::DataArray { .. })
+        Some(DeclaredSymbolInfo::DataArray { .. } | DeclaredSymbolInfo::ConstArray { .. })
     )
 }
 
@@ -281,7 +385,7 @@ mod tests {
 
     #[test]
     fn declared_buffer_helpers_distinguish_dynamic_and_mono() {
-        let declared_symbols = HashMap::from([
+        let declared_symbols = DeclaredSymbolMap::from_iter([
             (
                 String::from("mono"),
                 DeclaredSymbolInfo::Buffer {

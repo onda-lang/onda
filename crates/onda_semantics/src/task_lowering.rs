@@ -191,8 +191,7 @@ fn validate_task_control_stmts(
                     *loc,
                 ));
             }
-            Stmt::Const { .. }
-            | Stmt::Assign { .. }
+            Stmt::Assign { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }
@@ -228,11 +227,6 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
             proc.buffers
                 .iter()
                 .map(|decl| (decl.name.as_str(), "buffer")),
-        )
-        .chain(
-            proc.consts
-                .iter()
-                .map(|decl| (decl.name.as_str(), "constant")),
         )
         .chain(proc.init.body.iter().filter_map(|stmt| match stmt {
             Stmt::Assign {
@@ -963,7 +957,7 @@ fn infer_task_local_storage_type(
     );
     inference_errors
         .is_empty()
-        .then(|| effective_untyped_assignment_type(expr, inferred))
+        .then(|| effective_untyped_assignment_type(expr, inferred, &owner_types.declared_symbols))
         .flatten()
 }
 
@@ -975,6 +969,7 @@ fn collect_task_owner_types(
     frontend_struct_defs: &HashMap<String, onda_frontend::StructDef>,
     proc_registry: &TaskProcRegistry,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    constants: &crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
 ) -> TaskOwnerTypes {
     fn record_decl(
@@ -995,6 +990,7 @@ fn collect_task_owner_types(
     }
 
     let mut types = TaskOwnerTypes::default();
+    types.declared_symbols.clone_from(&constants.const_symbols);
     for (name, return_type) in return_types {
         if let Some(ty) = return_type.scalar() {
             types
@@ -1237,6 +1233,11 @@ fn analyze_task_owner_init(
         &HashSet::new(),
         &mut scratch_errors,
     );
+    seed_top_level_array_aliases(
+        &mut types.init_bindings.local_array_aliases,
+        const_arrays,
+        false,
+    );
     types.scalars = init_state.state_scalars;
     types.declared_symbols = init_state.declared_symbols;
     types.array_lens.extend(init_state.state_arrays);
@@ -1311,6 +1312,7 @@ fn register_task_owner_aggregate_storage(
 fn task_proc_signature(
     proc: &ProcessorDef,
     options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
 ) -> (FnSignature, Option<ReturnType>) {
     let inferred_io = infer_numbered_io_from_sample(&proc.sample);
     let inferred_names = infer_numbered_names_from_proc(proc);
@@ -1339,6 +1341,7 @@ fn task_proc_signature(
         &proc.name,
         &params,
         options,
+        const_arrays,
         &mut scratch_errors,
     );
     let return_types = flat_outputs
@@ -1398,10 +1401,11 @@ fn task_proc_signature(
         .collect();
     (
         FnSignature {
+            defaults_validated: false,
             display_name: Some(proc.name.clone()),
             requires_call_specialization: false,
             params: call_params,
-            defaults,
+            defaults: defaults.into(),
             param_types,
             type_params: Vec::new(),
             return_type: return_type.clone(),
@@ -1411,13 +1415,17 @@ fn task_proc_signature(
     )
 }
 
-fn task_proc_registry(program: &Program, options: AnalysisOptions) -> TaskProcRegistry {
+fn task_proc_registry(
+    program: &Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+) -> TaskProcRegistry {
     let surfaces = program
         .blocks
         .iter()
         .filter_map(|block| match block {
             Block::Proc(proc) => {
-                let (signature, return_type) = task_proc_signature(proc, options);
+                let (signature, return_type) = task_proc_signature(proc, options, const_arrays);
                 Some((
                     proc.name.clone(),
                     TaskProcSurface {
@@ -1641,9 +1649,6 @@ fn uniquify_task_bindings(
         fn rewrite_list(&mut self, stmts: &mut [Stmt]) {
             for stmt in stmts {
                 match stmt {
-                    Stmt::Const { decl, .. } => {
-                        rewrite_binding_expr(&mut decl.expr, &self.visible);
-                    }
                     Stmt::Assign {
                         target,
                         decl_ty,
@@ -1876,6 +1881,7 @@ fn analyze_task_binding_storage(
         state_tuples: &owner_types.tuples,
         registered_state_tuples: &registration_names,
         resolved_scalar_locals: Some(&resolved_scalars),
+        resolved_scalar_bindings: None,
         resolved_array_locals: Some(&resolved_arrays),
         resolved_tuple_locals: Some(&resolved_tuples),
         resolved_struct_locals: Some(&resolved_structs),
@@ -2045,7 +2051,6 @@ fn block_uses_and_defs(block: &TaskCfgBlock) -> (HashSet<String>, HashSet<String
                     collect_expr_uses(value, &mut uses);
                 }
             }
-            Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, &mut uses),
             Stmt::If {
                 cond,
                 then_branch,
@@ -2337,7 +2342,7 @@ fn task_stmt_can_remain_structured(stmt: &Stmt) -> bool {
         Stmt::For { body, .. } | Stmt::While { body, .. } => {
             !task_stmts_contain_resume_terminator(body)
         }
-        Stmt::Const { .. } | Stmt::Assign { .. } | Stmt::Expr { .. } | Stmt::Print { .. } => true,
+        Stmt::Assign { .. } | Stmt::Expr { .. } | Stmt::Print { .. } => true,
     }
 }
 
@@ -3022,6 +3027,7 @@ fn lower_top_level_tasks(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     frontend_struct_defs: &HashMap<String, onda_frontend::StructDef>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    constants: &crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> HashSet<String> {
@@ -3038,9 +3044,10 @@ fn lower_top_level_tasks(
         frontend_struct_defs,
         proc_registry,
         const_arrays,
+        constants,
         options,
     );
-    let call_env = task_call_type_env(&owner_surface, &owner_types);
+    let call_env = task_call_type_env(&owner_surface, &owner_types, constants);
     let owner_roots = collect_owner_roots(&owner_surface, &owner_types);
     let buffer_params = task_buffer_params(&owner_surface, errors);
     let buffer_names = buffer_params
@@ -3404,6 +3411,7 @@ fn resolve_task_callable_return_types(
 fn task_call_semantics(
     program: &Program,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    constants: &crate::def_semantics::CallTypeEnv,
 ) -> TaskCallSemantics {
     let mut defs = task_callable_defs(program);
     let delegates = program
@@ -3435,7 +3443,7 @@ fn task_call_semantics(
         .collect::<HashSet<_>>();
     desugar_task_callable_methods(
         &mut defs,
-        &crate::def_semantics::CallTypeEnv::default(),
+        constants,
         struct_defs,
         &struct_method_symbols,
         &callable_symbols,
@@ -3444,7 +3452,7 @@ fn task_call_semantics(
     let return_types = resolve_task_callable_return_types(
         &mut defs,
         &overloads,
-        &crate::def_semantics::CallTypeEnv::default(),
+        constants,
         struct_defs,
         &HashMap::new(),
     );
@@ -3539,9 +3547,15 @@ fn proc_task_call_semantics(
 fn task_call_type_env(
     owner: &TaskOwnerSurface,
     owner_types: &TaskOwnerTypes,
+    constants: &crate::def_semantics::CallTypeEnv,
 ) -> crate::def_semantics::CallTypeEnv {
-    let mut env = crate::def_semantics::CallTypeEnv::default();
-    env.scalar_types.clone_from(&owner_types.scalars);
+    let mut env = constants.clone();
+    env.scalar_types.extend(
+        owner_types
+            .scalars
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty)),
+    );
     env.struct_instances
         .clone_from(&owner_types.struct_instances);
     env.tuple_elem_types.clone_from(&owner_types.tuples);
@@ -3663,6 +3677,8 @@ pub(crate) fn lower_tasks(
     program: &mut Program,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> HashSet<String> {
     let has_source_tasks = program.blocks.iter().any(|block| match block {
@@ -3683,8 +3699,10 @@ pub(crate) fn lower_tasks(
         })
         .collect::<HashMap<_, _>>();
     let struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
-    let call_semantics = task_call_semantics(program, &struct_defs);
-    let proc_registry = task_proc_registry(program, options);
+    let mut constants = crate::def_semantics::CallTypeEnv::default();
+    constants.bind_constants(const_scalars, const_arrays, const_scope, options);
+    let call_semantics = task_call_semantics(program, &struct_defs, &constants);
+    let proc_registry = task_proc_registry(program, options, const_arrays);
 
     let top_level_tasks = take_top_level_tasks(program);
     let runtime_def_names = lower_top_level_tasks(
@@ -3695,6 +3713,7 @@ pub(crate) fn lower_tasks(
         &struct_defs,
         &raw_struct_defs,
         const_arrays,
+        &constants,
         options,
         errors,
     );
@@ -3717,9 +3736,11 @@ pub(crate) fn lower_tasks(
             &raw_struct_defs,
             &proc_registry,
             const_arrays,
+            &constants,
             options,
         );
-        let preliminary_call_env = task_call_type_env(&owner_surface, &preliminary_owner_types);
+        let preliminary_call_env =
+            task_call_type_env(&owner_surface, &preliminary_owner_types, &constants);
         let proc_call_semantics = proc_task_call_semantics(
             &proc.local_defs,
             &proc.delegates,
@@ -3735,9 +3756,10 @@ pub(crate) fn lower_tasks(
             &raw_struct_defs,
             &proc_registry,
             const_arrays,
+            &constants,
             options,
         );
-        let call_env = task_call_type_env(&owner_surface, &owner_types);
+        let call_env = task_call_type_env(&owner_surface, &owner_types, &constants);
         let owner_roots = collect_owner_roots(&owner_surface, &owner_types);
         let buffer_params = task_buffer_params(&owner_surface, errors);
         let buffer_names = buffer_params

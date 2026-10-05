@@ -394,7 +394,6 @@ pub(crate) fn analyze_init_stmt(
             }
         }
         match stmt {
-            Stmt::Const { .. } => {}
             Stmt::Assign {
                 target_loc,
                 target,
@@ -548,7 +547,12 @@ pub(crate) fn analyze_init_stmt(
                     stmt_expr_env(common.scope_kind()),
                     errors,
                 );
-                validate_for_loop_step_expr(step.as_ref(), stmt_expr_env(ScopeKind::Init), errors);
+                validate_for_loop_step_expr(
+                    step.as_ref(),
+                    *var_ty,
+                    stmt_expr_env(ScopeKind::Init),
+                    errors,
+                );
                 let mut loop_locals = locals.clone();
                 loop_locals.insert(var.clone());
                 let base_flow = st.flow_state();
@@ -654,6 +658,7 @@ fn analyze_assign_init(
         &mut rewritten_expr,
         &st.state_array_struct_roots,
         struct_defs,
+        &st.declared_symbols,
         errors,
     );
     let expr = &rewritten_expr;
@@ -777,8 +782,7 @@ fn analyze_assign_init(
                 return;
             }
             if let Some(alias) = st.local_array_aliases.get(base) {
-                if !alias.writable {
-                    target_error!(format!("cannot assign to immutable array alias '{base}'"),);
+                if !validate_array_write(base, alias, target_loc, errors) {
                     return;
                 }
                 if alias.elem_struct.is_some() {
@@ -886,7 +890,14 @@ fn analyze_assign_init(
                 .or_else(|| declared_symbol_scalar_type(&st.declared_symbols, base))
                 .or(aggregate_target_ty)
                 .unwrap_or(PrimitiveType::F32);
-            require_expr_assignable_type(expr, expr_ty, expected_ty, "array/buffer write", errors);
+            require_expr_assignable_type(
+                expr,
+                expr_ty,
+                expected_ty,
+                "array/buffer write",
+                errors,
+                &st.declared_symbols,
+            );
         }
         AssignTarget::Slice {
             base,
@@ -973,17 +984,12 @@ fn analyze_assign_init(
                 base,
                 start.as_deref(),
                 end.as_deref(),
-                &st.declared_symbols,
-                &st.state_arrays,
-                &st.local_array_aliases,
-                &visible_structs,
-                struct_defs,
+                scope_expr_env!(ScopeKind::Init),
                 errors,
             ) else {
                 return;
             };
-            if !target_info.writable {
-                target_error!(format!("cannot assign to immutable array alias '{base}'"),);
+            if !validate_array_write(base, &target_info, target_loc, errors) {
                 return;
             }
             let slice_env = scope_expr_env!(ScopeKind::Init);
@@ -1045,11 +1051,7 @@ fn analyze_assign_init(
                     |errors| {
                         resolve_executable_data_like_info(
                             expr,
-                            &st.declared_symbols,
-                            &st.state_arrays,
-                            &st.local_array_aliases,
-                            &visible_structs,
-                            struct_defs,
+                            scope_expr_env!(ScopeKind::Init),
                             errors,
                         )
                     },
@@ -1061,11 +1063,7 @@ fn analyze_assign_init(
                 validate_data_like_value_expr(expr, stmt_env, errors);
                 if let Some(src_info) = resolve_executable_data_like_info(
                     expr,
-                    &st.declared_symbols,
-                    &st.state_arrays,
-                    &st.local_array_aliases,
-                    &visible_structs,
-                    struct_defs,
+                    scope_expr_env!(ScopeKind::Init),
                     errors,
                 ) {
                     require_expr_assignable_type(
@@ -1074,6 +1072,7 @@ fn analyze_assign_init(
                         target_info.elem_ty,
                         "slice copy assignment",
                         errors,
+                        &st.declared_symbols,
                     );
                 }
             } else {
@@ -1100,6 +1099,7 @@ fn analyze_assign_init(
                     target_info.elem_ty,
                     "slice fill assignment",
                     errors,
+                    &st.declared_symbols,
                 );
             }
         }
@@ -1215,11 +1215,7 @@ fn analyze_assign_init(
                 {
                     if let Some(alias) = resolve_executable_data_like_info(
                         expr,
-                        &st.declared_symbols,
-                        &st.state_arrays,
-                        &st.local_array_aliases,
-                        &visible_structs,
-                        struct_defs,
+                        scope_expr_env!(ScopeKind::Init),
                         errors,
                     ) {
                         validate_fixed_data_expr(expr, scope_expr_env!(scope), errors);
@@ -1428,6 +1424,7 @@ fn analyze_assign_init(
                     *st.local_aliases.get(name).unwrap_or(&PrimitiveType::F32),
                     &format!("alias assignment to '{name}'"),
                     errors,
+                    &st.declared_symbols,
                 );
                 st.known_scalars.insert(name.clone());
                 return;
@@ -1478,7 +1475,7 @@ fn analyze_assign_init(
                 return;
             }
 
-            if let Expr::ArrayLiteral { values, .. } = expr {
+            if let Expr::ArrayLiteral { .. } = expr {
                 if declared_ty.is_some() {
                     target_error!(
                         format!(
@@ -1501,66 +1498,14 @@ fn analyze_assign_init(
                     ),);
                     return;
                 }
-                if values.is_empty() {
-                    with_expr_diag_context(expr, |expr_diag| {
-                        push_semantic(
-                            expr_diag,
-                            errors,
-                            format!("array initializer for symbol '{name}' cannot be empty"),
-                        );
-                    });
-                    return;
-                }
-
-                for value in values {
-                    validate_expr(value, scope_expr_env!(ScopeKind::Init), errors);
-                }
-
-                // Untyped arrays acquire their element type from the first
-                // element using the same defaults as untyped scalar locals.
-                let inferred_first = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                    &values[0],
-                    &st.state_scalars,
-                    &st.declared_symbols,
-                    None,
-                    &st.local_aliases,
-                    &st.local_array_aliases,
-                    locals,
-                    input_names,
-                    output_names,
-                    param_names,
-                    &visible_structs,
-                    struct_defs,
-                    &st.nested_proc_arrays,
+                let Some((elem_ty, len)) = crate::expr_validation::check_primitive_array_literal(
+                    expr,
+                    &format!("array initializer for symbol '{name}'"),
+                    scope_expr_env!(ScopeKind::Init),
                     errors,
-                );
-                let elem_ty = effective_untyped_assignment_type(&values[0], inferred_first)
-                    .unwrap_or(PrimitiveType::F32);
-                for (idx, value) in values.iter().enumerate() {
-                    let value_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-                        value,
-                        &st.state_scalars,
-                        &st.declared_symbols,
-                        None,
-                        &st.local_aliases,
-                        &st.local_array_aliases,
-                        locals,
-                        input_names,
-                        output_names,
-                        param_names,
-                        &visible_structs,
-                        struct_defs,
-                        &st.nested_proc_arrays,
-                        errors,
-                    );
-                    require_expr_assignable_type(
-                        value,
-                        value_ty,
-                        elem_ty,
-                        &format!("array initializer assignment to '{name}[{idx}]'"),
-                        errors,
-                    );
-                }
+                ) else {
+                    return;
+                };
 
                 insert_declared_symbol(
                     &mut st.state_scalars,
@@ -1568,12 +1513,12 @@ fn analyze_assign_init(
                     name.clone(),
                     DeclaredSymbolInfo::DataArray { elem_ty },
                 );
-                st.state_arrays.insert(name.clone(), values.len());
+                st.state_arrays.insert(name.clone(), len);
                 if ctx.proc_init_resolution().is_some() {
                     st.state_array_specs.entry(name.clone()).or_insert(
                         onda_frontend::ArrayTypeSpec {
                             elem: ArrayElemType::Primitive(elem_ty),
-                            size: Box::new(Expr::int(values.len() as i64)),
+                            size: Box::new(Expr::int(len as i64)),
                         },
                     );
                 }
@@ -1606,6 +1551,7 @@ fn analyze_assign_init(
                         errors,
                     )
                 },
+                &st.declared_symbols,
             );
             if let Some(inferred_types) = inferred_tuple_types {
                 if declared_tuple_types.is_none()
@@ -1643,6 +1589,7 @@ fn analyze_assign_init(
                     existing_types,
                     false,
                     errors,
+                    &st.declared_symbols,
                 ) else {
                     return;
                 };
@@ -1730,11 +1677,7 @@ fn analyze_assign_init(
                     base,
                     start.as_deref(),
                     end.as_deref(),
-                    &st.declared_symbols,
-                    &st.state_arrays,
-                    &st.local_array_aliases,
-                    &visible_structs,
-                    struct_defs,
+                    scope_expr_env!(ScopeKind::Init),
                     errors,
                 ) {
                     st.local_array_aliases.insert(name.clone(), alias);
@@ -2057,7 +2000,12 @@ fn analyze_assign_init(
                                 proc_ctor, name
                             );
                             let len = with_expr_diag_context(&spec.size, |_diag| {
-                                eval_data_size_expr(&spec.size, options, &size_context, errors)
+                                scope_expr_env!(ScopeKind::Init).data_size(
+                                    &spec.size,
+                                    options,
+                                    &size_context,
+                                    errors,
+                                )
                             })
                             .unwrap_or(1);
                             st.nested_proc_arrays.insert(
@@ -2093,7 +2041,12 @@ fn analyze_assign_init(
                     // Also populate state_arrays so Index target validation recognizes this as an array
                     let size_context = format!("array constructor size for symbol '{name}'");
                     if let Some(size_val) = with_expr_diag_context(&spec.size, |_diag| {
-                        eval_data_size_expr(&spec.size, options, &size_context, errors)
+                        scope_expr_env!(ScopeKind::Init).data_size(
+                            &spec.size,
+                            options,
+                            &size_context,
+                            errors,
+                        )
                     }) {
                         if let ArrayElemType::Primitive(elem_ty) = spec.elem {
                             st.state_arrays.entry(name.clone()).or_insert(size_val);
@@ -2163,7 +2116,12 @@ fn analyze_assign_init(
                             let size_context =
                                 format!("top-level processor array '{}' size", name.as_str());
                             let len = with_expr_diag_context(&spec.size, |_diag| {
-                                eval_data_size_expr(&spec.size, options, &size_context, errors)
+                                scope_expr_env!(ScopeKind::Init).data_size(
+                                    &spec.size,
+                                    options,
+                                    &size_context,
+                                    errors,
+                                )
                             })
                             .unwrap_or(1);
                             st.nested_proc_arrays.insert(
@@ -2219,7 +2177,12 @@ fn analyze_assign_init(
                     });
                 }
                 let Some(size_value) = with_expr_diag_context(&spec.size, |_diag| {
-                    eval_data_size_expr(&spec.size, options, &size_context, errors)
+                    scope_expr_env!(ScopeKind::Init).data_size(
+                        &spec.size,
+                        options,
+                        &size_context,
+                        errors,
+                    )
                 }) else {
                     return;
                 };
@@ -2286,6 +2249,7 @@ fn analyze_assign_init(
                                         "typed array initializer assignment to '{name}[{idx}]'"
                                     ),
                                     errors,
+                                    &st.declared_symbols,
                                 );
                             }
                         }
@@ -2439,7 +2403,7 @@ fn analyze_assign_init(
                 && !is_builtin_constant_name(name);
             if local_only_symbol || existing_local.is_some() {
                 let effective_expr_ty = if declared_ty.is_none() && existing_local.is_none() {
-                    effective_untyped_assignment_type(expr, expr_ty)
+                    effective_untyped_assignment_type(expr, expr_ty, &st.declared_symbols)
                 } else {
                     expr_ty
                 };
@@ -2454,13 +2418,14 @@ fn analyze_assign_init(
                     target_ty,
                     &format!("init assignment to '{name}'"),
                     errors,
+                    &st.declared_symbols,
                 );
                 st.local_aliases.entry(name.clone()).or_insert(target_ty);
                 st.known_scalars.insert(name.clone());
                 return;
             }
             let effective_expr_ty = if declared_ty.is_none() && existing_state.is_none() {
-                effective_untyped_assignment_type(expr, expr_ty)
+                effective_untyped_assignment_type(expr, expr_ty, &st.declared_symbols)
             } else {
                 expr_ty
             };
@@ -2476,6 +2441,7 @@ fn analyze_assign_init(
                 target_ty,
                 &format!("init assignment to '{name}'"),
                 errors,
+                &st.declared_symbols,
             );
             st.state_scalars.insert(name.clone(), target_ty);
             st.known_scalars.insert(name.clone());
@@ -2574,6 +2540,7 @@ fn analyze_assign_init(
                     target_ty,
                     &format!("init tuple destructuring assignment to '{name}'"),
                     errors,
+                    &st.declared_symbols,
                 );
                 replace_tracked_tuple_types(&mut st.local_aliases, name, None);
                 if allow_owner_state_intro && !st.local_aliases.contains_key(name) {
@@ -2827,6 +2794,7 @@ fn analyze_struct_field_init_assign(
                 prim,
                 &format!("struct field init '{flat}'"),
                 errors,
+                &st.declared_symbols,
             );
             state_scalars.insert(flat.clone(), prim);
             known_scalars.insert(flat);
@@ -2859,6 +2827,7 @@ fn analyze_struct_field_init_assign(
                         errors,
                     )
                 },
+                declared_symbols,
             );
             if let Some(assigned_types) = assigned_types {
                 resolve_tuple_assignment_types(
@@ -2869,6 +2838,7 @@ fn analyze_struct_field_init_assign(
                     Some(field_types),
                     false,
                     errors,
+                    declared_symbols,
                 );
             } else {
                 push_semantic(
@@ -2902,7 +2872,7 @@ fn analyze_struct_field_init_assign(
             let context = format!("array constructor for '{flat}'");
             let size_context = format!("array constructor size for '{flat}'");
             let Some(actual_len) = with_expr_diag_context(&spec.size, |_diag| {
-                eval_data_size_expr(&spec.size, options, &size_context, errors)
+                init_expr_env!().data_size(&spec.size, options, &size_context, errors)
             }) else {
                 return;
             };

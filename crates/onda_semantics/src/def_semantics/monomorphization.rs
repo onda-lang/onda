@@ -1,13 +1,54 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use super::call_types::{
     infer_array_arg_type as infer_call_array_arg_type, infer_buffer_arg_info,
-    infer_scalar_expr_type, infer_struct_expr_type, infer_tuple_arg_types, join_branch_envs,
-    resolved_buffer_channels, update_call_type_env_after_assign, CallArrayElemType,
-    CallTypeContext, CallTypeEnv, StatementFlow,
+    infer_scalar_expr_type, infer_struct_expr_type, infer_tuple_arg_types,
+    resolved_buffer_channels, CallArrayElemType, CallTypeContext, CallTypeEnv, CallTypeRewriter,
 };
 use crate::*;
 use onda_frontend::ast::{FnReturnType, Span};
+
+type InstanceKey = (usize, Vec<MonoParamKey>);
+
+/// Source declarations and type specializations. Runtime reachability and
+/// compile contexts do not participate in generic call binding.
+pub(crate) struct MonoCache {
+    declarations: Vec<Rc<FunctionDef>>,
+    names: HashMap<String, usize>,
+    instances: HashMap<InstanceKey, String>,
+}
+
+impl MonoCache {
+    pub(crate) fn new(defs: &[FunctionDef]) -> Self {
+        let mut cache = Self {
+            declarations: Vec::new(),
+            names: HashMap::new(),
+            instances: HashMap::new(),
+        };
+        for def in defs {
+            cache.register(def);
+        }
+        cache
+    }
+    pub(crate) fn register(&mut self, def: &FunctionDef) {
+        if self.names.contains_key(&def.name) {
+            return;
+        }
+        self.names.insert(def.name.clone(), self.declarations.len());
+        self.declarations.push(Rc::new(def.clone()));
+    }
+    pub(crate) fn revision(&self) -> usize {
+        self.instances.len()
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &String)> {
+        self.instances
+            .iter()
+            .map(|(key, name)| (self.declarations[key.0].name.as_str(), name))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum MonoParamKey {
@@ -201,6 +242,12 @@ fn infer_mono_arg_key(
             {
                 return Some(MonoParamKey::ResolvedScalar(primitive));
             }
+            // A call result has a concrete shape once its callee specializes.
+            // Let the shared fixed point supply it instead of committing an
+            // unresolved structural instance for a dependent default or argument.
+            if matches!(arg_expr, Expr::UserCall { .. }) {
+                return None;
+            }
             Some(MonoParamKey::UnresolvedStructural)
         }
         _ => Some(MonoParamKey::Passthrough),
@@ -218,8 +265,8 @@ fn infer_concrete_untyped_scalar_arg_type(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
     let inferred = infer_expr_primitive_type(expr, env, return_types, struct_defs);
-    if is_pure_numeric_literal_expr(expr) {
-        effective_untyped_assignment_type(expr, inferred)
+    if is_pure_numeric_literal_expr(expr, &env.const_symbols) {
+        effective_untyped_assignment_type(expr, inferred, &env.const_symbols)
     } else {
         inferred
     }
@@ -316,22 +363,16 @@ fn source_buffer_channels(channels: &TypedBufferChannels) -> BufferChannels {
 
 pub(crate) fn refresh_monomorphized_return_types(
     return_types: &mut HashMap<String, ReturnType>,
-    original_defs: &[FunctionDef],
-    generated_defs: &[FunctionDef],
+    source_defs: &[FunctionDef],
+    defs: &[FunctionDef],
     fn_signatures: &HashMap<String, FnSignature>,
     generated_sigs: &HashMap<String, FnSignature>,
     env_seed: &CallTypeEnv,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> bool {
-    // Strict return inference publishes only results whose complete expression
-    // dependencies are known. Keep dependent templates in the input so a
-    // result that does not depend on their open parameters (for example
-    // `def len(value): return 1`) remains available to nested call inference.
-    // A result that actually reads an open parameter or unresolved call is
-    // withheld by `infer_known_def_return_types` itself.
     let refreshed = infer_known_def_return_types(
-        original_defs,
-        generated_defs,
+        source_defs,
+        defs,
         fn_signatures,
         generated_sigs,
         env_seed,
@@ -361,11 +402,6 @@ fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
 
 fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
     match stmt {
-        Stmt::Const { loc, decl } => {
-            *loc = origin;
-            decl.loc = origin;
-            rebase_generated_expr(&mut decl.expr, origin);
-        }
         Stmt::Assign {
             loc,
             target_loc,
@@ -666,6 +702,14 @@ fn generate_mono_def(
         new_sig.type_params.clear();
     }
 
+    new_sig.return_type = super::call_types::declared_call_return_type(&new_def);
+    if keys
+        .iter()
+        .all(|key| matches!(key, MonoParamKey::Passthrough))
+    {
+        new_sig.sync_defaults_from_def(&new_def);
+        return (new_def, new_sig);
+    }
     new_def.loc = origin;
     for param in &mut new_def.params {
         param.loc = origin;
@@ -910,7 +954,8 @@ fn resolve_generic_def_type_bindings(
                 exact_target
             } else {
                 let contextual_type = |actual, expr| {
-                    effective_untyped_assignment_type(expr, Some(actual)).unwrap_or(actual)
+                    effective_untyped_assignment_type(expr, Some(actual), &env.const_symbols)
+                        .unwrap_or(actual)
                 };
                 let mut inferred = contextual_type(type_constraints[0].0, type_constraints[0].2);
                 for (next, _, expr) in type_constraints.iter().skip(1) {
@@ -951,7 +996,7 @@ fn resolve_generic_def_type_bindings(
                 let compatible = if *exact {
                     *actual == target
                 } else {
-                    can_assign_expr_to_type(expr, *actual, target)
+                    can_assign_expr_to_type(expr, *actual, target, &env.const_symbols)
                 };
                 if !compatible {
                     let diagnostic = Diagnostic::semantic_span(
@@ -1008,23 +1053,18 @@ pub(crate) fn monomorphize_calls_in_stmts(
     env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    mono_cache: &mut MonoCache,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     owner: MonoOwnerContext<'_>,
 ) -> CallTypeEnv {
-    let mut local_env = env.clone();
-    monomorphize_calls_in_stmt_list_impl(
-        stmts,
-        &mut local_env,
+    let mut rewriter = MonoRewriter {
         mono_eligible,
         fn_signatures,
-        original_defs,
         generic_templates,
         struct_defs,
         generated_defs,
@@ -1033,7 +1073,9 @@ pub(crate) fn monomorphize_calls_in_stmts(
         return_types,
         errors,
         owner,
-    );
+    };
+    let mut local_env = env.clone();
+    rewriter.rewrite_stmts(stmts, &mut local_env);
     local_env
 }
 
@@ -1046,13 +1088,12 @@ pub(crate) fn monomorphize_calls_in_function(
     env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
     proc_types: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    mono_cache: &mut MonoCache,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1063,17 +1104,20 @@ pub(crate) fn monomorphize_calls_in_function(
         return_type_env: env,
     };
     let mut local_env = env.clone();
-    local_env.set_owner_type_params(&type_params);
+    local_env.enter_function(&type_params);
 
     for param in &mut def.params {
         local_env.bind_function_param(param, &type_params);
         if let Some(default) = &mut param.default {
-            monomorphize_calls_in_expr(
-                default,
+            let mut statement = vec![Stmt::Expr {
+                loc: default.loc().span(),
+                expr: default.clone(),
+            }];
+            monomorphize_calls_in_stmts(
+                &mut statement,
                 &local_env,
                 mono_eligible,
                 fn_signatures,
-                original_defs,
                 generic_templates,
                 struct_defs,
                 generated_defs,
@@ -1083,6 +1127,9 @@ pub(crate) fn monomorphize_calls_in_function(
                 errors,
                 owner,
             );
+            if let Stmt::Expr { expr, .. } = &mut statement[0] {
+                *default = std::mem::replace(expr, Expr::int(0));
+            }
         }
     }
 
@@ -1091,7 +1138,6 @@ pub(crate) fn monomorphize_calls_in_function(
         &local_env,
         mono_eligible,
         fn_signatures,
-        original_defs,
         generic_templates,
         struct_defs,
         generated_defs,
@@ -1103,376 +1149,80 @@ pub(crate) fn monomorphize_calls_in_function(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn monomorphize_calls_in_stmt(
-    stmt: &mut Stmt,
-    env: &mut CallTypeEnv,
-    mono_eligible: &HashSet<String>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
-    generic_templates: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    generated_defs: &mut Vec<FunctionDef>,
-    generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
-    return_types: &mut HashMap<String, ReturnType>,
-    errors: &mut Vec<Diagnostic>,
-    owner: MonoOwnerContext<'_>,
-) -> StatementFlow {
-    match stmt {
-        Stmt::Const { .. } => StatementFlow::Continues,
-        Stmt::Assign {
-            target,
-            decl_ty,
-            generic_decl_ty,
-            expr,
-            ..
-        } => {
-            monomorphize_calls_in_assign_target(
-                target,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            update_call_type_env_after_assign(
-                target,
-                decl_ty.as_ref(),
-                generic_decl_ty.as_deref(),
-                expr,
-                env,
-                CallTypeContext {
-                    return_types,
-                    struct_defs,
-                },
-            );
-            StatementFlow::Continues
-        }
-        Stmt::Expr { expr, .. } => {
-            monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            StatementFlow::Continues
-        }
-        Stmt::Return { expr, .. } => {
-            monomorphize_calls_in_expr(
-                expr,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            StatementFlow::Terminates
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                monomorphize_calls_in_expr(
-                    value,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-            StatementFlow::Continues
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            monomorphize_calls_in_expr(
-                cond,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            let mut then_env = env.clone();
-            let then_flow = monomorphize_calls_in_stmt_list_impl(
-                then_branch,
-                &mut then_env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            let mut else_env = env.clone();
-            let else_flow = monomorphize_calls_in_stmt_list_impl(
-                else_branch,
-                &mut else_env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
-            *env = joined;
-            flow
-        }
-        Stmt::For {
-            var,
-            var_ty,
-            step,
-            start,
-            end,
-            body,
-            ..
-        } => {
-            monomorphize_calls_in_expr(
-                start,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            monomorphize_calls_in_expr(
-                end,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            if let Some(step) = step {
-                monomorphize_calls_in_expr(
-                    step,
-                    env,
-                    mono_eligible,
-                    fn_signatures,
-                    original_defs,
-                    generic_templates,
-                    struct_defs,
-                    generated_defs,
-                    generated_sigs,
-                    mono_cache,
-                    return_types,
-                    errors,
-                    owner,
-                );
-            }
-            let mut body_env = env.clone();
-            // Keep the resolved induction type available while specializing
-            // calls in the body; otherwise generated helpers called with the
-            // loop variable silently fall back to their contextual f32 template.
-            body_env.shadow_binding(var);
-            body_env.scalar_types.insert(var.clone(), *var_ty);
-            monomorphize_calls_in_stmt_list_impl(
-                body,
-                &mut body_env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            StatementFlow::Continues
-        }
-        Stmt::While { cond, body, .. } => {
-            monomorphize_calls_in_expr(
-                cond,
-                env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            let mut body_env = env.clone();
-            monomorphize_calls_in_stmt_list_impl(
-                body,
-                &mut body_env,
-                mono_eligible,
-                fn_signatures,
-                original_defs,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            StatementFlow::Continues
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
-    }
+struct MonoRewriter<'a> {
+    mono_eligible: &'a HashSet<String>,
+    fn_signatures: &'a HashMap<String, FnSignature>,
+    generic_templates: &'a HashSet<String>,
+    struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
+    generated_defs: &'a mut Vec<FunctionDef>,
+    generated_sigs: &'a mut HashMap<String, FnSignature>,
+    mono_cache: &'a mut MonoCache,
+    return_types: &'a mut HashMap<String, ReturnType>,
+    errors: &'a mut Vec<Diagnostic>,
+    owner: MonoOwnerContext<'a>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn monomorphize_calls_in_stmt_list_impl(
-    stmts: &mut [Stmt],
-    env: &mut CallTypeEnv,
-    mono_eligible: &HashSet<String>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
-    generic_templates: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    generated_defs: &mut Vec<FunctionDef>,
-    generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
-    return_types: &mut HashMap<String, ReturnType>,
-    errors: &mut Vec<Diagnostic>,
-    owner: MonoOwnerContext<'_>,
-) -> StatementFlow {
-    for stmt in stmts {
-        let flow = monomorphize_calls_in_stmt(
-            stmt,
-            env,
-            mono_eligible,
-            fn_signatures,
-            original_defs,
-            generic_templates,
-            struct_defs,
-            generated_defs,
-            generated_sigs,
-            mono_cache,
-            return_types,
-            errors,
-            owner,
-        );
-        if flow == StatementFlow::Terminates {
-            return flow;
+impl CallTypeRewriter for MonoRewriter<'_> {
+    fn context(&self) -> CallTypeContext<'_> {
+        CallTypeContext {
+            return_types: self.return_types,
+            struct_defs: self.struct_defs,
         }
     }
-    StatementFlow::Continues
-}
-
-#[allow(clippy::too_many_arguments)]
-fn monomorphize_calls_in_assign_target(
-    target: &mut AssignTarget,
-    env: &CallTypeEnv,
-    mono_eligible: &HashSet<String>,
-    fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
-    generic_templates: &HashSet<String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
-    generated_defs: &mut Vec<FunctionDef>,
-    generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
-    return_types: &mut HashMap<String, ReturnType>,
-    errors: &mut Vec<Diagnostic>,
-    owner: MonoOwnerContext<'_>,
-) {
-    target.visit_selectors_mut(|coordinate| {
+    fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
         monomorphize_calls_in_expr(
-            coordinate,
+            expr,
             env,
-            mono_eligible,
-            fn_signatures,
-            original_defs,
-            generic_templates,
-            struct_defs,
-            generated_defs,
-            generated_sigs,
-            mono_cache,
-            return_types,
-            errors,
-            owner,
+            self.mono_eligible,
+            self.fn_signatures,
+            self.generic_templates,
+            self.struct_defs,
+            self.generated_defs,
+            self.generated_sigs,
+            self.mono_cache,
+            self.return_types,
+            self.errors,
+            self.owner,
         );
-    });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_mono_instance(
+    key: InstanceKey,
+    sig: &FnSignature,
+    loc: Span,
+    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    generated_defs: &mut Vec<FunctionDef>,
+    generated_sigs: &mut HashMap<String, FnSignature>,
+    mono_cache: &mut MonoCache,
+    return_types: &mut HashMap<String, ReturnType>,
+    errors: &mut Vec<Diagnostic>,
+    owner: MonoOwnerContext<'_>,
+) -> String {
+    if let Some(name) = mono_cache.instances.get(&key) {
+        return name.clone();
+    }
+    let original = mono_cache.declarations[key.0].clone();
+    let name = mono_def_name(&original.name, &key.1);
+    // Register before walking dependencies so recursive calls retain identity.
+    mono_cache.instances.insert(key.clone(), name.clone());
+    let (def, mut signature) = generate_mono_def(&original, sig, &key.1, &name, loc, errors);
+    if let Some(result) = super::call_types::declared_call_return_type(&def).or_else(|| {
+        infer_known_def_return_type(
+            &def,
+            &signature,
+            owner.return_type_env,
+            return_types,
+            struct_defs,
+        )
+    }) {
+        signature.return_type = Some(result.clone());
+        return_types.insert(name.clone(), result);
+    }
+    generated_defs.push(def);
+    generated_sigs.insert(name.clone(), signature);
+    name
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1481,17 +1231,27 @@ fn monomorphize_calls_in_expr(
     env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
-    original_defs: &[FunctionDef],
     generic_templates: &HashSet<String>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
     generated_defs: &mut Vec<FunctionDef>,
     generated_sigs: &mut HashMap<String, FnSignature>,
-    mono_cache: &mut HashMap<(String, Vec<MonoParamKey>), String>,
+    mono_cache: &mut MonoCache,
     return_types: &mut HashMap<String, ReturnType>,
     errors: &mut Vec<Diagnostic>,
     owner: MonoOwnerContext<'_>,
 ) {
     expr.visit_mut_postorder(|expr| {
+        if let Expr::Index { base, index, .. } = expr {
+            super::call_types::normalize_tuple_index(
+                base,
+                index,
+                env,
+                CallTypeContext {
+                    return_types,
+                    struct_defs,
+                },
+            );
+        }
         if let Expr::UserCall {
             loc,
             name,
@@ -1510,6 +1270,9 @@ fn monomorphize_calls_in_expr(
             let Some(sig) = fn_signatures.get(name.as_str()) else {
                 return;
             };
+            // Defaults are rewritten in their declaration's lexical environment
+            // by the same specialization fixed point as function bodies. Calls
+            // consume its metadata instead of recursively traversing defaults.
             // For generic defs, resolve type param bindings from explicit type args
             // or infer from argument types.  Unresolved params default to f32,
             // consistent with struct/proc generic defaults.
@@ -1751,7 +1514,6 @@ fn monomorphize_calls_in_expr(
                 return;
             }
 
-            // Check if all keys are passthrough (nothing to monomorphize)
             if keys
                 .iter()
                 .all(|key| matches!(key, MonoParamKey::Passthrough))
@@ -1759,42 +1521,21 @@ fn monomorphize_calls_in_expr(
                 return;
             }
 
-            let cache_key = (name.clone(), keys.clone());
-            let mono_name = if let Some(cached) = mono_cache.get(&cache_key) {
-                cached.clone()
-            } else {
-                let new_name = mono_def_name(name, &keys);
-
-                // Specializations must always clone an immutable source
-                // template. A body already rewritten for an open or different
-                // call context is not a valid template for another ABI.
-                let Some(original) = original_defs.iter().find(|d| d.name == *name) else {
-                    return;
-                };
-                let (gen_def, gen_sig) =
-                    generate_mono_def(original, sig, &keys, &new_name, *loc, errors);
-                // The existing map is already at a strict fixed point. Only
-                // the appended specialization is new here; the phase-boundary
-                // refresh below still handles dependencies exposed while
-                // generated bodies are rewritten.
-                let generated_return_type = infer_known_def_return_type(
-                    &gen_def,
-                    &gen_sig,
-                    owner.return_type_env,
-                    return_types,
-                    struct_defs,
-                );
-                generated_defs.push(gen_def);
-                generated_sigs.insert(new_name.clone(), gen_sig);
-                if let Some(return_type) = generated_return_type {
-                    return_types.insert(new_name.clone(), return_type);
-                }
-
-                mono_cache.insert(cache_key, new_name.clone());
-                new_name
+            let Some(&declaration) = mono_cache.names.get(name.as_str()) else {
+                return;
             };
-
-            *name = mono_name;
+            *name = request_mono_instance(
+                (declaration, keys),
+                sig,
+                *loc,
+                struct_defs,
+                generated_defs,
+                generated_sigs,
+                mono_cache,
+                return_types,
+                errors,
+                owner,
+            );
             // Clear type_args on the rewritten call — the mono copy is concrete.
             type_args.clear();
         }
@@ -2307,6 +2048,42 @@ sample:
         );
         crate::lower_program_to_optimized_mir(&typed)
             .expect("the refined outer specialization should lower to MIR");
+    }
+
+    #[test]
+    fn overloaded_generic_callees_in_struct_param_functions_are_specialized() {
+        let source = r#"
+namespace N:
+  def convert<T>(value: T):
+    return convert(value, T(1))
+  def convert<T>(value: T, scale: T):
+    return value * scale
+
+struct Value:
+  scalar = 45.0
+
+def read(value: Value):
+  return N::convert(value.scalar)
+
+init:
+  value = Value()
+sample:
+  out1 = read(value)
+"#;
+        let parsed = parse_program(source).expect("overloaded struct-field source should parse");
+        let typed = crate::analyze(parsed)
+            .expect("overloaded generic calls should specialize inside ordinary defs");
+        assert_eq!(
+            typed
+                .defs
+                .iter()
+                .find(|def| def.name == "read")
+                .unwrap()
+                .return_ty,
+            ReturnType::Scalar(PrimitiveType::F32)
+        );
+        crate::lower_program_to_optimized_mir(&typed)
+            .expect("struct-field-driven overloaded calls should lower to MIR");
     }
 
     #[test]

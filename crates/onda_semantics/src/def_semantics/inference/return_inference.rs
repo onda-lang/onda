@@ -90,7 +90,7 @@ fn infer_return_scalar_type(
     require_known_calls: bool,
 ) -> Option<PrimitiveType> {
     let inferred = infer_scalar_expr_type(expr, env, context);
-    effective_untyped_assignment_type(expr, inferred)
+    effective_untyped_assignment_type(expr, inferred, &env.const_symbols)
         .or(inferred)
         .or_else(|| (!require_known_calls).then_some(PrimitiveType::F32))
 }
@@ -123,7 +123,6 @@ fn infer_stmt_returns_for_def_return_inference<'a>(
 ) -> StatementFlow {
     for stmt in stmts {
         let flow = match stmt {
-            Stmt::Const { .. } => StatementFlow::Continues,
             Stmt::Assign {
                 target,
                 decl_ty,
@@ -266,7 +265,7 @@ fn collect_def_return_observations<'a>(
     require_known_calls: bool,
 ) -> (Vec<ObservedReturn<'a>>, bool) {
     let mut env = env_seed.clone();
-    env.set_owner_type_params(&sig.type_params);
+    env.enter_function(&sig.type_params);
     for (index, param) in sig.params.iter().enumerate() {
         env.bind_function_param_type(
             param,
@@ -424,8 +423,7 @@ fn statements_must_return_value(statements: &[Stmt]) -> bool {
             {
                 return true;
             }
-            Stmt::Const { .. }
-            | Stmt::Assign { .. }
+            Stmt::Assign { .. }
             | Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::If { .. }
@@ -450,8 +448,7 @@ fn statements_contain_value_return(statements: &[Stmt]) -> bool {
                 || statements_contain_value_return(else_branch)
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_value_return(body),
-        Stmt::Const { .. }
-        | Stmt::Assign { .. }
+        Stmt::Assign { .. }
         | Stmt::Expr { .. }
         | Stmt::Print { .. }
         | Stmt::Break { .. }
@@ -471,8 +468,7 @@ fn statements_contain_bare_return(statements: &[Stmt]) -> bool {
                 || statements_contain_bare_return(else_branch)
         }
         Stmt::For { body, .. } | Stmt::While { body, .. } => statements_contain_bare_return(body),
-        Stmt::Const { .. }
-        | Stmt::Assign { .. }
+        Stmt::Assign { .. }
         | Stmt::Expr { .. }
         | Stmt::Print { .. }
         | Stmt::Break { .. }
@@ -488,7 +484,7 @@ fn statements_contain_bare_return(statements: &[Stmt]) -> bool {
 /// functions.
 pub(crate) fn validate_def_return_control_flow(
     defs: &[FunctionDef],
-    fn_signatures: &HashMap<String, FnSignature>,
+    fn_signatures: &dyn crate::expr_analysis::SignatureLookup,
     errors: &mut Vec<Diagnostic>,
 ) {
     for def in defs {
@@ -524,6 +520,7 @@ fn validate_return_observation(
     def_name: &str,
     observed: &ObservedReturn<'_>,
     expected: &ReturnType,
+    constants: &crate::decl_symbols::DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
     match (expected, &observed.ty, observed.expr) {
@@ -534,6 +531,7 @@ fn validate_return_observation(
                 *expected_ty,
                 &format!("return in function '{def_name}'"),
                 errors,
+                constants,
             );
         }
         (
@@ -550,6 +548,7 @@ fn validate_return_observation(
                     *expected_ty,
                     &format!("return in function '{def_name}'"),
                     errors,
+                    constants,
                 );
             }
         }
@@ -600,7 +599,13 @@ pub(crate) fn validate_def_return_types(
             true,
         );
         for observed in &observed_returns {
-            validate_return_observation(display_name, observed, &expected, errors);
+            validate_return_observation(
+                display_name,
+                observed,
+                &expected,
+                &env_seed.const_symbols,
+                errors,
+            );
         }
     }
 }
@@ -617,6 +622,19 @@ fn infer_def_return_types_impl(
 ) -> HashMap<String, ReturnType> {
     let all_defs = || defs.iter().chain(generated_defs);
     let mut out = seed.clone();
+    out.extend(
+        fn_signatures
+            .iter()
+            .chain(generated_signatures)
+            .filter_map(|(name, signature)| Some((name.clone(), signature.return_type.clone()?))),
+    );
+    if let Some(scope) = &env_seed.const_symbols.const_scope {
+        out.extend(
+            scope.signatures().filter_map(|(name, signature)| {
+                Some((name.clone(), signature.return_type.clone()?))
+            }),
+        );
+    }
     if require_known_calls {
         out.extend(all_defs().filter_map(|def| {
             resolve_declared_return_type(def, struct_defs).map(|ty| (def.name.clone(), ty))

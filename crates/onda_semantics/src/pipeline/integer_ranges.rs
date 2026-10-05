@@ -37,6 +37,23 @@ pub(crate) fn integer_binding_range_expr(
     if !matches!(ty, PrimitiveType::I32 | PrimitiveType::I64) {
         return None;
     }
+    let Expr::Call { args, .. } = expr else {
+        return None;
+    };
+    let (normalize, bounds, parser_marker) = integer_binding_range_call(expr)?;
+    Some(IntegerBindingRange {
+        ty,
+        normalize,
+        bounds,
+        parser_marker,
+        lower: args[1].clone(),
+        upper: args[2].clone(),
+    })
+}
+
+pub(crate) fn integer_binding_range_call(
+    expr: &Expr,
+) -> Option<(BuiltinFn, IntegerBindingRangeBounds, bool)> {
     let Expr::Call { func, args, .. } = expr else {
         return None;
     };
@@ -81,14 +98,7 @@ pub(crate) fn integer_binding_range_expr(
         ),
         _ => return None,
     };
-    (args.len() == 3).then(|| IntegerBindingRange {
-        ty,
-        normalize,
-        bounds,
-        parser_marker,
-        lower: args[1].clone(),
-        upper: args[2].clone(),
-    })
+    (args.len() == 3).then_some((normalize, bounds, parser_marker))
 }
 
 pub(crate) fn integer_binding_range_assignment(stmt: &Stmt) -> Option<(&str, IntegerBindingRange)> {
@@ -371,8 +381,7 @@ pub(crate) fn rewrite_integer_binding_ranges_in_list(
             Stmt::While { body, .. } => {
                 rewrite_integer_binding_ranges_in_list(body, &ranges, options, errors);
             }
-            Stmt::Const { .. }
-            | Stmt::Assign { .. }
+            Stmt::Assign { .. }
             | Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }
@@ -541,7 +550,7 @@ pub(crate) fn normalize_struct_constructor_ranges_in_list(
                 normalize_struct_constructor_ranges_in_expr(cond, struct_defs);
                 normalize_struct_constructor_ranges_in_list(body, struct_defs);
             }
-            Stmt::Const { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
 }
@@ -570,8 +579,7 @@ pub(crate) fn rewrite_indexed_integer_ranges_in_list(
             Stmt::For { body, .. } | Stmt::While { body, .. } => {
                 rewrite_indexed_integer_ranges_in_list(body, ranges);
             }
-            Stmt::Const { .. }
-            | Stmt::Expr { .. }
+            Stmt::Expr { .. }
             | Stmt::Print { .. }
             | Stmt::Return { .. }
             | Stmt::Break { .. }

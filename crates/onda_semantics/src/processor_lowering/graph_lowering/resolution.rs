@@ -16,6 +16,7 @@ pub(super) fn infer_graph_source_base_value_type(
         .get(base)
         .cloned()
         .or_else(|| owner.input_value_types.get(base).cloned())
+        .or_else(|| owner.const_value_type(base))
         .or_else(|| {
             base.rsplit_once('.').and_then(|(node_base, field)| {
                 infer_graph_proc_field_value_type(
@@ -674,7 +675,7 @@ fn validate_graph_source_base(
 ) {
     let resolved_input = resolve_graph_owner_input_name(owner, base);
     let resolved_output = resolve_graph_owner_output_name(owner, base);
-    if owner.param_value_types.contains_key(base) {
+    if owner.param_value_types.contains_key(base) || owner.constants.has_binding(base) {
         return;
     }
     if owner.input_value_types.contains_key(resolved_input) {
@@ -784,22 +785,18 @@ pub(super) fn infer_graph_source_value_type(
             if let Some(ty) = builtin_constant_type(name) {
                 return Some(GraphValueType::Scalar(ty));
             }
-            if let Some(ty) = owner.param_value_types.get(name).cloned() {
-                return Some(ty);
-            }
-            let resolved_input = resolve_graph_owner_input_name(owner, name);
-            if let Some(ty) = owner.input_value_types.get(resolved_input).cloned() {
-                return Some(ty);
-            }
-            if let Some((base, field)) = name.rsplit_once('.') {
-                return infer_graph_proc_field_value_type(
-                    &GraphNodeKey::Direct(base.to_owned()),
-                    field,
-                    nodes,
-                    proc_surfaces,
-                );
-            }
-            None
+            infer_graph_source_base_value_type(name, owner, nodes, proc_surfaces).map(|ty| match ty
+            {
+                GraphValueType::Scalar(ty) => GraphValueType::Scalar(
+                    effective_untyped_assignment_type(
+                        expr,
+                        Some(ty),
+                        &owner.constants.const_symbols,
+                    )
+                    .unwrap_or(ty),
+                ),
+                array => array,
+            })
         }
         Expr::Index { base, index, .. } => {
             let _ = infer_graph_source_value_type(
@@ -811,25 +808,16 @@ pub(super) fn infer_graph_source_value_type(
                 options,
                 errors,
             );
-            let base_ty = if let Some((node_base, field)) = base.rsplit_once('.') {
-                infer_graph_proc_field_value_type(
-                    &GraphNodeKey::Direct(node_base.to_owned()),
-                    field,
-                    nodes,
-                    proc_surfaces,
-                )
-            } else {
-                let resolved_input = resolve_graph_owner_input_name(owner, base);
-                owner
-                    .param_value_types
-                    .get(base)
-                    .cloned()
-                    .or_else(|| owner.input_value_types.get(resolved_input).cloned())
-            };
+            let base_ty = infer_graph_source_base_value_type(base, owner, nodes, proc_surfaces);
             match base_ty {
-                Some(GraphValueType::Array { elem_ty, .. }) => {
-                    Some(GraphValueType::Scalar(elem_ty))
-                }
+                Some(GraphValueType::Array { elem_ty, .. }) => Some(GraphValueType::Scalar(
+                    effective_untyped_assignment_type(
+                        expr,
+                        Some(elem_ty),
+                        &owner.constants.const_symbols,
+                    )
+                    .unwrap_or(elem_ty),
+                )),
                 Some(GraphValueType::Scalar(_)) => None,
                 None => None,
             }

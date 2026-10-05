@@ -512,8 +512,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
             for (index, expression) in values.iter().enumerate() {
-                let value = self.lower_expr(expression, block)?;
-                let value = self.coerce(value, ty, block, expression.loc())?;
+                let value = self.lower_expr_for_type(expression, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::Assign {
@@ -550,12 +549,13 @@ impl<'a> FunctionLowerer<'a> {
                         statement_location,
                     ));
                 };
+                let first = self.lower_untyped_expr(first, block)?;
+                let element = first.ty;
                 let mut lowered = Vec::with_capacity(values.len());
-                for value in values {
-                    lowered.push(self.lower_expr(value, block)?);
+                lowered.push(first);
+                for value in &values[1..] {
+                    lowered.push(self.lower_expr_for_type(value, element, block)?);
                 }
-                let element = effective_untyped_assignment_type(first, Some(lowered[0].ty))
-                    .unwrap_or(lowered[0].ty);
                 (element, values.len(), Some(lowered))
             }
             Expr::ArrayCtor { spec, init, .. } => {
@@ -568,6 +568,7 @@ impl<'a> FunctionLowerer<'a> {
                     AnalysisOptions {
                         sample_rate: self.config.sample_rate,
                         block_size: self.config.block_size as usize,
+                        ..AnalysisOptions::default()
                     },
                     "local array length during MIR lowering",
                     &mut diagnostics,
@@ -604,7 +605,7 @@ impl<'a> FunctionLowerer<'a> {
                     }
                     let mut lowered = Vec::with_capacity(values.len());
                     for value in values {
-                        lowered.push(self.lower_expr(value, block)?);
+                        lowered.push(self.lower_expr_for_type(value, element, block)?);
                     }
                     Some(lowered)
                 } else {
@@ -818,7 +819,13 @@ impl<'a> FunctionLowerer<'a> {
             }
             let inferred_ty = declared_ty
                 .and_then(onda_frontend::DeclType::scalar)
-                .or_else(|| effective_untyped_assignment_type(expression, Some(values[0].ty)))
+                .or_else(|| {
+                    effective_untyped_assignment_type(
+                        expression,
+                        Some(values[0].ty),
+                        &crate::decl_symbols::DeclaredSymbolMap::new(),
+                    )
+                })
                 .unwrap_or(PrimitiveType::F32);
             let (local, target_ty) = self.scalar_local(name, inferred_ty, statement_location)?;
             let value = self.coerce(values[0], target_ty, block, expression.loc())?;

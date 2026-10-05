@@ -1,3 +1,6 @@
+mod scopes;
+pub(crate) use scopes::CallTypeRewriter;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::*;
@@ -5,11 +8,16 @@ use crate::*;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallTypeEnv {
     owner_type_params: HashSet<String>,
+    pub(crate) sample_options: Option<AnalysisOptions>,
+    pub(crate) processor_apis: std::rc::Rc<HashMap<String, crate::proc_state_rewrite::ProcApi>>,
+    /// Processor layout is declaration metadata, shared by every lexical scope.
+    pub(crate) nominal_arrays: std::rc::Rc<HashMap<String, HashMap<String, CallArrayType>>>,
     /// Lexical bindings whose concrete semantic type still depends on a call
     /// site or an unresolved expression. Keeping existence separate from type
     /// prevents a later reassignment from being mistaken for a declaration.
     pub(crate) unresolved_bindings: HashSet<String>,
     pub(crate) scalar_types: HashMap<String, PrimitiveType>,
+    pub(crate) const_symbols: crate::decl_symbols::DeclaredSymbolMap,
     pub(crate) struct_instances: HashMap<String, String>,
     pub(crate) array_types: HashMap<String, CallArrayType>,
     pub(crate) buffer_types: HashMap<String, (PrimitiveType, TypedBufferChannels)>,
@@ -55,6 +63,16 @@ pub(crate) enum StatementFlow {
     Terminates,
 }
 
+impl StatementFlow {
+    pub(crate) fn branches(then_flow: Self, else_flow: Self) -> Self {
+        if then_flow == Self::Terminates && else_flow == Self::Terminates {
+            Self::Terminates
+        } else {
+            Self::Continues
+        }
+    }
+}
+
 pub(crate) fn statement_list_flow(stmts: &[Stmt]) -> StatementFlow {
     for stmt in stmts {
         let flow = statement_flow(stmt);
@@ -74,16 +92,13 @@ pub(crate) fn statement_flow(stmt: &Stmt) -> StatementFlow {
             then_branch,
             else_branch,
             ..
-        } if statement_list_flow(then_branch) == StatementFlow::Terminates
-            && statement_list_flow(else_branch) == StatementFlow::Terminates =>
-        {
-            StatementFlow::Terminates
-        }
-        Stmt::Const { .. }
-        | Stmt::Assign { .. }
+        } => StatementFlow::branches(
+            statement_list_flow(then_branch),
+            statement_list_flow(else_branch),
+        ),
+        Stmt::Assign { .. }
         | Stmt::Expr { .. }
         | Stmt::Print { .. }
-        | Stmt::If { .. }
         | Stmt::For { .. }
         | Stmt::While { .. } => StatementFlow::Continues,
     }
@@ -139,9 +154,51 @@ impl CallArrayType {
 }
 
 impl CallTypeEnv {
-    pub(crate) fn set_owner_type_params(&mut self, type_params: &[String]) {
+    pub(crate) fn fixed_array_length_call(&self, expr: &Expr) -> Option<i32> {
+        let Expr::UserCall {
+            name,
+            type_args,
+            args,
+            ..
+        } = expr
+        else {
+            return None;
+        };
+        if !args.is_empty() || !type_args.is_empty() {
+            return None;
+        }
+        let base = name.strip_suffix(".len")?;
+        let len = self.array_types.get(base)?.len?;
+        i32::try_from(len).ok()
+    }
+
+    pub(crate) fn bind_constants(
+        &mut self,
+        scalars: &HashMap<String, PrimitiveType>,
+        arrays: &HashMap<String, TypedArrayInfo>,
+        scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
+        options: AnalysisOptions,
+    ) {
+        self.scalar_types
+            .extend(scalars.iter().map(|(name, ty)| (name.clone(), *ty)));
+        crate::decl_symbols::bind_const_symbols(&mut self.const_symbols, scalars, arrays);
+        self.const_symbols.const_scope = scope.cloned();
+        self.const_symbols.options = options;
+        self.array_types.extend(arrays.iter().map(|(name, info)| {
+            (
+                name.clone(),
+                CallArrayType::primitive(info.elem_ty, Some(info.len)),
+            )
+        }));
+    }
+
+    fn set_owner_type_params(&mut self, type_params: &[String]) {
         self.owner_type_params.clear();
         self.owner_type_params.extend(type_params.iter().cloned());
+    }
+
+    pub(crate) fn enter_function(&mut self, type_params: &[String]) {
+        self.set_owner_type_params(type_params);
     }
 
     /// Binds a concrete function parameter in the shared call-typing
@@ -251,6 +308,11 @@ impl CallTypeEnv {
         self.unresolved_bindings
             .retain(|binding| !crate::path_is_within_root(binding, name));
         crate::shadow_rooted_entries(&mut self.scalar_types, name);
+        // Constant names are lexical roots (qualified namespaces use `::`).
+        // Avoid copying the shared catalog when this binding shadows no const.
+        if self.const_symbols.contains_key(name) {
+            self.const_symbols.remove(name);
+        }
         crate::shadow_rooted_entries(&mut self.struct_instances, name);
         crate::shadow_rooted_entries(&mut self.array_types, name);
         crate::shadow_rooted_entries(&mut self.buffer_types, name);
@@ -545,7 +607,11 @@ pub(crate) fn infer_scalar_expr_type(
                         return Some(ty);
                     }
                     if let Some(ty) = env.scalar_types.get(name).copied() {
-                        return Some(ty);
+                        return effective_untyped_assignment_type(
+                            expr,
+                            Some(ty),
+                            &env.const_symbols,
+                        );
                     }
                     match lookup_struct_field(name, env, context)?.ty {
                         TypedFieldType::Scalar(ty) => Some(ty),
@@ -556,16 +622,18 @@ pub(crate) fn infer_scalar_expr_type(
                 }
                 Expr::Index { base, index, .. } => {
                     if let Some(elem_ty) = infer_array_symbol_elem_type(base, env, context) {
-                        return Some(elem_ty);
+                        return effective_untyped_assignment_type(
+                            expr,
+                            Some(elem_ty),
+                            &env.const_symbols,
+                        );
                     }
                     if let Some((elem_ty, _)) = env.buffer_types.get(base) {
                         return (!env.buffer_array_lens.contains_key(base)).then_some(*elem_ty);
                     }
                     let tuple_elems = infer_tuple_symbol_elem_types(base, env, context)?;
-                    let Expr::Int { value, .. } = index.as_ref() else {
-                        return None;
-                    };
-                    usize::try_from(*value)
+                    let value = env.const_symbols.constant_integer(index, &mut Vec::new())?;
+                    usize::try_from(value)
                         .ok()
                         .and_then(|index| tuple_elems.get(index).copied())
                 }
@@ -655,7 +723,8 @@ pub(crate) fn infer_scalar_expr_type(
                 Expr::Binary { op, lhs, rhs, .. } => {
                     let lhs_ty = children.next()?;
                     let rhs_ty = children.next()?;
-                    let (lhs_ty, rhs_ty) = adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty);
+                    let (lhs_ty, rhs_ty) =
+                        adapt_binary_operand_types(lhs, rhs, lhs_ty, rhs_ty, &env.const_symbols);
                     match op {
                         BinaryOp::BitAnd
                         | BinaryOp::BitOr
@@ -680,7 +749,8 @@ pub(crate) fn infer_scalar_expr_type(
                 }
                 Expr::Call { func, args, .. } => {
                     let arg_types = children.collect::<Vec<_>>();
-                    let arg_types = adapt_numeric_argument_types(args, &arg_types);
+                    let arg_types =
+                        adapt_numeric_argument_types(args, &arg_types, &env.const_symbols);
                     intrinsic_result_type(*func, &arg_types)
                 }
                 Expr::ArrayLiteral { .. }
@@ -721,6 +791,17 @@ fn infer_array_symbol_type(
     if let Some(array_ty) = env.array_types.get(name) {
         return Some(array_ty.clone());
     }
+    if let Some((root, field)) = name.split_once('.') {
+        if let Some(owner) = env.struct_instances.get(root) {
+            if let Some(ty) = env
+                .nominal_arrays
+                .get(owner)
+                .and_then(|fields| fields.get(field))
+            {
+                return Some(ty.clone());
+            }
+        }
+    }
     let field = lookup_struct_field(name, env, context)?;
     let TypedFieldType::Array(len) = field.ty else {
         return None;
@@ -748,6 +829,24 @@ fn infer_tuple_symbol_elem_types(
     }
 }
 
+/// Tuple selectors determine a concrete element type. Keep the checked selector
+/// in the AST so later value materialization cannot change that type.
+pub(super) fn normalize_tuple_index(
+    base: &str,
+    index: &mut Expr,
+    env: &CallTypeEnv,
+    context: CallTypeContext<'_>,
+) {
+    if matches!(index, Expr::Int { .. })
+        || infer_tuple_symbol_elem_types(base, env, context).is_none()
+    {
+        return;
+    }
+    if let Some(value) = env.const_symbols.constant_integer(index, &mut Vec::new()) {
+        *index = Expr::int(value).with_loc(index.loc());
+    }
+}
+
 fn infer_array_literal_elem_type(
     values: &[Expr],
     env: &CallTypeEnv,
@@ -755,7 +854,7 @@ fn infer_array_literal_elem_type(
 ) -> Option<CallArrayElemType> {
     let mut elems = values.iter().map(|value| {
         let inferred = infer_scalar_expr_type(value, env, context);
-        effective_untyped_assignment_type(value, inferred)
+        effective_untyped_assignment_type(value, inferred, &env.const_symbols)
             .or(inferred)
             .map(CallArrayElemType::Primitive)
             .or_else(|| infer_struct_expr_type(value, env, context).map(CallArrayElemType::Nominal))
@@ -778,7 +877,7 @@ fn infer_assigned_array_type(
     };
     let first = values.first()?;
     let inferred = infer_scalar_expr_type(first, env, context);
-    let elem = effective_untyped_assignment_type(first, inferred)
+    let elem = effective_untyped_assignment_type(first, inferred, &env.const_symbols)
         .or(inferred)
         .map(CallArrayElemType::Primitive)
         .or_else(|| infer_struct_expr_type(first, env, context).map(CallArrayElemType::Nominal))?;
@@ -862,7 +961,7 @@ pub(crate) fn infer_tuple_arg_types(
             .iter()
             .map(|value| {
                 let inferred = infer_scalar_expr_type(value, env, context);
-                effective_untyped_assignment_type(value, inferred).or(inferred)
+                effective_untyped_assignment_type(value, inferred, &env.const_symbols).or(inferred)
             })
             .collect(),
         Expr::Var { name, .. } => infer_tuple_symbol_elem_types(name, env, context),
@@ -979,7 +1078,9 @@ pub(crate) fn update_call_type_env_after_assign(
         return;
     }
     let inferred = infer_scalar_expr_type(expr, env, context);
-    if let Some(ty) = effective_untyped_assignment_type(expr, inferred).or(inferred) {
+    if let Some(ty) =
+        effective_untyped_assignment_type(expr, inferred, &env.const_symbols).or(inferred)
+    {
         env.shadow_binding(name);
         env.scalar_types.insert(name.clone(), ty);
         return;

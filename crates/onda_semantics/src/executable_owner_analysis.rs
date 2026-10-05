@@ -468,30 +468,38 @@ pub(crate) fn rewrite_owner_struct_array_inline_fields(
     owner: ExecutableOwnerBodies<'_>,
     state_array_struct_roots: &HashMap<String, ArrayStructRootInfo>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    symbols: &DeclaredSymbolMap,
+    sample_options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
     rewrite_struct_array_inline_field_stmts(
         owner.init,
         state_array_struct_roots,
         struct_defs,
+        symbols,
         errors,
     );
     rewrite_struct_array_inline_field_stmts(
         owner.block_pre,
         state_array_struct_roots,
         struct_defs,
+        symbols,
         errors,
     );
     rewrite_struct_array_inline_field_stmts(
         owner.block_post,
         state_array_struct_roots,
         struct_defs,
+        symbols,
         errors,
     );
+    let mut sample_symbols = symbols.clone();
+    sample_symbols.options = sample_options;
     rewrite_struct_array_inline_field_stmts(
         owner.sample,
         state_array_struct_roots,
         struct_defs,
+        &sample_symbols,
         errors,
     );
     for event in owner.events {
@@ -499,6 +507,7 @@ pub(crate) fn rewrite_owner_struct_array_inline_fields(
             &mut event.body,
             state_array_struct_roots,
             struct_defs,
+            symbols,
             errors,
         );
     }
@@ -521,6 +530,7 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
         let mut structs = std::borrow::Cow::Borrowed(runtime_state.struct_instances);
         let mut roots = std::borrow::Cow::Borrowed(runtime_state.state_array_struct_roots);
         let mut symbols = std::borrow::Cow::Borrowed(runtime_state.declared_symbols);
+        symbols.to_mut().options = plan.common.options;
         for param in plan.params {
             bindings.to_mut().shadow_binding(&param.name);
             match param.ty.as_ref() {

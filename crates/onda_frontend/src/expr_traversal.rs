@@ -174,9 +174,14 @@ impl Clone for Expr {
                     loc: *loc,
                     value: *value,
                 },
-                Self::Int { loc, value } => Self::Int {
+                Self::Int {
+                    loc,
+                    value,
+                    const_ty,
+                } => Self::Int {
                     loc: *loc,
                     value: *value,
+                    const_ty: *const_ty,
                 },
                 Self::Bool { loc, value } => Self::Bool {
                     loc: *loc,

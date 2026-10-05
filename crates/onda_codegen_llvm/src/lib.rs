@@ -2494,17 +2494,19 @@ sample:
     }
 
     #[test]
-    fn oversampled_proc_local_consts_specialize_with_effective_sample_rate() {
+    fn oversampled_proc_const_calls_preserve_global_declaration_context() {
         let source = r#"
+const Frames = SR
+const def local_frames() -> f32:
+  return f32(SR)
+
 proc Voice:
-  const Frames = SR
   params:
     gain = 1.0 => update
   init:
     cached = 0.0
   def update():
-    const LocalFrames = SR
-    cached = Frames + LocalFrames
+    cached = Frames + local_frames()
   outs:
     out1
   sample 2:
@@ -2519,12 +2521,12 @@ sample:
 "#;
         let typed = typed_program_with_options(source, 48_000.0, 4);
         let mir = onda_semantics::lower_program_to_optimized_mir(&typed)
-            .expect("oversampled proc-local constants should lower to MIR");
+            .expect("oversampled const calls should lower to MIR");
         let dump = onda_mir::format_program(mir.as_program());
         assert_eq!(
-            dump.matches("f32(192000.0)").count(),
+            dump.matches("f32(144000.0)").count(),
             1,
-            "two effective-rate constants should fold to 192000"
+            "global host SR plus effective-rate const call should fold to 144000"
         );
     }
 

@@ -72,6 +72,8 @@ fn bind_buffer(
 
 #[path = "examples_suite/analysis_and_stdlib.rs"]
 mod analysis_and_stdlib;
+#[path = "examples_suite/const_dependencies.rs"]
+mod const_dependencies;
 #[path = "examples_suite/execution_and_runtime.rs"]
 mod execution_and_runtime;
 #[path = "examples_suite/generic_defs.rs"]

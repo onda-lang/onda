@@ -116,7 +116,6 @@ pub(crate) fn infer_numbered_io_from_sample(sample: &[Stmt]) -> IoInference {
 
 pub(crate) fn infer_io_from_stmt(stmt: &Stmt, acc: &mut IoInference) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign { target, expr, .. } => {
             match target {
                 AssignTarget::Var(name) => {
@@ -420,7 +419,6 @@ fn register_scope_stmt_state(
     registered_tuples: &mut HashMap<String, SourceLoc>,
 ) {
     match stmt {
-        Stmt::Const { .. } => {}
         Stmt::Assign {
             target,
             target_loc,
@@ -480,6 +478,7 @@ fn register_scope_stmt_state(
                                 &mut infer_errors,
                             )
                         },
+                        declared_symbols,
                     );
                     let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
                     if let Some(types) = declared_tuple_types.or(inferred_tuple_types.as_deref()) {
@@ -525,8 +524,12 @@ fn register_scope_stmt_state(
                                 // expressions (F64→F32, I64→I32) so that `gain = 3.0`
                                 // in a block scope stays F32, matching sample scope.
                                 if decl_ty.is_none() {
-                                    effective_untyped_assignment_type(expr, full_ty)
-                                        .unwrap_or(PrimitiveType::F32)
+                                    effective_untyped_assignment_type(
+                                        expr,
+                                        full_ty,
+                                        declared_symbols,
+                                    )
+                                    .unwrap_or(PrimitiveType::F32)
                                 } else {
                                     full_ty.unwrap_or(PrimitiveType::F32)
                                 }

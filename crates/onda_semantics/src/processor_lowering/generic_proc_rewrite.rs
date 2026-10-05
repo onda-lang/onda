@@ -412,9 +412,6 @@ pub(crate) fn validate_generic_proc_template_forwarded_type_args(
             errors,
         );
     }
-    for decl in &proc.consts {
-        validate_expr_type_args(&decl.expr, &allowed, proc, "const", errors);
-    }
     if let Some(factor) = &proc.sample_oversample_factor {
         validate_expr_type_args(factor, &allowed, proc, "oversample factor", errors);
     }
@@ -508,9 +505,6 @@ fn validate_stmt_type_args(
     errors: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        Stmt::Const { decl, .. } => {
-            validate_expr_type_args(&decl.expr, allowed, proc, context, errors);
-        }
         Stmt::Assign { target, expr, .. } => {
             target.visit_selectors(|index| {
                 validate_expr_type_args(index, allowed, proc, context, errors);

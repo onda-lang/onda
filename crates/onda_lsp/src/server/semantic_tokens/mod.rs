@@ -835,6 +835,10 @@ fn is_semantic_keyword(name: &str, source_lines: &[&str], line: u32, start: u32)
         || before_trimmed.ends_with('{')
         || before_trimmed.ends_with('}')
         || before_trimmed.ends_with(';')
+        || (name == "def"
+            && before_trimmed
+                .strip_suffix("const")
+                .is_some_and(|prefix| prefix.trim().is_empty()))
         || (name == "use" && before_trimmed == "pub")
 }
 

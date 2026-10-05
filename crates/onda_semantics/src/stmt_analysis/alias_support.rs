@@ -37,41 +37,27 @@ fn resolve_executable_array_source(
     base: &str,
     start: Option<&Expr>,
     end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    owner_structs: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
     preserve_static_len: bool,
     diagnose_non_array_field: bool,
 ) -> Option<LocalArrayAliasInfo> {
-    if let Some(alias) = local_array_aliases.get(base) {
-        return Some(LocalArrayAliasInfo {
-            proven_len: prove_static_slice_len(alias.static_len.or(alias.proven_len), start, end),
-            len: infer_static_slice_len_hint(Some(alias.len), start, end),
-            static_len: if preserve_static_len {
-                alias.static_len
-            } else {
-                None
-            },
-            elem_ty: alias.elem_ty,
-            elem_struct: alias.elem_struct.clone(),
-            writable: alias.writable,
-        });
-    }
-    if let Some(len) = state_arrays.get(base).copied() {
-        return Some(LocalArrayAliasInfo {
-            proven_len: prove_static_slice_len(Some(len), start, end),
-            len: infer_static_slice_len_hint(Some(len), start, end),
-            static_len: preserve_static_len.then_some(len),
-            elem_ty: declared_symbol_scalar_type(declared_symbols, base)
+    let mut source = if let Some(alias) = env.local_array_aliases.get(base) {
+        alias.clone()
+    } else if let Some(len) = env.array_vars.get(base).copied() {
+        LocalArrayAliasInfo {
+            proven_len: None,
+            len,
+            static_len: Some(len),
+            elem_ty: declared_symbol_scalar_type(env.declared_symbols, base)
                 .unwrap_or(PrimitiveType::F32),
             elem_struct: None,
-            writable: true,
-        });
-    }
-    if let Some((elem_ty, _)) = declared_buffer_info(declared_symbols, base) {
+            writable: !matches!(
+                env.declared_symbols.get(base),
+                Some(DeclaredSymbolInfo::ConstArray { .. })
+            ),
+        }
+    } else if let Some((elem_ty, _)) = declared_buffer_info(env.declared_symbols, base) {
         return Some(LocalArrayAliasInfo {
             proven_len: None,
             len: 1,
@@ -80,114 +66,84 @@ fn resolve_executable_array_source(
             elem_struct: None,
             writable: true,
         });
-    }
-
-    let (root, field) = split_root_field_path(base)?;
-    let struct_name = owner_structs.get(root)?;
-    let field_decl = resolve_struct_field_decl(struct_name, field, struct_defs)?;
-    if !matches!(field_decl.ty, TypedFieldType::Array(_)) {
-        if diagnose_non_array_field {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!("field '{root}.{field}' is not array and cannot be sliced"),
-            );
-        }
-        return None;
-    }
-    Some(LocalArrayAliasInfo {
-        proven_len: prove_static_slice_len(
-            match field_decl.ty {
-                TypedFieldType::Array(len) => Some(len),
-                _ => None,
-            },
-            start,
-            end,
-        ),
-        len: infer_static_slice_len_hint(
-            match field_decl.ty {
-                TypedFieldType::Array(len) => Some(len),
-                _ => None,
-            },
-            start,
-            end,
-        ),
-        static_len: if preserve_static_len {
-            match field_decl.ty {
-                TypedFieldType::Array(len) => Some(len),
-                _ => None,
+    } else {
+        let (root, field) = split_root_field_path(base)?;
+        let struct_name = env.struct_instances.get(root)?;
+        let field_decl = resolve_struct_field_decl(struct_name, field, env.struct_defs)?;
+        let TypedFieldType::Array(len) = field_decl.ty else {
+            if diagnose_non_array_field {
+                push_semantic(
+                    DiagCtx::default(),
+                    errors,
+                    format!("field '{root}.{field}' is not array and cannot be sliced"),
+                );
             }
-        } else {
-            None
-        },
-        elem_ty: field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32),
-        elem_struct: field_decl.array_elem_struct.clone(),
-        writable: true,
-    })
+            return None;
+        };
+        LocalArrayAliasInfo {
+            proven_len: None,
+            len,
+            static_len: Some(len),
+            elem_ty: field_decl.array_elem_ty.unwrap_or(PrimitiveType::F32),
+            elem_struct: field_decl.array_elem_struct.clone(),
+            writable: true,
+        }
+    };
+    // These lengths are optional analysis metadata. Inspect each bound once,
+    // without resolving scalar consts, reading array payloads or executing defs.
+    let integer = |bound| {
+        crate::expr_validation::metadata_slice_integer(bound, env)
+            .and_then(|raw| i32::try_from(raw).ok())
+            .map(i64::from)
+    };
+    let start_value = start.and_then(integer);
+    let end_value = end.and_then(integer);
+    let known =
+        (start.is_none() || start_value.is_some()) && (end.is_none() || end_value.is_some());
+    source.proven_len = source
+        .static_len
+        .map(SliceLength::Known)
+        .or(source.proven_len)
+        .map(|length| {
+            if let Some(len) = length.known().filter(|_| known) {
+                SliceLength::Known(normalize_slice_len(len, start_value, end_value))
+            } else if start.is_none() && end.is_none() {
+                length
+            } else {
+                length.slice(start, end, env)
+            }
+        });
+    source.len = normalize_slice_len(source.len, start_value, end_value).max(1);
+    if !preserve_static_len {
+        source.static_len = None;
+    }
+    Some(source)
 }
 
 pub(crate) fn resolve_executable_slice_alias_info(
     base: &str,
     start: Option<&Expr>,
     end: Option<&Expr>,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    owner_structs: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
-    resolve_executable_array_source(
-        base,
-        start,
-        end,
-        declared_symbols,
-        state_arrays,
-        local_array_aliases,
-        owner_structs,
-        struct_defs,
-        errors,
-        false,
-        true,
-    )
+    resolve_executable_array_source(base, start, end, env, errors, false, true)
 }
 
 pub(crate) fn resolve_executable_data_like_info(
     expr: &Expr,
-    declared_symbols: &DeclaredSymbolMap,
-    state_arrays: &HashMap<String, usize>,
-    local_array_aliases: &HashMap<String, LocalArrayAliasInfo>,
-    owner_structs: &HashMap<String, String>,
-    struct_defs: &HashMap<String, Vec<TypedStructField>>,
+    env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<LocalArrayAliasInfo> {
     match expr {
-        Expr::Var { name: base, .. } => resolve_executable_array_source(
-            base,
-            None,
-            None,
-            declared_symbols,
-            state_arrays,
-            local_array_aliases,
-            owner_structs,
-            struct_defs,
-            errors,
-            true,
-            false,
-        ),
+        Expr::Var { name: base, .. } => {
+            resolve_executable_array_source(base, None, None, env, errors, true, false)
+        }
         Expr::Slice {
             base, start, end, ..
-        } => resolve_executable_slice_alias_info(
-            base,
-            start.as_deref(),
-            end.as_deref(),
-            declared_symbols,
-            state_arrays,
-            local_array_aliases,
-            owner_structs,
-            struct_defs,
-            errors,
-        ),
+        } => {
+            resolve_executable_slice_alias_info(base, start.as_deref(), end.as_deref(), env, errors)
+        }
         _ => None,
     }
 }
@@ -212,15 +168,7 @@ pub(crate) fn typed_slice_alias_info(
             len: values.len(),
         })
         .or_else(|| infer_fixed_data_type(expr, env));
-    let source = resolve_executable_data_like_info(
-        expr,
-        env.declared_symbols,
-        env.array_vars,
-        env.local_array_aliases,
-        env.struct_instances,
-        env.struct_defs,
-        errors,
-    );
+    let source = resolve_executable_data_like_info(expr, env, errors);
     let actual = match &fixed {
         Some(DataType::Array { element, .. }) => Some(element.clone()),
         _ => source.as_ref().map(|source| {
@@ -268,9 +216,14 @@ pub(crate) fn typed_slice_alias_info(
     Some(LocalArrayAliasInfo {
         proven_len: source
             .as_ref()
-            .and_then(|source| source.static_len.or(source.proven_len))
+            .and_then(|source| {
+                source
+                    .static_len
+                    .map(SliceLength::Known)
+                    .or_else(|| source.proven_len.clone())
+            })
             .or(match &fixed {
-                Some(DataType::Array { len, .. }) => Some(*len),
+                Some(DataType::Array { len, .. }) => Some(SliceLength::Known(*len)),
                 _ => None,
             }),
         len: source

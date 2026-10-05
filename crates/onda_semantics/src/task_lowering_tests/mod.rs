@@ -344,13 +344,6 @@ fn rejects_task_member_conflicts_and_graph_owners() {
         .iter()
         .any(|error| error.message.contains("conflicts with proc-local def")));
 
-    let proc_const_conflict = validate(
-        "proc P:\n  const load = 1\n  task load():\n    return\n  sample:\n    out1 = 0.0\n",
-    );
-    assert!(proc_const_conflict
-        .iter()
-        .any(|error| error.message.contains("conflicts with constant")));
-
     let proc_state_conflict = validate(
             "proc P:\n  init:\n    load: i32 = 0\n  task load():\n    return\n  sample:\n    out1 = 0.0\n",
         );
@@ -408,28 +401,6 @@ fn top_level_tasks_open_the_sample_gate_without_an_explicit_block() {
             ..
         } if name == TASK_AVAILABLE_FIELD
     )));
-}
-
-#[test]
-fn rejects_proc_task_constant_conflicts_before_folding_await_markers() {
-    let source = r#"
-proc P:
-  const prepare = 1
-  task prepare():
-    yield
-  block:
-    await prepare()
-    sample:
-      out1 = 0.0
-"#;
-    let errors = analyze(parse_program(source).expect("task source should parse"))
-        .expect_err("task and constant names should conflict");
-    assert!(errors.iter().any(|error| error
-        .message
-        .contains("task 'prepare' in processor 'P' conflicts with local constant")));
-    assert!(errors.iter().all(|error| !error
-        .message
-        .contains("malformed internal task await marker")));
 }
 
 #[test]
@@ -1147,14 +1118,16 @@ sample:
 }
 
 #[test]
-fn task_bodies_receive_proc_and_lexical_constant_folding() {
+fn task_bodies_receive_namespace_constant_folding() {
     let source = r#"
-proc Loader:
+namespace Values:
   const Width = 2
+  const Left = 3
+use Values
+proc Loader:
   init:
     pin result: i32 = 0
   task load():
-    const Left = 3
     values: i32[Width] = [Left, 5]
     yield
     result = values[0] + values[1]

@@ -206,7 +206,7 @@ Rules:
 
 - A fresh top-level scalar assignment in `init` introduces persistent owner state.
 - Assigning to an already visible state symbol updates that state.
-- `const` declarations are allowed inside `init`.
+- `const` declarations are allowed only at the program or namespace top level.
 - Declaration order is lexical.
 - A fresh assignment inside nested control flow in `init` is local to that flow, not persistent state.
 
@@ -371,6 +371,12 @@ type, another concretely typed operand, an interface/state/array element type,
 or generic specialization at a call site. Conversion happens once at that
 boundary. Runtime arithmetic then executes at the selected width; Onda does not
 silently evaluate an `f32` expression through `f64` intermediates.
+The same width selection applies during `const def` evaluation. Integer
+arithmetic wraps at the selected integer width, before any later operation:
+`(2147483647 + 1) / 2` in an `i32` context produces `-1073741824`.
+Integer-only subexpressions retain integer arithmetic in floating contexts.
+An explicit cast evaluates its argument in the argument's own context, then
+converts the result.
 
 When no context exists, first assignment uses Onda defaults:
 
@@ -660,23 +666,36 @@ const MoreScale: f32[] = [0.25, 0.5, 1.0, 2.0]
 Rules:
 
 - `const NAME = expr` and `const NAME: T = expr` are supported.
+- Const scalars, const arrays, and `const def` declarations are allowed only at
+  the root or directly inside a namespace. Executable blocks and processors use
+  those declarations or ordinary local variables.
 - `expr` must be compile-time evaluable.
 - Primitive const arrays are supported at top level and namespace scope.
 - `const NAME: T[N] = [ ... ]` declares a fixed-size const array.
 - `const NAME: T[] = expr` infers the concrete array length from the initializer.
 - Const arrays are immutable. Their `.len()` and compile-time-indexed elements are themselves
   available to compile-time expressions.
+- Scalar const initializers evaluate when declared. Const-array payloads evaluate on demand:
+  importing or declaring an array does not build its elements. Code selected for compilation,
+  scalar initializers, dimensions, namespace arguments, and required shape proofs can demand
+  its contents. Transitive array dependencies share one cached evaluation.
+- `.len()` uses array metadata without building elements. This feature does not skip ordinary
+  runtime statements or defer general declaration and namespace preprocessing.
+- An evaluated const array is emitted as runtime constant data only when a runtime array reference
+  remains after compile-time folding. A use such as `Scale[0]` can fold to a scalar without
+  retaining the whole array in the typed or compiled program.
 - Inferred-length const array initializers can be literals, existing const arrays, const-array slices, or array-returning `const def` calls.
 - Untyped scalar const declarations remain contextual compile-time numerics and preserve the
   widest supported literal representation until each use site selects a concrete scalar type.
 - A typed const fixes its scalar type at the declaration. An untyped pure numeric const may
   specialize directly to `f32` in one context and `f64` in another.
+- Integer constants retain their `i32` or `i64` width for default inference and overload selection,
+  including when read from an array or copied into an inferred const array. An explicit destination
+  type can still contextually convert a compile-time integer expression. These rules do not depend
+  on when a const array is evaluated.
 - Once a numeric expression is concretely typed, every runtime operation uses that width and
   observes that type's normal rounding semantics. Use an explicit cast to request wider evaluation.
 - Reassignment, forward references, recursion, and mutual recursion are rejected.
-- Scalar `const` declarations are also valid inside runtime statement scopes and directly inside a
-  proc. They are lexical compile-time names, not runtime storage. Const arrays remain limited to
-  top-level and namespace scope.
 
 ## 5. Audio and Control Interfaces
 
@@ -1119,7 +1138,7 @@ structs, and fixed or unsized struct arrays do not support defaults.
 Names declared as callables by an owner cannot be reused by value bindings in
 that owner's executable scopes. This includes defs, events, tasks, delegates,
 and top-level processor and struct constructors. Function and event parameters,
-`when` bindings, local constants, assignment and tuple bindings, and loop
+`when` bindings, assignment and tuple bindings, and loop
 variables all follow this rule. Receiver-qualified methods and callable names
 brought into scope from another source file are not owner-local and may still be
 shadowed by local values.
@@ -1583,7 +1602,7 @@ proc Gain:
     out1 = in1 * g
 ```
 
-A proc uses the same `const`, `ins`, `params`, `buffers`, `outs`, `kouts`,
+A proc uses the same `ins`, `params`, `buffers`, `outs`, `kouts`,
 `init`, `sample`, and `block` forms as the top level. A processing proc has a
 `sample`, `block`, or `graph` section. A proc may instead omit all three and
 serve through its state, resources, events, delegates, tasks, and helper defs.
@@ -1597,8 +1616,8 @@ Proc sections use the same surface syntax as the top level, with these
 differences:
 
 - `kins` is not valid inside a proc; proc parameter sections are always `params`.
-- Proc-local scalar constants may be used by section counts, defaults, shapes, and executable code;
-  proc-local const arrays are not supported.
+- Root and namespace constants may be used by section counts, defaults, shapes,
+  and executable code. Const declarations are not allowed inside processors.
 - A processor declares either `outs` or `kouts`, not both.
 - `kouts` processors use `block` with no nested `sample`, cannot declare `ins`, and cannot declare `graph`.
 - Proc constructor arguments for params and buffers are named-only.
@@ -2408,6 +2427,8 @@ const SampleCount: i32 = Channels * BLOCK_SIZE
   changes, `Coefficients`—whether supplied by the host or evaluated from its default—must have the
   new length or compilation fails.
 - Ordinary constants cannot be overridden. With no host input, the source initializer is used.
+- Configuration arrays follow the same demand rules as ordinary arrays. Inspecting configuration
+  values explicitly evaluates their selected initializers.
 
 The native CLI accepts repeatable `--const Name=value` inputs using Onda literal syntax and
 `--list-consts` prints the resolved configuration surface. An `.ondaproject` may provide defaults
@@ -2425,17 +2446,51 @@ const def ramp() -> f32[4]:
 const Ramp: f32[4] = ramp()
 ```
 
+Constants and const defs are checked when declared, even in unused library code.
+The compiler and LSP report unknown names, invalid calls, incompatible known types,
+and invalid known array shapes without computing array payloads. Checks that
+depend on an untyped array parameter or generic type wait until a concrete use.
+
+Scalar const initializers evaluate when declared. Array payloads evaluate when
+required code reads their contents, and cache their value or failure for that
+concrete declaration and namespace specialization. Calls inside an unused array
+initializer do not execute. Array lengths remain available without its payload.
+
+Constants, function signatures, and body layout metadata use declaration-time
+compile options. Tuple selectors keep the index used for type checking; closed
+slice bounds keep the context used for their shape proofs. Direct const-def calls
+in executable value expressions use that owner's effective context. Runtime array
+defaults cache their values separately for each used compile context. `HOST_SR` and
+its aliases always retain the host sample rate, including inside const defs.
+
+Const defs use ordinary local variables and execute when called. Untaken branches
+inside const defs and short-circuited expression operands do not evaluate their
+values. Ordinary runtime statement checking and declaration preprocessing remain
+unchanged. Required metadata, such as dimensions and processor layout, is itself
+a compile-time use and can demand an array even in an unused function body.
+
 `const def` rules:
 
 - Every `const def` must declare an explicit return type.
 - Params support primitive scalars, fixed-size primitive arrays, typed primitive slices such as `f32[]`, and untyped slices `[]`.
 - Typed slice params accept compile-time arrays of any positive length with the matching element type.
 - Untyped slice params accept compile-time arrays of any positive length and primitive element type.
-- Slice params support indexed reads and `.len()`, but not indexed writes.
+- Array and slice params reference their caller's storage. Writes update mutable arguments;
+  const arrays and their aliases are accepted only by read-only callees.
 - Array-returning bodies can use local fixed primitive arrays, indexed local-array reads/writes, `if`, `for`, `loop`, `return`, pure builtin math, and calls to earlier visible const defs.
 - Compile-time loop evaluation is capped at 1,000,000 iterations per loop.
 - Scalar-returning const defs can be used by scalar const declarations.
 - Fixed-array-returning const defs can be used by const array declarations.
+- Calls retain their declared scalar or array element type when evaluated. Untyped slice
+  arguments complete body type and shape checks from their metadata, without computing values.
+- Local array literals and array-returning calls create owned arrays and infer their element type
+  and length. Literal elements use ordinary first-assignment defaults.
+- Fresh untyped bindings from existing arrays or slices are live aliases and preserve source
+  permissions. Explicit fixed-array declarations create independent copies; fixed-array returns
+  capture independent contents, matching ordinary runtime binding rules.
+- Named const array arguments retain their metadata through forwarding, aliases, copies, and slices.
+  Calling `.len()` does not evaluate their elements. Executed element reads and writes demand
+  the initializer; independent copies share immutable payloads until a write.
 
 Const arrays and const slices can be passed to ordinary runtime `def` array
 params when the callee treats the param as read-only. Writes through the param,

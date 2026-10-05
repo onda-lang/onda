@@ -1,8 +1,48 @@
+use crate::array_semantics::{
+    check_array_shape, ArrayInitializer, ArrayShape, ShapeCheck, ShapeMismatch,
+};
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::*;
 
 fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
     errors.push(Diagnostic::semantic_span(message, expr.loc()));
+}
+
+pub(crate) fn validate_numeric_selector(
+    selector: &Expr,
+    context: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    require_expr_numeric_type(
+        selector,
+        validate_scalar_expr(selector, context, env, errors),
+        context,
+        errors,
+    );
+}
+
+pub(crate) fn validate_scalar_expr(
+    expr: &Expr,
+    context: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    let ty = validate_typed_expr(expr, env, errors);
+    if is_array_value(expr, env) {
+        push_expr_error(errors, expr, format!("{context} requires a scalar value"));
+        return None;
+    }
+    ty
+}
+
+fn validate_typed_expr(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<PrimitiveType> {
+    validate_expr(expr, env, errors);
+    crate::expr_typing::infer_scalar_expr_type(expr, env, Some(errors))
 }
 
 fn push_loc_error(errors: &mut Vec<Diagnostic>, loc: SourceLoc, message: impl Into<String>) {
@@ -45,23 +85,7 @@ pub(crate) fn infer_call_argument_scalar_type(
     expr: &Expr,
     env: ExprEnv<'_>,
 ) -> Option<PrimitiveType> {
-    let mut discarded = Vec::new();
-    infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
-        expr,
-        env.state_scalars,
-        env.declared_symbols,
-        Some(env.param_structs),
-        env.local_aliases,
-        env.local_array_aliases,
-        env.locals,
-        env.input_names,
-        env.output_names,
-        env.param_names,
-        env.struct_instances,
-        env.struct_defs,
-        env.proc_array_roots,
-        &mut discarded,
-    )
+    crate::expr_typing::infer_scalar_expr_type(expr, env, None)
 }
 
 pub(crate) fn dynamic_param_surface_value_name<'a>(
@@ -391,7 +415,12 @@ fn validate_expr_node<'a>(
             }
         }
         Expr::Var { name, .. } => {
-            if is_builtin_constant_name(name) {
+            if is_builtin_constant_name(name)
+                || matches!(
+                    env.declared_symbols.get(name),
+                    Some(DeclaredSymbolInfo::Constant { .. })
+                )
+            {
                 return;
             }
             if !name.contains('.') && env.has_value_binding(name) {
@@ -692,9 +721,9 @@ fn validate_expr_node<'a>(
                         }
                         if let TypedFieldType::Tuple(ref elem_tys) = field_decl.ty {
                             // Validate const index for tuple field
-                            match index.as_ref() {
-                                Expr::Int { value, .. } => {
-                                    let idx = *value as usize;
+                            match env.declared_symbols.constant_integer(index, errors) {
+                                Some(value) => {
+                                    let idx = value as usize;
                                     if idx >= elem_tys.len() {
                                         push_expr_error(
                                             errors,
@@ -823,9 +852,9 @@ fn validate_expr_node<'a>(
                     format!("indexed expression '{base}[...]' is not a array/buffer symbol"),
                 );
             } else if let Some(&arity) = env.tuple_vars.get(base) {
-                match index.as_ref() {
-                    Expr::Int { value, .. } => {
-                        let idx = *value as usize;
+                match env.declared_symbols.constant_integer(index, errors) {
+                    Some(value) => {
+                        let idx = value as usize;
                         if idx >= arity {
                             push_expr_error(errors, expr, format!(
                                 "tuple index {idx} is out of bounds for '{base}' with {arity} elements"
@@ -1019,6 +1048,15 @@ fn validate_expr_node<'a>(
                     format!("array slice '{base}[...]' does not support buffer coordinates"),
                 );
             }
+            if env.declared_symbols.constant_context
+                && infer_array_value_type(expr, env).is_some_and(|(_, len)| len == Some(0))
+            {
+                push_expr_error(
+                    errors,
+                    expr,
+                    format!("const array '{base}' slice must have positive length"),
+                );
+            }
             for coordinate in [
                 selector.as_deref(),
                 channel.as_deref(),
@@ -1045,14 +1083,42 @@ fn validate_expr_node<'a>(
                 }
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+        Expr::Cast { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
+            children.push(expr);
+        }
+        Expr::UnaryNot { expr, .. } => {
+            require_expr_bool_type(
+                expr,
+                infer_call_argument_scalar_type(expr, env),
+                "logical not operand",
+                errors,
+            );
             children.push(expr);
         }
         Expr::Logical { lhs, rhs, .. } => {
+            for operand in [lhs.as_ref(), rhs.as_ref()] {
+                let ty = infer_call_argument_scalar_type(operand, env);
+                require_expr_bool_type(operand, ty, "logical operand", errors);
+            }
             children.push(lhs);
             children.push(rhs);
         }
-        Expr::Compare { lhs, rhs, .. } => {
+        Expr::Compare { op, lhs, rhs, .. } => {
+            if let (Some(lhs_ty), Some(rhs_ty)) = (
+                infer_call_argument_scalar_type(lhs, env),
+                infer_call_argument_scalar_type(rhs, env),
+            ) {
+                if !matches!(
+                    (op, lhs_ty, rhs_ty),
+                    (
+                        CmpOp::Eq | CmpOp::Ne,
+                        PrimitiveType::Bool,
+                        PrimitiveType::Bool
+                    )
+                ) {
+                    merge_numeric_types(lhs_ty, rhs_ty, "comparison", expr.loc(), errors);
+                }
+            }
             children.push(lhs);
             children.push(rhs);
         }
@@ -1079,6 +1145,28 @@ fn validate_expr_node<'a>(
             args,
             ..
         } => {
+            if env.deferred_type_params.contains(name) {
+                if args.len() != 1
+                    || args.iter().any(|arg| arg.name.is_some())
+                    || !type_args.is_empty()
+                {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        format!("type cast '{name}' expects one argument"),
+                    );
+                }
+                for arg in args {
+                    let arg = &arg.expr;
+                    validate_expr(arg, env, errors);
+                    if call_array_arg_info(arg, env).is_some()
+                        || infer_call_argument_tuple_types(arg, env).is_some()
+                    {
+                        push_expr_error(errors, arg, "type cast requires a scalar value");
+                    }
+                }
+                return;
+            }
             if is_internal_buffer_2d_fn(name) {
                 validate_internal_buffer_index_call(name, args, env, expr.loc(), errors);
                 if name == WRITE_UNSAFE_FN {
@@ -1156,7 +1244,9 @@ fn validate_expr_node<'a>(
                     }
                     TypedFieldType::Tuple(types) => {
                         validate_expr(&field_index, env, errors);
-                        let Expr::Int { value, .. } = field_index else {
+                        let Some(value) =
+                            env.declared_symbols.constant_integer(&field_index, errors)
+                        else {
                             push_expr_error(
                                 errors,
                                 expr,
@@ -1325,7 +1415,7 @@ fn validate_expr_node<'a>(
                         errors.push(diagnostic);
                     }
                 }
-                for (idx, arg) in resolved.into_iter().enumerate() {
+                for (idx, arg) in resolved.iter().copied().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
                         let param_readonly = sig
@@ -1438,8 +1528,9 @@ fn validate_expr_node<'a>(
                                 for value in values {
                                     children.push(value);
                                 }
-                            } else if matches!(arg, Expr::ArrayCtor { .. } | Expr::UserCall { .. })
-                            {
+                            } else if matches!(arg, Expr::ArrayCtor { .. }) {
+                                validate_fixed_data_expr(arg, env, errors);
+                            } else if matches!(arg, Expr::UserCall { .. }) {
                                 children.push(arg);
                             }
                             // Array params accept data-like args.
@@ -1506,15 +1597,22 @@ fn validate_expr_node<'a>(
                                         sig.params[idx]
                                     ),
                                     errors,
+                                    env.declared_symbols,
                                 );
                             }
                         }
                         children.push(arg);
-                    } else if let Some(default) = sig.defaults.get(idx).and_then(|d| d.as_ref()) {
+                    } else if let Some(default) = sig
+                        .defaults
+                        .get(idx)
+                        .and_then(|d| d.as_ref())
+                        .filter(|_| !sig.defaults_validated)
+                    {
                         validate_default_expr(
                             default,
                             errors,
                             &format!("function '{display_name}' default '{}'", sig.params[idx]),
+                            env.declared_symbols,
                         );
                         let param_ty = sig.param_types.get(idx).and_then(|ty| ty.as_ref());
                         match param_ty {
@@ -1529,6 +1627,7 @@ fn validate_expr_node<'a>(
                                         sig.params[idx]
                                     ),
                                     errors,
+                                    env.declared_symbols,
                                 );
                             }
                             Some(FnParamType::Tuple(expected)) => {
@@ -1554,6 +1653,10 @@ fn validate_expr_node<'a>(
                             _ => {}
                         }
                     }
+                }
+                if call_binding_is_valid {
+                    env.fn_signatures
+                        .validate_const_call(name, &resolved, env, errors);
                 }
                 if sig.requires_call_specialization && call_binding_is_valid {
                     let diagnostic = Diagnostic::semantic_span(
@@ -1781,10 +1884,15 @@ fn immutable_array_alias_arg_name<'a>(expr: &'a Expr, env: ExprEnv<'_>) -> Optio
         Expr::Slice { base, .. } => base.as_str(),
         _ => return None,
     };
-    env.local_array_aliases
-        .get(name)
-        .filter(|alias| !alias.writable)
-        .map(|_| name)
+    if let Some(alias) = env.local_array_aliases.get(name) {
+        return (!alias.writable).then_some(name);
+    }
+    (!env.has_value_binding(name)
+        && matches!(
+            env.declared_symbols.get(name),
+            Some(DeclaredSymbolInfo::ConstArray { .. })
+        ))
+    .then_some(name)
 }
 
 fn is_function_array_param(param_ty: Option<&FnParamType>) -> bool {
@@ -1805,7 +1913,8 @@ pub(crate) fn infer_call_argument_tuple_types(
             .iter()
             .map(|value| {
                 let inferred = infer_call_argument_scalar_type(value, env);
-                effective_untyped_assignment_type(value, inferred).or(inferred)
+                effective_untyped_assignment_type(value, inferred, env.declared_symbols)
+                    .or(inferred)
             })
             .collect(),
         Expr::Var { name, .. } => {
@@ -1879,6 +1988,7 @@ fn validate_tuple_param_call_arg(
                 *expected,
                 &format!("function '{function_name}' argument '{param_name}'"),
                 errors,
+                env.declared_symbols,
             );
         }
         return;
@@ -1970,14 +2080,23 @@ fn direct_array_symbol_info(name: &str, env: ExprEnv<'_>) -> Option<CallArrayArg
         return None;
     }
     if let Some(alias) = env.local_array_aliases.get(name) {
-        let elem = alias
-            .elem_struct
-            .clone()
-            .map(CallArrayArgElem::Nominal)
-            .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty));
+        let elem = if env.declared_symbols.unresolved_types.contains(name) {
+            CallArrayArgElem::Unknown
+        } else {
+            alias
+                .elem_struct
+                .clone()
+                .map(CallArrayArgElem::Nominal)
+                .unwrap_or(CallArrayArgElem::Primitive(alias.elem_ty))
+        };
         return Some(CallArrayArgInfo {
             elem,
-            len: alias.static_len,
+            len: alias.static_len.or_else(|| {
+                env.declared_symbols
+                    .constant_context
+                    .then(|| alias.proven_len.as_ref()?.known())
+                    .flatten()
+            }),
         });
     }
     if env.struct_name(name).is_some() {
@@ -2056,18 +2175,22 @@ pub(crate) fn array_data_struct_element_type(name: &str, env: ExprEnv<'_>) -> Op
         .then_some(struct_name)
 }
 
+pub(crate) fn is_array_value(expr: &Expr, env: ExprEnv<'_>) -> bool {
+    call_array_arg_info(expr, env).is_some()
+}
+
 fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
     match expr {
-        Expr::UserCall { name, .. } => match env.fn_signatures.get(name)?.return_type.as_ref()? {
-            ReturnType::Data(DataType::Array { element, len }) => Some(CallArrayArgInfo {
+        Expr::UserCall { name, .. } => {
+            let (element, len) = env.fn_signatures.array_return(name)?;
+            Some(CallArrayArgInfo {
                 elem: match element {
-                    ArrayElemType::Primitive(ty) => CallArrayArgElem::Primitive(*ty),
-                    ArrayElemType::Struct(name) => CallArrayArgElem::Nominal(name.clone()),
+                    ArrayElemType::Primitive(ty) => CallArrayArgElem::Primitive(ty),
+                    ArrayElemType::Struct(name) => CallArrayArgElem::Nominal(name),
                 },
-                len: Some(*len),
-            }),
-            _ => None,
-        },
+                len,
+            })
+        }
         Expr::Var { name, .. } => call_array_symbol_info(name, env),
         Expr::Slice { base, .. } => call_array_symbol_info(base, env).map(|mut info| {
             info.len = None;
@@ -2083,15 +2206,219 @@ fn call_array_arg_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo
                 len: Some(values.len()),
             })
         }
-        Expr::ArrayCtor { spec, .. } => Some(CallArrayArgInfo {
+        Expr::ArrayCtor {
+            spec,
+            init,
+            init_is_value,
+            ..
+        } => Some(CallArrayArgInfo {
             elem: match &spec.elem {
                 ArrayElemType::Primitive(elem) => CallArrayArgElem::Primitive(*elem),
                 ArrayElemType::Struct(name) => CallArrayArgElem::Nominal(name.clone()),
             },
-            len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size),
+            // An element list fixes the length of every valid constructor,
+            // even when its declared dimension is still dependent. A scalar
+            // fill or whole-array copy does not have this list-length contract.
+            len: crate::def_semantics::const_positive_usize_for_call_type(&spec.size)
+                .or_else(|| init.as_ref().filter(|_| !*init_is_value).map(Vec::len)),
         }),
         _ => None,
     }
+}
+
+/// Array element and length metadata, including partially known dependent shapes.
+pub(crate) fn infer_array_value_type(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<(Option<ArrayElemType>, Option<usize>)> {
+    let info = array_value_info(expr, env)?;
+    let element = match info.elem {
+        CallArrayArgElem::Primitive(ty) => Some(ArrayElemType::Primitive(ty)),
+        CallArrayArgElem::Nominal(name) => Some(ArrayElemType::Struct(name)),
+        CallArrayArgElem::Unknown | CallArrayArgElem::NominalUnknown => None,
+    };
+    Some((element, info.len))
+}
+
+fn array_value_info(expr: &Expr, env: ExprEnv<'_>) -> Option<CallArrayArgInfo> {
+    let mut info = call_array_arg_info(expr, env)?;
+    if let Expr::Slice {
+        base,
+        selector: None,
+        channel: None,
+        start,
+        end,
+        ..
+    } = expr
+    {
+        info.len = crate::stmt_analysis::prove_slice_len(
+            call_array_symbol_info(base, env)?.len,
+            start.as_deref(),
+            end.as_deref(),
+            |bound| metadata_slice_integer(bound, env),
+        );
+    }
+    if let Expr::ArrayCtor { spec, .. } = expr {
+        // A declared dimension takes precedence over an initializer's count
+        // when lexical metadata (such as a parameter's .len()) proves it.
+        info.len = metadata_array_size(&spec.size, env).or(info.len);
+    }
+    Some(info)
+}
+
+/// Array bindings use ordinary first-assignment defaults for literal elements.
+/// Named arrays, slices, constructors, and calls retain their element metadata.
+/// Unknown element types and lengths remain deferred; no payload is evaluated.
+pub(crate) fn infer_array_initializer_type(
+    expr: &Expr,
+    env: ExprEnv<'_>,
+) -> Option<(Option<ArrayElemType>, Option<usize>)> {
+    let (mut element, len) = infer_array_value_type(expr, env)?;
+    if let Expr::ArrayLiteral { values, .. } = expr {
+        if let (Some(first), Some(ArrayElemType::Primitive(ty))) = (values.first(), &element) {
+            element = effective_untyped_assignment_type(first, Some(*ty), env.declared_symbols)
+                .map(ArrayElemType::Primitive);
+        }
+    }
+    Some((element, len))
+}
+
+/// Check initializer contents against the destination's type and shape while
+/// preserving any available length proof, without evaluating array payloads.
+pub(crate) fn validate_array_initializer(
+    expr: &Expr,
+    element: Option<ArrayElemType>,
+    len: Option<usize>,
+    context: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<usize> {
+    let len = len.or_else(|| infer_array_value_type(expr, env).and_then(|(_, len)| len));
+    if let Expr::ArrayLiteral { values, .. } = expr {
+        if values.is_empty() {
+            push_expr_error(errors, expr, format!("{context} cannot be empty"));
+            return None;
+        }
+        if let Some(ArrayElemType::Primitive(element)) = element {
+            validate_primitive_array_values(
+                values,
+                element,
+                len.unwrap_or(values.len()),
+                expr,
+                env,
+                errors,
+            );
+            return len;
+        }
+    }
+    validate_fixed_data_expr(expr, env, errors);
+    validate_array_value_type(expr, element, len, context, env, errors);
+    len
+}
+
+/// Ordinary executable scopes need a concrete type for new literal storage.
+/// Keep their diagnostic fallback here; const bodies may instead defer an
+/// unknown element type until an untyped slice argument is specialized.
+pub(crate) fn check_primitive_array_literal(
+    expr: &Expr,
+    context: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<(PrimitiveType, usize)> {
+    let (element, len) = infer_array_initializer_type(expr, env)?;
+    let element = match element {
+        Some(ArrayElemType::Primitive(element)) => element,
+        None => PrimitiveType::F32,
+        Some(ArrayElemType::Struct(_)) => return None,
+    };
+    let len = validate_array_initializer(
+        expr,
+        Some(ArrayElemType::Primitive(element)),
+        len,
+        context,
+        env,
+        errors,
+    )?;
+    Some((element, len))
+}
+
+/// Optional slice proofs must never demand initializer values or execute defs.
+pub(crate) fn metadata_slice_integer(expr: &Expr, env: ExprEnv<'_>) -> Option<i64> {
+    let expr = fold_array_length_metadata(expr, env)?;
+    crate::builtins::eval_const_slice_integer(
+        &expr,
+        env.declared_symbols.options,
+        "const slice bound",
+        &mut Vec::new(),
+    )
+}
+
+fn metadata_array_size(expr: &Expr, env: ExprEnv<'_>) -> Option<usize> {
+    let expr = fold_array_length_metadata(expr, env)?;
+    eval_data_size_expr(
+        &expr,
+        env.declared_symbols.options,
+        "array size",
+        &mut Vec::new(),
+    )
+}
+
+/// Substitute known lengths and eager scalars without evaluating declarations.
+/// Return only closed expressions; payload reads, calls, and context-dependent
+/// builtin constants stay deferred, including in unspecialized const-def checks.
+pub(crate) fn fold_array_length_metadata(expr: &Expr, env: ExprEnv<'_>) -> Option<Expr> {
+    let expr = substitute_array_length_metadata(expr, env);
+    let closed = !expr.walk().any(|node| {
+        matches!(
+            node,
+            Expr::Var { .. } | Expr::Index { .. } | Expr::UserCall { .. } | Expr::Slice { .. }
+        )
+    });
+    closed.then_some(expr)
+}
+
+fn array_length_metadata(expr: &Expr, env: ExprEnv<'_>) -> Option<i32> {
+    let Expr::UserCall {
+        name,
+        args,
+        type_args,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if !args.is_empty() || !type_args.is_empty() {
+        return None;
+    }
+    let base = parse_array_len_instance_base(name)?;
+    let len = call_array_symbol_info(base, env)?.len.or_else(|| {
+        env.local_array_aliases
+            .get(base)?
+            .proven_len
+            .as_ref()?
+            .known()
+    })?;
+    i32::try_from(len).ok()
+}
+
+pub(crate) fn substitute_array_length_metadata(expr: &Expr, env: ExprEnv<'_>) -> Expr {
+    let mut expr = expr.clone();
+    expr.visit_mut(|node| {
+        let value = match node {
+            Expr::Var { name, .. } if !env.resource_receiver_is_shadowed(name) => {
+                match env.declared_symbols.get(name) {
+                    Some(DeclaredSymbolInfo::Constant { value, .. }) => *value,
+                    _ => None,
+                }
+            }
+            _ => array_length_metadata(node, env).map(TypedConstValue::I32),
+        };
+        if let Some(value) = value {
+            *node = typed_const_expr(value).with_loc(node.loc());
+        }
+        true
+    });
+    expr
 }
 
 /// Storage declarations may use a proven slice length without promoting the
@@ -2122,11 +2449,11 @@ pub(crate) fn infer_fixed_initializer_type(expr: &Expr, env: ExprEnv<'_>) -> Opt
                     .as_ref()
                     .map(|name| ArrayElemType::Struct(name.clone()))
                     .unwrap_or(ArrayElemType::Primitive(alias.elem_ty)),
-                alias.proven_len,
+                alias.proven_len.as_ref()?.resolve(env.declared_symbols),
             )
         }
     };
-    let len = crate::stmt_analysis::prove_static_slice_len(len, start, end)?;
+    let len = crate::stmt_analysis::prove_static_slice_len(len, start, end, env.declared_symbols)?;
     (len > 0).then_some(DataType::Array { element, len })
 }
 
@@ -2238,13 +2565,14 @@ pub(crate) fn validate_primitive_array_values(
         );
     }
     for value in values {
-        validate_expr(value, env, errors);
+        let actual = validate_scalar_expr(value, "array initializer", env, errors);
         require_expr_assignable_type(
             value,
-            infer_call_argument_scalar_type(value, env),
+            actual,
             element,
             "array initializer",
             errors,
+            env.declared_symbols,
         );
     }
 }
@@ -2288,29 +2616,55 @@ pub(crate) fn validate_fixed_data_expr(
             let ArrayElemType::Primitive(element) = spec.elem else {
                 unreachable!()
             };
-            let Some(len) = crate::def_semantics::const_positive_usize_for_call_type(&spec.size)
-            else {
-                push_expr_error(errors, expr, "data array requires a positive fixed length");
-                return;
-            };
-            if let Some(values) = init {
-                if *init_is_value
-                    && values.len() == 1
-                    && infer_fixed_initializer_type(&values[0], env)
-                        == Some(DataType::Array {
-                            element: spec.elem.clone(),
-                            len,
-                        })
-                {
-                    validate_fixed_data_expr(&values[0], env, errors);
-                } else {
-                    let count = if *init_is_value && values.len() == 1 {
-                        1
-                    } else {
-                        len
-                    };
-                    validate_primitive_array_values(values, element, count, expr, env, errors);
+            let mut len = metadata_array_size(&spec.size, env);
+            if len.is_none() && !env.declared_symbols.constant_context {
+                len = env.data_size(
+                    &spec.size,
+                    env.declared_symbols.options,
+                    "data array size",
+                    errors,
+                );
+                if len.is_none() {
+                    return;
                 }
+            }
+            if len.is_none() && can_eval_const_expr_exact_int(&spec.size) {
+                eval_data_size_expr(
+                    &spec.size,
+                    env.declared_symbols.options,
+                    "data array size",
+                    errors,
+                );
+            }
+            match ArrayInitializer::new(init.as_deref(), *init_is_value) {
+                ArrayInitializer::Zero => {}
+                ArrayInitializer::Elements(values) => validate_primitive_array_values(
+                    values,
+                    element,
+                    len.unwrap_or(values.len()),
+                    expr,
+                    env,
+                    errors,
+                ),
+                ArrayInitializer::Value(value) if is_array_value(value, env) => {
+                    validate_fixed_data_expr(value, env, errors);
+                    validate_array_value_type(
+                        value,
+                        Some(spec.elem.clone()),
+                        len,
+                        "array initializer",
+                        env,
+                        errors,
+                    );
+                }
+                ArrayInitializer::Value(value) => validate_primitive_array_values(
+                    std::slice::from_ref(value),
+                    element,
+                    1,
+                    expr,
+                    env,
+                    errors,
+                ),
             }
         }
         Expr::ArrayCtor {
@@ -2405,7 +2759,7 @@ pub(crate) fn validate_fixed_data_expr(
                 if actual.is_some() {
                     validate_fixed_data_expr(value, env, errors);
                 } else {
-                    validate_expr(value, env, errors);
+                    validate_typed_expr(value, env, errors);
                 }
             }
         }
@@ -2418,13 +2772,13 @@ pub(crate) fn validate_fixed_data_expr(
             }
         }
         Expr::Index { index, .. } if infer_fixed_data_type(expr, env).is_some() => {
-            validate_expr(index, env, errors)
+            validate_numeric_selector(index, "data index", env, errors)
         }
         Expr::UserCall { name, .. }
             if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL
                 && infer_fixed_data_type(expr, env).is_some() =>
         {
-            validate_expr(expr, env, errors)
+            validate_typed_expr(expr, env, errors);
         }
         Expr::UserCall { name, args, .. }
             if name == READ_UNSAFE_FN && infer_data_value_type(expr, env).is_some() =>
@@ -2469,13 +2823,14 @@ pub(crate) fn validate_fixed_data_expr(
                 };
                 match &field.ty {
                     TypedFieldType::Scalar(ty) => {
-                        validate_expr(arg, env, errors);
+                        let actual = validate_scalar_expr(arg, "constructor field", env, errors);
                         require_expr_assignable_type(
                             arg,
-                            infer_call_argument_scalar_type(arg, env),
+                            actual,
                             *ty,
                             "constructor field",
                             errors,
+                            env.declared_symbols,
                         );
                     }
                     TypedFieldType::Tuple(types) => {
@@ -2526,7 +2881,9 @@ pub(crate) fn validate_fixed_data_expr(
                 }
             }
         }
-        _ => validate_expr(expr, env, errors),
+        _ => {
+            validate_typed_expr(expr, env, errors);
+        }
     }
 }
 
@@ -2538,6 +2895,25 @@ fn validate_array_param_call_arg(
     env: ExprEnv<'_>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    // A const call accepts a fixed slice shape from compile-time metadata even
+    // when its caller is executable code. Its payload remains deferred.
+    let mut symbols;
+    let env = if !env.declared_symbols.constant_context
+        && env
+            .declared_symbols
+            .const_scope
+            .as_ref()
+            .is_some_and(|scope| scope.contains_function(function_name))
+    {
+        symbols = env.declared_symbols.clone();
+        symbols.constant_context = true;
+        ExprEnv {
+            declared_symbols: &symbols,
+            ..env
+        }
+    } else {
+        env
+    };
     if matches!(
         param_ty,
         FnParamType::Array(_) | FnParamType::ArrayGeneric(_)
@@ -2545,32 +2921,17 @@ fn validate_array_param_call_arg(
     {
         return;
     }
-    let Some(actual) = call_array_arg_info(arg, env) else {
-        if is_definitely_scalar_call_arg(arg, env)
-            || infer_call_argument_tuple_types(arg, env).is_some()
-        {
-            push_expr_error(
-                errors,
-                arg,
-                format!(
-                    "function '{function_name}' parameter '{param_name}' expects an array value"
-                ),
-            );
-        }
-        return;
-    };
-
     let (expected_elem, expected_len) = match param_ty {
-        FnParamType::Array(Some(elem)) => (Some(CallArrayArgElem::Primitive(*elem)), None),
-        FnParamType::ArrayGeneric(name) => (Some(CallArrayArgElem::Nominal(name.clone())), None),
+        FnParamType::Array(Some(elem)) => (Some(ArrayElemType::Primitive(*elem)), None),
+        FnParamType::ArrayGeneric(name) => (Some(ArrayElemType::Struct(name.clone())), None),
         FnParamType::SizedArray {
             elem,
             generic_name,
             size,
         } => {
             let elem = elem
-                .map(CallArrayArgElem::Primitive)
-                .or_else(|| generic_name.clone().map(CallArrayArgElem::Nominal));
+                .map(ArrayElemType::Primitive)
+                .or_else(|| generic_name.clone().map(ArrayElemType::Struct));
             (
                 elem,
                 crate::def_semantics::const_positive_usize_for_call_type(size),
@@ -2580,14 +2941,42 @@ fn validate_array_param_call_arg(
         _ => return,
     };
 
+    validate_array_value_type(
+        arg,
+        expected_elem,
+        expected_len,
+        &format!("function '{function_name}' parameter '{param_name}'"),
+        env,
+        errors,
+    );
+}
+
+pub(crate) fn validate_array_value_type(
+    arg: &Expr,
+    expected_elem: Option<ArrayElemType>,
+    expected_len: Option<usize>,
+    context: &str,
+    env: ExprEnv<'_>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let Some(actual) = array_value_info(arg, env) else {
+        if is_definitely_scalar_call_arg(arg, env)
+            || infer_call_argument_tuple_types(arg, env).is_some()
+        {
+            push_expr_error(errors, arg, format!("{context} expects an array value"));
+        }
+        return;
+    };
+
     let literal_elements_match = match (expected_elem.as_ref(), arg) {
-        (Some(CallArrayArgElem::Primitive(expected)), Expr::ArrayLiteral { values, .. }) => {
+        (Some(ArrayElemType::Primitive(expected)), Expr::ArrayLiteral { values, .. }) => {
             Some(values.iter().all(|value| {
-                infer_call_argument_scalar_type(value, env)
-                    .is_some_and(|actual| can_assign_expr_to_type(value, actual, *expected))
+                infer_call_argument_scalar_type(value, env).is_some_and(|actual| {
+                    can_assign_expr_to_type(value, actual, *expected, env.declared_symbols)
+                })
             }))
         }
-        (Some(CallArrayArgElem::Nominal(expected)), Expr::ArrayLiteral { values, .. }) => {
+        (Some(ArrayElemType::Struct(expected)), Expr::ArrayLiteral { values, .. }) => {
             Some(values.iter().all(|value| {
                 matches!(
                     call_array_value_elem(value, env),
@@ -2597,25 +2986,36 @@ fn validate_array_param_call_arg(
         }
         _ => None,
     };
-    let elem_matches =
-        literal_elements_match.unwrap_or_else(|| match (expected_elem.as_ref(), &actual.elem) {
-            (None, _) => true,
-            (Some(_), CallArrayArgElem::Unknown) => true,
-            (Some(CallArrayArgElem::Primitive(expected)), CallArrayArgElem::Primitive(actual)) => {
-                expected == actual
-            }
-            (Some(CallArrayArgElem::Nominal(expected)), CallArrayArgElem::Nominal(actual)) => {
-                expected == actual
-            }
-            (Some(CallArrayArgElem::Nominal(_)), CallArrayArgElem::NominalUnknown) => true,
-            _ => false,
-        });
-    if !elem_matches {
+    let actual_elem = match &actual.elem {
+        CallArrayArgElem::Primitive(ty) => Some(ArrayElemType::Primitive(*ty)),
+        CallArrayArgElem::Nominal(name) => Some(ArrayElemType::Struct(name.clone())),
+        CallArrayArgElem::Unknown | CallArrayArgElem::NominalUnknown => None,
+    };
+    // Literal coercions are checked element by element before shape matching.
+    let element = if literal_elements_match == Some(true) {
+        expected_elem.as_ref()
+    } else {
+        actual_elem.as_ref()
+    };
+    let len = actual.len;
+    let shape = check_array_shape(
+        ArrayShape {
+            elem_ty: element,
+            len,
+        },
+        ArrayShape {
+            elem_ty: expected_elem.as_ref(),
+            len: expected_len,
+        },
+    );
+    if literal_elements_match == Some(false)
+        || matches!(shape, Err(ShapeMismatch::Element))
+        || (matches!(actual.elem, CallArrayArgElem::NominalUnknown)
+            && matches!(expected_elem, Some(ArrayElemType::Primitive(_))))
+    {
         let expected = match expected_elem.expect("mismatched typed array element") {
-            CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
-            CallArrayArgElem::Nominal(name) => name,
-            CallArrayArgElem::Unknown => "unknown".to_owned(),
-            CallArrayArgElem::NominalUnknown => "nominal".to_owned(),
+            ArrayElemType::Primitive(elem) => elem.name().to_owned(),
+            ArrayElemType::Struct(name) => name,
         };
         let actual = match &actual.elem {
             CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
@@ -2626,31 +3026,32 @@ fn validate_array_param_call_arg(
         push_expr_error(
             errors,
             arg,
-            format!(
-                "function '{function_name}' parameter '{param_name}' expects {expected} array elements, got {actual}"
-            ),
+            format!("{context} expects {expected} array elements, got {actual}"),
         );
         return;
     }
 
-    if let Some(expected) = expected_len {
-        match actual.len {
-            Some(actual) if actual == expected => {}
-            Some(actual) => push_expr_error(
+    match shape {
+        Err(ShapeMismatch::Length { expected, actual }) => push_expr_error(
+            errors,
+            arg,
+            format!("{context} expects array length {expected}, got {actual}"),
+        ),
+        Ok(ShapeCheck::Deferred)
+            if expected_len.is_some()
+                && len.is_none()
+                && !env.declared_symbols.constant_context =>
+        {
+            let expected = expected_len.unwrap();
+            push_expr_error(
                 errors,
                 arg,
                 format!(
-                    "function '{function_name}' parameter '{param_name}' expects array length {expected}, got {actual}"
+                    "{context} expects fixed array length {expected}, but the argument length is not statically known"
                 ),
-            ),
-            None => push_expr_error(
-                errors,
-                arg,
-                format!(
-                    "function '{function_name}' parameter '{param_name}' expects fixed array length {expected}, but the argument length is not statically known"
-                ),
-            ),
+            );
         }
+        _ => {}
     }
 }
 
@@ -2676,6 +3077,7 @@ fn is_definitely_scalar_call_arg(expr: &Expr, env: ExprEnv<'_>) -> bool {
                         DeclaredSymbolInfo::Input { .. }
                             | DeclaredSymbolInfo::Output { .. }
                             | DeclaredSymbolInfo::Param { .. }
+                            | DeclaredSymbolInfo::Constant { .. }
                             | DeclaredSymbolInfo::FunctionReturn { .. }
                     )
                 )
@@ -2685,8 +3087,13 @@ fn is_definitely_scalar_call_arg(expr: &Expr, env: ExprEnv<'_>) -> bool {
             .get(name)
             .and_then(|signature| signature.return_type.as_ref())
             .is_some_and(|return_type| matches!(return_type, ReturnType::Scalar(_))),
-        Expr::Index { .. }
-        | Expr::Slice { .. }
+        Expr::Index { base, .. } => call_array_symbol_info(base, env).is_some_and(|info| {
+            matches!(
+                info.elem,
+                CallArrayArgElem::Primitive(_) | CallArrayArgElem::Unknown
+            )
+        }),
+        Expr::Slice { .. }
         | Expr::ArrayLiteral { .. }
         | Expr::ArrayCtor { .. }
         | Expr::Tuple { .. } => false,
@@ -2745,7 +3152,7 @@ fn reject_protected_array_pointer_call_arg(
     true
 }
 
-fn reject_immutable_array_call_arg(
+pub(crate) fn reject_immutable_array_call_arg(
     fn_name: &str,
     param_name: &str,
     param_readonly: bool,
@@ -3064,7 +3471,7 @@ fn validate_buffer_symbol_for_param(
             }
         }
         BufferChannels::Static(expr) => {
-            let requested_channels = const_positive_usize(expr);
+            let requested_channels = crate::def_semantics::const_positive_usize_for_call_type(expr);
             if let Some(channels) = requested_channels {
                 if channels <= 1 {
                     if is_declared_multichannel_buffer_info(env.declared_symbols, symbol) {
@@ -3122,16 +3529,6 @@ fn validate_buffer_symbol_for_param(
         // `f32[]` means an unspecified positive channel count. Mono and exact
         // multichannel buffers are therefore both valid arguments.
         BufferChannels::Dynamic => {}
-    }
-}
-
-fn const_positive_usize(expr: &Expr) -> Option<usize> {
-    match expr {
-        Expr::Int { value: v, .. } if *v > 0 => usize::try_from(*v).ok(),
-        Expr::Number { value: v, .. } if *v > 0.0 && v.fract() == 0.0 => {
-            usize::try_from(*v as i64).ok()
-        }
-        _ => None,
     }
 }
 
@@ -3348,6 +3745,7 @@ fn validate_unsafe_index_call(
                             *expected_ty,
                             "'write_unsafe' value",
                             errors,
+                            env.declared_symbols,
                         );
                     }
                     UnsafeStorageElement::Primitive(None) | UnsafeStorageElement::Resource => {}

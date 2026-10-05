@@ -5,7 +5,7 @@ impl<'a> FunctionLowerer<'a> {
     /// Runtime metadata is a fallback namespace. Exact bindings always win;
     /// dotted paths may only fall through roots whose bindings deliberately
     /// model aggregate storage through separately registered leaf symbols.
-    pub(super) fn runtime_globals_for_unbound(&self, name: &str) -> Option<&'a RuntimeGlobals> {
+    pub(super) fn runtime_globals_for_unbound(&self, name: &str) -> Option<&'a RuntimeGlobals<'a>> {
         if self.bindings.contains_key(name) {
             return None;
         }
@@ -27,15 +27,14 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn new(
         function: &'a TypedFunction,
         functions: &'a [TypedFunction],
-        function_ids: &'a HashMap<FunctionKey, FunctionId>,
+        function_base: usize,
         function_indices: &'a HashMap<String, usize>,
         oversample_factors: &'a HashMap<String, usize>,
-        proc_instance_oversample_factors: &'a HashMap<String, usize>,
         proc_step_oversample_meta: Option<&'a ProcStepOversampleMeta>,
         structs: &'a HashMap<String, Vec<TypedStructField>>,
         aggregate_layouts: &'a AggregateLayoutTable,
         nested_proc_arrays: &'a [TypedNestedProcArray],
-        const_arrays: &'a HashMap<String, (onda_mir::ConstDataId, PrimitiveType, u32)>,
+        const_arrays: &'a ConstDataCatalog<'a>,
         host_config: onda_mir::CompileConfig,
         config: onda_mir::CompileConfig,
         emitted_name: String,
@@ -47,10 +46,9 @@ impl<'a> FunctionLowerer<'a> {
         Self {
             function,
             functions,
-            function_ids,
+            function_base,
             function_indices,
             oversample_factors,
-            proc_instance_oversample_factors,
             proc_step_oversample_meta,
             structs,
             aggregate_layouts,
@@ -86,14 +84,13 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn new_runtime(
         function: &'a TypedFunction,
         functions: &'a [TypedFunction],
-        function_ids: &'a HashMap<FunctionKey, FunctionId>,
+        function_base: usize,
         function_indices: &'a HashMap<String, usize>,
         oversample_factors: &'a HashMap<String, usize>,
-        proc_instance_oversample_factors: &'a HashMap<String, usize>,
         host_config: onda_mir::CompileConfig,
         config: onda_mir::CompileConfig,
         emitted_name: String,
-        globals: &'a RuntimeGlobals,
+        globals: &'a RuntimeGlobals<'a>,
         types: &'a mut Vec<MirType>,
         source_files: &'a mut Vec<SourceFile>,
         log_sites: &'a mut Vec<onda_mir::LogSite>,
@@ -101,15 +98,14 @@ impl<'a> FunctionLowerer<'a> {
         let mut lowerer = Self::new(
             function,
             functions,
-            function_ids,
+            function_base,
             function_indices,
             oversample_factors,
-            proc_instance_oversample_factors,
             None,
             &globals.structs,
             &globals.aggregate_layouts,
             &globals.nested_proc_arrays,
-            &globals.const_arrays,
+            globals.const_arrays.expect("runtime const catalog"),
             host_config,
             config,
             emitted_name,

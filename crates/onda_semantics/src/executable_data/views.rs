@@ -173,7 +173,6 @@ impl CapturedViews {
                 Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
                     collect_expr_uses(expr, &mut uses)
                 }
-                Stmt::Const { decl, .. } => collect_expr_uses(&decl.expr, &mut uses),
                 Stmt::Print { values, .. } => {
                     for value in values {
                         collect_expr_uses(value, &mut uses);
@@ -391,7 +390,10 @@ impl Planner<'_> {
                             *expr = Expr::var(backing);
                         }
                         if let Some(info) = self.types.arrays.get(name).cloned() {
-                            if let Some(len) = info.static_len.or(info.proven_len) {
+                            if let Some(len) = info
+                                .static_len
+                                .or_else(|| info.proven_len.as_ref().and_then(SliceLength::known))
+                            {
                                 let backing = self.fresh("backing");
                                 let element = info
                                     .elem_struct
