@@ -1,6 +1,91 @@
 import std/math
 import std/complex
 
+# Keep coefficients in the arithmetic precision of each specialization.
+namespace std::_fft_coefficients<Count = 256>:
+  const def narrow(values: f64[]) -> f32[Count]:
+    result: f32[Count]
+    for i in 0..Count:
+      result[i] = f32(values[i])
+    return result
+
+  # Precision-specific base widths balance register use and vectorization.
+  def odd_base_width(precision: f32, n: i32):
+    if n < 8:
+      return n
+    return 8
+
+  def odd_base_width(precision: f64, n: i32):
+    return n
+
+  def at(precision: f32, wide: f64[], single: f32[], i: i32):
+    return single.read_unsafe(i)
+
+  def at(precision: f64, wide: f64[], single: f32[], i: i32):
+    return wide.read_unsafe(i)
+
+# Namespace specialization fixes each stage's strides before optimization.
+namespace std::_fft_radix4<Stage = 4>:
+  def transform<T>(real: T[], imag: T[], n: i32, direction: T,
+    wide_real: f64[], wide_imag: f64[], single_real: f32[], single_imag: f32[],
+    base: i32 = 0, odd_length: bool = false):
+    # Binary bit reversal swaps the middle two radix-4 inputs.
+    stage = Stage
+    if odd_length:
+      stage *= 2
+    quarter = stage >> 2
+    start = base
+    while start < base + n:
+      for k in 0..quarter:
+        a = start + k
+        b = a + quarter
+        c = b + quarter
+        d = c + quarter
+        ar = real.read_unsafe(a)
+        ai = imag.read_unsafe(a)
+        br = real.read_unsafe(b)
+        bi = imag.read_unsafe(b)
+        cr = real.read_unsafe(c)
+        ci = imag.read_unsafe(c)
+        dr = real.read_unsafe(d)
+        di = imag.read_unsafe(d)
+
+        if stage > 4:
+          coeff = 3 * (quarter - 1) + k
+          w1r = std::_fft_coefficients::at(T(0.0), wide_real, single_real, coeff)
+          w1i = direction * std::_fft_coefficients::at(T(0.0), wide_imag, single_imag, coeff)
+          w2r = std::_fft_coefficients::at(T(0.0), wide_real, single_real, coeff + quarter)
+          w2i = direction * std::_fft_coefficients::at(T(0.0), wide_imag, single_imag, coeff + quarter)
+          w3r = std::_fft_coefficients::at(T(0.0), wide_real, single_real, coeff + 2 * quarter)
+          w3i = direction * std::_fft_coefficients::at(T(0.0), wide_imag, single_imag, coeff + 2 * quarter)
+          temp = w2r * br - w2i * bi
+          bi = w2r * bi + w2i * br
+          br = temp
+          temp = w1r * cr - w1i * ci
+          ci = w1r * ci + w1i * cr
+          cr = temp
+          temp = w3r * dr - w3i * di
+          di = w3r * di + w3i * dr
+          dr = temp
+
+        ur = ar + br
+        ui = ai + bi
+        vr = ar - br
+        vi = ai - bi
+        pr = cr + dr
+        sum_i = ci + di
+        tr = direction * (cr - dr)
+        ti = direction * (ci - di)
+        real.write_unsafe(a, ur + pr)
+        imag.write_unsafe(a, ui + sum_i)
+        real.write_unsafe(b, vr - ti)
+        imag.write_unsafe(b, vi + tr)
+        real.write_unsafe(c, ur - pr)
+        imag.write_unsafe(c, ui - sum_i)
+        real.write_unsafe(d, vr + ti)
+        imag.write_unsafe(d, vi - tr)
+      start += stage
+
 namespace std::fft<N = 256>:
   assert(N > 1 && (N & (N - 1)) == 0)
 
@@ -83,9 +168,55 @@ namespace std::fft<N = 256>:
       values[i] = sin(TWO_PI * f64(i) / f64(N))
     return values
 
+  # Bits 0, 2, 4, ... distinguish powers of four from twice a power of four.
+  const _PowerOfFourBits = 1431655765
+
   const _BitReverse: i32[N] = _bit_reverse_table()
   const _TwiddleReal: f64[N / 2] = _twiddle_real()
   const _TwiddleImag: f64[N / 2] = _twiddle_imag()
+
+  # Each radix-4 stage has three contiguous coefficient planes. A stage of
+  # length 4*q starts at 3*(q-1), the sum of the preceding stage lengths.
+  const _Radix4CoefficientCount = N + N / 2
+
+  const def _radix4_coefficients(imaginary: bool) -> f64[_Radix4CoefficientCount]:
+    values: f64[_Radix4CoefficientCount]
+    for level in 2..31:
+      stage = 1 << level
+      if stage <= N:
+        quarter = stage >> 2
+        for power in 1..4:
+          for k in 0..quarter:
+            phase = TWO_PI * f64(power * k) / f64(stage)
+            position = power * k
+            value: f64 = 0.0
+            if imaginary:
+              if position == quarter:
+                value = 1.0
+              elif position != 0 && position != (stage >> 1):
+                value = sin(phase)
+            else:
+              if position == 0:
+                value = 1.0
+              elif position == (stage >> 1):
+                value = -1.0
+              elif position != quarter:
+                value = cos(phase)
+            values[3 * (quarter - 1) + (power - 1) * quarter + k] = value
+    return values
+
+  const _Radix4Real: f64[_Radix4CoefficientCount] = _radix4_coefficients(false)
+  const _Radix4Imag: f64[_Radix4CoefficientCount] = _radix4_coefficients(true)
+  const _TwiddleReal32: f32[N / 2] = std::_fft_coefficients<N / 2>::narrow(_TwiddleReal)
+  const _TwiddleImag32: f32[N / 2] = std::_fft_coefficients<N / 2>::narrow(_TwiddleImag)
+  const _Radix4Real32: f32[_Radix4CoefficientCount] = std::_fft_coefficients<_Radix4CoefficientCount>::narrow(_Radix4Real)
+  const _Radix4Imag32: f32[_Radix4CoefficientCount] = std::_fft_coefficients<_Radix4CoefficientCount>::narrow(_Radix4Imag)
+
+  def _twiddle_real_at(precision, i: i32):
+    return std::_fft_coefficients::at(precision, _TwiddleReal, _TwiddleReal32, i)
+
+  def _twiddle_imag_at(precision, i: i32):
+    return std::_fft_coefficients::at(precision, _TwiddleImag, _TwiddleImag32, i)
 
   def _wrap_add(base: i32, offset: i32, n: i32):
     idx = base + offset
@@ -250,8 +381,9 @@ namespace std::fft<N = 256>:
       return atan2(self.imag(i), self.real(i))
 
     def forward_real(self, input: T[]):
-      self.load_real(input)
-      self.forward()
+      self._load_real_pairs(input)
+      self._forward_loaded_real()
+      self._complete_real_spectrum()
 
     def forward_real_packed(self, input: T[], output: T[]):
       self.forward_real(input)
@@ -302,39 +434,74 @@ namespace std::fft<N = 256>:
           self._set_bin_at(i, other_r, other_i)
           self._set_bin_at(j, temp_r, temp_i)
 
-      stage = 2
-      while stage <= n:
-        half = stage >> 1
-        tw_stride = N / stage
+      direction: T = -1.0
+      if inverse:
+        direction = 1.0
 
-        start = 0
-        while start < n:
-          k = 0
-          while k < half:
-            tw_idx = k * tw_stride
-            wr = T(_TwiddleReal.read_unsafe(tw_idx))
-            wi = T(_TwiddleImag.read_unsafe(tw_idx))
-            if !inverse:
-              wi = -wi
+      # Start odd binary lengths with radix-2, then use radix-4 throughout.
+      odd_length = (n & _PowerOfFourBits) == 0
+      if odd_length:
+        width = std::_fft_coefficients::odd_base_width(T(0.0), n)
+        for group in 0..(n / width):
+          base = group * width
+          self._radix2_base(width, base)
+          if n >= 8:
+            std::_fft_radix4<4>::transform(self.bin_real, self.bin_imag, width, direction,
+              _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, base, true)
+        if n >= 32:
+          std::_fft_radix4<16>::transform(self.bin_real, self.bin_imag, n, direction,
+            _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, true)
+      elif n >= 16:
+        for group in 0..(n >> 4):
+          base = group << 4
+          std::_fft_radix4<4>::transform(self.bin_real, self.bin_imag, 16, direction,
+            _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, base)
+          std::_fft_radix4<16>::transform(self.bin_real, self.bin_imag, 16, direction,
+            _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, base)
+      elif n >= 4:
+        std::_fft_radix4<4>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32)
 
-            even_i = start + k
-            odd_i = even_i + half
-
-            odd_r = self._real_at(odd_i)
-            odd_i_v = self._imag_at(odd_i)
-
-            tw_r = wr * odd_r - wi * odd_i_v
-            tw_i = wr * odd_i_v + wi * odd_r
-
-            even_r = self._real_at(even_i)
-            even_i_v = self._imag_at(even_i)
-
-            self._set_bin_at(even_i, even_r + tw_r, even_i_v + tw_i)
-            self._set_bin_at(odd_i, even_r - tw_r, even_i_v - tw_i)
-
-            k += 1
-          start += stage
-        stage <<= 1
+      # Literal namespace arguments keep stage geometry static in each kernel.
+      if n >= 64:
+        std::_fft_radix4<64>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 256:
+        std::_fft_radix4<256>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 1024:
+        std::_fft_radix4<1024>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 4096:
+        std::_fft_radix4<4096>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 16384:
+        std::_fft_radix4<16384>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 65536:
+        std::_fft_radix4<65536>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 262144:
+        std::_fft_radix4<262144>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 1048576:
+        std::_fft_radix4<1048576>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 4194304:
+        std::_fft_radix4<4194304>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 16777216:
+        std::_fft_radix4<16777216>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 67108864:
+        std::_fft_radix4<67108864>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 268435456:
+        std::_fft_radix4<268435456>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
+      if n >= 1073741824:
+        std::_fft_radix4<1073741824>::transform(self.bin_real, self.bin_imag, n, direction,
+          _Radix4Real, _Radix4Imag, _Radix4Real32, _Radix4Imag32, 0, odd_length)
 
       if inverse:
         inverse_scale = T(1.0) / T(n)
@@ -344,6 +511,31 @@ namespace std::fft<N = 256>:
             self._real_at(i) * inverse_scale,
             self._imag_at(i) * inverse_scale
           )
+
+    def _radix2_base(self, n: i32, base: i32):
+      for pair in 0..(n >> 1):
+        a = base + (pair << 1)
+        b = a + 1
+        ar = self._real_at(a)
+        ai = self._imag_at(a)
+        br = self._real_at(b)
+        bi = self._imag_at(b)
+        self._set_bin_at(a, ar + br, ai + bi)
+        self._set_bin_at(b, ar - br, ai - bi)
+
+    def _load_real_pairs(self, input: T[]):
+      count = _min_i(input.len(), N)
+      pairs = count >> 1
+      for i in 0..pairs:
+        self._set_bin_at(i, input.read_unsafe(2 * i), input.read_unsafe(2 * i + 1))
+      for i in pairs..(N >> 1):
+        self._set_bin_at(i, 0.0, 0.0)
+      if (count & 1) != 0:
+        self._set_bin_at(pairs, input.read_unsafe(count - 1), 0.0)
+
+    def _complete_real_spectrum(self):
+      for k in ((N >> 1) + 1)..N:
+        self._set_bin_at(k, self._real_at(N - k), -self._imag_at(N - k))
 
     # Complete an N-point real transform after bins 0..N/2 have been loaded
     # with the even samples as real parts and odd samples as imaginary parts.
@@ -368,8 +560,8 @@ namespace std::fft<N = 256>:
         even_im = (a_im - mirror_im) * 0.5
         odd_re = (a_im + mirror_im) * 0.5
         odd_im = (mirror_re - a_re) * 0.5
-        tw_re = T(_TwiddleReal.read_unsafe(k))
-        tw_im = T(_TwiddleImag.read_unsafe(k))
+        tw_re = _twiddle_real_at(T(0.0), k)
+        tw_im = _twiddle_imag_at(T(0.0), k)
         rotated_re = tw_re * odd_re + tw_im * odd_im
         rotated_im = tw_re * odd_im - tw_im * odd_re
 
@@ -402,8 +594,8 @@ namespace std::fft<N = 256>:
         even_im = (x_im - mirror_im) * 0.5
         rotated_re = (x_re - mirror_re) * 0.5
         rotated_im = (x_im + mirror_im) * 0.5
-        tw_re = T(_TwiddleReal.read_unsafe(k))
-        tw_im = T(_TwiddleImag.read_unsafe(k))
+        tw_re = _twiddle_real_at(T(0.0), k)
+        tw_im = _twiddle_imag_at(T(0.0), k)
         odd_re = tw_re * rotated_re - tw_im * rotated_im
         odd_im = tw_im * rotated_re + tw_re * rotated_im
 
@@ -438,18 +630,7 @@ namespace std::fft<N = 256>:
       return self.fft.imag(i)
 
     def forward(self, input: T[]):
-      count = _min_i(input.len(), N)
-      half = N >> 1
-      for i in 0..half:
-        even = i << 1
-        odd = even + 1
-        even_value: T = 0.0
-        odd_value: T = 0.0
-        if even < count:
-          even_value = input.read_unsafe(even)
-        if odd < count:
-          odd_value = input.read_unsafe(odd)
-        self.fft._set_bin_at(i, even_value, odd_value)
+      self.fft._load_real_pairs(input)
       self.fft._forward_loaded_real()
 
     def inverse(self, real: T[], imag: T[], output: T[]):
@@ -559,30 +740,33 @@ namespace std::fft<N = 256>:
     def store_real_spectrum_phase(self, output: T[]):
       self.fft.store_real_spectrum_phase(output)
 
-    def _load_windowed_real(self, input: T[]):
+    def _load_windowed_pairs(self, input: T[], window: f64[]):
       count = _min_i(input.len(), N)
-      kind = self.window_kind
-      if (kind == _WindowHann):
-        for i in 0..count:
-          self.fft.set_bin(i, input[i] * T(Hann[i]), 0.0)
-      elif (kind == _WindowRectangular):
-        for i in 0..count:
-          self.fft.set_bin(i, input[i] * T(Rectangular[i]), 0.0)
-      elif (kind == _WindowHamming):
-        for i in 0..count:
-          self.fft.set_bin(i, input[i] * T(Hamming[i]), 0.0)
-      elif (kind == _WindowBlackman):
-        for i in 0..count:
-          self.fft.set_bin(i, input[i] * T(Blackman[i]), 0.0)
-      else:
-        for i in 0..count:
-          self.fft.set_bin(i, input[i] * T(Hann[i]), 0.0)
-      for i in count..N:
-        self.fft.set_bin(i, 0.0, 0.0)
+      pairs = count >> 1
+      for i in 0..pairs:
+        even = 2 * i
+        odd = even + 1
+        self.fft._set_bin_at(i,
+          input.read_unsafe(even) * T(window.read_unsafe(even)),
+          input.read_unsafe(odd) * T(window.read_unsafe(odd)))
+      for i in pairs..(N >> 1):
+        self.fft._set_bin_at(i, 0.0, 0.0)
+      if (count & 1) != 0:
+        i = count - 1
+        self.fft._set_bin_at(pairs, input.read_unsafe(i) * T(window.read_unsafe(i)), 0.0)
 
     def forward_real(self, input: T[]):
-      self._load_windowed_real(input)
-      self.fft.forward()
+      kind = self.window_kind
+      if kind == _WindowRectangular:
+        self.fft._load_real_pairs(input)
+      elif kind == _WindowHamming:
+        self._load_windowed_pairs(input, Hamming)
+      elif kind == _WindowBlackman:
+        self._load_windowed_pairs(input, Blackman)
+      else:
+        self._load_windowed_pairs(input, Hann)
+      self.fft._forward_loaded_real()
+      self.fft._complete_real_spectrum()
 
     def forward_real_packed(self, input: T[], output: T[]):
       self.forward_real(input)
