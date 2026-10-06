@@ -40,6 +40,7 @@ namespace std::osc:
   proc Sine:
     params:
       freq = 440.0 => update_freq
+      amp = 1.0
       phase_offset = 0.0 => update_phase_offset
 
     init:
@@ -57,12 +58,13 @@ namespace std::osc:
       phase = _sine_phase(phase_cycles)
 
     sample:
-      out1 = _sine_lookup(phase + offset)
+      out1 = _sine_lookup(phase + offset) * amp
       phase += incr
 
   proc KSine:
     params:
       freq = 1.0 => update_freq
+      amp = 1.0
       phase_offset = 0.0 => update_phase_offset
 
     init:
@@ -80,7 +82,7 @@ namespace std::osc:
       phase = _sine_phase(phase_cycles)
 
     block:
-      kout1 = _sine_lookup(phase + offset)
+      kout1 = _sine_lookup(phase + offset) * amp
       phase += incr
 
   proc Phasor<T>:
@@ -124,6 +126,7 @@ namespace std::osc:
 
     params<T>:
       freq = 440.0 => update_freq
+      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -139,13 +142,14 @@ namespace std::osc:
     sample:
       phase = phasor()
       base = phase + phase - 1.0
-      out1 = (base - poly_blep<T>(phase, dt))
+      out1 = (base - poly_blep<T>(phase, dt)) * amp
 
   proc SawDown<T>:
     outs<T> 1
 
     params<T>:
       freq = 440.0 => update_freq
+      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -161,7 +165,7 @@ namespace std::osc:
     sample:
       phase = phasor()
       base = 1.0 - phase - phase
-      out1 = (base + poly_blep<T>(phase, dt))
+      out1 = (base + poly_blep<T>(phase, dt)) * amp
 
   proc Pulse<T>:
     outs<T> 1
@@ -169,6 +173,7 @@ namespace std::osc:
     params<T>:
       freq = 440.0 => update_freq
       width = 0.5 {0.001, 0.999} => update_width
+      amp = 1.0
 
     init<T>:
       phasor = Phasor(freq = freq)
@@ -198,13 +203,14 @@ namespace std::osc:
 
       wave += poly_blep<T>(phase, dt)
       wave -= poly_blep<T>(phase2, dt)
-      out1 = wave
+      out1 = wave * amp
 
   proc Square<T>:
     outs<T> 1
 
     params<T>:
       freq = 440.0 => update_freq
+      amp = 1.0
 
     init:
       pulse = Pulse(freq = freq, width = 0.5)
@@ -216,13 +222,14 @@ namespace std::osc:
       pulse.reset(phase_cycles)
 
     sample:
-      out1 = pulse()
+      out1 = pulse() * amp
 
   proc Triangle<T>:
     outs<T> 1
 
     params<T>:
       freq = 440.0 => update_freq
+      amp = 1.0
 
     init<T>:
       pulse = Pulse(freq = freq, width = 0.5)
@@ -240,5 +247,5 @@ namespace std::osc:
         tri = T(2.0) - tri
 
     sample:
-      out1 = tri
+      out1 = tri * amp
       tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))

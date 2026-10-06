@@ -25,8 +25,8 @@ init:
   recording = true
   direction = 1.0
 
-  source_a = std::osc::Saw()
-  source_b = std::osc::Sine()
+  source_a = std::osc::Saw(amp = 0.58)
+  source_b = std::osc::Sine(amp = 0.24)
   envelope = std::env::DecayEnv(decay_s = 0.22)
   source_clock = 0
   source_step = 0
@@ -66,8 +66,8 @@ sample:
     pending_bang = false
   source_clock = (source_clock + 1) % source_period
 
-  audition = source_a(freq = source_frequency) * 0.58
-  audition = audition + source_b(freq = source_frequency * 1.4983) * 0.24
+  audition = source_a(freq = source_frequency)
+  audition = audition + source_b(freq = source_frequency * 1.4983)
   audition = audition * envelope() * 0.44
   input_l = audition * (1.0 - live_input) + in1 * live_input
   input_r = audition * (1.0 - live_input) + in2 * live_input

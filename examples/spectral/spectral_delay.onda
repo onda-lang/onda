@@ -102,9 +102,9 @@ params:
 
 init:
   spectral_delay = SpectralDelay::Engine()
-  saw_a = std::osc::Saw()
-  saw_b = std::osc::Saw()
-  saw_c = std::osc::Saw()
+  saw_a = std::osc::Saw(amp = 0.54)
+  saw_b = std::osc::Saw(amp = 0.28)
+  saw_c = std::osc::Saw(amp = 0.18)
   envelope = std::env::DecayEnv(decay_s = 0.24)
   clock = 0
   step = 0
@@ -132,9 +132,9 @@ sample:
   if live_input:
     source = in1
   else:
-    audition = saw_a(freq = frequency) * 0.54
-    audition = audition + saw_b(freq = frequency * 1.4983) * 0.28
-    audition = audition + saw_c(freq = frequency * 2.006) * 0.18
+    audition = saw_a(freq = frequency)
+    audition = audition + saw_b(freq = frequency * 1.4983)
+    audition = audition + saw_c(freq = frequency * 2.006)
     source = audition * envelope() * 0.28
 
   delayed_l, delayed_r = spectral_delay(

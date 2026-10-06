@@ -13,9 +13,9 @@ params:
 
 init:
   chorus = StereoChorus()
-  pad_a = std::osc::Saw(freq = std::pitch::note_to_hz(45.0))
-  pad_b = std::osc::Saw(freq = std::pitch::note_to_hz(52.0))
-  pad_c = std::osc::Triangle(freq = std::pitch::note_to_hz(57.0))
+  pad_a = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.18)
+  pad_b = std::osc::Saw(freq = std::pitch::note_to_hz(52.0), amp = 0.14)
+  pad_c = std::osc::Triangle(freq = std::pitch::note_to_hz(57.0), amp = 0.12)
   pad_filter = std::filter::OnePole(cutoff = 1250.0)
   movement = std::osc::Sine(freq = 0.07)
 
@@ -26,7 +26,7 @@ sample:
     drift = movement()
     pad_a.freq = std::pitch::note_to_hz(45.0) * (1.0 + drift * 0.0015)
     pad_b.freq = std::pitch::note_to_hz(52.0) * (1.0 - drift * 0.0011)
-    pad = pad_filter(pad_a() * 0.18 + pad_b() * 0.14 + pad_c() * 0.12)
+    pad = pad_filter(pad_a() + pad_b() + pad_c())
     source_l = pad
     source_r = pad
 

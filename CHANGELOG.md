@@ -49,8 +49,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and outputs, wrapping 32-bit phase accumulators, and precomputed increments.
   Their accuracy is limited by the table, interpolation, and phase resolution;
   use `sin()` for direct mathematical sine evaluation.
-- Standard oscillators produce normalized waveforms without an `amp`
-  parameter; callers apply gain explicitly.
 - `Phasor` and standard oscillators output their current state before advancing,
   making initialization and reset consistent across audio and control rates.
 - Optimized standard-library FFT processing with radix-4 stages and specialized

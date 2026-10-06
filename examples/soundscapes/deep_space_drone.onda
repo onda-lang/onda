@@ -16,8 +16,8 @@ proc DroneVoice:
     brightness = 1800.0
 
   init:
-    saw = std::osc::Saw(freq = std::pitch::note_to_hz(note))
-    sine = std::osc::Sine(freq = std::pitch::note_to_hz(note) * 0.5)
+    saw = std::osc::Saw(freq = std::pitch::note_to_hz(note), amp = 0.48)
+    sine = std::osc::Sine(freq = std::pitch::note_to_hz(note) * 0.5, amp = 0.52)
     drift = std::osc::Sine(freq = drift_rate)
     tone = std::filter::OnePole(cutoff = brightness)
 
@@ -27,7 +27,7 @@ proc DroneVoice:
     saw.freq = freq
     sine.freq = freq * 0.5
     tone.cutoff = brightness
-    out1 = tone(saw() * 0.48 + sine() * 0.52)
+    out1 = tone(saw() + sine())
 
 params:
   root_note = 33 {21, 57}
