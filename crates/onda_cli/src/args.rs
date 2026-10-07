@@ -33,11 +33,9 @@ pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, 
     let Some(cmd) = args.next() else {
         return Ok(Command::Run(parse_run_window_args(std::iter::empty())?));
     };
-    if cmd == "--help" || cmd == "-h" || cmd == "help" {
-        return Err(usage().to_owned());
-    }
-
     match cmd.as_str() {
+        "--help" | "-h" | "help" => Ok(Command::Help),
+        "--version" | "-v" => Ok(Command::Version),
         "project" => parse_project_args(args),
         "compile" => parse_compile_args(args),
         "lsp" => parse_lsp_args(args),

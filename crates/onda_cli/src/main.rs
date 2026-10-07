@@ -78,6 +78,7 @@ Shared Options:
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
   --help, -h             Show this help
+  --version, -v          Print the version
 
 Compile Options:
   
@@ -125,13 +126,15 @@ fn usage() -> &'static str {
 fn build_usage() -> String {
     let mut out = String::new();
     out.push('\n');
-    out.push_str(&format!("~ onda {ONDA_VERSION} ~\n"));
+    out.push_str(&format!("~ Onda {ONDA_VERSION} ~\n"));
     out.push('\n');
     out.push_str(USAGE_BODY);
     out
 }
 
 enum Command {
+    Help,
+    Version,
     Project {
         destination: PathBuf,
         source: Option<PathBuf>,
@@ -235,6 +238,14 @@ fn main() {
     };
 
     let result = match cmd {
+        Command::Help => {
+            print!("{}", usage());
+            Ok(())
+        }
+        Command::Version => {
+            println!("Onda {ONDA_VERSION}");
+            Ok(())
+        }
         Command::Project {
             destination,
             source,

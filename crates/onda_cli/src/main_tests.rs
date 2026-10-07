@@ -1185,12 +1185,12 @@ fn parse_no_command_defaults_to_run_window() {
 }
 
 #[test]
-fn parse_explicit_help_still_returns_usage() {
-    let error = match parse_args(["onda", "--help"].into_iter().map(str::to_owned)) {
-        Ok(_) => panic!("explicit help should not launch the run window"),
-        Err(error) => error,
-    };
-    assert!(error.contains("onda run [input]"));
+fn parse_explicit_help_returns_help_command() {
+    for flag in ["--help", "-h", "help"] {
+        let command = parse_args(["onda", flag].into_iter().map(str::to_owned))
+            .expect("explicit help should parse successfully");
+        assert!(matches!(command, Command::Help));
+    }
 }
 
 #[test]

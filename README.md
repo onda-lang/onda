@@ -95,6 +95,7 @@ onda lsp
 `<input>` may be an `.onda` source file or an `.ondaproject` project file.
 
 For a full list of all commands and their flags, run the help file via `onda --help`.
+Use `onda --version` (or `onda -v`) to print the installed version.
 
 ### `onda compile`
 
