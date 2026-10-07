@@ -89,5 +89,7 @@ mod proc_local_defs;
 mod slices_and_ports;
 #[path = "examples_suite/stdlib_optimizations.rs"]
 mod stdlib_optimizations;
+#[path = "examples_suite/stdlib_reverb.rs"]
+mod stdlib_reverb;
 #[path = "examples_suite/tuples.rs"]
 mod tuples;

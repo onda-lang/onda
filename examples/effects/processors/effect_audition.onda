@@ -40,6 +40,6 @@ proc EffectAudition:
     clock = (clock + 1) % period
 
     source = (fundamental(freq = frequency) + upper(freq = frequency * 1.4983) + shimmer(freq = frequency * 2.006))
-    source = source * envelope(decay_s = decay_s) * 0.52
+    source = source * envelope(decay_s = decay_s)
     out1 = source
     out2 = source

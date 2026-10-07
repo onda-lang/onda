@@ -20,6 +20,16 @@ namespace std::reverb:
       length: i32
       index: i32 {AllpassCapacity, wrap}
 
+      def process(self, input: T):
+        read_index = self.index - self.length
+        if read_index < 0:
+          read_index += AllpassCapacity
+        delayed = self.buffer[read_index]
+        stored = input + delayed * T(0.5)
+        self.buffer[self.index] = stored
+        self.index += 1
+        return delayed - stored * T(0.5)
+
     proc Reverb<T>:
       ins<T> 2
       outs<T> 2
@@ -43,9 +53,12 @@ namespace std::reverb:
 
       block:
         feedback = T(0.70) + room_size * T(0.28)
+        # Normalize the energy of parallel, undamped combs, including feedback.
+        # Damping still removes high-frequency energy from the tail.
+        comb_norm = sqrt((T(1.0) - feedback * feedback) * T(2.0) / T(CombLines))
 
         sample:
-          excitation = (in1 + in2) * T(0.015)
+          excitation = (in1 + in2) * T(0.5)
           comb_l: T = 0.0
           comb_r: T = 0.0
 
@@ -65,23 +78,14 @@ namespace std::reverb:
             else:
               comb_r += delayed
 
-          comb_norm = T(2.0) / T(CombLines)
           diffuse_l = comb_l * comb_norm
           diffuse_r = comb_r * comb_norm
           for i in 0..AllpassLines:
             line = allpass[i]
-            read_index = line.index - line.length
-            if read_index < 0:
-              read_index += AllpassCapacity
-
-            delayed = line.buffer[read_index]
             if i < AllpassLines / 2:
-              line.buffer[line.index] = diffuse_l + delayed * T(0.5)
-              diffuse_l = delayed - diffuse_l * T(0.5)
+              diffuse_l = line.process(diffuse_l)
             else:
-              line.buffer[line.index] = diffuse_r + delayed * T(0.5)
-              diffuse_r = delayed - diffuse_r * T(0.5)
-            line.index += 1
+              diffuse_r = line.process(diffuse_r)
 
           width_main = T(0.5) + width * T(0.5)
           width_cross = T(0.5) - width * T(0.5)

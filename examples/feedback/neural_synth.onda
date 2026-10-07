@@ -1,13 +1,3 @@
-# Neural feedback machine: 14 leaky tanh neurons with fixed random connections.
-# Each neuron feeds a detuned resonator back into itself; the dense recurrent
-# matrix couples all neurons. There are no trained weights or learning here.
-#
-# Start with resonance_hz for register, resonant_feedback for self-oscillation,
-# feedback for interaction, and drive for saturation. Turn excitation_amount
-# up to entrain the network to excitation_hz. At zero excitation it runs freely.
-# Set noise_amount, motion_depth and bias to zero to hear the unforced network.
-# With both feedback controls at zero, bang() produces a decaying response.
-
 import std/filter
 import std/osc
 import std/random

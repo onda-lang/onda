@@ -486,6 +486,7 @@ struct AllpassLine<T>:
   buffer: T[AllpassCapacity]
   length: i32
   index: i32 {AllpassCapacity, wrap}
+  def process(self, input: T):
 ```
 
 #### Processor `Reverb<T>`
