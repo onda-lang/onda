@@ -9,7 +9,7 @@ fn oscillators_emit_initialized_and_reset_phase_before_advancing() {
         ("SawDown", 0.0, 0.5),
         ("Pulse", 0.0, 1.0),
         ("Square", 0.0, 1.0),
-        ("Triangle", -1.0, 0.0),
+        ("Triangle", -11.0 / 12.0, 0.0),
     ];
     for scalar in ["f32", "f64"] {
         let mut source = format!("import std/osc\nouts {}\ninit:\n", oscillators.len());
@@ -59,7 +59,7 @@ fn oscillators_emit_initialized_and_reset_phase_before_advancing() {
             assert_near(output[index], *reset, 1e-6);
         }
         assert_near(output[channels], 0.3125, 1e-6);
-        // The reset triangle starts at zero and integrates the following interval.
+        // The reset triangle evaluates phase 0.25 before advancing to 0.3125.
         assert_near(output[channels + 6], 0.25, 1e-6);
     }
 }

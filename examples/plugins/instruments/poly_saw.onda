@@ -8,7 +8,6 @@ import std/reverb
 const VoiceCount = 8
 const MidiChannelCount = 16
 const PitchBendSemitones = 5.0
-const ReverbWetGain = 6.0
 
 proc StereoSaturator:
   params:
@@ -318,5 +317,5 @@ block:
     mix_l, mix_r = voice_manager.render(voices)
     saturated_l, saturated_r = saturator(mix_l, mix_r, drive = drive)
     wet_l, wet_r = reverb(saturated_l, saturated_r, mix = 1.0)
-    out1 = (saturated_l + wet_l * reverb_level * ReverbWetGain) * level
-    out2 = (saturated_r + wet_r * reverb_level * ReverbWetGain) * level
+    out1 = (saturated_l + wet_l * reverb_level) * level
+    out2 = (saturated_r + wet_r * reverb_level) * level

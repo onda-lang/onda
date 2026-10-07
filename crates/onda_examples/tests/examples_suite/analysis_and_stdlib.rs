@@ -4003,7 +4003,7 @@ event configure():
 sample:
   out1 = filter_f32(1.0)
   out2 = f32(filter_f64(f64(1.0)))
-  out3 = (lowpass.b0 + lowpass.b1 + lowpass.b2) / (1.0 + lowpass.a1 + lowpass.a2)
+  out3 = f32((lowpass.b0 + lowpass.b1 + lowpass.b2) / (1.0 + lowpass.a1 + lowpass.a2))
   out4 = f32((highpass.b0 - highpass.b1 + highpass.b2) / (f64(1.0) - highpass.a1 + highpass.a2))
 "#;
     let frames = 2;

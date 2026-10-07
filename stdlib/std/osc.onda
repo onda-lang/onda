@@ -109,6 +109,7 @@ namespace std::osc:
 
 
   def poly_blep<T>(t: T, dt: T) -> T:
+    dt = abs(dt)
     zero = dt - dt
     if dt <= zero:
       return zero
@@ -120,6 +121,18 @@ namespace std::osc:
       x = (t - one) / dt
       return x * x + x + x + one
     return zero
+
+  def _poly_blamp<T>(t: T, dt: T) -> T:
+    # Integral of the BLEP residual, correcting a discontinuity in slope.
+    if dt <= 0.0:
+      return T(0.0)
+    if t < dt:
+      x = T(1.0) - t / dt
+    elif t > T(1.0) - dt:
+      x = T(1.0) + (t - T(1.0)) / dt
+    else:
+      return T(0.0)
+    return dt * x * x * x / T(3.0)
 
   proc Saw<T>:
     outs<T> 1
@@ -232,20 +245,21 @@ namespace std::osc:
       amp = 1.0
 
     init<T>:
-      pulse = Pulse(freq = freq, width = 0.5)
-      tri = -1.0
+      phasor = Phasor(freq = freq)
       dt = 0.0
 
     def update_freq():
-      dt = freq / SR
-      pulse.freq = freq
+      dt = abs(freq) / SR
+      phasor.freq = freq
 
     event reset(phase_cycles: T = 0.0):
-      pulse.reset(phase_cycles)
-      tri = T(-1.0) + wrap(phase_cycles, T(0.0), T(1.0)) * T(4.0)
-      if tri > 1.0:
-        tri = T(2.0) - tri
+      phasor.reset(phase_cycles)
 
     sample:
-      out1 = tri * amp
-      tri = clamp(tri + pulse() * dt * T(4.0), T(-1.0), T(1.0))
+      phase = phasor()
+      opposite = phase - T(0.5)
+      if opposite < 0.0:
+        opposite += T(1.0)
+      base = T(1.0) - T(4.0) * abs(phase - T(0.5))
+      correction = _poly_blamp<T>(phase, dt) - _poly_blamp<T>(opposite, dt)
+      out1 = (base + T(4.0) * correction) * amp

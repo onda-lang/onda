@@ -293,8 +293,8 @@ struct BiquadCoefficients<T>:
   b0: T = 1.0
   b1: T = 0.0
   b2: T = 0.0
-  a1: T = 0.0
-  a2: T = 0.0
+  a1: f64 = 0.0
+  a2: f64 = 0.0
 ```
 
 ### Processor `Biquad<T>`

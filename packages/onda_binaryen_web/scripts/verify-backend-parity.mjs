@@ -343,6 +343,12 @@ const scenarios = [
     blocks: 3,
     comparison: "approximate",
   },
+  {
+    name: "stdlib oscillator, envelope, mapping, panning, and biquad regressions",
+    source: join(packageDir, "test/fixtures/stdlib-dsp-regressions.onda"),
+    blocks: 16,
+    comparison: "approximate",
+  },
 ];
 
 try {

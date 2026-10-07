@@ -75,6 +75,8 @@ fn bind_buffer(
 mod analysis_and_stdlib;
 #[path = "examples_suite/const_dependencies.rs"]
 mod const_dependencies;
+#[path = "examples_suite/example_audio.rs"]
+mod example_audio;
 #[path = "examples_suite/execution_and_runtime.rs"]
 mod execution_and_runtime;
 #[path = "examples_suite/fft_accuracy.rs"]
@@ -87,6 +89,8 @@ mod language_core;
 mod proc_local_defs;
 #[path = "examples_suite/slices_and_ports.rs"]
 mod slices_and_ports;
+#[path = "examples_suite/stdlib_dsp_regressions.rs"]
+mod stdlib_dsp_regressions;
 #[path = "examples_suite/stdlib_optimizations.rs"]
 mod stdlib_optimizations;
 #[path = "examples_suite/stdlib_reverb.rs"]

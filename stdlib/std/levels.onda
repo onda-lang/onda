@@ -11,11 +11,14 @@ namespace std::levels:
     safe = max(x, T(MIN_FLOAT))
     return log(safe) * T(DB_PER_NAT)
 
+  def _pan_position(x):
+    return clamp((x + 1.0) * 0.5, 0.0, 1.0)
+
   def pan_linear<T>(x: T):
-    t = clamp((x + T(1.0)) * T(0.5), T(0.0), T(1.0))
-    return (T(1.0) - t, t)
+    t = _pan_position(x)
+    return (1.0 - t, t)
 
   def pan_3db<T>(x: T):
-    t = clamp((x + T(1.0)) * T(0.5), T(0.0), T(1.0))
-    angle = t * T(HALF_PI)
+    t = _pan_position(x)
+    angle = t * (PI / 2.0)
     return (cos(angle), sin(angle))

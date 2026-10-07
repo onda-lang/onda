@@ -19,6 +19,7 @@ proc FormantVoice:
   init:
     frequency = 110.0
     exciter = std::osc::Pulse(width = 0.055)
+    excitation_dc = std::filter::DCBlock()
     amplitude = std::env::DecayEnv(decay_s = decay_s)
     formant_1 = std::filter::Resonator()
     formant_2 = std::filter::Resonator()
@@ -37,7 +38,8 @@ proc FormantVoice:
     amplitude.start(velocity)
 
   sample:
-    pulse = exciter(freq = frequency, width = 0.035 + vowel * 0.055)
+    # Remove pulse bias before it drives the resonators and saturation
+    pulse = excitation_dc(exciter(freq = frequency, width = 0.035 + vowel * 0.055))
     shaped = formant_1(pulse) * 0.72 + formant_2(pulse) * 0.44 + formant_3(pulse) * 0.23
     out1 = tanh(shaped * 1.8) * amplitude(decay_s = decay_s)
 
