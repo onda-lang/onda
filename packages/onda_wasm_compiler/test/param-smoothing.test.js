@@ -385,6 +385,7 @@ sample:
   out1 = voice()
 `, 0.25]);
     }
+    // Concrete f64 array elements retain their type through indexing and scalar aliases.
     for (const expression of ["Selected", "Table[0]", "Table[i32(0)]"]) {
       cases.push([`const Table: f64[1] = [0.25]
 const Selected = Table[0]
@@ -399,7 +400,7 @@ init:
   voice = Voice()
 sample:
   out1 = voice()
-`, 1]);
+`, 2]);
     }
     for (const optimize of [false, true]) {
       for (const [source, expected, firstBlock] of cases) {
