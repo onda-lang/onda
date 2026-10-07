@@ -361,73 +361,223 @@ Compound types:
 
 ### Numeric Literals and Casts
 
-Numeric literals and pure numeric constant expressions begin without a source
-machine width. During semantic analysis they retain the widest supported
-literal representation until a concrete numeric context selects `f32`, `f64`,
-`i32`, or `i64`.
+Width selection, operand promotion, and destination conversion are separate
+steps. These rules apply to runtime code and `const def` evaluation alike.
 
-A concrete context can come from an annotation, a function parameter or return
-type, another concretely typed operand, an interface/state/array element type,
-or generic specialization at a call site. Conversion happens once at that
-boundary. Runtime arithmetic then executes at the selected width; Onda does not
-silently evaluate an `f32` expression through `f64` intermediates.
-The same width selection applies during `const def` evaluation. Integer
-arithmetic wraps at the selected integer width, before any later operation:
-`(2147483647 + 1) / 2` in an `i32` context produces `-1073741824`.
-Integer-only subexpressions retain integer arithmetic in floating contexts.
-An explicit cast evaluates its argument in the argument's own context, then
-converts the result.
+#### Contextual Values and Defaults
 
-When no context exists, first assignment uses Onda defaults:
+Numeric literals and builtin numeric constants are contextual. An unannotated
+numeric const whose initializer is contextual stays contextual through aliases
+and folding. These values retain `i64`/`f64` evaluation precision until a use
+selects a machine width. A pure numeric literal expression contains only these
+values, numeric operators, and numeric builtins.
+
+Annotations, explicit casts, concrete array elements, and typed function
+results carry concrete types. Runtime bindings also keep the type chosen at
+their first assignment; later uses do not infer it again. A concrete constant
+participates in operand promotion with its existing type, even though its
+known value may permit conversion at a typed destination.
+
+A context can come from an annotation, an existing destination, a parameter or
+return type, an interface or state type, an array element or struct field type,
+a concrete operand, or generic specialization. With no such context, fresh
+bindings use these defaults:
+
+| Contextual value or expression | Default type |
+| --- | --- |
+| Floating | `f32` |
+| Integer, with every contributing integer literal or untyped const value in the `i32` range | `i32` |
+| Integer, requiring a wider literal or untyped const value | `i64` |
+
+Inline integer expressions select this width before their arithmetic executes.
+A named untyped const has already evaluated its initializer; its computed value
+determines the default at a use. Each new tuple component uses its own default.
+An untyped array binding selects its element type from its first element.
+
+```onda
+const Small = 64
+const Large = 4294967297
+const Precise = 16777217.0
+const Fixed = f64(Precise)
+
+init:
+  small = Small      # i32
+  large = Large      # i64
+  rounded = Precise  # f32: 16777216.0
+  fixed = Fixed      # f64: 16777217.0
+```
+
+#### Operand Promotion
+
+Once operands have concrete widths, arithmetic uses this symmetric table:
+
+| Left / right | `i32` | `i64` | `f32` | `f64` |
+| --- | --- | --- | --- | --- |
+| `i32` | `i32` | `i64` | `f32` | `f64` |
+| `i64` | `i64` | `i64` | `f64` | `f64` |
+| `f32` | `f32` | `f64` | `f32` | `f64` |
+| `f64` | `f64` | `f64` | `f64` | `f64` |
+
+Comparisons use the same operand type and return `bool`. Numeric branch joins
+and scalar generic inference use the same promotion table. `bool` is outside
+numeric promotion: logical operators require boolean operands, and numeric
+values produce booleans through comparisons such as `value != 0`.
+
+A contextual operand first adapts to its concrete peer. Integer literals can
+enter either numeric family; a floating literal keeps its floating family.
+For arithmetic and comparison operands, the resulting common type is:
+
+| Contextual operand / concrete peer | `i32` | `i64` | `f32` | `f64` |
+| --- | --- | --- | --- | --- |
+| Integer | `i32` | `i64` | `f32` | `f64` |
+| Floating | `f32` | `f64` | `f32` | `f64` |
+
+Consequently, `integer_i32 / 10.0` uses `f32` division and
+`integer_i64 / 10.0` uses `f64` division. Integer-only division stays integer
+division. Reversing the operands does not change their common type.
+
+Numeric builtins combine their concrete arguments first, then adapt contextual
+arguments to that common type. A destination does not change the arithmetic
+width inside a mixed expression containing concrete operands:
+
+```onda
+params:
+  value: f32 = 16777216.0
+
+sample:
+  widened: f64 = value + 1.0  # f32 addition, then f64 conversion: 16777216.0
+  wide = f64(value) + 1.0     # f64 addition: 16777217.0
+```
+
+To select narrow arithmetic for a concrete `i64` mixed with a float, cast the
+integer operand: `f32(count_i64) + 0.5`. Casting the completed expression with
+`f32(count_i64 + 0.5)` instead performs `f64` addition before conversion.
+
+#### Implicit Destination Conversions
+
+Assignments, scalar arguments, defaults, returns, and scalar storage writes
+accept exactly these implicit conversions for runtime values, including the
+identity conversion:
+
+| Source type | Allowed destination types |
+| --- | --- |
+| `i32` | `i32`, `i64`, `f32`, `f64` |
+| `i64` | `i64`, `f64` |
+| `f32` | `f32`, `f64` |
+| `f64` | `f64` |
+| `bool` | `bool` |
+
+Integer-to-float conversion rounds when necessary. The term widening describes
+the type relation, not preservation of every integer bit: `f32` has 24 bits of
+integer precision and `f64` has 53.
+
+Closed compile-time expressions additionally allow these destination conversions:
+
+| Source family | Allowed destinations | Conversion |
+| --- | --- | --- |
+| Integer | `i32`, `i64`, `f32`, `f64` | Integer destinations check the computed value's range; floating destinations round normally. |
+| Floating | `f32`, `f64` | Normal floating-point rounding. |
+| Boolean | `bool` | No numeric conversion. |
+
+This includes typed consts, compile-time-selected const-array elements, and
+`const def` results. It does not include an ordinary runtime binding or an
+ordinary `def` result merely because an optimizer could compute its value.
+Floating-to-integer conversion requires an explicit cast, even for `7.0`.
+Inside `const def`, parameters and local values also permit checked constant
+conversions; their concrete types still control operand promotion.
+
+Pure inline numeric expressions evaluate at the destination's selected width.
+Expressions with concrete operands evaluate their arithmetic first, then
+convert the result. The distinction also applies to typed const declarations.
+
+Tuple destinations apply these rules independently to each component. Array
+literals and scalar element writes use the destination element type. Existing
+array, slice, and buffer references require matching element types; passing
+one does not insert an element-by-element numeric conversion.
+
+Range checking at a destination is distinct from integer arithmetic. Arithmetic
+wraps at its selected integer width, including contextual operands converted
+to that width:
+
+```onda
+const Huge = 4294967297
+
+sample:
+  zero: i32 = 0
+  wrapped = zero + Huge  # i32 arithmetic: Huge wraps to 1
+  # value: i32 = Huge   # rejected: the constant is out of range for i32
+```
+
+A function argument is a typed destination too: a generic call that selects
+`i32` cannot accept `Huge` as a separate argument, whereas its `i32` arithmetic
+can wrap during evaluation.
+
+#### Evaluation Width and Explicit Casts
+
+At the selected width, integer arithmetic wraps and floating arithmetic rounds
+at each operation. Onda does not compute an `f32` expression through `f64`
+intermediates. Unary minus preserves the selected numeric type; `~` requires
+an integer. Neither supports `bool`.
+
+Contextual numeric const initializers evaluate once at `i64`/`f64` precision.
+Uses adapt the computed value rather than re-evaluating the initializer:
+
+```onda
+const Half = (2147483647 + 1) / 2
+
+init:
+  named: i32 = Half                        # 1073741824
+  inline: i32 = (2147483647 + 1) / 2        # -1073741824: i32 addition wraps
+  converted = i32((2147483647 + 1) / 2)     # 1073741824: i64 argument, then cast
+```
+
+Integer-only literal subexpressions inside floating arithmetic evaluate with
+`i64` integer operations, then convert to the surrounding floating width.
+For example, `value: f32 = ((16777216 + 1) - 16777216) + 0.0` yields `1.0`.
+
+An explicit cast `TYPE(expr)` evaluates its argument in the argument's own
+context, then converts its result. A pure numeric argument with no concrete
+peer evaluates at `i64`/`f64` precision. The cast's result type does not select
+the argument's arithmetic width:
 
 ```onda
 sample:
-  x = 0.5  # f32
-  n = 5    # i32 when it fits, otherwise i64
-  m = -5   # i32 when it fits, otherwise i64
+  contextual: f32 = (16777216.0 + 1.0) - 16777216.0  # 0.0: f32 arithmetic
+  converted = f32((16777216.0 + 1.0) - 16777216.0)   # 1.0: f64 arithmetic, then cast
 ```
 
-Unary minus preserves the selected numeric type: it works for `f32`, `f64`,
-`i32`, and `i64`, including generic code specialized to those types. It is not
-defined for `bool`.
+Cast targets are `f32`, `f64`, `i32`, and `i64`. They accept numeric or boolean
+arguments:
 
-Pure numeric expressions adapt directly to their surrounding context:
+| Explicit conversion | Behavior |
+| --- | --- |
+| `i32` to `i64` | Sign extension. |
+| `i64` to `i32` | Keep the low 32 bits, interpreted as signed. |
+| Integer to float, or `f64` to `f32` | Normal floating-point rounding. |
+| `f32` to `f64` | Preserve the existing `f32` value exactly. |
+| Float to integer | Truncate toward zero, saturate at the destination bounds; NaN becomes zero. |
+| `bool` to numeric | `false` becomes zero and `true` becomes one. |
 
-```onda
-sample:
-  narrow: f32 = 0.0
-  wide: f64 = 0.0
-
-  a = narrow + 0.1  # f32 addition
-  b = wide + 0.1    # f64 addition
-  c = 0.1           # no context, so f32
-```
-
-Builtin constants such as `TWO_PI` have an `f64` standalone type, but a pure
-compile-time expression such as `freq * TWO_PI / SR` can convert directly into
-an `f32` context. This does not create an `f64` runtime calculation followed by
-an `f32` truncation.
-
-Use an explicit annotation or cast when wider runtime evaluation is intended:
-
-```onda
-sample:
-  narrow: f32 = 0.5
-  wide = f64(narrow) * 0.1
-  count = i64(0)
-```
+To obtain a boolean from a numeric value, use `value != 0`. Zero, including
+negative zero, produces `false`; every other value, including NaN, produces
+`true`. `bool(expr)` is not a cast form.
 
 ### Builtin Constants and Functions
 
 Builtin constants:
 
-| Constant family | Names | Type |
+| Constant family | Names | Numeric family |
 | --- | --- | --- |
-| Pi | `PI`, `pi` | `f64` |
-| Two pi | `TWO_PI`, `TWOPI`, `two_pi`, `twopi` | `f64` |
-| Effective sample rate | `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate` | `f32` |
-| Host sample rate | `HOST_SR`, `HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate` | `f32` |
-| Block size | `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize` | `i32` |
+| Pi | `PI`, `pi` | Floating |
+| Two pi | `TWO_PI`, `TWOPI`, `two_pi`, `twopi` | Floating |
+| Effective sample rate | `SAMPLE_RATE`, `SAMPLERATE`, `SR`, `sample_rate`, `samplerate` | Floating |
+| Host sample rate | `HOST_SR`, `HOST_SAMPLE_RATE`, `HOST_SAMPLERATE`, `host_sample_rate`, `host_samplerate` | Floating |
+| Block size | `BLOCK_SIZE`, `BLOCKSIZE`, `BS`, `block_size`, `blocksize` | Integer |
+
+Numeric builtin constants remain contextual: a fresh `value = PI` binding
+defaults to `f32`, while
+`value: f64 = PI` uses `f64`. With an `f32` frequency, `freq * TWO_PI / SR`
+uses `f32` runtime arithmetic; the constants adapt before those operations.
 
 Builtin functions include:
 
@@ -435,6 +585,19 @@ Builtin functions include:
 sin cos tan tanh atan atan2 exp log sqrt pow abs fabs
 floor ceil round trunc min max fma
 ```
+
+Numeric builtin types follow these rules after contextual argument adaptation:
+
+| Builtin | Argument and result types |
+| --- | --- |
+| `abs`, `fabs` | Numeric argument; preserve its selected type. |
+| `min`, `max`, `clamp(value, lower, upper)` | Numeric arguments; use their common promoted type. |
+| `pow` | Numeric arguments and a floating result. With floating operands, use their common promoted type. Two concrete integer operands produce `f32`; a pure contextual call can select a floating destination's width. |
+| `sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `exp`, `log`, `sqrt`, `floor`, `ceil`, `round`, `trunc`, `fma` | Floating arguments; use `f64` if any adapted argument is `f64`, otherwise `f32`. |
+
+For example, `sin(1)` is rejected: use `sin(1.0)` or `sin(f32(1))`.
+In `fma(value_f32, 1, 0)`, the integer literals adapt to the concrete floating
+peer, so the call uses `f32`. No numeric builtin accepts `bool`.
 
 ### Assignment and Declarations
 
@@ -478,6 +641,9 @@ sample:
 
 On the first sample these statements store `0.01`, `7`, `0.5`, `2.0`, and `1`
 respectively.
+
+Compound assignment uses ordinary operand promotion and then checks conversion
+back to the binding's existing type. The operation does not change that type.
 
 Arithmetic compound operators are `+=`, `-=`, `*=`, `/=`, and `%=`. Integer
 bindings additionally support `&=`, `|=`, `^=`, `<<=`, and `>>=`. Every writable
@@ -685,16 +851,15 @@ Rules:
   remains after compile-time folding. A use such as `Scale[0]` can fold to a scalar without
   retaining the whole array in the typed or compiled program.
 - Inferred-length const array initializers can be literals, existing const arrays, const-array slices, or array-returning `const def` calls.
-- Untyped scalar const declarations remain contextual compile-time numerics and preserve the
-  widest supported literal representation until each use site selects a concrete scalar type.
-- A typed const fixes its scalar type at the declaration. An untyped pure numeric const may
-  specialize directly to `f32` in one context and `f64` in another.
-- Integer constants retain their `i32` or `i64` width for default inference and overload selection,
-  including when read from an array or copied into an inferred const array. An explicit destination
-  type can still contextually convert a compile-time integer expression. These rules do not depend
-  on when a const array is evaluated.
-- Once a numeric expression is concretely typed, every runtime operation uses that width and
-  observes that type's normal rounding semantics. Use an explicit cast to request wider evaluation.
+- Numeric width selection follows [Numeric Literals and Casts](#numeric-literals-and-casts).
+  Contextual numeric consts evaluate in `i64`/`f64` once and retain their computed values through
+  aliases and folding. Each use selects its width: `combine(value_i32, Limit)` infers `i32`
+  when `Limit` is a contextual integer const. Uses without a concrete context take ordinary
+  binding defaults.
+- An annotation, explicit cast, concrete array element, or typed `const def` result fixes the
+  const's type. It participates in operand promotion like another concrete value.
+- Known constants also permit [checked destination conversions](#implicit-destination-conversions).
+  Concrete arithmetic executes before conversion; a destination does not change its width.
 - Reassignment, forward references, recursion, and mutual recursion are rejected.
 
 ## 5. Audio and Control Interfaces
@@ -1090,6 +1255,9 @@ Rules:
 - Tuples can be locals, `init` state, `def` params and returns, and struct fields.
 - A tuple binding keeps the arity and element types established by its declaration or first
   assignment. Reassignment accepts compatible values but never changes the binding's type.
+- Each tuple component uses its destination's numeric context independently. New bindings
+  use ordinary binding defaults; discarded components are still evaluated. Existing bindings
+  follow the same conversion and constant-range checks as scalar assignments.
 - Tuple parameters are mutable local values and follow the same reassignment rules.
 - A fresh tuple assigned at the root of `init` or before a block's `sample` section is persistent
   state. Fresh tuples introduced in nested control flow are lexical locals.
@@ -1146,7 +1314,8 @@ Return rules:
   loop may execute zero times.
 - Explicit annotations can use primitive scalars, primitive tuples, nominal structs, and fixed primitive or struct arrays, including resolved generic types.
 - Struct and fixed-array returns capture independent contents. Unsized slices and buffers cannot be returned.
-- Return checking follows ordinary assignment rules: exact match and implicit widening are allowed; narrowing requires an explicit cast.
+- Return checking follows ordinary assignment rules: exact match, implicit widening, and checked
+  compile-time constant conversion are allowed; runtime narrowing requires an explicit cast.
 - Runtime def call graphs must be acyclic. Direct and mutual recursion are
   rejected because they do not provide a statically bounded realtime workload.
 - `const def` remains value-returning and does not accept bare `return`.
@@ -1212,12 +1381,20 @@ def sat(x: f64):
 Resolution rules:
 
 - Exact typed match wins first.
-- If no exact typed match exists, numeric widening candidates may be used.
+- Contextual scalar arguments use their ordinary binding defaults when ranking typed matches;
+  their retained `i64`/`f64` evaluation representation does not make a wide overload exact.
+- If no exact typed match exists, candidates using the
+  [implicit destination conversions](#implicit-destination-conversions) may be used, including
+  checked constant conversions. A constant must fit the selected parameter type.
 - Explicit typed params outrank generic or duck-typed params.
 - Generic or duck-typed params outrank untyped params.
 - Default arguments participate in overload matching.
 - Return type is not part of overload selection.
 - Equally valid candidates are a semantic error.
+
+For the `sat` overloads above, `sat(0.5)` and a contextual `sat(Fraction)` select
+`f32`; `sat(f64(0.5))` selects `f64`. A typed `f64` const also selects `f64`.
+Use an annotation or cast to resolve an ambiguous numeric call.
 
 Proc-local defs are not overloadable. Runtime defs may still be generic with
 syntax such as `def id<T>(x: T) -> T`; those generic defs are specialized from
@@ -2578,6 +2755,24 @@ Rules:
 - `bool` is not allowed as a generic def type arg.
 - A type param not constrained by any call argument defaults to `f32`; for example, `zero<T>()`
   called as `zero()` specializes `T` to `f32`.
+- Scalar inference collects every concrete argument for a type parameter before adapting
+  contextual arguments. It uses the [operand promotion table](#operand-promotion), regardless
+  of argument order. For `combine<T>(a: T, b: T)`, an `i32` with a contextual integer selects
+  `i32`, an `f32` with a contextual integer selects `f32`, and an `i64` with a floating
+  argument selects `f64`.
+- If every scalar argument is contextual, any floating argument selects `f32`; otherwise
+  integer binding defaults select `i32` or `i64`. For example, `combine(4294967297, 0.5)`
+  selects `f32` because the integer has no concrete `i64` type yet.
+- Explicit type arguments select the parameter type directly. Every scalar argument must
+  then satisfy the ordinary destination-conversion rules, including constant range checks;
+  selecting `T` does not permit runtime narrowing.
+- Array and buffer arguments constrain a type parameter to their exact element type.
+  Conflicting element types are errors. Scalar arguments sharing that type parameter must
+  convert to the fixed type, and an explicit type argument must agree with it. Existing
+  aggregate references are not converted element by element.
+- A call's destination or expected return type does not select its generic type arguments.
+  `result: f64 = id(0.5)` still calls `id<f32>` and then widens its result; use
+  `id<f64>(0.5)` to select the wider specialization.
 - Generic type params can appear in scalar params, array params, buffer element params, locals, casts, and supported return annotations.
 - `const def` cannot declare type parameters.
 

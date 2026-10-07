@@ -979,7 +979,7 @@ fn invalid_deferred_value_diamonds_report_the_failure_once() {
 }
 
 #[test]
-fn deferred_numeric_aliases_preserve_contextual_coercion() {
+fn deferred_numeric_aliases_allow_checked_destination_conversion() {
     for (ty, value, target) in [("f64", "0.25", "f32"), ("i64", "7", "i32")] {
         let prefix = format!("const Table: {ty}[1] = [{value}]\nconst Selected = Table[0]\n");
         for body in [
@@ -993,7 +993,7 @@ fn deferred_numeric_aliases_preserve_contextual_coercion() {
             for expression in ["Selected", "Table[0]", "Table[i32(0)]"] {
                 let body = body.replace("Selected", expression);
                 let typed = analyze_source(&format!("{prefix}{body}"));
-                lower_program_to_optimized_mir(&typed).expect("contextual constants should lower");
+                lower_program_to_optimized_mir(&typed).expect("checked constant conversion should lower");
             }
         }
     }
@@ -1033,7 +1033,7 @@ fn unused_processor_graph_sources_do_not_demand_const_values() {
 
 #[test]
 fn deferred_numeric_metadata_does_not_evaluate_unused_bodies_or_narrow_wide_integers() {
-    let unused = analyze_source("const Table: f64[1] = [1.0 / 0.0]\nstruct Holder:\n  value: f32 = 0.0\n  def set(self):\n    self.value = Table[0]\nsample:\n  out1 = 0.0\n");
+    let unused = analyze_source("const Table: f64[1] = [1.0 / 0.0]\nstruct Holder:\n  value: f32 = 0.0\n  def set(self):\n    self.value = f32(Table[0])\nsample:\n  out1 = 0.0\n");
     assert!(unused.const_arrays.is_empty());
     let wide = analyze_source("const Table: i64[1] = [4294967297]\nconst Selected = Table[0]\nproc Voice:\n  init:\n    value = Selected\n  sample:\n    out1 = f32((value == 4294967297))\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n");
     lower_program_to_optimized_mir(&wide).expect("wide aliases should retain their value");
@@ -1052,7 +1052,7 @@ fn unused_graph_delay_metadata_still_demands_const_values() {
 }
 
 #[test]
-fn lazy_graph_numeric_sources_keep_contextual_coercion() {
+fn lazy_graph_numeric_sources_allow_checked_destination_conversion() {
     for expression in ["Table[0]", "Table[i32(0)]", "Selected[0]"] {
         let prefix = format!("const Table: f64[1] = [0.25]\nconst Selected = [Table[0]]\nproc Voice:\n  graph:\n    {expression} >> out1\n");
         let unused = analyze_source(&format!("{prefix}sample:\n  out1 = 0.0\n"));
@@ -1060,7 +1060,7 @@ fn lazy_graph_numeric_sources_keep_contextual_coercion() {
         let used = analyze_source(&format!(
             "{prefix}init:\n  voice = Voice()\nsample:\n  out1 = voice()\n"
         ));
-        lower_program_to_optimized_mir(&used).expect("graph literal coercion should lower");
+        lower_program_to_optimized_mir(&used).expect("checked graph conversion should lower");
     }
 }
 
@@ -1078,7 +1078,7 @@ fn runtime_const_array_indices_do_not_allow_literal_narrowing() {
 }
 
 #[test]
-fn deferred_float_overload_arguments_use_the_same_default_as_folded_literals() {
+fn deferred_float_overload_arguments_keep_concrete_element_width() {
     for expression in ["Selected", "Table[0]", "Table[i32(0)]"] {
         let source = format!("const Table: f64[1] = [0.25]\nconst Selected = Table[0]\ndef select(value: f32):\n  return 1.0\ndef select(value: f64):\n  return 2.0\nproc Voice:\n  sample:\n    out1 = select({expression})\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n");
         let typed = analyze_source(&source);
@@ -1091,7 +1091,7 @@ fn deferred_float_overload_arguments_use_the_same_default_as_folded_literals() {
             matches!(
                 selected.param_kinds.first(),
                 Some(TypedFnParam::Scalar {
-                    ty: Some(PrimitiveType::F32)
+                    ty: Some(PrimitiveType::F64)
                 })
             ),
             "{selected:?}"

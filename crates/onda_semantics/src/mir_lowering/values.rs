@@ -3,17 +3,18 @@ use super::*;
 impl<'a> FunctionLowerer<'a> {
     /// Reuse checked annotations and existing storage metadata for the RHS's
     /// numeric context. Resolving a type never evaluates the assignment place.
+    /// Discarded and fresh targets leave only their own component uncontextualized.
     pub(super) fn assignment_value_types(
         &self,
         target: &AssignTarget,
         declared: Option<&onda_frontend::DeclType>,
         expression: &Expr,
-    ) -> Result<Option<Vec<PrimitiveType>>, MirLoweringError> {
+    ) -> Result<Option<Vec<Option<PrimitiveType>>>, MirLoweringError> {
         if let Some(ty) = declared.and_then(onda_frontend::DeclType::scalar) {
-            return Ok(Some(vec![ty]));
+            return Ok(Some(vec![Some(ty)]));
         }
         if let Some(types) = declared.and_then(onda_frontend::DeclType::tuple) {
-            return Ok(Some(types.to_vec()));
+            return Ok(Some(types.iter().copied().map(Some).collect()));
         }
         let (name, index) = match target {
             AssignTarget::Var(name) => (name.as_str(), None),
@@ -26,8 +27,8 @@ impl<'a> FunctionLowerer<'a> {
                             .first()
                             .copied()
                     })
-                    .collect::<Option<Vec<_>>>();
-                return Ok(types);
+                    .collect();
+                return Ok(Some(types));
             }
             _ => return Ok(None),
         };
@@ -38,14 +39,13 @@ impl<'a> FunctionLowerer<'a> {
                     types = vec![types[component]];
                 }
             }
-            return Ok(Some(types));
+            return Ok(Some(types.into_iter().map(Some).collect()));
         }
         // First assignment has the ordinary literal defaults. Non-literal
         // values retain the type inferred by ordinary expression lowering.
         if index.is_none() {
-            return Ok(
-                crate::expr_typing::default_numeric_literal_type(expression).map(|ty| vec![ty])
-            );
+            return Ok(crate::expr_typing::default_numeric_literal_type(expression)
+                .map(|ty| vec![Some(ty)]));
         }
         Ok(None)
     }

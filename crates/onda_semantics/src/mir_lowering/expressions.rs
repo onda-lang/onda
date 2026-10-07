@@ -68,14 +68,46 @@ impl<'a> FunctionLowerer<'a> {
         types: &[PrimitiveType],
         block: &mut MirBlock,
     ) -> Result<Vec<LoweredValue>, MirLoweringError> {
+        self.lower_value_expr_with_types(expression, types.len(), |index| Some(types[index]), block)
+    }
+
+    pub(super) fn lower_assignment_value_expr(
+        &mut self,
+        expression: &Expr,
+        types: Option<&[Option<PrimitiveType>]>,
+        block: &mut MirBlock,
+    ) -> Result<Vec<LoweredValue>, MirLoweringError> {
+        let arity = types.map_or(0, <[Option<PrimitiveType>]>::len);
+        self.lower_value_expr_with_types(
+            expression,
+            arity,
+            |index| types.and_then(|types| types[index]),
+            block,
+        )
+    }
+
+    fn lower_value_expr_with_types(
+        &mut self,
+        expression: &Expr,
+        arity: usize,
+        component_type: impl Fn(usize) -> Option<PrimitiveType>,
+        block: &mut MirBlock,
+    ) -> Result<Vec<LoweredValue>, MirLoweringError> {
         match expression {
-            Expr::Tuple { values, .. } if values.len() == types.len() => values
+            Expr::Tuple { values, .. } if values.len() == arity => values
                 .iter()
-                .zip(types)
-                .map(|(value, ty)| self.lower_expr_for_type(value, *ty, block))
+                .enumerate()
+                .map(|(index, value)| match component_type(index) {
+                    Some(ty) => self.lower_expr_for_type(value, ty, block),
+                    None => self.lower_untyped_expr(value, block),
+                })
                 .collect(),
-            _ if types.len() == 1 => {
-                Ok(vec![self.lower_expr_for_type(expression, types[0], block)?])
+            _ if arity == 1 => {
+                let value = match component_type(0) {
+                    Some(ty) => self.lower_expr_for_type(expression, ty, block)?,
+                    None => self.lower_untyped_expr(expression, block)?,
+                };
+                Ok(vec![value])
             }
             _ => self.lower_value_expr(expression, block),
         }
@@ -96,6 +128,9 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
         let constants = scalar_const_kinds(expression, scalar_children);
+        if target.is_some() && constants.contains_key(&(expression as *const Expr)) {
+            return self.lower_constant(expression, target, true);
+        }
         let operand = expression.try_fold(
             |expr, children| {
                 if !constants.contains_key(&(expr as *const Expr)) {
@@ -320,7 +355,7 @@ impl<'a> FunctionLowerer<'a> {
         match expression {
             Expr::Tuple { values, .. } => values
                 .iter()
-                .map(|value| self.lower_expr(value, block))
+                .map(|value| self.lower_untyped_expr(value, block))
                 .collect(),
             Expr::Var { name, .. } => {
                 if let Some(components) = self.data_tuple_components(name) {

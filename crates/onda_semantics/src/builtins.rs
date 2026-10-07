@@ -413,100 +413,104 @@ pub(crate) fn infer_const_expr_type(
 fn fold_const_expr_exactness(
     expr: &Expr,
     constants: Option<&crate::decl_symbols::DeclaredSymbolMap>,
-) -> bool {
+) -> (bool, bool) {
     // Keep constant availability separate from integer results: an explicit
     // integer cast may consume a constant floating expression without losing
     // its integer result type or exact arithmetic in the surrounding tree.
-    let (_, exact) = expr
-        .try_fold(
-            Expr::children,
-            |node, children| -> Result<(bool, bool), std::convert::Infallible> {
-                let mut child = || children.next().expect("const expression exactness child");
-                let (constant, exact) = match node {
-                    Expr::Int { .. } | Expr::Bool { .. } => (true, true),
-                    Expr::Number { .. } => (true, false),
-                    Expr::Var { name, .. } => {
-                        let ty = builtin_constant_type(name).or_else(|| {
-                            match constants.and_then(|symbols| symbols.get(name)) {
-                                Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
-                                    ty,
-                                    ..
-                                }) => Some(*ty),
-                                _ => None,
-                            }
-                        });
-                        (
-                            ty.is_some(),
-                            matches!(
-                                ty,
-                                Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
-                            ),
-                        )
-                    }
-                    Expr::Index { base, .. } => {
-                        let (_, index_exact) = child();
-                        let ty = match constants.and_then(|symbols| symbols.get(base)) {
-                            Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
-                                elem_ty,
-                            }) => Some(*elem_ty),
+    expr.try_fold(
+        Expr::children,
+        |node, children| -> Result<(bool, bool), std::convert::Infallible> {
+            let mut child = || children.next().expect("const expression exactness child");
+            let (constant, exact) = match node {
+                Expr::Int { .. } | Expr::Bool { .. } => (true, true),
+                Expr::Number { .. } => (true, false),
+                Expr::Var { name, .. } => {
+                    let ty = builtin_constant_type(name).or_else(|| {
+                        match constants.and_then(|symbols| symbols.get(name)) {
+                            Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                                ty, ..
+                            }) => Some(*ty),
                             _ => None,
-                        };
-                        (
-                            ty.is_some() && index_exact,
-                            matches!(
-                                ty,
-                                Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
-                            ) && index_exact,
-                        )
-                    }
-                    Expr::Cast { to, .. } => {
-                        let (constant, _) = child();
-                        (
-                            constant,
-                            constant
-                                && matches!(
-                                    to,
-                                    PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool
-                                ),
-                        )
-                    }
-                    Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => child(),
-                    Expr::Logical { .. } | Expr::Compare { .. } | Expr::Binary { .. } => {
-                        let (lhs_const, lhs_exact) = child();
-                        let (rhs_const, rhs_exact) = child();
-                        (lhs_const && rhs_const, lhs_exact && rhs_exact)
-                    }
-                    Expr::Call { func, .. } => {
-                        let (constant, integers) = children.fold(
-                            (true, true),
-                            |(constant, integers), (arg_const, arg_int)| {
-                                (constant && arg_const, integers && arg_int)
-                            },
-                        );
-                        (
-                            constant,
-                            integers
-                                && matches!(
-                                    func,
-                                    BuiltinFn::Abs
-                                        | BuiltinFn::Min
-                                        | BuiltinFn::Max
-                                        | BuiltinFn::RangeClamp
-                                        | BuiltinFn::RangeWrap
-                                ),
-                        )
-                    }
-                    _ => (false, false),
-                };
-                Ok((constant, exact))
-            },
-        )
-        .unwrap();
-    exact
+                        }
+                    });
+                    (
+                        ty.is_some(),
+                        matches!(
+                            ty,
+                            Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
+                        ),
+                    )
+                }
+                Expr::Index { base, .. } => {
+                    let (_, index_exact) = child();
+                    let ty = match constants.and_then(|symbols| symbols.get(base)) {
+                        Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray { elem_ty }) => {
+                            Some(*elem_ty)
+                        }
+                        _ => None,
+                    };
+                    (
+                        ty.is_some() && index_exact,
+                        matches!(
+                            ty,
+                            Some(PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool)
+                        ) && index_exact,
+                    )
+                }
+                Expr::Cast { to, .. } => {
+                    let (constant, _) = child();
+                    (
+                        constant,
+                        constant
+                            && matches!(
+                                to,
+                                PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::Bool
+                            ),
+                    )
+                }
+                Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => child(),
+                Expr::Logical { .. } | Expr::Compare { .. } | Expr::Binary { .. } => {
+                    let (lhs_const, lhs_exact) = child();
+                    let (rhs_const, rhs_exact) = child();
+                    (lhs_const && rhs_const, lhs_exact && rhs_exact)
+                }
+                Expr::Call { func, .. } => {
+                    let (constant, integers) = children.fold(
+                        (true, true),
+                        |(constant, integers), (arg_const, arg_int)| {
+                            (constant && arg_const, integers && arg_int)
+                        },
+                    );
+                    (
+                        constant,
+                        integers
+                            && matches!(
+                                func,
+                                BuiltinFn::Abs
+                                    | BuiltinFn::Min
+                                    | BuiltinFn::Max
+                                    | BuiltinFn::RangeClamp
+                                    | BuiltinFn::RangeWrap
+                            ),
+                    )
+                }
+                _ => (false, false),
+            };
+            Ok((constant, exact))
+        },
+    )
+    .unwrap()
 }
 
 pub(crate) fn can_eval_const_expr_exact_int(expr: &Expr) -> bool {
-    fold_const_expr_exactness(expr, None)
+    fold_const_expr_exactness(expr, None).1
+}
+
+pub(crate) fn can_eval_const_expr_with_symbols(
+    expr: &Expr,
+    constants: &crate::decl_symbols::DeclaredSymbolMap,
+) -> bool {
+    fold_const_expr_exactness(expr, Some(constants)).0
 }
 
 /// Proves the same exact integer forms before deferred constants have values.
@@ -514,7 +518,7 @@ pub(crate) fn can_eval_const_expr_exact_int_with_symbols(
     expr: &Expr,
     constants: &crate::decl_symbols::DeclaredSymbolMap,
 ) -> bool {
-    fold_const_expr_exactness(expr, Some(constants))
+    fold_const_expr_exactness(expr, Some(constants)).1
 }
 
 pub(crate) fn eval_const_expr_i64_exact(

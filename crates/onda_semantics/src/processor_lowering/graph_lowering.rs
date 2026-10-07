@@ -59,6 +59,8 @@ struct ResolvedGraphSourcePlan {
     source: Expr,
     delay_state: Option<GraphDelayState>,
     shared_tmp: Option<String>,
+    /// Per-component runtime values shared by destination-specific delay writes.
+    shared_delay_values: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

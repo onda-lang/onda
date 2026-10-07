@@ -120,62 +120,96 @@ pub(super) fn build_graph_lowering_plan(
                 Err(()) => return,
             };
 
+            let edge_errors_before = errors.len();
+            let mut push_source = |expr: &Expr,
+                                   dests: Vec<(GraphDestKind, String, GraphValueType)>,
+                                   use_shared_tmp: bool| {
+                let source_plan = push_graph_source_plan(
+                    expr,
+                    &dests,
+                    rate,
+                    delay,
+                    use_shared_tmp,
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    owner_context,
+                    options,
+                    inferred_param_rate,
+                    &mut delayed_edge_counter,
+                    &mut shared_tmp_counter,
+                    &mut source_plans,
+                    errors,
+                );
+                for (dest, _, dest_value_ty) in dests {
+                    resolved.push(ResolvedGraphEdge {
+                        source_plan,
+                        dest,
+                        dest_value_ty,
+                    });
+                }
+                source_plan
+            };
             match expansion {
                 GraphSourceExpansion::Shared {
                     expr,
                     use_shared_tmp,
                 } => {
-                    let source_plan = push_graph_source_plan(
-                        &expr,
-                        &edge_dests,
-                        rate,
-                        delay,
-                        use_shared_tmp,
-                        owner,
-                        nodes,
-                        proc_surfaces,
-                        owner_context,
-                        options,
-                        inferred_param_rate,
-                        &mut delayed_edge_counter,
-                        &mut shared_tmp_counter,
-                        &mut source_plans,
-                        errors,
-                    );
-                    for (dest, _, dest_value_ty) in edge_dests {
-                        resolved.push(ResolvedGraphEdge {
-                            source_plan,
-                            dest,
-                            dest_value_ty,
-                        });
+                    // Delay storage applies destination conversion before the
+                    // value becomes runtime data. Only equal destination types
+                    // and shapes can share that storage.
+                    let delayed = delay.is_some_and(|len| len > 0);
+                    let mut groups = Vec::<Vec<(GraphDestKind, String, GraphValueType)>>::new();
+                    for dest in edge_dests {
+                        if let Some(group) = groups
+                            .iter_mut()
+                            .find(|group| !delayed || group[0].2 == dest.2)
+                        {
+                            group.push(dest);
+                        } else {
+                            groups.push(vec![dest]);
+                        }
                     }
-                }
-                GraphSourceExpansion::PerDest(exprs) => {
-                    for (expr, (dest, dest_key, dest_value_ty)) in exprs.into_iter().zip(edge_dests)
+                    let plans = groups
+                        .into_iter()
+                        .map(|dests| push_source(&expr, dests, use_shared_tmp))
+                        .collect::<Vec<_>>();
+                    if delayed
+                        && use_shared_tmp
+                        && errors.len() == edge_errors_before
+                        && !owner.constants.const_symbols.constant_expression(&expr)
                     {
-                        let single_dest = vec![(dest.clone(), dest_key, dest_value_ty.clone())];
-                        let source_plan = push_graph_source_plan(
+                        let value_count = match infer_graph_source_value_type(
                             &expr,
-                            &single_dest,
-                            rate,
-                            delay,
-                            false,
                             owner,
                             nodes,
                             proc_surfaces,
                             owner_context,
                             options,
-                            inferred_param_rate,
-                            &mut delayed_edge_counter,
-                            &mut shared_tmp_counter,
-                            &mut source_plans,
                             errors,
-                        );
-                        resolved.push(ResolvedGraphEdge {
-                            source_plan,
-                            dest,
-                            dest_value_ty,
-                        });
+                        ) {
+                            Some(GraphValueType::Scalar(_)) => 1,
+                            Some(GraphValueType::Array { len, .. }) => len,
+                            None => return,
+                        };
+                        if value_count == 0 {
+                            return;
+                        }
+                        let values = (0..value_count)
+                            .map(|_| {
+                                let name = format!("__graph_fanout_{}", shared_tmp_counter);
+                                shared_tmp_counter += 1;
+                                name
+                            })
+                            .collect::<Vec<_>>();
+                        for plan in plans {
+                            source_plans[plan].shared_delay_values = Some(values.clone());
+                        }
+                    }
+                }
+                GraphSourceExpansion::PerDest(exprs) => {
+                    for (expr, dest) in exprs.into_iter().zip(edge_dests) {
+                        push_source(&expr, vec![dest], false);
                     }
                 }
             }
@@ -233,7 +267,8 @@ fn push_graph_source_plan(
             require_graph_assignable_type(
                 src_value_ty,
                 dest_value_ty,
-                source_expr.loc(),
+                source_expr,
+                &owner.constants.const_symbols,
                 &format!("{owner_context} graph edge source for destination '{dest_key}'"),
                 errors,
             );
@@ -285,7 +320,13 @@ fn push_graph_source_plan(
     } else {
         None
     };
-    let shared_tmp = if use_shared_tmp && edge_dests.len() > 1 {
+    // Delay buffers already cache runtime sources. Closed sources must still
+    // fold independently to preserve each destination's constant conversion.
+    let shared_tmp = if use_shared_tmp
+        && delay_state.is_none()
+        && edge_dests.len() > 1
+        && !owner.constants.const_symbols.constant_expression(&source)
+    {
         let name = format!("__graph_fanout_{}", *shared_tmp_counter);
         *shared_tmp_counter += 1;
         Some(name)
@@ -301,6 +342,7 @@ fn push_graph_source_plan(
         source,
         delay_state,
         shared_tmp,
+        shared_delay_values: None,
     });
     source_plan
 }

@@ -1322,6 +1322,7 @@ pub(crate) fn expand_proc_port_specs(
             }
             ProcPortSpec {
                 name: spec.name,
+                is_array: arrays.contains_key(&port.name),
                 slots,
                 defaults,
                 ranges,

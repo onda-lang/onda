@@ -2215,15 +2215,9 @@ pub(crate) fn merge_inferred_return_types(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
 ) -> Option<PrimitiveType> {
-    use PrimitiveType::*;
-    match (lhs, rhs) {
-        (a, b) if a == b => Some(a),
-        (Bool, _) | (_, Bool) => None,
-        (F64, _) | (_, F64) => Some(F64),
-        (F32, I64) | (I64, F32) => Some(F64),
-        (F32, I32) | (I32, F32) => Some(F32),
-        (F32, F32) => Some(F32),
-        (I64, I32) | (I32, I64) | (I64, I64) => Some(I64),
-        (I32, I32) => Some(I32),
+    if lhs == rhs {
+        Some(lhs)
+    } else {
+        crate::expr_typing::merge_numeric_types_without_diagnostics(lhs, rhs)
     }
 }

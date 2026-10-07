@@ -239,6 +239,142 @@ fn generic_arithmetic_uses_each_specializations_width() {
 }
 
 #[test]
+fn mixed_i64_float_operations_agree_with_generic_helpers() {
+    assert_context_output(
+        r#"
+const Half = 0.5
+const FixedCount: i64 = 16777217
+const FixedHalf: f32 = 0.5
+const Counts: i64[1] = [FixedCount]
+const FoldedSum = FixedCount + FixedHalf
+const FoldedMaximum = max(FixedHalf, Counts[0])
+const FoldedComparison = FixedCount > 16777216.0
+def add<T>(a: T, b: T) -> T:
+  return a + b
+def greater<T>(a: T, b: T) -> bool:
+  return a > b
+init:
+  count: i64 = 16777217
+  half: f32 = 0.5
+  limit: f32 = 16777216.0
+  direct = count + Half
+  helper = add(count, Half)
+sample:
+  correct = direct == helper && direct == 16777217.5
+  correct = correct && FoldedSum == helper && FoldedMaximum == 16777217.0 && FoldedComparison
+  correct = correct && count + half == helper && half + count == helper
+  correct = correct && max(count, Half) == 16777217.0 && max(Half, count) == 16777217.0
+  correct = correct && min(count, 16777218.0) == 16777217.0
+  correct = correct && clamp(count, 16777216.0, 16777218.0) == 16777217.0
+  correct = correct && count > limit && greater(count, limit)
+  correct = correct && limit < count && 16777216.0 < count
+  correct = correct && count > 16777216.0 && count != limit
+  correct = correct && f32(count) + Half == limit && f32(count) == limit
+  out1 = f32(correct)
+"#,
+        1.0,
+    );
+}
+
+#[test]
+fn const_and_native_mixed_i64_float_operations_preserve_precision() {
+    for (result, expression, expected) in [
+        ("f64", "count + 0.5", "16777217.5"),
+        ("f64", "0.5 + count", "16777217.5"),
+        ("f64", "count + half", "16777217.5"),
+        ("f64", "half + count", "16777217.5"),
+        ("f64", "max(count, half)", "16777217.0"),
+        ("f64", "max(half, count)", "16777217.0"),
+        ("f64", "min(count, 16777218.0)", "16777217.0"),
+        (
+            "f64",
+            "min(max(count, 16777216.0), 16777218.0)",
+            "16777217.0",
+        ),
+        ("f64", "pow(count, 1.0)", "16777217.0"),
+        ("bool", "count > 16777216.0", "true"),
+        ("bool", "16777216.0 < count", "true"),
+        ("bool", "count != f32(16777216.0)", "true"),
+        ("f32", "f32(count) + half", "16777216.0"),
+    ] {
+        assert_const_and_native_result(
+            |prefix| {
+                format!(
+                    "{prefix}def run() -> {result}:\n  count: i64 = 16777217\n  half: f32 = 0.5\n  return {expression}\n"
+                )
+            },
+            expected,
+        );
+    }
+}
+
+#[test]
+fn contextual_power_preserves_precision_before_explicit_casts() {
+    for (result, expression, expected) in [
+        ("f64", "f64(pow(16777217, 1))", "16777217.0"),
+        ("f32", "f32(pow(16777217, 1) - 16777216)", "1.0"),
+        ("f32", "pow(16777217, 1)", "16777216.0"),
+        ("f64", "f64(pow(i64(16777217), i64(1)))", "16777216.0"),
+    ] {
+        assert_const_and_native_result(
+            |prefix| format!("{prefix}def run() -> {result}:\n  return {expression}\n"),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn primitive_casts_and_boolean_comparisons_match_const_and_native_execution() {
+    for (source_type, value, result_type, expected) in [
+        ("i64", "4294967297", "i32", "1"),
+        ("i32", "-7", "i64", "-7"),
+        ("f64", "-7.75", "i32", "-7"),
+        ("f32", "7.75", "i64", "7"),
+        ("f64", "1.0 / 0.0", "i32", "2147483647"),
+        ("f64", "-1.0 / 0.0", "i64", "-9223372036854775808"),
+        ("f64", "0.0 / 0.0", "i32", "0"),
+        ("f64", "0.0 / 0.0", "bool", "true"),
+        ("f64", "-0.0", "bool", "false"),
+        ("i64", "-1", "bool", "true"),
+        ("bool", "true", "f64", "1.0"),
+        ("bool", "false", "i32", "0"),
+        ("f64", "16777217.0", "f32", "16777216.0"),
+        ("f32", "16777217.0", "f64", "16777216.0"),
+    ] {
+        let expression = if result_type == "bool" {
+            "value != 0".to_owned()
+        } else {
+            format!("{result_type}(value)")
+        };
+        assert_const_and_native_result(
+            |prefix| {
+                format!(
+                    "{prefix}def run() -> {result_type}:\n  value: {source_type} = {value}\n  return {expression}\n"
+                )
+            },
+            expected,
+        );
+    }
+}
+
+#[test]
+fn integer_literal_subtrees_preserve_the_selected_float_context() {
+    for (expression, expected) in [
+        ("(16777216 + 1) + 0.5 - 16777216.0", "0.0"),
+        ("0.5 + (16777216 + 1) - 16777216.0", "0.0"),
+        ("max(16777216 + 1, 16777216.0) - 16777216.0", "0.0"),
+        ("pow(16777216 + 1, 1.0) - 16777216.0", "0.0"),
+        ("((16777216 + 1) - 16777216) + 0.0", "1.0"),
+        ("((2147483647 + 1) / 2) + 0.0", "1073741824.0"),
+    ] {
+        assert_const_and_native_result(
+            |prefix| format!("{prefix}def run() -> f32:\n  return {expression}\n"),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn deferred_literal_operands_preserve_runtime_argument_effects() {
     assert_const_and_native_result(
         |prefix| {
@@ -282,6 +418,88 @@ sample:
 "#
     );
     assert_context_output(&source, 1.0);
+}
+
+#[test]
+fn tuple_binding_defaults_agree_with_scalar_arithmetic_and_overloads() {
+    for (assignment, value) in [
+        ("pair = (Limit, Float)", "pair[0]"),
+        ("value, float = (Limit, Float)", "value"),
+        ("value, _ = (Limit, Float)", "value"),
+        ("_, value = (Float, Limit)", "value"),
+    ] {
+        let source = format!(
+            "const Limit = 2147483647\nconst Float = 16777217.0\ndef next(value: i32) -> i32:\n  return value + 1\ndef next(value: i64) -> i64:\n  return value + 1\ndef run() -> bool:\n  {assignment}\n  return {value} + 1 == next({value}) && {value} + 1 == -2147483648\nsample:\n  out1 = f32(run())\n"
+        );
+        assert_context_output(&source, 1.0);
+    }
+}
+
+#[test]
+fn tuple_binding_defaults_and_concrete_types_survive_materialization() {
+    for (assignment, integer, large, float, fixed) in [
+        (
+            "pair = (Limit, Large, Float, Fixed)",
+            "pair[0]",
+            "pair[1]",
+            "pair[2]",
+            "pair[3]",
+        ),
+        (
+            "integer, large, float, fixed = (Limit, Large, Float, Fixed)",
+            "integer",
+            "large",
+            "float",
+            "fixed",
+        ),
+    ] {
+        let body = format!(
+            "{assignment}\n  result = {integer} + 1 == -2147483648 && {large} == i64(4294967297) && {float} - 16777216.0 == 0.0 && {fixed} - 16777216.0 == 1.0"
+        );
+        for scope in [
+            format!(
+                "def run() -> bool:\n  {body}\n  return result\nsample:\n  out1 = f32(run())\n"
+            ),
+            format!("sample:\n  {body}\n  out1 = f32(result)\n"),
+            format!("init:\n  {body}\nsample:\n  out1 = f32(result)\n"),
+            format!(
+                "sample:\n  out1 = 0.0\n  if true:\n    {}\n    out1 = f32(result)\n",
+                body.replace('\n', "\n  ")
+            ),
+        ] {
+            let source = format!(
+                "const Limit = 2147483647\nconst Large = 4294967297\nconst Float = 16777217.0\nconst Fixed = f64(Float)\n{scope}"
+            );
+            assert_context_output(&source, 1.0);
+        }
+    }
+}
+
+#[test]
+fn tuple_destructuring_selects_context_independently_for_each_destination() {
+    for (targets, values) in [
+        ("narrow, _", "Precise - 16777216.0, 0"),
+        ("narrow, fresh", "Precise - 16777216.0, Fixed - 16777216.0"),
+        ("_, narrow", "0, Precise - 16777216.0"),
+        ("fresh, narrow", "Fixed - 16777216.0, Precise - 16777216.0"),
+    ] {
+        for scope in [
+            format!("def run() -> f32:\n  narrow: f32 = -1\n  {targets} = ({values})\n  return narrow\nsample:\n  out1 = run()\n"),
+            format!("sample:\n  narrow: f32 = -1\n  {targets} = ({values})\n  out1 = narrow\n"),
+            format!("init:\n  narrow: f32 = -1\n  {targets} = ({values})\nsample:\n  out1 = narrow\n"),
+        ] {
+            let source = format!("const Precise = 16777217.0\nconst Fixed: f64 = Precise\n{scope}");
+            assert_context_output(&source, 0.0);
+        }
+    }
+}
+
+#[test]
+fn tuple_destructuring_preserves_order_and_discarded_component_effects() {
+    assert_context_output(
+        "def advance(values: i32[1]) -> i64:\n  values[0] = values[0] + 1\n  return i64(values[0])\ndef run() -> i32:\n  values: i32[1] = [0]\n  first: i64 = 0\n  second: i64 = 0\n  first, _, second = (advance(values), advance(values), advance(values))\n  return i32(first * 100 + values[0] * 10 + second)\nsample:\n  out1 = f32(run())\n",
+        133.0,
+    );
 }
 
 #[test]
@@ -1834,4 +2052,233 @@ sample 2:
         );
         assert_context_output(&source, 1.0);
     }
+}
+
+#[test]
+fn contextual_constants_select_width_at_each_concrete_use() {
+    let definitions = "const Precise = 16777217.0\nconst Alias = Precise + 0.0\ndef difference<T>(value: T, base: T) -> T:\n  return value - base\n";
+    for (ty, expected) in [("f32", 0.0), ("f64", 1.0)] {
+        for expression in [
+            "difference(Alias, base)",
+            "-difference(base, Alias)",
+            "Alias - base",
+            "max(base, Alias) - base",
+        ] {
+            let source = format!("{definitions}init:\n  base: {ty} = 16777216.0\n  result = {expression}\nsample:\n  out1 = f32(result)\n");
+            assert_context_output(&source, expected);
+        }
+    }
+}
+
+#[test]
+fn contextual_integer_constants_use_the_selected_runtime_width() {
+    for (ty, expected) in [("i32", 0.0), ("i64", 1.0)] {
+        for args in ["value, Limit", "Limit, value"] {
+            let source = format!("const Limit = 2147483647\ndef add<T>(a: T, b: T) -> T:\n  return a + b\ninit:\n  value: {ty} = 1\n  result = add({args})\nsample:\n  out1 = f32(result > 0)\n");
+            assert_context_output(&source, expected);
+        }
+    }
+}
+
+#[test]
+fn contextual_constant_binding_defaults_match_const_and_native_execution() {
+    for (value, operation, expected) in [
+        ("2147483647", "+ 1", "-2147483648"),
+        ("-2147483648", "- 1", "2147483647"),
+        ("2147483648", "+ 1", "2147483649"),
+        ("64", "+ 1", "65"),
+    ] {
+        let source = format!("const Limit = {value}\nconst Alias = Limit\nconst def folded() -> i64:\n  value = Alias\n  return value {operation}\ndef native() -> i64:\n  value = Alias\n  return value {operation}\nsample:\n  out1 = f32(folded() == native() && native() == i64({expected}))\n");
+        assert_context_output(&source, 1.0);
+    }
+}
+
+#[test]
+fn contextual_constants_evaluate_once_before_use_site_narrowing() {
+    assert_const_and_native_result(
+        |prefix| {
+            format!("const Half = (2147483647 + 1) / 2\nconst Alias = Half\n{prefix}def run() -> i32:\n  named: i32 = Alias\n  inline: i32 = (2147483647 + 1) / 2\n  return i32((named == 1073741824 && inline == -1073741824))\n")
+        },
+        "1",
+    );
+}
+
+#[test]
+fn contextual_builtin_constants_keep_full_evaluation_precision() {
+    let source = "const Count = BS * BS\nconst Huge = Count * Count * Count * Count\nconst Alias = Huge\nconst Rate = SR\nconst Volume = Rate * Rate * Rate\nconst Direct = SR * SR * SR\nconst Angle = sin(SR)\nconst Fixed = f32(SR) * f32(SR) * f32(SR)\ninit:\n  wide: i64 = Alias\n  inferred = Alias\nsample:\n  rate: f64 = SR\n  expected = rate * rate * rate\n  narrow = f32(SR) * f32(SR) * f32(SR)\n  out1 = f32((wide == 4294967296 && inferred == wide && Volume == expected && Direct == expected && abs(Angle - sin(rate)) < 0.000000000001 && Fixed == narrow && f64(Fixed) != expected))\n";
+    assert_context_output(source, 1.0);
+}
+
+#[test]
+fn contextual_integer_subexpressions_keep_full_precision_in_mixed_constants() {
+    // At the test's block size of 16, eight products exceed i32.
+    let product = "BS * BS * BS * BS * BS * BS * BS * BS";
+    let source = format!(
+        "const Integer = {product}\nconst ViaAlias = Integer + 0.0\nconst Direct = ({product}) + 0.0\nconst Divided = ({product}) / 3 + 0.0\nconst Greater = ({product}) > BS\nconst Narrow = i32(BS) * i32(BS) * i32(BS) * i32(BS) * i32(BS) * i32(BS) * i32(BS) * i32(BS)\nsample:\n  out1 = f32((Direct == ViaAlias && Direct == 4294967296.0 && Divided == 1431655765.0 && Greater && Narrow == 0))\n"
+    );
+    assert_context_output(&source, 1.0);
+}
+
+#[test]
+fn constant_graph_fanout_converts_separately_for_each_destination() {
+    for expression in ["Precise", "Values[0]"] {
+        let source = format!(
+            "const Precise: f64 = 16777217.0\nconst Values: f64[1] = [Precise]\nproc Narrow:\n  ins:\n    in1: f32\n  sample:\n    out1 = in1\nproc Wide:\n  ins:\n    in1: f64\n  outs:\n    out1: f64\n  sample:\n    out1 = in1\ninit:\n  narrow = Narrow()\n  wide = Wide()\ngraph:\n  {expression} >> {{ narrow.in1, wide.in1 }}\n  f32(wide.out1 - f64(narrow.out1)) >> out1\n"
+        );
+        assert_context_output(&source, 1.0);
+    }
+}
+
+#[test]
+fn delayed_constant_graph_fanout_preserves_precision_and_timing_in_either_order() {
+    for (input, expression, selection) in [("", "Precise", "in1"), ("[2]", "Values", "in1[0]")] {
+        for destinations in ["narrow.in1, wide.in1", "wide.in1, narrow.in1"] {
+            for delay in [1, 19] {
+                let source = format!(
+                    "const Precise: f64 = 16777217.0\nconst Values = [Precise, Precise]\nproc Narrow:\n  ins:\n    in1: f32{input}\n  sample:\n    out1 = {selection}\nproc Wide:\n  ins:\n    in1: f64{input}\n  outs:\n    out1: f64\n  sample:\n    out1 = {selection}\ninit:\n  narrow = Narrow()\n  wide = Wide()\ngraph:\n  {expression} >>[{delay}] {{ {destinations} }}\n  f32(wide.out1 - f64(narrow.out1)) >> out1\n"
+                );
+                for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+                    let (mut instance, _, _) = compile_instance_with_options(
+                        &source,
+                        16,
+                        CompileOptions {
+                            sample_rate: 48_000.0,
+                            block_size: 16,
+                            fast_math: false,
+                            opt_level,
+                        },
+                    );
+                    let mut output = [0.0; 16];
+                    for block in 0..3 {
+                        process_interleaved(&mut instance, &[], &mut output, 16).unwrap();
+                        for (frame, value) in output.iter().enumerate() {
+                            let expected = if block * 16 + frame < delay { 0.0 } else { 1.0 };
+                            assert_eq!(*value, expected, "{source}\nblock {block}, frame {frame}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn delayed_runtime_graph_fanout_preserves_values_and_timing_in_either_order() {
+    for (narrow_shape, wide_shape, expression, selection, cosine) in [
+        ("", "", "sin(in1)", "in1", false),
+        ("[1]", "[1]", "[sin(in1)]", "in1[0]", false),
+        ("[2]", "[2]", "[sin(in1), cos(in1)]", "in1[1]", true),
+        ("[2]", "[3]", "sin(in1)", "in1[1]", false),
+    ] {
+        for destinations in ["narrow.in1, wide.in1", "wide.in1, narrow.in1"] {
+            for delay in [1, 19] {
+                let source = format!(
+                    "ins 1\nouts 2\nproc Narrow:\n  ins:\n    in1: f32{narrow_shape}\n  sample:\n    out1 = {selection}\nproc Wide:\n  ins:\n    in1: f64{wide_shape}\n  outs:\n    out1: f64\n  sample:\n    out1 = {selection}\ninit:\n  narrow = Narrow()\n  wide = Wide()\ngraph:\n  {expression} >>[{delay}] {{ {destinations} }}\n  narrow.out1 >> out1\n  f32(wide.out1) >> out2\n"
+                );
+                for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+                    let (mut instance, _, _) = compile_instance_with_options(
+                        &source,
+                        16,
+                        CompileOptions {
+                            sample_rate: 48_000.0,
+                            block_size: 16,
+                            fast_math: false,
+                            opt_level,
+                        },
+                    );
+                    let mut output = [0.0; 32];
+                    for block in 0..3 {
+                        let input = std::array::from_fn::<_, 16, _>(|frame| {
+                            (block * 16 + frame) as f32 * 0.05
+                        });
+                        process_interleaved(&mut instance, &input, &mut output, 16).unwrap();
+                        for (frame, channels) in output.as_chunks::<2>().0.iter().enumerate() {
+                            let expected = if block * 16 + frame < delay {
+                                0.0
+                            } else {
+                                let input = (block * 16 + frame - delay) as f32 * 0.05;
+                                if cosine {
+                                    input.cos()
+                                } else {
+                                    input.sin()
+                                }
+                            };
+                            for value in channels {
+                                assert!(
+                                    (*value - expected).abs() < 0.000001,
+                                    "{source}\nblock {block}, frame {frame}: {channels:?}, expected {expected}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn delayed_mixed_graph_fanout_preserves_contextual_constant_components() {
+    for destinations in ["narrow.in1, wide.in1", "wide.in1, narrow.in1"] {
+        for delay in [1, 19] {
+            let source = format!(
+                "const Precise = 16777217.0\nins 1\nproc Narrow:\n  ins:\n    in1: f32[2]\n  sample:\n    out1 = in1[1]\nproc Wide:\n  ins:\n    in1: f64[2]\n  outs:\n    out1: f64\n  sample:\n    out1 = in1[1]\ninit:\n  narrow = Narrow()\n  wide = Wide()\ngraph:\n  [sin(in1), Precise] >>[{delay}] {{ {destinations} }}\n  f32(wide.out1 - f64(narrow.out1)) >> out1\n"
+            );
+            for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+                let (mut instance, _, _) = compile_instance_with_options(
+                    &source,
+                    16,
+                    CompileOptions {
+                        sample_rate: 48_000.0,
+                        block_size: 16,
+                        fast_math: false,
+                        opt_level,
+                    },
+                );
+                let mut output = [0.0; 16];
+                for block in 0..3 {
+                    process_interleaved(&mut instance, &[0.5; 16], &mut output, 16).unwrap();
+                    for (frame, value) in output.iter().enumerate() {
+                        let expected = if block * 16 + frame < delay { 0.0 } else { 1.0 };
+                        assert_eq!(*value, expected, "{source}\nblock {block}, frame {frame}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn resource_constant_writes_follow_destination_precision() {
+    for source in [
+        "init:\n  values: f32[1] = [0]\nsample:\n  write_unsafe(values, 0, VALUE)\n  out1 = values[0]\n",
+        "sample:\n  values: f32[1] = [0]\n  values.write_unsafe(0, VALUE)\n  out1 = values[0]\n",
+        "init:\n  values: f32[2] = [0, 0]\nsample:\n  xs = values[:1]\n  write_unsafe(xs, 0, VALUE)\n  out1 = xs[0]\n",
+        "def write(values: f32[1]):\n  write_unsafe(values, 0, VALUE)\ninit:\n  values: f32[1] = [0]\nsample:\n  write(values)\n  out1 = values[0]\n",
+        "def write(values: f32[]):\n  write_unsafe(values, 0, VALUE)\ninit:\n  values: f32[1] = [0]\nsample:\n  write(values)\n  out1 = values[0]\n",
+    ] {
+        for (expression, expected) in [
+            ("Precise - 16777216.0", 0.0),
+            ("Fixed - 16777216.0", 1.0),
+            ("i64(7)", 7.0),
+        ] {
+            let source = format!(
+                "const Precise = 16777217.0\nconst Fixed: f64 = Precise\n{}",
+                source.replace("VALUE", expression)
+            );
+            assert_context_output(&source, expected);
+        }
+    }
+}
+
+#[test]
+fn concrete_constant_arithmetic_converts_after_its_own_width_is_evaluated() {
+    assert_const_and_native_result(
+        |prefix| {
+            format!(
+                "const Integer: i64 = 2147483647\nconst Float: f64 = 16777217.0\n{prefix}def take(value: f32 = Float - 16777216.0) -> f32:\n  return value\n{prefix}def run() -> i32:\n  integer: i32 = (Integer + 1) / 2\n  float: f32 = Float - 16777216.0\n  values: f32[1] = [Float - 16777216.0]\n  return i32((integer == 1073741824 && float == 1.0 && values[0] == 1.0 && take() == 1.0 && take(Float - 16777216.0) == 1.0))\n"
+            )
+        },
+        "1",
+    );
 }

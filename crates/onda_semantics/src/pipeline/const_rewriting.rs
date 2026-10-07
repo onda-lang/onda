@@ -1054,7 +1054,7 @@ pub(super) fn substitute_scalar_const_expr(
     expr.visit_mut(|expr| {
         if let Expr::Var { loc, name } = expr {
             if let Some(value) = local_consts.get(name) {
-                *expr = typed_const_expr_with_loc(*value, (*loc).into());
+                *expr = contextual_const_expr(*value).with_loc(*loc);
             }
         }
         true

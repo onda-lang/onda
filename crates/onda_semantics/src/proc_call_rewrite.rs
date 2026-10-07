@@ -746,11 +746,20 @@ pub(super) fn expand_expr_to_slots(
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Expr> {
-    if slot_count == 0 {
-        return Vec::new();
-    }
     if slot_count == 1 {
         return vec![expr.clone()];
+    }
+    expand_array_expr_to_slots(expr, slot_count, context, errors)
+}
+
+fn expand_array_expr_to_slots(
+    expr: &Expr,
+    slot_count: usize,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Expr> {
+    if slot_count == 0 {
+        return Vec::new();
     }
     match expr {
         Expr::ArrayLiteral { values, .. } => {
@@ -847,7 +856,7 @@ pub(super) fn expand_proc_call_args(
         .ins
         .iter()
         .map(|p| {
-            if p.slots.len() == 1 {
+            if !p.is_array {
                 p.defaults.first().cloned().flatten()
             } else if p.defaults.iter().all(|d| d.is_some()) {
                 Some(Expr::array_literal(
@@ -872,8 +881,13 @@ pub(super) fn expand_proc_call_args(
     );
     let mut expanded = Vec::<CallArg>::new();
     for (idx, port) in api.ins.iter().enumerate() {
+        let expand_slots = if port.is_array {
+            expand_array_expr_to_slots
+        } else {
+            expand_expr_to_slots
+        };
         let slot_exprs = match resolved.get(idx).and_then(|a| *a) {
-            Some(arg_expr) => expand_expr_to_slots(
+            Some(arg_expr) => expand_slots(
                 arg_expr,
                 port.slots.len(),
                 &format!(

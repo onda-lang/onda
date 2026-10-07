@@ -96,7 +96,7 @@ pub(super) fn validate_template_consts(
     let mut scope = parent.map(|(_, scope)| scope.clone()).unwrap_or_default();
     scope.members.extend(template_member_paths(decl, namespace));
     for name in template_consts.keys() {
-        check.scalar_constant(name, PrimitiveType::I32);
+        check.scalar_constant(name, PrimitiveType::I32, false);
         scope.members.insert(name.clone());
     }
     for param in &decl.params {
@@ -112,7 +112,7 @@ pub(super) fn validate_template_consts(
                 errors,
             );
         });
-        check.scalar_constant(&param.name, PrimitiveType::I32);
+        check.scalar_constant(&param.name, PrimitiveType::I32, false);
         check.alias(&namespace_join(namespace, &param.name), &param.name);
         scope.members.insert(param.name.clone());
         scope.members.insert(namespace_join(namespace, &param.name));

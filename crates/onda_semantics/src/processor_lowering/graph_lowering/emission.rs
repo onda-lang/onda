@@ -448,54 +448,73 @@ pub(super) fn lower_graph(
             }
         }
 
+        let mut emitted_delay_values = HashSet::new();
         for plan in source_plans {
             let Some(delay_state) = plan.delay_state else {
                 continue;
             };
-            if delay_state.array_len == 1 {
-                sample.push(Stmt::Assign {
-                    loc: Default::default(),
-                    target_loc: Default::default(),
-                    target: AssignTarget::Index {
-                        base: delay_state.buf_name.clone(),
-                        index: Expr::var(delay_state.head_name.clone()),
-                    },
-                    decl_ty: None,
-                    generic_decl_ty: None,
-                    is_typed_decl: false,
-                    typed_decl_ty_loc: Default::default(),
-                    expr: plan.original_source,
-                });
+            let context = format!("{owner_context} delayed graph edge writeback");
+            let slot_exprs = if let Some(values) = &plan.shared_delay_values {
+                let sources = expand_graph_expr_to_slots(
+                    &plan.original_source,
+                    values.len(),
+                    owner,
+                    nodes,
+                    proc_surfaces,
+                    &context,
+                    options,
+                    errors,
+                );
+                let slots = values
+                    .iter()
+                    .zip(sources)
+                    .map(|(name, expr)| {
+                        // Closed components still convert at each destination,
+                        // even when other components carry runtime values.
+                        if owner.constants.const_symbols.constant_expression(&expr) {
+                            return expr;
+                        }
+                        if emitted_delay_values.insert(name.clone()) {
+                            sample.push(assign_stmt(name.clone(), expr));
+                        }
+                        Expr::var(name.clone())
+                    })
+                    .collect::<Vec<_>>();
+                if slots.len() == 1 {
+                    vec![slots[0].clone(); delay_state.array_len]
+                } else {
+                    slots
+                }
             } else {
-                let slot_exprs = expand_graph_expr_to_slots(
+                expand_graph_expr_to_slots(
                     &plan.original_source,
                     delay_state.array_len,
                     owner,
                     nodes,
                     proc_surfaces,
-                    &format!("{owner_context} delayed graph edge writeback"),
+                    &context,
                     options,
                     errors,
-                );
-                for (slot, slot_expr) in slot_exprs.into_iter().enumerate() {
-                    sample.push(Stmt::Assign {
-                        loc: Default::default(),
-                        target_loc: Default::default(),
-                        target: AssignTarget::Index {
-                            base: delay_state.buf_name.clone(),
-                            index: graph_delay_flat_index_expr(
-                                &delay_state.head_name,
-                                delay_state.array_len,
-                                slot,
-                            ),
-                        },
-                        decl_ty: None,
-                        generic_decl_ty: None,
-                        is_typed_decl: false,
-                        typed_decl_ty_loc: Default::default(),
-                        expr: slot_expr,
-                    });
-                }
+                )
+            };
+            for (slot, slot_expr) in slot_exprs.into_iter().enumerate() {
+                sample.push(Stmt::Assign {
+                    loc: Default::default(),
+                    target_loc: Default::default(),
+                    target: AssignTarget::Index {
+                        base: delay_state.buf_name.clone(),
+                        index: graph_delay_flat_index_expr(
+                            &delay_state.head_name,
+                            delay_state.array_len,
+                            slot,
+                        ),
+                    },
+                    decl_ty: None,
+                    generic_decl_ty: None,
+                    is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
+                    expr: slot_expr,
+                });
             }
             sample.push(assign_stmt(
                 delay_state.head_name.clone(),

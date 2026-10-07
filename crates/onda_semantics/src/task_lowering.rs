@@ -1881,7 +1881,7 @@ fn analyze_task_binding_storage(
         state_tuples: &owner_types.tuples,
         registered_state_tuples: &registration_names,
         resolved_scalar_locals: Some(&resolved_scalars),
-        resolved_scalar_bindings: None,
+        resolved_assignment_types: None,
         resolved_array_locals: Some(&resolved_arrays),
         resolved_tuple_locals: Some(&resolved_tuples),
         resolved_struct_locals: Some(&resolved_structs),

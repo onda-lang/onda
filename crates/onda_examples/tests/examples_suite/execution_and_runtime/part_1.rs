@@ -465,11 +465,11 @@ import std/osc
 outs { out1 }
 
 init {
-  osc = std::osc::Square<f64>(freq = f64(220.0))
+  osc = std::osc::Square<f64>(freq = f64(220.0), amp = f64(0.25))
 }
 
 sample {
-  out1 = f32(osc()) * 0.25
+  out1 = f32(osc())
 }
 "#;
 
@@ -480,12 +480,13 @@ outs { out1 }
 
 init {
   lfo = std::osc::KSine(
-    freq = SR / (BS * 4)
+    freq = SR / (BS * 4),
+    amp = 0.25
   )
 }
 
 block {
-  held = lfo() * 0.25
+  held = lfo()
 
   sample {
     out1 = held
@@ -551,17 +552,17 @@ sample {
 }
 "#;
 
-const STDLIB_OSC_SAW_EXPLICIT_GAIN_EXAMPLE: &str = r#"
+const STDLIB_OSC_SAW_AMP_EXAMPLE: &str = r#"
 import std/osc
 
 outs { out1 }
 
 init {
-  osc = std::osc::Saw(freq = 220.0)
+  osc = std::osc::Saw(freq = 220.0, amp = 0.25)
 }
 
 sample {
-  out1 = osc() * 0.25
+  out1 = osc()
 }
 "#;
 
@@ -680,11 +681,11 @@ import std/osc
 outs { out1 }
 
 init {
-  osc = std::osc::Triangle<f64>(freq = f64(220.0))
+  osc = std::osc::Triangle<f64>(freq = f64(220.0), amp = f64(0.25))
 }
 
 sample {
-  out1 = f32(osc()) * 0.25
+  out1 = f32(osc())
 }
 "#;
 
@@ -777,14 +778,14 @@ import std/osc
 outs 3
 
 init {
-  src = std::osc::Saw(freq = 220.0)
+  src = std::osc::Saw(freq = 220.0, amp = 0.25)
   notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_NOTCH)
   peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_PEAK)
   allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_ALLPASS)
 }
 
 sample {
-  x = src() * 0.25
+  x = src()
   out1 = notch(x)
   out2 = peak(x)
   out3 = allpass(x)
@@ -1726,7 +1727,7 @@ fn stdlib_square_supports_f64_and_stays_bounded() {
     );
     assert!(
         output.iter().all(|sample| sample.abs() <= 0.3),
-        "expected explicitly scaled square output to stay bounded, got {output:?}"
+        "expected square output to stay within amp bounds, got {output:?}"
     );
 }
 
@@ -1997,11 +1998,11 @@ fn explicit_oversampled_proc_from_oversampled_context_is_rejected() {
 
 #[test]
 
-fn stdlib_saw_supports_explicit_output_gain() {
+fn stdlib_saw_applies_amp_to_the_full_waveform() {
     let frames = 256;
 
     let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_OSC_SAW_EXPLICIT_GAIN_EXAMPLE, frames);
+        compile_instance(STDLIB_OSC_SAW_AMP_EXAMPLE, frames);
 
     assert_eq!(in_channels, 0);
 
@@ -2018,7 +2019,7 @@ fn stdlib_saw_supports_explicit_output_gain() {
     assert!(peak >= 0.15, "expected audible saw output, got {output:?}");
     assert!(
         peak <= 0.3,
-        "expected explicitly scaled saw output near 0.25 peak, got peak {peak} from {output:?}"
+        "expected amp-scaled saw output near 0.25 peak, got peak {peak} from {output:?}"
     );
 }
 
@@ -2048,7 +2049,7 @@ fn stdlib_triangle_supports_f64_and_stays_bounded() {
     );
     assert!(
         output.iter().all(|sample| sample.abs() <= 0.3),
-        "expected explicitly scaled triangle output to stay bounded, got {output:?}"
+        "expected triangle output to stay within amp bounds, got {output:?}"
     );
 }
 

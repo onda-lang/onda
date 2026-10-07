@@ -42,6 +42,7 @@ pub(crate) struct ProcOutputs {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcPortSpec {
     pub(crate) name: String,
+    pub(crate) is_array: bool,
     pub(crate) slots: Vec<String>,
     pub(crate) defaults: Vec<Option<Expr>>,
     pub(crate) ranges: Vec<Option<TypedValueRange>>,

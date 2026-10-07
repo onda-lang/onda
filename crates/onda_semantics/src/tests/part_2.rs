@@ -2452,18 +2452,18 @@ params:
 sample:
   from_binary = identity(narrow + wide_integer)
   from_builtin = identity(max(narrow, wide_integer))
-  out1 = from_binary + from_builtin
+  out1 = f32(from_binary + from_builtin)
 "#;
     let typed = analyze(parse_program(source).expect("source should parse"))
         .expect("call inference must agree with runtime expression typing");
     assert!(typed
         .defs
         .iter()
-        .any(|function| function.name == "identity.__onda_mono__scalar_f32"));
+        .any(|function| function.name == "identity.__onda_mono__scalar_f64"));
     assert!(!typed
         .defs
         .iter()
-        .any(|function| function.name == "identity.__onda_mono__scalar_f64"));
+        .any(|function| function.name == "identity.__onda_mono__scalar_f32"));
     lower_program_to_optimized_mir(&typed)
         .expect("consistently inferred numeric expressions should lower to MIR");
 }
@@ -2945,7 +2945,7 @@ sample:
 }
 
 #[test]
-fn tuple_call_arguments_reject_implicit_narrowing() {
+fn tuple_call_arguments_reject_runtime_narrowing() {
     let cases = [
         r#"
 def choose(values: (f32, i32)):
@@ -2979,25 +2979,6 @@ sample:
             "missing tuple narrowing diagnostic: {errors:?}"
         );
     }
-
-    let default_source = r#"
-def choose(values: (f32, i32) = (f64(1.0), 2)):
-  return values[0]
-
-sample:
-  out1 = choose()
-"#;
-    let program = parse_program(default_source).expect("tuple default source should parse");
-    let errors = analyze(program).expect_err("tuple defaults must not narrow implicitly");
-    assert!(
-        errors.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("function 'choose' argument 'values'")
-                && diagnostic.message.contains("cannot assign F64 to F32")
-        }),
-        "missing tuple default narrowing diagnostic: {errors:?}"
-    );
 
     let scalar_source = r#"
 def make() -> f32:

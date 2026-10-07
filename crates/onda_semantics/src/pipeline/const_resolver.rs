@@ -34,6 +34,13 @@ pub(crate) struct ConstScope {
 }
 
 impl ConstScope {
+    pub(crate) fn contextual_numeric(&self, name: &str) -> bool {
+        self.artifacts
+            .const_values
+            .entry(name)
+            .is_some_and(|entry| entry.contextual_numeric)
+    }
+
     pub(super) fn declaration_count(&self) -> usize {
         self.artifacts.const_values.entries.len() + self.artifacts.const_defs.len()
     }
@@ -116,7 +123,7 @@ impl ConstScope {
         eval_data_size_expr(&folded, options, context, errors)
     }
 
-    fn can_evaluate(&self, expr: &Expr, symbols: &DeclaredSymbolMap) -> bool {
+    pub(crate) fn can_evaluate(&self, expr: &Expr, symbols: &DeclaredSymbolMap) -> bool {
         can_evaluate_const_expression(expr, symbols, &self.artifacts.const_defs)
     }
 }
@@ -225,6 +232,7 @@ pub(super) struct ConstEntry {
     pub(super) cache: ConstCache,
     contextual_caches: RefCell<HashMap<CompileContext, Rc<ConstCache>>>,
     pub(super) scalar_type: Option<PrimitiveType>,
+    pub(super) contextual_numeric: bool,
 }
 
 #[derive(Debug, Default)]
@@ -388,6 +396,10 @@ impl ConstValues {
         defs: &HashMap<String, Rc<ConstDefinition>>,
     ) {
         let environment = ConstEnvironment::capture(dependencies, self, defs);
+        let contextual_numeric = array.is_none()
+            && decl.ty.is_none()
+            && ConstCheck::capture(&environment.values, &environment.defs)
+                .contextual_numeric(&decl.expr);
         self.entries.insert(
             name.to_owned(),
             Rc::new(ConstEntry {
@@ -398,6 +410,7 @@ impl ConstValues {
                 cache: ConstCache::default(),
                 contextual_caches: RefCell::new(HashMap::new()),
                 scalar_type,
+                contextual_numeric,
             }),
         );
     }

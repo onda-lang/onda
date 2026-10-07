@@ -385,39 +385,12 @@ fn generic_primitive_constraints_match(
     env: &CallTypeEnv,
 ) -> bool {
     constraints.iter().all(|(name, constraints)| {
-        let exact_target = constraints
-            .iter()
-            .find_map(|(ty, exact, _)| exact.then_some(*ty));
-        let target = if let Some(explicit) = explicit_bindings.get(name).copied() {
-            explicit
-        } else if let Some(exact_target) = exact_target {
-            if constraints
-                .iter()
-                .any(|(ty, exact, _)| *exact && *ty != exact_target)
-            {
-                return false;
-            }
-            exact_target
-        } else {
-            let Some((first, rest)) = constraints.split_first() else {
-                return true;
-            };
-            let Some(merged) = rest.iter().try_fold(first.0, |merged, (next, _, _)| {
-                merge_inferred_return_types(merged, *next)
-            }) else {
-                return false;
-            };
-            merged
-        };
-
-        target.is_numeric()
-            && constraints.iter().all(|(actual, exact, expr)| {
-                if *exact {
-                    *actual == target
-                } else {
-                    can_assign_expr_to_type(expr, *actual, target, &env.const_symbols)
-                }
-            })
+        super::numeric_constraints::resolve_numeric_constraints(
+            constraints,
+            explicit_bindings.get(name).copied(),
+            &env.const_symbols,
+        )
+        .is_ok()
     })
 }
 

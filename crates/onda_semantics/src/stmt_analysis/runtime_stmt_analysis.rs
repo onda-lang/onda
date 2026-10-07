@@ -46,7 +46,7 @@ pub(crate) struct FlowStmtAnalysisCtx<'a> {
     pub state_tuples: &'a HashMap<String, Vec<PrimitiveType>>,
     pub registered_state_tuples: &'a HashMap<String, SourceLoc>,
     pub resolved_scalar_locals: Option<&'a std::cell::RefCell<LocalAliasTypes>>,
-    pub resolved_scalar_bindings: Option<&'a std::cell::RefCell<ScalarBindingTypes>>,
+    pub resolved_assignment_types: Option<&'a std::cell::RefCell<AssignmentTypes>>,
     pub resolved_array_locals: Option<&'a std::cell::RefCell<HashMap<String, LocalArrayAliasInfo>>>,
     pub resolved_struct_locals: Option<&'a std::cell::RefCell<HashMap<String, String>>>,
     pub resolved_tuple_locals: Option<&'a std::cell::RefCell<HashMap<String, Vec<PrimitiveType>>>>,
@@ -217,7 +217,7 @@ pub(super) fn build_runtime_stmt_analysis_ctx<'a>(
         state_tuples,
         registered_state_tuples,
         resolved_scalar_locals: None,
-        resolved_scalar_bindings: None,
+        resolved_assignment_types: None,
         resolved_array_locals: None,
         resolved_tuple_locals: None,
         resolved_struct_locals: None,
@@ -755,6 +755,7 @@ fn analyze_flow_stmt(
                         return;
                     }
                 }
+                let mut assignment_type = None;
                 analyze_flow_assignment(
                     target_loc.as_ref().into(),
                     target,
@@ -800,15 +801,18 @@ fn analyze_flow_stmt(
                     common.port_index_kins,
                     ctx.state_tuples,
                     ctx.registered_state_tuples,
+                    &mut assignment_type,
                     errors,
                 );
                 record_resolved_local_bindings(ctx, state);
-                if let (Some(types), AssignTarget::Var(name)) =
-                    (ctx.resolved_scalar_bindings, target)
-                {
-                    if let Some(ty) = state.local_aliases.get(name) {
-                        types.borrow_mut().insert(stmt, *ty);
+                let assignment_type = assignment_type.or_else(|| match target {
+                    AssignTarget::Var(name) => {
+                        state.local_aliases.get(name).copied().map(DeclType::Scalar)
                     }
+                    _ => None,
+                });
+                if let (Some(types), Some(ty)) = (ctx.resolved_assignment_types, assignment_type) {
+                    types.borrow_mut().insert(stmt, ty);
                 }
             }
             Stmt::Expr { expr, .. } => {
@@ -1119,6 +1123,7 @@ fn analyze_flow_assignment(
     port_index_kins: Option<PortIndexInfo>,
     state_tuples: &HashMap<String, Vec<PrimitiveType>>,
     registered_state_tuples: &HashMap<String, SourceLoc>,
+    assignment_type: &mut Option<DeclType>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let scope = policy.scope_kind();
@@ -2515,6 +2520,7 @@ fn analyze_flow_assignment(
                     set_tracked_tuple_types(tuple_vars, local_aliases, name, &target_types);
                     known_scalars.insert(name.clone());
                 }
+                *assignment_type = Some(DeclType::Tuple(target_types));
                 return;
             }
             if existing_tuple_types.is_some() {
@@ -2572,6 +2578,7 @@ fn analyze_flow_assignment(
                 if can_track_local {
                     local_aliases.entry(name.clone()).or_insert(target_ty);
                 }
+                *assignment_type = Some(DeclType::Scalar(target_ty));
             }
 
             // Track local tuple variables for indexing validation
@@ -2611,6 +2618,27 @@ fn analyze_flow_assignment(
             if !targets_ok {
                 return;
             }
+            let target_types = resolve_tuple_destructuring_types(
+                targets,
+                &expr_for_validation,
+                destructured_types.as_deref(),
+                |name| {
+                    if output_names.contains(name) {
+                        Some(
+                            declared_symbol_scalar_type(declared_symbols, name)
+                                .unwrap_or(PrimitiveType::F32),
+                        )
+                    } else {
+                        state_scalars
+                            .get(name)
+                            .or_else(|| local_aliases.get(name))
+                            .copied()
+                    }
+                },
+                diagnostic_scope,
+                declared_symbols,
+                errors,
+            );
             clear_tuple_var_bindings(
                 tuple_vars,
                 targets.iter().filter_map(|target| target.binding()),
@@ -2619,17 +2647,14 @@ fn analyze_flow_assignment(
                 let Some(target_name) = target.binding() else {
                     continue;
                 };
-                let target_ty = destructured_types
-                    .as_ref()
-                    .and_then(|types| types.get(index))
-                    .copied()
-                    .unwrap_or(PrimitiveType::F32);
+                let target_ty = target_types[index];
                 replace_tracked_tuple_types(local_aliases, target_name, None);
                 known_scalars.insert(target_name.to_owned());
                 local_aliases
                     .entry(target_name.to_owned())
                     .or_insert(target_ty);
             }
+            *assignment_type = Some(DeclType::Tuple(target_types));
         }
         AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }

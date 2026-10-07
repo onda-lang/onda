@@ -265,7 +265,7 @@ fn infer_concrete_untyped_scalar_arg_type(
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<PrimitiveType> {
     let inferred = infer_expr_primitive_type(expr, env, return_types, struct_defs);
-    if is_pure_numeric_literal_expr(expr, &env.const_symbols) {
+    if is_contextual_numeric_expr(expr, &env.const_symbols) {
         effective_untyped_assignment_type(expr, inferred, &env.const_symbols)
     } else {
         inferred
@@ -930,89 +930,27 @@ fn resolve_generic_def_type_bindings(
             let Some(type_constraints) = constraints.get(type_param) else {
                 continue;
             };
-            let exact_target = type_constraints
-                .iter()
-                .find_map(|(ty, exact, _)| exact.then_some(*ty));
-            let target = if let Some(exact_target) = exact_target {
-                if let Some((actual, _, expr)) = type_constraints
-                    .iter()
-                    .find(|(ty, exact, _)| *exact && *ty != exact_target)
-                {
+            let target = match super::numeric_constraints::resolve_numeric_constraints(
+                type_constraints,
+                None,
+                &env.const_symbols,
+            ) {
+                Ok(target) => target,
+                Err(error) => {
                     let diagnostic = Diagnostic::semantic_span(
                         format!(
-                            "generic function '{call_name}' type parameter '{type_param}' has incompatible exact argument types {} and {}",
-                            exact_target.name(),
-                            actual.name()
+                            "generic function '{call_name}' type parameter '{type_param}' {}",
+                            error.message
                         ),
-                        expr.loc(),
+                        error.location,
                     );
                     if !errors.contains(&diagnostic) {
                         errors.push(diagnostic);
                     }
                     return None;
                 }
-                exact_target
-            } else {
-                let contextual_type = |actual, expr| {
-                    effective_untyped_assignment_type(expr, Some(actual), &env.const_symbols)
-                        .unwrap_or(actual)
-                };
-                let mut inferred = contextual_type(type_constraints[0].0, type_constraints[0].2);
-                for (next, _, expr) in type_constraints.iter().skip(1) {
-                    let next = contextual_type(*next, expr);
-                    let Some(merged) = merge_inferred_return_types(inferred, next) else {
-                        let diagnostic = Diagnostic::semantic_span(
-                            format!(
-                                "generic function '{call_name}' type parameter '{type_param}' has incompatible argument types {} and {}",
-                                inferred.name(),
-                                next.name()
-                            ),
-                            expr.loc(),
-                        );
-                        if !errors.contains(&diagnostic) {
-                            errors.push(diagnostic);
-                        }
-                        return None;
-                    };
-                    inferred = merged;
-                }
-                inferred
             };
 
-            if !target.is_numeric() {
-                let diagnostic = Diagnostic::semantic_span(
-                    format!(
-                        "generic function '{call_name}' type parameter '{type_param}' inferred as bool, but generic type arguments must be numeric (f32, f64, i32, or i64)"
-                    ),
-                    type_constraints[0].2.loc(),
-                );
-                if !errors.contains(&diagnostic) {
-                    errors.push(diagnostic);
-                }
-                return None;
-            }
-
-            for (actual, exact, expr) in type_constraints {
-                let compatible = if *exact {
-                    *actual == target
-                } else {
-                    can_assign_expr_to_type(expr, *actual, target, &env.const_symbols)
-                };
-                if !compatible {
-                    let diagnostic = Diagnostic::semantic_span(
-                        format!(
-                            "generic function '{call_name}' type parameter '{type_param}' resolves to {}, but argument has type {} and cannot be implicitly converted",
-                            target.name(),
-                            actual.name()
-                        ),
-                        expr.loc(),
-                    );
-                    if !errors.contains(&diagnostic) {
-                        errors.push(diagnostic);
-                    }
-                    return None;
-                }
-            }
             bindings.insert(type_param.clone(), target);
         }
     }

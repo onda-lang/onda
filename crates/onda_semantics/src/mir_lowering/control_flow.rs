@@ -266,11 +266,7 @@ impl<'a> FunctionLowerer<'a> {
                         None
                     };
                     let types = self.assignment_value_types(target, decl_ty.as_ref(), expr)?;
-                    let values = if let Some(types) = types {
-                        self.lower_value_expr_for_types(expr, &types, block)?
-                    } else {
-                        self.lower_value_expr(expr, block)?
-                    };
+                    let values = self.lower_assignment_value_expr(expr, types.as_deref(), block)?;
                     match target {
                         AssignTarget::Var(name) => {
                             if !self.assign_runtime_global(

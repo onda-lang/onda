@@ -112,6 +112,20 @@ Non-crate directories of note:
   shapes, and failures by argument metadata; evaluation consumes those checked types.
   Const declarations are restricted to root and namespace scope. Const defs bypass
   runtime monomorphization; ordinary functions specialize by argument types and shapes.
+  Scalar const metadata separates evaluation width from contextual typing. Untyped numeric
+  consts evaluate in `i64`/`f64` and materialize as untyped literals; annotations, casts, and
+  concrete array elements preserve their types. Overloads and monomorphization share
+  `numeric_constraints`, which considers concrete operands before contextual defaults.
+  After contextual adaptation, arithmetic, comparisons, numeric builtins, generic
+  inference, and branch joins share the numeric promotion rule in `expr_typing`.
+  A concrete `i64` combined with a floating operand promotes to `f64`.
+  Binary operands, builtin arguments, and scalar generic constraints also share
+  one contextual operand adapter; a floating literal retains its family beside
+  an integer peer. Pure builtin results retain full literal precision until use,
+  independently of the builtin's default concrete result type.
+  Assignment checks recognize closed compile-time expressions from lexical metadata without
+  demanding array payloads. These expressions may convert at typed destinations; scalar
+  lowering evaluates their concrete arithmetic before checking and converting the result.
   Overload resolution and monomorphization share one lexical statement walker and
   specialization fixed point. Defaults use that same solver in their declaration's
   lexical environment; dependent call metadata defers specialization rather than
@@ -148,16 +162,16 @@ Non-crate directories of note:
   Scalar evaluation and MIR lowering defer literal operands until a destination or concrete
   peer selects their arithmetic width. A bottom-up metadata pass records purity and natural
   types; deferred operands borrow the AST and emit no wider intermediates. Explicit casts keep
-  their argument's own context, and integer-only subtrees retain integer arithmetic in
+  their argument's own context, and integer-only literal subtrees use full `i64` precision in
   floating contexts.
   Materialized calls, array elements, and length queries retain their checked numeric types.
   Static slice lengths use the same i32 bound conversion and normalization as runtime views.
   Closed slice bounds are materialized in the checked layout context; dynamic bounds
   retain runtime evaluation.
   Runtime array and slice length queries stay in MIR; const evaluation consults only
-  its own array bindings and declaration catalog. Checked scalar assignments retain
-  their storage type on the statement before materialization, so specialization and
-  cloning require no metadata keyed by diagnostic locations.
+  its own array bindings and declaration catalog. Checked function assignments retain
+  scalar storage types and tuple component types on the statement before materialization,
+  so specialization and cloning require no metadata keyed by diagnostic locations.
   `runtime_materialization` selects the ordinary syntactic call graph before substituting
   constants in roots and selected functions. Its late worklist preserves runtime sample-rate
   and block-size variants through helpers and defaults without changing their checked types

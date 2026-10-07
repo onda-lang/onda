@@ -44,14 +44,14 @@ impl CheckedBranchScope {
 
 /// Assignment types collected while checking an immutable body, then written
 /// onto those statements before the body is moved or cloned.
-pub(crate) type ScalarBindingTypes = HashMap<*const Stmt, PrimitiveType>;
+pub(crate) type AssignmentTypes = HashMap<*const Stmt, DeclType>;
 
-pub(crate) fn retain_scalar_binding_types(stmts: &mut [Stmt], types: ScalarBindingTypes) {
+pub(crate) fn retain_assignment_types(stmts: &mut [Stmt], mut types: AssignmentTypes) {
     for stmt in stmts {
         stmt.visit_statements_mut(|stmt| {
-            let ty = types.get(&(stmt as *const Stmt)).copied();
+            let ty = types.remove(&(stmt as *const Stmt));
             if let (Some(ty), Stmt::Assign { decl_ty, .. }) = (ty, stmt) {
-                *decl_ty = Some(DeclType::Scalar(ty));
+                *decl_ty = Some(ty);
             }
         });
     }
@@ -938,6 +938,44 @@ pub(crate) fn clear_tuple_var_bindings<'a>(
     for name in names {
         tuple_vars.remove(name);
     }
+}
+
+pub(crate) fn resolve_tuple_destructuring_types(
+    targets: &[onda_frontend::TupleAssignTarget],
+    expr: &Expr,
+    source_types: Option<&[PrimitiveType]>,
+    existing_type: impl Fn(&str) -> Option<PrimitiveType>,
+    context: &str,
+    constants: &DeclaredSymbolMap,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<PrimitiveType> {
+    targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| {
+            let source_ty = source_types
+                .and_then(|types| types.get(index))
+                .copied()
+                .unwrap_or(PrimitiveType::F32);
+            let Some(name) = target.binding() else {
+                return source_ty;
+            };
+            let target_ty = existing_type(name).unwrap_or(source_ty);
+            let component = match expr {
+                Expr::Tuple { values, .. } => values.get(index).unwrap_or(expr),
+                _ => expr,
+            };
+            require_expr_assignable_type(
+                component,
+                Some(source_ty),
+                target_ty,
+                &format!("{context} tuple destructuring assignment to '{name}'"),
+                errors,
+                constants,
+            );
+            target_ty
+        })
+        .collect()
 }
 
 pub(crate) fn analyze_tuple_destructuring_expr(

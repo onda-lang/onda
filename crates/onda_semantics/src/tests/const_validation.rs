@@ -563,7 +563,7 @@ fn invalid_const_body_types_are_rejected_before_interpretation() {
 #[test]
 fn template_scalar_constants_share_concrete_type_inference() {
     for (scalar, scalar_ty, array_ty) in [
-        ("7", "i64", "i64"),
+        ("7", "i64", "i32"),
         ("16777217.0", "f64", "f32"),
         ("i32(7)", "i32", "i32"),
         ("f32(7.0)", "f32", "f32"),

@@ -51,6 +51,10 @@ pub(super) struct ConstCheck {
 }
 
 impl ConstCheck {
+    pub(super) fn contextual_numeric(&self, expr: &Expr) -> bool {
+        crate::expr_typing::is_contextual_numeric_expr(expr, &self.symbols)
+    }
+
     pub(super) fn empty() -> Self {
         let mut check = Self::default();
         check.symbols.constant_context = true;
@@ -131,6 +135,9 @@ impl ConstCheck {
                 name.to_owned(),
                 DeclaredSymbolInfo::Constant {
                     ty,
+                    contextual: values
+                        .entry(name)
+                        .is_some_and(|entry| entry.contextual_numeric),
                     value: values.scalar_value(name),
                 },
             );
@@ -188,11 +195,15 @@ impl ConstCheck {
         self.scalars.insert(name.to_owned(), ty);
     }
 
-    pub(super) fn scalar_constant(&mut self, name: &str, ty: PrimitiveType) {
+    pub(super) fn scalar_constant(&mut self, name: &str, ty: PrimitiveType, contextual: bool) {
         self.scalar(name, ty);
         self.symbols.insert(
             name.to_owned(),
-            DeclaredSymbolInfo::Constant { ty, value: None },
+            DeclaredSymbolInfo::Constant {
+                ty,
+                contextual,
+                value: None,
+            },
         );
     }
 
@@ -245,7 +256,13 @@ impl ConstCheck {
         } else {
             // Scalar consts retain literal precision. Ordinary first-assignment
             // defaults apply to array elements and mutable bindings instead.
-            self.expression(&decl.expr, errors)
+            self.expression(&decl.expr, errors).map(|ty| {
+                if self.contextual_numeric(&decl.expr) {
+                    crate::expr_typing::full_precision_numeric_type(ty)
+                } else {
+                    ty
+                }
+            })
         }
     }
 
@@ -713,34 +730,54 @@ impl ConstCheck {
         let array = match &decl.ty {
             Some(ConstType::Scalar(ty)) => {
                 self.scalar_constant_type(decl, errors);
-                self.scalar_constant(&decl.name, *ty);
+                self.scalar_constant(&decl.name, *ty, false);
                 return;
             }
             Some(ConstType::Array { elem, size }) => {
-                Some((*elem, self.dimension(size, &context, errors)))
+                Some((Some(*elem), self.dimension(size, &context, errors)))
             }
             Some(ConstType::Slice { elem }) => {
-                Some((*elem, inferred.as_ref().and_then(|(_, len)| *len)))
+                Some((Some(*elem), inferred.as_ref().and_then(|(_, len)| *len)))
             }
             None => inferred.and_then(|(elem, len)| match elem {
-                Some(ArrayElemType::Primitive(elem)) => Some((elem, len)),
+                Some(ArrayElemType::Primitive(elem)) => Some((Some(elem), len)),
+                None => Some((None, len)),
                 _ => None,
             }),
         };
         if let Some((elem, len)) = array {
-            let len = self.array_value(&decl.expr, Some(elem), len, &context, errors);
+            let len = self.array_value(&decl.expr, elem, len, &context, errors);
+            let unknown_element = elem.is_none();
+            let elem = elem.unwrap_or(PrimitiveType::F32);
             self.array(&decl.name, elem, len);
             self.arrays.get_mut(&decl.name).unwrap().writable = false;
             self.symbols.insert(
                 decl.name.clone(),
                 DeclaredSymbolInfo::ConstArray { elem_ty: elem },
             );
+            if unknown_element {
+                self.symbols.unresolved_types.insert(decl.name.clone());
+            }
         } else {
             let ty = self.scalar_constant_type(decl, errors);
             if let Some(ty) = ty {
-                self.scalar_constant(&decl.name, ty);
+                let contextual = self.contextual_numeric(&decl.expr);
+                // Host-dependent template values wait for instantiation.
+                let independent = decl.expr.walk().all(|node| {
+                    !matches!(node, Expr::Var { name, .. } if builtin_constant_type(name).is_some())
+                });
+                let value = (contextual && ty == PrimitiveType::I64 && independent)
+                    .then(|| self.symbols.constant_integer(&decl.expr, &mut Vec::new()))
+                    .flatten()
+                    .map(TypedConstValue::I64);
+                self.scalar_constant(&decl.name, ty, contextual);
+                if let Some(DeclaredSymbolInfo::Constant { value: stored, .. }) =
+                    self.symbols.get_mut(&decl.name)
+                {
+                    *stored = value;
+                }
             } else {
-                self.scalar_constant(&decl.name, PrimitiveType::F32);
+                self.scalar_constant(&decl.name, PrimitiveType::F32, false);
                 self.symbols.unresolved_types.insert(decl.name.clone());
             }
         }
@@ -1033,7 +1070,7 @@ mod tests {
         };
         let mut catalog = ConstCheck::default();
         for name in ["Count", "Fallback", "x", "values"] {
-            catalog.scalar_constant(name, PrimitiveType::I32);
+            catalog.scalar_constant(name, PrimitiveType::I32, false);
         }
         catalog.array("Table", PrimitiveType::I32, Some(2));
         catalog.template_function(helper, ConstDefReturn::Scalar(PrimitiveType::I32));

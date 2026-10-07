@@ -520,14 +520,15 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         if self.require(name, Frame::Expr(node))? {
                             return Some(());
                         }
-                        let evaluation = self
-                            .scope()
-                            .values
-                            .entry(name)?
-                            .evaluation(self.scope().options);
+                        let entry = self.scope().values.entry(name)?;
+                        let evaluation = entry.evaluation(self.scope().options);
                         match evaluation.evaluated.get()?.as_ref().ok()? {
                             ResolvedConstValue::Scalar(value) => self.stack.push(Value::expr(
-                                typed_const_expr_with_loc(*value, node.loc()),
+                                if entry.contextual_numeric {
+                                    contextual_const_expr(*value).with_loc(node.loc())
+                                } else {
+                                    concrete_const_expr(*value, node.loc())
+                                },
                                 true,
                             )),
                             ResolvedConstValue::Array(_) if self.scope().runtime => {
@@ -857,14 +858,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         else {
                             return self.error(format!("{}: const array '{base}' index {raw} is out of bounds for length {}", self.scope().context, array.len()), loc);
                         };
-                        if matches!(
-                            self.scope().local_binding(base),
-                            Some(LocalBinding::Array(_))
-                        ) {
-                            concrete_const_expr(value, loc)
-                        } else {
-                            typed_const_expr_with_loc(value, loc)
-                        }
+                        concrete_const_expr(value, loc)
                     }
                     Expr::Binary { loc, op, .. } => Expr::Binary {
                         loc: *loc,

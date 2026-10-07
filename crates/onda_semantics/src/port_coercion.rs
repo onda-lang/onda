@@ -217,6 +217,16 @@ pub(super) fn clamp_typed_const_to_range(
     }
 }
 
+pub(super) fn contextual_const_expr(value: TypedConstValue) -> Expr {
+    match value {
+        TypedConstValue::F32(value) => Expr::number(f64::from(value)),
+        TypedConstValue::F64(value) => Expr::number(value),
+        TypedConstValue::I32(value) => Expr::int(i64::from(value)),
+        TypedConstValue::I64(value) => Expr::int(value),
+        TypedConstValue::Bool(value) => Expr::bool(value),
+    }
+}
+
 pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
     fn typed_scalar_expr(to: PrimitiveType, expr: Expr) -> Expr {
         Expr::Cast {

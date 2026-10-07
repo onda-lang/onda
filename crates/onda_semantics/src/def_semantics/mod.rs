@@ -2,6 +2,7 @@ pub(crate) mod body_analysis;
 pub(crate) mod call_types;
 pub(crate) mod inference;
 mod monomorphization;
+mod numeric_constraints;
 mod overloads;
 
 pub(crate) use body_analysis::*;

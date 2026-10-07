@@ -1170,9 +1170,6 @@ pub(super) fn expand_graph_expr_to_slots(
     if slot_count == 0 {
         return Vec::new();
     }
-    if slot_count == 1 {
-        return vec![expr.clone()];
-    }
     if let Expr::ArrayLiteral { values, .. } = expr {
         if values.len() != slot_count {
             push_graph_error(
@@ -1201,6 +1198,8 @@ pub(super) fn expand_graph_expr_to_slots(
             );
         }
         Some(GraphValueType::Array { .. }) => {}
+        // Generated scalar temporaries and delay reads have no owner-surface metadata.
+        None if slot_count == 1 => return vec![expr.clone()],
         None => {
             push_graph_error(
                 errors,
@@ -1212,9 +1211,6 @@ pub(super) fn expand_graph_expr_to_slots(
     }
 
     match expr {
-        Expr::ArrayLiteral { values, .. } => (0..slot_count)
-            .map(|i| values.get(i).cloned().unwrap_or(Expr::number(0.0)))
-            .collect(),
         Expr::Var { name: base, .. } => (0..slot_count)
             .map(|i| Expr::Index {
                 loc: Default::default(),
@@ -1363,12 +1359,14 @@ pub(super) fn expand_graph_expr_to_slots(
 pub(super) fn require_graph_assignable_type(
     src: &GraphValueType,
     dst: &GraphValueType,
-    loc: SourceLoc,
+    source_expr: &Expr,
+    constants: &crate::decl_symbols::DeclaredSymbolMap,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) {
+    let loc = source_expr.loc();
     let mut push_scalar_mismatch = |src_ty: PrimitiveType, dst_ty: PrimitiveType| {
-        if src_ty != dst_ty && !can_implicitly_assign(src_ty, dst_ty) {
+        if !crate::expr_typing::can_assign_expr_to_type(source_expr, src_ty, dst_ty, constants) {
             push_graph_error(
                 errors,
                 loc,

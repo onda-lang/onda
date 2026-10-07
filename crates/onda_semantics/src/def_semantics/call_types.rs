@@ -584,6 +584,8 @@ fn has_semantic_binding(name: &str, env: &CallTypeEnv, context: CallTypeContext<
         || lookup_struct_field(name, env, context).is_some()
 }
 
+/// Call matching uses ordinary contextual defaults, independently of retained
+/// evaluation precision. Concrete expressions keep their promoted type.
 pub(crate) fn infer_scalar_expr_type(
     expr: &Expr,
     env: &CallTypeEnv,
@@ -762,6 +764,7 @@ pub(crate) fn infer_scalar_expr_type(
         },
     )
     .ok()
+    .and_then(|ty| effective_untyped_assignment_type(expr, Some(ty), &env.const_symbols))
 }
 
 fn named_call_var_arg<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a str> {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) enum GraphValueType {
     Scalar(PrimitiveType),
     Array { elem_ty: PrimitiveType, len: usize },

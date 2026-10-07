@@ -2984,8 +2984,7 @@ impl<'a> FunctionLowerer<'a> {
             if let Some(Binding::ArrayParameter(parameter, ty, _)) =
                 self.bindings.get(&base).cloned()
             {
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::Assign {
@@ -3000,8 +2999,7 @@ impl<'a> FunctionLowerer<'a> {
                 return Ok(true);
             }
             if let Some(Binding::Array(local, ty, _)) = self.bindings.get(&base).cloned() {
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::Assign {
@@ -3019,8 +3017,7 @@ impl<'a> FunctionLowerer<'a> {
                 if access != onda_mir::AccessMode::ReadWrite {
                     return Err(self.error(format!("slice '{base}' is read-only"), location));
                 }
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::SliceStore {
@@ -3037,8 +3034,7 @@ impl<'a> FunctionLowerer<'a> {
                 .runtime_globals
                 .and_then(|globals| globals.control_output_arrays.get(&base).copied())
             {
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::ControlOutputStore {
@@ -3055,8 +3051,7 @@ impl<'a> FunctionLowerer<'a> {
                 .runtime_globals
                 .and_then(|globals| globals.state_arrays.get(&base).copied())
             {
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 self.push_statement(
                     block,
                     StatementKind::Assign {
@@ -3074,8 +3069,7 @@ impl<'a> FunctionLowerer<'a> {
                 .runtime_globals
                 .and_then(|globals| globals.output_arrays.get(&base).copied())
             {
-                let value = self.lower_expr(value_arg, block)?;
-                let value = self.coerce(value, ty, block, value_arg.loc())?;
+                let value = self.lower_expr_for_type(value_arg, ty, block)?;
                 if let Some((cache, cache_ty, _)) =
                     self.audio_output_array_caches.get(&output).copied()
                 {
@@ -3114,8 +3108,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
         if let Some((span, ty, _len)) = buffer_param_array {
-            let value = self.lower_expr(value_arg, block)?;
-            let value = self.coerce(value, ty, block, value_arg.loc())?;
+            let value = self.lower_expr_for_type(value_arg, ty, block)?;
             self.push_statement(
                 block,
                 StatementKind::BufferParamStore {
@@ -3140,8 +3133,7 @@ impl<'a> FunctionLowerer<'a> {
                 selector: selector.expect("buffer array selector was lowered"),
                 bounds,
             };
-            let value = self.lower_expr(value_arg, block)?;
-            let value = self.coerce(value, ty, block, value_arg.loc())?;
+            let value = self.lower_expr_for_type(value_arg, ty, block)?;
             self.push_statement(
                 block,
                 StatementKind::BufferStore {
@@ -3169,8 +3161,7 @@ impl<'a> FunctionLowerer<'a> {
                 ty,
             )
         };
-        let value = self.lower_expr(value_arg, block)?;
-        let value = self.coerce(value, ty, block, value_arg.loc())?;
+        let value = self.lower_expr_for_type(value_arg, ty, block)?;
         let statement = match reference {
             MaterializedBufferReference::Interface(buffer) => StatementKind::BufferStore {
                 buffer,

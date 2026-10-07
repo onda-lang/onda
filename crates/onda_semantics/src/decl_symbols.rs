@@ -25,6 +25,8 @@ pub(crate) enum DeclaredSymbolInfo {
     },
     Constant {
         ty: PrimitiveType,
+        /// Untyped numeric declarations adapt to the concrete type of each use.
+        contextual: bool,
         /// Already evaluated in declaration context; never demands a payload.
         value: Option<crate::TypedConstValue>,
     },
@@ -62,6 +64,25 @@ impl DeclaredSymbolMap {
         Self::default()
     }
 
+    pub(crate) fn contextual_constant(&self, name: &str) -> bool {
+        match self.get(name) {
+            Some(DeclaredSymbolInfo::Constant { contextual, .. }) => self
+                .const_scope
+                .as_ref()
+                .map_or(*contextual, |scope| scope.contextual_numeric(name)),
+            _ => false,
+        }
+    }
+
+    /// Closed expressions may convert at a typed destination without changing
+    /// the concrete types used by their arithmetic or generic inference.
+    pub(crate) fn constant_expression(&self, expr: &crate::Expr) -> bool {
+        self.const_scope.as_ref().map_or_else(
+            || crate::builtins::can_eval_const_expr_with_symbols(expr, self),
+            |scope| scope.can_evaluate(expr, self),
+        )
+    }
+
     pub(crate) fn constant_integer(
         &self,
         expr: &crate::Expr,
@@ -70,6 +91,18 @@ impl DeclaredSymbolMap {
         if let crate::Expr::Int { value, .. } = expr {
             return Some(*value);
         }
+        if let crate::Expr::Var { name, .. } = expr {
+            if let Some(DeclaredSymbolInfo::Constant {
+                value: Some(value), ..
+            }) = self.get(name)
+            {
+                return match value {
+                    crate::TypedConstValue::I32(value) => Some(i64::from(*value)),
+                    crate::TypedConstValue::I64(value) => Some(*value),
+                    _ => None,
+                };
+            }
+        }
         if crate::builtins::can_eval_const_expr_exact_int(expr) {
             return crate::builtins::eval_const_expr_i64_exact(
                 expr,
@@ -77,6 +110,42 @@ impl DeclaredSymbolMap {
                 "constant selector",
                 errors,
             );
+        }
+        // Template metadata has scalar values but no executable ConstScope.
+        if self.const_scope.is_none()
+            && crate::builtins::can_eval_const_expr_exact_int_with_symbols(expr, self)
+        {
+            let mut resolved = expr.clone();
+            let mut known = true;
+            resolved.visit_mut(|node| {
+                if let crate::Expr::Var { name, .. } = node {
+                    if let Some(DeclaredSymbolInfo::Constant {
+                        value: Some(value),
+                        contextual,
+                        ..
+                    }) = self.get(name)
+                    {
+                        *node = if *contextual {
+                            crate::port_coercion::contextual_const_expr(*value)
+                        } else {
+                            crate::port_coercion::typed_const_expr(*value)
+                        }
+                        .with_loc(node.loc());
+                    } else if crate::builtins::builtin_constant_type(name).is_none() {
+                        known = false;
+                    }
+                    return false;
+                }
+                true
+            });
+            if known {
+                return crate::builtins::eval_const_expr_i64_exact(
+                    &resolved,
+                    self.options,
+                    "constant selector",
+                    errors,
+                );
+            }
         }
         self.const_scope
             .as_ref()?
@@ -128,6 +197,7 @@ pub(crate) fn bind_const_symbols(
             name.clone(),
             DeclaredSymbolInfo::Constant {
                 ty: *ty,
+                contextual: false,
                 value: None,
             },
         )

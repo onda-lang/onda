@@ -7,7 +7,7 @@ use onda_frontend::{BinaryOp, Diagnostic, Expr, LogicalOp, PrimitiveType};
 use onda_mir::{constant_eval, ScalarValue, UnaryOp};
 
 use crate::builtins::{
-    builtin_arity, builtin_constant_type, builtin_constant_value_f64, builtin_name,
+    builtin_arity, builtin_constant_type, builtin_constant_value_f64, builtin_name, is_float_type,
 };
 use crate::expr_typing::{
     adapt_binary_types_from_purity, adapt_numeric_argument_types_from_purity,
@@ -107,7 +107,7 @@ fn evaluate(
             .and_then(|kind| kind.literal_type())
     };
     let literal_root = literal_type(expr).is_some();
-    let numeric_context = numeric_context.filter(|ty| {
+    let numeric_context = numeric_context.or_else(|| literal_type(expr)).filter(|ty| {
         literal_root
             && (matches!(ty, PrimitiveType::F32 | PrimitiveType::F64)
                 || (!matches!(expr, Expr::Int { .. } | Expr::Var { .. })
@@ -115,7 +115,7 @@ fn evaluate(
                         .is_some_and(|ty| matches!(ty, PrimitiveType::I32 | PrimitiveType::I64))))
     });
     // In mixed trees every literal operand is deferred. In literal trees the
-    // context is already known and computed children use ordinary type merging.
+    // context is already known and selects the floating arithmetic width.
     let mut frames = vec![Frame::Eval(expr, numeric_context)];
     let mut values = Vec::<Value<'_>>::new();
     while let Some(frame) = frames.pop() {
@@ -128,12 +128,13 @@ fn evaluate(
                         continue;
                     }
                 }
-                // Floating destinations retain exact integer-only subtrees.
+                // Integer-only literal subtrees use full integer precision
+                // before their result converts into a floating context.
                 if target.is_some_and(|ty| matches!(ty, PrimitiveType::F32 | PrimitiveType::F64))
                     && literal_type(node)
                         .is_some_and(|ty| matches!(ty, PrimitiveType::I32 | PrimitiveType::I64))
                 {
-                    target = None;
+                    target = Some(PrimitiveType::I64);
                 }
                 let scalar = match node {
                     Expr::Number { value, .. } => ScalarValue::F64(*value),
@@ -291,6 +292,12 @@ fn evaluate(
                             && rhs_ty == PrimitiveType::Bool
                         {
                             PrimitiveType::Bool
+                        } else if let Some(ty) = numeric_context.filter(|ty| {
+                            is_float_type(*ty) && literal_type(node).is_some_and(is_float_type)
+                        }) {
+                            // Wide integer literal intermediates convert before
+                            // participating in the selected floating arithmetic.
+                            ty
                         } else {
                             merge_numeric_types_without_diagnostics(lhs_ty, rhs_ty)
                                 .ok_or_else(|| {

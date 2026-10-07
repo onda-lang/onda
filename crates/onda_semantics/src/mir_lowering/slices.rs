@@ -1344,9 +1344,7 @@ impl<'a> FunctionLowerer<'a> {
         };
         let selected =
             self.lower_dynamic_interface_index(index, view.slots.len(), bounds, block)?;
-        let value_location = value.loc();
-        let value = self.lower_expr(value, block)?;
-        let value = self.coerce(value, view.element_type, block, value_location)?;
+        let value = self.lower_expr_for_type(value, view.element_type, block)?;
         let dispatch = self.dynamic_interface_write_dispatch(
             &view.slots,
             0,

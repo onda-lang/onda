@@ -4179,7 +4179,7 @@ pub fn analyze_with_options_and_inputs(
             }
             def.body = rewritten_def_body;
         }
-        let resolved_scalar_bindings = RefCell::new(ScalarBindingTypes::new());
+        let resolved_assignment_types = RefCell::new(AssignmentTypes::new());
         let def_ctx = DefStmtAnalysisCtx {
             common: ScopeAnalysisCtx {
                 policy: ScopePolicy::Def,
@@ -4206,7 +4206,7 @@ pub fn analyze_with_options_and_inputs(
             struct_array_roots: &def_param_array_struct_roots,
             proc_array_roots: &def_proc_array_roots,
             state_scalars: &def_state_scalars,
-            resolved_scalar_bindings: &resolved_scalar_bindings,
+            resolved_assignment_types: &resolved_assignment_types,
         };
         let mut def_state = DefStmtAnalysisState::from_parts(
             fn_known,
@@ -4248,7 +4248,7 @@ pub fn analyze_with_options_and_inputs(
                 );
             }
         }
-        retain_scalar_binding_types(&mut def.body, resolved_scalar_bindings.into_inner());
+        retain_assignment_types(&mut def.body, resolved_assignment_types.into_inner());
     }
 
     if errors.is_empty() {

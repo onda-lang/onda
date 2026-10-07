@@ -42,11 +42,8 @@ pub(crate) fn untyped_literal_type(expr: &Expr) -> Option<PrimitiveType> {
     }
 }
 
-/// For untyped first-assignment inference, maps the inferred type of a pure
-/// literal expression to its ordinary first-assignment default. Float
-/// expressions default to F32. Integer literals are handled above with an
-/// exact range check. Pure integer expressions default to I32 only when none
-/// of their literal leaves or referenced constants requires I64.
+/// Apply ordinary binding defaults to contextual numerics, independently of
+/// their evaluation width. Concrete constants keep their selected type.
 pub(crate) fn effective_untyped_assignment_type(
     expr: &Expr,
     expr_ty: Option<PrimitiveType>,
@@ -56,13 +53,12 @@ pub(crate) fn effective_untyped_assignment_type(
     if let Some(lit_ty) = untyped_literal_type(expr) {
         return Some(lit_ty);
     }
-    // Pure numeric expressions (e.g. 0.5 + 0.5, PI * 2.0) use the ordinary
-    // F32/I32 defaults. Preserve I64 for wide literals and I64 constants,
-    // including folded constants, independently of when their values evaluate.
-    if is_pure_numeric_literal_expr(expr, constants) {
-        return expr_ty.map(|ty| match ty {
+    // Integer constants use their value, rather than their evaluation width,
+    // to select the same default before and after folding.
+    if is_contextual_numeric_expr(expr, constants) {
+        return Some(match expr_ty? {
             PrimitiveType::F64 => PrimitiveType::F32,
-            PrimitiveType::I64 if !requires_wide_integer_type(expr, constants) => {
+            PrimitiveType::I64 if !requires_wide_integer_type(expr, constants)? => {
                 PrimitiveType::I32
             }
             other => other,
@@ -74,7 +70,7 @@ pub(crate) fn effective_untyped_assignment_type(
 /// Pure numerics need no symbol environment to select their ordinary defaults.
 pub(crate) fn default_numeric_literal_type(expr: &Expr) -> Option<PrimitiveType> {
     let constants = DeclaredSymbolMap::new();
-    if !is_pure_numeric_literal_expr(expr, &constants) {
+    if !is_contextual_numeric_expr(expr, &constants) {
         return None;
     }
     let inferred = if crate::builtins::can_eval_const_expr_exact_int(expr) {
@@ -86,63 +82,47 @@ pub(crate) fn default_numeric_literal_type(expr: &Expr) -> Option<PrimitiveType>
 }
 
 // Integer constants retain their width through both metadata and value folding.
-fn requires_wide_integer_type(expr: &Expr, constants: &DeclaredSymbolMap) -> bool {
-    expr.walk().any(|expr| match expr {
-        Expr::Int {
-            const_ty: Some(PrimitiveType::I64),
-            ..
-        } => true,
-        Expr::Int { value, .. } => i32::try_from(*value).is_err(),
-        Expr::Var { name, .. } => matches!(
-            constants.get(name),
-            Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
-                ty: PrimitiveType::I64,
-                ..
-            })
-        ),
-        Expr::Index { base, .. } => matches!(
-            constants.get(base),
-            Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
-                elem_ty: PrimitiveType::I64
-            })
-        ),
-        _ => false,
-    })
+fn requires_wide_integer_type(expr: &Expr, constants: &DeclaredSymbolMap) -> Option<bool> {
+    let mut unknown = false;
+    for expr in expr.walk() {
+        let value = match expr {
+            Expr::Int { value, .. } => Some(*value),
+            Expr::Var { name, .. }
+                if matches!(
+                    constants.get(name),
+                    Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
+                        ty: PrimitiveType::I64,
+                        ..
+                    })
+                ) =>
+            {
+                let value = constants.constant_integer(expr, &mut Vec::new());
+                unknown |= value.is_none();
+                value
+            }
+            _ => None,
+        };
+        if value.is_some_and(|value| i32::try_from(value).is_err()) {
+            return Some(true);
+        }
+    }
+    // A template must wait for values whose width depends on instantiation.
+    (!unknown).then_some(false)
 }
 
-/// Returns true if the expression is a "pure" numeric expression composed
-/// entirely of numeric literals, unary ops on literals, and binary ops on
-/// literals. Explicit casts (e.g. `i64(1)`) are NOT considered pure literals
-/// — the user chose a specific type and implicit narrowing would discard that.
-///
-/// Used to allow implicit narrowing (F64→F32, I64→I32) at assignment sites
-/// when the entire RHS is a compile-time numeric constant expression.
-pub(crate) fn is_pure_numeric_literal_expr(expr: &Expr, constants: &DeclaredSymbolMap) -> bool {
+/// Untyped numerics adapt to each use. An annotation, cast, or concrete array
+/// element fixes the type even when its value is known at compile time.
+pub(crate) fn is_contextual_numeric_expr(expr: &Expr, constants: &DeclaredSymbolMap) -> bool {
     let mut pending = vec![expr];
     while let Some(expr) = pending.pop() {
         match expr {
-            Expr::Number { .. } | Expr::Int { .. } => {}
+            Expr::Number { .. } | Expr::Int { const_ty: None, .. } => {}
             Expr::UnaryBitNot { .. } | Expr::Binary { .. } | Expr::Call { .. } => {
                 expr.children(&mut pending)
             }
             Expr::Var { name, .. }
-                if builtin_constant_type(name).is_some()
-                    || matches!(
-                        constants.get(name),
-                        Some(crate::decl_symbols::DeclaredSymbolInfo::Constant {
-                            ty: PrimitiveType::F64 | PrimitiveType::I64,
-                            ..
-                        })
-                    ) => {}
-            Expr::Index { base, index, .. }
-                if matches!(
-                    constants.get(base),
-                    Some(crate::decl_symbols::DeclaredSymbolInfo::ConstArray {
-                        elem_ty: PrimitiveType::F64 | PrimitiveType::I64
-                    })
-                ) && crate::builtins::can_eval_const_expr_exact_int_with_symbols(
-                    index, constants,
-                ) => {}
+                if builtin_constant_type(name).is_some() || constants.contextual_constant(name) => {
+            }
             _ => return false,
         }
     }
@@ -164,6 +144,14 @@ impl ScalarConstKind {
     }
 }
 
+pub(crate) fn full_precision_numeric_type(ty: PrimitiveType) -> PrimitiveType {
+    match ty {
+        PrimitiveType::I32 => PrimitiveType::I64,
+        PrimitiveType::F32 => PrimitiveType::F64,
+        _ => ty,
+    }
+}
+
 /// Classify closed scalar expressions once, bottom-up. Literal arithmetic
 /// waits for a destination or concrete peer to supply its width; other closed
 /// trees preserve their own types. Lowering evaluates each maximal constant
@@ -177,7 +165,10 @@ pub(crate) fn scalar_const_kinds<'a>(
         descend,
         |node, children| -> Result<Option<ScalarConstKind>, std::convert::Infallible> {
             let closed = match node {
-                Expr::Bool { .. } => true,
+                Expr::Bool { .. }
+                | Expr::Int {
+                    const_ty: Some(_), ..
+                } => true,
                 Expr::Binary { .. }
                 | Expr::Compare { .. }
                 | Expr::Cast { .. }
@@ -187,9 +178,11 @@ pub(crate) fn scalar_const_kinds<'a>(
                 _ => false,
             };
             let ty = match node {
-                Expr::Int { .. } => Some(PrimitiveType::I64),
+                Expr::Int { const_ty: None, .. } => Some(PrimitiveType::I64),
                 Expr::Number { .. } => Some(PrimitiveType::F64),
-                Expr::Var { name, .. } => builtin_constant_type(name),
+                Expr::Var { name, .. } => {
+                    builtin_constant_type(name).map(full_precision_numeric_type)
+                }
                 Expr::Binary { op, .. } => {
                     let left = children
                         .next()
@@ -224,7 +217,8 @@ pub(crate) fn scalar_const_kinds<'a>(
                 Expr::Call { func, .. } => children
                     .map(|kind| kind.and_then(ScalarConstKind::literal_type))
                     .collect::<Option<Vec<_>>>()
-                    .and_then(|types| intrinsic_result_type(*func, &types)),
+                    .and_then(|types| intrinsic_result_type(*func, &types))
+                    .map(full_precision_numeric_type),
                 _ => None,
             };
             let kind = ty
@@ -256,8 +250,8 @@ pub(crate) fn adapt_binary_operand_types(
     if lhs_ty == rhs_ty {
         return (lhs_ty, rhs_ty);
     }
-    let l_pure = is_pure_numeric_literal_expr(lhs, constants);
-    let r_pure = is_pure_numeric_literal_expr(rhs, constants);
+    let l_pure = is_contextual_numeric_expr(lhs, constants);
+    let r_pure = is_contextual_numeric_expr(rhs, constants);
     adapt_binary_types_from_purity(lhs_ty, rhs_ty, l_pure, r_pure)
 }
 
@@ -270,27 +264,26 @@ pub(crate) fn adapt_binary_types_from_purity(
     r_pure: bool,
 ) -> (PrimitiveType, PrimitiveType) {
     match (l_pure, r_pure) {
-        // One pure-literal, one non-literal: adapt literal to match the non-literal's type.
-        // Never narrow a floating literal to an integer variable: `i / 10.0`
-        // is a floating expression. Integer literals may still adapt to a
-        // floating variable, and literals within one numeric family retain the
-        // non-literal width.
-        (true, false) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
-            if is_float_type(lhs_ty) && !is_float_type(rhs_ty) {
-                (PrimitiveType::F32, rhs_ty)
-            } else {
-                (rhs_ty, rhs_ty)
-            }
-        }
-        (false, true) if lhs_ty != PrimitiveType::Bool && rhs_ty != PrimitiveType::Bool => {
-            if is_float_type(rhs_ty) && !is_float_type(lhs_ty) {
-                (lhs_ty, PrimitiveType::F32)
-            } else {
-                (lhs_ty, lhs_ty)
-            }
-        }
+        (true, false) => (adapt_contextual_numeric_type(lhs_ty, rhs_ty), rhs_ty),
+        (false, true) => (lhs_ty, adapt_contextual_numeric_type(rhs_ty, lhs_ty)),
         // Both pure or neither: keep inferred types, let merge handle it.
         _ => (lhs_ty, rhs_ty),
+    }
+}
+
+/// Select a contextual operand's width from a concrete peer before promotion.
+/// Floating literals keep their family beside integer peers: `i / 10.0`
+/// stays floating. Bool never participates in numeric adaptation.
+pub(crate) fn adapt_contextual_numeric_type(
+    contextual: PrimitiveType,
+    concrete: PrimitiveType,
+) -> PrimitiveType {
+    if contextual == PrimitiveType::Bool || concrete == PrimitiveType::Bool {
+        contextual
+    } else if is_float_type(contextual) && !is_float_type(concrete) {
+        PrimitiveType::F32
+    } else {
+        concrete
     }
 }
 
@@ -310,7 +303,7 @@ pub(crate) fn adapt_numeric_argument_types(
     }
     let pure = args
         .iter()
-        .map(|arg| is_pure_numeric_literal_expr(arg, constants))
+        .map(|arg| is_contextual_numeric_expr(arg, constants))
         .collect::<Vec<_>>();
     adapt_numeric_argument_types_from_purity(arg_types, &pure)
 }
@@ -346,18 +339,17 @@ pub(crate) fn adapt_numeric_argument_types_from_purity(
     pure.iter()
         .zip(arg_types.iter().copied())
         .map(|(&is_pure, ty)| {
-            if !is_pure || ty == PrimitiveType::Bool || concrete_ty == PrimitiveType::Bool {
-                return ty;
-            }
-            if is_float_type(ty) && !is_float_type(concrete_ty) {
-                PrimitiveType::F32
+            if is_pure {
+                adapt_contextual_numeric_type(ty, concrete_ty)
             } else {
-                concrete_ty
+                ty
             }
         })
         .collect()
 }
 
+/// Common numeric promotion after contextual operands have selected their widths.
+/// A concrete i64 promotes to f64 when combined with a floating operand.
 pub(crate) fn merge_numeric_types_without_diagnostics(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
@@ -366,6 +358,7 @@ pub(crate) fn merge_numeric_types_without_diagnostics(
     match (lhs, rhs) {
         (Bool, _) | (_, Bool) => None,
         (F64, _) | (_, F64) => Some(F64),
+        (F32, I64) | (I64, F32) => Some(F64),
         (F32, _) | (_, F32) => Some(F32),
         (I64, _) | (_, I64) => Some(I64),
         (I32, I32) => Some(I32),
@@ -424,11 +417,18 @@ pub(crate) fn intrinsic_result_type(
         | BuiltinFn::Ceil
         | BuiltinFn::Round
         | BuiltinFn::Trunc
-        | BuiltinFn::Fma => Some(if adapted_arg_types.contains(&PrimitiveType::F64) {
-            PrimitiveType::F64
-        } else {
-            PrimitiveType::F32
-        }),
+        | BuiltinFn::Fma => {
+            let (&first, rest) = adapted_arg_types.split_first()?;
+            let ty = rest
+                .iter()
+                .copied()
+                .try_fold(first, merge_numeric_types_without_diagnostics)?;
+            Some(if is_float_type(ty) {
+                ty
+            } else {
+                PrimitiveType::F32
+            })
+        }
     }
 }
 
@@ -767,11 +767,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                     return None;
                                 }
                             }
-                            Some(if arg_types.contains(&PrimitiveType::F64) {
-                                PrimitiveType::F64
-                            } else {
-                                PrimitiveType::F32
-                            })
+                            intrinsic_result_type(*func, &arg_types)
                         }
                         _ => {
                             for ty in &arg_types {
@@ -787,11 +783,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                     return None;
                                 }
                             }
-                            Some(if arg_types.contains(&PrimitiveType::F64) {
-                                PrimitiveType::F64
-                            } else {
-                                PrimitiveType::F32
-                            })
+                            intrinsic_result_type(*func, &arg_types)
                         }
                     }
                 }
@@ -1157,9 +1149,9 @@ pub(crate) fn require_expr_assignable_type(
 /// Returns whether semantic analysis may adapt `expr` from `src` to `dst`
 /// without an explicit source cast.
 ///
-/// Concrete runtime values follow the ordinary widening relation. Pure
-/// numeric literal expressions additionally adapt once at their contextual
-/// boundary, retaining their wide compile-time representation until then.
+/// Runtime values follow the ordinary widening relation. Closed constants
+/// additionally permit checked numeric conversion at their destination;
+/// their concrete arithmetic and generic inference types remain unchanged.
 pub(crate) fn can_assign_expr_to_type(
     expr: &Expr,
     src: PrimitiveType,
@@ -1171,22 +1163,12 @@ pub(crate) fn can_assign_expr_to_type(
     }
     // Const conversion checks the computed value's range in the interpreter.
     // Checking its numeric family does not require computing that value.
-    if constants.constant_context {
+    if constants.constant_context || constants.constant_expression(expr) {
         return src != PrimitiveType::Bool
             && dst != PrimitiveType::Bool
             && (is_float_type(dst) || !is_float_type(src));
     }
-    if !is_pure_numeric_literal_expr(expr, constants) {
-        return false;
-    }
-    matches!(
-        (src, dst),
-        // Same-category contextual literal narrowing.
-        (PrimitiveType::F64, PrimitiveType::F32)
-            | (PrimitiveType::I64, PrimitiveType::I32)
-            // Integer literal to floating context.
-            | (PrimitiveType::I64, PrimitiveType::F32)
-    )
+    false
 }
 
 pub(crate) fn require_expr_numeric_type(

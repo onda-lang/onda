@@ -2511,6 +2511,20 @@ fn analyze_assign_init(
             if !targets_ok {
                 return;
             }
+            let target_types = resolve_tuple_destructuring_types(
+                targets,
+                expr,
+                destructured_types.as_deref(),
+                |name| {
+                    st.state_scalars
+                        .get(name)
+                        .or_else(|| st.local_aliases.get(name))
+                        .copied()
+                },
+                "init",
+                &st.declared_symbols,
+                errors,
+            );
             clear_tuple_var_bindings(
                 &mut st.tuple_vars,
                 targets.iter().filter_map(|target| target.binding()),
@@ -2519,29 +2533,7 @@ fn analyze_assign_init(
                 let Some(name) = target.binding() else {
                     continue;
                 };
-                let source_ty = destructured_types
-                    .as_ref()
-                    .and_then(|types| types.get(index))
-                    .copied()
-                    .unwrap_or(PrimitiveType::F32);
-                let target_ty = st
-                    .state_scalars
-                    .get(name)
-                    .or_else(|| st.local_aliases.get(name))
-                    .copied()
-                    .unwrap_or(source_ty);
-                let component = match expr {
-                    Expr::Tuple { values, .. } => values.get(index).unwrap_or(expr),
-                    _ => expr,
-                };
-                require_expr_assignable_type(
-                    component,
-                    Some(source_ty),
-                    target_ty,
-                    &format!("init tuple destructuring assignment to '{name}'"),
-                    errors,
-                    &st.declared_symbols,
-                );
+                let target_ty = target_types[index];
                 replace_tracked_tuple_types(&mut st.local_aliases, name, None);
                 if allow_owner_state_intro && !st.local_aliases.contains_key(name) {
                     st.state_scalars.entry(name.to_owned()).or_insert(target_ty);
