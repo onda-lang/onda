@@ -75,8 +75,6 @@ fn bind_buffer(
 mod analysis_and_stdlib;
 #[path = "examples_suite/const_dependencies.rs"]
 mod const_dependencies;
-#[path = "examples_suite/example_audio.rs"]
-mod example_audio;
 #[path = "examples_suite/execution_and_runtime.rs"]
 mod execution_and_runtime;
 #[path = "examples_suite/fft_accuracy.rs"]
