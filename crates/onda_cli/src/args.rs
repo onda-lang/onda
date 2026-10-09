@@ -491,6 +491,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut dur_seconds = DEFAULT_DUR_SECONDS;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut fast_math = false;
     let mut show_meta = false;
@@ -522,6 +523,12 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
+            }
+            "--param-smoothing-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--param-smoothing-ms requires a duration".to_owned())?;
+                param_smoothing_seconds = parse_param_smoothing_ms(&value)?;
             }
             "--opt-level" => {
                 let Some(value) = args.next() else {
@@ -559,6 +566,10 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             _ if arg.starts_with("--block-size=") => {
                 block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
+            _ if arg.starts_with("--param-smoothing-ms=") => {
+                param_smoothing_seconds =
+                    parse_param_smoothing_ms(&arg["--param-smoothing-ms=".len()..])?;
+            }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
             }
@@ -578,6 +589,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        param_smoothing_seconds,
         opt_level,
         fast_math,
         show_meta,
@@ -590,6 +602,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut input = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
@@ -612,6 +625,12 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
+            }
+            "--param-smoothing-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--param-smoothing-ms requires a duration".to_owned())?;
+                param_smoothing_seconds = parse_param_smoothing_ms(&value)?;
             }
             "--opt-level" => {
                 let Some(value) = args.next() else {
@@ -656,6 +675,10 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             _ if arg.starts_with("--block-size=") => {
                 block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
+            _ if arg.starts_with("--param-smoothing-ms=") => {
+                param_smoothing_seconds =
+                    parse_param_smoothing_ms(&arg["--param-smoothing-ms=".len()..])?;
+            }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
             }
@@ -683,6 +706,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         input,
         sample_rate_hz,
         block_frames,
+        param_smoothing_seconds,
         opt_level,
         input_device,
         output_device,
@@ -713,6 +737,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
     let mut output_device = None;
@@ -746,6 +771,12 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
                 block_frames = parse_block_frames(&value)?;
+            }
+            "--param-smoothing-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--param-smoothing-ms requires a duration".to_owned())?;
+                param_smoothing_seconds = parse_param_smoothing_ms(&value)?;
             }
             "--opt-level" => {
                 let Some(value) = args.next() else {
@@ -809,6 +840,10 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             _ if arg.starts_with("--block-size=") => {
                 block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
             }
+            _ if arg.starts_with("--param-smoothing-ms=") => {
+                param_smoothing_seconds =
+                    parse_param_smoothing_ms(&arg["--param-smoothing-ms=".len()..])?;
+            }
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
             }
@@ -836,6 +871,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         dur_seconds,
         sample_rate_hz,
         block_frames,
+        param_smoothing_seconds,
         opt_level,
         input_device,
         output_device,
@@ -1248,4 +1284,17 @@ fn parse_buffer_binding(value: &str) -> Result<(String, PathBuf), String> {
         return Err(format!("buffer binding for '{name}' requires a file path"));
     }
     Ok((name.to_owned(), PathBuf::from(path)))
+}
+
+fn parse_param_smoothing_ms(value: &str) -> Result<f64, String> {
+    let milliseconds = value
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| {
+            format!(
+                "invalid parameter smoothing '{value}', expected finite, non-negative milliseconds"
+            )
+        })?;
+    Ok(milliseconds / 1000.0)
 }

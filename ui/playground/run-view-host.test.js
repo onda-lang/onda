@@ -376,6 +376,7 @@ test("allows browser playback while buffers are unbound", async () => {
   const previousMutationObserver = globalThis.MutationObserver;
   let starts = 0;
   let paramResets = 0;
+  const smoothingChanges = [];
   globalThis.window = {
     location: { href: "https://onda.test/play/" },
     addEventListener() {},
@@ -397,6 +398,10 @@ test("allows browser playback while buffers are unbound", async () => {
     const host = new BrowserRunViewHost(iframe, {
       start: async () => { starts += 1; },
       resetParams: async () => { paramResets += 1; },
+      setParamSmoothing: async (milliseconds) => {
+        if (milliseconds === 999) throw new Error("duration rejected");
+        smoothingChanges.push(milliseconds);
+      },
     });
     assert.deepEqual(
       {
@@ -412,6 +417,21 @@ test("allows browser playback while buffers are unbound", async () => {
         scope: true,
       },
     );
+    assert.equal(host.state.supportsParamSmoothing, true);
+    assert.equal(host.state.paramSmoothingMs, 30);
+    for (const milliseconds of [15.5, 0]) {
+      await host.handleMessage({ type: "setParamSmoothing", milliseconds });
+      assert.equal(host.state.paramSmoothingMs, milliseconds);
+    }
+    host.setRunning(44_100);
+    for (const milliseconds of [-1, NaN, Infinity, "5", 999]) {
+      await host.handleMessage({ type: "setParamSmoothing", milliseconds });
+      assert.equal(host.state.paramSmoothingMs, 0);
+      assert.equal(host.state.running, true);
+    }
+    assert.deepEqual(smoothingChanges, [15.5, 0]);
+    host.clearArtifact();
+    assert.equal(host.state.paramSmoothingMs, 0);
     host.setArtifact({
       metadata: {
         compile: {

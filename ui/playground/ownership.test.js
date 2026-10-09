@@ -33,7 +33,7 @@ test("the shared run view presents the browser compiler's Onda version", async (
   assert.match(runView, /ondaVersionNode\.textContent = "Onda " \+ ondaVersion/);
   assert.match(runView, /showOndaVersion\(incoming\.ondaVersion\)/);
   assert.match(playground, /import \{ createCompiler, ONDA_VERSION \}/);
-  assert.match(playground, /runView\.setState\(\{ ondaVersion: ONDA_VERSION \}\)/);
+  assert.match(playground, /runView\.setState\(\{ ondaVersion: ONDA_VERSION, paramSmoothingMs \}\)/);
 });
 
 test("the shared run view only shows its scope when supported and during playback", async () => {
@@ -252,7 +252,7 @@ test("the shared run view offers a device-cached knob layout", async () => {
   assert.match(runView, /function paramDisplayName\(param\)/);
   assert.match(
     runView,
-    /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button[^>]+id="reset-params"[\s\S]*?<\/div>\s*<div class="param-layout-toggle"/,
+    /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button class="secondary compact-action" id="reset-params"[^>]*>Reset<\/button>\s*<\/div>\s*<label class="param-smoothing"[\s\S]*?id="param-smoothing-ms"[\s\S]*?<\/label>\s*<div class="param-layout-toggle"/,
   );
   assert.match(runView, /classList\.add\("param-knob-ring-value"\)/);
   assert.match(runView, /function knobValueArcPath\(normalized\)/);

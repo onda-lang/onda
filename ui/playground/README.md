@@ -11,6 +11,7 @@ and the standalone `examples/web/onda_wasm_playground` host.
 - `run-view-host.js` adapts `ui/run/run.html` to the browser runtime.
 - `browser-buffers.js` validates and decodes browser-provided WAV buffers.
 - `microphone.js` requests and reuses browser microphone input only for top-level audio ports.
+- `param-smoothing.js` retains the smoothing preference across processor replacements.
 - `default.onda` is embedded into the generated playground bundle.
 
 Hosts provide the required DOM elements and `globalThis.__ONDA_PLAYGROUND_ASSETS__`; they do not own

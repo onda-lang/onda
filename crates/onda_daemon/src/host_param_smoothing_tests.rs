@@ -337,3 +337,65 @@ fn invalid_host_durations_are_rejected() {
         ));
     }
 }
+
+#[test]
+fn smoothing_duration_changes_live_and_can_be_enabled_after_starting_disabled() {
+    for ty in ["f32", "f64"] {
+        for suffix in ["", "[2]"] {
+            let mut run = build(&control(ty, suffix), 48, 0.0).unwrap();
+            let name = if suffix.is_empty() { "gain" } else { "gain[0]" };
+            assert_block(&mut run, 0.0);
+            run.set_param_f64(name, 0.25).unwrap();
+            assert_block(&mut run, 0.25);
+            run.set_param_smoothing_seconds(0.003).unwrap();
+            run.set_param_f64(name, 1.0).unwrap();
+            assert_block(&mut run, 0.5);
+            run.set_param_smoothing_seconds(0.002).unwrap();
+            assert_block(&mut run, 0.75);
+            // Invalid changes leave both the option and active ramp intact.
+            for seconds in [-1.0, f64::NAN, f64::INFINITY, f64::MAX] {
+                assert!(run.set_param_smoothing_seconds(seconds).is_err());
+                assert_eq!(run.options().param_smoothing_seconds, 0.002);
+            }
+            assert_block(&mut run, 1.0);
+            run.set_param_f64(name, 0.0).unwrap();
+            assert_block(&mut run, 0.5);
+            run.set_param_smoothing_seconds(0.0).unwrap();
+            assert_block(&mut run, 0.0);
+            run.set_param_f64(name, 1.0).unwrap();
+            assert_block(&mut run, 1.0);
+            run.set_param_smoothing_seconds(0.003).unwrap();
+            run.set_param_f64(name, 0.0).unwrap();
+            assert_block(&mut run, 2.0 / 3.0);
+            run.restart().unwrap();
+            assert_block(&mut run, 0.0);
+            run.set_param_f64(name, 1.0).unwrap();
+            assert_block(&mut run, 1.0 / 3.0);
+        }
+    }
+}
+
+#[test]
+fn duration_changes_do_not_restart_cancelled_nonfinite_transitions() {
+    for ty in ["f32", "f64"] {
+        for target in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let source = control(ty, "").replace(" {0, 1}", "");
+            let mut run = build(&source, 48, 0.003).unwrap();
+            assert_block(&mut run, 0.0);
+            run.set_param_f64("gain", 1.0).unwrap();
+            assert_block(&mut run, 1.0 / 3.0);
+            run.set_param_f64("gain", target).unwrap();
+            run.set_param_smoothing_seconds(0.006).unwrap();
+            assert!(run
+                .render_block()
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|value| if target.is_nan() {
+                    value.is_nan()
+                } else {
+                    *value == target as f32
+                }));
+        }
+    }
+}

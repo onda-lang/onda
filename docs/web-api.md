@@ -229,6 +229,10 @@ The adapter exposes its `node` and validated `metadata`, plus these operations:
 - `setParam(nameOrIndex, plain)` and `setParamNormalized(nameOrIndex, normalized)` for whole
   parameters.
 - `resetParams()` to restore parameter defaults immediately and cancel host ramps, retaining DSP state.
+- `setParamSmoothingSeconds(seconds)` to change the host duration live without recompiling or
+  reinitializing DSP state. Finite, nonnegative durations are required. Active ramps restart from
+  their current values using the new duration; 0 (or a duration at most one block) settles their
+  targets immediately. Smoothing can be enabled after starting with 0.
 - `setParamElement(nameOrIndex, element, plain)` and
   `setParamElementNormalized(nameOrIndex, element, normalized)` for one scalar or fixed-array
   element.

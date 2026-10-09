@@ -16,7 +16,6 @@ use onda_daemon::{
     DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
     RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
-    INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use serde::Deserialize;
@@ -53,6 +52,7 @@ pub struct PlaybackLaunch {
     pub dur_seconds: Option<u32>,
     pub sample_rate_hz: u32,
     pub block_frames: usize,
+    pub param_smoothing_seconds: f64,
     pub opt_level: TargetOptLevel,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
@@ -137,6 +137,10 @@ enum PlaybackControlCommand {
         reply: PlaybackReply<()>,
     },
     ResetParams {
+        reply: PlaybackReply<()>,
+    },
+    SetParamSmoothing {
+        seconds: f64,
         reply: PlaybackReply<()>,
     },
     GetParams {
@@ -787,7 +791,7 @@ fn spawn_run_render_thread(
         let run_options = RunOptions {
             sample_rate: launch.sample_rate_hz as f32,
             block_size: launch.block_frames,
-            param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+            param_smoothing_seconds: launch.param_smoothing_seconds,
             fast_math: launch.fast_math,
             opt_level: launch.opt_level,
         };
@@ -998,6 +1002,25 @@ fn spawn_run_render_thread(
                                     run.reset_params().map_err(|diag| {
                                         format_single_diagnostic(
                                             "daemon run parameter reset failed",
+                                            &diag,
+                                        )
+                                    })
+                                });
+                            let _ = reply.send(result);
+                        }
+                        PlaybackControlCommand::SetParamSmoothing { seconds, reply } => {
+                            flush_pending_param_updates(
+                                &mut pending_param_updates,
+                                &mut session,
+                                &launch.input,
+                            );
+                            let result = session
+                                .run_mut(&launch.input)
+                                .ok_or_else(|| "run is not active".to_owned())
+                                .and_then(|run| {
+                                    run.set_param_smoothing_seconds(seconds).map_err(|diag| {
+                                        format_single_diagnostic(
+                                            "parameter smoothing update failed",
                                             &diag,
                                         )
                                     })
@@ -2221,6 +2244,31 @@ fn run_control_response(
                     })
                 })
         }
+        "setParamSmoothing" => (|| -> Result<Option<Value>, String> {
+            let seconds = request
+                .value
+                .as_ref()
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or_else(|| {
+                    "setParamSmoothing requires a finite, non-negative 'value' in seconds"
+                        .to_owned()
+                })?;
+            let (reply_tx, reply_rx) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::SetParamSmoothing {
+                    seconds,
+                    reply: reply_tx,
+                })
+                .map_err(|_| "run control channel closed".to_owned())?;
+            let result = reply_rx
+                .recv()
+                .map_err(|_| "run control reply channel closed".to_owned())?;
+            Ok(request_id.clone().map(|id| match result {
+                Ok(()) => json!({ "id": id, "ok": true }),
+                Err(error) => json!({ "id": id, "ok": false, "error": error }),
+            }))
+        })(),
         "setParam" => (|| -> Result<Option<Value>, String> {
             let name = request
                 .name
@@ -2991,5 +3039,46 @@ mod tests {
         worker.join().expect("resetParams worker should finish");
         assert_eq!(response.get("id"), Some(&Value::from(8)));
         assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
+    }
+    #[test]
+    fn run_smoothing_command_validates_input_and_waits_for_runtime_result() {
+        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        for value in [Value::Null, Value::from(-1), Value::from("30")] {
+            let (tx, rx) = mpsc::channel();
+            let request = serde_json::from_value(serde_json::json!({
+                "id": 1, "command": "setParamSmoothing", "value": value
+            }))
+            .unwrap();
+            let response = run_control_response(request, &tx, &scope_ring, 0).unwrap();
+            assert_eq!(response["ok"], false);
+            assert!(rx.try_recv().is_err());
+        }
+        for seconds in [0.0, 0.015, f64::MAX] {
+            let (tx, rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || match rx.recv().unwrap() {
+                PlaybackControlCommand::SetParamSmoothing {
+                    seconds: actual,
+                    reply,
+                } => {
+                    assert_eq!(actual, seconds);
+                    reply
+                        .send(if seconds == f64::MAX {
+                            Err("overflow".to_owned())
+                        } else {
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                _ => panic!("expected duration update"),
+            });
+            let request = serde_json::from_value(serde_json::json!({
+                "id": 2, "command": "setParamSmoothing", "value": seconds
+            }))
+            .unwrap();
+            let response = run_control_response(request, &tx, &scope_ring, 0).unwrap();
+            worker.join().unwrap();
+            assert_eq!(response["id"], 2);
+            assert_eq!(response["ok"], seconds != f64::MAX);
+        }
     }
 }

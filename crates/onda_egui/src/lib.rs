@@ -35,10 +35,18 @@ const EVENT_ARRAY_CELL_GAP: f32 = 7.0;
 const RUN_SAMPLE_RATE_CHOICES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 const RUN_BLOCK_SIZE_CHOICES: [usize; 6] = [64, 128, 256, 512, 1_024, 2_048];
 const CONTROL_CORNER_RADIUS: f32 = 5.0;
+const PARAM_HEADER_CONTROL_HEIGHT: f32 = 26.0;
 const CONTROL_GROUP_CORNER_RADIUS: f32 = 8.0;
 const CARD_CORNER_RADIUS: f32 = 9.0;
 const SECTION_CORNER_RADIUS: f32 = 12.0;
 const WINDOW_CORNER_RADIUS: f32 = 14.0;
+// Match the text roles in ui/run/run.html, expressed in egui logical points.
+const BODY_FONT_SIZE: f32 = 13.0;
+const HEADING_FONT_SIZE: f32 = 14.0;
+const COMPACT_FONT_SIZE: f32 = 12.0;
+const SMALL_FONT_SIZE: f32 = 11.0;
+const CAPTION_FONT_SIZE: f32 = 10.0;
+const TITLE_FONT_SIZE: f32 = 17.0;
 
 pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     let theme_mode = options.theme;
@@ -376,6 +384,7 @@ impl RunApp {
             ui.label("Velocity");
         };
         let controls = |ui: &mut egui::Ui, app: &mut Self| {
+            set_control_font_size(ui, SMALL_FONT_SIZE);
             let width = ui.available_width();
             let height = ui.spacing().interact_size.y;
             let layout = egui::Layout::right_to_left(egui::Align::Center);
@@ -397,11 +406,19 @@ impl RunApp {
             }
         };
         if ui.available_width() < 390.0 {
-            ui.strong("MIDI Keyboard");
+            ui.label(
+                egui::RichText::new("MIDI Keyboard")
+                    .strong()
+                    .size(HEADING_FONT_SIZE),
+            );
             controls(ui, self);
         } else {
             ui.horizontal(|ui| {
-                ui.strong("MIDI Keyboard");
+                ui.label(
+                    egui::RichText::new("MIDI Keyboard")
+                        .strong()
+                        .size(HEADING_FONT_SIZE),
+                );
                 controls(ui, self);
             });
         }
@@ -712,7 +729,11 @@ impl RunApp {
         let choose_clicked = if file_hovered {
             content_ui.add_sized(
                 [168.0, 32.0],
-                egui::Label::new(egui::RichText::new("Drop to open").strong().size(20.0)),
+                egui::Label::new(
+                    egui::RichText::new("Drop to open")
+                        .strong()
+                        .size(TITLE_FONT_SIZE),
+                ),
             );
             content_ui.add_space(6.0);
             content_ui.add_sized(
@@ -720,7 +741,7 @@ impl RunApp {
                 egui::Label::new(
                     egui::RichText::new("Release anywhere in this window")
                         .weak()
-                        .size(13.0),
+                        .size(BODY_FONT_SIZE),
                 ),
             );
             false
@@ -737,7 +758,7 @@ impl RunApp {
                 egui::Label::new(
                     egui::RichText::new("or drop an .onda or .ondaproject file here")
                         .weak()
-                        .size(13.0),
+                        .size(BODY_FONT_SIZE),
                 ),
             );
             clicked
@@ -754,13 +775,21 @@ impl RunApp {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.add_sized(
                         [184.0, 16.0],
-                        egui::Label::new(egui::RichText::new("Sample rate").weak().size(11.0))
-                            .halign(egui::Align::Center),
+                        egui::Label::new(
+                            egui::RichText::new("Sample rate")
+                                .weak()
+                                .size(SMALL_FONT_SIZE),
+                        )
+                        .halign(egui::Align::Center),
                     );
                     ui.add_sized(
                         [184.0, 16.0],
-                        egui::Label::new(egui::RichText::new("Block size").weak().size(11.0))
-                            .halign(egui::Align::Center),
+                        egui::Label::new(
+                            egui::RichText::new("Block size")
+                                .weak()
+                                .size(SMALL_FONT_SIZE),
+                        )
+                        .halign(egui::Align::Center),
                     );
                 });
                 ui.horizontal(|ui| {
@@ -808,7 +837,7 @@ impl RunApp {
         });
         if let Some(error) = &self.load_error {
             content_ui.add_space(12.0);
-            content_ui.colored_label(theme.error, error);
+            content_ui.colored_label(theme.error, error_text(error));
         }
     }
 
@@ -836,21 +865,26 @@ impl RunApp {
                     ui.set_min_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
-                        ui.label(egui::RichText::new(name).strong().monospace());
+                        ui.label(
+                            egui::RichText::new(name)
+                                .strong()
+                                .monospace()
+                                .size(HEADING_FONT_SIZE),
+                        );
                         ui.label(
                             egui::RichText::new(buffer_type_summary(buffer))
-                                .size(11.0)
+                                .size(SMALL_FONT_SIZE)
                                 .weak()
                                 .monospace(),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let clear_clicked = is_bound
                                 && ui
-                                    .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
+                                    .add(compact_button("Clear").min_size(egui::vec2(48.0, 26.0)))
                                     .clicked();
                             let bind_label = if is_bound { "Replace" } else { "Bind" };
                             let bind_clicked = ui
-                                .add(run_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
+                                .add(compact_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
                                 .on_hover_text("Bind a WAV or .ondabuffer file to this buffer")
                                 .clicked();
 
@@ -889,7 +923,7 @@ impl RunApp {
                                 .painter()
                                 .layout_no_wrap(
                                     summary.to_owned(),
-                                    egui::FontId::monospace(11.0),
+                                    egui::FontId::monospace(SMALL_FONT_SIZE),
                                     ui.visuals().weak_text_color(),
                                 )
                                 .size()
@@ -902,7 +936,7 @@ impl RunApp {
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(file_name)
-                                                .size(11.0)
+                                                .size(COMPACT_FONT_SIZE)
                                                 .weak()
                                                 .monospace(),
                                         )
@@ -914,14 +948,20 @@ impl RunApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        egui::RichText::new(summary).size(11.0).weak().monospace(),
+                                        egui::RichText::new(summary)
+                                            .size(SMALL_FONT_SIZE)
+                                            .weak()
+                                            .monospace(),
                                     );
                                 },
                             );
                         } else {
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(file_name).size(11.0).weak().monospace(),
+                                    egui::RichText::new(file_name)
+                                        .size(COMPACT_FONT_SIZE)
+                                        .weak()
+                                        .monospace(),
                                 )
                                 .truncate(),
                             );
@@ -978,8 +1018,10 @@ impl RunApp {
                         egui::vec2(ui.available_width(), heading_height),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            let name_text =
-                                egui::RichText::new(name).strong().size(14.0).monospace();
+                            let name_text = egui::RichText::new(name)
+                                .strong()
+                                .size(HEADING_FONT_SIZE)
+                                .monospace();
                             if args.is_empty() {
                                 ui.label(name_text).on_hover_text(name);
                             } else {
@@ -989,7 +1031,9 @@ impl RunApp {
                                         1 => "1 argument".to_owned(),
                                         count => format!("{count} arguments"),
                                     };
-                                    ui.label(egui::RichText::new(summary).size(11.0).weak());
+                                    ui.label(
+                                        egui::RichText::new(summary).size(SMALL_FONT_SIZE).weak(),
+                                    );
                                 });
                             }
                             ui.with_layout(
@@ -998,7 +1042,7 @@ impl RunApp {
                                     if ui
                                         .add_enabled(
                                             connected && valid,
-                                            run_button(egui::RichText::new("Trigger").strong())
+                                            compact_button(egui::RichText::new("Trigger").strong())
                                                 .min_size(egui::vec2(72.0, 30.0)),
                                         )
                                         .clicked()
@@ -1039,6 +1083,10 @@ impl RunApp {
     }
 
     fn render_log(&self, ui: &mut egui::Ui, state: &onda_run::RunState) {
+        ui.style_mut().text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::monospace(COMPACT_FONT_SIZE),
+        );
         if !state.log_text.is_empty() {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
@@ -1053,7 +1101,10 @@ impl RunApp {
                             |ui| {
                                 if !context.is_empty() {
                                     ui.label(
-                                        egui::RichText::new(context).small().weak().monospace(),
+                                        egui::RichText::new(context)
+                                            .size(CAPTION_FONT_SIZE)
+                                            .weak()
+                                            .monospace(),
                                     );
                                 }
                                 ui.with_layout(
@@ -1298,7 +1349,7 @@ impl eframe::App for RunApp {
                                     ui.separator();
                                     ui.add_space(8.0);
                                     ui.label(
-                                        egui::RichText::new(&state.path).monospace().size(14.0),
+                                        egui::RichText::new(&state.path).monospace().size(BODY_FONT_SIZE),
                                     );
                                     ui.add_space(8.0);
                                     ui.separator();
@@ -1309,7 +1360,7 @@ impl eframe::App for RunApp {
                                             self.options.sample_rate_hz,
                                             self.options.block_frames,
                                         ))
-                                        .size(13.0),
+                                        .size(BODY_FONT_SIZE),
                                     );
                                     ui.add_space(10.0);
                                     ui.allocate_ui_with_layout(
@@ -1375,12 +1426,12 @@ impl eframe::App for RunApp {
                                         ui.add_space(6.0);
                                         match notice {
                                             Ok(message) => {
-                                                ui.label(egui::RichText::new(message).size(11.0));
+                                                ui.label(egui::RichText::new(message).size(SMALL_FONT_SIZE));
                                             }
                                             Err(error) => {
                                                 ui.colored_label(
                                                     theme.error,
-                                                    egui::RichText::new(error).size(11.0),
+                                                    error_text(error),
                                                 );
                                             }
                                         }
@@ -1496,7 +1547,7 @@ impl eframe::App for RunApp {
                                                             |ui| {
                                                                 let selector_offset = ui
                                                                     .text_style_height(
-                                                                        &egui::TextStyle::Body,
+                                                                        &egui::TextStyle::Small,
                                                                     )
                                                                     + ui
                                                                         .spacing()
@@ -1540,9 +1591,11 @@ impl eframe::App for RunApp {
                                             );
                                         },
                                     );
-                                    if let Some(error) = &state.error {
+                                    if let Some(error) =
+                                        self.load_error.as_ref().or(state.error.as_ref())
+                                    {
                                         ui.add_space(8.0);
-                                        ui.colored_label(theme.error, error);
+                                        ui.colored_label(theme.error, error_text(error));
                                     }
                                 },
                             );
@@ -1586,7 +1639,7 @@ impl eframe::App for RunApp {
                                 let mut clear_log = false;
                                 render_section_header(ui, &mut log_state, "Log", |ui| {
                                     clear_log = ui
-                                        .add(run_button("Clear").min_size(egui::vec2(48.0, 26.0)))
+                                        .add(compact_button("Clear").min_size(egui::vec2(48.0, 26.0)))
                                         .clicked();
                                 });
                                 if clear_log {
@@ -1640,7 +1693,7 @@ impl eframe::App for RunApp {
                                     |ui| {
                                         if ui
                                             .add(
-                                                run_button("Reset")
+                                                compact_button("Reset")
                                                     .min_size(egui::vec2(52.0, 26.0)),
                                             )
                                             .clicked()
@@ -1675,24 +1728,21 @@ impl eframe::App for RunApp {
                                     &mut params_state,
                                     "Params",
                                     |ui| {
-                                        if ui
-                                            .add(
-                                                run_button("Reset")
-                                                    .min_size(egui::vec2(52.0, 26.0)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.controller
-                                                .as_mut()
-                                                .expect("loaded run controller")
-                                                .reset_params();
+                                        let mut seconds = self.options.param_smoothing_seconds;
+                                        let actions = render_param_header_actions(ui, &mut param_layout, &mut seconds);
+                                        let controller = self.controller.as_mut().expect("loaded run controller");
+                                        if actions.reset {
+                                            controller.reset_params();
                                         }
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                render_param_layout_toggle(ui, &mut param_layout);
-                                            },
-                                        );
+                                        if actions.smoothing_changed {
+                                            match controller.set_param_smoothing_seconds(seconds) {
+                                                Ok(()) => {
+                                                    self.options.param_smoothing_seconds = seconds;
+                                                    self.load_error = None;
+                                                },
+                                                Err(error) => self.load_error = Some(error),
+                                            }
+                                        }
                                     },
                                 );
                                 self.param_layout = param_layout;
@@ -1771,32 +1821,121 @@ fn run_button(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
     egui::Button::new(text).corner_radius(CONTROL_CORNER_RADIUS)
 }
 
-fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
+fn compact_button(text: impl Into<egui::RichText>) -> egui::Button<'static> {
+    run_button(text.into().size(COMPACT_FONT_SIZE))
+}
+
+fn set_control_font_size(ui: &mut egui::Ui, size: f32) {
+    for text_style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+        ui.style_mut()
+            .text_styles
+            .insert(text_style, egui::FontId::proportional(size));
+    }
+}
+
+fn error_text(error: &str) -> egui::RichText {
+    egui::RichText::new(error)
+        .monospace()
+        .size(COMPACT_FONT_SIZE)
+}
+
+struct ParamHeaderActions {
+    reset: bool,
+    smoothing_changed: bool,
+}
+
+fn render_param_header_actions(
+    ui: &mut egui::Ui,
+    layout: &mut ParamLayout,
+    seconds: &mut f64,
+) -> ParamHeaderActions {
+    set_control_font_size(ui, COMPACT_FONT_SIZE);
+    let reset = ui
+        .add(run_button("Reset").min_size(egui::vec2(52.0, PARAM_HEADER_CONTROL_HEIGHT)))
+        .on_hover_text("Restore parameter defaults")
+        .clicked();
+    let smoothing_changed = ui
+        .with_layout(
+            egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                render_param_layout_toggle(ui, layout);
+                render_param_smoothing(ui, seconds)
+            },
+        )
+        .inner;
+    ParamHeaderActions {
+        reset,
+        smoothing_changed,
+    }
+}
+
+fn render_param_smoothing(ui: &mut egui::Ui, seconds: &mut f64) -> bool {
     ui.allocate_ui_with_layout(
-        egui::vec2(114.0, 30.0),
+        egui::vec2(112.0, PARAM_HEADER_CONTROL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if ui
-                .add(
-                    run_button("Sliders")
-                        .selected(*layout == ParamLayout::Sliders)
-                        .min_size(egui::vec2(58.0, 26.0)),
-                )
-                .clicked()
-            {
-                *layout = ParamLayout::Sliders;
+            ui.style_mut().drag_value_text_style = egui::TextStyle::Body;
+            ui.spacing_mut().interact_size.y = PARAM_HEADER_CONTROL_HEIGHT;
+            let mut milliseconds = *seconds * 1000.0;
+            let response = ui.add_sized(
+                [112.0, PARAM_HEADER_CONTROL_HEIGHT],
+                egui::DragValue::new(&mut milliseconds)
+                    .prefix("Smooth ")
+                    .suffix(" ms")
+                    .range(0.0..=f64::MAX)
+                    .speed(1.0)
+                    .update_while_editing(false),
+            );
+            let changed = response.changed();
+            response.on_hover_text(
+                "Smoothing duration for continuous parameter changes. Set to 0 to disable.",
+            );
+            if changed {
+                *seconds = milliseconds / 1000.0;
             }
-            if ui
-                .add(
-                    run_button("Knobs")
-                        .selected(*layout == ParamLayout::Knobs)
-                        .min_size(egui::vec2(52.0, 26.0)),
-                )
-                .clicked()
-            {
-                *layout = ParamLayout::Knobs;
-            }
+            changed
+        },
+    )
+    .inner
+}
+
+fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
+    let buttons = [
+        ("Sliders", ParamLayout::Sliders, 56.0),
+        ("Knobs", ParamLayout::Knobs, 50.0),
+    ];
+    let spacing = 2.0;
+    let frame = egui::Frame::default()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.inactive.bg_stroke)
+        .corner_radius(CONTROL_CORNER_RADIUS)
+        .inner_margin(egui::Margin::same(1));
+    let margin = frame.total_margin().sum();
+    let width = buttons.iter().map(|(_, _, width)| width).sum::<f32>() + spacing + margin.x;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, PARAM_HEADER_CONTROL_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let button_height = PARAM_HEADER_CONTROL_HEIGHT - margin.y;
+            frame.show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
+                for (label, choice, width) in buttons {
+                    if ui
+                        .add_sized(
+                            [width, button_height],
+                            run_button(label)
+                                .selected(*layout == choice)
+                                .stroke(egui::Stroke::NONE)
+                                .frame(false)
+                                .corner_radius(3),
+                        )
+                        .clicked()
+                    {
+                        *layout = choice;
+                    }
+                }
+            });
         },
     );
 }
@@ -1814,7 +1953,7 @@ fn render_section_header(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
-                ui.label(egui::RichText::new(title).strong());
+                ui.label(egui::RichText::new(title).strong().size(HEADING_FONT_SIZE));
             });
             add_actions(ui);
         },
@@ -1833,7 +1972,7 @@ fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
                 ui.label(
                     egui::RichText::new(title)
                         .strong()
-                        .size(15.0)
+                        .size(HEADING_FONT_SIZE)
                         .color(ui.visuals().strong_text_color()),
                 );
                 ui.add_space(8.0);
@@ -1847,7 +1986,7 @@ fn paint_onda_version(ui: &egui::Ui, position: egui::Pos2) {
         position,
         egui::Align2::RIGHT_TOP,
         ONDA_VERSION_LABEL,
-        egui::FontId::monospace(10.0),
+        egui::FontId::monospace(CAPTION_FONT_SIZE),
         ui.visuals().weak_text_color(),
     );
 }
@@ -1861,7 +2000,7 @@ fn render_device_combo(
     mut on_change: impl FnMut(Option<&str>),
 ) {
     ui.vertical_centered(|ui| {
-        ui.label(label);
+        ui.label(egui::RichText::new(label).size(SMALL_FONT_SIZE));
         let selected = current
             .or_else(|| devices.first().map(String::as_str))
             .or(default_label)
@@ -1919,53 +2058,49 @@ fn render_event_arg_editor(
     connected: bool,
 ) {
     if structured_event_type(ty) {
-        egui::CollapsingHeader::new(
-            egui::RichText::new(format!("{label}: {ty}"))
-                .strong()
-                .monospace(),
-        )
-        .id_salt("structured-event-argument")
-        .default_open(true)
-        .show_unindented(ui, |ui| {
-            let visible_lines = structured_event_visible_lines(draft);
-            let viewport_height =
-                ui.text_style_height(&egui::TextStyle::Monospace) * visible_lines as f32;
-            let editor_visuals = ui.visuals().widgets.inactive;
-            let changed = ui
-                .add_enabled_ui(connected, |ui| {
-                    egui::Frame::default()
-                        .fill(ui.visuals().extreme_bg_color)
-                        .stroke(editor_visuals.bg_stroke)
-                        .corner_radius(editor_visuals.corner_radius)
-                        .inner_margin(egui::Margin::symmetric(4, 2))
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .min_scrolled_height(viewport_height)
-                                .max_height(viewport_height)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::multiline(draft)
-                                            .code_editor()
-                                            .frame(false)
-                                            .margin(egui::Margin::ZERO)
-                                            .desired_rows(visible_lines)
-                                            .desired_width(f32::INFINITY),
-                                    )
-                                    .changed()
-                                })
-                                .inner
-                        })
-                        .inner
-                })
-                .inner;
-            match serde_json::from_str::<Value>(draft) {
-                Ok(parsed) if changed => *value = parsed,
-                Err(_) => {
-                    ui.colored_label(ui.visuals().error_fg_color, "Enter a valid JSON value");
+        egui::CollapsingHeader::new(event_arg_heading(ui, label, ty))
+            .id_salt("structured-event-argument")
+            .default_open(true)
+            .show_unindented(ui, |ui| {
+                let visible_lines = structured_event_visible_lines(draft);
+                let viewport_height =
+                    ui.text_style_height(&egui::TextStyle::Monospace) * visible_lines as f32;
+                let editor_visuals = ui.visuals().widgets.inactive;
+                let changed = ui
+                    .add_enabled_ui(connected, |ui| {
+                        egui::Frame::default()
+                            .fill(ui.visuals().extreme_bg_color)
+                            .stroke(editor_visuals.bg_stroke)
+                            .corner_radius(editor_visuals.corner_radius)
+                            .inner_margin(egui::Margin::symmetric(4, 2))
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .min_scrolled_height(viewport_height)
+                                    .max_height(viewport_height)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::multiline(draft)
+                                                .code_editor()
+                                                .frame(false)
+                                                .margin(egui::Margin::ZERO)
+                                                .desired_rows(visible_lines)
+                                                .desired_width(f32::INFINITY),
+                                        )
+                                        .changed()
+                                    })
+                                    .inner
+                            })
+                            .inner
+                    })
+                    .inner;
+                match serde_json::from_str::<Value>(draft) {
+                    Ok(parsed) if changed => *value = parsed,
+                    Err(_) => {
+                        ui.colored_label(ui.visuals().error_fg_color, "Enter a valid JSON value");
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        });
+            });
         return;
     }
     if is_array_type(ty) {
@@ -1979,15 +2114,37 @@ fn render_event_arg_editor(
             egui::vec2(150.0, 26.0),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.spacing_mut().item_spacing.x = 7.0;
-                ui.label(egui::RichText::new(label).strong().size(12.0).monospace());
-                ui.label(egui::RichText::new(ty).size(11.0).weak().monospace());
+                ui.label(event_arg_heading(ui, label, ty));
             },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             render_event_scalar_editor(ui, ty, value, connected, 112.0)
         });
     });
+}
+
+fn event_arg_heading(ui: &egui::Ui, label: &str, ty: &str) -> egui::text::LayoutJob {
+    let mut heading = egui::text::LayoutJob::default();
+    for (text, spacing, size, color) in [
+        (
+            label,
+            0.0,
+            COMPACT_FONT_SIZE,
+            ui.visuals().strong_text_color(),
+        ),
+        (ty, 7.0, SMALL_FONT_SIZE, ui.visuals().weak_text_color()),
+    ] {
+        heading.append(
+            text,
+            spacing,
+            egui::TextFormat {
+                font_id: egui::FontId::monospace(size),
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    heading
 }
 
 fn structured_event_visible_lines(draft: &str) -> usize {
@@ -2017,13 +2174,16 @@ fn render_event_array_editor(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.0;
-        ui.label(egui::RichText::new(label).strong().size(12.0).monospace());
-        ui.label(egui::RichText::new(ty).size(11.0).weak().monospace());
+        ui.label(event_arg_heading(ui, label, ty));
         let count_label = match values.len() {
             1 => "1 element".to_owned(),
             count => format!("{count} elements"),
         };
-        ui.label(egui::RichText::new(count_label).size(11.0).weak());
+        ui.label(
+            egui::RichText::new(count_label)
+                .size(SMALL_FONT_SIZE)
+                .weak(),
+        );
 
         if fixed_len.is_none() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2058,7 +2218,7 @@ fn render_event_array_editor(
             if values.is_empty() {
                 ui.label(
                     egui::RichText::new("No elements. Add one to build the event payload.")
-                        .size(11.0)
+                        .size(SMALL_FONT_SIZE)
                         .weak(),
                 );
                 return;
@@ -2087,7 +2247,7 @@ fn render_event_array_editor(
                                             egui::Label::new(
                                                 egui::RichText::new(format!("[{index}]"))
                                                     .monospace()
-                                                    .size(10.0)
+                                                    .size(CAPTION_FONT_SIZE)
                                                     .weak(),
                                             ),
                                         );
@@ -2111,7 +2271,7 @@ fn render_event_array_editor(
                         "{} additional elements are retained but not shown",
                         values.len() - EVENT_ARRAY_VISIBLE_LIMIT
                     ))
-                    .size(11.0)
+                    .size(SMALL_FONT_SIZE)
                     .weak(),
                 );
             }
@@ -2239,7 +2399,9 @@ fn render_param_value_editor(
         if ui
             .add(egui::Checkbox::new(
                 &mut checked,
-                egui::RichText::new(label).monospace(),
+                egui::RichText::new(label)
+                    .monospace()
+                    .size(HEADING_FONT_SIZE),
             ))
             .changed()
         {
@@ -2416,8 +2578,8 @@ fn render_compact_param_value_editor(
 }
 
 fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, align: egui::Align) {
-    let name_font = egui::FontId::monospace(egui::TextStyle::Body.resolve(ui.style()).size);
-    let type_font = egui::FontId::monospace(12.0);
+    let name_font = egui::FontId::monospace(HEADING_FONT_SIZE);
+    let type_font = egui::FontId::monospace(COMPACT_FONT_SIZE);
     let name_width = ui
         .painter()
         .layout_no_wrap(label.to_owned(), name_font, ui.visuals().text_color())
@@ -2447,9 +2609,20 @@ fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, al
             ui.add_space(leading_space);
             ui.add_sized(
                 [visible_name_width, 20.0],
-                egui::Label::new(egui::RichText::new(label).strong().monospace()).truncate(),
+                egui::Label::new(
+                    egui::RichText::new(label)
+                        .strong()
+                        .monospace()
+                        .size(HEADING_FONT_SIZE),
+                )
+                .truncate(),
             );
-            ui.label(egui::RichText::new(ty).size(12.0).weak().monospace());
+            ui.label(
+                egui::RichText::new(ty)
+                    .size(COMPACT_FONT_SIZE)
+                    .weak()
+                    .monospace(),
+            );
         },
     );
 }
@@ -2750,7 +2923,7 @@ fn draw_buffer_waveform(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, theme.scope_background);
 
-    let label_font = egui::FontId::monospace(9.5);
+    let label_font = egui::FontId::monospace(CAPTION_FONT_SIZE);
     let label_color = ui.visuals().weak_text_color();
     painter.text(
         rect.left_top() + egui::vec2(5.0, 4.0),
@@ -2997,6 +3170,37 @@ impl RunTheme {
 
 fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     let mut style = (*ctx.style()).clone();
+    for (text_style, size, family) in [
+        (
+            egui::TextStyle::Body,
+            BODY_FONT_SIZE,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Button,
+            BODY_FONT_SIZE,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Small,
+            SMALL_FONT_SIZE,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Heading,
+            TITLE_FONT_SIZE,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Monospace,
+            BODY_FONT_SIZE,
+            egui::FontFamily::Monospace,
+        ),
+    ] {
+        style
+            .text_styles
+            .insert(text_style, egui::FontId::new(size, family));
+    }
     let visuals = &mut style.visuals;
 
     visuals.panel_fill = theme.panel_fill;
@@ -3283,13 +3487,14 @@ mod tests {
     use onda_run::RunHostOptions;
 
     use super::{
-        buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label, buffer_waveform_scale,
-        computer_key_offset, computer_key_press_blocked, control_decimals, event_arg_signature,
-        event_array_grid_columns, event_array_len, event_array_scalar_type, format_run_status,
-        log_entry_context, param_grid_columns, prepared_param_domain,
-        render_compact_param_value_editor, render_section_header, scalar_drag_speed, scalar_step,
-        section_box, structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain,
-        ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme, PARAM_LAYOUT_STORAGE_KEY,
+        apply_run_theme, buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label,
+        buffer_waveform_scale, computer_key_offset, computer_key_press_blocked, control_decimals,
+        event_arg_signature, event_array_grid_columns, event_array_len, event_array_scalar_type,
+        format_run_status, log_entry_context, param_grid_columns, prepared_param_domain,
+        render_compact_param_value_editor, render_param_header_actions, render_section_header,
+        scalar_drag_speed, scalar_step, section_box, structured_event_visible_lines, KnobDragState,
+        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme,
+        PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -3692,6 +3897,8 @@ mod tests {
     #[test]
     fn collapsed_run_section_uses_only_its_header_height() {
         egui::__run_test_ui(|ui| {
+            apply_run_theme(ui.ctx(), &RunTheme::from_dark_mode(true));
+            ui.set_style(ui.ctx().style());
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 ui.make_persistent_id("collapsed-scope-test"),
@@ -3710,9 +3917,56 @@ mod tests {
     }
 
     #[test]
+    fn params_header_keeps_its_controls_inside_narrow_windows() {
+        for width in [300.0, 400.0, 680.0] {
+            let ctx = egui::Context::default();
+            apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 840.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        section_box(ui, "", |ui| {
+                            let bounds = ui.max_rect();
+                            let mut state =
+                                egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    ui.make_persistent_id("params"),
+                                    true,
+                                );
+                            let top = ui.cursor().top();
+                            render_section_header(ui, &mut state, "Params", |ui| {
+                                render_param_header_actions(ui, &mut ParamLayout::Knobs, &mut 0.03);
+                                assert!(ui.min_rect().left() >= bounds.left(), "width: {width}");
+                                assert!(
+                                    ui.min_rect().right() <= bounds.right(),
+                                    "width: {width}, controls: {:?}, bounds: {bounds:?}",
+                                    ui.min_rect(),
+                                );
+                            });
+                            if width >= 400.0 {
+                                assert!(
+                                    ui.cursor().top() - top < 40.0,
+                                    "header must stay in one row at width {width}"
+                                );
+                            }
+                        });
+                    });
+                },
+            );
+        }
+    }
+
+    #[test]
     fn midi_keyboard_keeps_the_main_panel_visible_at_narrow_widths() {
         for width in [300.0, 400.0, 680.0] {
             let ctx = egui::Context::default();
+            apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
             let mut app = RunApp::new(None, RunHostOptions::default(), None, ParamLayout::Sliders);
             let _ = ctx.run(
                 egui::RawInput {
@@ -3741,6 +3995,8 @@ mod tests {
     #[test]
     fn compact_knob_contents_stay_inside_the_card() {
         egui::__run_test_ui(|ui| {
+            apply_run_theme(ui.ctx(), &RunTheme::from_dark_mode(true));
+            ui.set_style(ui.ctx().style());
             let card_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(140.0, 124.0));
             let mut card_ui = ui.new_child(
                 egui::UiBuilder::new()

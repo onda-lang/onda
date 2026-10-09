@@ -1545,3 +1545,52 @@ fn format_diag_snippet_underlines_same_line_ranges() {
 
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn parse_run_commands_accept_and_validate_param_smoothing_ms() {
+    for command in [
+        vec!["onda", "run"],
+        vec!["onda", "run", "play", "x.onda"],
+        vec!["onda", "run", "render", "x.onda"],
+    ] {
+        for (flags, expected) in [
+            (vec![], 0.03),
+            (vec!["--param-smoothing-ms", "0"], 0.0),
+            (vec!["--param-smoothing-ms=12.5"], 0.0125),
+        ] {
+            let parsed = parse_args(
+                command
+                    .iter()
+                    .chain(flags.iter())
+                    .map(|value| (*value).to_owned()),
+            )
+            .unwrap();
+            let seconds = match parsed {
+                Command::Run(RunCommand::Window {
+                    param_smoothing_seconds,
+                    ..
+                })
+                | Command::Run(RunCommand::Play {
+                    param_smoothing_seconds,
+                    ..
+                })
+                | Command::Run(RunCommand::Render {
+                    param_smoothing_seconds,
+                    ..
+                }) => param_smoothing_seconds,
+                _ => panic!("expected run command"),
+            };
+            assert_eq!(seconds, expected);
+        }
+        for value in ["-1", "NaN", "inf", "invalid", ""] {
+            let flag = format!("--param-smoothing-ms={value}");
+            assert!(parse_args(
+                command
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .chain([flag])
+            )
+            .is_err());
+        }
+    }
+}

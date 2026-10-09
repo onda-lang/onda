@@ -150,14 +150,6 @@ Run host selection:
 - egui is the default run host
 - `--webview` selects the webview run host explicitly
 
-Useful flags:
-- `--sample-rate`
-- `--block-size`
-- `--input-device`
-- `--output-device`
-- `--midi-input-device`
-- `--theme`
-
 ### `onda run play`
 
 Runs the real-time playback/control transport without opening the standalone UI.
@@ -167,16 +159,6 @@ Parameters can be set via the `--set` argument.
 onda run play examples/basic/sine.onda --dur 2
 onda run play examples/basic/sine.onda --forever --set freq=220
 ```
-
-Useful flags:
-- `--dur` or `--forever`
-- `--sample-rate`
-- `--block-size`
-- `--input-device`
-- `--output-device`
-- `--midi-input-device`
-- `--set name=value`
-- `--buffer name=path`
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
 
@@ -188,14 +170,6 @@ This is useful when you want to render out to a wav file without running real-ti
 ```bash
 onda run render examples/basic/sine.onda --output ./onda_out.wav --dur 5 --set freq=220
 ```
-
-Useful flags:
-- `--output`
-- `--dur`
-- `--sample-rate`
-- `--block-size`
-- `--set name=value`
-- `--buffer name=path`
 
 ### `onda project`
 

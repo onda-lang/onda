@@ -28,11 +28,11 @@ struct Entry {
 
 impl ParamSmoothing {
     pub(super) fn new(jit: &JitProgram, seconds: f64) -> Result<Self, Diagnostic> {
-        let count = (seconds * f64::from(jit.mir().config.sample_rate)).ceil();
-        if !seconds.is_finite() || seconds < 0.0 || count >= usize::MAX as f64 {
-            return Err(Diagnostic::runtime("param_smoothing_seconds must be finite, non-negative, and fit the host sample counter", 0, 0));
-        }
-        let samples = count as usize;
+        let samples = smoothing_samples(
+            seconds,
+            jit.mir().config.sample_rate,
+            jit.mir().config.block_size as usize,
+        )?;
         let mut out = Self {
             samples,
             inverse_samples: 1.0 / samples.max(1) as f64,
@@ -41,9 +41,6 @@ impl ParamSmoothing {
             active: Vec::new(),
             started: false,
         };
-        if samples <= jit.mir().config.block_size as usize {
-            return Ok(out);
-        }
         for index in 0..jit.param_count() {
             let desc = jit.param_descriptor(index).expect("declared parameter");
             let continuous = matches!(desc.elem_ty(), PrimitiveType::F32 | PrimitiveType::F64)
@@ -74,6 +71,46 @@ impl ParamSmoothing {
         Ok(out)
     }
 
+    pub(super) fn set_duration(
+        &mut self,
+        instance: &mut Instance,
+        seconds: f64,
+        sample_rate: f32,
+        block_size: usize,
+    ) -> Result<(), Diagnostic> {
+        let samples = smoothing_samples(seconds, sample_rate, block_size)?;
+        if samples == self.samples {
+            return Ok(());
+        }
+        let previous_samples = self.samples;
+        self.samples = samples;
+        self.inverse_samples = 1.0 / samples.max(1) as f64;
+        for &id in &self.active {
+            let entry = &mut self.entries[id];
+            if samples == 0 {
+                let bytes = scalar_param_bytes(entry.ty, entry.target)?;
+                onda_runtime::set_param_element_by_index(
+                    instance,
+                    entry.index,
+                    entry.element,
+                    bytes.as_slice(),
+                )?;
+                entry.current = entry.target;
+                entry.active = false;
+            }
+            entry.start = entry.current;
+            entry.elapsed = if entry.elapsed == previous_samples {
+                samples
+            } else {
+                0
+            };
+        }
+        if samples == 0 {
+            self.active.clear();
+        }
+        Ok(())
+    }
+
     /// Returns whether this write is handled by a ramp. Discrete and disabled
     /// controls, and transitions involving non-finite values, are written directly.
     pub(super) fn set_target(&mut self, index: usize, element: usize, value: f64) -> bool {
@@ -90,7 +127,7 @@ impl ParamSmoothing {
         } else {
             value
         };
-        if !self.started || !target.is_finite() || !entry.current.is_finite() {
+        if self.samples == 0 || !self.started || !target.is_finite() || !entry.current.is_finite() {
             entry.current = target;
             entry.target = target;
             entry.elapsed = self.samples;
@@ -173,4 +210,21 @@ impl ParamSmoothing {
             entry.active = false;
         }
     }
+}
+
+fn smoothing_samples(
+    seconds: f64,
+    sample_rate: f32,
+    block_size: usize,
+) -> Result<usize, Diagnostic> {
+    let count = (seconds * f64::from(sample_rate)).ceil();
+    if !seconds.is_finite() || seconds < 0.0 || count >= usize::MAX as f64 {
+        return Err(Diagnostic::runtime(
+            "param_smoothing_seconds must be finite, non-negative, and fit the host sample counter",
+            0,
+            0,
+        ));
+    }
+    let samples = count as usize;
+    Ok(if samples > block_size { samples } else { 0 })
 }

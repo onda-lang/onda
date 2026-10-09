@@ -134,6 +134,8 @@ export class OndaAudioProcessor {
   setParam(param: string | number, value: unknown): Promise<any>;
   /** Restore all parameter defaults immediately, cancelling host ramps and retaining DSP state. */
   resetParams(): Promise<any>;
+  /** Change host smoothing live, restarting active ramps from their current values; 0 settles them immediately. */
+  setParamSmoothingSeconds(seconds: number): Promise<any>;
   /** Set one scalar or fixed-array parameter element without modifying its siblings. */
   setParamElement(param: string | number, element: number, value: unknown): Promise<any>;
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */

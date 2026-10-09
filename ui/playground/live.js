@@ -18,6 +18,7 @@ import { loadExampleProject } from "./examples.js";
 import { OndaBrowserLsp } from "./lsp-client.js";
 import { BrowserMidiInputs, isMidiKeyboardEditingTarget } from "./midi.js";
 import { BrowserMicrophoneInput } from "./microphone.js";
+import { BrowserParamSmoothing } from "./param-smoothing.js";
 import { BrowserRunViewHost, BrowserScopeSource } from "./run-view-host.js";
 import {
   decodeSharedSession,
@@ -53,7 +54,9 @@ const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
-const interactiveParamSmoothingSeconds = 0.03;
+const paramSmoothing = new BrowserParamSmoothing(Math.max(...supportedSampleRates),
+  () => audioProcessor, error => runView.showError(error));
+const paramSmoothingMs = paramSmoothing.milliseconds;
 
 let compiler = null;
 let languageServer = null;
@@ -84,6 +87,7 @@ const runView = new BrowserRunViewHost(runViewFrame, {
   stop: () => stopExecution(),
   resetParams: () => resetRunParams(),
   setParam: (name, value) => audioProcessor?.setParam(name, value),
+  setParamSmoothing: milliseconds => paramSmoothing.set(milliseconds),
   triggerEvent: (name, values) => audioProcessor?.trigger(name, values),
   midiEventsChanged: (events) => midiInputs?.setDeclared(events),
   refreshMidiInputs: async () => {
@@ -109,7 +113,7 @@ const runView = new BrowserRunViewHost(runViewFrame, {
     setErrorStatus();
   },
 });
-runView.setState({ ondaVersion: ONDA_VERSION });
+runView.setState({ ondaVersion: ONDA_VERSION, paramSmoothingMs });
 midiInputs = new BrowserMidiInputs({
   onState: ({ devices, current }) => runView.setMidiInputs(devices, current),
   onEvent: (name, values) => audioProcessor?.trigger(name, values),
@@ -794,12 +798,14 @@ async function startAudio() {
     );
     audioProcessor = await createOndaAudioProcessorInitialized(context, artifact, {
       compiledModule,
-      paramSmoothingSeconds: interactiveParamSmoothingSeconds,
+      paramSmoothingSeconds: paramSmoothing.milliseconds / 1000,
       params,
       buffers,
       workletUrl: hostedAssets.workletUrl,
     });
 
+    // The preference may have changed while the processor was being created.
+    await audioProcessor.setParamSmoothingSeconds(paramSmoothing.milliseconds / 1000);
     await microphoneInput.connect(context, audioProcessor.node, inputChannels);
 
     if (outputChannels) {

@@ -56,8 +56,14 @@ block, independently of Web Audio callback sizes; durations at most one block ar
 Integer, boolean, and stepped controls update directly. Initial parameters and reinitialization
 settle immediately. A new target restarts from the published value, while repeated writes of the
 same target preserve its deadline. Host ramps are excluded from processor snapshots. The browser
-playground uses `0.03` seconds (30 ms); explicit DSP smoothing can be used for interpolation within
-an audio block.
+playground defaults to `0.03` seconds (30 ms), with a live **Smooth** control in its Params header
+that remembers the duration in the browser. Explicit DSP smoothing can interpolate within a block.
+
+`setParamSmoothingSeconds(seconds)` changes the duration live without recompilation or
+reinitialization. Active ramps restart from the current published value with the new duration.
+Setting 0 (or a duration at most one block) settles active targets immediately and disables ramps;
+smoothing can be enabled later. The duration must be finite and nonnegative, and affects continuous
+float writes from UI controls and automation alike.
 
 `resetParams()` restores all declared defaults immediately and cancels host ramps without resetting
 DSP state.

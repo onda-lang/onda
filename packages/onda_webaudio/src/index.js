@@ -660,6 +660,16 @@ export class OndaAudioProcessor {
     }
   }
 
+  setParamSmoothingSeconds(seconds) {
+    try {
+      paramSmoothingSamples(seconds, this.metadata?.compile?.sample_rate ?? 1,
+        this.metadata?.compile?.block_size ?? 0);
+      return this.request("set-param-smoothing", { seconds });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   resetParams() {
     return this.request("reset-params");
   }

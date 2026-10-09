@@ -985,3 +985,22 @@ test("array updates constrain each element through explicit and indexed writes",
   assert.equal(elements.size, 2);
   processor.close();
 });
+
+
+test("live smoothing updates are acknowledged and reject invalid durations before posting", async () => {
+  const node = { port: new FakePort() };
+  const processor = new OndaAudioProcessor(node, artifact().metadata);
+  for (const seconds of [-1, NaN, Infinity, Number.MAX_VALUE, "3"]) {
+    await assert.rejects(processor.setParamSmoothingSeconds(seconds), /paramSmoothingSeconds/);
+  }
+  assert.equal(node.port.messages.length, 0);
+  for (const seconds of [0.03, 0]) {
+    const pending = processor.setParamSmoothingSeconds(seconds);
+    const request = node.port.messages.at(-1);
+    assert.equal(request.type, "set-param-smoothing");
+    assert.equal(request.seconds, seconds);
+    node.port.reply({ type: "onda-ok", requestId: request.requestId });
+    await pending;
+  }
+  processor.close();
+});

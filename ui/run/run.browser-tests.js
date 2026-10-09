@@ -47,6 +47,54 @@ try {
   send({ running: true, connected: true, path: "test.onda", status: "Active",
     ondaVersion: "0.0.1-browser", supportsTransport: false, supportsViewState: true,
     events, params });
+  const smoothingControl = document.getElementById("param-smoothing-control");
+  const smoothingInput = document.getElementById("param-smoothing-ms");
+  check(smoothingControl.hidden, "hosts without smoothing support hide its control");
+  send({ supportsParamSmoothing: true, paramSmoothingMs: 30 });
+  check(!smoothingControl.hidden && smoothingInput.value === "30",
+    "smoothing duration is exposed in the Params header with the host preference");
+  shell.style.width = "480px";
+  const header = document.querySelector("#params-section .params-toolbar");
+  check(header.querySelector(".section-heading").lastElementChild === resetButton
+    && resetButton.classList.contains("secondary"),
+    "Reset is a button beside the Params title");
+  check([...header.children].every(node => Math.abs(
+    node.getBoundingClientRect().top + node.getBoundingClientRect().height / 2
+    - (header.getBoundingClientRect().top + header.getBoundingClientRect().height / 2)
+  ) < 1), "Params controls stay aligned in one row at the default webview width");
+  check(getComputedStyle(smoothingInput).borderTopWidth === "0px"
+    && getComputedStyle(smoothingControl).borderTopWidth === "1px",
+    "Smooth, the value, and ms share one field outline");
+  shell.style.width = "";
+  edit(smoothingInput, "15.5");
+  refresh();
+  check(document.activeElement === smoothingInput && smoothingInput.value === "15.5",
+    "background host updates retain the smoothing draft");
+  const smoothingMessages = () => window.__testMessages.filter(message => message.type === "setParamSmoothing");
+  smoothingInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  check(smoothingMessages().at(-1)?.milliseconds === 15.5 && smoothingMessages().length === 1,
+    "Enter commits smoothing once without the blur duplicating it");
+  send({ paramSmoothingMs: 15.5 });
+  edit(smoothingInput, "0");
+  smoothingInput.blur();
+  check(smoothingMessages().at(-1)?.milliseconds === 0,
+    "blur commits zero milliseconds to disable smoothing");
+  send({ paramSmoothingMs: 0 });
+  for (const draft of ["-1", ""]) {
+    edit(smoothingInput, draft);
+    smoothingInput.blur();
+    check(smoothingMessages().length === 2 && smoothingInput.value === "0",
+      "invalid smoothing drafts restore the host value without being sent");
+  }
+  edit(smoothingInput, "50");
+  smoothingInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  check(smoothingInput.value === "0" && smoothingMessages().length === 2,
+    "Escape cancels the smoothing draft");
+  shell.style.width = "320px";
+  check([...document.querySelector("#params-section .params-toolbar").children].every(node =>
+    node.getBoundingClientRect().right <= shell.getBoundingClientRect().right),
+    "Params header controls wrap within a narrow run view");
+  shell.style.width = "";
   check(document.getElementById("params").dataset.layout === "knobs"
     && document.querySelector('[data-param-layout="knobs"]').getAttribute("aria-pressed") === "true"
     && document.querySelector("#params .param-knob"),

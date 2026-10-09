@@ -382,6 +382,26 @@ mod platform {
                 }
                 update_run_settings(msg, options)
             }
+            "setParamSmoothing" => {
+                let Some(milliseconds) = msg
+                    .get("milliseconds")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                else {
+                    return false;
+                };
+                let Some(controller) = controller.as_mut() else {
+                    return false;
+                };
+                match controller.set_param_smoothing_seconds(milliseconds / 1000.0) {
+                    Ok(()) => {
+                        options.param_smoothing_seconds = milliseconds / 1000.0;
+                        *load_error = None;
+                    }
+                    Err(error) => *load_error = Some(error),
+                }
+                true
+            }
             "start" => {
                 if let Some(controller) = controller.as_mut() {
                     let _ = controller.start();
@@ -530,6 +550,7 @@ mod platform {
             sync_panel_state(
                 webview,
                 controller.state(),
+                load_error,
                 options,
                 theme_mode,
                 reset_view_state,
@@ -564,6 +585,8 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
+            "supportsParamSmoothing": true,
+            "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
             "supportsScope": true,
             "supportsProjectExport": false,
             "canExportProject": false,
@@ -578,6 +601,7 @@ mod platform {
     fn sync_panel_state(
         webview: &wry::WebView,
         state: &RunState,
+        load_error: Option<&str>,
         options: &RunHostOptions,
         theme_mode: &str,
         reset_view_state: bool,
@@ -587,7 +611,7 @@ mod platform {
             "connected": state.connected,
             "path": state.path,
             "status": state.status,
-            "error": state.error,
+            "error": load_error.or(state.error.as_deref()),
             "outputChannels": state.output_channels,
             "buffers": state.buffers,
             "events": state.events,
@@ -610,6 +634,8 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
+            "supportsParamSmoothing": true,
+            "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
             "supportsScope": true,
             "supportsProjectExport": true,
             "canExportProject": true,

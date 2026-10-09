@@ -928,3 +928,63 @@ test("worklet rejects invalid host ramp durations", () => {
     assert.throws(() => rampProcessor({ seconds }), /paramSmoothingSeconds/);
   }
 });
+
+
+test("live smoothing changes preserve DSP state, settle at zero, and enable after direct bulk writes", () => {
+  for (const scalar of ["f32", "f64"]) {
+    const host = rampProcessor({ scalar, seconds: 0 });
+    const memory = host.processor.memory.buffer;
+    const messages = [];
+    host.processor.port.postMessage = message => messages.push(message);
+    const change = (seconds) => {
+      host.processor.handleMessage({ type: "set-param-smoothing", requestId: 20, seconds });
+      assert.equal(messages.at(-1).type, "onda-ok");
+      assert.equal(host.processor.memory.buffer, memory);
+    };
+    host.process();
+    host.processor.setParam("gain", [0.25, 0.75]);
+    host.processor.init(1);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.25, 0.75]);
+    change(0.003);
+    host.processor.setParam("gain", [1, 0]);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.5, 0.5]);
+    change(0.002);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.75, 0.25]);
+    for (const seconds of [-1, NaN, Infinity, Number.MAX_VALUE, "3"]) {
+      host.processor.handleMessage({ type: "set-param-smoothing", requestId: 21, seconds });
+      assert.equal(messages.at(-1).type, "onda-error");
+      assert.equal(host.processor.paramSmoothing.samples, 96);
+    }
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [1, 0]);
+    host.processor.setParam("gain", [0, 1]);
+    host.process();
+    change(0);
+    assert.deepEqual([host.read(0), host.read(1)], [0, 1]);
+    host.processor.setParam("gain", [0.25, 0.75]);
+    change(0.003);
+    host.processor.setParam("gain", [1, 0]);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.5, 0.5]);
+  }
+});
+
+
+test("duration changes do not restart cancelled nonfinite transitions", () => {
+  for (const scalar of ["f32", "f64"]) {
+    for (const value of [Infinity, -Infinity, NaN]) {
+      const host = rampProcessor({ scalar });
+      host.process();
+      host.processor.setParam("gain[0]", 1);
+      host.process();
+      host.processor.setParam("gain[0]", value);
+      host.processor.handleMessage({ type: "set-param-smoothing", seconds: 0.006 });
+      host.process();
+      assert.ok(Object.is(host.read(), value));
+      assert.equal(host.processor.paramSmoothing.activeCount, 0);
+    }
+  }
+});

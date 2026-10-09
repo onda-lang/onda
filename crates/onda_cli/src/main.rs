@@ -74,6 +74,7 @@ Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
   --block-size, -b       Block size in frames (default: 512)
+  --param-smoothing-ms   Run parameter smoothing in milliseconds (default: 30; 0 disables)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable LLVM fast-math flags for floating-point operations
   --meta                 Print available metadata for the selected command
@@ -175,6 +176,7 @@ enum RunCommand {
         dur_seconds: Option<u32>,
         sample_rate_hz: u32,
         block_frames: usize,
+        param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         input_device: Option<String>,
         output_device: Option<String>,
@@ -191,6 +193,7 @@ enum RunCommand {
         dur_seconds: u32,
         sample_rate_hz: u32,
         block_frames: usize,
+        param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         fast_math: bool,
         show_meta: bool,
@@ -201,6 +204,7 @@ enum RunCommand {
         input: Option<PathBuf>,
         sample_rate_hz: u32,
         block_frames: usize,
+        param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         input_device: Option<String>,
         output_device: Option<String>,

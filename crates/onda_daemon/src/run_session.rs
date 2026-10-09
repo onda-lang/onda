@@ -671,6 +671,18 @@ impl RunSession {
         self.delegate_collection_enabled
     }
 
+    /// Change host ramps without resetting DSP state; zero settles active targets immediately.
+    pub fn set_param_smoothing_seconds(&mut self, seconds: f64) -> Result<(), Diagnostic> {
+        self.param_smoothing.set_duration(
+            &mut self.instance,
+            seconds,
+            self.options.sample_rate,
+            self.options.block_size,
+        )?;
+        self.options.param_smoothing_seconds = seconds;
+        Ok(())
+    }
+
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
         let Some((index, element)) = param_element_address(&self.jit, name) else {
             return Err(Diagnostic::runtime(

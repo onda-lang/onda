@@ -748,6 +748,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           message.element ?? null,
         );
         this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "set-param-smoothing") {
+        const samples = paramSmoothingSamples(message.seconds, this.compileSampleRate, this.blockSize);
+        this.paramSmoothing.setDuration(samples, this.memoryView(), this.paramsPtr);
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "reset-params") {
         this.writeParamDefaults();
         this.paramSmoothing.reset(this.memoryView(), this.paramsPtr);

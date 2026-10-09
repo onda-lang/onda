@@ -35,6 +35,8 @@ export class BrowserRunViewHost {
       supportsTransport: true,
       supportsDeviceSelection: false,
       supportsRunSettings: false,
+      supportsParamSmoothing: typeof handlers.setParamSmoothing === "function",
+      paramSmoothingMs: 30,
       supportsScope: true,
       sampleRateHz: 48_000,
       blockFrames: 512,
@@ -264,6 +266,20 @@ export class BrowserRunViewHost {
         case "resetEventArguments":
           this.resetEventArguments();
           break;
+        case "setParamSmoothing": {
+          const milliseconds = message.milliseconds;
+          if (!this.state.supportsParamSmoothing) break;
+          try {
+            if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+              throw new Error("Smoothing duration must be a finite, non-negative number");
+            }
+            await this.handlers.setParamSmoothing(milliseconds);
+            this.setState({ paramSmoothingMs: milliseconds, error: "" });
+          } catch (error) {
+            this.showError(error);
+          }
+          break;
+        }
         case "setParam":
           this.state.params = this.state.params.map((param) =>
             param.name === message.name ? { ...param, value: message.value } : param

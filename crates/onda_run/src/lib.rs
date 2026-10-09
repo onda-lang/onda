@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
-    RunParamInfo,
+    RunParamInfo, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
 use onda_frontend::{load_program_file, Diagnostic};
 use onda_host_protocol::{event_by_name, signature_matches, HostEventFamily};
@@ -68,6 +68,7 @@ pub enum RunThemeMode {
 pub struct RunHostOptions {
     pub sample_rate_hz: u32,
     pub block_frames: usize,
+    pub param_smoothing_seconds: f64,
     pub opt_level: String,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
@@ -83,6 +84,7 @@ impl Default for RunHostOptions {
         Self {
             sample_rate_hz: 48_000,
             block_frames: DEFAULT_REALTIME_BLOCK_FRAMES,
+            param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             opt_level: "3".to_owned(),
             input_device: None,
             output_device: None,
@@ -625,6 +627,23 @@ impl RunController {
         self.state.delegate_transport_drop_count = 0;
     }
 
+    /// Update the live child and retain the duration for subsequent source reloads.
+    pub fn set_param_smoothing_seconds(&mut self, seconds: f64) -> Result<(), String> {
+        if !seconds.is_finite()
+            || seconds < 0.0
+            || (seconds * f64::from(self.options.sample_rate_hz)).ceil() >= usize::MAX as f64
+        {
+            return Err(
+                "Parameter smoothing must be finite, non-negative, and fit the host sample counter"
+                    .to_owned(),
+            );
+        }
+        self.options.param_smoothing_seconds = seconds;
+        self.bridge
+            .send_command("setParamSmoothing", &json!({ "value": seconds }));
+        Ok(())
+    }
+
     pub fn set_param(&mut self, name: &str, value: Value) {
         self.bridge
             .send_command_notification("setParam", &json!({ "name": name, "value": value }));
@@ -949,6 +968,10 @@ impl RunController {
         // control clients remain unsubscribed until they request collection.
         self.bridge
             .send_command_notification("subscribeDelegates", &json!({}));
+        self.bridge.send_command(
+            "setParamSmoothing",
+            &json!({ "value": self.options.param_smoothing_seconds }),
+        );
 
         for (name, value) in &self.preserved_params {
             self.bridge
@@ -1601,6 +1624,8 @@ impl ChildSession {
             .arg(options.sample_rate_hz.to_string())
             .arg("--block-size")
             .arg(options.block_frames.to_string())
+            .arg("--param-smoothing-ms")
+            .arg((options.param_smoothing_seconds * 1000.0).to_string())
             .arg("--opt-level")
             .arg(options.opt_level.as_str());
 

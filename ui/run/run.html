@@ -344,6 +344,7 @@
       }
 
       .params-toolbar {
+        flex-wrap: wrap;
         align-items: center;
         width: 100%;
       }
@@ -355,20 +356,75 @@
         margin-right: auto;
       }
 
+      #params-section > .params-toolbar {
+        gap: 8px;
+      }
+
+      #reset-params,
+      .param-smoothing,
+      .param-layout-toggle {
+        height: 26px;
+        min-height: 26px;
+        font-size: 12px;
+      }
+
+      #reset-params {
+        padding-block: 0;
+      }
+
+      .param-smoothing {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 0.25em;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-control);
+        background: var(--field-bg);
+        color: var(--muted);
+      }
+
+      .param-smoothing:focus-within {
+        border-color: var(--accent);
+      }
+
+      .param-smoothing input {
+        appearance: textfield;
+        field-sizing: content;
+        width: auto;
+        min-width: 1ch;
+        height: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        text-align: left;
+        outline: none;
+      }
+
+      .param-smoothing input::-webkit-inner-spin-button,
+      .param-smoothing input::-webkit-outer-spin-button {
+        appearance: none;
+        margin: 0;
+      }
+
       .param-layout-toggle {
         display: inline-flex;
         flex: 0 0 auto;
-        gap: 4px;
+        gap: 2px;
+        padding: 1px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-control);
+        background: var(--field-bg);
       }
 
       .param-layout-toggle button {
-        min-height: 28px;
-        padding: 4px 8px;
+        min-height: 0;
+        padding: 2px 8px;
         border: 0;
-        border-radius: var(--radius-control);
+        border-radius: 3px;
         background: transparent;
         color: var(--muted);
-        font-size: 11px;
       }
 
       .param-layout-toggle button[aria-pressed="true"] {
@@ -1483,10 +1539,14 @@
               aria-label="Toggle Params"
             ></button>
             <div class="params-title">Params</div>
-            <button class="secondary compact-action" id="reset-params" type="button">
-              Reset
-            </button>
+            <button class="secondary compact-action" id="reset-params" type="button" title="Restore parameter defaults">Reset</button>
           </div>
+          <label class="param-smoothing" id="param-smoothing-control" hidden>
+            Smooth
+            <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1" value="30"
+              aria-label="Parameter smoothing duration in milliseconds" title="Smoothing for continuous parameters. 0 disables smoothing." />
+            ms
+          </label>
           <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
             <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
             <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
@@ -1700,6 +1760,8 @@
         supportsTransport: false,
         supportsDeviceSelection: false,
         supportsRunSettings: false,
+        supportsParamSmoothing: false,
+        paramSmoothingMs: 30,
         supportsScope: false,
         supportsViewState: false,
         sampleRateHz: 48_000,
@@ -1761,6 +1823,8 @@
       const eventsBody = document.getElementById("events-body");
       const logToggle = document.getElementById("log-toggle");
       const logBody = document.getElementById("log-body");
+      const smoothingControl = document.getElementById("param-smoothing-control");
+      const smoothingInput = document.getElementById("param-smoothing-ms");
       const paramsToggle = document.getElementById("params-toggle");
       const paramsBody = document.getElementById("params-body");
       const paramLayoutButtons = [...document.querySelectorAll("[data-param-layout]")];
@@ -2021,6 +2085,27 @@
       });
       resetParamsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetParams" });
+      });
+      const commitSmoothing = () => {
+        const milliseconds = smoothingInput.valueAsNumber;
+        if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+          smoothingInput.value = String(state.paramSmoothingMs);
+          return;
+        }
+        if (milliseconds === state.paramSmoothingMs) return;
+        state.paramSmoothingMs = milliseconds;
+        hostBridge.postMessage({ type: "setParamSmoothing", milliseconds });
+      };
+      smoothingInput.addEventListener("change", commitSmoothing);
+      smoothingInput.addEventListener("blur", commitSmoothing);
+      smoothingInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          commitSmoothing();
+          smoothingInput.blur();
+        } else if (event.key === "Escape") {
+          smoothingInput.value = String(state.paramSmoothingMs);
+          smoothingInput.blur();
+        }
       });
       resetEventArgumentsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetEventArguments" });
@@ -3478,6 +3563,10 @@
         const logWasAtBottom =
           logOutputNode.scrollHeight - logOutputNode.clientHeight - logOutputNode.scrollTop <= 1;
         applyTheme();
+        smoothingControl.hidden = state.supportsParamSmoothing !== true;
+        if (document.activeElement !== smoothingInput) {
+          smoothingInput.value = String(state.paramSmoothingMs);
+        }
         const supportsSourceSelection = state.supportsSourceSelection === true;
         const supportsProjectExport = state.supportsProjectExport === true;
         const supportsBufferEmbedding = state.supportsBufferEmbedding === true;

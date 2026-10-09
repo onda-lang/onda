@@ -332,7 +332,10 @@ Non-crate directories of note:
 - `run_session/param_smoothing.rs` — host-owned linear ramps for continuous float controls.
   Prepared indexed entries and a preallocated active list avoid descriptor searches and allocation
   during block updates. Targets remain available to the UI and restart separately from rendered
-  values. The compiler and processor snapshots contain no parameter smoothing state.
+  values. Hosts can change the duration live; zero settles active targets and disables ramps,
+  while positive changes restart active ramps from their published values. Ramp storage is
+  prepared even when initially disabled so enabling it needs no render-time allocation.
+  The compiler and processor snapshots contain no parameter smoothing state.
 
 ### `onda_run` (`crates/onda_run/src`)
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw

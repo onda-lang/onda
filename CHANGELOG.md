@@ -5,6 +5,23 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.22]
+
+### Added
+
+- Live **Smooth** duration control in the Params header of `onda run` egui, webview, and the web
+  playground. It defaults to 30 ms; 0 disables smoothing and settles active targets immediately.
+  Continuous float changes from UI controls and automation share the setting. Native sessions
+  retain it across reloads and unloads; the playground also remembers it in browser storage.
+- `--param-smoothing-ms` for `onda run`, `onda run play`, and `onda run render`, plus the
+  `setParamSmoothing` run-control command (seconds) and Web Audio
+  `setParamSmoothingSeconds(seconds)` method for live changes without recompilation or DSP reset.
+
+### Fixed
+
+- Keep smoothing edits when the playground stops or replaces a processor before its reply arrives.
+- Show rejected smoothing durations in the loaded egui and webview run views.
+
 ## [0.8.21]
 
 ### Added
@@ -1047,6 +1064,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.22]: https://github.com/onda-lang/onda/compare/0.8.21...0.8.22
 [0.8.21]: https://github.com/onda-lang/onda/compare/0.8.20...0.8.21
 [0.8.20]: https://github.com/onda-lang/onda/compare/0.8.19...0.8.20
 [0.8.19]: https://github.com/onda-lang/onda/compare/0.8.18...0.8.19

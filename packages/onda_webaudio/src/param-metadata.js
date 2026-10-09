@@ -48,29 +48,55 @@ export class ParamSmoothing {
     this.started = false;
     this.addresses = new Map();
     this.entries = [];
-    if (samples > 0) {
-      for (const param of params) {
-        if ((param.scalar !== "f32" && param.scalar !== "f64")
-          || param.param_control?.step_count != null) continue;
-        const elements = [];
-        const f32 = param.scalar === "f32";
-        for (let element = 0; element < param.array_len; element += 1) {
-          const offset = Number(param.byte_offset) + element * (f32 ? 4 : 8);
-          const value = f32 ? view.getFloat32(paramsPtr + offset, true)
-            : view.getFloat64(paramsPtr + offset, true);
-          elements.push(this.entries.length);
-          this.entries.push({ offset, f32, current: value, start: value,
-            target: value, elapsed: samples, active: false });
-        }
-        this.addresses.set(param, elements);
+    for (const param of params) {
+      if ((param.scalar !== "f32" && param.scalar !== "f64")
+        || param.param_control?.step_count != null) continue;
+      const elements = [];
+      const f32 = param.scalar === "f32";
+      for (let element = 0; element < param.array_len; element += 1) {
+        const offset = Number(param.byte_offset) + element * (f32 ? 4 : 8);
+        const value = f32 ? view.getFloat32(paramsPtr + offset, true)
+          : view.getFloat64(paramsPtr + offset, true);
+        elements.push(this.entries.length);
+        this.entries.push({ offset, f32, current: value, start: value,
+          target: value, elapsed: samples, active: false });
       }
+      this.addresses.set(param, elements);
     }
     this.active = new Uint32Array(this.entries.length);
     this.activeCount = 0;
   }
 
   isEnabledFor(param) {
-    return this.addresses.has(param);
+    return this.samples > 0 && this.addresses.has(param);
+  }
+
+  setDuration(samples, view, paramsPtr) {
+    if (samples === this.samples) return;
+    // Bulk writes bypass ramp state while disabled; read the actual DSP values.
+    if (this.samples === 0) this.readTargets(view, paramsPtr);
+    const previousSamples = this.samples;
+    this.samples = samples;
+    this.inverseSamples = 1 / Math.max(samples, 1);
+    for (let cursor = 0; cursor < this.activeCount; cursor += 1) {
+      const entry = this.entries[this.active[cursor]];
+      if (samples === 0) {
+        this.write(entry, entry.target, view, paramsPtr);
+        entry.active = false;
+      }
+      entry.start = entry.current;
+      entry.elapsed = entry.elapsed === previousSamples ? samples : 0;
+    }
+    if (samples === 0) this.activeCount = 0;
+  }
+
+  readTargets(view, paramsPtr) {
+    for (const entry of this.entries) {
+      entry.current = entry.target = entry.f32
+        ? view.getFloat32(paramsPtr + entry.offset, true)
+        : view.getFloat64(paramsPtr + entry.offset, true);
+      entry.start = entry.current;
+    }
   }
 
   setTarget(param, element, value, initialized) {
@@ -78,7 +104,7 @@ export class ParamSmoothing {
     if (id === undefined) return false;
     const entry = this.entries[id];
     const target = entry.f32 ? Math.fround(Number(value)) : Number(value);
-    if (!initialized || !this.started || !Number.isFinite(target) || !Number.isFinite(entry.current)) {
+    if (this.samples === 0 || !initialized || !this.started || !Number.isFinite(target) || !Number.isFinite(entry.current)) {
       entry.current = target;
       entry.target = target;
       entry.elapsed = this.samples;
@@ -123,6 +149,7 @@ export class ParamSmoothing {
   }
 
   settle(view, paramsPtr) {
+    if (this.samples === 0) this.readTargets(view, paramsPtr);
     this.activeCount = 0;
     this.started = false;
     for (const entry of this.entries) {
@@ -134,10 +161,7 @@ export class ParamSmoothing {
   }
 
   reset(view, paramsPtr) {
-    for (const entry of this.entries) {
-      entry.target = entry.f32 ? view.getFloat32(paramsPtr + entry.offset, true)
-        : view.getFloat64(paramsPtr + entry.offset, true);
-    }
+    this.readTargets(view, paramsPtr);
     this.settle(view, paramsPtr);
   }
 
