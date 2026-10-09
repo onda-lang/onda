@@ -304,10 +304,6 @@ typedef struct {
   float sample_rate;
   /* Fixed compile-time block size. Must be > 0. */
   int block_size;
-  /* Default block-rate linear ramp duration in seconds for floating-point
-     top-level parameters without explicit smooth metadata. Must be finite and
-     >= 0; the rounded-up host sample count must fit i64. Zero disables it. */
-  double default_param_smoothing_seconds;
   /* Immutable compile-constant inputs for this request. NULL when count is 0. */
   const onda_compile_const_input_t* const_inputs;
   size_t const_input_count;

@@ -53,6 +53,12 @@ export interface OndaAudioProcessorOptions {
   /** Initial plain Onda parameter values, keyed or ordered by descriptor parameter. */
   params?: Record<string, unknown> | unknown[];
   /**
+   * Host-owned linear ramp duration in seconds for continuous float parameters.
+   * Defaults to 0. Ramps advance once per logical block and are bypassed when
+   * the duration is at most one block. Initial values and reinitialization settle immediately.
+   */
+  paramSmoothingSeconds?: number;
+  /**
    * Initial external-buffer bindings keyed by physical name, grouped by logical array name, or
    * ordered by physical descriptor slot. Missing and null slots use neutral one-frame storage.
    */
@@ -126,6 +132,8 @@ export class OndaAudioProcessor {
   request(type: string, fields?: Record<string, unknown>, transfer?: Transferable[]): Promise<any>;
   /** Set a plain Onda value; ranged scalar values are clamped and snapped. */
   setParam(param: string | number, value: unknown): Promise<any>;
+  /** Restore all parameter defaults immediately, cancelling host ramps and retaining DSP state. */
+  resetParams(): Promise<any>;
   /** Set one scalar or fixed-array parameter element without modifying its siblings. */
   setParamElement(param: string | number, element: number, value: unknown): Promise<any>;
   /** Map a host value in [0, 1] through the descriptor and set the resulting plain value. */

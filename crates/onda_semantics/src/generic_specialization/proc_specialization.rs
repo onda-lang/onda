@@ -356,7 +356,6 @@ pub(crate) fn specialize_generic_proc_template(
         for (field, expr) in [
             ("curve", &mut param.control.curve),
             ("step", &mut param.control.step),
-            ("smooth", &mut param.control.smooth),
         ]
         .into_iter()
         .filter_map(|(field, expr)| expr.as_mut().map(|expr| (field, expr)))

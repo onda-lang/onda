@@ -339,7 +339,7 @@ test("the browser editor starts loaded projects as soon as the compiler is ready
   );
 });
 
-test("browser compile settings default to 1024 frames and recompile on change", async () => {
+test("browser compile settings default to 512 frames and recompile on change", async () => {
   const [playground, examplePage, websitePage, runViewHost] = await Promise.all([
     readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
     readFile(resolve(repoRoot, "examples/web/onda_wasm_playground/index.html"), "utf8"),
@@ -348,10 +348,10 @@ test("browser compile settings default to 1024 frames and recompile on change", 
   ]);
 
   for (const page of [examplePage, websitePage]) {
-    assert.match(page, /<option value="1024" selected>1024 frames<\/option>/);
-    assert.doesNotMatch(page, /<option value="512" selected>/);
+    assert.match(page, /<option value="512" selected>512 frames<\/option>/);
+    assert.doesNotMatch(page, /<option value="1024" selected>/);
   }
-  assert.match(runViewHost, /blockFrames: 1024/);
+  assert.match(runViewHost, /blockFrames: 512/);
   assert.match(
     playground,
     /async function applyCompileOptions\(\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,

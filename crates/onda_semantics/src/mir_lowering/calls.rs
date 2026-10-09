@@ -2724,20 +2724,15 @@ impl<'a> FunctionLowerer<'a> {
                 .runtime_globals
                 .and_then(|globals| globals.param_arrays.get(&base).copied())
             {
-                return Ok(Some(
-                    self.emit_temp(
-                        block,
-                        ty,
-                        Rvalue::Load(Place {
-                            base: self
-                                .runtime_globals
-                                .expect("parameter arrays require runtime globals")
-                                .effective_param_base(param),
-                            projections: vec![Projection::Index { index, bounds }],
-                        }),
-                        location,
-                    ),
-                ));
+                return Ok(Some(self.emit_temp(
+                    block,
+                    ty,
+                    Rvalue::Load(Place {
+                        base: PlaceBase::Param(param),
+                        projections: vec![Projection::Index { index, bounds }],
+                    }),
+                    location,
+                )));
             }
             if let Some((output, ty, _)) = self
                 .runtime_globals

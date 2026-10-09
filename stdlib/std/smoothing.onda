@@ -1,4 +1,8 @@
 namespace std::smoothing:
+  namespace shape:
+    const LINEAR = 0
+    const S_CURVE = 1
+
   def time_coefficient<T>(time_s: T):
     if time_s <= 0.0:
       return T(0.0)
@@ -75,4 +79,67 @@ namespace std::smoothing:
         y -= fall_step
       else:
         y = in1
+      out1 = y
+
+  # Fixed-duration transitions. Configuration is captured when the target changes.
+  proc Ramp<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      time_s = 0.05 => update_time
+      shape: i32 = shape::LINEAR {shape::LINEAR, shape::S_CURVE}
+
+    init<T>:
+      y = 0.0
+      start = 0.0
+      target = 0.0
+      samples: i64 = 0
+      elapsed: i64 = 0
+      inverse_samples: f64 = 0.0
+      transition_shape: i32 = shape::LINEAR
+      duration_samples: i64 = 0
+      duration_inverse: f64 = 0.0
+
+    def update_time():
+      duration_samples = 0
+      if time_s > 0.0 && time_s - time_s == 0.0:
+        duration_samples = max(i64(ceil(time_s * SR)), i64(1))
+      duration_inverse = 1.0 / f64(max(duration_samples, i64(1)))
+
+    event reset(value: T = 0.0):
+      y = value
+      start = value
+      target = value
+      elapsed = samples
+
+    sample:
+      if in1 != target:
+        start = y
+        target = in1
+        samples = duration_samples
+        elapsed = 0
+        inverse_samples = duration_inverse
+        transition_shape = shape
+        # Non-finite endpoints update directly, allowing the next finite input to recover.
+        if samples <= 1 || start - start != 0.0 || target - target != 0.0:
+          y = target
+          elapsed = samples
+
+      if elapsed < samples:
+        elapsed += 1
+        if elapsed == samples:
+          y = target
+        else:
+          phase = f64(elapsed) * inverse_samples
+          if transition_shape == shape::S_CURVE:
+            phase = phase * phase * (3.0 - 2.0 * phase)
+          weight = T(clamp(phase, 0.0, 1.0))
+          # Keep finite extremes finite and retain precision near either endpoint.
+          if (start < 0.0) != (target < 0.0):
+            y = start * (1.0 - weight) + target * weight
+          elif weight <= 0.5:
+            y = start + (target - start) * weight
+          else:
+            y = target + (start - target) * (1.0 - weight)
       out1 = y

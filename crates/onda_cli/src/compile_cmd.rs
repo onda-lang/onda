@@ -56,7 +56,6 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
     let analysis_options = AnalysisOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
-        ..AnalysisOptions::default()
     };
     let mut constant_literals = project_input
         .project()

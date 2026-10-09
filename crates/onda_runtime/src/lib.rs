@@ -2297,7 +2297,7 @@ pub fn process_checked_segment_with_status(
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     output.reset();
-    validate_process_request(instance, start_frame, frames, flags)?;
+    validate_process_segment(instance, start_frame, frames, flags)?;
     validate_bindings_for_process(instance)?;
     let start_frame = u32::try_from(start_frame)
         .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?;
@@ -2386,7 +2386,7 @@ pub unsafe fn process_unchecked_segment(
 ) -> Result<u32, Diagnostic> {
     configure_current_thread_audio_fp_mode();
     output.reset();
-    validate_process_request(instance, start_frame, frames, flags)?;
+    validate_process_segment(instance, start_frame, frames, flags)?;
     debug_assert!(
         instance.is_initialized(),
         "process_unchecked called before full initialization; this is UB in release builds"
@@ -2437,7 +2437,9 @@ pub unsafe fn process_unchecked_segment(
     Ok(status)
 }
 
-fn validate_process_request(
+/// Checks a segment's frame bounds and flags without executing the processor.
+/// Hosts can preflight a complete schedule before applying block-level updates.
+pub fn validate_process_segment(
     instance: &Instance,
     start_frame: usize,
     frames: usize,

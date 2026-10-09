@@ -97,13 +97,9 @@ pub(super) fn reject_forward_const_refs_param_decl(
         reject_forward_const_refs_expr(default, future_consts, errors);
     }
     reject_forward_const_refs_decl_range(&decl.range, future_consts, errors);
-    for expr in [
-        &decl.control.curve,
-        &decl.control.step,
-        &decl.control.smooth,
-    ]
-    .into_iter()
-    .flatten()
+    for expr in [&decl.control.curve, &decl.control.step]
+        .into_iter()
+        .flatten()
     {
         reject_forward_const_refs_expr(expr, future_consts, errors);
     }
@@ -1182,13 +1178,9 @@ pub(super) fn substitute_scalar_const_param_decl(
         substitute_scalar_const_expr(default, local_consts);
     }
     substitute_scalar_const_decl_range(&mut decl.range, local_consts);
-    for expr in [
-        &mut decl.control.curve,
-        &mut decl.control.step,
-        &mut decl.control.smooth,
-    ]
-    .into_iter()
-    .flatten()
+    for expr in [&mut decl.control.curve, &mut decl.control.step]
+        .into_iter()
+        .flatten()
     {
         substitute_scalar_const_expr(expr, local_consts);
     }

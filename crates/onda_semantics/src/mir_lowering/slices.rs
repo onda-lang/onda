@@ -151,7 +151,6 @@ impl<'a> FunctionLowerer<'a> {
                     AnalysisOptions {
                         sample_rate: self.config.sample_rate,
                         block_size: self.config.block_size as usize,
-                        ..AnalysisOptions::default()
                     },
                     "array value length during MIR lowering",
                     &mut diagnostics,
@@ -600,7 +599,7 @@ impl<'a> FunctionLowerer<'a> {
                 .get(base)
                 .map(|&(id, element, len)| {
                     (
-                        globals.effective_param_base(id),
+                        PlaceBase::Param(id),
                         element,
                         len,
                         onda_mir::AccessMode::ReadOnly,

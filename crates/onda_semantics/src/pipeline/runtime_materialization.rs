@@ -121,11 +121,11 @@ pub(super) fn materialize_reachable_typed_defs(
             materialize_runtime_stmts(
                 &mut def.body,
                 artifacts,
-                context.options(contexts.host),
+                context.options(),
                 errors,
                 contexts
                     .callee(&def.name, None, CompileContext::new(contexts.host))
-                    .options(contexts.host),
+                    .options(),
             );
             rewrite(&mut def.body, context);
             def.compile_context = Some(context);

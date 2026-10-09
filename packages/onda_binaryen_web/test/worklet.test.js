@@ -747,6 +747,37 @@ test("AudioWorklet can allocate valid state layouts larger than 16 MiB", () => {
   );
 });
 
+test("AudioWorklet host ramps feed real Wasm parameter reads once per logical block", () => {
+  const mir = f32PassthroughMir();
+  mir.config.block_size = 48;
+  const loop = mir.functions[1].body.statements.find((entry) => entry.kind.kind === "loop");
+  const branch = loop.kind.data.body.statements.find((entry) => entry.kind.kind === "if");
+  const load = branch.kind.data.then_block.statements.find((entry) => entry.kind.kind === "assign"
+    && entry.kind.data.value.kind === "input_load");
+  load.kind.data.value = { kind: "load", data: place("param", 0) };
+  const artifact = compileMir(mir);
+  assert.equal(artifact.metadata.runtime.snapshot_size_bytes, 0);
+  const make = (seconds) => new WorkletProcessor({ processorOptions: {
+    wasmBytes: artifact.wasm, metadata: artifact.metadata, paramSmoothingSeconds: seconds,
+  } });
+  const render = (processor, frames) => {
+    const output = new Float32Array(frames);
+    processor.process([[new Float32Array(frames)]], [[output]]);
+    return [...output];
+  };
+  const processor = make(0.003);
+  assert.deepEqual(render(processor, 48), Array(48).fill(0));
+  processor.setParam("special", 1);
+  assert.ok(render(processor, 17).every((value) => Math.abs(value - 1 / 3) < 1e-6));
+  assert.ok(render(processor, 31).every((value) => Math.abs(value - 1 / 3) < 1e-6));
+  assert.ok(render(processor, 48).every((value) => Math.abs(value - 2 / 3) < 1e-6));
+  assert.deepEqual(render(processor, 48), Array(48).fill(1));
+  const direct = make(0);
+  render(direct, 48);
+  direct.setParam("special", 1);
+  assert.deepEqual(render(direct, 48), Array(48).fill(1));
+});
+
 test("AudioWorklet segments arbitrary callback sizes across compile blocks", () => {
   const artifact = compileMir(f64PassthroughMir());
   const processor = new WorkletProcessor({

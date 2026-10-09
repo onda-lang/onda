@@ -18,7 +18,7 @@ use run_cmd::{run_daemon, run_run};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DUR_SECONDS: u32 = 5;
-const DEFAULT_BLOCK_FRAMES: usize = 512;
+const DEFAULT_BLOCK_FRAMES: usize = onda_run::DEFAULT_REALTIME_BLOCK_FRAMES;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 

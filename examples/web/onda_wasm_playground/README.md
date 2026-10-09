@@ -92,7 +92,7 @@ The scripts:
 - bundle the canonical `ui/playground` runtime into this example's static host
 - optionally start `server.mjs` on `127.0.0.1:8787`
 
-The editor defaults to 48000 Hz and 1024 frames, with 44100/48000 Hz sample rates and
+The editor defaults to 48000 Hz and 512 frames, with 44100/48000 Hz sample rates and
 128/256/512/1024/2048-frame compile blocks available. Changing either setting recompiles and
 restarts the current project; these are editor controls, not build-script flags.
 

@@ -1,4 +1,4 @@
-import { paramAddress, paramElementAddress } from "./param-metadata.js";
+import { paramAddress, paramElementAddress, paramSmoothingSamples } from "./param-metadata.js";
 import {
   PayloadPlan,
   createParamControl,
@@ -86,6 +86,7 @@ function audioWorkletNodeOptionsFromValidated(
   if (options.onPrint !== undefined && typeof options.onPrint !== "function") {
     throw new TypeError("initial print listener must be a function");
   }
+  paramSmoothingSamples(options.paramSmoothingSeconds ?? 0, metadata.compile.sample_rate, metadata.compile.block_size);
   const inputChannels = flattenedAudioChannelCount(metadata.metadata.inputs);
   const outputChannels = flattenedAudioChannelCount(metadata.metadata.outputs);
   if (inputChannels > 32 || outputChannels > 32) {
@@ -133,6 +134,7 @@ function audioWorkletNodeOptionsFromValidated(
         ? { wasmBytes: wasm }
         : { wasmModule: options.compiledModule }),
       metadata,
+      paramSmoothingSeconds: options.paramSmoothingSeconds ?? 0,
       params: constrainInitialParamValues(
         metadata.metadata.params,
         options.params ?? {},
@@ -656,6 +658,10 @@ export class OndaAudioProcessor {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  resetParams() {
+    return this.request("reset-params");
   }
 
   setParamElement(param, element, value) {

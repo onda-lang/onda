@@ -663,9 +663,6 @@ pub struct TypedParamControl {
     pub step: Option<TypedConstValue>,
     /// Number of equal intervals between the inclusive range endpoints.
     pub step_count: Option<u32>,
-    /// Block-rate linear parameter ramp duration in seconds. Zero is
-    /// canonicalized to `None` so it has no storage or processing cost.
-    pub smooth_seconds: Option<f64>,
 }
 
 impl Default for TypedParamControl {
@@ -676,7 +673,6 @@ impl Default for TypedParamControl {
             unit: None,
             step: None,
             step_count: None,
-            smooth_seconds: None,
         }
     }
 }
@@ -847,9 +843,6 @@ pub(crate) type LocalAliasTypes = HashMap<String, PrimitiveType>;
 pub struct AnalysisOptions {
     pub sample_rate: f32,
     pub block_size: usize,
-    /// Smoothing applied to floating-point top-level parameters that do not
-    /// declare `smooth` explicitly. Zero emits no smoothing state or code.
-    pub default_param_smoothing_seconds: f64,
 }
 
 impl Default for AnalysisOptions {
@@ -857,7 +850,6 @@ impl Default for AnalysisOptions {
         Self {
             sample_rate: 48_000.0,
             block_size: 512,
-            default_param_smoothing_seconds: 0.0,
         }
     }
 }

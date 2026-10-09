@@ -925,7 +925,6 @@ mod tests {
             AnalysisOptions {
                 sample_rate,
                 block_size,
-                ..AnalysisOptions::default()
             },
         )
         .expect("source should analyze")

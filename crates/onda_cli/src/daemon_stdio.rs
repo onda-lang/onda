@@ -14,7 +14,7 @@ pub fn run_stdio_loop() -> Result<(), String> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
-        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
         ..RunOptions::default()
     }));
     let mut writer = BufWriter::new(stdout.lock());
@@ -60,7 +60,7 @@ enum Request {
         #[serde(default)]
         block_frames: Option<usize>,
         #[serde(default)]
-        default_param_smoothing_seconds: Option<f64>,
+        param_smoothing_seconds: Option<f64>,
         #[serde(default)]
         fast_math: Option<bool>,
     },
@@ -181,23 +181,22 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
         Request::Initialize {
             sample_rate_hz,
             block_frames,
-            default_param_smoothing_seconds,
+            param_smoothing_seconds,
             fast_math,
         } => {
             let current = session.config();
-            let default_param_smoothing_seconds = default_param_smoothing_seconds
-                .unwrap_or(current.run.default_param_smoothing_seconds);
-            if !default_param_smoothing_seconds.is_finite() || default_param_smoothing_seconds < 0.0
-            {
+            let param_smoothing_seconds =
+                param_smoothing_seconds.unwrap_or(current.run.param_smoothing_seconds);
+            if !param_smoothing_seconds.is_finite() || param_smoothing_seconds < 0.0 {
                 return ResponseEnvelope::error(
                     id,
-                    "default_param_smoothing_seconds must be finite and non-negative",
+                    "param_smoothing_seconds must be finite and non-negative",
                 );
             }
             let run = RunOptions {
                 sample_rate: sample_rate_hz.unwrap_or(current.run.sample_rate as u32) as f32,
                 block_size: block_frames.unwrap_or(current.run.block_size),
-                default_param_smoothing_seconds,
+                param_smoothing_seconds,
                 fast_math: fast_math.unwrap_or(current.run.fast_math),
                 opt_level: current.run.opt_level,
             };
@@ -206,7 +205,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             Ok(json!({
                 "sample_rate_hz": run.sample_rate,
                 "block_frames": run.block_size,
-                "default_param_smoothing_seconds": run.default_param_smoothing_seconds,
+                "param_smoothing_seconds": run.param_smoothing_seconds,
                 "fast_math": run.fast_math,
             }))
         }
@@ -616,7 +615,7 @@ mod tests {
                 request: Request::Initialize {
                     sample_rate_hz: Some(44_100),
                     block_frames: Some(256),
-                    default_param_smoothing_seconds: Some(0.03),
+                    param_smoothing_seconds: Some(0.03),
                     fast_math: Some(true),
                 },
             },
@@ -625,10 +624,7 @@ mod tests {
         assert!(response.ok);
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
-        assert_eq!(
-            session.config().analysis.default_param_smoothing_seconds,
-            0.03
-        );
+        assert_eq!(session.config().run.param_smoothing_seconds, 0.03);
         assert!(session.config().run.fast_math);
     }
 

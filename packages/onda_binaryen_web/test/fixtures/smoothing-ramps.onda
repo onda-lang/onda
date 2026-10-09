@@ -1,0 +1,29 @@
+import std/smoothing
+
+outs 4
+
+init:
+  linear = std::smoothing::Ramp(time_s = 8.0 / SR)
+  curved = std::smoothing::Ramp(time_s = 8.0 / SR, shape = std::smoothing::shape::S_CURVE)
+  linear_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR))
+  curved_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR), shape = std::smoothing::shape::S_CURVE)
+  frame = 0
+
+sample:
+  target = 1.0
+  if frame >= 3:
+    target = -0.5
+  if frame >= 16:
+    target = 0.25
+  if frame == 24:
+    linear.reset(0.25)
+    curved.reset(0.25)
+    linear_wide.reset(0.25)
+    curved_wide.reset(0.25)
+  if frame >= 25:
+    target = 1.0
+  out1 = linear(target)
+  out2 = curved(target)
+  out3 = f32(linear_wide(f64(target)))
+  out4 = f32(curved_wide(f64(target)))
+  frame += 1

@@ -50,6 +50,18 @@ adapter clamps ranged scalar values and snaps stepped domains before posting the
 worklet only writes the resulting canonical value in the declared scalar representation. Unknown
 initial parameter names or indices are rejected before the worklet node is constructed.
 
+The optional host setting `paramSmoothingSeconds` defaults to `0`. A positive value applies finite
+linear ramps to continuous float parameters and array elements. Values advance once per logical
+block, independently of Web Audio callback sizes; durations at most one block are bypassed.
+Integer, boolean, and stepped controls update directly. Initial parameters and reinitialization
+settle immediately. A new target restarts from the published value, while repeated writes of the
+same target preserve its deadline. Host ramps are excluded from processor snapshots. The browser
+playground uses `0.03` seconds (30 ms); explicit DSP smoothing can be used for interpolation within
+an audio block.
+
+`resetParams()` restores all declared defaults immediately and cancels host ramps without resetting
+DSP state.
+
 `setParamNormalized()` accepts a host value in `[0, 1]`. The adapter uses the artifact descriptor's
 linear or logarithmic scale and step metadata to convert it to a plain value before posting the
 write to the worklet. Boolean normalized values use the `0.5` threshold. For example:

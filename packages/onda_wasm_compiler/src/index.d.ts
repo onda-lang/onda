@@ -54,13 +54,6 @@ export interface OndaCodegenOptions {
 export interface OndaCompileOptions {
   sampleRate?: number;
   blockSize?: number;
-  /**
-   * Block-rate linear ramp duration in seconds for floating-point top-level
-   * parameters that omit `smooth`. Explicit metadata takes precedence. Positive
-   * durations round up to at least one host sample and must fit an i64 sample count.
-   * Defaults to zero.
-   */
-  defaultParamSmoothingSeconds?: number;
   constants?: Map<string, OndaCompileConstValue>
     | Record<string, OndaCompileConstValue>;
   codegen?: OndaCodegenOptions;

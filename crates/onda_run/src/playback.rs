@@ -787,7 +787,7 @@ fn spawn_run_render_thread(
         let run_options = RunOptions {
             sample_rate: launch.sample_rate_hz as f32,
             block_size: launch.block_frames,
-            default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+            param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             fast_math: launch.fast_math,
             opt_level: launch.opt_level,
         };

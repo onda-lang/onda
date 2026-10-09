@@ -388,7 +388,6 @@ impl<'a> FunctionLowerer<'a> {
             process_location,
         );
         let mut block_pre_body = MirBlock::default();
-        self.advance_smoothed_params(&mut block_pre_body, process_location);
         let block_local_start = self.locals.len();
         let abortable = crate::task_lowering::contains_task_abort(block_pre);
         if abortable {
@@ -536,7 +535,6 @@ impl<'a> FunctionLowerer<'a> {
             },
             process_location,
         );
-        self.record_smoothed_param_samples(&mut body, frames.value, process_location);
         let source = self.source_span(process_location);
         let i32_type = intern_scalar_type(self.types, PrimitiveType::I32);
         Ok((

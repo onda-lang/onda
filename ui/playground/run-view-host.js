@@ -37,7 +37,7 @@ export class BrowserRunViewHost {
       supportsRunSettings: false,
       supportsScope: true,
       sampleRateHz: 48_000,
-      blockFrames: 1024,
+      blockFrames: 512,
       themeMode: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {

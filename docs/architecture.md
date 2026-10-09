@@ -238,9 +238,6 @@ Non-crate directories of note:
     maximum across each active call path; overflow uses lifetime-reused instance scratch.
     Struct helper tensors use strided slice descriptors;
     fixed-data returns use caller-owned result storage.
-  - `mir_lowering/param_smoothing.rs` — block-rate linear parameter ramps with
-    per-element endpoint/elapsed snapshot state, compile-time reciprocal durations,
-    and one shared counter of actual host frames processed across segments.
   - `mir_lowering/param_arrays.rs` — clamped snapshots of ranged parameter arrays: process
     snapshots persist across segments, init/event snapshots are invocation-local, and helpers
     receive read-only references to the calling boundary’s snapshot. Logical host array
@@ -332,6 +329,10 @@ Non-crate directories of note:
   param updates, and `render_block`.
   `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
   returns retired instance/storage ownership for reclamation outside the render producer.
+- `run_session/param_smoothing.rs` — host-owned linear ramps for continuous float controls.
+  Prepared indexed entries and a preallocated active list avoid descriptor searches and allocation
+  during block updates. Targets remain available to the UI and restart separately from rendered
+  values. The compiler and processor snapshots contain no parameter smoothing state.
 
 ### `onda_run` (`crates/onda_run/src`)
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw

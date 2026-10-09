@@ -341,7 +341,6 @@ unsafe fn compile_program(src: &str) -> ProgramHandle {
         fast_math: 0,
         sample_rate: 48_000.0,
         block_size: 512,
-        default_param_smoothing_seconds: 0.0,
         const_inputs: std::ptr::null(),
         const_input_count: 0,
     };
@@ -440,7 +439,6 @@ sample:
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: inputs.as_ptr(),
             const_input_count: inputs.len(),
         };
@@ -475,7 +473,6 @@ fn c_api_compile_constant_inspection_returns_reusable_native_inputs() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -611,7 +608,6 @@ fn c_api_compile_constants_reject_malformed_native_values() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: &input,
             const_input_count: 1,
         };
@@ -631,7 +627,6 @@ fn diagnostic_strings_have_an_explicit_reusable_lifecycle() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -670,7 +665,6 @@ fn null_diagnostic_output_releases_generated_strings() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -752,7 +746,6 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -977,7 +970,6 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -1136,7 +1128,6 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -1251,7 +1242,6 @@ fn c_project_image_and_typed_asset_api_round_trip() {
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 64,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -1703,7 +1693,6 @@ sample { out1 = value }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -1826,7 +1815,6 @@ sample { samples[0] = 0.0 }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 4,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -1925,7 +1913,6 @@ sample:
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 512,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -3709,7 +3696,7 @@ fn c_api_parameter_unit_query_distinguishes_absence_from_invalid_index() {
         let program = compile_program(
             r#"
 params {
-  cutoff = 440.0 {20, 20000, scale = log, unit = "Hz"}
+  cutoff = 440.0 {20, 20000, log, "Hz"}
   gain = 1.0 {0, 2, curve = -4}
 }
 outs { out1 }
@@ -3753,7 +3740,7 @@ fn c_api_numeric_param_array_queries_share_the_element_control_domain() {
         let program = compile_program(
             r#"
 params:
-  ratios: f64[2] = [1.0, 2.0] {0.5, 4.0, scale = log, unit = "x"}
+  ratios: f64[2] = [1.0, 2.0] {0.5, 4.0, log, "x"}
 sample:
   out1 = f32(ratios[0] + 10.0 * ratios[1])
 "#,
@@ -3865,7 +3852,6 @@ sample { out1 = 0.25 }
             fast_math: 0,
             sample_rate: 48_000.0,
             block_size: 128,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };
@@ -4237,7 +4223,6 @@ sample { out1 = SAMPLE_RATE }
             fast_math: 0,
             sample_rate,
             block_size,
-            default_param_smoothing_seconds: 0.0,
             const_inputs: std::ptr::null(),
             const_input_count: 0,
         };

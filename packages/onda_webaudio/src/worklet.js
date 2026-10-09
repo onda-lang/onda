@@ -1,4 +1,4 @@
-import { paramAddress, paramElementAddress } from "./param-metadata.js";
+import { paramAddress, paramElementAddress, paramSmoothingSamples, ParamSmoothing } from "./param-metadata.js";
 import {
   EXECUTION_OPERATION_EVENT,
   EXECUTION_OPERATION_INIT,
@@ -144,7 +144,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         "the Onda Web Audio processor requires at least one audio input or output",
       );
     }
-    this.blockSize = Number(metadata.compile?.block_size ?? 128);
+    this.blockSize = Number(metadata.compile?.block_size ?? 512);
     this.compileSampleRate = Number(metadata.compile?.sample_rate ?? sampleRate);
     if (!Number.isInteger(this.blockSize) || this.blockSize <= 0) {
       throw new Error(`invalid compile-time block size: ${this.blockSize}`);
@@ -292,6 +292,12 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     };
     this.writeParamDefaults();
     this.writeInitialParams(processorOptions.params ?? {});
+    this.paramSmoothing = new ParamSmoothing(
+      this.paramInfo,
+      paramSmoothingSamples(processorOptions.paramSmoothingSeconds ?? 0, this.compileSampleRate, this.blockSize),
+      this.memoryView(),
+      this.paramsPtr,
+    );
     this.ensureInputCapacity(this.blockSize);
     this.ensureOutputCapacity(this.blockSize);
     this.viewsReady = true;
@@ -517,14 +523,26 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       throw new Error(`Onda parameter '${param.name}' has invalid storage metadata`);
     }
     if (element !== null) {
-      this.writeScalar(this.paramsPtr + offset + element * this.scalarByteSize(param.scalar), param.scalar, value, this.memoryView());
+      this.setParamScalar(param, element, value);
       return;
     }
-    this.writeStorage(
-      this.paramsPtr + offset,
-      param,
-      value,
-    );
+    if (!this.paramSmoothing?.isEnabledFor(param)) {
+      this.writeStorage(this.paramsPtr + offset, param, value);
+      return;
+    }
+    this.validateStorageValue(param, value);
+    if (this.isFixedArray(param)) {
+      for (let index = 0; index < length; index += 1) {
+        this.setParamScalar(param, index, value[index]);
+      }
+    } else {
+      this.setParamScalar(param, 0, value);
+    }
+  }
+
+  setParamScalar(param, element, value) {
+    if (this.paramSmoothing?.setTarget(param, element, value, this.initialized)) return;
+    this.writeScalar(this.paramsPtr + Number(param.byte_offset) + element * this.scalarByteSize(param.scalar), param.scalar, value);
   }
 
   init(mode) {
@@ -560,6 +578,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.invalidateState();
     this.refreshMemoryCache();
     if (collectOutput) this.prepareExecutionOutput();
+    this.paramSmoothing.settle(this.memoryView(), this.paramsPtr);
     const status = this.exports.onda_processor_init(
       this.paramsPtr,
       this.statePtr,
@@ -728,6 +747,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           message.value,
           message.element ?? null,
         );
+        this.postResponse(message, { type: "onda-ok", operation: message.type });
+      } else if (message.type === "reset-params") {
+        this.writeParamDefaults();
+        this.paramSmoothing.reset(this.memoryView(), this.paramsPtr);
         this.postResponse(message, { type: "onda-ok", operation: message.type });
       } else if (message.type === "init") {
         this.init(message.mode);
@@ -1586,6 +1609,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       const endsBlock = startFrame + segmentFrames === this.blockSize;
       const flags = (startFrame === 0 ? PROCESSOR_BEGIN_BLOCK : 0)
         | (endsBlock ? PROCESSOR_END_BLOCK : 0);
+
+      if (startFrame === 0) {
+        this.paramSmoothing.beginBlock(this.blockSize, this.dataViewCache, this.paramsPtr);
+      }
 
       this.marshalInputSegment(
         inputs,

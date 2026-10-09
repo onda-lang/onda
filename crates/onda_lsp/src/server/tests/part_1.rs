@@ -1426,7 +1426,7 @@ namespace sc:
             .collect::<Vec<_>>();
 
         assert!(!labels.contains(&"min"), "items: {items:?}");
-        for expected in ["max", "scale", "curve", "unit", "step", "smooth"] {
+        for expected in ["max", "scale", "curve", "unit", "step"] {
             assert!(labels.contains(&expected), "missing {expected}: {items:?}");
         }
         let scale = items
@@ -1442,11 +1442,6 @@ namespace sc:
             .find(|item| item["label"] == json!("curve"))
             .expect("curve field completion");
         assert_eq!(curve["insertText"], json!("curve = $1"));
-        let smooth = items
-            .iter()
-            .find(|item| item["label"] == json!("smooth"))
-            .expect("smooth field completion");
-        assert_eq!(smooth["insertText"], json!("smooth = $1"));
 
         let shorthand_source = "params:\n  cutoff = 440.0 {20000, scale = linear, ";
         write_file(&main, shorthand_source);
@@ -1497,7 +1492,7 @@ namespace sc:
         assert_eq!(named_items[0]["kind"], json!(20));
         assert_eq!(named_items[0]["detail"], json!("parameter scale"));
 
-        let positional_source = "params:\n  cutoff = 440.0 {20, 20000, 0.02, lo";
+        let positional_source = "params:\n  cutoff = 440.0 {20, 20000, lo";
         let positional_items =
             completion_items_for(&mut server, &main, positional_source, positional_source);
         assert_eq!(positional_items.len(), 1, "items: {positional_items:?}");

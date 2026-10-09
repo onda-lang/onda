@@ -163,7 +163,6 @@ impl<'a> FunctionLowerer<'a> {
         let options = AnalysisOptions {
             sample_rate: self.config.sample_rate,
             block_size: self.config.block_size as usize,
-            ..AnalysisOptions::default()
         };
         let context = "constant expression during MIR lowering";
         // Destinations check representability; operands use the operation's
@@ -623,7 +622,7 @@ impl<'a> FunctionLowerer<'a> {
                     block,
                     ty,
                     Rvalue::Load(Place {
-                        base: globals.effective_param_base(param),
+                        base: PlaceBase::Param(param),
                         projections: Vec::new(),
                     }),
                     location,
@@ -665,7 +664,6 @@ impl<'a> FunctionLowerer<'a> {
         let options = AnalysisOptions {
             sample_rate: self.config.sample_rate,
             block_size: self.config.block_size as usize,
-            ..AnalysisOptions::default()
         };
         let Some(value) = builtin_constant_value_f64(name, options) else {
             return Err(self.error(
@@ -733,7 +731,6 @@ impl<'a> FunctionLowerer<'a> {
             AnalysisOptions {
                 sample_rate: self.config.sample_rate,
                 block_size: self.config.block_size as usize,
-                ..AnalysisOptions::default()
             },
             "tuple index during MIR lowering",
             &mut diagnostics,
@@ -961,10 +958,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 ty,
                 Rvalue::Load(Place {
-                    base: self
-                        .runtime_globals
-                        .expect("parameter arrays require runtime globals")
-                        .effective_param_base(param),
+                    base: PlaceBase::Param(param),
                     projections: vec![Projection::Index {
                         index: index_value.value,
                         bounds: BoundsMode::Clamp,

@@ -6,23 +6,19 @@ See [api.md](api.md) for the complete public Web API shared with the released pa
 self-contained WebAssembly processor artifact. It runs in modern browsers and Node.js and does not
 require LLVM, a Wasm linker, Rust, or `wasm-pack` after installation.
 
+Compilation defaults to 48000 Hz and 512 frames per block.
+
 ```js
 import { createCompiler } from "@onda-lang/wasm-compiler";
 
 const compiler = await createCompiler();
 const { artifact, sourceFiles } = await compiler.compileSource(source, {
   sampleRate: 48_000,
-  blockSize: 128,
-  defaultParamSmoothingSeconds: 0.02,
+  blockSize: 512,
 });
 
 console.log(artifact.wasm, artifact.metadata, sourceFiles);
 ```
-
-`defaultParamSmoothingSeconds` is optional and defaults to `0`. A positive value applies compiled
-block-rate linear ramps to floating-point top-level parameters that omit `smooth`; explicit source
-metadata, including `smooth = 0`, takes precedence. Durations round up to at least one host sample;
-values exceeding the supported signed 64-bit sample count are rejected.
 
 Source may expose explicitly typed `config const` declarations. Supply optional partial overrides
 on any source, workspace, or project-image compilation:
@@ -89,7 +85,7 @@ const { artifact, sourceFiles } = await compiler.compileWorkspace({
   },
 }, {
   sampleRate: 48_000,
-  blockSize: 128,
+  blockSize: 512,
 });
 
 // Entry first, then transitive imports/includes. Embedded stdlib is excluded.

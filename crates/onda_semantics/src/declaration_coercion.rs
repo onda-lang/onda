@@ -850,57 +850,6 @@ fn coerce_top_level_param_control(
             }
         })
     });
-    let validate_smoothing = |value: f64, errors: &mut Vec<Diagnostic>| {
-        if !value.is_finite() || value < 0.0 {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context} smooth must be a finite non-negative number of seconds"),
-                param.loc.as_ref(),
-            ));
-            return None;
-        }
-        if value == 0.0 {
-            return None;
-        }
-        if param_smoothing_samples(value, f64::from(options.sample_rate)).is_none() {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context} smooth duration exceeds the supported i64 sample count"),
-                param.loc.as_ref(),
-            ));
-            return None;
-        }
-        Some(value)
-    };
-    control.smooth_seconds = match param.control.smooth.as_ref() {
-        Some(smooth) => {
-            let value = with_loc_diag_context(param.loc.as_ref(), |_diag| {
-                match eval_typed_const_expr(
-                    smooth,
-                    PrimitiveType::F64,
-                    options,
-                    &format!("{context} smooth"),
-                    false,
-                    errors,
-                ) {
-                    Some(TypedConstValue::F64(value)) => Some(value),
-                    Some(_) => unreachable!("f64 constant evaluation must produce f64"),
-                    None => None,
-                }
-            });
-            if !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
-                errors.push(Diagnostic::semantic_span(
-                    format!("{context} smooth requires f32 or f64"),
-                    param.loc.as_ref(),
-                ));
-                None
-            } else {
-                value.and_then(|value| validate_smoothing(value, errors))
-            }
-        }
-        None if matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) => {
-            validate_smoothing(options.default_param_smoothing_seconds, errors)
-        }
-        None => None,
-    };
     let Some(range) = range else {
         return control;
     };
@@ -979,12 +928,6 @@ fn coerce_top_level_param_control(
     control.step = Some(step);
     control.step_count = Some(step_count);
     control
-}
-
-pub(crate) fn param_smoothing_samples(seconds: f64, sample_rate: f64) -> Option<i64> {
-    let samples = (seconds * sample_rate).ceil().max(1.0);
-    // i64::MAX rounds up to 2^63 as f64, so the upper bound is exclusive.
-    (samples < i64::MAX as f64).then_some(samples as i64)
 }
 
 fn validate_param_step_grid(

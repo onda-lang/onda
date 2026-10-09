@@ -3,17 +3,16 @@ import test from "node:test";
 
 import {
   createCompiler,
-  PROCESSOR_BEGIN_BLOCK,
-  PROCESSOR_END_BLOCK,
   PROCESSOR_FULL_BLOCK,
   PROCESSOR_INIT_FULL,
 } from "../src/index.js";
 
-async function processor(compiler, source, optimize, blockSize = 48, fastMath = false) {
+async function processor(compiler, source, optimize) {
+  const blockSize = 48;
   const { artifact } = await compiler.compileSource(source, {
     sampleRate: 48_000,
     blockSize,
-    codegen: { optimize, fastMath },
+    codegen: { optimize },
   });
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
@@ -43,169 +42,12 @@ async function processor(compiler, source, optimize, blockSize = 48, fastMath = 
   for (let element = 0; element < param.array_len; element++) setTarget(1, element);
   assert.equal(onda_processor_init(params, state, PROCESSOR_INIT_FULL, 0, 0, 0, 0, 0), 0);
   return {
-    setTarget,
     process(start = 0, frames = blockSize, flags = PROCESSOR_FULL_BLOCK) {
       assert.equal(onda_process(state, params, 0, outputTable, start, frames, flags, 0, 0, 0, 0, 0), 0);
       return outputs.map((address) => new Float32Array(memory.buffer, address, blockSize));
     },
   };
 }
-
-test("short linear ramps reach targets exactly and defer mid-block target changes", async () => {
-  const compiler = await createCompiler();
-  try {
-    for (const optimize of [false, true]) {
-      for (const scalar of ["f32", "f64"]) {
-        for (const array of [false, true]) {
-          for (const seconds of [0.000001, 0.001]) {
-            for (const target of [1e-9, -1e-9]) {
-              const suffix = array ? "[2]" : "";
-              const read = array ? "gain[0]" : "gain";
-              const source = `params:
-  gain: ${scalar}${suffix} = 1.0 {${target < 0 ? -1 : "0.000000001"}, 1.0, smooth = ${seconds.toFixed(18)}}
-sample:
-  out1 = f32(${read})
-${array ? "  out2 = f32(gain[1])" : ""}
-`;
-              const dsp = await processor(compiler, source, optimize);
-              dsp.setTarget(target);
-              dsp.process(0, 17, PROCESSOR_BEGIN_BLOCK);
-              dsp.setTarget(0.5);
-              const output = dsp.process(17, 31, PROCESSOR_END_BLOCK);
-              assert.ok(output[0].every((sample) => sample === 1));
-              if (array) assert.ok(output[1].every((sample) => sample === 1));
-              assert.ok(dsp.process()[0].every((sample) => sample === Math.fround(target)));
-              assert.ok(dsp.process()[0].every((sample) => sample === 0.5));
-            }
-          }
-        }
-      }
-    }
-  } finally {
-    await compiler.dispose();
-  }
-});
-
-test("linear ramps preserve block reads and 17 + 47 segmentation", async () => {
-  const compiler = await createCompiler();
-  try {
-    for (const optimize of [false, true]) {
-      for (const scalar of ["f32", "f64"]) {
-        const source = `params:
-  gain: ${scalar}[2] = 1.0 {0, 1, smooth = 0.02}
-def read_gain(values: ${scalar}[]):
-  return values[0]
-block:
-  cached = read_gain(gain)
-  sample:
-    out1 = f32(read_gain(gain))
-    out2 = f32(cached)
-    out3 = f32(gain[1])
-`;
-        const full = await processor(compiler, source, optimize, 64);
-        const split = await processor(compiler, source, optimize, 64);
-        full.setTarget(0);
-        split.setTarget(0);
-        for (let block = 0; block < 17; block++) {
-          full.setTarget(0); // Identical writes must not restart the ramp.
-          const expected = full.process();
-          split.process(0, 17, PROCESSOR_BEGIN_BLOCK);
-          split.process(17, 0, 0);
-          const actual = split.process(17, 47, PROCESSOR_END_BLOCK);
-          assert.deepEqual(actual, expected);
-          assert.deepEqual(actual[0], actual[1]);
-          assert.ok(actual[2].every((sample) => sample === 1));
-          const value = 1 - Math.min(block * 64, 960) / 960;
-          assert.ok(actual[0].every((sample) => Math.abs(sample - value) < 2e-7));
-        }
-        const variable = await processor(compiler, source, optimize, 64);
-        variable.setTarget(0);
-        assert.equal(variable.process(0, 17)[0][0], 1);
-        assert.ok(Math.abs(variable.process(0, 47)[0][0] - (1 - 17 / 960)) < 2e-7);
-        variable.process(0, 0);
-        variable.process(0, 0);
-        assert.ok(Math.abs(variable.process(0, 1)[0][0] - (1 - 64 / 960)) < 2e-7);
-      }
-    }
-  } finally {
-    await compiler.dispose();
-  }
-});
-
-test("linear interpolation stays finite at opposite extremes with strict and fast math", async () => {
-  const compiler = await createCompiler();
-  try {
-    for (const optimize of [false, true]) {
-      for (const fastMath of [false, true]) {
-        for (const [scalar, maximum] of [["f32", 3e38], ["f64", 1.6e308]]) {
-          const maximumLiteral = `${BigInt(maximum)}.0`;
-          const source = `params:
-  gain: ${scalar} = 1.0 {-${maximumLiteral}, ${maximumLiteral}, smooth = 0.002}
-sample:
-  out1 = f32(gain / ${maximumLiteral})
-`;
-          const dsp = await processor(compiler, source, optimize, 64, fastMath);
-          dsp.setTarget(maximum);
-          dsp.process();
-          dsp.process();
-          dsp.process();
-          dsp.setTarget(-maximum);
-          for (const expected of [1, -1 / 3, -1, -1]) {
-            const output = dsp.process()[0];
-            assert.ok(output.every((sample) => Number.isFinite(sample) && Math.abs(sample - expected) < 2e-6));
-          }
-        }
-      }
-    }
-  } finally {
-    await compiler.dispose();
-  }
-});
-
-test("long f32 linear ramps retain small changes without accumulated rounding", async () => {
-  const compiler = await createCompiler();
-  try {
-    for (const optimize of [false, true]) {
-      const dsp = await processor(compiler, `params:
-  gain: f32 = 1.0 {1.0, 2.0, smooth = 26.666666666666668}
-sample:
-  out1 = gain
-`, optimize, 64);
-      dsp.setTarget(1.001);
-      dsp.process(0, 0);
-      for (let block = 0; block < 10_000; block++) dsp.process();
-      assert.equal(dsp.process(0, 1)[0][0], Math.fround(1.0005));
-      for (let block = 0; block < 10_000; block++) dsp.process();
-      assert.equal(dsp.process(0, 1)[0][0], Math.fround(1.001));
-    }
-  } finally {
-    await compiler.dispose();
-  }
-});
-
-test("const-def array dependencies and unused diamond chains compile in Wasm", async () => {
-  const compiler = await createCompiler();
-  try {
-    let source = `const Unused: i32[1] = [1 / 0]
-const S0 = Unused
-`;
-    for (let index = 1; index <= 30; index++) {
-      source += `const S${index} = [S${index - 1}[0] + S${index - 1}[0]]\n`;
-    }
-    source += `const Values: f32[1] = [0.02]
-const def select(Unused: i32[1] = [7]) -> f32:
-  return Values[0] + f32(Unused[0]) * 0.0
-params:
-  gain = 1.0 {0, 1, smooth = select()}
-sample:
-  out1 = gain
-`;
-    const { artifact } = await compiler.compileSource(source);
-    assert.equal(WebAssembly.validate(artifact.wasm), true);
-  } finally {
-    await compiler.dispose();
-  }
-});
 
 test("const array dimensions and locals resolve before processor and overload typing", async () => {
   const compiler = await createCompiler();
@@ -246,7 +88,6 @@ test("long scalar const chains compile without exhausting the Wasm stack", async
     await compiler.dispose();
   }
 });
-
 
 test("integer const widths and overloads survive deferred and eager evaluation in Wasm", async () => {
   const compiler = await createCompiler();

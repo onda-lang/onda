@@ -48,7 +48,6 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_frames,
-                default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -96,7 +95,6 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_frames,
-                default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -197,7 +195,6 @@ fn run_daemon_diagnose(
     let analysis_options = AnalysisOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
-        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
     };
     let compile_inputs = match project_input.project() {
         Some(project) if !project.manifest.constants.is_empty() => {
@@ -210,7 +207,7 @@ fn run_daemon_diagnose(
     let session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
-        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
         ..RunOptions::default()
     }));
     let snapshot =
@@ -260,7 +257,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     let run_options = RunOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
-        default_param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+        param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
         fast_math,
         opt_level,
     };

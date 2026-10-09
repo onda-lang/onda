@@ -9,7 +9,7 @@ import {
   createCompiler,
   createProcessorArtifactFiles,
 } from "../src/index.js";
-import { MAX_BLOCK_SIZE } from "../src/config.js";
+import { DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE } from "../src/config.js";
 
 const HELP = `Usage:
   onda-wasm compile <input.onda> [options]
@@ -19,7 +19,7 @@ Options:
   --output, -o <file>      Output Wasm path (default: <input>.wasm)
   --meta-out <file>        Output descriptor path (default: <output>.onda.json)
   --sample-rate <number>   Compile-time sample rate (default: 48000)
-  --block-size <integer>   Compile-time block size (default: 128)
+  --block-size <integer>   Compile-time block size (default: ${DEFAULT_BLOCK_SIZE})
   --optimize-level <0..4>  Binaryen optimization level (default: 4)
   --shrink-level <0..2>    Binaryen shrink level (default: 0)
   --fast-math              Enable relaxed floating-point rewrites
@@ -116,7 +116,7 @@ function parseCompileArguments(args) {
     output: undefined,
     metaOut: undefined,
     sampleRate: 48_000,
-    blockSize: 128,
+    blockSize: DEFAULT_BLOCK_SIZE,
     optimizeLevel: 4,
     shrinkLevel: 0,
     fastMath: false,

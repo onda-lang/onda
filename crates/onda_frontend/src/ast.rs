@@ -475,9 +475,8 @@ pub enum ParamScale {
 
 pub const PARAM_SCALES: &[(ParamScale, &str)] =
     &[(ParamScale::Linear, "linear"), (ParamScale::Log, "log")];
-pub const PARAM_DOMAIN_FIELDS: &[&str] =
-    &["min", "max", "smooth", "scale", "curve", "unit", "step"];
-pub const PARAM_DOMAIN_POSITIONAL_FIELDS: &[&str] = &["min", "max", "smooth", "scale"];
+pub const PARAM_DOMAIN_FIELDS: &[&str] = &["min", "max", "scale", "curve", "unit", "step"];
+pub const PARAM_DOMAIN_POSITIONAL_FIELDS: &[&str] = &["min", "max", "scale", "unit", "step"];
 
 impl ParamScale {
     pub fn from_name(name: &str) -> Option<Self> {
@@ -500,7 +499,6 @@ pub struct ParamControl {
     pub curve: Option<Expr>,
     pub unit: Option<String>,
     pub step: Option<Expr>,
-    pub smooth: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

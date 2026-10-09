@@ -568,7 +568,6 @@ impl<'a> FunctionLowerer<'a> {
                     AnalysisOptions {
                         sample_rate: self.config.sample_rate,
                         block_size: self.config.block_size as usize,
-                        ..AnalysisOptions::default()
                     },
                     "local array length during MIR lowering",
                     &mut diagnostics,

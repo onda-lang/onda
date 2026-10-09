@@ -28,7 +28,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
 | [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between`, `ratio_from_semitones`, `semitones_from_ratio` |
-| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Slew`, `time_coefficient` |
+| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Ramp`, `Slew`, `shape`, `time_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
 | [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
@@ -778,6 +778,15 @@ Namespace: `std::smoothing`.
 def time_coefficient<T>(time_s: T):
 ```
 
+### Namespace `shape`
+
+#### Constants
+
+```onda
+const LINEAR = 0
+const S_CURVE = 1
+```
+
 ### Processor `Lag<T>`
 
 ```onda
@@ -808,6 +817,19 @@ proc Slew<T>:
   params:
     rise_per_s: T = 1.0 => update_rise
     fall_per_s: T = 1.0 => update_fall
+```
+
+### Processor `Ramp<T>`
+
+```onda
+proc Ramp<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    time_s: T = 0.05 => update_time
+    shape: i32 = shape::LINEAR {shape::LINEAR, shape::S_CURVE}
+  events:
+    reset(value: T = 0.0):
 ```
 
 

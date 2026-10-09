@@ -22,7 +22,6 @@ fn compile_instance_with_options(
         AnalysisOptions {
             sample_rate: options.sample_rate,
             block_size: options.block_size,
-            ..AnalysisOptions::default()
         },
     )
     .expect("semantic analysis should succeed");

@@ -1496,8 +1496,8 @@ fn semantic_tokens_mark_named_argument_labels_as_parameters_in_calls() {
 fn semantic_tokens_distinguish_parameter_domain_fields_and_scale_values() {
     let source = concat!(
         "params:\n",
-        "  cutoff = 440.0 {min = 20, max = 20000, scale = log, unit = \"Hz\", smooth = 0.1}\n",
-        "  gain = 1.0 {0, 2, 0.02, linear}\n",
+        "  cutoff = 440.0 {min = 20, max = 20000, scale = log, unit = \"Hz\"}\n",
+        "  gain = 1.0 {0, 2, linear}\n",
         "outs:\n",
         "  out1\n",
         "sample:\n",
@@ -1505,7 +1505,7 @@ fn semantic_tokens_distinguish_parameter_domain_fields_and_scale_values() {
     );
     let tokens = semantic_tokens_for_document(source, None);
 
-    for field in ["min", "max", "scale", "unit", "smooth"] {
+    for field in ["min", "max", "scale", "unit"] {
         assert_eq!(
             token_type_at_text_on_line(&tokens, source, 1, field),
             Some(SEMANTIC_TOKEN_TYPE_STATE),

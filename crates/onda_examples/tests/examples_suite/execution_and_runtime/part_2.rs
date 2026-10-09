@@ -1423,7 +1423,6 @@ fn generic_proc_buffer_decl_type_analyzes_and_codegen_compiles() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 64,
-            ..AnalysisOptions::default()
         },
     )
     .expect("semantic analysis should succeed");

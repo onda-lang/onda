@@ -237,11 +237,7 @@ fn processor(proc: &ProcessorDef, visit: &mut Visitor<'_>) {
             }
             optional(param.default.as_ref(), visit);
             range(param.range.as_ref(), visit);
-            for expr in [
-                &param.control.curve,
-                &param.control.step,
-                &param.control.smooth,
-            ] {
+            for expr in [&param.control.curve, &param.control.step] {
                 optional(expr.as_ref(), visit);
             }
         }

@@ -278,7 +278,6 @@ struct ParsedParamDomain {
     curve: Option<Expr>,
     unit: Option<String>,
     step: Option<Expr>,
-    smooth: Option<Expr>,
 }
 
 impl ParsedParamDomain {
@@ -292,7 +291,6 @@ impl ParsedParamDomain {
             "min" => &mut self.min,
             "max" => &mut self.max,
             "step" => &mut self.step,
-            "smooth" => &mut self.smooth,
             "curve" => &mut self.curve,
             _ => {
                 return Err(vec![syntax_at_pair(
@@ -404,7 +402,7 @@ fn parse_named_param_domain_item(
         )]);
     };
     match name {
-        "min" | "max" | "step" | "curve" | "smooth" if value_pair.as_rule() == Rule::expr => {
+        "min" | "max" | "step" | "curve" if value_pair.as_rule() == Rule::expr => {
             parsed.set_expr(name, parse_expr_inner(value_pair), &pair)
         }
         "scale" if value_pair.as_rule() == Rule::expr => {
@@ -413,7 +411,7 @@ fn parse_named_param_domain_item(
         "unit" if value_pair.as_rule() == Rule::param_unit => {
             parsed.set_unit(parse_param_unit(&value_pair)?, &pair)
         }
-        "min" | "max" | "step" | "curve" | "smooth" => Err(vec![syntax_at_pair(
+        "min" | "max" | "step" | "curve" => Err(vec![syntax_at_pair(
             &pair,
             format!("parameter domain field '{name}' requires a constant expression"),
         )]),
@@ -493,11 +491,14 @@ pub(super) fn parse_param_domain_pair(
             PARAM_DOMAIN_POSITIONAL_FIELDS[index]
         };
         match (field, item.as_rule()) {
-            ("min" | "max" | "smooth", Rule::expr) => {
+            ("min" | "max" | "step", Rule::expr) => {
                 parsed.set_expr(field, parse_expr_inner(item.clone()), &item)?;
             }
             ("scale", Rule::expr) => {
                 parsed.set_scale(parse_param_scale(&item)?, &item)?;
+            }
+            ("unit", Rule::param_unit) => {
+                parsed.set_unit(parse_param_unit(&item)?, &item)?;
             }
             _ => {
                 return Err(vec![syntax_at_pair(
@@ -524,7 +525,6 @@ pub(super) fn parse_param_domain_pair(
             curve: parsed.curve,
             unit: parsed.unit,
             step: parsed.step,
-            smooth: parsed.smooth,
         },
     ))
 }

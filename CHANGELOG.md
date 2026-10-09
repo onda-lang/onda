@@ -5,6 +5,29 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.21]
+
+### Added
+
+- `std::smoothing::Ramp<T>` provides exact-duration linear and cubic S-curve transitions in seconds,
+  with independent retargeting from the current output and an immediate `reset(value)` event.
+
+### Changed
+
+- Native run hosts, the browser playground, and the WebAssembly compiler now share a default
+  block size of 512 frames. Explicit block-size selections remain available.
+- Parameter smoothing belongs to the host. `onda run` and the browser playground use 30 ms
+  block-level linear ramps for continuous float controls, with exact completion and immediate
+  startup, reset, and restart. Discrete controls and durations at most one block update directly.
+- Parameter domains restore positional `min, max, scale, unit, step` fields.
+- The Web Audio adapter provides optional host-owned smoothing through paramSmoothingSeconds, disabled by default.
+  The browser playground explicitly enables 30 ms smoothing.
+
+### Removed
+
+- Removed `smooth` parameter metadata, compiler smoothing options, and generated parameter ramp
+  state.
+
 ## [0.8.20]
 
 ### Added
@@ -1024,6 +1047,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.21]: https://github.com/onda-lang/onda/compare/0.8.20...0.8.21
+[0.8.20]: https://github.com/onda-lang/onda/compare/0.8.19...0.8.20
 [0.8.19]: https://github.com/onda-lang/onda/compare/0.8.18...0.8.19
 [0.8.18]: https://github.com/onda-lang/onda/compare/0.8.17...0.8.18
 [0.8.17]: https://github.com/onda-lang/onda/compare/0.8.16...0.8.17

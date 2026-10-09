@@ -24,7 +24,7 @@ import { SUPPORTED_MIR_SCHEMA_VERSION } from "../dist/backend/constants.js";
 import { OndaBinaryenError } from "../dist/backend/errors.js";
 import { defaultFrontendInput } from "#onda-frontend-loader";
 import { ONDA_VERSION } from "../dist/version.js";
-import { MAX_BLOCK_SIZE } from "./config.js";
+import { DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE } from "./config.js";
 
 export const MIR_SCHEMA_VERSION = SUPPORTED_MIR_SCHEMA_VERSION;
 export { ONDA_VERSION };
@@ -107,7 +107,6 @@ class OndaCompiler {
         source,
         compile.sampleRate,
         compile.blockSize,
-        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -154,7 +153,6 @@ class OndaCompiler {
         JSON.stringify(workspace.sources),
         compile.sampleRate,
         compile.blockSize,
-        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -199,7 +197,6 @@ class OndaCompiler {
         bytes,
         compile.sampleRate,
         compile.blockSize,
-        compile.defaultParamSmoothingSeconds,
         compile.constantsJson,
       );
     } catch (error) {
@@ -622,7 +619,6 @@ function normalizeCompileOptions(options) {
   }
   return {
     ...compile,
-    defaultParamSmoothingSeconds: normalizeDefaultParamSmoothingSeconds(options),
     codegen: options.codegen ?? {},
   };
 }
@@ -640,14 +636,6 @@ function normalizeCompileInputOptions(options) {
     ...normalizeContextOptions(options),
     constantsJson: JSON.stringify(normalizeCompileConstants(options.constants ?? {})),
   };
-}
-
-function normalizeDefaultParamSmoothingSeconds(options) {
-  const value = options.defaultParamSmoothingSeconds ?? 0;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw configurationError("defaultParamSmoothingSeconds must be finite and non-negative");
-  }
-  return value;
 }
 
 function normalizeLspAnalysisOptions(options) {
@@ -668,7 +656,7 @@ function normalizeContextOptions(options) {
     throw configurationError("compiler options must be an object");
   }
   const sampleRate = options.sampleRate ?? 48_000;
-  const blockSize = options.blockSize ?? 128;
+  const blockSize = options.blockSize ?? DEFAULT_BLOCK_SIZE;
   if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
     throw configurationError("sampleRate must be finite and greater than zero");
   }

@@ -349,6 +349,17 @@ const scenarios = [
     blocks: 16,
     comparison: "approximate",
   },
+  {
+    name: "fixed-duration linear and S-curve ramps, retargeting, and reset",
+    source: join(packageDir, "test/fixtures/smoothing-ramps.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "render" },
+      { kind: "restore" },
+      ...Array.from({ length: 9 }, () => ({ kind: "render" })),
+    ],
+  },
 ];
 
 try {
@@ -452,7 +463,6 @@ async function renderNativeBlocks(scenario, metadata) {
       block_frames: blockSize,
       fast_math: false,
       // Match `onda compile`; interactive daemon defaults add persistent ramp state.
-      default_param_smoothing_seconds: 0,
     });
     const start = await request({ command: "run_start", path: source });
     delegateBatches.push(emptyDelegateBatch());

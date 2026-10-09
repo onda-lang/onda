@@ -410,6 +410,18 @@ test("derives explicit Web Audio channel options from processor metadata", () =>
   assert.equal(options.channelInterpretation, "discrete");
   assert.deepEqual(options.outputChannelCount, [1]);
   assert.deepEqual(options.processorOptions.params, {});
+  assert.equal(options.processorOptions.paramSmoothingSeconds, 0);
+});
+
+test("Web Audio configures host smoothing independently of compilation", () => {
+  assert.equal(ondaAudioWorkletNodeOptions(artifact(), {
+    paramSmoothingSeconds: 0.03,
+  }).processorOptions.paramSmoothingSeconds, 0.03);
+  for (const duration of [-1, NaN, Infinity, Number.MAX_VALUE]) {
+    assert.throws(() => ondaAudioWorkletNodeOptions(artifact(), {
+      paramSmoothingSeconds: duration,
+    }), /paramSmoothingSeconds/);
+  }
 });
 
 test("rejects unknown initial parameters before worklet construction", () => {

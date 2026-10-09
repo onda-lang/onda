@@ -214,9 +214,8 @@ pub(super) fn completion_context_at(
     } else {
         PARAM_DOMAIN_POSITIONAL_FIELDS
             .get(positional_count)
-            .map_or(ParamDomainValueKind::None, |field| {
-                value_kind_for_field(field)
-            })
+            .copied()
+            .map_or(ParamDomainValueKind::None, value_kind_for_field)
     };
     Some(ParamDomainCompletionContext {
         used_fields,
@@ -297,7 +296,7 @@ pub(super) fn binding_range_identifier_role_at(
 
 fn value_kind_for_field(field: &str) -> ParamDomainValueKind {
     match field {
-        "min" | "max" | "curve" | "step" | "smooth" => ParamDomainValueKind::Expression,
+        "min" | "max" | "curve" | "step" => ParamDomainValueKind::Expression,
         "scale" => ParamDomainValueKind::Scale,
         "unit" => ParamDomainValueKind::Unit,
         _ => ParamDomainValueKind::None,
@@ -597,33 +596,11 @@ mod tests {
         assert_eq!(named_context.value_kind, ParamDomainValueKind::Scale);
         assert!(!named_context.allow_fields);
 
-        let positional = "params:\n  cutoff = 440.0 {20, 20000, 0.02, lo";
+        let positional = "params:\n  cutoff = 440.0 {20, 20000, lo";
         let positional_context =
             completion_context_at(positional, positional.len()).expect("positional domain");
         assert_eq!(positional_context.value_kind, ParamDomainValueKind::Scale);
         assert!(positional_context.allow_fields);
-    }
-
-    #[test]
-    fn positional_completion_tracks_smoothing_and_the_four_field_limit() {
-        for (domain, kind) in [
-            ("{", ParamDomainValueKind::Expression),
-            ("{20, ", ParamDomainValueKind::Expression),
-            ("{20, 20000, ", ParamDomainValueKind::Expression),
-            ("{20, 20000, 0.02, ", ParamDomainValueKind::Scale),
-            ("{20, 20000, 0.02, log, ", ParamDomainValueKind::None),
-        ] {
-            let source = format!("params:\n  cutoff = 440.0 {domain}");
-            let context = completion_context_at(&source, source.len()).unwrap();
-            assert_eq!(context.value_kind, kind, "{domain}");
-            assert!(context.allow_fields);
-            if domain.contains("0.02") {
-                assert!(context.used_fields.contains("smooth"), "{domain}");
-            }
-        }
-        let source = "params:\n  cutoff = 440.0 {20, 20000, log";
-        let start = source.rfind("log").unwrap();
-        assert_eq!(identifier_role_at(source, start, source.len()), None);
     }
 
     #[test]
@@ -710,14 +687,14 @@ mod tests {
 
     #[test]
     fn does_not_treat_parameter_domains_as_binding_ranges() {
-        let source = "proc Voice:\n  params:\n    cutoff = 440.0 {20, 20000, 0.02, lo";
+        let source = "proc Voice:\n  params:\n    cutoff = 440.0 {20, 20000, lo";
         assert!(binding_range_completion_context_at(source, source.len()).is_none());
     }
 
     #[test]
     fn recognizes_input_domains_and_excludes_them_from_binding_ranges() {
         for header in ["ins", "inputs", "ins<f64>"] {
-            let source = format!("{header}:\n  cutoff = 440.0 {{20, 20000, 0.02, lo");
+            let source = format!("{header}:\n  cutoff = 440.0 {{20, 20000, lo");
             let context = completion_context_at(&source, source.len()).expect("input domain");
             assert_eq!(context.value_kind, ParamDomainValueKind::Scale, "{header}");
             assert!(

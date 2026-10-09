@@ -53,6 +53,7 @@ const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
+const interactiveParamSmoothingSeconds = 0.03;
 
 let compiler = null;
 let languageServer = null;
@@ -170,7 +171,7 @@ function compileOptions() {
   if (!supportedBlockSizes.has(blockSize)) {
     throw new Error("block size must be 128, 256, 512, 1024, or 2048 frames");
   }
-  return { sampleRate, blockSize, defaultParamSmoothingSeconds: 0.02 };
+  return { sampleRate, blockSize };
 }
 
 function validEditorFontSize(value) {
@@ -776,7 +777,6 @@ async function startAudio() {
       const options = {
         sampleRate: context.sampleRate,
         blockSize: Number(metadata.compile.block_size),
-        defaultParamSmoothingSeconds: 0.02,
       };
       await languageServer.setAnalysisOptions(options);
       const project = projectEditor.compilerProject();
@@ -794,6 +794,7 @@ async function startAudio() {
     );
     audioProcessor = await createOndaAudioProcessorInitialized(context, artifact, {
       compiledModule,
+      paramSmoothingSeconds: interactiveParamSmoothingSeconds,
       params,
       buffers,
       workletUrl: hostedAssets.workletUrl,
@@ -870,9 +871,7 @@ async function closeAudioContext() {
 
 async function resetRunParams() {
   if (!audioProcessor) return;
-  await Promise.all(
-    runView.state.params.map((param) => audioProcessor.setParam(param.name, param.value)),
-  );
+  await audioProcessor.resetParams();
 }
 
 async function bindBufferFile(name, file) {

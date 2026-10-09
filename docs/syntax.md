@@ -948,8 +948,8 @@ Rules:
 - Scalar params and fixed-size top-level parameter arrays can have host-control domains.
 - Proc parameter arrays support per-element numeric ranges and scalar or list defaults,
   using the same clamp-on-store rules as scalar proc params. Host-control attributes
-  such as scale, curve, unit, step, and smooth remain top-level only.
-- An array's range, scale, curve, unit, step, and smooth apply independently to every element.
+  such as scale, curve, unit, and step remain top-level only.
+- An array's range, scale, curve, unit, and step apply independently to every element.
   A scalar default fills the array; a list supplies one default per element and must match its length.
   Arrays support `f32`, `f64`, `i32`, `i64`, and `bool`. Boolean arrays use toggles without numeric ranges.
 - `params N` expands to `param1..paramN`; top-level `kins N` expands to `kin1..kinN`.
@@ -961,29 +961,25 @@ Rules:
 #### Host Control Domains
 
 A parameter domain extends the existing range braces with `scale`, `curve`,
-`unit`, `step`, and `smooth`. Positional fields are ordered as
-`min, max, smooth, scale`, with at most four unnamed fields inside the braces
-(five values counting the default outside them). All fields may be named and
-named fields may appear in any order. `curve`, `unit`, and `step` are named-only:
+`unit`, and `step`. Positional fields remain ordered as
+`min, max, scale, unit, step`; all fields may be named and named fields may
+appear in any order. `curve` is named-only:
 
 ```onda
 params:
-  cutoff = 440.0 {20, 20000, 0.02, log, unit = "Hz"}
+  cutoff = 440.0 {20, 20000, log, "Hz"}
   resonance = 0.5 {0, 1, unit = "%"}
   envelope = 0.5 {0, 1, curve = -4}
-  gain = 1.0 {0, 2, smooth = 0.02}
   voices: i32 = 4 {min = 0, max = 16, step = 1}
-  boost = 1.0 {max = 2, scale = linear}
+  gain = 1.0 {max = 2, scale = linear}
   offsets: f32[4] = 0.0 {-2000, 2000, unit = "Hz"}
   harmonics: i32[3] = [1, 2, 4] {1, 16}
   enabled: bool[3] = true
 ```
 
-The unnamed forms are `{max}`, `{min, max}`, `{min, max, smooth}`, and
-`{min, max, smooth, scale}`. To omit smoothing while specifying a scale, use
-`{min, max, scale = log}`. Positional fields must precede named fields, fields
-cannot be repeated, and `{max}` retains the maximum-only shorthand. `scale`
-defaults to `linear`; the other optional fields default to absent.
+Positional fields must precede named fields, fields cannot be repeated, and
+`{max}` retains the existing maximum-only shorthand. `scale` defaults to
+`linear`; the other optional fields default to absent.
 
 `scale`, `curve`, `unit`, and `step` describe external control of explicit
 top-level `params` (and their top-level `kins` alias). They are not available
@@ -1012,56 +1008,53 @@ calculation:
 - Logarithmic stepped domains are not supported.
 - `curve` may be combined with `step`, but not with `scale = log`.
 
-`smooth = seconds` gives an `f32` or `f64` top-level parameter a compiled
-block-rate linear ramp. Hosts write and report the target value, while Onda
-code reads the effective value. Every read in `block:`, `sample:`, block-end
-code, and events observes the same effective value until the next logical
-block begins. Splitting a block into process segments does not change it.
-
-The duration is the time to reach a stationary target, rounded up to at least
-one host sample:
-
-```text
-samples = max(1, ceil(seconds * HOST_SAMPLE_RATE))
-elapsed = min(elapsed + processed_samples, samples)
-current = lerp(start, target, elapsed * inverse_samples)
-```
-
-Generated code accumulates the actual frames processed across segment calls
-and publishes the next effective value at the following block boundary.
-Zero-frame calls do not advance time. At completion, the target is assigned
-directly, so it becomes visible at the first block boundary at or after the
-deadline. For example, a 20 ms ramp at 48 kHz lasts 960 samples; with 128-frame
-logical blocks, its target first appears at sample 1024.
-
-Targets are constrained and captured at block boundaries. A changed target
-starts a fresh ramp from the value reached there, after accounting for the
-previous block's samples. The first block retains that starting value.
-Repeated writes of the same target do not restart a ramp; changes made inside
-a block wait for the next boundary. Interpolation uses the original endpoints
-and integer elapsed samples, avoiding accumulated floating-point rounding.
-It selects the nearer endpoint and uses a bounded convex sum for opposite
-signs, preserving small targets and keeping finite extremes finite. The
-reciprocal duration is a compile-time constant; processing uses no division
-or per-sample smoothing operations.
-
-The duration must be a finite non-negative compile-time expression whose
-rounded sample count fits signed 64-bit storage. By default, omitting `smooth`,
-or writing `smooth = 0`, generates no smoothing state or processing code.
-Hosts may supply a non-negative compile-time default for floating-point
-parameters that omit the field; explicit metadata always wins, so `smooth = 0`
-also disables a host default. Onda's interactive hosts (`onda run`, egui,
-native webview, and the website editor) use `0.02` seconds.
-
-Private snapshot state is initialized directly from the constrained target,
-so initialization never ramps from zero. Snapshots preserve the complete ramp
-and pending sample count. Array elements have independent ramps and share the
-declaration's duration. Top-level audio oversampling does not increase the
-parameter update rate or advance its host-sample clock faster.
-
 The step count is the number of intervals from `min` to `max` and must fit the
 host descriptor. Normalization, snapping, and units are host-boundary
 semantics; Onda code reads the resulting plain parameter value.
+
+Parameter declarations do not specify smoothing. The compiler reads the values supplied by the
+host and generates no parameter ramp state. `onda run` and the browser playground apply host-owned
+30 ms linear ramps to continuous floating-point controls, with independent ramps for array elements.
+This is **block-level smoothing**: values advance once per logical block and remain unchanged across
+its process segments. Durations at most one block are bypassed; integer, boolean, and stepped
+controls update directly. Initial values, parameter reset, and processor restart settle immediately.
+Other hosts choose their own policy. Use `std/smoothing` or the smoothed gain processors in
+`std/gain` when an audible response should be expressed in the DSP program.
+
+`std::smoothing::Ramp<T>` provides sample-rate, fixed-duration transitions for `f32` and `f64`.
+Its `time_s` is the time to reach a new target, independent of the distance travelled. Choose
+`std::smoothing::shape::LINEAR` (the default) or `std::smoothing::shape::S_CURVE`, which uses cubic
+smoothstep `p * p * (3 - 2 * p)` with zero slope at both endpoints:
+
+```onda
+import std/smoothing
+
+params:
+  amplitude = 0.5 {0.0, 1.0}
+
+init:
+  amplitude_ramp = std::smoothing::Ramp(
+    time_s = 0.02,
+    shape = std::smoothing::shape::S_CURVE
+  )
+  amplitude_ramp.reset(amplitude)
+
+sample:
+  out1 = in1 * amplitude_ramp(amplitude)
+```
+
+Each call advances one sample. A changed input captures the current output as the start and
+restarts the full duration; repeated inputs keep the existing deadline. Retargeting preserves
+the output value, but does not preserve the previous transition's slope. Duration and shape are
+captured when the input changes, so configuration changes apply to the next target. Positive
+durations round up with `ceil(time_s * SR)` and use a saturating signed 64-bit sample counter.
+The target is assigned exactly on the final sample and held afterwards, independently of process
+block or segment sizes. Non-positive or non-finite durations update immediately; non-finite
+endpoints also update directly so later finite targets can recover.
+
+The initial output is zero. `reset(value)` sets the current value immediately and cancels any
+transition; its default value is zero. The example resets to the initial amplitude to avoid a
+startup fade. Use `shape::LINEAR` for a straight ramp or `Lag` for an exponential response.
 
 `onda run` groups array elements under their logical name, with addresses such as `offsets[0]`.
 Each element can be edited, automated, and reset independently; **Reset** restores all declared
@@ -1072,9 +1065,6 @@ used ranged top-level parameter once at the start of `init`, once at the start
 of each event invocation, and once at the start of each logical process block.
 Every read in that entry point uses the resulting typed value. A floating NaN
 maps to the range minimum; infinities clamp to the corresponding endpoint.
-For a smoothed parameter, the constrained target is captured and the effective
-value is published once at the start of each logical block, using samples
-processed since the previous boundary; events observe the latest effective value.
 This protects raw parameter storage writes independently of any host-control
 conversion.
 

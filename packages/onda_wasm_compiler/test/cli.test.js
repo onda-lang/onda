@@ -45,6 +45,7 @@ test("onda-wasm writes the reusable artifact pair", async () => {
     const wat = await readFile(watOutput, "utf8");
     assert.equal(WebAssembly.validate(wasm), true);
     assert.equal(metadata.format, "onda-processor");
+    assert.equal(metadata.compile.block_size, 512);
     assert.match(metadata.integrity.wasm, /^[0-9a-f]{64}$/);
     assert.match(wat, /\(module/);
   } finally {

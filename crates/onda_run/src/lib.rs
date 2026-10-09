@@ -48,7 +48,7 @@ const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Periodic controller polling interval used while a native run frontend is loaded.
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
-pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 256;
+pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 512;
 pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -2884,8 +2884,8 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn realtime_host_defaults_to_256_frame_blocks() {
-        assert_eq!(RunHostOptions::default().block_frames, 256);
+    fn realtime_host_defaults_to_512_frame_blocks() {
+        assert_eq!(RunHostOptions::default().block_frames, 512);
     }
 
     #[test]

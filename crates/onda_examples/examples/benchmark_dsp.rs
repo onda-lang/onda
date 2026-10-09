@@ -86,7 +86,6 @@ fn load_mir(config: &Config) -> Result<(onda_mir::OptimizedProgram, Option<Sourc
             AnalysisOptions {
                 sample_rate: config.sample_rate,
                 block_size: config.block_size,
-                ..AnalysisOptions::default()
             },
         )
         .map_err(|e| format!("analysis: {e:?}"))?;

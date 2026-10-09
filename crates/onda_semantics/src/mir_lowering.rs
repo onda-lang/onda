@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod param_array_tests;
 mod param_arrays;
-mod param_smoothing;
 
 mod aggregates;
 mod audio_outputs;
@@ -427,7 +426,6 @@ fn lower_program_to_mir(
         )
         .map_err(|error| vec![error])?,
     );
-    param_smoothing::prepend_initialization(&mut init, &globals, &mut mir.types);
     lower_user_functions_to_mir(program, &mut mir, Some(&globals))?;
     init.kind = onda_mir::FunctionKind::Init;
 
@@ -472,10 +470,7 @@ fn lower_program_to_mir(
         &function_indices,
         function_base,
     )?;
-    param_arrays::clamp_parameter_arrays(
-        &mut mir,
-        &globals.smoothed_params.keys().copied().collect(),
-    );
+    param_arrays::clamp_parameter_arrays(&mut mir);
     mir.const_data = const_arrays.take_data(true);
     if prune_before_range_analysis {
         // Processor lowering intentionally begins with uniform flattened ABIs.
@@ -1120,17 +1115,6 @@ fn populate_interface(
                 range: program.params[index].range.map(mir_range),
                 control: mir_param_control(&program.params[index].control),
             });
-            param_smoothing::register(
-                mir,
-                globals,
-                id,
-                name,
-                info.elem_ty,
-                type_id,
-                Some(len),
-                &program.params[index].control,
-                program.params[index].range,
-            );
             globals
                 .param_arrays
                 .insert(name.clone(), (id, info.elem_ty, len));
@@ -1147,17 +1131,6 @@ fn populate_interface(
             range: param.range.map(mir_range),
             control: mir_param_control(&param.control),
         });
-        param_smoothing::register(
-            mir,
-            globals,
-            id,
-            &param.name,
-            param.ty,
-            type_id,
-            None,
-            &param.control,
-            param.range,
-        );
         globals.params.insert(param.name.clone(), (id, param.ty));
         index += 1;
     }
@@ -1424,9 +1397,7 @@ fn resolve_runtime_interface_endpoint(
                 .get(&slot.root)
                 .copied()
                 .ok_or_else(missing)?;
-            let base = if let Some(state) = globals.smoothed_params.get(&param).copied() {
-                PlaceBase::State(state)
-            } else if let Some(alias) = program.dynamic_param_range_aliases.get(&slot.root) {
+            let base = if let Some(alias) = program.dynamic_param_range_aliases.get(&slot.root) {
                 PlaceBase::State(
                     globals
                         .states
@@ -1453,7 +1424,7 @@ fn resolve_runtime_interface_endpoint(
                 .ok_or_else(missing)?;
             Ok((
                 RuntimeInterfaceEndpoint::Param {
-                    base: globals.effective_param_base(param),
+                    base: PlaceBase::Param(param),
                     element: Some(checked_element(element, len)?),
                 },
                 ty,
@@ -2114,9 +2085,6 @@ struct RuntimeGlobals<'a> {
     control_output_arrays: HashMap<String, (onda_mir::ControlOutputId, PrimitiveType, u32)>,
     params: HashMap<String, (onda_mir::ParamId, PrimitiveType)>,
     param_arrays: HashMap<String, (onda_mir::ParamId, PrimitiveType, u32)>,
-    smoothed_params: HashMap<onda_mir::ParamId, onda_mir::StateId>,
-    param_smoothing: Vec<param_smoothing::ParamSmoothing>,
-    param_smoothing_processed: Option<onda_mir::StateId>,
     buffers: HashMap<String, (onda_mir::BufferId, PrimitiveType)>,
     buffer_arrays: HashMap<String, (onda_mir::BufferId, PrimitiveType, u32)>,
     interface_views: HashMap<DynamicInterfaceKind, RuntimeInterfaceView>,
@@ -2125,16 +2093,6 @@ struct RuntimeGlobals<'a> {
     nested_proc_arrays: Vec<TypedNestedProcArray>,
     struct_roots: HashMap<String, String>,
     top_level_oversampling: TopLevelOversamplingState,
-}
-
-impl RuntimeGlobals<'_> {
-    fn effective_param_base(&self, param: onda_mir::ParamId) -> PlaceBase {
-        self.smoothed_params
-            .get(&param)
-            .copied()
-            .map(PlaceBase::State)
-            .unwrap_or(PlaceBase::Param(param))
-    }
 }
 
 #[derive(Debug, Default)]

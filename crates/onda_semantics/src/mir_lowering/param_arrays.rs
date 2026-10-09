@@ -1,20 +1,15 @@
 //! Snapshot ranged parameter arrays at exported execution boundaries. All array
 //! reads, including slices and references passed to helpers, use the same copy.
-use std::collections::HashSet;
-
 use onda_mir::*;
 mod reads;
 
-pub(super) fn clamp_parameter_arrays(program: &mut Program, compiler_managed: &HashSet<ParamId>) {
+pub(super) fn clamp_parameter_arrays(program: &mut Program) {
     if !program.interface.params.iter().any(|param| {
         param.range.is_some() && matches!(program.types[param.ty.index()], Type::Array { .. })
     }) {
         return;
     }
-    let mut required = reads::required_snapshots(program);
-    for function in &mut required {
-        function.retain(|index| !compiler_managed.contains(&ParamId::new(*index as u32)));
-    }
+    let required = reads::required_snapshots(program);
     let user_functions = program
         .functions
         .iter()

@@ -36,7 +36,7 @@ import {
 const compiler = await createCompiler();
 const { artifact } = await compiler.compileSource(source, {
   sampleRate: audioContext.sampleRate,
-  blockSize: 128,
+  blockSize: 512,
 });
 
 const print = ({ text }) => console.debug(text);
@@ -83,12 +83,8 @@ The returned instance provides:
 - `sendLspMessage(message)` and `setLspAnalysisOptions(options?)` for the embedded language server.
 - `dispose()`, an idempotent terminal release of compiler and worker resources.
 
-Compile options accept `sampleRate`, `blockSize`, `defaultParamSmoothingSeconds`, typed
-compile-constant overrides, and `codegen`. `defaultParamSmoothingSeconds` defaults to `0` and must
-be finite and non-negative. It applies to floating-point top-level parameters that omit `smooth`;
-explicit metadata, including `smooth = 0`, takes precedence. Positive values specify block-rate
-linear ramp durations, rounded up to at least one host sample; the sample count must fit signed
-64-bit storage.
+Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
+The sample rate defaults to 48000 Hz and the block size to 512 frames.
 Code generation can select optimization level `0..4`, shrink level `0..2`, strict or fast math,
 SIMD, loop-containing inlining, and optional WAT emission. A successful compilation returns an
 `OndaCompilationResult` containing the artifact, resolved source paths, and the exact source graph
@@ -217,12 +213,22 @@ the artifact metadata as the adapter constructor's second argument and
 `processorOptions.executionOutputRing` as its fourth argument. Event encoding and numeric
 unknown-index classification require that metadata.
 
+`paramSmoothingSeconds` is an optional **host** setting on `OndaAudioProcessorOptions`, defaulting
+to `0`. It applies finite linear ramps to continuous floating-point parameters and array elements;
+integer, boolean, and stepped parameters update directly. Ramps publish once per logical compile
+block, independent of Web Audio callback sizes. Durations round up to host samples and are bypassed
+when they fit within one block. A changed target starts a fresh ramp from the published value;
+repeated writes of the same target keep its deadline. Initial values and reinitialization settle
+immediately, and processor snapshots do not contain the host ramps. The browser playground opts
+into `0.03` seconds (30 ms). These block-level updates do not interpolate inside `sample:`.
+
 ### `OndaAudioProcessor`
 
 The adapter exposes its `node` and validated `metadata`, plus these operations:
 
 - `setParam(nameOrIndex, plain)` and `setParamNormalized(nameOrIndex, normalized)` for whole
   parameters.
+- `resetParams()` to restore parameter defaults immediately and cancel host ramps, retaining DSP state.
 - `setParamElement(nameOrIndex, element, plain)` and
   `setParamElementNormalized(nameOrIndex, element, normalized)` for one scalar or fixed-array
   element.

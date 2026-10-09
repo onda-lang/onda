@@ -10,19 +10,24 @@ use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
     format_decoded_print_occurrences, init_checked_with_output, prepare_unchecked_process,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked, DelegateBatch,
-    ExecutionOutput, InitMode, Instance, InstanceConfig, PrintBatch, PrintValue,
-    DELEGATE_RECORD_HEADER_SIZE,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked,
+    validate_process_segment, DelegateBatch, ExecutionOutput, InitMode, Instance, InstanceConfig,
+    PrintBatch, PrintValue, DELEGATE_RECORD_HEADER_SIZE,
 };
 use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
+mod param_smoothing;
+use param_smoothing::ParamSmoothing;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
     pub sample_rate: f32,
     pub block_size: usize,
-    pub default_param_smoothing_seconds: f64,
+    /// Host-owned linear ramps for continuous float controls, published once per
+    /// logical block. Zero disables ramps; durations at most one block are bypassed.
+    pub param_smoothing_seconds: f64,
     pub fast_math: bool,
     pub opt_level: TargetOptLevel,
 }
@@ -32,7 +37,7 @@ impl Default for RunOptions {
         Self {
             sample_rate: 48_000.0,
             block_size: 512,
-            default_param_smoothing_seconds: 0.0,
+            param_smoothing_seconds: 0.0,
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         }
@@ -44,7 +49,6 @@ impl RunOptions {
         AnalysisOptions {
             sample_rate: self.sample_rate,
             block_size: self.block_size,
-            default_param_smoothing_seconds: self.default_param_smoothing_seconds,
         }
     }
 
@@ -266,6 +270,7 @@ pub struct RunSession {
     jit: JitProgram,
     instance: Instance,
     param_values: HashMap<String, f64>,
+    param_smoothing: ParamSmoothing,
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
     output_buffers: Vec<Vec<f32>>,
@@ -423,6 +428,8 @@ impl RunSession {
             buffer_bindings[index] = Some(binding);
         }
         let param_values = HashMap::new();
+        let param_smoothing = ParamSmoothing::new(&jit, options.param_smoothing_seconds)
+            .map_err(RunBuildError::Runtime)?;
         let delegate_storage = if jit.delegate_count() == 0 {
             Vec::new()
         } else {
@@ -496,6 +503,7 @@ impl RunSession {
             jit,
             instance,
             param_values,
+            param_smoothing,
             buffer_bindings,
             input_buffers,
             output_buffers,
@@ -690,6 +698,9 @@ impl RunSession {
                 .unwrap_or(value)
         };
         self.param_values.insert(name.to_owned(), value);
+        if self.param_smoothing.set_target(index, element, value) {
+            return Ok(());
+        }
         let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
         onda_runtime::set_param_element_by_index(
             &mut self.instance,
@@ -760,6 +771,7 @@ impl RunSession {
 
     /// Renders one block while dispatching events at exact frame boundaries.
     /// Events must be ordered by frame and target a frame within the block.
+    /// Names and payloads are validated before processor state or host ramps change.
     pub fn render_block_events_interleaved(
         &mut self,
         rendered: &mut [f32],
@@ -787,10 +799,17 @@ impl RunSession {
                     0,
                 ));
             }
+            encode_run_event(
+                &self.jit,
+                &self.event_plans,
+                &mut self.event_encoder,
+                event.name,
+                event.values,
+            )?;
             previous_frame = event.frame;
         }
 
-        self.begin_block_render(rendered)?;
+        self.begin_block_render(rendered, self.options.block_size)?;
         let mut sequence_base = 0_u32;
         let mut cursor = 0;
         let mut began_block = false;
@@ -833,13 +852,22 @@ impl RunSession {
 
     /// Renders one block through an explicit segmented process schedule.
     /// Segments may include zero-frame begin/end notifications and must each
-    /// satisfy the runtime process ABI.
+    /// satisfy the runtime process ABI. The entire schedule is validated before
+    /// execution. Host ramps publish once using the total scheduled audio frames;
+    /// empty and zero-frame-only schedules preserve ramp time.
     pub fn render_block_segments_interleaved(
         &mut self,
         rendered: &mut [f32],
         segments: &[(usize, usize, u32)],
     ) -> Result<(), Diagnostic> {
-        self.begin_block_render(rendered)?;
+        let mut rendered_frames = 0_usize;
+        for &(start_frame, frames, flags) in segments {
+            validate_process_segment(&self.instance, start_frame, frames, flags)?;
+            rendered_frames = rendered_frames.checked_add(frames).ok_or_else(|| {
+                Diagnostic::runtime("run segment frame count overflows usize", 0, 0)
+            })?;
+        }
+        self.begin_block_render(rendered, rendered_frames)?;
         let mut sequence_base = 0_u32;
         // SAFETY: all input, output, and declared-buffer bindings are installed
         // and prepared during build/rebuild. Their backing allocations remain
@@ -856,7 +884,7 @@ impl RunSession {
         Ok(())
     }
 
-    fn begin_block_render(&mut self, rendered: &[f32]) -> Result<(), Diagnostic> {
+    fn begin_block_render(&mut self, rendered: &[f32], frames: usize) -> Result<(), Diagnostic> {
         let expected_samples = self
             .options
             .block_size
@@ -876,6 +904,8 @@ impl RunSession {
         for buffer in &mut self.output_buffers {
             buffer.fill(0.0);
         }
+        self.param_smoothing
+            .begin_block(&mut self.instance, frames)?;
         Ok(())
     }
 
@@ -933,18 +963,13 @@ impl RunSession {
         values: &[RunEventValue],
         sequence_base: u32,
     ) -> Result<u32, Diagnostic> {
-        let Some(index) = self.jit.event_index(name) else {
-            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
-        };
-        let Some(desc) = self.jit.event_descriptor(index) else {
-            return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
-        };
-        let payload = self
-            .event_encoder
-            .encode(&self.event_plans[index], values)
-            .map_err(|error| {
-                Diagnostic::runtime(format!("event '{}': {error}", desc.name()), 0, 0)
-            })?;
+        let (index, payload) = encode_run_event(
+            &self.jit,
+            &self.event_plans,
+            &mut self.event_encoder,
+            name,
+            values,
+        )?;
         let delegate_start = self.delegate_used;
         let print_start = self.print_used;
         let mut batch = Self::next_delegate_batch(
@@ -1155,6 +1180,7 @@ impl RunSession {
             set_param_by_index(&mut self.instance, index, default)?;
         }
         self.param_values.clear();
+        self.param_smoothing.settle(true);
         Ok(())
     }
 
@@ -1252,6 +1278,7 @@ impl RunSession {
             index,
             binding: prepared.as_mut().map(|prepared| &mut prepared.0),
         }))?;
+        self.param_smoothing.settle(false);
         Ok(RetiredRunBuffer {
             _instance: mem::replace(&mut self.instance, instance),
             _binding: mem::replace(
@@ -1264,6 +1291,7 @@ impl RunSession {
     fn rebuild_instance(&mut self) -> Result<(), Diagnostic> {
         let instance = self.build_instance(None)?;
         self.instance = instance;
+        self.param_smoothing.settle(false);
         Ok(())
     }
 
@@ -1292,6 +1320,25 @@ impl RunSession {
         self.finish_print_batch(print_result);
         result
     }
+}
+
+fn encode_run_event<'a>(
+    jit: &JitProgram,
+    plans: &[onda_processor_abi::payload::PayloadPlan],
+    encoder: &'a mut onda_processor_abi::payload::PayloadEncoderWorkspace,
+    name: &str,
+    values: &[RunEventValue],
+) -> Result<(usize, &'a [u8]), Diagnostic> {
+    let Some(index) = jit.event_index(name) else {
+        return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+    };
+    let Some(desc) = jit.event_descriptor(index) else {
+        return Err(Diagnostic::runtime(format!("unknown event '{name}'"), 0, 0));
+    };
+    let payload = encoder
+        .encode(&plans[index], values)
+        .map_err(|error| Diagnostic::runtime(format!("event '{}': {error}", desc.name()), 0, 0))?;
+    Ok((index, payload))
 }
 
 fn validated_buffer_binding(
@@ -2071,3 +2118,7 @@ sample:
 #[cfg(test)]
 #[path = "param_array_tests.rs"]
 mod param_array_tests;
+
+#[cfg(test)]
+#[path = "host_param_smoothing_tests.rs"]
+mod host_param_smoothing_tests;

@@ -750,3 +750,181 @@ test("worklet indexed array writes preserve sibling values for every primitive",
     assert.throws(() => processor.setParam("values", 0, 2), /out of bounds/);
   }
 });
+
+function rampProcessor({ scalar = "f32", length = 2, blockSize = 48, seconds = 0.003, step = null, initial = [0, 0.5] } = {}) {
+  const descriptor = metadata();
+  const width = scalar === "bool" ? 1 : scalar.endsWith("64") ? 8 : 4;
+  descriptor.compile.block_size = blockSize;
+  descriptor.runtime.param_size_bytes = width * length;
+  descriptor.metadata.buffers = [];
+  descriptor.metadata.params = [{
+    name: "gain", type_repr: `${scalar}[${length}]`, scalar, array_len: length,
+    element_size_bytes: width, slot_offset: 0, byte_offset: 0, state_byte_offset: null,
+    byte_size: width * length, default_reprs: Array(length).fill(scalar === "bool" ? "false" : "0"),
+    range_min_repr: null, range_max_repr: null,
+    param_control: step === null ? null : { scale: "linear", curve: null, unit: null, step_repr: String(step), step_count: 1 },
+  }];
+  const processor = new Processor({ processorOptions: {
+    wasmBytes: wasm, metadata: descriptor, paramSmoothingSeconds: seconds,
+    params: { gain: initial.slice(0, length) },
+  } });
+  return {
+    processor,
+    read(element = 0) { return processor.readScalar(processor.paramsPtr + element * width, scalar); },
+    process(frames = blockSize) { processor.process([], [[new Float32Array(frames)]]); },
+  };
+}
+
+test("unsmoothed whole-array writes refresh Wasm memory once per update", (t) => {
+  for (const options of [
+    { seconds: 0 }, { scalar: "f64", seconds: 0 },
+    { seconds: 0.001 }, { scalar: "f64", seconds: 0.02, blockSize: 1024 },
+    { step: 1 }, { scalar: "f64", step: 1 },
+    { scalar: "i32" }, { scalar: "i64" }, { scalar: "bool" },
+  ]) {
+    const scalar = options.scalar ?? "f32";
+    const value = scalar === "bool" ? true : scalar === "i64" ? 9007199254740993n : 1;
+    const TypedArray = { f32: Float32Array, f64: Float64Array, i32: Int32Array,
+      i64: BigInt64Array, bool: Uint8Array }[scalar];
+    for (const length of [1, 64]) {
+      for (const typed of [false, true]) {
+        const host = rampProcessor({ ...options, length, initial: Array(length).fill(0) });
+        host.process();
+        const values = Array(length).fill(value);
+        const memoryView = t.mock.method(host.processor, "memoryView");
+        host.processor.setParam("gain", typed ? new TypedArray(values) : values);
+        assert.equal(memoryView.mock.callCount(), 1, `${scalar}, length ${length}, typed ${typed}`);
+        for (let element = 0; element < length; element += 1) {
+          assert.equal(host.read(element), value);
+        }
+        assert.equal(host.processor.paramSmoothing.activeCount, 0);
+      }
+    }
+  }
+});
+
+test("smoothed whole-array writes retain each element's startup value and ramp target", () => {
+  for (const scalar of ["f32", "f64"]) {
+    const host = rampProcessor({ scalar });
+    host.processor.setParam("gain", [0.25, 0.75]);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.25, 0.75]);
+    host.processor.setParam("gain", [1, 0]);
+    assert.deepEqual([host.read(0), host.read(1)], [0.25, 0.75]);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0.5, 0.5]);
+    host.process(48 * 2);
+    assert.deepEqual([host.read(0), host.read(1)], [1, 0]);
+    host.processor.setParam("gain", [0, 1]);
+    host.processor.init(1);
+    host.process();
+    assert.deepEqual([host.read(0), host.read(1)], [0, 1]);
+  }
+});
+
+test("host ramps settle initial values and finish exactly without restarting identical targets", () => {
+  for (const scalar of ["f32", "f64"]) {
+    for (const length of [1, 2]) {
+      const host = rampProcessor({ scalar, length });
+      assert.equal(host.read(), 0);
+      host.process();
+      host.processor.setParam("gain[0]", 1);
+      assert.equal(host.read(), 0);
+      host.process();
+      assert.ok(Math.abs(host.read() - 1 / 3) < 1e-6);
+      host.processor.setParam("gain[0]", 1);
+      host.process();
+      assert.ok(Math.abs(host.read() - 2 / 3) < 1e-6);
+      host.process();
+      assert.equal(host.read(), 1);
+      assert.equal(host.processor.paramSmoothing.activeCount, 0);
+      if (length === 2) assert.equal(host.read(1), 0.5);
+      host.processor.setParam("gain[0]", 1e-9);
+      host.process(48 * 3);
+      assert.equal(host.read(), scalar === "f32" ? Math.fround(1e-9) : 1e-9);
+    }
+  }
+});
+
+test("host ramps retarget from the published value and reinitialization settles targets", () => {
+  const host = rampProcessor();
+  host.process();
+  host.processor.setParam("gain[0]", 1);
+  host.process();
+  host.processor.setParam("gain[0]", 0);
+  host.process();
+  assert.ok(Math.abs(host.read() - 2 / 9) < 1e-6);
+  host.processor.setParam("gain[0]", 1);
+  host.processor.init(1);
+  assert.equal(host.read(), 1);
+  host.process();
+  assert.equal(host.read(), 1);
+});
+
+test("parameter reset cancels host ramps without reinitializing DSP", () => {
+  const host = rampProcessor();
+  host.process();
+  host.processor.setParam("gain[0]", 1);
+  host.process(17);
+  assert.ok(Math.abs(host.read() - 1 / 3) < 1e-6);
+  host.processor.runInitialization = () => { throw new Error("parameter reset must retain DSP state"); };
+  host.processor.handleMessage({ type: "reset-params" });
+  assert.equal(host.read(), 0);
+  assert.equal(host.read(1), 0);
+  assert.equal(host.processor.blockCursor, 17);
+  host.process(48 * 3);
+  assert.equal(host.read(), 0);
+});
+
+test("host ramps advance by logical blocks rather than callback or segment sizes", () => {
+  const host = rampProcessor();
+  host.process();
+  host.processor.setParam("gain[0]", 1);
+  host.process(17);
+  assert.ok(Math.abs(host.read() - 1 / 3) < 1e-6);
+  host.processor.setParam("gain[0]", 0);
+  host.process(31);
+  assert.ok(Math.abs(host.read() - 1 / 3) < 1e-6);
+  host.process(48);
+  assert.ok(Math.abs(host.read() - 2 / 9) < 1e-6);
+  host.process(96);
+  assert.equal(host.read(), 0);
+});
+
+test("disabled, short, and discrete host controls write directly", () => {
+  for (const options of [
+    { seconds: 0 }, { seconds: 0.001 }, { seconds: 0.02, blockSize: 1024 },
+    { seconds: 0.03, blockSize: 2048 }, { step: 1 },
+    { scalar: "i32" }, { scalar: "i64", initial: [0, 0] },
+    { scalar: "bool", initial: [false, false] },
+  ]) {
+    const host = rampProcessor(options);
+    host.process();
+    host.processor.setParam("gain[0]", 1);
+    assert.equal(host.read(), options.scalar === "i64" ? 1n : options.scalar === "bool" ? true : 1);
+  }
+  const host = rampProcessor({ blockSize: 1024, seconds: 0.03 });
+  host.process();
+  host.processor.setParam("gain[0]", 1);
+  host.process();
+  assert.ok(Math.abs(host.read() - 1024 / 1440) < 1e-6);
+  host.process();
+  assert.equal(host.read(), 1);
+});
+
+test("host interpolation stays finite between opposite extremes", () => {
+  const host = rampProcessor({ scalar: "f64", initial: [Number.MAX_VALUE, 0] });
+  host.process();
+  host.processor.setParam("gain[0]", -Number.MAX_VALUE);
+  for (const expected of [1 / 3, -1 / 3, -1]) {
+    host.process();
+    assert.ok(Number.isFinite(host.read()));
+    assert.ok(Math.abs(host.read() / Number.MAX_VALUE - expected) < 1e-12);
+  }
+});
+
+test("worklet rejects invalid host ramp durations", () => {
+  for (const seconds of [-1, NaN, Infinity, Number.MAX_VALUE]) {
+    assert.throws(() => rampProcessor({ seconds }), /paramSmoothingSeconds/);
+  }
+});

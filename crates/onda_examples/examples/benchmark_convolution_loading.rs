@@ -184,7 +184,6 @@ fn compile(source: &str, block_size: usize) -> Result<JitProgram, Box<dyn Error>
         AnalysisOptions {
             sample_rate: SAMPLE_RATE,
             block_size,
-            ..AnalysisOptions::default()
         },
     )
     .map_err(|errors| format!("semantic analysis failed: {errors:?}"))?;

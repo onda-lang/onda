@@ -1763,7 +1763,6 @@ fn stdlib_sines_track_mathematical_references_and_emit_the_table_on_demand() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: frames,
-            ..AnalysisOptions::default()
         },
     )
     .expect("sine source should analyze");
@@ -1846,7 +1845,6 @@ fn stdlib_sine_sample_kernel_avoids_float_range_reduction() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: frames,
-            ..AnalysisOptions::default()
         },
     )
     .expect("sine source should analyze");
@@ -1875,7 +1873,6 @@ fn stdlib_osc_import_without_sines_does_not_demand_the_wavetable() {
         AnalysisOptions {
             sample_rate: 48_000.0,
             block_size: 4,
-            ..AnalysisOptions::default()
         },
     )
     .expect("intrinsic sine source should analyze");

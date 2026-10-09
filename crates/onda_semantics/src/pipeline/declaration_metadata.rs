@@ -348,13 +348,9 @@ fn visit_param_decl(decl: &mut ParamDecl, visitor: &mut Metadata) {
         }
     }
     visit_range(decl.range.as_mut(), visitor);
-    for value in [
-        &mut decl.control.curve,
-        &mut decl.control.step,
-        &mut decl.control.smooth,
-    ]
-    .into_iter()
-    .flatten()
+    for value in [&mut decl.control.curve, &mut decl.control.step]
+        .into_iter()
+        .flatten()
     {
         visitor.expr(value);
     }

@@ -3536,13 +3536,9 @@ fn rewrite_param_decls(
             errors,
             decl.ty_loc.as_ref().or(decl.loc.as_ref()),
         );
-        for expr in [
-            &mut decl.control.curve,
-            &mut decl.control.step,
-            &mut decl.control.smooth,
-        ]
-        .into_iter()
-        .flatten()
+        for expr in [&mut decl.control.curve, &mut decl.control.step]
+            .into_iter()
+            .flatten()
         {
             rewrite_expr(
                 expr,

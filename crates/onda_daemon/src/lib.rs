@@ -1,8 +1,7 @@
 mod run_session;
 
-/// Default smoothing used by Onda's interactive hosts for floating-point
-/// parameters that omit explicit `smooth` metadata.
-pub const INTERACTIVE_PARAM_SMOOTHING_SECONDS: f64 = 0.02;
+/// Default host-owned, block-level linear ramp duration for continuous float controls.
+pub const INTERACTIVE_PARAM_SMOOTHING_SECONDS: f64 = 0.03;
 
 pub use onda_semantics::{AnalysisSession, AnalysisSnapshot, DocumentVersion, OpenDocument};
 pub use run_session::{

@@ -15,10 +15,9 @@ The package build runs `wasm-pack --release` and then the workspace-pinned Binar
 optimizer so every local, CI, website, and npm build uses the same Binaryen release.
 
 The production exports
-`compile_to_mir_messagepack(source, sampleRate, blockSize, defaultParamSmoothingSeconds,
-constantsJson)` and `compile_source_workspace_to_mir_messagepack(entryPath, sourcesJson,
-sampleRate, blockSize, defaultParamSmoothingSeconds, constantsJson)`. They return a
-`FrontendMessagePackCompilation` containing compact
+`compile_to_mir_messagepack(source, sampleRate, blockSize, constantsJson)` and
+`compile_source_workspace_to_mir_messagepack(entryPath, sourcesJson, sampleRate, blockSize,
+constantsJson)`. They return a `FrontendMessagePackCompilation` containing compact
 schema-versioned bytes plus the ordered contributing project paths. `constantsJson` is the typed,
 lossless internal transport for immutable `config const` inputs supplied by the public npm package.
 JSON variants return the equivalent `FrontendJsonCompilation` for inspection and tooling. Both
@@ -26,9 +25,8 @@ result types expose the source list and exact portable source image.
 Workspace
 compilation accepts a JSON object of project-relative paths to source strings, resolving imports and
 includes entirely in memory. Paths cannot escape the virtual project root. Embedded
-standard-library modules are omitted from the source manifest. `onda_version()` exposes the Onda
-release version and `mir_schema_version()` exposes the producer schema version for integration
-checks. Compilation failures reject with a JSON-encoded object
+standard-library modules are omitted from the source manifest. `mir_schema_version()` exposes the
+producer version for integration checks. Compilation failures reject with a JSON-encoded object
 containing structured diagnostics, the partially resolved source list, and unresolved
 non-standard-library candidates which a host may watch for creation.
 

@@ -1041,125 +1041,6 @@ proc Voice:
 }
 
 #[test]
-fn parses_named_parameter_smoothing() {
-    let program = parse_program(
-        "params:\n  gain: f32 = 0.5 {0.0, 1.0, smooth = 0.1}\nsample:\n  out1 = gain\n",
-    )
-    .expect("smoothed parameter should parse");
-    let param = program
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            Block::Params(params) => params.first(),
-            _ => None,
-        })
-        .expect("top-level parameter");
-    assert!(matches!(
-        param.control.smooth,
-        Some(Expr::Number { value, .. }) if value == 0.1
-    ));
-
-    assert!(parse_program(
-        "proc Voice:\n  params:\n    gain = 0.5 {0.0, 1.0, smooth = 0.1}\n  sample:\n    out1 = gain\n"
-    )
-    .is_err());
-}
-
-#[test]
-fn parses_positional_parameter_smoothing_and_scale() {
-    for (domain, has_min, smooth, scale) in [
-        ("{1}", false, None, ParamScale::Linear),
-        ("{0, 1}", true, None, ParamScale::Linear),
-        ("{0, 1, 0.1}", true, Some(0.1), ParamScale::Linear),
-        ("{0, 1, 0.1, log}", true, Some(0.1), ParamScale::Log),
-        ("{0, 1, 0.0, linear}", true, Some(0.0), ParamScale::Linear),
-        ("{1, smooth = 0.1}", false, Some(0.1), ParamScale::Linear),
-        ("{0, 1, scale = log}", true, None, ParamScale::Log),
-        (
-            "{0, max = 1, smooth = 0.1}",
-            true,
-            Some(0.1),
-            ParamScale::Linear,
-        ),
-        (
-            "{0, 1, 0.1, unit = \"Hz\", step = 0.1}",
-            true,
-            Some(0.1),
-            ParamScale::Linear,
-        ),
-    ] {
-        let source = format!("params:\n  gain = 0.5 {domain}\n");
-        let program = parse_program(&source).unwrap();
-        let param = program
-            .blocks
-            .iter()
-            .find_map(|block| match block {
-                Block::Params(params) => params.first(),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(
-            param.range.as_ref().unwrap().min.is_some(),
-            has_min,
-            "{domain}"
-        );
-        assert_eq!(param.control.scale, scale, "{domain}");
-        assert_eq!(
-            param.control.smooth.as_ref().map(|expr| match expr {
-                Expr::Number { value, .. } => *value,
-                _ => panic!("unexpected smoothing expression: {expr:?}"),
-            }),
-            smooth,
-            "{domain}"
-        );
-    }
-
-    let source = "const Duration = 0.1\nparams:\n  gain = 0.5 {0, 1, Duration + 0.1, linear}\n";
-    assert!(parse_program(source).is_ok());
-    assert!(parse_program(
-        "proc Voice:\n  params:\n    gain = 0.5 {0, 1, 0.1}\n  sample:\n    out1 = gain\n"
-    )
-    .is_err());
-}
-
-#[test]
-fn rejects_invalid_positional_parameter_domains() {
-    for (domain, diagnostic) in [
-        ("{0, 1, 0.1, log, 2}", "at most 4 positional fields"),
-        (
-            "{0, 1, \"Hz\"}",
-            "invalid positional parameter domain field 'smooth'",
-        ),
-        (
-            "{0, 1, 0.1, \"Hz\"}",
-            "invalid positional parameter domain field 'scale'",
-        ),
-        ("{0, 1, 0.1, 2}", "unknown parameter scale"),
-        (
-            "{0, 1, 0.1, smooth = 0.2}",
-            "duplicate parameter domain field 'smooth'",
-        ),
-        (
-            "{0, 1, 0.1, log, scale = linear}",
-            "duplicate parameter domain field 'scale'",
-        ),
-        (
-            "{0, 1, smooth = 0.1, log}",
-            "positional parameter domain fields must precede named fields",
-        ),
-    ] {
-        let source = format!("params:\n  gain = 0.5 {domain}\n");
-        let errors = parse_program(&source).unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains(diagnostic)),
-            "{domain}: {errors:?}"
-        );
-    }
-}
-
-#[test]
 fn rejects_incomplete_and_duplicate_named_binding_ranges() {
     for (range, expected) in [
         (
@@ -1182,6 +1063,13 @@ fn rejects_incomplete_and_duplicate_named_binding_ranges() {
             "{errors:?}"
         );
     }
+}
+
+#[test]
+fn smoothing_is_not_parameter_domain_metadata() {
+    let errors = parse_program("params:\n  gain = 0.5 {0, 1, smooth = 0.03}\nsample:\n  out1 = gain\n")
+        .expect_err("smoothing is a host policy");
+    assert!(errors.iter().any(|error| error.message.contains("unknown parameter domain field 'smooth'")));
 }
 
 #[test]

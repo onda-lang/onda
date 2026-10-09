@@ -93,5 +93,7 @@ mod stdlib_dsp_regressions;
 mod stdlib_optimizations;
 #[path = "examples_suite/stdlib_reverb.rs"]
 mod stdlib_reverb;
+#[path = "examples_suite/stdlib_smoothing.rs"]
+mod stdlib_smoothing;
 #[path = "examples_suite/tuples.rs"]
 mod tuples;

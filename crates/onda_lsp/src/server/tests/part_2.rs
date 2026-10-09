@@ -1627,9 +1627,13 @@ init:
             json!(null),
             "{needle:?} should resolve inside materialized stdlib local def"
         );
+        let declaration_line = smoothing_source
+            .lines()
+            .position(|line| line.trim() == "coef = 0.0")
+            .expect("coef init declaration should exist");
         assert_eq!(
             state_definition["range"]["start"]["line"],
-            json!(15),
+            json!(declaration_line),
             "{needle:?} should goto the init declaration: {state_definition:?}"
         );
 
