@@ -1351,7 +1351,11 @@ fn run_render_rounds_fractional_durations_to_audio_frames() {
             .samples::<i16>()
             .collect::<Result<Vec<_>, _>>()
             .expect("WAV samples should decode");
-        assert!(samples.chunks_exact(2).all(|frame| frame == [8192, -16384]));
+        assert!(samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|frame| *frame == [8192, -16384]));
     }
     std::fs::remove_dir_all(root).expect("test directory should be removed");
 }
