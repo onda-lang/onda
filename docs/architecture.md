@@ -375,6 +375,7 @@ Non-crate directories of note:
 
 ### `onda_egui` (`crates/onda_egui/src`)
 - `lib.rs` — native egui run host (param/buffer panels, device selectors, transport controls).
+- `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
 
 ### `onda_webview` (`crates/onda_webview/src`)
 - `lib.rs` — webview run host.

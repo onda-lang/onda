@@ -5,6 +5,52 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.23]
+
+### Added
+
+- `--skip-build` in the standalone browser playground's shell build script to refresh UI assets
+  using an existing compiler build that matches the package version.
+
+### Changed
+
+- The virtual MIDI keyboard defaults to full velocity (`1.0`) in egui, webview, and the web playground.
+- `onda run play` and `onda run render` accept fractional seconds with `--dur` or `-d`.
+  Offline rendering rounds the duration to the nearest audio frame.
+- Unified draggable number controls across egui, webview, and the browser playground for parameters,
+  event arguments and array elements, MIDI octave and velocity, and smoothing. Drag horizontally,
+  hold Shift for fine adjustment, click or Tab to type, and double-click to reset. The browser
+  editor's font-size setting uses the same interaction.
+- Ranged parameter numbers and MIDI velocity cover their full range in 375 horizontal pixels;
+  knobs cover their normalized range in 250 vertical pixels. Parameter-number drags follow the
+  declared logarithmic scale or curve across egui, webview, and the web playground, matching the
+  knob's mapping while typed values remain in plain units. MIDI octave uses 10 horizontal pixels
+  per octave; editor font size uses 4 horizontal pixels per 1 px adjustment.
+- Shift makes knob drags ten times finer in egui, webview, and the web playground, including
+  when toggled during a drag. Float parameter and event editors start with up to five decimal places,
+  with scientific notation for tiny or very large values; unchanged drafts retain full precision.
+- Smoothing keeps a fixed control width, edits whole milliseconds, and resets to the exact initial
+  host setting, including fractional durations.
+
+### Removed
+
+- The redundant `onda compile --ir` alias; use `onda compile --emit llvm-ir`.
+
+### Fixed
+
+- Keep egui number text vertically aligned when entering or leaving editing, and show a single
+  tooltip for each number control.
+- Preserve accumulated drag precision and exact endpoints for very small or overflowing floating-point
+  ranges, reverse immediately at bounds, and keep `i64` event values exact beyond float precision.
+- Keep number drafts with their parameter or array element during grid reflow, and discard stale
+  interactions when controls disappear or change type or range.
+- Cancel parameter typing without rounding the underlying value, commit browser keyboard edits
+  on Enter or blur, and discard outgoing number drags when selecting another program.
+- Start browser number drags from the latest host value after a held press, and discard egui
+  event-number drafts and drags when hot reload changes the argument schema.
+- Stage the shared number widget and required processor ABI modules in the standalone browser
+  playground, and bundle its compiler worker in both shell and PowerShell builds.
+
 ## [0.8.22]
 
 ### Added
@@ -1064,6 +1110,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.23]: https://github.com/onda-lang/onda/compare/0.8.22...0.8.23
 [0.8.22]: https://github.com/onda-lang/onda/compare/0.8.21...0.8.22
 [0.8.21]: https://github.com/onda-lang/onda/compare/0.8.20...0.8.21
 [0.8.20]: https://github.com/onda-lang/onda/compare/0.8.19...0.8.20

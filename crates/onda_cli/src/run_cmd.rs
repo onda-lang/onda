@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
@@ -32,7 +33,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
     match cmd {
         RunCommand::Play {
             input,
-            dur_seconds,
+            duration,
             sample_rate_hz,
             block_frames,
             param_smoothing_seconds,
@@ -58,7 +59,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             play_run_realtime(PlaybackLaunch {
                 input: project.entry,
                 compile_inputs: project.compile_inputs,
-                dur_seconds,
+                duration,
                 sample_rate_hz,
                 block_frames,
                 param_smoothing_seconds,
@@ -85,7 +86,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         RunCommand::Render {
             input,
             output,
-            dur_seconds,
+            duration,
             sample_rate_hz,
             block_frames,
             param_smoothing_seconds,
@@ -107,7 +108,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             run_daemon_run(DaemonRenderRequest {
                 input: &project.entry,
                 output: &output,
-                dur_seconds,
+                duration,
                 sample_rate_hz,
                 block_frames,
                 param_smoothing_seconds,
@@ -233,7 +234,7 @@ fn run_daemon_diagnose(
 struct DaemonRenderRequest<'a> {
     input: &'a Path,
     output: &'a Path,
-    dur_seconds: u32,
+    duration: Duration,
     sample_rate_hz: u32,
     block_frames: usize,
     param_smoothing_seconds: f64,
@@ -250,7 +251,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     let DaemonRenderRequest {
         input,
         output,
-        dur_seconds,
+        duration,
         sample_rate_hz,
         block_frames,
         param_smoothing_seconds,
@@ -262,6 +263,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         project_buffer_bindings,
         compile_inputs,
     } = request;
+    let total_frames = render_frame_count(duration, sample_rate_hz)?;
     let run_options = RunOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_frames,
@@ -316,7 +318,6 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
 
-    let total_frames = sample_rate_hz as usize * dur_seconds as usize;
     let full_blocks = total_frames / block_frames;
     let tail_frames = total_frames % block_frames;
     let mut rendered = Vec::<f32>::new();
@@ -350,10 +351,20 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     write_wav_interleaved_i16(output, out_channels, sample_rate_hz, &rendered)?;
     println!(
         "Wrote {} seconds of daemon-run audio to {}",
-        dur_seconds,
+        duration.as_secs_f64(),
         output.display()
     );
     Ok(())
+}
+
+fn render_frame_count(duration: Duration, sample_rate_hz: u32) -> Result<usize, String> {
+    let frames = (duration.as_nanos() * u128::from(sample_rate_hz) + 500_000_000) / 1_000_000_000;
+    let frames = usize::try_from(frames)
+        .map_err(|_| "duration exceeds the supported frame count".to_owned())?;
+    if frames == 0 {
+        return Err("duration must cover at least one audio frame".to_owned());
+    }
+    Ok(frames)
 }
 
 fn write_run_prints(session: &mut DaemonSession, input: &Path) -> Result<(), String> {
@@ -446,4 +457,17 @@ fn write_wav_interleaved_i16(
 fn f32_to_i16(sample: f32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
     (clamped * i16::MAX as f32).round() as i16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_frame_count;
+    use std::time::Duration;
+
+    #[test]
+    fn render_rejects_empty_or_overflowing_frame_counts() {
+        assert!(render_frame_count(Duration::ZERO, 48_000).is_err());
+        assert!(render_frame_count(Duration::from_nanos(1), 48_000).is_err());
+        assert!(render_frame_count(Duration::MAX, u32::MAX).is_err());
+    }
 }

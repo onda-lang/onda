@@ -375,6 +375,7 @@
       .param-smoothing {
         display: inline-flex;
         flex: 0 0 auto;
+        width: 112px;
         align-items: center;
         gap: 0.25em;
         padding: 0 8px;
@@ -382,6 +383,9 @@
         border-radius: var(--radius-control);
         background: var(--field-bg);
         color: var(--muted);
+        cursor: ew-resize;
+        touch-action: none;
+        user-select: none;
       }
 
       .param-smoothing:focus-within {
@@ -390,16 +394,23 @@
 
       .param-smoothing input {
         appearance: textfield;
-        field-sizing: content;
-        width: auto;
+        field-sizing: fixed;
+        flex: 1;
+        width: 0;
         min-width: 1ch;
         height: 100%;
         padding: 0;
         border: 0;
         background: transparent;
         color: var(--text);
-        text-align: left;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
         outline: none;
+      }
+
+      .param-smoothing input:not(:read-only) {
+        cursor: text;
+        user-select: text;
       }
 
       .param-smoothing input::-webkit-inner-spin-button,
@@ -1378,6 +1389,9 @@
       if (!globalThis.__ONDA_PARAM_CONTROL_V2__) {
         document.write('<script src="./param-control.js"><\/script>');
       }
+      if (!globalThis.__ONDA_NUMBER_INPUT__) {
+        document.write('<script src="./number-input.js"><\/script>');
+      }
     </script>
   </head>
   <body>
@@ -1541,12 +1555,12 @@
             <div class="params-title">Params</div>
             <button class="secondary compact-action" id="reset-params" type="button" title="Restore parameter defaults">Reset</button>
           </div>
-          <label class="param-smoothing" id="param-smoothing-control" hidden>
+          <div class="param-smoothing" id="param-smoothing-control" hidden>
             Smooth
-            <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1" value="30"
+            <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1"
               aria-label="Parameter smoothing duration in milliseconds" title="Smoothing for continuous parameters. 0 disables smoothing." />
             ms
-          </label>
+          </div>
           <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
             <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
             <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
@@ -1567,7 +1581,8 @@
         <div class="midi-control">
           Velocity
           <span id="midi-velocity"></span>
-          <span id="midi-velocity-value">0.80</span>
+          <input class="param-number" id="midi-velocity-value" type="number" min="0" max="1"
+            step="0.01" value="1.00" aria-label="MIDI velocity" />
         </div>
       </div>
       <div class="piano" id="piano" aria-label="Musical keyboard"></div>
@@ -1726,6 +1741,7 @@
           </svg>
         `),
       };
+      const { bindDraggableNumber } = globalThis.__ONDA_NUMBER_INPUT__;
       const state = {
         running: false,
         connected: false,
@@ -1761,7 +1777,8 @@
         supportsDeviceSelection: false,
         supportsRunSettings: false,
         supportsParamSmoothing: false,
-        paramSmoothingMs: 30,
+        paramSmoothingMs: null,
+        paramSmoothingDefaultMs: null,
         supportsScope: false,
         supportsViewState: false,
         sampleRateHz: 48_000,
@@ -1811,7 +1828,8 @@
       const midiOctaveNode = document.getElementById("midi-octave");
       const midiVelocityMountNode = document.getElementById("midi-velocity");
       const midiVelocityValueNode = document.getElementById("midi-velocity-value");
-      let midiVelocityValue = 0.8;
+      const defaultMidiVelocity = Number(midiVelocityValueNode.defaultValue);
+      let midiVelocityValue = defaultMidiVelocity;
       const scopeSection = document.getElementById("scope-section");
       const scopeToggle = document.getElementById("scope-toggle");
       const scopeBody = document.getElementById("scope-body");
@@ -1836,6 +1854,7 @@
       const paramBindings = new Map();
       let pendingParamFrame = 0;
       let renderedParamSignature = "";
+      let renderedParamPath = "";
       let renderedEvents = null;
       let renderedEventShape = "";
       let pendingScopeFrame = 0;
@@ -1885,7 +1904,10 @@
             values: (event.args || []).map(arg => arg.value),
             drafts: [...(cards[index]?.querySelectorAll(".event-arg") || [])]
               .map(setting => [...setting.querySelectorAll("input, textarea")]
-                .map(input => input.type === "checkbox" ? input.checked : input.value)),
+                // Numeric values are stored above; only invalid drafts need text.
+                .map(input => input.type === "checkbox" ? input.checked
+                  : input.dataset.draggable !== undefined && !input.validity.customError
+                    ? null : input.value)),
           })),
         };
       }
@@ -1933,7 +1955,7 @@
             scrollY: 0,
             logScrollY: 0,
             octave: 4,
-            velocity: 0.8,
+            velocity: defaultMidiVelocity,
             sections: Object.fromEntries(Object.keys(sectionState).map(name => [name, true])),
             events: [],
           };
@@ -1950,7 +1972,7 @@
           }
           if (typeof snapshot.velocity === "number" && Number.isFinite(snapshot.velocity)) {
             midiVelocityValue = clamp(snapshot.velocity, 0, 1);
-            midiVelocityValueNode.textContent = midiVelocityValue.toFixed(2);
+            midiVelocityValueNode.value = midiVelocityValue.toFixed(2);
             midiVelocityControl?.setValue(midiVelocityValue);
           }
           for (const name of Object.keys(sectionState)) {
@@ -2086,15 +2108,23 @@
       resetParamsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetParams" });
       });
-      const commitSmoothing = () => {
-        const milliseconds = smoothingInput.valueAsNumber;
-        if (!Number.isFinite(milliseconds) || milliseconds < 0) {
-          smoothingInput.value = String(state.paramSmoothingMs);
-          return;
-        }
+      const setSmoothing = milliseconds => {
+        smoothingInput.value = formatNumberForInput(milliseconds, 1);
         if (milliseconds === state.paramSmoothingMs) return;
         state.paramSmoothingMs = milliseconds;
         hostBridge.postMessage({ type: "setParamSmoothing", milliseconds });
+      };
+      smoothingInput.addEventListener("focus", () => {
+        smoothingInput.value = String(state.paramSmoothingMs);
+      });
+      const commitSmoothing = () => {
+        if (smoothingInput.readOnly) return;
+        const value = smoothingInput.valueAsNumber;
+        if (!Number.isFinite(value) || value < 0) {
+          smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
+          return;
+        }
+        setSmoothing(value === state.paramSmoothingMs ? value : Math.round(value));
       };
       smoothingInput.addEventListener("change", commitSmoothing);
       smoothingInput.addEventListener("blur", commitSmoothing);
@@ -2103,9 +2133,20 @@
           commitSmoothing();
           smoothingInput.blur();
         } else if (event.key === "Escape") {
-          smoothingInput.value = String(state.paramSmoothingMs);
+          smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
+          smoothingInput.readOnly = true;
           smoothingInput.blur();
         }
+      });
+      const smoothingNumber = bindDraggableNumber(smoothingInput, {
+        speed: 1,
+        updateValue(value, _commit, reason) {
+          // Reset restores the exact host option; manual adjustments use whole milliseconds.
+          setSmoothing(reason === "reset" ? value : Math.round(value));
+        },
+        readValue: () => state.paramSmoothingMs,
+        resetValue: () => state.paramSmoothingDefaultMs,
+        dragTarget: smoothingControl,
       });
       resetEventArgumentsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetEventArguments" });
@@ -2186,7 +2227,7 @@
       ];
 
       function midiOctave() {
-        return Math.max(-1, Math.min(7, Number(midiOctaveNode.value) || 0));
+        return clamp(Math.round(Number(midiOctaveNode.value) || 0), -1, 7);
       }
 
       function midiBaseNote() {
@@ -2298,6 +2339,16 @@
         releaseAllVirtualMidiNotes();
         midiOctaveNode.value = String(midiOctave());
         renderVirtualMidiNotes();
+      });
+      midiOctaveNode.setAttribute("aria-label", "MIDI octave");
+      bindDraggableNumber(midiOctaveNode, {
+        speed: 0.1,
+        updateValue(value) {
+          const next = String(clamp(Math.round(value), -1, 7));
+          if (next === midiOctaveNode.value) return;
+          midiOctaveNode.value = next;
+          midiOctaveNode.dispatchEvent(new Event("change", { bubbles: true }));
+        },
       });
       function handleComputerMidiKey(code, pressed) {
         if (state.midiKeyboardInteractive === false) return false;
@@ -2582,6 +2633,8 @@
       const FLOAT_CONTROL_TARGET_STEPS = 2000;
       const FLOAT_CONTROL_MIN_STEP = 0.0001;
       const FLOAT_CONTROL_MAX_STEP = 0.1;
+      const PARAM_NUMBER_DRAG_PIXELS_PER_RANGE = 375;
+      const PARAM_KNOB_DRAG_PIXELS_PER_RANGE = 250;
       const EVENT_STRUCTURED_MIN_VISIBLE_LINES = 4;
       const EVENT_STRUCTURED_MAX_VISIBLE_LINES = 20;
 
@@ -2615,6 +2668,12 @@
           }
         }
         return 0.001;
+      }
+
+      function scalarDragSpeedForParam(param) {
+        // Keep this host policy aligned with onda_egui::scalar_drag_speed.
+        if (param.type === "i32" || param.type === "i64") return 0.25;
+        return 0.01;
       }
 
       function formatNumberForInput(value, step) {
@@ -2671,6 +2730,21 @@
 
       function paramNormalizedToPlain(param, normalized) {
         return paramControl(param).normalizedToPlain(normalized);
+      }
+
+      function paramNumberDragRange(param) {
+        const domain = paramControl(param);
+        return {
+          pixels: PARAM_NUMBER_DRAG_PIXELS_PER_RANGE,
+          // Match egui: retain continuous motion and let the owner apply the step grid.
+          domain: globalThis.__ONDA_PARAM_CONTROL_V2__.createParamDomain({
+            scalar: "f64",
+            minimum: domain.minimum,
+            maximum: domain.maximum,
+            scale: domain.scale,
+            curve: domain.curve,
+          }),
+        };
       }
 
       function canEditRunControls() {
@@ -2834,11 +2908,11 @@
           unit: null,
           step: 0.01,
           stepCount: 100,
-          default: 0.8,
+          default: defaultMidiVelocity,
         };
         const update = value => {
           midiVelocityValue = value;
-          midiVelocityValueNode.textContent = value.toFixed(2);
+          midiVelocityValueNode.value = value.toFixed(2);
           publishViewState();
         };
         const { control, setValue } = createSliderControl(
@@ -2851,13 +2925,31 @@
         );
         control.id = midiVelocityMountNode.id;
         midiVelocityMountNode.replaceWith(control);
-        midiVelocityControl = { setValue };
+        const sync = value => {
+          const next = constrainParamPlain(param, value);
+          update(next);
+          setValue(next);
+        };
+        const commitNumber = () => {
+          sync(Number.isFinite(midiVelocityValueNode.valueAsNumber)
+            ? midiVelocityValueNode.valueAsNumber : midiVelocityValue);
+        };
+        midiVelocityValueNode.addEventListener("change", commitNumber);
+        midiVelocityValueNode.addEventListener("blur", commitNumber);
+        bindDraggableNumber(midiVelocityValueNode, {
+          speed: scalarDragSpeedForParam(param),
+          dragRange: paramNumberDragRange(param),
+          readValue: () => midiVelocityValue,
+          updateValue: sync,
+          resetValue: () => param.default,
+        });
+        midiVelocityControl = { setValue: sync };
       }
 
       function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
         const knob = document.createElement("div");
         knob.className = "param-knob";
-        knob.title = "Drag vertically to adjust; double-click to reset";
+        knob.title = "Drag vertically to adjust; Shift for fine adjustment; double-click to reset";
         const canEdit = initializeRangeControl(knob, param);
 
         const dial = document.createElement("div");
@@ -2906,15 +2998,15 @@
           knob.addEventListener("pointerdown", (event) => {
             event.preventDefault();
             knob.setPointerCapture(event.pointerId);
-            const startY = event.clientY;
-            const startNormalized = paramPlainToNormalized(param, controller.value);
+            let previousY = event.clientY;
+            let normalized = paramPlainToNormalized(param, controller.value);
 
             const onMove = (moveEvent) => {
               if (moveEvent.pointerId !== event.pointerId) return;
-              controller.input(paramNormalizedToPlain(
-                param,
-                startNormalized + (startY - moveEvent.clientY) / 160,
-              ));
+              normalized = clamp(normalized + (previousY - moveEvent.clientY)
+                * (moveEvent.shiftKey ? 0.1 : 1) / PARAM_KNOB_DRAG_PIXELS_PER_RANGE, 0, 1);
+              previousY = moveEvent.clientY;
+              controller.input(paramNormalizedToPlain(param, normalized));
             };
 
             const onEnd = (endEvent) => {
@@ -3001,24 +3093,29 @@
           });
       }
 
+      function paramControlSignature(param) {
+        return JSON.stringify([
+          param.name,
+          param.label,
+          param.array,
+          param.type,
+          param.default,
+          param.rangeMin,
+          param.rangeMax,
+          param.scale,
+          param.curve,
+          param.unit,
+          param.step,
+          param.stepCount,
+        ]);
+      }
+
       function paramRenderSignature(params) {
         return JSON.stringify([
+          state.path,
           paramLayout,
           canEditRunControls(),
-          params.map((param) => [
-            param.name,
-            param.label,
-            param.array,
-            param.type,
-            param.default,
-            param.rangeMin,
-            param.rangeMax,
-            param.scale,
-            param.curve,
-            param.unit,
-            param.step,
-            param.stepCount,
-          ]),
+          params.map(paramControlSignature),
         ]);
       }
 
@@ -3057,25 +3154,79 @@
       }
 
       function bindParamNumber(param, input, setValue) {
-        input.addEventListener("blur", () => setValue(param.value));
+        let edited = false;
+        input.addEventListener("focus", () => {
+          edited = false;
+          input.value = param.type === "i32" || param.type === "i64"
+            ? String(param.value) : globalThis.__ONDA_NUMBER_INPUT__.formatNumberForEditing(param.value);
+        });
+        input.addEventListener("input", () => {
+          if (!input.readOnly) edited = true;
+        });
+        const commitDraft = () => {
+          if (input.readOnly || !edited) return;
+          edited = false;
+          if (input.value !== "" && Number.isFinite(input.valueAsNumber)) {
+            setValue(input.valueAsNumber);
+            commitParamMessage(param.name, param.value);
+          }
+        };
+        input.addEventListener("change", commitDraft);
+        input.addEventListener("blur", () => {
+          // Some keyboard edits emit input without change, even on native blur.
+          commitDraft();
+          edited = false;
+          setValue(param.value);
+        });
+        input.setAttribute("aria-label", paramDisplayName(param));
+        const drag = bindDraggableNumber(input, {
+          speed: scalarDragSpeedForParam(param),
+          dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
+            && param.rangeMin < param.rangeMax ? paramNumberDragRange(param) : null,
+          readValue: () => param.value,
+          updateValue(value, commit) {
+            setValue(value);
+            if (commit) {
+              activeParamGestures.delete(param.name);
+              commitParamMessage(param.name, param.value);
+            } else {
+              activeParamGestures.add(param.name);
+              scheduleParamMessage(param.name, param.value);
+            }
+          },
+          resetValue: () => initialParamValue(param),
+        });
         paramBindings.set(param.name, {
           param,
           isEditing: () => document.activeElement === input,
           setValue,
+          finishDrag: drag.finish,
+          cancelDrag() {
+            edited = false;
+            input.readOnly = true;
+            drag.cancel();
+          },
         });
       }
 
       function resetRenderedParams(signature) {
-        for (const name of activeParamGestures) {
-          const binding = paramBindings.get(name);
-          if (binding) {
-            commitParamMessage(name, binding.param.value);
+        const incoming = new Map(state.params.map(param => [param.name, param]));
+        for (const [name, binding] of paramBindings) {
+          const next = incoming.get(name);
+          if (renderedParamPath === state.path && canEditRunControls() && next
+            && paramControlSignature(binding.param) === paramControlSignature(next)) {
+            binding.finishDrag?.();
+            if (activeParamGestures.has(name)) commitParamMessage(name, binding.param.value);
+          } else {
+            binding.cancelDrag?.();
           }
         }
+        pendingParamMessages.clear();
         activeParamGestures.clear();
         paramBindings.clear();
         paramsNode.replaceChildren();
         renderedParamSignature = signature;
+        renderedParamPath = state.path;
       }
 
       function parseEventI64(value) {
@@ -3171,7 +3322,7 @@
         return arg.scalar || String(arg.type || "").split("[", 1)[0];
       }
 
-      function createEventScalarControl(type, value, onChange) {
+      function createEventScalarControl(type, value, defaultValue, onChange) {
         if (type === "bool") {
           const toggle = document.createElement("label");
           toggle.className = "param-toggle";
@@ -3195,25 +3346,57 @@
         if (type === "i64") {
           input.inputMode = "numeric";
           input.pattern = "-?[0-9]+";
+          input.min = "-9223372036854775808";
+          input.max = "9223372036854775807";
+        } else if (type === "i32") {
+          input.min = "-2147483648";
+          input.max = "2147483647";
         }
         const integer = type === "i32" || type === "i64";
         input.step = integer ? "1" : "0.001";
-        input.value = String(eventScalarValue(type, value));
+        let currentValue = eventScalarValue(type, value);
+        // Match egui's event display without rounding the stored argument.
+        const displayValue = () => integer ? String(currentValue)
+          : formatNumberForInput(currentValue, 0.0001);
+        input.value = displayValue();
         input.disabled = !state.connected;
         const parsedValue = () => {
           if (type === "i64") return parseEventI64(input.value);
-          const nextValue = Number(input.value);
+          const nextValue = input.value === "" ? NaN : Number(input.value);
           if (!Number.isFinite(nextValue)) return null;
-          return integer ? Math.round(nextValue) : nextValue;
+          return integer ? clamp(Math.round(nextValue), Number(input.min), Number(input.max)) : nextValue;
         };
+        input.addEventListener("focus", () => {
+          input.value = integer ? String(currentValue)
+            : globalThis.__ONDA_NUMBER_INPUT__.formatNumberForEditing(currentValue);
+        });
         input.addEventListener("input", () => {
           const nextValue = parsedValue();
-          if (nextValue !== null) onChange(nextValue);
+          input.setCustomValidity(nextValue === null ? "Enter a valid " + type + " value" : "");
+          if (nextValue !== null) {
+            currentValue = nextValue;
+            onChange(nextValue);
+          }
         });
-        input.addEventListener("change", () => {
-          const nextValue = parsedValue() ?? eventScalarValue(type, 0);
-          onChange(nextValue);
-          input.value = String(nextValue);
+        const normalize = () => {
+          onChange(currentValue);
+          input.value = document.activeElement === input && !input.readOnly
+            ? String(currentValue) : displayValue();
+          input.setCustomValidity("");
+        };
+        input.addEventListener("change", normalize);
+        input.addEventListener("blur", normalize);
+        bindDraggableNumber(input, {
+          speed: scalarDragSpeedForParam({ type }),
+          readValue() {
+            return type === "i64" ? BigInt(currentValue) : currentValue;
+          },
+          updateValue(value) {
+            input.value = String(type === "i32" ? Math.round(value) : value);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.value = displayValue();
+          },
+          resetValue: () => eventScalarValue(type, defaultValue),
         });
         return input;
       }
@@ -3394,7 +3577,9 @@
             trigger.className = "event-trigger compact-action";
             trigger.textContent = "Trigger";
             const refreshTrigger = () => {
-              trigger.disabled = !state.connected || Boolean(controls.querySelector(":invalid"));
+              // Numeric steps set keyboard increments; event parsing owns validity.
+              trigger.disabled = !state.connected || [...controls.querySelectorAll("input, textarea")]
+                .some(input => input.validity.customError);
             };
             eventHead.append(head, trigger);
             card.appendChild(eventHead);
@@ -3505,7 +3690,7 @@
                   grid.className = "event-array-grid";
                   const scalarType = eventArrayScalarType(arg);
                   arg.value.slice(0, 16).forEach((value, index) => {
-                    const element = document.createElement("label");
+                    const element = document.createElement("div");
                     element.className = "event-array-element";
                     const elementIndex = document.createElement("span");
                     elementIndex.className = "event-array-index";
@@ -3515,6 +3700,7 @@
                     element.appendChild(createEventScalarControl(
                       scalarType,
                       value,
+                      arg.default?.[index],
                       (nextValue) => { arg.value[index] = nextValue; },
                     ));
                     grid.appendChild(element);
@@ -3533,10 +3719,18 @@
                 setting.appendChild(createEventScalarControl(
                   arg.type,
                   arg.value,
+                  arg.default,
                   (nextValue) => { arg.value = nextValue; },
                 ));
               }
 
+              setting.addEventListener("input", refreshTrigger);
+              setting.addEventListener("change", refreshTrigger);
+              setting.addEventListener("focusout", refreshTrigger);
+              for (const input of setting.querySelectorAll("input[data-draggable]")) {
+                const index = input.closest(".event-array-element")?.querySelector(".event-array-index");
+                input.setAttribute("aria-label", arg.name + (index ? " " + index.textContent : ""));
+              }
               controls.appendChild(setting);
             }
 
@@ -3564,8 +3758,8 @@
           logOutputNode.scrollHeight - logOutputNode.clientHeight - logOutputNode.scrollTop <= 1;
         applyTheme();
         smoothingControl.hidden = state.supportsParamSmoothing !== true;
-        if (document.activeElement !== smoothingInput) {
-          smoothingInput.value = String(state.paramSmoothingMs);
+        if (document.activeElement !== smoothingInput && !smoothingNumber.isDragging()) {
+          smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
         }
         const supportsSourceSelection = state.supportsSourceSelection === true;
         const supportsProjectExport = state.supportsProjectExport === true;
@@ -3834,19 +4028,20 @@
             const stepValue = scalarStepForParam(param);
             const step = String(stepValue);
             const currentValue = typeof param.value === "number" ? param.value : 0;
+            const number = document.createElement("input");
+            number.className = "param-number";
+            number.type = "number";
+            number.step = step;
+            number.value = formatNumberForInput(currentValue, stepValue);
+            number.disabled = !canEditRun;
+            controls.appendChild(number);
+            let rangeControl;
 
             if (hasRange) {
-              const number = document.createElement("input");
-              number.className = "param-number";
-              number.type = "number";
               number.min = String(param.rangeMin);
               number.max = String(param.rangeMax);
-              number.step = step;
-              number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !canEditRun;
-              controls.appendChild(number);
 
-              const rangeControl = (
+              rangeControl = (
                 paramLayout === "knobs" ? createKnobControl : createSliderControl
               )(
                 param,
@@ -3868,57 +4063,19 @@
                 },
               );
               controls.prepend(rangeControl.control);
-
-              const sync = (nextValue) => {
-                const parsed = Number(nextValue);
-                if (!Number.isFinite(parsed)) {
-                  return;
-                }
-                const quantized = constrainParamPlain(param, parsed);
-                param.value = quantized;
-                rangeControl.setValue(quantized);
-                number.value = formatNumberForInput(quantized, stepValue);
-              };
-
-              number.addEventListener("change", () => {
-                sync(number.value);
-                commitParamMessage(param.name, Number(number.value));
-              });
-              bindParamNumber(param, number, sync);
-            } else {
-              const number = document.createElement("input");
-              number.className = "param-number";
-              number.type = "number";
-              number.step = step;
-              number.value = formatNumberForInput(currentValue, stepValue);
-              number.disabled = !canEditRun;
-              number.addEventListener("change", () => {
-                const parsed = Number(number.value);
-                if (!Number.isFinite(parsed)) {
-                  return;
-                }
-                const quantized = quantizeToStep(parsed, 0, stepValue);
-                param.value = quantized;
-                number.value = formatNumberForInput(quantized, stepValue);
-                hostBridge.postMessage({
-                  type: "setParam",
-                  name: param.name,
-                  value: quantized,
-                  commit: true,
-                });
-              });
-              controls.appendChild(number);
-              bindParamNumber(param, number, (nextValue) => {
-                const parsed = Number(nextValue);
-                if (!Number.isFinite(parsed)) {
-                  return;
-                }
-                const quantized = quantizeToStep(parsed, 0, stepValue);
-                param.value = quantized;
-                number.value = formatNumberForInput(quantized, stepValue);
-              });
             }
-
+            const sync = (nextValue) => {
+              const parsed = Number(nextValue);
+              if (!Number.isFinite(parsed)) return;
+              const quantized = hasRange
+                ? constrainParamPlain(param, parsed)
+                : quantizeToStep(parsed, 0,
+                  param.type === "i32" || param.type === "i64" ? stepValue : param.step);
+              param.value = quantized;
+              rangeControl?.setValue(quantized);
+              number.value = formatNumberForInput(quantized, stepValue);
+            };
+            bindParamNumber(param, number, sync);
           }
 
           container.appendChild(card);

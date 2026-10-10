@@ -418,10 +418,12 @@ test("allows browser playback while buffers are unbound", async () => {
       },
     );
     assert.equal(host.state.supportsParamSmoothing, true);
-    assert.equal(host.state.paramSmoothingMs, 30);
+    assert.equal(host.state.paramSmoothingMs, null);
+    host.setState({ paramSmoothingMs: 50, paramSmoothingDefaultMs: 50 });
     for (const milliseconds of [15.5, 0]) {
       await host.handleMessage({ type: "setParamSmoothing", milliseconds });
       assert.equal(host.state.paramSmoothingMs, milliseconds);
+      assert.equal(host.state.paramSmoothingDefaultMs, 50);
     }
     host.setRunning(44_100);
     for (const milliseconds of [-1, NaN, Infinity, "5", 999]) {
@@ -432,6 +434,7 @@ test("allows browser playback while buffers are unbound", async () => {
     assert.deepEqual(smoothingChanges, [15.5, 0]);
     host.clearArtifact();
     assert.equal(host.state.paramSmoothingMs, 0);
+    assert.equal(host.state.paramSmoothingDefaultMs, 50);
     host.setArtifact({
       metadata: {
         compile: {

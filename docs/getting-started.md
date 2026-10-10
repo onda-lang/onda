@@ -79,7 +79,7 @@ Create a file named `sine.onda`:
 
 ```onda
 params:
-  freq = 440.0 {20.0, 20000.0}
+  freq = 440.0 {20, 10000, scale = log}
 
 init:
   phase = 0.0
@@ -88,10 +88,10 @@ block:
   incr = freq * TWO_PI / SR
 
   sample:
+    out1 = sin(phase)
     phase = phase + incr
     if phase > TWO_PI:
       phase = phase - TWO_PI
-    out1 = sin(phase)
 ```
 
 This small program exposes one host parameter, stores oscillator phase between samples, calculates the phase increment once per block, and produces one output per sample.

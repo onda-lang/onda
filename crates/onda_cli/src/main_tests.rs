@@ -1,6 +1,6 @@
 use super::{
-    compile_cmd, parse_args, project_cmd, run_compile, Command, CompileEmit, DaemonCommand,
-    RunCommand, RunHostKind,
+    compile_cmd, parse_args, project_cmd, run_compile, run_run, Command, CompileEmit,
+    DaemonCommand, RunCommand, RunHostKind,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
@@ -11,7 +11,7 @@ use onda_frontend::{
 };
 use onda_run::RunThemeMode;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn write_temp_target_spec(contents: &str) -> PathBuf {
     let stamp = SystemTime::now()
@@ -1011,16 +1011,16 @@ events {
 }
 
 #[test]
-fn parse_compile_rejects_ir_and_emit_together() {
+fn parse_compile_rejects_removed_ir_alias() {
     let err = match parse_args(
-        ["onda", "compile", "x.onda", "--ir", "--emit", "obj"]
+        ["onda", "compile", "x.onda", "--ir"]
             .into_iter()
             .map(str::to_owned),
     ) {
-        Ok(_) => panic!("compile should reject --ir and --emit together"),
+        Ok(_) => panic!("compile should reject the removed --ir alias"),
         Err(err) => err,
     };
-    assert!(err.contains("cannot use both --ir and --emit"));
+    assert!(err.contains("unknown option '--ir'"));
 }
 
 #[test]
@@ -1227,6 +1227,136 @@ fn parse_run_window_rejects_multiple_input_files() {
 }
 
 #[test]
+fn parse_run_commands_accept_fractional_durations() {
+    let cases: &[(&[&str], Duration)] = &[
+        (&[], Duration::from_secs(5)),
+        (&["--dur", "5"], Duration::from_secs(5)),
+        (&["--dur", ".125"], Duration::from_millis(125)),
+        (&["-d", "1.25"], Duration::from_millis(1250)),
+        (&["--dur=1e-3"], Duration::from_millis(1)),
+    ];
+    for command in ["play", "render"] {
+        for &(options, expected) in cases {
+            let cmd = parse_args(
+                ["onda", "run", command, "x.onda"]
+                    .into_iter()
+                    .chain(options.iter().copied())
+                    .map(str::to_owned),
+            )
+            .expect("duration should parse");
+            let duration = match cmd {
+                Command::Run(RunCommand::Play { duration, .. }) => duration,
+                Command::Run(RunCommand::Render { duration, .. }) => Some(duration),
+                _ => panic!("expected play or render command"),
+            };
+            assert_eq!(duration, Some(expected), "{command} {options:?}");
+        }
+    }
+}
+
+#[test]
+fn parse_run_commands_reject_invalid_durations() {
+    for command in ["play", "render"] {
+        for value in [
+            "0", "-0", "-1.5", "NaN", "inf", "-inf", "1e309", "1e20", "1e-30", "", "abc",
+        ] {
+            let result = parse_args(
+                ["onda", "run", command, "x.onda", "--dur", value]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+            assert!(result.is_err(), "{command} --dur {value} should fail");
+        }
+        for option in ["--dur", "-d"] {
+            let result = parse_args(
+                ["onda", "run", command, "x.onda", option]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+            assert!(result.is_err(), "{command} {option} requires a duration");
+        }
+    }
+}
+
+#[test]
+fn parse_run_play_rejects_duration_with_forever_in_either_order() {
+    let cases: &[&[&str]] = &[
+        &["--dur", "5", "--forever"],
+        &["--forever", "--dur", "5"],
+        &["-d", "0.25", "--forever"],
+        &["--forever", "-d", "0.25"],
+        &["--dur=5.0", "--forever"],
+        &["--forever", "--dur=5.0"],
+    ];
+    for options in cases {
+        let error = match parse_args(
+            ["onda", "run", "play", "x.onda"]
+                .into_iter()
+                .chain(options.iter().copied())
+                .map(str::to_owned),
+        ) {
+            Ok(_) => panic!("{options:?} should conflict"),
+            Err(error) => error,
+        };
+        assert!(error.contains("cannot be combined"), "{error}");
+    }
+}
+
+#[test]
+fn run_render_rounds_fractional_durations_to_audio_frames() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("onda-duration-test-{}-{stamp}", std::process::id()));
+    std::fs::create_dir(&root).expect("test directory should exist");
+    let source = root.join("main.onda");
+    let output = root.join("output.wav");
+    std::fs::write(&source, "sample:\n  out1 = 0.25\n  out2 = -0.5\n")
+        .expect("source should write");
+    for (seconds, sample_rate, expected_frames) in [
+        ("0.0005", "1000", 1),
+        ("0.01249", "1000", 12),
+        ("0.0125", "1000", 13),
+        ("0.512", "1000", 512),
+        ("0.0123", "48000", 590),
+    ] {
+        let cmd = parse_args(
+            [
+                "onda",
+                "run",
+                "render",
+                source.to_str().expect("source path should be UTF-8"),
+                "--output",
+                output.to_str().expect("output path should be UTF-8"),
+                "--dur",
+                seconds,
+                "--sample-rate",
+                sample_rate,
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("render args should parse");
+        let Command::Run(cmd) = cmd else {
+            panic!("expected run command");
+        };
+        run_run(cmd).expect("fractional duration should render");
+        let mut wav = hound::WavReader::open(&output).expect("WAV should exist");
+        assert_eq!(wav.spec().channels, 2);
+        assert_eq!(wav.spec().sample_rate.to_string(), sample_rate);
+        assert_eq!(wav.duration(), expected_frames, "duration {seconds}");
+        let samples = wav
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("WAV samples should decode");
+        assert!(samples.chunks_exact(2).all(|frame| frame == [8192, -16384]));
+    }
+    std::fs::remove_dir_all(root).expect("test directory should be removed");
+}
+
+#[test]
 fn parse_run_play_accepts_forever() {
     let cmd = parse_args(
         ["onda", "run", "play", "x.onda", "--forever"]
@@ -1236,11 +1366,11 @@ fn parse_run_play_accepts_forever() {
     .expect("run play --forever should parse");
     match cmd {
         Command::Run(RunCommand::Play {
-            dur_seconds,
+            duration,
             block_frames,
             ..
         }) => {
-            assert_eq!(dur_seconds, None);
+            assert_eq!(duration, None);
             assert_eq!(block_frames, 512);
         }
         _ => panic!("expected run play command"),

@@ -61,6 +61,16 @@ while standard-library tabs are merely dismissed. Definition navigation continue
 standard-library tabs. Browser autoplay rules may require another click on the page before output becomes
 audible.
 
+After the initial build, UI-only changes can be previewed quickly on macOS/Linux:
+
+```bash
+bash ./examples/web/onda_wasm_playground/build-demo.sh --skip-build --serve
+```
+
+This refreshes all staged UI and JavaScript assets using the existing compiler build.
+Omit `--serve` if the server is already running, then reload the page.
+Omit `--skip-build` when changing the Rust compiler or its packaged backend.
+
 Use **Share** to copy a URL-fragment snapshot containing every project source file, the main and active
 files, sample rate, and block size. The fragment stays in the browser and is compressed when supported.
 Selected buffer files remain local and are not embedded in the URL.
@@ -89,7 +99,8 @@ The scripts:
 - build the Rust frontend with `wasm-pack --release`, then optimize it with the workspace-pinned
   Binaryen `wasm-opt -O4`
 - stage the compiler, shared LSP/run view, ABI, and Web Audio modules
-- bundle the canonical `ui/playground` runtime into this example's static host
+- bundle the canonical `ui/playground` runtime and compiler worker, including Binaryen dependencies,
+  into this example's static host
 - optionally start `server.mjs` on `127.0.0.1:8787`
 
 The editor defaults to 48000 Hz and 512 frames, with 44100/48000 Hz sample rates and

@@ -9,6 +9,9 @@ use onda_run::{
 };
 use serde_json::{Number, Value};
 
+mod number_input;
+use number_input::{NumberInput, NumberValue};
+
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
 const LOGO_LIGHT_URI: &str = "bytes://onda-logo-rect.svg";
 const ONDA_VERSION_LABEL: &str = concat!("Onda ", env!("CARGO_PKG_VERSION"));
@@ -27,6 +30,9 @@ const PARAM_LAYOUT_STORAGE_KEY: &str = "onda.run-view.param-layout.v1";
 const FLOAT_CONTROL_TARGET_STEPS: f64 = 2_000.0;
 const FLOAT_CONTROL_MIN_STEP: f64 = 0.0001;
 const FLOAT_CONTROL_MAX_STEP: f64 = 0.1;
+const PARAM_NUMBER_DRAG_POINTS_PER_RANGE: f64 = 375.0;
+const PARAM_KNOB_DRAG_POINTS_PER_RANGE: f64 = 250.0;
+const DEFAULT_KEYBOARD_VELOCITY: f32 = 1.0;
 const EVENT_ARRAY_VISIBLE_LIMIT: usize = 16;
 const EVENT_STRUCTURED_MIN_VISIBLE_LINES: usize = 4;
 const EVENT_STRUCTURED_MAX_VISIBLE_LINES: usize = 20;
@@ -195,7 +201,7 @@ fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: RunThemeMode) -> bool
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Hash)]
 struct EventArgSignature {
     name: Option<String>,
     type_repr: String,
@@ -206,12 +212,12 @@ struct EventArgSignature {
 struct RunApp {
     controller: Option<RunController>,
     options: RunHostOptions,
+    default_param_smoothing_seconds: f64,
     load_error: Option<String>,
     project_notice: Option<Result<String, String>>,
     event_inputs: HashMap<String, Vec<Value>>,
     event_json_drafts: HashMap<String, Vec<String>>,
     event_input_signatures: HashMap<String, Vec<EventArgSignature>>,
-    number_drafts: HashMap<String, f64>,
     current_icon_dark: Option<bool>,
     applied_theme_dark: Option<bool>,
     param_layout: ParamLayout,
@@ -230,18 +236,18 @@ impl RunApp {
     ) -> Self {
         let mut app = Self {
             controller,
+            default_param_smoothing_seconds: options.param_smoothing_seconds,
             options,
             load_error: None,
             project_notice: None,
             event_inputs: HashMap::new(),
             event_json_drafts: HashMap::new(),
             event_input_signatures: HashMap::new(),
-            number_drafts: HashMap::new(),
             current_icon_dark,
             applied_theme_dark: None,
             param_layout,
             keyboard_octave: 4,
-            keyboard_velocity: 0.8,
+            keyboard_velocity: DEFAULT_KEYBOARD_VELOCITY,
             computer_notes: HashMap::new(),
             pointer_note: None,
         };
@@ -364,12 +370,15 @@ impl RunApp {
     fn render_midi_keyboard(&mut self, ui: &mut egui::Ui, theme: &RunTheme) {
         let previous_octave = self.keyboard_octave;
         let octave = |ui: &mut egui::Ui, app: &mut Self| {
-            ui.add(
-                egui::DragValue::new(&mut app.keyboard_octave)
-                    .range(-1..=7)
-                    .speed(0.1),
-            )
-            .on_hover_text("Z / X: octave down / up");
+            let mut number = NumberValue::Integer(i64::from(app.keyboard_octave));
+            let response = ui.add(
+                NumberInput::new(&mut number, NumberValue::Integer(4), 0.1)
+                    .range(-1.0, 7.0)
+                    .help("Z / X: octave down / up."),
+            );
+            if response.changed() {
+                app.keyboard_octave = number.as_i64() as i32;
+            }
             ui.label("Octave");
         };
         let velocity = |ui: &mut egui::Ui, app: &mut Self, slider_width| {
@@ -377,10 +386,12 @@ impl RunApp {
                 ui.spacing_mut().slider_width = slider_width;
                 ui.add(
                     egui::Slider::new(&mut app.keyboard_velocity, 0.0..=1.0)
-                        .show_value(true)
+                        .show_value(false)
+                        .step_by(0.01)
                         .max_decimals(2),
                 );
             });
+            render_midi_velocity_number(ui, &mut app.keyboard_velocity);
             ui.label("Velocity");
         };
         let controls = |ui: &mut egui::Ui, app: &mut Self| {
@@ -555,7 +566,6 @@ impl RunApp {
             self.event_inputs.clear();
             self.event_json_drafts.clear();
             self.event_input_signatures.clear();
-            self.number_drafts.clear();
             return;
         };
         let events = controller.state().events.clone();
@@ -598,17 +608,6 @@ impl RunApp {
             .retain(|name, _| valid_names.iter().any(|valid| valid == name));
         self.event_json_drafts
             .retain(|name, _| valid_names.iter().any(|valid| valid == name));
-        let valid_params = self
-            .controller
-            .as_ref()
-            .expect("loaded run controller")
-            .state()
-            .params
-            .iter()
-            .filter_map(|param| param_name(param).map(str::to_owned))
-            .collect::<Vec<_>>();
-        self.number_drafts
-            .retain(|name, _| valid_params.iter().any(|valid| valid == name));
     }
 
     fn reset_event_inputs(&mut self) {
@@ -646,7 +645,6 @@ impl RunApp {
         self.event_inputs.clear();
         self.event_json_drafts.clear();
         self.event_input_signatures.clear();
-        self.number_drafts.clear();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(run_window_title(None)));
     }
 
@@ -984,6 +982,8 @@ impl RunApp {
                 continue;
             };
             let args = event_args(event);
+            // Match the signature that resets values on reload, including sibling changes.
+            let event_id = egui::Id::new((name, self.event_input_signatures.get(name)));
             let values = self.event_inputs.entry(name.to_owned()).or_insert_with(|| {
                 args.iter()
                     .map(|arg| {
@@ -1062,12 +1062,13 @@ impl RunApp {
                         ui.separator();
                         ui.add_space(6.0);
                         for (index, arg) in args.iter().enumerate() {
-                            ui.push_id((name, index, arg_type(arg)), |ui| {
+                            ui.push_id((event_id, index, arg_type(arg)), |ui| {
                                 render_event_arg_editor(
                                     ui,
                                     arg_name(arg).unwrap_or("arg"),
                                     arg_type(arg),
                                     &mut values[index],
+                                    arg.get("default"),
                                     &mut drafts[index],
                                     connected,
                                 );
@@ -1157,43 +1158,10 @@ impl RunApp {
     }
 
     fn render_param_grid(&mut self, ui: &mut egui::Ui, params: &[Value]) {
-        let gap = 8.0;
-        let columns = param_grid_columns(ui.available_width(), self.param_layout);
-        let card_width =
-            (ui.available_width() - gap * columns.saturating_sub(1) as f32) / columns as f32;
-        let card_height = match self.param_layout {
-            ParamLayout::Sliders => 80.0,
-            ParamLayout::Knobs => 140.0,
-        };
-        for (row_index, row) in params.chunks(columns).enumerate() {
-            if row_index > 0 {
-                ui.add_space(gap);
-            }
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for (column_index, param) in row.iter().enumerate() {
-                    let (card_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(card_width, card_height),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect(
-                        card_rect,
-                        CARD_CORNER_RADIUS,
-                        ui.visuals().faint_bg_color,
-                        ui.visuals().widgets.noninteractive.bg_stroke,
-                        egui::StrokeKind::Inside,
-                    );
-
-                    let mut card_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .id_salt(("param-card", row_index, column_index))
-                            .max_rect(card_rect.shrink2(egui::vec2(9.0, 8.0)))
-                            .layout(egui::Layout::top_down(egui::Align::Center)),
-                    );
-                    self.render_param(&mut card_ui, param, self.param_layout == ParamLayout::Knobs);
-                }
-            });
-        }
+        let layout = self.param_layout;
+        render_param_grid(ui, params, layout, |ui, param| {
+            self.render_param(ui, param, layout == ParamLayout::Knobs);
+        });
     }
 
     fn render_param(&mut self, ui: &mut egui::Ui, param: &Value, compact: bool) {
@@ -1212,7 +1180,6 @@ impl RunApp {
             .get("value")
             .cloned()
             .unwrap_or_else(|| default_value_for_type(ty));
-        let number_draft = self.number_drafts.get(&name).copied();
         let spec = ParamControlSpec {
             label: &display_name,
             ty,
@@ -1220,21 +1187,17 @@ impl RunApp {
             domain,
         };
         let outcome = if compact {
-            render_compact_param_value_editor(ui, spec, &value, number_draft)
+            render_compact_param_value_editor(ui, spec, &value)
         } else {
-            render_param_value_editor(ui, spec, &value, number_draft)
+            render_param_value_editor(ui, spec, &value)
         };
         match outcome {
             ParamEditOutcome::None => {}
-            ParamEditOutcome::NumberDraft(next_value) => {
-                self.number_drafts.insert(name, next_value);
-            }
             ParamEditOutcome::Commit(next_value) => {
                 let next_value = next_value
                     .as_f64()
                     .map(|value| json_number(spec.constrain_plain(value)))
                     .unwrap_or(next_value);
-                self.number_drafts.remove(&name);
                 self.controller
                     .as_mut()
                     .expect("loaded run controller")
@@ -1729,7 +1692,7 @@ impl eframe::App for RunApp {
                                     "Params",
                                     |ui| {
                                         let mut seconds = self.options.param_smoothing_seconds;
-                                        let actions = render_param_header_actions(ui, &mut param_layout, &mut seconds);
+                                        let actions = render_param_header_actions(ui, &mut param_layout, &mut seconds, self.default_param_smoothing_seconds);
                                         let controller = self.controller.as_mut().expect("loaded run controller");
                                         if actions.reset {
                                             controller.reset_params();
@@ -1848,6 +1811,7 @@ fn render_param_header_actions(
     ui: &mut egui::Ui,
     layout: &mut ParamLayout,
     seconds: &mut f64,
+    default_seconds: f64,
 ) -> ParamHeaderActions {
     set_control_font_size(ui, COMPACT_FONT_SIZE);
     let reset = ui
@@ -1860,7 +1824,7 @@ fn render_param_header_actions(
             |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 render_param_layout_toggle(ui, layout);
-                render_param_smoothing(ui, seconds)
+                render_param_smoothing(ui, seconds, default_seconds)
             },
         )
         .inner;
@@ -1870,34 +1834,62 @@ fn render_param_header_actions(
     }
 }
 
-fn render_param_smoothing(ui: &mut egui::Ui, seconds: &mut f64) -> bool {
+fn render_param_smoothing(ui: &mut egui::Ui, seconds: &mut f64, default_seconds: f64) -> bool {
     ui.allocate_ui_with_layout(
         egui::vec2(112.0, PARAM_HEADER_CONTROL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.style_mut().drag_value_text_style = egui::TextStyle::Body;
             ui.spacing_mut().interact_size.y = PARAM_HEADER_CONTROL_HEIGHT;
-            let mut milliseconds = *seconds * 1000.0;
+            let mut milliseconds = NumberValue::Float(*seconds * 1000.0);
             let response = ui.add_sized(
                 [112.0, PARAM_HEADER_CONTROL_HEIGHT],
-                egui::DragValue::new(&mut milliseconds)
-                    .prefix("Smooth ")
-                    .suffix(" ms")
-                    .range(0.0..=f64::MAX)
-                    .speed(1.0)
-                    .update_while_editing(false),
+                NumberInput::new(
+                    &mut milliseconds,
+                    NumberValue::Float(default_seconds * 1000.0),
+                    1.0,
+                )
+                .prefix("Smooth ")
+                .suffix(" ms")
+                .help("Smoothing duration for continuous parameter changes. Set to 0 to disable.")
+                .range(0.0, f64::MAX)
+                .max_decimals(0)
+                .step(1.0)
+                .update_while_editing(false),
             );
-            let changed = response.changed();
-            response.on_hover_text(
-                "Smoothing duration for continuous parameter changes. Set to 0 to disable.",
-            );
+            let changed = response.changed() && !response.has_focus();
+            let reset = response.double_clicked_by(egui::PointerButton::Primary);
             if changed {
-                *seconds = milliseconds / 1000.0;
+                *seconds = if reset {
+                    default_seconds
+                } else {
+                    milliseconds.as_f64().round() / 1000.0
+                };
             }
             changed
         },
     )
     .inner
+}
+
+fn render_midi_velocity_number(ui: &mut egui::Ui, velocity: &mut f32) -> egui::Response {
+    let mut number = NumberValue::Float(f64::from(*velocity));
+    let response = ui.add_sized(
+        [56.0, 26.0],
+        NumberInput::new(
+            &mut number,
+            NumberValue::Float(f64::from(DEFAULT_KEYBOARD_VELOCITY)),
+            scalar_drag_speed("f32"),
+        )
+        .drag_range(0.0, 1.0, PARAM_NUMBER_DRAG_POINTS_PER_RANGE)
+        .max_decimals(2)
+        .step(0.01)
+        .update_while_editing(false),
+    );
+    if response.changed() {
+        *velocity = ((number.as_f64() * 100.0).round() / 100.0) as f32;
+    }
+    response
 }
 
 fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
@@ -2054,6 +2046,7 @@ fn render_event_arg_editor(
     label: &str,
     ty: &str,
     value: &mut Value,
+    default: Option<&Value>,
     draft: &mut String,
     connected: bool,
 ) {
@@ -2104,7 +2097,7 @@ fn render_event_arg_editor(
         return;
     }
     if is_array_type(ty) {
-        render_event_array_editor(ui, label, ty, value, connected);
+        render_event_array_editor(ui, label, ty, value, default, connected);
         return;
     }
 
@@ -2118,7 +2111,7 @@ fn render_event_arg_editor(
             },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            render_event_scalar_editor(ui, ty, value, connected, 112.0)
+            render_event_scalar_editor(ui, ty, value, default, connected, 112.0)
         });
     });
 }
@@ -2159,6 +2152,7 @@ fn render_event_array_editor(
     label: &str,
     ty: &str,
     value: &mut Value,
+    default: Option<&Value>,
     connected: bool,
 ) {
     let scalar_ty = event_array_scalar_type(ty);
@@ -2251,9 +2245,16 @@ fn render_event_array_editor(
                                                     .weak(),
                                             ),
                                         );
-                                        render_event_scalar_editor(
-                                            ui, scalar_ty, element, connected, 104.0,
-                                        );
+                                        ui.push_id(("event-array-element", index), |ui| {
+                                            render_event_scalar_editor(
+                                                ui,
+                                                scalar_ty,
+                                                element,
+                                                default.and_then(|values| values.get(index)),
+                                                connected,
+                                                104.0,
+                                            );
+                                        });
                                     },
                                 );
                             });
@@ -2282,6 +2283,7 @@ fn render_event_scalar_editor(
     ui: &mut egui::Ui,
     ty: &str,
     value: &mut Value,
+    default: Option<&Value>,
     connected: bool,
     width: f32,
 ) {
@@ -2300,62 +2302,50 @@ fn render_event_scalar_editor(
         return;
     }
 
-    if ty == "i64" {
-        let mut integer = value
-            .as_str()
-            .and_then(|text| text.parse::<i64>().ok())
-            .or_else(|| value.as_i64())
-            .unwrap_or(0);
-        if ui
-            .add_enabled_ui(connected, |ui| {
-                ui.add_sized([width, 24.0], egui::DragValue::new(&mut integer))
-                    .changed()
-            })
-            .inner
-        {
-            *value = Value::String(integer.to_string());
-        }
-        return;
-    }
-
-    let mut number = value.as_f64().unwrap_or(0.0);
-    let changed = if is_integer_type(ty) {
-        let mut integer = number.round() as i64;
-        let changed = ui
-            .add_enabled_ui(connected, |ui| {
-                ui.add_sized(
-                    [width, 24.0],
-                    egui::DragValue::new(&mut integer)
-                        .speed(0.25)
-                        .range(i64::MIN..=i64::MAX),
-                )
-                .changed()
-            })
-            .inner;
-        number = integer as f64;
-        changed
-    } else {
-        let step = scalar_step(ty, None, None);
-        ui.add_enabled_ui(connected, |ui| {
-            ui.add_sized(
-                [width, 24.0],
-                egui::DragValue::new(&mut number)
-                    .speed(step / 4.0)
-                    .max_decimals(slider_decimals(step)),
+    let decode = |value: Option<&Value>| {
+        if is_integer_type(ty) {
+            NumberValue::Integer(
+                value
+                    .and_then(|value| {
+                        value
+                            .as_str()
+                            .and_then(|text| text.parse().ok())
+                            .or_else(|| value.as_i64())
+                    })
+                    .unwrap_or(0),
             )
-            .changed()
-        })
-        .inner
+        } else {
+            NumberValue::Float(value.and_then(Value::as_f64).unwrap_or(0.0))
+        }
     };
-
-    if changed {
-        *value = json_number(number);
+    let mut number = decode(Some(value));
+    let reset = decode(default);
+    let response = ui
+        .add_enabled_ui(connected, |ui| {
+            let input = NumberInput::new(&mut number, reset, scalar_drag_speed(ty))
+                .id_salt("event-number")
+                .max_decimals(slider_decimals(scalar_step(ty, None, None)));
+            let input = if ty == "i32" {
+                input.range(f64::from(i32::MIN), f64::from(i32::MAX))
+            } else {
+                input
+            };
+            ui.add_sized([width, 24.0], input)
+        })
+        .inner;
+    if response.changed() {
+        *value = if ty == "i64" {
+            Value::String(number.as_i64().to_string())
+        } else if is_integer_type(ty) {
+            Value::from(number.as_i64())
+        } else {
+            json_number(number.as_f64())
+        };
     }
 }
 
 enum ParamEditOutcome {
     None,
-    NumberDraft(f64),
     Commit(Value),
 }
 
@@ -2384,13 +2374,62 @@ impl ParamControlSpec<'_> {
         self.domain
             .map_or(value, |domain| domain.constrain_plain(value))
     }
+
+    fn initial_value(self) -> f64 {
+        self.constrain_plain(
+            self.default
+                .unwrap_or_else(|| self.bounds().map_or(0.0, |(min, _)| min)),
+        )
+    }
+}
+
+fn render_param_grid(
+    ui: &mut egui::Ui,
+    params: &[Value],
+    layout: ParamLayout,
+    mut render_param: impl FnMut(&mut egui::Ui, &Value),
+) {
+    let gap = 8.0;
+    let columns = param_grid_columns(ui.available_width(), layout);
+    let card_width =
+        (ui.available_width() - gap * columns.saturating_sub(1) as f32) / columns as f32;
+    let card_height = match layout {
+        ParamLayout::Sliders => 80.0,
+        ParamLayout::Knobs => 140.0,
+    };
+    for (row_index, row) in params.chunks(columns).enumerate() {
+        if row_index > 0 {
+            ui.add_space(gap);
+        }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for param in row {
+                let (card_rect, _) = ui
+                    .allocate_exact_size(egui::vec2(card_width, card_height), egui::Sense::hover());
+                ui.painter().rect(
+                    card_rect,
+                    CARD_CORNER_RADIUS,
+                    ui.visuals().faint_bg_color,
+                    ui.visuals().widgets.noninteractive.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+
+                let mut card_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("param-card", param_name(param), param_type(param)))
+                        .max_rect(card_rect.shrink2(egui::vec2(9.0, 8.0)))
+                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                );
+                render_param(&mut card_ui, param);
+            }
+        });
+    }
 }
 
 fn render_param_value_editor(
     ui: &mut egui::Ui,
     spec: ParamControlSpec<'_>,
     value: &Value,
-    number_draft: Option<f64>,
 ) -> ParamEditOutcome {
     let ParamControlSpec { label, ty, .. } = spec;
     let (min, max) = spec.bounds().unzip();
@@ -2411,7 +2450,6 @@ fn render_param_value_editor(
     }
 
     let committed_number = value.as_f64().unwrap_or(0.0);
-    let displayed_number = number_draft.unwrap_or(committed_number);
     let is_integer = is_integer_type(ty);
     let step = spec.effective_step();
     let mut outcome = ParamEditOutcome::None;
@@ -2421,61 +2459,12 @@ fn render_param_value_editor(
             let heading_width = (ui.available_width() - 112.0).max(36.0);
             render_param_heading(ui, label, ty, heading_width, egui::Align::Min);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if is_integer {
-                    let mut integer = displayed_number.round() as i64;
-                    let drag = if let (Some(min), Some(max)) = (min, max) {
-                        egui::DragValue::new(&mut integer)
-                            .speed(0.25)
-                            .range((min.ceil() as i64)..=(max.floor() as i64))
-                    } else {
-                        egui::DragValue::new(&mut integer).speed(0.25)
-                    };
-                    let response = ui.add_sized([104.0, 26.0], drag);
-                    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    let editing_finished =
-                        response.drag_stopped() || response.lost_focus() || enter_pressed;
-                    let number_changed = response.changed();
-                    let dragging = response.dragged();
-
-                    if number_changed {
-                        let next = integer as f64;
-                        if dragging || editing_finished {
-                            outcome = ParamEditOutcome::Commit(json_number(next));
-                        } else {
-                            outcome = ParamEditOutcome::NumberDraft(next);
-                        }
-                    } else if editing_finished && number_draft.is_some() {
-                        outcome = ParamEditOutcome::Commit(json_number(displayed_number.round()));
-                    }
-                } else {
-                    let mut number = displayed_number;
-                    let drag = if let (Some(min), Some(max)) = (min, max) {
-                        egui::DragValue::new(&mut number)
-                            .speed(scalar_drag_speed(ty, Some(min), Some(max)))
-                            .range(min..=max)
-                            .max_decimals(slider_decimals(step).max(6))
-                    } else {
-                        egui::DragValue::new(&mut number)
-                            .speed(0.01)
-                            .max_decimals(8)
-                    };
-                    let response = ui.add_sized([104.0, 26.0], drag);
-                    let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    let editing_finished =
-                        response.drag_stopped() || response.lost_focus() || enter_pressed;
-                    let number_changed = response.changed();
-                    let dragging = response.dragged();
-
-                    if number_changed {
-                        if dragging || editing_finished {
-                            outcome = ParamEditOutcome::Commit(json_number(number));
-                        } else {
-                            outcome = ParamEditOutcome::NumberDraft(number);
-                        }
-                    } else if editing_finished && number_draft.is_some() {
-                        outcome = ParamEditOutcome::Commit(json_number(displayed_number));
-                    }
-                }
+                outcome = render_param_number_input(
+                    ui,
+                    spec,
+                    committed_number,
+                    slider_decimals(step).max(6),
+                );
             });
         });
 
@@ -2515,7 +2504,16 @@ fn render_param_value_editor(
                 })
                 .inner;
 
-            if slider_response.changed() {
+            // egui sliders sense drags, so double-clicks come from the pointer input.
+            let reset = slider_response.hovered()
+                && ui.input(|input| {
+                    input
+                        .pointer
+                        .button_double_clicked(egui::PointerButton::Primary)
+                });
+            if reset {
+                outcome = ParamEditOutcome::Commit(json_number(spec.initial_value()));
+            } else if slider_response.changed() {
                 outcome = ParamEditOutcome::Commit(json_number(slider_value));
             }
         }
@@ -2528,7 +2526,6 @@ fn render_compact_param_value_editor(
     ui: &mut egui::Ui,
     spec: ParamControlSpec<'_>,
     value: &Value,
-    number_draft: Option<f64>,
 ) -> ParamEditOutcome {
     let mut outcome = ParamEditOutcome::None;
     render_param_heading(
@@ -2549,7 +2546,7 @@ fn render_compact_param_value_editor(
     }
 
     let committed_number = value.as_f64().unwrap_or(0.0);
-    let mut displayed_number = number_draft.unwrap_or(committed_number);
+    let mut displayed_number = committed_number;
 
     if let Some((min, max)) = spec.bounds() {
         let mut knob_value = committed_number;
@@ -2562,14 +2559,11 @@ fn render_compact_param_value_editor(
         ui.add_space(68.0);
     }
 
-    let next = render_compact_number_input(
+    let next = render_param_number_input(
         ui,
-        spec.ty,
-        spec.bounds().map(|(min, _)| min),
-        spec.bounds().map(|(_, max)| max),
-        spec.effective_step(),
+        spec,
         displayed_number,
-        number_draft.is_some(),
+        control_decimals(spec.effective_step()),
     );
     if !matches!(next, ParamEditOutcome::None) {
         outcome = next;
@@ -2627,65 +2621,45 @@ fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, al
     );
 }
 
-fn render_compact_number_input(
+fn render_param_number_input(
     ui: &mut egui::Ui,
-    ty: &str,
-    min: Option<f64>,
-    max: Option<f64>,
-    step: f64,
+    spec: ParamControlSpec<'_>,
     displayed_number: f64,
-    has_draft: bool,
+    max_decimals: usize,
 ) -> ParamEditOutcome {
-    let mut outcome = ParamEditOutcome::None;
-    let is_integer = is_integer_type(ty);
-    if is_integer {
-        let mut integer = displayed_number.round() as i64;
-        let drag = if let (Some(min), Some(max)) = (min, max) {
-            egui::DragValue::new(&mut integer)
-                .speed(0.25)
-                .range((min.ceil() as i64)..=(max.floor() as i64))
+    let convert = |value: f64| {
+        // Ranged parameters retain fractional motion until the domain snaps it once.
+        if is_integer_type(spec.ty) && spec.domain.is_none() {
+            NumberValue::Integer(value.round() as i64)
         } else {
-            egui::DragValue::new(&mut integer).speed(0.25)
-        };
-        let response = ui.add_sized([104.0, 26.0], drag);
-        let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-        let editing_finished = response.drag_stopped() || response.lost_focus() || enter_pressed;
-        if response.changed() {
-            let next = integer as f64;
-            outcome = if response.dragged() || editing_finished {
-                ParamEditOutcome::Commit(json_number(next))
-            } else {
-                ParamEditOutcome::NumberDraft(next)
-            };
-        } else if editing_finished && has_draft {
-            outcome = ParamEditOutcome::Commit(json_number(displayed_number.round()));
+            NumberValue::Float(value)
         }
+    };
+    let mut number = convert(displayed_number);
+    let input = NumberInput::new(
+        &mut number,
+        convert(spec.initial_value()),
+        scalar_drag_speed(spec.ty),
+    )
+    .id_salt("param-number")
+    .max_decimals(max_decimals)
+    .step(spec.effective_step())
+    .update_while_editing(false);
+    let input = if let Some(domain) = spec.domain {
+        input.drag_domain(domain, PARAM_NUMBER_DRAG_POINTS_PER_RANGE)
     } else {
-        let mut number = displayed_number;
-        let drag = if let (Some(min), Some(max)) = (min, max) {
-            egui::DragValue::new(&mut number)
-                .speed(scalar_drag_speed(ty, Some(min), Some(max)))
-                .range(min..=max)
-                .max_decimals(control_decimals(step))
-        } else {
-            egui::DragValue::new(&mut number)
-                .speed(0.01)
-                .max_decimals(8)
-        };
-        let response = ui.add_sized([104.0, 26.0], drag);
-        let enter_pressed = ui.input(|input| input.key_pressed(egui::Key::Enter));
-        let editing_finished = response.drag_stopped() || response.lost_focus() || enter_pressed;
-        if response.changed() {
-            outcome = if response.dragged() || editing_finished {
-                ParamEditOutcome::Commit(json_number(number))
-            } else {
-                ParamEditOutcome::NumberDraft(number)
-            };
-        } else if editing_finished && has_draft {
-            outcome = ParamEditOutcome::Commit(json_number(displayed_number));
-        }
+        input
+    };
+    let response = ui.add_sized([104.0, 26.0], input);
+    let next_value = number.as_f64();
+    if response.double_clicked_by(egui::PointerButton::Primary) {
+        return ParamEditOutcome::Commit(json_number(next_value));
     }
-    outcome
+    if response.changed() && !response.has_focus() {
+        ParamEditOutcome::Commit(json_number(next_value))
+    } else {
+        ParamEditOutcome::None
+    }
 }
 
 fn render_param_knob(
@@ -2713,7 +2687,8 @@ fn render_param_knob(
         });
     }
     if response.dragged() {
-        let delta_y = response.drag_delta().y as f64;
+        let precision = ui.input(|input| if input.modifiers.shift { 0.1 } else { 1.0 });
+        let delta_y = response.drag_delta().y as f64 * precision;
         next_value = ui.data_mut(|data| {
             data.get_temp_mut_or_insert_with(response.id, || KnobDragState::new(domain, next_value))
                 .drag(domain, delta_y)
@@ -2739,7 +2714,7 @@ fn render_param_knob(
         });
     }
     if response.double_clicked() {
-        next_value = spec.default.unwrap_or(min);
+        next_value = spec.initial_value();
     }
 
     next_value = spec.constrain_plain(next_value);
@@ -2785,10 +2760,12 @@ fn render_param_knob(
         egui::Stroke::new(3.0_f32, visuals.fg_stroke.color),
     );
 
-    response.on_hover_text("Drag vertically to adjust; double-click to reset")
+    response
+        .on_hover_and_drag_cursor(egui::CursorIcon::ResizeVertical)
+        .on_hover_text(
+            "Drag vertically to adjust; Shift for fine adjustment; double-click to reset",
+        )
 }
-
-const KNOB_DRAG_POINTS_PER_RANGE: f64 = 160.0;
 
 #[derive(Clone, Copy)]
 struct KnobDragState {
@@ -2805,11 +2782,12 @@ impl KnobDragState {
     }
 
     fn drag(&mut self, domain: ParamDomain<'_>, delta_y: f64) -> f64 {
-        let minimum_delta = (self.start_normalized - 1.0) * KNOB_DRAG_POINTS_PER_RANGE;
-        let maximum_delta = self.start_normalized * KNOB_DRAG_POINTS_PER_RANGE;
+        let minimum_delta = (self.start_normalized - 1.0) * PARAM_KNOB_DRAG_POINTS_PER_RANGE;
+        let maximum_delta = self.start_normalized * PARAM_KNOB_DRAG_POINTS_PER_RANGE;
         self.delta_y = (self.delta_y + delta_y).clamp(minimum_delta, maximum_delta);
-        domain
-            .normalized_to_plain(self.start_normalized - self.delta_y / KNOB_DRAG_POINTS_PER_RANGE)
+        domain.normalized_to_plain(
+            self.start_normalized - self.delta_y / PARAM_KNOB_DRAG_POINTS_PER_RANGE,
+        )
     }
 }
 
@@ -2856,15 +2834,10 @@ fn scalar_step(ty: &str, min: Option<f64>, max: Option<f64>) -> f64 {
     0.001
 }
 
-fn scalar_drag_speed(ty: &str, min: Option<f64>, max: Option<f64>) -> f64 {
+fn scalar_drag_speed(ty: &str) -> f64 {
+    // Keep this host policy aligned with ui/run/run.html::scalarDragSpeedForParam.
     if is_integer_type(ty) {
         return 0.25;
-    }
-    if let (Some(min), Some(max)) = (min, max) {
-        let span = (max - min).abs();
-        if span.is_finite() && span > 0.0 {
-            return (span / 2000.0).max(0.0001) / 16.0;
-        }
     }
     0.01
 }
@@ -3481,6 +3454,7 @@ fn json_number(value: f64) -> Value {
 
 #[cfg(test)]
 mod tests {
+    mod number_input;
     use std::collections::HashMap;
 
     use eframe::{egui, Storage};
@@ -3491,9 +3465,11 @@ mod tests {
         buffer_waveform_scale, computer_key_offset, computer_key_press_blocked, control_decimals,
         event_arg_signature, event_array_grid_columns, event_array_len, event_array_scalar_type,
         format_run_status, log_entry_context, param_grid_columns, prepared_param_domain,
-        render_compact_param_value_editor, render_param_header_actions, render_section_header,
-        scalar_drag_speed, scalar_step, section_box, structured_event_visible_lines, KnobDragState,
-        ParamControlSpec, ParamDomain, ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme,
+        render_compact_param_value_editor, render_event_scalar_editor, render_midi_velocity_number,
+        render_param_header_actions, render_param_number_input, render_param_smoothing,
+        render_param_value_editor, render_section_header, scalar_drag_speed, scalar_step,
+        section_box, structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain,
+        ParamEditOutcome, ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme,
         PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
@@ -3509,6 +3485,806 @@ mod tests {
         }
 
         fn flush(&mut self) {}
+    }
+
+    fn widget_frame<T>(
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        render: impl FnMut(&mut egui::Ui) -> T,
+    ) -> (egui::Rect, T) {
+        widget_frame_with_modifiers(ctx, time, events, egui::Modifiers::default(), render)
+    }
+
+    fn widget_frame_with_modifiers<T>(
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+        mut render: impl FnMut(&mut egui::Ui) -> T,
+    ) -> (egui::Rect, T) {
+        let mut result = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(time),
+                events,
+                modifiers,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 200.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rendered = ui.scope(|ui| render(ui));
+                    result = Some((rendered.response.rect, rendered.inner));
+                });
+            },
+        );
+        result.expect("rendered widget")
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]
+    }
+
+    #[test]
+    fn parameter_number_double_click_restores_default_and_discards_draft() {
+        for ty in ["f32", "f64", "i32", "i64"] {
+            for ranged in [false, true] {
+                let ctx = egui::Context::default();
+                let spec = ParamControlSpec {
+                    label: "value",
+                    ty,
+                    default: Some(4.0),
+                    domain: ranged.then(|| {
+                        ParamDomain::new(
+                            ParamScalarType::F64,
+                            0.0,
+                            10.0,
+                            ParamScale::Linear,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .expect("valid test domain")
+                    }),
+                };
+                let render = |ui: &mut egui::Ui| render_param_number_input(ui, spec, 8.0, 6);
+                let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
+                let pos = rect.center();
+                widget_frame(&ctx, 0.1, pointer_button(pos, true), render);
+                widget_frame(&ctx, 0.15, pointer_button(pos, false), render);
+                assert!(ctx.memory(|memory| memory.focused().is_some()));
+                let (_, outcome) =
+                    widget_frame(&ctx, 0.2, vec![egui::Event::Text("9".into())], render);
+                assert!(matches!(outcome, ParamEditOutcome::None));
+                let render_draft = |ui: &mut egui::Ui| render_param_number_input(ui, spec, 8.0, 6);
+                widget_frame(&ctx, 0.25, pointer_button(pos, true), render_draft);
+                let (_, outcome) =
+                    widget_frame(&ctx, 0.3, pointer_button(pos, false), render_draft);
+                assert!(
+                    matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(4.0)),
+                    "{ty}, ranged: {ranged}"
+                );
+                assert!(ctx.memory(|memory| memory.focused().is_none()));
+                let (_, outcome) = widget_frame(&ctx, 0.4, vec![], |ui| {
+                    render_param_number_input(ui, spec, 4.0, 6)
+                });
+                assert!(
+                    matches!(outcome, ParamEditOutcome::None),
+                    "stale draft for {ty}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parameter_number_keyboard_edits_preserve_drafts_across_host_updates() {
+        let ctx = egui::Context::default();
+        let spec = ParamControlSpec {
+            label: "value",
+            ty: "f64",
+            default: Some(0.0),
+            domain: None,
+        };
+        widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        widget_frame(&ctx, 0.1, key_event(egui::Key::Tab), |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        assert!(ctx.memory(|memory| memory.focused().is_some()));
+        let (_, outcome) = widget_frame(&ctx, 0.2, vec![egui::Event::Text("9".into())], |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        assert!(matches!(outcome, ParamEditOutcome::None));
+        let (_, outcome) = widget_frame(&ctx, 0.3, key_event(egui::Key::Enter), |ui| {
+            render_param_number_input(ui, spec, 10.0, 6)
+        });
+        assert!(
+            matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(9.0))
+        );
+        assert!(ctx.memory(|memory| memory.focused().is_none()));
+
+        widget_frame(&ctx, 0.5, key_event(egui::Key::Tab), |ui| {
+            render_param_number_input(ui, spec, 10.0, 6)
+        });
+        widget_frame(&ctx, 0.6, vec![egui::Event::Text("3".into())], |ui| {
+            render_param_number_input(ui, spec, 10.0, 6)
+        });
+        let (_, outcome) = widget_frame(&ctx, 0.7, key_event(egui::Key::Escape), |ui| {
+            render_param_number_input(ui, spec, 11.0, 6)
+        });
+        assert!(matches!(outcome, ParamEditOutcome::None));
+        assert!(ctx.memory(|memory| memory.focused().is_none()));
+        let (_, outcome) = widget_frame(&ctx, 0.8, vec![], |ui| {
+            render_param_number_input(ui, spec, 11.0, 6)
+        });
+        assert!(matches!(outcome, ParamEditOutcome::None));
+    }
+
+    #[test]
+    fn parameter_number_drafts_expire_when_controls_disappear() {
+        for ty in ["f64", "i64"] {
+            for hidden_frames in [1, 2] {
+                let ctx = egui::Context::default();
+                let spec = ParamControlSpec {
+                    label: "value",
+                    ty,
+                    default: Some(4.0),
+                    domain: None,
+                };
+                for (time, events) in [
+                    (0.0, vec![]),
+                    (0.1, key_event(egui::Key::Tab)),
+                    (0.2, vec![egui::Event::Text("99".into())]),
+                ] {
+                    let (_, outcome) = widget_frame(&ctx, time, events, |ui| {
+                        render_param_number_input(ui, spec, 8.0, 6)
+                    });
+                    assert!(matches!(outcome, ParamEditOutcome::None));
+                }
+                for index in 0..hidden_frames {
+                    widget_frame(&ctx, 0.3 + f64::from(index) * 0.1, vec![], |_| {});
+                }
+                let (_, outcome) = widget_frame(&ctx, 0.6, vec![], |ui| {
+                    render_param_number_input(ui, spec, 4.0, 6)
+                });
+                assert!(
+                    matches!(outcome, ParamEditOutcome::None),
+                    "{ty}: stale draft"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parameter_number_drags_expire_when_controls_disappear() {
+        let ctx = egui::Context::default();
+        let spec = ParamControlSpec {
+            label: "value",
+            ty: "f64",
+            default: Some(4.0),
+            domain: None,
+        };
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        let start = rect.center();
+        let end = start + egui::vec2(20.0, 0.0);
+        widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        let (_, outcome) = widget_frame(&ctx, 0.2, vec![egui::Event::PointerMoved(end)], |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        assert!(matches!(outcome, ParamEditOutcome::Commit(_)));
+        widget_frame(&ctx, 0.3, vec![], |_| {});
+        for (time, events) in [(0.4, vec![]), (0.5, pointer_button(end, false))] {
+            let (_, outcome) = widget_frame(&ctx, time, events, |ui| {
+                render_param_number_input(ui, spec, 4.0, 6)
+            });
+            assert!(matches!(outcome, ParamEditOutcome::None), "stale drag");
+        }
+    }
+
+    #[test]
+    fn parameter_number_blur_commits_the_current_draft() {
+        let ctx = egui::Context::default();
+        let spec = ParamControlSpec {
+            label: "value",
+            ty: "f64",
+            default: Some(4.0),
+            domain: None,
+        };
+        for (time, events) in [
+            (0.0, vec![]),
+            (0.1, key_event(egui::Key::Tab)),
+            (0.2, vec![egui::Event::Text("99".into())]),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_param_number_input(ui, spec, 8.0, 6)
+            });
+        }
+        let (_, outcome) = widget_frame(&ctx, 0.3, key_event(egui::Key::Tab), |ui| {
+            render_param_number_input(ui, spec, 8.0, 6)
+        });
+        assert!(
+            matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(99.0))
+        );
+    }
+
+    #[test]
+    fn parameter_slider_double_click_restores_default() {
+        for scale in [ParamScale::Linear, ParamScale::Log] {
+            let ctx = egui::Context::default();
+            let spec = ParamControlSpec {
+                label: "gain",
+                ty: "f64",
+                default: Some(4.0),
+                domain: ParamDomain::new(
+                    ParamScalarType::F64,
+                    1.0,
+                    10.0,
+                    scale,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            };
+            let render =
+                |ui: &mut egui::Ui| render_param_value_editor(ui, spec, &serde_json::json!(8.0));
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
+            let pos = egui::pos2(rect.left() + 20.0, rect.bottom() - 12.0);
+            widget_frame(&ctx, 0.1, pointer_button(pos, true), render);
+            widget_frame(&ctx, 0.15, pointer_button(pos, false), render);
+            widget_frame(&ctx, 0.2, pointer_button(pos, true), render);
+            let (_, outcome) = widget_frame(&ctx, 0.25, pointer_button(pos, false), render);
+            assert!(
+                matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(4.0))
+            );
+        }
+    }
+
+    #[test]
+    fn smoothing_edits_commit_whole_milliseconds() {
+        let ctx = egui::Context::default();
+        let default_seconds = RunHostOptions::default().param_smoothing_seconds;
+        let mut seconds = default_seconds;
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_param_smoothing(ui, &mut seconds, default_seconds)
+        });
+        let pos = rect.center();
+        widget_frame(&ctx, 0.1, pointer_button(pos, true), |ui| {
+            render_param_smoothing(ui, &mut seconds, default_seconds)
+        });
+        widget_frame(&ctx, 0.15, pointer_button(pos, false), |ui| {
+            render_param_smoothing(ui, &mut seconds, default_seconds)
+        });
+        widget_frame(&ctx, 0.2, vec![egui::Event::Text("15.5".into())], |ui| {
+            render_param_smoothing(ui, &mut seconds, default_seconds)
+        });
+        assert_eq!(seconds, 0.03);
+        let (_, changed) = widget_frame(
+            &ctx,
+            0.3,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            |ui| render_param_smoothing(ui, &mut seconds, default_seconds),
+        );
+        assert!(changed);
+        assert_eq!(seconds, 0.016);
+    }
+
+    #[test]
+    fn smoothing_double_click_restores_launch_option_without_reapplying_a_draft() {
+        for launch_seconds in [0.0, 0.03, 0.05, 0.0125] {
+            let ctx = egui::Context::default();
+            let mut app = RunApp::new(
+                None,
+                RunHostOptions {
+                    param_smoothing_seconds: launch_seconds,
+                    ..RunHostOptions::default()
+                },
+                None,
+                ParamLayout::Knobs,
+            );
+            app.options.param_smoothing_seconds = 0.15;
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_param_smoothing(
+                    ui,
+                    &mut app.options.param_smoothing_seconds,
+                    app.default_param_smoothing_seconds,
+                )
+            });
+            let pos = rect.center();
+            for (time, events) in [
+                (0.1, pointer_button(pos, true)),
+                (0.15, pointer_button(pos, false)),
+                (0.2, vec![egui::Event::Text("99".into())]),
+                (0.25, pointer_button(pos, true)),
+                (0.3, pointer_button(pos, false)),
+                (0.4, vec![]),
+            ] {
+                let (_, changed) = widget_frame(&ctx, time, events, |ui| {
+                    render_param_smoothing(
+                        ui,
+                        &mut app.options.param_smoothing_seconds,
+                        app.default_param_smoothing_seconds,
+                    )
+                });
+                if time == 0.2 {
+                    assert!(!changed);
+                    assert_eq!(app.options.param_smoothing_seconds, 0.15);
+                }
+                if time >= 0.3 {
+                    assert_eq!(app.options.param_smoothing_seconds, launch_seconds);
+                    assert_eq!(changed, time == 0.3);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn event_number_drag_uses_the_shared_unbounded_sensitivity() {
+        for (ty, initial, expected) in [
+            ("f32", serde_json::json!(0.25), serde_json::json!(0.45)),
+            ("f64", serde_json::json!(-2.0), serde_json::json!(-1.8)),
+            ("i32", serde_json::json!(3), serde_json::json!(8)),
+            ("i64", serde_json::json!("3"), serde_json::json!("8")),
+        ] {
+            let ctx = egui::Context::default();
+            let mut value = initial;
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+            });
+            let start = rect.center();
+            let end = start + egui::vec2(20.0, 0.0);
+            for (time, events) in [
+                (0.1, pointer_button(start, true)),
+                (0.2, vec![egui::Event::PointerMoved(end)]),
+                (0.3, pointer_button(end, false)),
+            ] {
+                widget_frame(&ctx, time, events, |ui| {
+                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                });
+            }
+            assert_eq!(value, expected, "{ty} drag must match the web view");
+        }
+    }
+
+    #[test]
+    fn event_i64_drag_preserves_large_values_and_reverses_at_bounds() {
+        for (initial, movement, expected) in [
+            (9_007_199_254_740_993, vec![20.0], 9_007_199_254_740_998),
+            (i64::MAX - 1, vec![20.0, 16.0], i64::MAX - 1),
+            (i64::MIN + 1, vec![-20.0, -16.0], i64::MIN + 1),
+        ] {
+            let ctx = egui::Context::default();
+            let mut value = serde_json::json!(initial.to_string());
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            });
+            let start = rect.center();
+            widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            });
+            for (index, x) in movement.iter().enumerate() {
+                widget_frame(
+                    &ctx,
+                    0.2 + index as f64 * 0.1,
+                    vec![egui::Event::PointerMoved(start + egui::vec2(*x, 0.0))],
+                    |ui| render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0),
+                );
+            }
+            assert_eq!(value, serde_json::json!(expected.to_string()));
+        }
+    }
+
+    #[test]
+    fn event_number_drag_uses_only_horizontal_motion() {
+        let ctx = egui::Context::default();
+        let mut value = serde_json::json!(0.0);
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
+        });
+        let start = rect.center();
+        widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
+        });
+        widget_frame(
+            &ctx,
+            0.2,
+            vec![egui::Event::PointerMoved(start + egui::vec2(20.0, 20.0))],
+            |ui| render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0),
+        );
+        assert_eq!(value, serde_json::json!(0.2));
+    }
+
+    #[test]
+    fn parameter_number_type_changes_cancel_active_drags() {
+        for (old_type, new_type) in [("f64", "i32"), ("i64", "f64")] {
+            let ctx = egui::Context::default();
+            let spec = ParamControlSpec {
+                label: "value",
+                ty: old_type,
+                default: Some(0.0),
+                domain: None,
+            };
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_param_number_input(ui, spec, 10.0, 6)
+            });
+            let start = rect.center();
+            widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+                render_param_number_input(ui, spec, 10.0, 6)
+            });
+            let (_, outcome) = widget_frame(
+                &ctx,
+                0.2,
+                vec![egui::Event::PointerMoved(start + egui::vec2(20.0, 0.0))],
+                |ui| render_param_number_input(ui, spec, 10.0, 6),
+            );
+            assert!(matches!(outcome, ParamEditOutcome::Commit(_)));
+
+            let new_spec = ParamControlSpec {
+                ty: new_type,
+                ..spec
+            };
+            for (time, events, current_spec) in [
+                (0.3, vec![], new_spec),
+                (
+                    0.4,
+                    vec![egui::Event::PointerMoved(start + egui::vec2(40.0, 0.0))],
+                    new_spec,
+                ),
+                (
+                    0.5,
+                    pointer_button(start + egui::vec2(40.0, 0.0), false),
+                    spec,
+                ),
+            ] {
+                let (_, outcome) = widget_frame(&ctx, time, events, |ui| {
+                    render_param_number_input(ui, current_spec, 43.0, 6)
+                });
+                assert!(matches!(outcome, ParamEditOutcome::None));
+            }
+
+            widget_frame(&ctx, 0.7, pointer_button(start, true), |ui| {
+                render_param_number_input(ui, new_spec, 43.0, 6)
+            });
+            let (_, outcome) = widget_frame(
+                &ctx,
+                0.8,
+                vec![egui::Event::PointerMoved(start + egui::vec2(20.0, 0.0))],
+                |ui| render_param_number_input(ui, new_spec, 43.0, 6),
+            );
+            let expected = if new_type == "f64" { 43.2 } else { 48.0 };
+            let actual = match outcome {
+                ParamEditOutcome::Commit(value) => Some(value),
+                ParamEditOutcome::None => None,
+            };
+            assert_eq!(
+                actual,
+                Some(serde_json::json!(expected)),
+                "{old_type} -> {new_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn parameter_number_type_changes_discard_typed_drafts() {
+        for (old_type, new_type) in [("f64", "i32"), ("i64", "f64")] {
+            let ctx = egui::Context::default();
+            let spec = ParamControlSpec {
+                label: "value",
+                ty: old_type,
+                default: Some(0.0),
+                domain: None,
+            };
+            widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_param_number_input(ui, spec, 10.0, 6)
+            });
+            widget_frame(&ctx, 0.1, key_event(egui::Key::Tab), |ui| {
+                render_param_number_input(ui, spec, 10.0, 6)
+            });
+            widget_frame(&ctx, 0.2, vec![egui::Event::Text("99".into())], |ui| {
+                render_param_number_input(ui, spec, 10.0, 6)
+            });
+            let (_, outcome) = widget_frame(&ctx, 0.3, key_event(egui::Key::Enter), |ui| {
+                render_param_number_input(
+                    ui,
+                    ParamControlSpec {
+                        ty: new_type,
+                        ..spec
+                    },
+                    43.0,
+                    6,
+                )
+            });
+            assert!(matches!(outcome, ParamEditOutcome::None));
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
+        }
+    }
+
+    #[test]
+    fn parameter_numbers_reverse_immediately_after_overshooting_bounds() {
+        let ctx = egui::Context::default();
+        let spec = ParamControlSpec {
+            label: "gain",
+            ty: "f64",
+            default: Some(0.5),
+            domain: ParamDomain::new(
+                ParamScalarType::F64,
+                0.0,
+                1.0,
+                ParamScale::Linear,
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+        let mut value = 0.5;
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_param_number_input(ui, spec, value, 4)
+        });
+        let start = rect.center();
+        for (time, events) in [
+            (0.1, pointer_button(start, true)),
+            (
+                0.2,
+                vec![egui::Event::PointerMoved(start + egui::vec2(1000.0, 0.0))],
+            ),
+            (
+                0.3,
+                vec![egui::Event::PointerMoved(start + egui::vec2(990.0, 0.0))],
+            ),
+        ] {
+            let (_, outcome) = widget_frame(&ctx, time, events, |ui| {
+                render_param_number_input(ui, spec, value, 4)
+            });
+            if let ParamEditOutcome::Commit(next) = outcome {
+                value = next.as_f64().unwrap();
+            }
+        }
+        assert!((value - (1.0 - 10.0 / 375.0)).abs() < 1e-15);
+    }
+
+    #[test]
+    fn parameter_number_drags_preserve_precision_through_fine_motion_and_release() {
+        for shift in [false, true] {
+            let ctx = egui::Context::default();
+            let initial = 0.0020037;
+            let spec = ParamControlSpec {
+                label: "tiny",
+                ty: "f64",
+                default: Some(initial),
+                domain: ParamDomain::new(
+                    ParamScalarType::F64,
+                    0.0,
+                    0.008,
+                    ParamScale::Linear,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            };
+            let mut value = initial;
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_param_number_input(ui, spec, value, 4)
+            });
+            let start = rect.center();
+            let end = start + egui::vec2(20.0, 20.0);
+            widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+                render_param_number_input(ui, spec, value, 4)
+            });
+            for (time, events) in [
+                (0.2, vec![egui::Event::PointerMoved(end)]),
+                (0.3, pointer_button(end, false)),
+            ] {
+                let (_, outcome) = widget_frame_with_modifiers(
+                    &ctx,
+                    time,
+                    events,
+                    egui::Modifiers {
+                        shift,
+                        ..Default::default()
+                    },
+                    |ui| render_param_number_input(ui, spec, value, 4),
+                );
+                if let ParamEditOutcome::Commit(next) = outcome {
+                    value = next.as_f64().unwrap();
+                }
+                let expected = initial + 20.0 * 0.008 / 375.0 * if shift { 0.1 } else { 1.0 };
+                assert!((value - expected).abs() < 1e-15);
+            }
+        }
+    }
+
+    fn key_event(key: egui::Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]
+    }
+
+    #[test]
+    fn event_i64_typing_cancel_and_keyboard_steps_stay_exact() {
+        let ctx = egui::Context::default();
+        let initial = "9007199254740993";
+        let mut value = serde_json::json!(initial);
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+        });
+        let pos = rect.center();
+        for (time, events) in [
+            (0.1, pointer_button(pos, true)),
+            (0.15, pointer_button(pos, false)),
+            (0.2, vec![egui::Event::Text("9007199254740998".into())]),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            });
+        }
+        assert_eq!(value, serde_json::json!("9007199254740998"));
+        widget_frame(&ctx, 0.3, key_event(egui::Key::Escape), |ui| {
+            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+        });
+        assert_eq!(value, serde_json::json!(initial));
+        assert!(ctx.memory(|memory| memory.focused().is_none()));
+        for (time, events) in [
+            (0.7, pointer_button(pos, true)),
+            (0.75, pointer_button(pos, false)),
+            (0.8, key_event(egui::Key::ArrowUp)),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            });
+        }
+        assert_eq!(value, serde_json::json!("9007199254740994"));
+    }
+
+    #[test]
+    fn midi_velocity_number_supports_drag_fine_motion_typing_and_reset() {
+        let ctx = egui::Context::default();
+        let mut velocity = 0.81;
+        let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+            render_midi_velocity_number(ui, &mut velocity)
+        });
+        let start = rect.center();
+        let end = start + egui::vec2(20.0, 0.0);
+        for (time, events) in [
+            (0.1, pointer_button(start, true)),
+            (0.2, vec![egui::Event::PointerMoved(end)]),
+            (0.3, pointer_button(end, false)),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_midi_velocity_number(ui, &mut velocity)
+            });
+        }
+        assert_eq!(velocity, 0.86);
+        widget_frame(&ctx, 0.5, pointer_button(start, true), |ui| {
+            render_midi_velocity_number(ui, &mut velocity)
+        });
+        let end = start + egui::vec2(50.0, 0.0);
+        for (time, events) in [
+            (0.6, vec![egui::Event::PointerMoved(end)]),
+            (0.7, pointer_button(end, false)),
+        ] {
+            widget_frame_with_modifiers(&ctx, time, events, egui::Modifiers::SHIFT, |ui| {
+                render_midi_velocity_number(ui, &mut velocity)
+            });
+        }
+        assert_eq!(velocity, 0.87);
+        for (time, events) in [
+            (1.0, pointer_button(start, true)),
+            (1.05, pointer_button(start, false)),
+            (1.1, vec![egui::Event::Text("0.42".into())]),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_midi_velocity_number(ui, &mut velocity)
+            });
+        }
+        assert_eq!(velocity, 0.87);
+        widget_frame(&ctx, 1.2, key_event(egui::Key::Enter), |ui| {
+            render_midi_velocity_number(ui, &mut velocity)
+        });
+        assert_eq!(velocity, 0.42);
+        for (time, events) in [
+            (1.6, pointer_button(start, true)),
+            (1.65, pointer_button(start, false)),
+            (1.7, vec![egui::Event::Text("0.99".into())]),
+            (1.75, pointer_button(start, true)),
+            (1.8, pointer_button(start, false)),
+            (1.9, vec![]),
+        ] {
+            widget_frame(&ctx, time, events, |ui| {
+                render_midi_velocity_number(ui, &mut velocity)
+            });
+        }
+        assert_eq!(velocity, 1.0);
+    }
+
+    #[test]
+    fn event_numbers_double_click_reset_and_discard_typed_drafts() {
+        for (ty, initial, default) in [
+            ("f32", serde_json::json!(9.0), serde_json::json!(0.25)),
+            ("f64", serde_json::json!(9.0), serde_json::json!(-2.0)),
+            ("i32", serde_json::json!(9), serde_json::json!(3)),
+            (
+                "i64",
+                serde_json::json!("9"),
+                serde_json::json!("9007199254740993"),
+            ),
+        ] {
+            let ctx = egui::Context::default();
+            let mut value = initial;
+            let render = |ui: &mut egui::Ui| {
+                render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
+            };
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
+            let pos = rect.center();
+            for (time, events) in [
+                (0.1, pointer_button(pos, true)),
+                (0.15, pointer_button(pos, false)),
+                (0.2, vec![egui::Event::Text("99".into())]),
+                (0.25, pointer_button(pos, true)),
+                (0.3, pointer_button(pos, false)),
+                (0.4, vec![]),
+            ] {
+                widget_frame(&ctx, time, events, |ui| {
+                    render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
+                });
+                if time >= 0.3 {
+                    assert_eq!(value, default, "{ty} default must survive the next frame");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn event_number_reset_without_default_uses_typed_zero() {
+        for ty in ["f32", "f64", "i32", "i64"] {
+            let ctx = egui::Context::default();
+            let mut value = serde_json::json!(9);
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+            });
+            for (time, pressed) in [(0.1, true), (0.15, false), (0.2, true), (0.25, false)] {
+                widget_frame(&ctx, time, pointer_button(rect.center(), pressed), |ui| {
+                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                });
+            }
+            let expected = if ty == "i64" {
+                serde_json::json!("0")
+            } else if ty == "f32" || ty == "f64" {
+                serde_json::json!(0.0)
+            } else {
+                serde_json::json!(0)
+            };
+            assert_eq!(value, expected);
+        }
     }
 
     #[test]
@@ -3546,9 +4322,95 @@ mod tests {
     }
 
     #[test]
-    fn float_drag_speed_remains_scaled_to_the_range() {
-        let speed = scalar_drag_speed("f32", Some(40.0), Some(12_000.0));
-        assert!((speed - 0.37375).abs() < f64::EPSILON);
+    fn unbounded_number_drag_speed_matches_the_scalar_type() {
+        assert_eq!(scalar_drag_speed("f32"), 0.01);
+        assert_eq!(scalar_drag_speed("i32"), 0.25);
+    }
+
+    #[test]
+    fn parameter_number_drags_cover_ranges_with_overflowing_spans() {
+        for maximum in [1.0e308, f64::MAX] {
+            let spec = ParamControlSpec {
+                label: "wide",
+                ty: "f64",
+                default: Some(0.0),
+                domain: ParamDomain::new(
+                    ParamScalarType::F64,
+                    -maximum,
+                    maximum,
+                    ParamScale::Linear,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            };
+            assert!(spec.domain.is_some());
+            for direction in [-1.0, 1.0] {
+                let ctx = egui::Context::default();
+                let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
+                    render_param_number_input(ui, spec, 0.0, 6)
+                });
+                let start = rect.center();
+                widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
+                    render_param_number_input(ui, spec, 0.0, 6)
+                });
+                let (_, outcome) = widget_frame(
+                    &ctx,
+                    0.2,
+                    vec![egui::Event::PointerMoved(
+                        start + egui::vec2(direction * 187.5, 0.0),
+                    )],
+                    |ui| render_param_number_input(ui, spec, 0.0, 6),
+                );
+                let ParamEditOutcome::Commit(value) = outcome else {
+                    panic!("wide-range drag must commit a value");
+                };
+                assert!((value.as_f64().unwrap() / maximum - f64::from(direction)).abs() < 1.0e-15);
+            }
+        }
+    }
+
+    #[test]
+    fn parameter_number_and_knob_drags_use_separate_sensitivities() {
+        for ty in ["f32", "f64", "i32", "i64"] {
+            let ctx = egui::Context::default();
+            let domain = ParamDomain::new(
+                ParamScalarType::F64,
+                0.0,
+                160.0,
+                ParamScale::Linear,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("valid test domain");
+            let spec = ParamControlSpec {
+                label: "value",
+                ty,
+                default: Some(0.0),
+                domain: Some(domain),
+            };
+            let render = |ui: &mut egui::Ui| render_param_number_input(ui, spec, 0.0, 6);
+            let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
+            let pos = rect.center();
+            widget_frame(&ctx, 0.1, pointer_button(pos, true), render);
+            let (_, outcome) = widget_frame(
+                &ctx,
+                0.2,
+                vec![egui::Event::PointerMoved(pos + egui::vec2(93.75, 0.0))],
+                render,
+            );
+            let mut knob_drag = KnobDragState::new(domain, 0.0);
+            let knob_value = knob_drag.drag(domain, -62.5);
+            assert_eq!(knob_value, 40.0);
+            assert!(
+                matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(knob_value)),
+                "{ty} numbers need 93.75 points and knobs need 62.5 points for one quarter of the range"
+            );
+            assert_eq!(knob_drag.drag(domain, -187.5), 160.0);
+        }
     }
 
     #[test]
@@ -3594,7 +4456,7 @@ mod tests {
         .expect("valid stepped domain");
         let mut drag = KnobDragState::new(domain, 0.0);
 
-        for _ in 0..9 {
+        for _ in 0..15 {
             assert_eq!(drag.drag(domain, -1.0), 0.0);
         }
         assert_eq!(drag.drag(domain, -1.0), 100.0);
@@ -3941,7 +4803,12 @@ mod tests {
                                 );
                             let top = ui.cursor().top();
                             render_section_header(ui, &mut state, "Params", |ui| {
-                                render_param_header_actions(ui, &mut ParamLayout::Knobs, &mut 0.03);
+                                render_param_header_actions(
+                                    ui,
+                                    &mut ParamLayout::Knobs,
+                                    &mut 0.03,
+                                    RunHostOptions::default().param_smoothing_seconds,
+                                );
                                 assert!(ui.min_rect().left() >= bounds.left(), "width: {width}");
                                 assert!(
                                     ui.min_rect().right() <= bounds.right(),
@@ -4021,7 +4888,6 @@ mod tests {
                     ),
                 },
                 &serde_json::json!(880.0),
-                None,
             );
 
             assert!(

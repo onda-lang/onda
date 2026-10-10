@@ -41,6 +41,7 @@ mod platform {
     const RUN_HTML: &str = include_str!("../../../ui/run/run.html");
     const PARAM_CONTROL_JS: &str =
         include_str!("../../../packages/onda_processor_abi/src/param-control.js");
+    const NUMBER_INPUT_JS: &str = include_str!("../../../ui/number-input.js");
     #[cfg(target_os = "macos")]
     const APP_ICON_DARK_PNG: &[u8] =
         include_bytes!("../../../assets/png/onda-app-icon-dark-1024.png");
@@ -70,6 +71,7 @@ mod platform {
         let event_loop: EventLoop<UserEvent> = EventLoopBuilder::with_user_event().build();
         let proxy = event_loop.create_proxy();
         let run_theme = options.theme;
+        let default_param_smoothing_seconds = options.param_smoothing_seconds;
         let mut controller = onda_path
             .map(|path| RunController::new(path, options.clone()))
             .transpose()?;
@@ -88,6 +90,7 @@ mod platform {
         let init_script = format!(
             r#"
             {PARAM_CONTROL_JS}
+            {NUMBER_INPUT_JS}
             window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}", ondaVersion: {onda_version} }};
             window.__ondaForcedTheme = "{theme_mode}";
             if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
@@ -261,6 +264,7 @@ mod platform {
                     &options,
                     theme_mode,
                     reset_view_state,
+                    default_param_smoothing_seconds,
                 );
                 last_synced_path = Some(path);
                 pending_state_sync = false;
@@ -545,6 +549,7 @@ mod platform {
         options: &RunHostOptions,
         theme_mode: &str,
         reset_view_state: bool,
+        default_param_smoothing_seconds: f64,
     ) {
         if let Some(controller) = controller {
             sync_panel_state(
@@ -554,6 +559,7 @@ mod platform {
                 options,
                 theme_mode,
                 reset_view_state,
+                default_param_smoothing_seconds,
             );
             return;
         }
@@ -587,6 +593,7 @@ mod platform {
             "supportsRunSettings": true,
             "supportsParamSmoothing": true,
             "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
+            "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
             "supportsScope": true,
             "supportsProjectExport": false,
             "canExportProject": false,
@@ -605,6 +612,7 @@ mod platform {
         options: &RunHostOptions,
         theme_mode: &str,
         reset_view_state: bool,
+        default_param_smoothing_seconds: f64,
     ) {
         let panel_state = serde_json::json!({
             "running": state.running,
@@ -636,6 +644,7 @@ mod platform {
             "supportsRunSettings": true,
             "supportsParamSmoothing": true,
             "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
+            "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
             "supportsScope": true,
             "supportsProjectExport": true,
             "canExportProject": true,

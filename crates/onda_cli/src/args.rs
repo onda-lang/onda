@@ -162,7 +162,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         ));
     };
     let mut emit = CompileEmit::Check;
-    let mut emit_explicit = false;
     let mut output = None::<PathBuf>;
     let mut meta_out = None::<PathBuf>;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
@@ -189,11 +188,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                             .to_owned(),
                     );
                 };
-                if emit == CompileEmit::LlvmIr && !emit_explicit {
-                    return Err("cannot use both --ir and --emit".to_owned());
-                }
                 emit = parse_compile_emit(&value)?;
-                emit_explicit = true;
             }
             "--output" | "-o" => {
                 let Some(value) = args.next() else {
@@ -233,12 +228,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                     ));
                 }
                 const_overrides.push(parsed);
-            }
-            "--ir" => {
-                if emit_explicit {
-                    return Err("cannot use both --ir and --emit".to_owned());
-                }
-                emit = CompileEmit::LlvmIr;
             }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
@@ -298,12 +287,8 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 sample_rate_hz = parse_sample_rate_hz(value)?;
             }
             _ if arg.starts_with("--emit=") => {
-                if emit == CompileEmit::LlvmIr && !emit_explicit {
-                    return Err("cannot use both --ir and --emit".to_owned());
-                }
                 let value = &arg["--emit=".len()..];
                 emit = parse_compile_emit(value)?;
-                emit_explicit = true;
             }
             _ if arg.starts_with("--output=") => {
                 let value = &arg["--output=".len()..];
@@ -488,7 +473,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     };
 
     let mut output = PathBuf::from(DEFAULT_DAEMON_OUTPUT);
-    let mut dur_seconds = DEFAULT_DUR_SECONDS;
+    let mut duration = DEFAULT_DURATION;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
@@ -508,9 +493,9 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             }
             "--dur" | "-d" => {
                 let Some(value) = args.next() else {
-                    return Err("--dur requires a positive integer value".to_owned());
+                    return Err("--dur requires a positive duration in seconds".to_owned());
                 };
-                dur_seconds = parse_dur_seconds(&value)?;
+                duration = parse_duration(&value)?;
             }
             "--sample-rate" | "--sr" => {
                 let Some(value) = args.next() else {
@@ -555,7 +540,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 output = PathBuf::from(&arg["--output=".len()..]);
             }
             _ if arg.starts_with("--dur=") => {
-                dur_seconds = parse_dur_seconds(&arg["--dur=".len()..])?;
+                duration = parse_duration(&arg["--dur=".len()..])?;
             }
             _ if arg.starts_with("--sample-rate=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
@@ -586,7 +571,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     Ok(RunCommand::Render {
         input: PathBuf::from(input),
         output,
-        dur_seconds,
+        duration,
         sample_rate_hz,
         block_frames,
         param_smoothing_seconds,
@@ -734,7 +719,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         return Err(format!("run play requires an input file\n\n{}", usage()));
     };
 
-    let mut dur_seconds = Some(DEFAULT_DUR_SECONDS);
+    let mut duration = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_frames = DEFAULT_BLOCK_FRAMES;
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
@@ -753,12 +738,12 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         match arg.as_str() {
             "--dur" | "-d" => {
                 let Some(value) = args.next() else {
-                    return Err("--dur requires a positive integer value".to_owned());
+                    return Err("--dur requires a positive duration in seconds".to_owned());
                 };
                 if forever {
                     return Err("--dur cannot be combined with --forever".to_owned());
                 }
-                dur_seconds = Some(parse_dur_seconds(&value)?);
+                duration = Some(parse_duration(&value)?);
             }
             "--sample-rate" | "--sr" => {
                 let Some(value) = args.next() else {
@@ -815,11 +800,10 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 midi_input_device = Some(value);
             }
             "--forever" => {
-                if dur_seconds != Some(DEFAULT_DUR_SECONDS) {
+                if duration.is_some() {
                     return Err("--forever cannot be combined with --dur".to_owned());
                 }
                 forever = true;
-                dur_seconds = None;
             }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
@@ -829,7 +813,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 if forever {
                     return Err("--dur cannot be combined with --forever".to_owned());
                 }
-                dur_seconds = Some(parse_dur_seconds(&arg["--dur=".len()..])?);
+                duration = Some(parse_duration(&arg["--dur=".len()..])?);
             }
             _ if arg.starts_with("--sample-rate=") => {
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sample-rate=".len()..])?;
@@ -868,7 +852,11 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
 
     Ok(RunCommand::Play {
         input: PathBuf::from(input),
-        dur_seconds,
+        duration: if forever {
+            None
+        } else {
+            Some(duration.unwrap_or(DEFAULT_DURATION))
+        },
         sample_rate_hz,
         block_frames,
         param_smoothing_seconds,
@@ -884,14 +872,16 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     })
 }
 
-fn parse_dur_seconds(value: &str) -> Result<u32, String> {
-    let parsed = value
-        .parse::<u32>()
-        .map_err(|_| format!("invalid duration '{value}', expected positive integer seconds"))?;
-    if parsed == 0 {
-        return Err("duration must be greater than zero".to_owned());
+fn parse_duration(value: &str) -> Result<Duration, String> {
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|_| format!("invalid duration '{value}', expected positive seconds"))?;
+    let duration = Duration::try_from_secs_f64(seconds)
+        .map_err(|error| format!("invalid duration '{value}': {error}"))?;
+    if duration.is_zero() {
+        return Err("duration must be greater than zero (at least one nanosecond)".to_owned());
     }
-    Ok(parsed)
+    Ok(duration)
 }
 
 fn parse_sample_rate_hz(value: &str) -> Result<u32, String> {

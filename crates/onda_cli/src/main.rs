@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 mod args;
 mod compile_cmd;
@@ -17,7 +18,7 @@ use onda_run::RunThemeMode;
 use run_cmd::{run_daemon, run_run};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
-const DEFAULT_DUR_SECONDS: u32 = 5;
+const DEFAULT_DURATION: Duration = Duration::from_secs(5);
 const DEFAULT_BLOCK_FRAMES: usize = onda_run::DEFAULT_REALTIME_BLOCK_FRAMES;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,7 +31,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--const <name=value>] [--list-consts]
     [--opt-level <0|1|2|3>] [--fast-math]  
-    [--dump-graph] [--ir] [--meta] 
+    [--dump-graph] [--meta]
     [--target-spec <path>] [--target-features <feature-list>] 
     [--target-triple <triple>] [--target-cpu <name|host>] [--target-abi <name>] 
     [--reloc-model <default|static|pic|dynamic-no-pic>] 
@@ -89,7 +90,6 @@ Compile Options:
   --dump-graph           Print program after graph lowering, before proc desugaring/codegen
   --const                Override one typed `config const` declaration
   --list-consts          Resolve and print compile configuration without generating an artifact
-  --ir                   Alias for `onda compile --emit llvm-ir`
   --target-triple        LLVM target triple for compile-time IR emission
   --target-spec          TOML target spec for compile-time IR/object emission
   --target-cpu           Target CPU name, or 'host' for the native host CPU
@@ -100,7 +100,7 @@ Compile Options:
 
 Run Options:
   
-  --dur, -d              Render/play duration in seconds (default: 5)
+  --dur, -d              Render/play duration in seconds; accepts fractions (default: 5)
   --forever              Render/play with infinite duration
   --output, -o           Output WAV path for `onda run render`
   --input-device         Select audio input device by exact name for run playback
@@ -173,7 +173,7 @@ enum CompileEmit {
 enum RunCommand {
     Play {
         input: PathBuf,
-        dur_seconds: Option<u32>,
+        duration: Option<Duration>,
         sample_rate_hz: u32,
         block_frames: usize,
         param_smoothing_seconds: f64,
@@ -190,7 +190,7 @@ enum RunCommand {
     Render {
         input: PathBuf,
         output: PathBuf,
-        dur_seconds: u32,
+        duration: Duration,
         sample_rate_hz: u32,
         block_frames: usize,
         param_smoothing_seconds: f64,

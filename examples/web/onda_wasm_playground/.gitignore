@@ -9,6 +9,7 @@ onda-wasm-processor.js
 math-kernel.generated.js
 onda-compiler-web/
 run.html
+number-input.js
 default.mir.json
 default.o
 default.wasm

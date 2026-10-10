@@ -1,4 +1,5 @@
 // Shared browser IDE controller used by the website and standalone example.
+import "../number-input.js";
 import { closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { createCompiler, ONDA_VERSION } from "@onda-lang/wasm-compiler";
 import {
@@ -113,7 +114,11 @@ const runView = new BrowserRunViewHost(runViewFrame, {
     setErrorStatus();
   },
 });
-runView.setState({ ondaVersion: ONDA_VERSION, paramSmoothingMs });
+runView.setState({
+  ondaVersion: ONDA_VERSION,
+  paramSmoothingMs,
+  paramSmoothingDefaultMs: paramSmoothingMs,
+});
 midiInputs = new BrowserMidiInputs({
   onState: ({ devices, current }) => runView.setMidiInputs(devices, current),
   onEvent: (name, values) => audioProcessor?.trigger(name, values),
@@ -1214,10 +1219,19 @@ editorFontSizeEl.addEventListener("input", () => {
   const fontSize = validEditorFontSize(editorFontSizeEl.value);
   if (fontSize !== null) applyEditorFontSize(fontSize);
 });
-editorFontSizeEl.addEventListener("change", () => {
+const normalizeEditorFontSize = () => {
   const fontSize = validEditorFontSize(editorFontSizeEl.value);
   if (fontSize !== null) applyEditorFontSize(fontSize);
   editorFontSizeEl.value = String(editorFontSize);
+};
+editorFontSizeEl.addEventListener("change", normalizeEditorFontSize);
+editorFontSizeEl.addEventListener("blur", normalizeEditorFontSize);
+globalThis.__ONDA_NUMBER_INPUT__.bindDraggableNumber(editorFontSizeEl, {
+  speed: 0.25,
+  updateValue(value) {
+    editorFontSizeEl.value = String(Math.round(value));
+    editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
+  },
 });
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
 document.addEventListener("pointerdown", () => {

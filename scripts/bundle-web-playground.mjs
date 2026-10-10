@@ -29,9 +29,26 @@ export async function bundlePlayground(outfile) {
   });
 }
 
+export async function bundleCompilerWorker(outfile) {
+  return build({
+    entryPoints: [resolve(repoRoot, "packages/onda_wasm_compiler/src/worker.js")],
+    outfile: resolve(outfile),
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    minify: true,
+    metafile: true,
+    legalComments: "none",
+    // Binaryen guards these Node-only imports so browsers never execute them.
+    external: ["node:*"],
+  });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const outfile = process.argv[2]
     ?? resolve(repoRoot, "examples/web/onda_wasm_playground/playground.js");
   await bundlePlayground(outfile);
+  if (process.argv[3]) await bundleCompilerWorker(process.argv[3]);
   process.stdout.write(`Bundled browser playground: ${outfile}\n`);
 }

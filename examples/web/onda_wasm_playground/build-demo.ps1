@@ -31,7 +31,11 @@ Copy-Item (Join-Path $compilerPackage "src") (Join-Path $compilerOut "src") -Rec
 Copy-Item (Join-Path $compilerPackage "dist") (Join-Path $compilerOut "dist") -Recurse
 Copy-Item $binaryenJs (Join-Path $compilerOut "dist\backend\binaryen.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "src\processor-abi.js") -Force
+Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "src\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "src\payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "dist\backend\processor-abi.js") -Force
+Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "dist\backend\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "dist\backend\payload.js") -Force
 $compilerSource = Get-Content (Join-Path $compilerPackage "src\index.js") -Raw
 $compilerSource.Replace('from "#onda-frontend-loader"', 'from "./frontend-browser.js"').Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $compilerOut "src\index.js") -NoNewline
@@ -46,11 +50,16 @@ Copy-Item (Join-Path $webAudioPackage "src\processor-constants.js") (Join-Path $
 Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\execution-output-ring.js") (Join-Path $webAudioOut "execution-output-ring.js") -Force
 Copy-Item (Join-Path $repoRoot "ui\run\run.html") (Join-Path $demoDir "run.html") -Force
+Copy-Item (Join-Path $repoRoot "ui\number-input.js") (Join-Path $demoDir "number-input.js") -Force
+Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $demoDir "param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $demoDir "payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $webAudioOut "processor-abi.js") -Force
+Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $webAudioOut "param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $webAudioOut "payload.js") -Force
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw
 $webAudioSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $webAudioOut "index.js") -NoNewline
-node (Join-Path $repoRoot "scripts\bundle-web-playground.mjs") (Join-Path $demoDir "playground.js")
+node (Join-Path $repoRoot "scripts\bundle-web-playground.mjs") (Join-Path $demoDir "playground.js") (Join-Path $compilerOut "src\worker.js")
 
 Write-Host "Staged @onda-lang/wasm-compiler in: $compilerOut"
 Write-Host "Staged @onda-lang/webaudio in: $webAudioOut"

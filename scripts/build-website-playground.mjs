@@ -3,8 +3,7 @@ import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
-import { bundlePlayground } from "./bundle-web-playground.mjs";
+import { bundleCompilerWorker, bundlePlayground } from "./bundle-web-playground.mjs";
 import { writeBundledJavaScriptLicenses } from "./bundled-javascript-licenses.mjs";
 import { buildExampleProjectCatalog } from "./example-projects.mjs";
 
@@ -86,22 +85,10 @@ const [playgroundBuild] = await Promise.all([
     `${JSON.stringify(catalog)}\n`,
   )),
   cp(resolve(repoRoot, "ui/run/run.html"), resolve(assetsRoot, "run.html")),
+  cp(resolve(repoRoot, "ui/number-input.js"), resolve(assetsRoot, "number-input.js")),
 ]);
 
-const workerBuild = await build({
-  entryPoints: [resolve(compilerRoot, "src/worker.js")],
-  outfile: resolve(assetsRoot, "compiler-worker.js"),
-  bundle: true,
-  format: "esm",
-  platform: "browser",
-  target: "es2022",
-  minify: true,
-  metafile: true,
-  legalComments: "none",
-  // Binaryen's universal bundle keeps Node-only dynamic imports behind an
-  // environment guard. Preserve those unreachable specifiers for browsers.
-  external: ["node:*"],
-});
+const workerBuild = await bundleCompilerWorker(resolve(assetsRoot, "compiler-worker.js"));
 
 const bundledLicenses = resolve(
   assetsRoot,

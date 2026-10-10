@@ -14,6 +14,11 @@ and the standalone `examples/web/onda_wasm_playground` host.
 - `param-smoothing.js` retains the smoothing preference across processor replacements.
 - `default.onda` is embedded into the generated playground bundle.
 
+Editor font size and all single-number run controls share `ui/number-input.js`:
+drag to adjust, Shift for fine adjustment, click or Tab to type, and double-click
+to reset. Font size uses a fixed sensitivity of 4 horizontal pixels per 1 px
+adjustment and resets to 14 pixels.
+
 Hosts provide the required DOM elements and `globalThis.__ONDA_PLAYGROUND_ASSETS__`; they do not own
 copies of the IDE runtime. `scripts/bundle-web-playground.mjs` is the single bundling entry point.
 External hosts can configure `midiKeyboardInteractive: false` to use the shared

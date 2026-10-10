@@ -101,28 +101,15 @@ Use `onda --version` (or `onda -v`) to print the installed version.
 
 Compiles an Onda file and optionally emits IR or an object file.
 
-Typical uses:
-- syntax and semantic checking
-- inspect graph lowering with `--dump-graph`
-- emit backend-neutral MIR for inspection with `--emit mir`, versioned JSON with `--emit mir-json`, or compact production transport with `--emit mir-messagepack`
-- select explicitly declared compile-time variants with repeatable `--const Name=value`, or inspect
-  their resolved types and defaults with `--list-consts`
-- emit LLVM IR with `--emit llvm-ir` or `--ir`
-- emit a native object file with `--emit obj`
-
 Examples:
 
 ```bash
 onda compile examples/basic/sine.onda
 onda compile examples/basic/sine.onda --emit mir
-onda compile examples/basic/sine.onda --emit mir-json --output sine.mir.json
-onda compile examples/basic/sine.onda --emit mir-messagepack --output sine.mir.msgpack
-onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
-onda compile program.onda --const Channels=8 --const 'Window=[0.0, 0.5, 1.0]' --emit mir
-onda compile program.onda --list-consts
 onda compile examples/basic/sine.onda --emit llvm-ir
 onda compile examples/basic/sine.onda --emit obj
 onda compile examples/basic/sine.onda --target-triple aarch64-unknown-linux-gnu --emit obj
+onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
 ```
 
 Cross-target IR and object emission is also supported:
@@ -142,7 +129,6 @@ Loaded filesystem sources and projects reload when their entry, transitive sourc
 manifest, or file-backed assets change; unresolved and temporarily missing paths remain watchable.
 
 ```bash
-onda
 onda run examples/basic/sine.onda
 ```
 
@@ -154,9 +140,10 @@ Run host selection:
 
 Runs the real-time playback/control transport without opening the standalone UI.
 Parameters can be set via the `--set` argument.
+`--dur` (or `-d`) accepts positive fractional seconds for both playback and offline rendering.
 
 ```bash
-onda run play examples/basic/sine.onda --dur 2
+onda run play examples/basic/sine.onda --dur 2.5
 onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 

@@ -49,7 +49,7 @@ static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub struct PlaybackLaunch {
     pub input: PathBuf,
     pub compile_inputs: onda_semantics::CompileInputs,
-    pub dur_seconds: Option<u32>,
+    pub duration: Option<Duration>,
     pub sample_rate_hz: u32,
     pub block_frames: usize,
     pub param_smoothing_seconds: f64,
@@ -565,17 +565,17 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     if launch.control_json {
         eprintln!(
             "{}",
-            playback_status_message(&startup.path, launch.dur_seconds)
+            playback_status_message(&startup.path, launch.duration)
         );
     } else {
         println!(
             "{}",
-            playback_status_message(&startup.path, launch.dur_seconds)
+            playback_status_message(&startup.path, launch.duration)
         );
     }
 
     let playback_result = wait_for_playback_completion(
-        launch.dur_seconds,
+        launch.duration,
         &stop_flag,
         &render_error,
         &error_state,
@@ -709,21 +709,25 @@ fn run_delegate_occurrence_json(occurrence: &RunDelegateOccurrence) -> Value {
     })
 }
 
-fn playback_status_message(path: &Path, dur_seconds: Option<u32>) -> String {
-    match dur_seconds {
-        Some(dur_seconds) => format!("Playing {} for {} seconds", display_path(path), dur_seconds),
+fn playback_status_message(path: &Path, duration: Option<Duration>) -> String {
+    match duration {
+        Some(duration) => format!(
+            "Playing {} for {} seconds",
+            display_path(path),
+            duration.as_secs_f64()
+        ),
         None => format!("Playing {} until stopped", display_path(path)),
     }
 }
 
 fn wait_for_playback_completion(
-    dur_seconds: Option<u32>,
+    duration: Option<Duration>,
     stop_flag: &Arc<AtomicBool>,
     render_error: &Arc<Mutex<Option<String>>>,
     error_state: &StreamErrorState,
     mut midi_input: Option<&mut midi::MidiInputManager>,
 ) -> Result<(), String> {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let mut reported_underrun = false;
     loop {
         if run_termination_requested() {
@@ -733,8 +737,8 @@ fn wait_for_playback_completion(
         if stop_flag.load(Ordering::Acquire) {
             break;
         }
-        if let Some(limit) = dur_seconds {
-            if start.elapsed() >= Duration::from_secs(u64::from(limit)) {
+        if let Some(limit) = duration {
+            if start.elapsed() >= limit {
                 break;
             }
         }
@@ -760,7 +764,11 @@ fn wait_for_playback_completion(
         if let Some(input) = midi_input.as_deref_mut() {
             input.poll();
         }
-        thread::sleep(Duration::from_millis(50));
+        let poll_interval = Duration::from_millis(50);
+        let sleep_duration = duration.map_or(poll_interval, |limit| {
+            poll_interval.min(limit.saturating_sub(start.elapsed()))
+        });
+        thread::sleep(sleep_duration);
     }
     Ok(())
 }
