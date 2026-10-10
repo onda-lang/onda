@@ -5,6 +5,13 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.25]
+
+### Fixed
+
+- Limit the webview and browser playground scrollbar to the content above the virtual MIDI
+  keyboard, matching egui.
+
 ## [0.8.24]
 
 ### Added
@@ -1110,6 +1117,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.25]: https://github.com/onda-lang/onda/compare/0.8.24...0.8.25
 [0.8.24]: https://github.com/onda-lang/onda/compare/0.8.22...0.8.24
 [0.8.22]: https://github.com/onda-lang/onda/compare/0.8.21...0.8.22
 [0.8.21]: https://github.com/onda-lang/onda/compare/0.8.20...0.8.21

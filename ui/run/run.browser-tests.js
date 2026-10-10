@@ -45,7 +45,8 @@ const params = [
 ];
 try {
   const shell = document.querySelector(".shell");
-  const scrollNode = document.scrollingElement;
+  const scrollNode = shell;
+  const paramsList = document.getElementById("params");
   const resetButton = document.getElementById("reset-params");
   const ondaVersion = document.getElementById("onda-version");
   check(!ondaVersion.hidden && ondaVersion.textContent === "Onda 0.0.0-test",
@@ -188,22 +189,41 @@ try {
     "button transitions resume after the view is ready");
   check(document.getElementById("midi-keyboard").hidden,
     "the run view starts without a MIDI keyboard");
-  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  paramsList.style.minHeight = `${window.innerHeight + 400}px`;
   scrollNode.scrollTop = 160;
-  check(scrollNode.scrollTop > 0 && shell.scrollTop === 0,
-    "the document scrolls when no MIDI keyboard is shown");
+  check(scrollNode.scrollTop > 0 && document.scrollingElement.scrollTop === 0,
+    "the content scrolls when no MIDI keyboard is shown");
   scrollNode.scrollTop = 0;
-  shell.style.minHeight = "";
+  paramsList.style.minHeight = "";
+  send({ midi: { noteOn: true }, params: Array.from({ length: 24 }, (_, index) => ({
+    ...params[0], name: `gain${index}`,
+  })) });
+  await waitFrames(1);
+  const midiKeyboard = document.getElementById("midi-keyboard");
+  const contentScrollNode = [shell, document.scrollingElement].find(node =>
+    node.scrollHeight > node.clientHeight);
+  check(contentScrollNode && contentScrollNode.getBoundingClientRect().bottom
+    <= midiKeyboard.getBoundingClientRect().top,
+    `the run view scrollbar ends above the MIDI keyboard (${window.innerWidth} × ${window.innerHeight})`);
+  const keyboardTop = midiKeyboard.getBoundingClientRect().top;
+  scrollNode.scrollTop = scrollNode.scrollHeight;
+  await waitFrames(1);
+  check(scrollNode.scrollTop > 0 && document.scrollingElement.scrollTop === 0
+    && midiKeyboard.getBoundingClientRect().top === keyboardTop
+    && paramsList.lastElementChild.getBoundingClientRect().bottom <= keyboardTop,
+    "scrolling reveals the last parameter while the MIDI keyboard stays in place");
+  scrollNode.scrollTop = 0;
+  send({ midi: { noteOn: false }, params });
+  check(Math.abs(shell.getBoundingClientRect().bottom - window.innerHeight) < 1,
+    "hiding the MIDI keyboard returns its space to the content");
   send({ supportsScope: true });
   for (const section of ["scope", "events", "params"]) {
     document.getElementById(`${section}-toggle`).click();
   }
-  shell.style.minHeight = `${window.innerHeight + 400}px`;
   await waitFrames(1);
   check(["scope-section", "events-section", "params-section"].every(id =>
     document.getElementById(id).getBoundingClientRect().height < 80),
   "collapsed run sections stay at header height when the viewport has spare space");
-  shell.style.minHeight = "";
   for (const section of ["scope", "events", "params"]) {
     document.getElementById(`${section}-toggle`).click();
   }
@@ -1277,19 +1297,21 @@ try {
   }));
   check(velocityNumber.value === "0.82",
     "velocity slider remains synchronized after editing its number");
-  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  paramsList.style.minHeight = `${window.innerHeight + 400}px`;
   check(scrollNode.scrollHeight > scrollNode.clientHeight
-    && getComputedStyle(shell).overflowY !== "auto",
-    "the document owns run view scrolling");
+    && document.scrollingElement.scrollTop === 0,
+    "the content owns run view scrolling");
   scrollNode.scrollTop = 200;
   await new Promise(resolve => setTimeout(resolve, 130));
   const savedView = window.__testMessages.findLast(message => message.type === "viewState")?.state;
-  check(savedView?.octave === 2 && savedView.events[0].drafts[0][0] === '{"unfinished":'
+  check(Math.abs(savedView?.scrollY - 200) < 1 && savedView.octave === 2
+    && savedView.events[0].drafts[0][0] === '{"unfinished":'
     && savedView.sections.events === false,
-    "view snapshot includes keyboard, event draft, and section state");
+    "view snapshot includes content scroll, keyboard, event draft, and section state");
   send({ events: structuredEvents, resetEventArguments: true });
   octaveInput.value = "4";
   document.getElementById("events-toggle").click();
+  scrollNode.scrollTop = 0;
   const restoreCount = () => window.__testMessages.filter(
     message => message.type === "runViewReady").length;
   const restoresBefore = restoreCount();
@@ -1317,9 +1339,9 @@ try {
   check(!document.querySelector(".event-structured-arg").open
     && !document.querySelector(".param-array").open
     && document.getElementById("events-toggle").getAttribute("aria-expanded") === "false"
-    && scrollNode.scrollTop > 0,
+    && Math.abs(scrollNode.scrollTop - savedView.scrollY) < 1,
     "view restore recovers folds and scroll position");
-  shell.style.minHeight = "";
+  paramsList.style.minHeight = "";
 
   send({ viewState: { reset: true, readyId: 42 }, events: structuredEvents,
     resetEventArguments: true });
