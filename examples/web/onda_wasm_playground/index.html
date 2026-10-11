@@ -7,15 +7,15 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0b1015;
-        --surface: #0d141b;
-        --ink: #e8eef5;
-        --text: #b8c7d5;
-        --muted: #7890a5;
-        --line: #314152;
-        --soft: #143124;
+        --bg: #0c1e33;
+        --surface: #102943;
+        --ink: #f5f9ff;
+        --text: #dbe9fa;
+        --muted: #a8bfd9;
+        --line: #2d5278;
+        --soft: #143a63;
         --code-bg: #081522;
-        --code-ink: #e8eef5;
+        --code-ink: #f5f9ff;
         --syntax-section: #a9d2ff;
         --syntax-keyword: #87b9ed;
         --syntax-type: #c9dbf2;
@@ -34,10 +34,10 @@
       body {
         margin: 0;
         min-height: 100vh;
-        background: radial-gradient(circle at 12% 0%, #17312a 0, transparent 34rem), var(--bg);
+        background: var(--bg);
       }
-      main { width: min(1500px, calc(100% - 32px)); margin: 0 auto; padding: 24px 0 40px; }
-      header, .toolbar, .control-grid, .project-files, .project-file-tabs, .project-file-actions {
+      main { --play-viewport-offset: 160px; --play-stacked-offset: 192px; width: min(max(1920px, 84vw), calc(100% - 32px)); margin: 0 auto; padding: 24px 0 40px; }
+      header {
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
@@ -45,33 +45,28 @@
       }
       header { justify-content: space-between; margin-bottom: 18px; }
       h1, p { margin-top: 0; }
-      h1 { margin-bottom: 4px; font-size: clamp(22px, 4vw, 34px); }
-      p { color: #9cb0c3; }
+      h1 { margin-bottom: 4px; font: 650 clamp(24px, 2vw, 32px)/1.2 system-ui, sans-serif; }
+      p { color: var(--muted); }
       .header-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 14px; }
-      .header-divider { width: 1px; height: 16px; background: var(--line); }
-      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; gap: 16px; margin: 0; color: var(--muted); }
+      .header-divider { flex-shrink: 0; width: 1px; height: 16px; background: var(--line); }
+      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; flex-shrink: 0; gap: 16px; margin: 0; color: var(--muted); }
       .shortcut { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
       .shortcut > span { color: var(--text); font-size: 11px; font-weight: 650; }
       .shortcut-help kbd { padding: 0; border: 0; background: none; color: var(--muted); font: 600 11px/1 var(--mono); }
-      .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(390px, .8fr); gap: 16px; align-items: stretch; }
       .panel {
         min-width: 0;
         padding: 16px;
-        border: 1px solid #2a3642;
-        border-radius: 16px;
-        background: rgb(11 16 21 / 88%);
-        box-shadow: 0 20px 70px rgb(0 0 0 / 24%);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
       }
-      .toolbar { justify-content: space-between; margin-bottom: 12px; }
-      .control-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(90px, .6fr); flex: 1 1 460px; }
-      .control-grid label { display: grid; gap: 5px; flex: 1 1 130px; color: var(--text); }
       button, input, select { font: inherit; }
       button {
         padding: 8px 11px;
         border: 1px solid var(--line);
-        border-radius: 9px;
-        background: #18212b;
-        color: #dce7f2;
+        border-radius: 5px;
+        background: var(--soft);
+        color: var(--text);
         cursor: pointer;
       }
       button:disabled { cursor: default; opacity: .55; }
@@ -79,158 +74,44 @@
         min-width: 0;
         padding: 7px 9px;
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: 5px;
         background: var(--surface);
         color: var(--ink);
       }
       .status {
         --status-color: var(--muted);
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
+        display: block;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
         color: var(--text);
         font-size: 12px;
         font-weight: 650;
         white-space: nowrap;
       }
-      .status::before { width: 7px; height: 7px; border-radius: 50%; background: var(--status-color); content: ""; }
+      .status::before { display: inline-block; width: 7px; height: 7px; margin-right: 7px; vertical-align: middle; border-radius: 50%; background: var(--status-color); content: ""; }
       .status.ready { --status-color: var(--syntax-keyword); }
       .status.playing { --status-color: var(--syntax-string); }
       .status.fail { --status-color: #f0a3ad; color: #f0a3ad; }
-      .project-files { display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 6px 0; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
-      .project-file-tabs { grid-column: 1; grid-row: 2; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
-      .project-file-add { display: grid; grid-column: 2; grid-row: 2; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: 16px/1 system-ui, sans-serif; }
-      .project-file-add:hover, .project-file-add:focus-visible { background: var(--soft); color: var(--ink); }
-      .project-file-actions { grid-column: 1 / -1; grid-row: 1; align-self: flex-start; flex: 0 0 auto; flex-wrap: wrap; gap: 4px; padding: 0 0 5px; }
-      .project-file-actions button { padding: 5px 7px; border-radius: 6px; font-size: 11px; }
-      .project-file {
-        display: flex;
-        align-items: center;
-        flex: 0 0 152px;
-        width: 152px;
-        min-width: 152px;
-        max-width: 152px;
-        min-height: 30px;
-        margin-bottom: -1px;
-        overflow: hidden;
-        border: 1px solid transparent;
-        border-bottom-color: var(--line);
-        border-radius: 7px 7px 0 0;
-        background: transparent;
-        color: var(--muted);
-        font-size: 11px;
-        white-space: nowrap;
-        cursor: grab;
-      }
-      .project-file[data-dragging="true"] { opacity: .55; cursor: grabbing; }
-      .project-file-tabs[data-dragging="true"] { cursor: grabbing; }
-      .project-file-tabs[data-dragging="true"] .project-file { user-select: none; }
-      .project-file-select {
-        display: inline-flex;
-        align-items: center;
-        flex: 1 1 auto;
-        min-width: 0;
-        align-self: stretch;
-        padding: 6px 2px 6px 8px;
-        gap: 6px;
-        overflow: hidden;
-        border: 0;
-        border-radius: 0;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        text-align: left;
-        cursor: grab;
-      }
-      .project-file-tabs[data-dragging="true"] .project-file-select { cursor: grabbing; }
-      .project-file-menu-trigger, .project-file-close {
-        display: grid;
-        place-items: center;
-        flex: 0 0 22px;
-        align-self: stretch;
-        width: 22px;
-        padding: 0 5px;
-        border: 0;
-        border-radius: 0;
-        background: transparent;
-        color: var(--muted);
-        font: 13px/1 system-ui, sans-serif;
-      }
-      .project-file-close:hover:not(:disabled), .project-file-close:focus-visible { background: var(--soft); color: var(--ink); }
-      .project-file-close:disabled { cursor: default; opacity: .28; }
-      .project-file-menu-trigger:hover, .project-file-menu-trigger:focus-visible { background: var(--soft); color: var(--ink); }
-      .project-file-menu {
-        position: fixed;
-        z-index: 1000;
-        min-width: 132px;
-        padding: 4px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        background: var(--surface);
-        box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
-      }
-      .project-file-menu button { display: block; width: 100%; padding: 6px 7px; border: 0; background: transparent; font-size: 11px; text-align: left; }
-      .project-file-menu button:hover:not(:disabled), .project-file-menu button:focus-visible { background: var(--soft); outline: none; }
-      .project-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-      .project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 8px/1.25 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
-      .project-file-main { background: var(--soft); color: #9de2be; }
-      .project-file-library { border: 1px solid var(--line); color: var(--muted); }
-      .project-file-errors { min-width: 16px; background: #8a3a45; color: #fff; text-align: center; }
-      .project-file[data-active="true"] { border-color: var(--line) var(--line) var(--code-bg); background: var(--code-bg); color: var(--ink); }
-      .project-file[data-kind="library"] .project-file-name { font-style: italic; }
-      .source-editor {
-        display: grid;
-        width: 100%;
-        height: min(68vh, 760px);
-        min-height: 420px;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 0 0 12px 12px;
-        background: var(--code-bg);
-      }
-      .source-editor:focus-within { border-color: #3e9c73; box-shadow: 0 0 0 3px rgb(62 156 115 / 16%); }
-      .panel[aria-label="Onda run controls"] { display: flex; }
-      .run-view { flex: 1 1 auto; width: 100%; min-height: 620px; border: 0; border-radius: 10px; background: var(--code-bg); }
-      code { color: #9de2be; }
-      @media (max-width: 980px) {
+      .play-source-editor:focus-within { border-color: var(--ink); box-shadow: 0 0 0 2px var(--soft); }
+      code { color: var(--ink); }
+      @media (max-width: 1280px) {
         .header-meta { justify-content: flex-start; flex-wrap: wrap; }
-        .workspace { grid-template-columns: 1fr; }
-        .source-editor { height: min(64vh, 620px); }
-        .run-view { min-height: 680px; }
       }
       @media (max-width: 720px) {
-        main { width: min(100% - 20px, 1500px); padding-top: 16px; }
-        .panel { padding: 12px; border-radius: 12px; }
-        .control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(72px, .6fr); }
-        .project-files {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr) 44px;
-          gap: 10px 0;
-          align-items: end;
-        }
-        .project-file-actions {
-          grid-column: 1 / -1;
-          grid-row: 1;
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 8px;
-          width: 100%;
-          padding: 0;
-        }
-        .project-file-actions button { min-height: 44px; font-size: 12px; }
-        .project-file-tabs { grid-column: 1; grid-row: 2; }
-        .project-file-add { grid-column: 2; grid-row: 2; width: 44px; min-height: 44px; font-size: 20px; }
-        .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
-        .project-file-select { padding-left: 11px; }
-        .project-file-menu-trigger, .project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
-        .source-editor { height: min(62svh, 540px); min-height: 360px; }
+        main { --play-viewport-offset: 160px; --play-stacked-offset: 192px; width: calc(100% - 20px); padding-top: 16px; }
+        .header-meta { min-width: 0; flex-wrap: nowrap; justify-content: flex-start; width: 100%; gap: 10px; }
+
       }
       @media (max-width: 390px) {
-        .control-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 68px; gap: 7px; }
-        .control-grid label { min-width: 0; font-size: 12px; }
-        .control-grid select, .control-grid input { padding: 7px 6px; font-size: 12px; }
+        .header-meta { gap: 6px; }
+        .shortcut-help { gap: 12px; }
+      }
+      @media (max-width: 360px) {
+        .shortcut-help kbd { display: none; }
       }
     </style>
+    <link rel="stylesheet" href="./playground.css" />
   </head>
   <body>
     <main>
@@ -248,38 +129,32 @@
           </p>
         </div>
       </header>
-
-      <div class="workspace">
-        <section class="panel">
-          <div class="toolbar">
-            <div class="control-grid">
+      <div class="play-workspace">
+        <section class="panel play-editor">
+          <div class="play-toolbar">
+            <div class="play-control-grid">
               <label>
                 <span>Sample rate</span>
                 <select data-sample-rate>
-                  <option value="48000" selected>48000 Hz</option>
                   <option value="44100">44100 Hz</option>
+                  <option value="48000" selected>48000 Hz</option>
                 </select>
               </label>
               <label>
                 <span>Block size</span>
                 <select data-block-size>
-                  <option value="128">128 frames</option>
-                  <option value="256">256 frames</option>
-                  <option value="512" selected>512 frames</option>
-                  <option value="1024">1024 frames</option>
-                  <option value="2048">2048 frames</option>
+                  <option value="128">128 samples</option>
+                  <option value="256">256 samples</option>
+                  <option value="512" selected>512 samples</option>
+                  <option value="1024">1024 samples</option>
+                  <option value="2048">2048 samples</option>
                 </select>
               </label>
               <label>
                 <span>Font size</span>
-                <input type="number" min="8" max="40" step="1" value="14" inputmode="numeric" aria-label="Editor font size in pixels" data-editor-font-size>
+                <input type="number" min="8" max="40" step="1" value="16" inputmode="numeric" aria-label="Editor font size in pixels" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
               </label>
             </div>
-          </div>
-
-          <div class="project-files">
-            <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
-            <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
             <div class="project-file-actions">
               <button type="button" data-new-project>New project</button>
               <button type="button" data-open-project>Open project</button>
@@ -287,11 +162,15 @@
               <button type="button" data-share-project>Share</button>
             </div>
           </div>
-          <div class="source-editor" aria-label="Onda project editor" data-editor></div>
-        </section>
 
-        <aside class="panel" aria-label="Onda run controls">
-          <iframe class="run-view" title="Onda run view" data-run-view></iframe>
+          <div class="project-files">
+            <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
+            <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
+          </div>
+          <div class="play-source-editor" aria-label="Onda project editor" data-editor></div>
+        </section>
+        <aside class="panel play-run-panel" aria-label="Onda run controls">
+          <iframe class="play-run-view" title="Onda run view" data-run-view></iframe>
         </aside>
       </div>
     </main>

@@ -10,14 +10,14 @@ fn update_run_settings(message: &serde_json::Value, options: &mut RunHostOptions
         .and_then(|value| value.as_u64())
         .and_then(|value| u32::try_from(value).ok())
         .filter(|value| *value > 0);
-    let block_frames = message
-        .get("blockFrames")
+    let block_samples = message
+        .get("blockSamples")
         .and_then(|value| value.as_u64())
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value > 0);
-    if let (Some(sample_rate_hz), Some(block_frames)) = (sample_rate_hz, block_frames) {
+    if let (Some(sample_rate_hz), Some(block_samples)) = (sample_rate_hz, block_samples) {
         options.sample_rate_hz = sample_rate_hz;
-        options.block_frames = block_frames;
+        options.block_samples = block_samples;
         true
     } else {
         false
@@ -78,7 +78,7 @@ mod platform {
 
         let window = WindowBuilder::new()
             .with_title(run_window_title(onda_path))
-            .with_inner_size(tao::dpi::LogicalSize::new(480.0_f64, 720.0))
+            .with_inner_size(tao::dpi::LogicalSize::new(720.0_f64, 840.0))
             .with_window_icon(Some(load_app_icon(startup_window_icon_is_dark(run_theme))?))
             .build(&event_loop)
             .map_err(|e| format!("failed to create window: {e}"))?;
@@ -598,7 +598,7 @@ mod platform {
             "supportsProjectExport": false,
             "canExportProject": false,
             "sampleRateHz": options.sample_rate_hz,
-            "blockFrames": options.block_frames,
+            "blockSamples": options.block_samples,
             "themeMode": theme_mode,
         });
         send_panel_state(webview, panel_state, reset_view_state);
@@ -649,7 +649,7 @@ mod platform {
             "supportsProjectExport": true,
             "canExportProject": true,
             "sampleRateHz": options.sample_rate_hz,
-            "blockFrames": options.block_frames,
+            "blockSamples": options.block_samples,
             "themeMode": theme_mode,
         });
         send_panel_state(webview, panel_state, reset_view_state);
@@ -798,21 +798,21 @@ mod tests {
         assert!(update_run_settings(
             &serde_json::json!({
                 "sampleRateHz": 96_000,
-                "blockFrames": 512,
+                "blockSamples": 512,
             }),
             &mut options,
         ));
         assert_eq!(options.sample_rate_hz, 96_000);
-        assert_eq!(options.block_frames, 512);
+        assert_eq!(options.block_samples, 512);
 
         assert!(!update_run_settings(
             &serde_json::json!({
                 "sampleRateHz": 0,
-                "blockFrames": 128,
+                "blockSamples": 128,
             }),
             &mut options,
         ));
         assert_eq!(options.sample_rate_hz, 96_000);
-        assert_eq!(options.block_frames, 512);
+        assert_eq!(options.block_samples, 512);
     }
 }

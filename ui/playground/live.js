@@ -1,5 +1,6 @@
 // Shared browser IDE controller used by the website and standalone example.
 import "../number-input.js";
+import "./layout.css";
 import { closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { createCompiler, ONDA_VERSION } from "@onda-lang/wasm-compiler";
 import {
@@ -15,6 +16,7 @@ import {
 } from "./browser-buffers.js";
 import { compilationKey } from "./compile-cache.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
+import { bindEditorFontSize } from "./editor-font-size.js";
 import { loadExampleProject } from "./examples.js";
 import { OndaBrowserLsp } from "./lsp-client.js";
 import { BrowserMidiInputs, isMidiKeyboardEditingTarget } from "./midi.js";
@@ -50,7 +52,6 @@ const pageParams = new URLSearchParams(window.location.search);
 const smokeMode = pageParams.has("smoke");
 const requestedExample = pageParams.get("example");
 const projectStorageKey = "onda.browser-ide.project.v1";
-const editorFontSizeStorageKey = "onda.browser-ide.editor-font-size.v1";
 const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
@@ -72,7 +73,7 @@ let rerunRequested = false;
 let processingRequested = false;
 let runGeneration = 0;
 let projectSaveTimer = 0;
-let editorFontSize = 14;
+let editorFontSizeControl = null;
 let needsBundledExample = false;
 let sharedSession = null;
 let sharedSessionError = null;
@@ -178,26 +179,9 @@ function compileOptions() {
     throw new Error("sample rate must be 44100 or 48000 Hz");
   }
   if (!supportedBlockSizes.has(blockSize)) {
-    throw new Error("block size must be 128, 256, 512, 1024, or 2048 frames");
+    throw new Error("block size must be 128, 256, 512, 1024, or 2048 samples");
   }
   return { sampleRate, blockSize };
-}
-
-function validEditorFontSize(value) {
-  const fontSize = Number(value);
-  return Number.isInteger(fontSize) && fontSize >= 8 && fontSize <= 40
-    ? fontSize
-    : null;
-}
-
-function restoreEditorFontSize() {
-  try {
-    const fontSize = validEditorFontSize(localStorage.getItem(editorFontSizeStorageKey));
-    if (fontSize !== null) editorFontSize = fontSize;
-  } catch {
-    // The default remains available when browser storage is disabled.
-  }
-  editorFontSizeEl.value = String(editorFontSize);
 }
 
 function restoreCompileOptions() {
@@ -221,16 +205,6 @@ function saveCompileOptions(options) {
     localStorage.setItem(compileOptionsStorageKey, JSON.stringify(options));
   } catch {
     // Compile controls still work for this page when browser storage is disabled.
-  }
-}
-
-function applyEditorFontSize(fontSize) {
-  editorFontSize = fontSize;
-  projectEditor.setFontSize(fontSize);
-  try {
-    localStorage.setItem(editorFontSizeStorageKey, String(fontSize));
-  } catch {
-    // Font sizing still works for this page when browser storage is disabled.
   }
 }
 
@@ -544,7 +518,8 @@ async function smokeEditorBindings() {
   const projectTabCloseHandled = !projectEditor.states.has(smokePath)
     && projectEditor.paths().length === projectFileCount;
 
-  const originalFontSize = editorFontSize;
+  const originalFontSize = editorFontSizeControl.value;
+  editorFontSizeEl.focus();
   editorFontSizeEl.value = "23";
   editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
   const lineNumber = editorEl.querySelector(".cm-lineNumbers .cm-gutterElement");
@@ -557,8 +532,8 @@ async function smokeEditorBindings() {
   const lineNumberFontSizeAfterMeasure = lineNumber
     ? getComputedStyle(lineNumber).fontSize
     : null;
-  editorFontSizeEl.value = String(originalFontSize);
-  editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
+  editorFontSizeEl.blur();
+  editorFontSizeControl.set(originalFontSize);
   const editorFontSizeHandled =
     editorFontSizeImmediately === "23px"
     && editorFontSizeAfterMeasure === "23px";
@@ -974,7 +949,6 @@ function smokeBufferFile() {
 }
 
 function initializeEditor(initialSharedSession, initialExampleProject) {
-  restoreEditorFontSize();
   restoreCompileOptions();
   let storedProject = normalizeStoredProject(initialSharedSession ?? initialExampleProject);
   if (!storedProject && !smokeMode && !requestedExample) {
@@ -1004,7 +978,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
       sources: { "main.onda": "# Loading the bundled Onda example...\n" },
     },
   });
-  projectEditor.setFontSize(editorFontSize);
+  editorFontSizeControl = bindEditorFontSize(editorFontSizeEl, projectEditor);
 }
 
 function editProject(action) {
@@ -1215,24 +1189,6 @@ shareProjectButton.addEventListener("click", () => void shareProject());
 for (const select of [sampleRateEl, blockSizeEl]) {
   select.addEventListener("change", () => void applyCompileOptions());
 }
-editorFontSizeEl.addEventListener("input", () => {
-  const fontSize = validEditorFontSize(editorFontSizeEl.value);
-  if (fontSize !== null) applyEditorFontSize(fontSize);
-});
-const normalizeEditorFontSize = () => {
-  const fontSize = validEditorFontSize(editorFontSizeEl.value);
-  if (fontSize !== null) applyEditorFontSize(fontSize);
-  editorFontSizeEl.value = String(editorFontSize);
-};
-editorFontSizeEl.addEventListener("change", normalizeEditorFontSize);
-editorFontSizeEl.addEventListener("blur", normalizeEditorFontSize);
-globalThis.__ONDA_NUMBER_INPUT__.bindDraggableNumber(editorFontSizeEl, {
-  speed: 0.25,
-  updateValue(value) {
-    editorFontSizeEl.value = String(Math.round(value));
-    editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
-  },
-});
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
 document.addEventListener("pointerdown", () => {
   if (context?.state === "suspended") void context.resume().catch(() => {});

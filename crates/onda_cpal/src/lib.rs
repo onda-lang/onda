@@ -36,7 +36,7 @@ impl OutputEndpoint {
         host: &AudioHost,
         requested_name: Option<&str>,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
     ) -> Result<Self, String> {
         let device = find_output_device(&host.inner, requested_name)?;
         let supported = device
@@ -45,7 +45,7 @@ impl OutputEndpoint {
         let config = cpal::StreamConfig {
             channels: supported.channels(),
             sample_rate: sample_rate_hz,
-            buffer_size: cpal::BufferSize::Fixed(block_frames as u32),
+            buffer_size: cpal::BufferSize::Fixed(block_samples as u32),
         };
         Ok(Self {
             device,
@@ -112,7 +112,7 @@ impl InputEndpoint {
         host: &AudioHost,
         requested_name: Option<&str>,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
     ) -> Result<Self, String> {
         let device = find_input_device(&host.inner, requested_name)?;
         let supported = device
@@ -121,7 +121,7 @@ impl InputEndpoint {
         let config = cpal::StreamConfig {
             channels: supported.channels(),
             sample_rate: sample_rate_hz,
-            buffer_size: cpal::BufferSize::Fixed(block_frames as u32),
+            buffer_size: cpal::BufferSize::Fixed(block_samples as u32),
         };
         Ok(Self {
             device,

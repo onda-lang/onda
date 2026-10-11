@@ -48,7 +48,7 @@ const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Periodic controller polling interval used while a native run frontend is loaded.
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
-pub const DEFAULT_REALTIME_BLOCK_FRAMES: usize = 512;
+pub const DEFAULT_REALTIME_BLOCK_SAMPLES: usize = 512;
 pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -67,7 +67,7 @@ pub enum RunThemeMode {
 #[derive(Clone, Debug)]
 pub struct RunHostOptions {
     pub sample_rate_hz: u32,
-    pub block_frames: usize,
+    pub block_samples: usize,
     pub param_smoothing_seconds: f64,
     pub opt_level: String,
     pub input_device: Option<String>,
@@ -83,7 +83,7 @@ impl Default for RunHostOptions {
     fn default() -> Self {
         Self {
             sample_rate_hz: 48_000,
-            block_frames: DEFAULT_REALTIME_BLOCK_FRAMES,
+            block_samples: DEFAULT_REALTIME_BLOCK_SAMPLES,
             param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
             opt_level: "3".to_owned(),
             input_device: None,
@@ -323,6 +323,7 @@ pub struct RunController {
     preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
     pending_commands: HashMap<u64, PendingCommand>,
+    active_virtual_notes: HashSet<i32>,
     processing_requested: bool,
     scope_polling_active: bool,
     scope_polling_in_flight: bool,
@@ -392,6 +393,7 @@ impl RunController {
             preserved_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
+            active_virtual_notes: Default::default(),
             processing_requested: true,
             scope_polling_active: false,
             scope_polling_in_flight: false,
@@ -569,6 +571,7 @@ impl RunController {
     }
 
     pub fn stop(&mut self) {
+        self.active_virtual_notes.clear();
         self.processing_requested = false;
         if self.state.connected && self.child.is_active() {
             let _ = self.bridge.send_command("pause", &json!({}));
@@ -671,12 +674,17 @@ impl RunController {
     }
 
     pub fn trigger_midi_note(&mut self, key: i32, velocity: f32, pressed: bool) {
+        if !self.state.running || !self.state.connected {
+            self.active_virtual_notes.clear();
+            return;
+        }
+        let key = key.clamp(0, 127);
         let name = if pressed {
-            if !self.state.midi.note_on {
+            if !self.state.midi.note_on || !self.active_virtual_notes.insert(key) {
                 return;
             }
             "note_on"
-        } else if self.state.midi.note_off {
+        } else if self.active_virtual_notes.remove(&key) && self.state.midi.note_off {
             "note_off"
         } else {
             return;
@@ -685,7 +693,7 @@ impl RunController {
             "triggerEvent",
             &json!({
                 "name": name,
-                "values": [-1, 0, key.clamp(0, 127), velocity.clamp(0.0, 1.0)],
+                "values": [-1, 0, key, velocity.clamp(0.0, 1.0)],
             }),
         );
     }
@@ -1103,6 +1111,7 @@ impl RunController {
     fn refresh_kqueue_file_watches(&mut self, _changed_paths: &[PathBuf]) {}
 
     fn advance_child_generation(&mut self) {
+        self.active_virtual_notes.clear();
         self.child_generation = self
             .child_generation
             .checked_add(1)
@@ -1110,6 +1119,7 @@ impl RunController {
     }
 
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
+        self.active_virtual_notes.clear();
         self.scope_polling_active = false;
         self.scope_polling_in_flight = false;
         self.bridge.disconnect();
@@ -1253,6 +1263,7 @@ impl RunController {
                         PendingCommand::ClearBuffer { .. } => {}
                         PendingCommand::Play => {
                             self.state.running = false;
+                            self.active_virtual_notes.clear();
                             self.scope_polling_active = false;
                             self.scope_polling_in_flight = false;
                             self.state.status = "Runtime error".to_owned();
@@ -1278,6 +1289,9 @@ impl RunController {
                 let samples = result.get("samples").and_then(Value::as_array);
                 if let (Some(channels), Some(samples)) = (channels, samples) {
                     self.scope_polling_in_flight = false;
+                    if !self.scope_polling_active {
+                        return poll;
+                    }
                     self.state.scope_channels = channels as usize;
                     self.state.scope_samples = samples
                         .iter()
@@ -1623,7 +1637,7 @@ impl ChildSession {
             .arg("--sample-rate")
             .arg(options.sample_rate_hz.to_string())
             .arg("--block-size")
-            .arg(options.block_frames.to_string())
+            .arg(options.block_samples.to_string())
             .arg("--param-smoothing-ms")
             .arg((options.param_smoothing_seconds * 1000.0).to_string())
             .arg("--opt-level")
@@ -2910,7 +2924,124 @@ mod tests {
 
     #[test]
     fn realtime_host_defaults_to_512_frame_blocks() {
-        assert_eq!(RunHostOptions::default().block_frames, 512);
+        assert_eq!(RunHostOptions::default().block_samples, 512);
+    }
+
+    fn controller_without_child() -> super::RunController {
+        let path = PathBuf::from("scope.onda");
+        let options = RunHostOptions::default();
+        let (events_tx, events_rx) = mpsc::channel();
+        super::RunController {
+            state: super::RunState::new(&path, &options),
+            launch_path: path.clone(),
+            onda_path: path,
+            project_watch_paths: None,
+            options,
+            events_rx,
+            events_tx,
+            bridge: super::IpcBridge::new(),
+            child: super::ChildSession {
+                child: None,
+                stderr_buffer: Default::default(),
+                stderr_reader: None,
+            },
+            child_generation: 1,
+            watcher: None,
+            watched_sources: Vec::new(),
+            watched_paths: Vec::new(),
+            watched_roots: HashMap::new(),
+            source_watch_revision: Default::default(),
+            compiled_watch_revision: None,
+            last_source_fallback_validation: std::time::Instant::now(),
+            preserved_params: Vec::new(),
+            preserved_buffers: Default::default(),
+            preserved_events: Vec::new(),
+            pending_commands: HashMap::new(),
+            active_virtual_notes: Default::default(),
+            processing_requested: true,
+            scope_polling_active: true,
+            scope_polling_in_flight: true,
+            last_scope_poll: std::time::Instant::now(),
+            source_compilation: SourceCompilationState::None,
+        }
+    }
+
+    #[test]
+    fn stop_clears_scope_samples_and_ignores_in_flight_captures() {
+        let mut controller = controller_without_child();
+        let captured = json!({ "result": { "channels": 1, "samples": [0.25, -0.5, 0.75] } });
+        assert!(
+            controller
+                .handle_tcp_response(&captured.to_string())
+                .scope_changed
+        );
+        controller.stop();
+        assert!(!controller.state.running);
+        assert_eq!(controller.state.scope_channels, 0);
+        assert!(controller.state.scope_samples.is_empty());
+
+        let late = json!({ "result": { "channels": 1, "samples": [0, 0, 0] } });
+        assert!(
+            !controller
+                .handle_tcp_response(&late.to_string())
+                .scope_changed
+        );
+        assert_eq!(controller.state.scope_channels, 0);
+        assert!(controller.state.scope_samples.is_empty());
+    }
+
+    #[test]
+    fn midi_notes_only_reach_an_active_connected_processor() {
+        use std::io::BufRead;
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (receiver, _) = listener.accept().unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let mut controller = controller_without_child();
+        *controller.bridge.writer.lock().unwrap() = Some(std::io::BufWriter::new(sender));
+        controller.state.midi.note_on = true;
+        controller.state.midi.note_off = true;
+        for (running, connected) in [(false, false), (false, true), (true, false)] {
+            controller.state.running = running;
+            controller.state.connected = connected;
+            controller.trigger_midi_note(60, 0.75, true);
+            controller.trigger_midi_note(60, 0.0, false);
+            let error = receiver.peek(&mut [0; 1]).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        }
+        for (running, connected) in [(false, true), (true, false)] {
+            controller.state.running = running;
+            controller.state.connected = connected;
+            controller.trigger_midi_note(60, 0.75, true);
+            controller.state.running = true;
+            controller.state.connected = true;
+            controller.trigger_midi_note(60, 0.0, false);
+            assert_eq!(
+                receiver.peek(&mut [0; 1]).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock,
+                "resuming must not deliver an off for a suppressed note-on",
+            );
+        }
+        receiver.set_nonblocking(false).unwrap();
+        receiver
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(receiver);
+        controller.state.running = true;
+        controller.state.connected = true;
+        for (pressed, name, velocity) in [(true, "note_on", 0.75), (false, "note_off", 0.0)] {
+            controller.trigger_midi_note(60, velocity, pressed);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                message,
+                json!({ "command": "triggerEvent", "name": name,
+                "values": [-1, 0, 60, velocity] })
+            );
+        }
     }
 
     #[test]

@@ -41,6 +41,13 @@ import { highlightOnda } from "./onda-highlighter.js";
 
   document.querySelectorAll('code.language-onda').forEach(highlightOnda);
 
+  document.querySelectorAll('.prose table').forEach((table) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-scroll';
+    table.before(wrapper);
+    wrapper.appendChild(table);
+  });
+
   document.querySelectorAll('.prose pre, .home-example pre').forEach((pre) => {
     const button = document.createElement('button');
     button.className = 'copy-button';

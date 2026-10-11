@@ -30,18 +30,18 @@ test("the shared run view presents the browser compiler's Onda version", async (
 
   assert.match(runView, /id="onda-version" hidden/);
   assert.match(runView, /window\.__hostBridge\?\.ondaVersion/);
-  assert.match(runView, /ondaVersionNode\.textContent = "Onda " \+ ondaVersion/);
+  assert.match(runView, /ondaVersionNumberNode\.textContent = ondaVersion/);
   assert.match(runView, /showOndaVersion\(incoming\.ondaVersion\)/);
   assert.match(playground, /import \{ createCompiler, ONDA_VERSION \}/);
   assert.match(playground, /runView\.setState\(\{\s*ondaVersion: ONDA_VERSION,\s*paramSmoothingMs,/);
 });
 
-test("the shared run view only shows its scope when supported and during playback", async () => {
+test("the shared run view keeps its scope visible while a source is loaded", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
   assert.match(
     runView,
-    /scopeSection\.style\.display = supportsScope && state\.running \? "block" : "none"/,
+    /scopeSection\.style\.display = supportsScope && hasSource \? "block" : "none"/,
   );
   assert.doesNotMatch(runView, /scopeSection\.style\.display = state\.connected/);
 });
@@ -53,19 +53,14 @@ test("the shared MIDI keyboard uses themed keys without a computer-key legend", 
     readFile(resolve(repoRoot, "ui/playground/run-view-host.js"), "utf8"),
   ]);
 
-  assert.match(runView, /--piano-white-top:/);
-  assert.match(runView, /:root\[data-theme="light"\][\s\S]*?--piano-white-top:/);
+  assert.match(runView, /--piano-white:/);
+  assert.match(runView, /:root\[data-theme="light"\][\s\S]*?--piano-white:/);
   assert.match(runView, /\.piano-key\.white:hover:not\(\.active\)/);
   assert.match(runView, /\.piano-key\.black\.active/);
   assert.doesNotMatch(runView, /computer-key-hint|Keys: A W S E D/);
   assert.match(
     runView,
     /<\/div>\s*<section class="midi-keyboard" id="midi-keyboard" hidden>/,
-  );
-  assert.match(runView, /\.io-settings\.midi-only[\s\S]*?justify-content: center/);
-  assert.match(
-    runView,
-    /ioSettingsNode\.classList\.toggle\([\s\S]*?"midi-only"[\s\S]*?!supportsDeviceSelection && supportsMidiInput/,
   );
   assert.match(runView, /message\.type === "computerKey"/);
   assert.match(runView, /message\.type === "midiActivity"/);
@@ -86,7 +81,7 @@ test("the native buffer cards render bounded peak-preserving waveform previews",
   assert.match(runView, /Math\.max\(1, Math\.abs\(waveform\.minValue\)/);
   assert.match(runView, /for \(const value of \[-1, 1\]\)/);
   assert.match(runView, /Math\.abs\(guideY\(1\) - zeroY\) >= 2/);
-  assert.match(runView, /bufferWaveformRangeLabel\(waveform\)/);
+  assert.match(runView, /bufferWaveformSummary\(waveform\)/);
   assert.match(runView, /maximum > 0 \? sampleY\(maximum\) : zeroY/);
   assert.match(runView, /minimum < 0 \? sampleY\(minimum\) : zeroY/);
   assert.match(runView, /context\.arc\(x, maximumY, markerRadius/);
@@ -212,16 +207,16 @@ test("the empty native run view owns its compile settings", async () => {
   assert.match(runView, /id="run-block-size"/);
   assert.match(runView, /filePickerSettingsNode\.hidden = !supportsRunSettings/);
   assert.match(webview, /"supportsRunSettings": true/);
-  assert.match(runView, /blockFrames: 512/);
+  assert.match(runView, /blockSamples: 512/);
   assert.match(runView, /type: "setRunSettings"/);
 });
 
 test("the loaded run view includes active compile settings in its status", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
-  assert.match(runView, /formatRunStatus\(status, state\.sampleRateHz, state\.blockFrames\)/);
+  assert.match(runView, /formatRunStatus\(status, state\.sampleRateHz, state\.blockSamples\)/);
   assert.match(runView, /" \\u2014 " \+ formatBufferSampleRate\(sampleRate\)/);
-  assert.match(runView, /" \\u00b7 " \+ blockFrames \+ " frames"/);
+  assert.match(runView, /" \\u00b7 " \+ blockSamples \+ " samples"/);
 });
 
 test("the shared run view offers a device-cached knob layout", async () => {
@@ -247,10 +242,6 @@ test("the shared run view offers a device-cached knob layout", async () => {
     /grid-template-areas:\s+"heading value"\s+"control control";/,
   );
   assert.match(runView, /function paramDisplayName\(param\)/);
-  assert.match(
-    runView,
-    /<div class="section-heading">\s*<button\s+class="section-toggle params-disclosure"\s+id="params-toggle"[\s\S]*?<\/button>\s*<div class="params-title">Params<\/div>\s*<button class="secondary compact-action" id="reset-params"[^>]*>Reset<\/button>\s*<\/div>\s*<div class="param-smoothing"[\s\S]*?id="param-smoothing-ms"[\s\S]*?<\/div>\s*<div class="param-layout-toggle"/,
-  );
   assert.match(runView, /classList\.add\("param-knob-ring-value"\)/);
   assert.match(runView, /function knobValueArcPath\(normalized\)/);
   assert.match(runView, /valueArc\.setAttribute\("d", knobValueArcPath\(ratio\)\)/);
@@ -336,7 +327,7 @@ test("the browser editor starts loaded projects as soon as the compiler is ready
   );
 });
 
-test("browser compile settings default to 512 frames and recompile on change", async () => {
+test("browser compile settings default to 512 samples and recompile on change", async () => {
   const [playground, examplePage, websitePage, runViewHost] = await Promise.all([
     readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
     readFile(resolve(repoRoot, "examples/web/onda_wasm_playground/index.html"), "utf8"),
@@ -345,10 +336,10 @@ test("browser compile settings default to 512 frames and recompile on change", a
   ]);
 
   for (const page of [examplePage, websitePage]) {
-    assert.match(page, /<option value="512" selected>512 frames<\/option>/);
+    assert.match(page, /<option value="512" selected>512 samples<\/option>/);
     assert.doesNotMatch(page, /<option value="1024" selected>/);
   }
-  assert.match(runViewHost, /blockFrames: 512/);
+  assert.match(runViewHost, /blockSamples: 512/);
   assert.match(
     playground,
     /async function applyCompileOptions\(\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,

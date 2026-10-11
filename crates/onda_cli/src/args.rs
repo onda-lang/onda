@@ -165,7 +165,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut output = None::<PathBuf>;
     let mut meta_out = None::<PathBuf>;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_samples = DEFAULT_BLOCK_SAMPLES;
     let mut dump_graph = false;
     let mut const_overrides = Vec::<(String, String)>::new();
     let mut list_consts = false;
@@ -212,7 +212,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let Some(value) = args.next() else {
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
-                block_frames = parse_block_frames(&value)?;
+                block_samples = parse_block_samples(&value)?;
             }
             "--dump-graph" => dump_graph = true,
             "--list-consts" => list_consts = true,
@@ -310,7 +310,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             _ if arg.starts_with("--block-size=") => {
                 let value = &arg["--block-size=".len()..];
-                block_frames = parse_block_frames(value)?;
+                block_samples = parse_block_samples(value)?;
             }
             _ if arg.starts_with("--const=") => {
                 let parsed = parse_compile_const_override(&arg["--const=".len()..])?;
@@ -412,7 +412,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         output,
         meta_out,
         sample_rate_hz,
-        block_frames,
+        block_samples,
         dump_graph,
         const_overrides,
         list_consts,
@@ -432,7 +432,7 @@ fn parse_daemon_diagnose_args(
         ));
     };
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_samples = DEFAULT_BLOCK_SAMPLES;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--sample-rate" | "--sr" => {
@@ -445,7 +445,7 @@ fn parse_daemon_diagnose_args(
                 let Some(value) = args.next() else {
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
-                block_frames = parse_block_frames(&value)?;
+                block_samples = parse_block_samples(&value)?;
             }
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
@@ -455,7 +455,7 @@ fn parse_daemon_diagnose_args(
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
             _ if arg.starts_with("--block-size=") => {
-                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
+                block_samples = parse_block_samples(&arg["--block-size=".len()..])?;
             }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
@@ -463,7 +463,7 @@ fn parse_daemon_diagnose_args(
     Ok(DaemonCommand::Diagnose {
         input: PathBuf::from(input),
         sample_rate_hz,
-        block_frames,
+        block_samples,
     })
 }
 
@@ -475,7 +475,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut output = PathBuf::from(DEFAULT_DAEMON_OUTPUT);
     let mut duration = DEFAULT_DURATION;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_samples = DEFAULT_BLOCK_SAMPLES;
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut fast_math = false;
@@ -507,7 +507,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 let Some(value) = args.next() else {
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
-                block_frames = parse_block_frames(&value)?;
+                block_samples = parse_block_samples(&value)?;
             }
             "--param-smoothing-ms" => {
                 let value = args
@@ -549,7 +549,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
             _ if arg.starts_with("--block-size=") => {
-                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
+                block_samples = parse_block_samples(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--param-smoothing-ms=") => {
                 param_smoothing_seconds =
@@ -573,7 +573,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         output,
         duration,
         sample_rate_hz,
-        block_frames,
+        block_samples,
         param_smoothing_seconds,
         opt_level,
         fast_math,
@@ -586,7 +586,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
 fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCommand, String> {
     let mut input = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_samples = DEFAULT_BLOCK_SAMPLES;
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
@@ -609,7 +609,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 let Some(value) = args.next() else {
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
-                block_frames = parse_block_frames(&value)?;
+                block_samples = parse_block_samples(&value)?;
             }
             "--param-smoothing-ms" => {
                 let value = args
@@ -658,7 +658,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
             _ if arg.starts_with("--block-size=") => {
-                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
+                block_samples = parse_block_samples(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--param-smoothing-ms=") => {
                 param_smoothing_seconds =
@@ -690,7 +690,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     Ok(RunCommand::Window {
         input,
         sample_rate_hz,
-        block_frames,
+        block_samples,
         param_smoothing_seconds,
         opt_level,
         input_device,
@@ -721,7 +721,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
 
     let mut duration = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
-    let mut block_frames = DEFAULT_BLOCK_FRAMES;
+    let mut block_samples = DEFAULT_BLOCK_SAMPLES;
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
@@ -755,7 +755,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 let Some(value) = args.next() else {
                     return Err("--block-size requires a positive integer value".to_owned());
                 };
-                block_frames = parse_block_frames(&value)?;
+                block_samples = parse_block_samples(&value)?;
             }
             "--param-smoothing-ms" => {
                 let value = args
@@ -822,7 +822,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 sample_rate_hz = parse_sample_rate_hz(&arg["--sr=".len()..])?;
             }
             _ if arg.starts_with("--block-size=") => {
-                block_frames = parse_block_frames(&arg["--block-size=".len()..])?;
+                block_samples = parse_block_samples(&arg["--block-size=".len()..])?;
             }
             _ if arg.starts_with("--param-smoothing-ms=") => {
                 param_smoothing_seconds =
@@ -858,7 +858,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             Some(duration.unwrap_or(DEFAULT_DURATION))
         },
         sample_rate_hz,
-        block_frames,
+        block_samples,
         param_smoothing_seconds,
         opt_level,
         input_device,
@@ -894,10 +894,10 @@ fn parse_sample_rate_hz(value: &str) -> Result<u32, String> {
     Ok(parsed)
 }
 
-fn parse_block_frames(value: &str) -> Result<usize, String> {
+fn parse_block_samples(value: &str) -> Result<usize, String> {
     let parsed = value
         .parse::<usize>()
-        .map_err(|_| format!("invalid block size '{value}', expected positive integer frames"))?;
+        .map_err(|_| format!("invalid block size '{value}', expected positive integer samples"))?;
     if parsed == 0 {
         return Err("block size must be greater than zero".to_owned());
     }

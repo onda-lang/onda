@@ -58,7 +58,7 @@ enum Request {
         #[serde(default)]
         sample_rate_hz: Option<u32>,
         #[serde(default)]
-        block_frames: Option<usize>,
+        block_samples: Option<usize>,
         #[serde(default)]
         param_smoothing_seconds: Option<f64>,
         #[serde(default)]
@@ -180,7 +180,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
         Request::Ping => Ok(json!({ "status": "ok" })),
         Request::Initialize {
             sample_rate_hz,
-            block_frames,
+            block_samples,
             param_smoothing_seconds,
             fast_math,
         } => {
@@ -195,7 +195,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             }
             let run = RunOptions {
                 sample_rate: sample_rate_hz.unwrap_or(current.run.sample_rate as u32) as f32,
-                block_size: block_frames.unwrap_or(current.run.block_size),
+                block_size: block_samples.unwrap_or(current.run.block_size),
                 param_smoothing_seconds,
                 fast_math: fast_math.unwrap_or(current.run.fast_math),
                 opt_level: current.run.opt_level,
@@ -204,7 +204,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             session.set_config(config);
             Ok(json!({
                 "sample_rate_hz": run.sample_rate,
-                "block_frames": run.block_size,
+                "block_samples": run.block_size,
                 "param_smoothing_seconds": run.param_smoothing_seconds,
                 "fast_math": run.fast_math,
             }))
@@ -610,18 +610,22 @@ mod tests {
         let mut session = DaemonSession::default();
         let response = handle_request(
             &mut session,
-            RequestEnvelope {
-                id: Some(1),
-                request: Request::Initialize {
-                    sample_rate_hz: Some(44_100),
-                    block_frames: Some(256),
-                    param_smoothing_seconds: Some(0.03),
-                    fast_math: Some(true),
-                },
-            },
+            serde_json::from_value(json!({
+                "id": 1,
+                "command": "initialize",
+                "sample_rate_hz": 44_100,
+                "block_samples": 256,
+                "param_smoothing_seconds": 0.03,
+                "fast_math": true,
+            }))
+            .expect("initialize request"),
         );
 
         assert!(response.ok);
+        assert_eq!(
+            response.result.expect("initialize result")["block_samples"],
+            256
+        );
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
         assert_eq!(session.config().run.param_smoothing_seconds, 0.03);

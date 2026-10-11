@@ -40,7 +40,7 @@ export class BrowserRunViewHost {
       paramSmoothingDefaultMs: null,
       supportsScope: true,
       sampleRateHz: 48_000,
-      blockFrames: 512,
+      blockSamples: 512,
       themeMode: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {
@@ -93,7 +93,7 @@ export class BrowserRunViewHost {
       status: "Compiling...",
       error: "",
       sampleRateHz: options?.sampleRate ?? this.state.sampleRateHz,
-      blockFrames: options?.blockSize ?? this.state.blockFrames,
+      blockSamples: options?.blockSize ?? this.state.blockSamples,
     });
   }
 
@@ -107,12 +107,12 @@ export class BrowserRunViewHost {
     this.state.buffers = mergeBuffers(metadata.buffers ?? [], this.state.buffers, bufferFiles);
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
     const sampleRateHz = Number(artifact.metadata.compile?.sample_rate);
-    const blockFrames = Number(artifact.metadata.compile?.block_size);
+    const blockSamples = Number(artifact.metadata.compile?.block_size);
     if (Number.isFinite(sampleRateHz) && sampleRateHz > 0) {
       this.state.sampleRateHz = sampleRateHz;
     }
-    if (Number.isInteger(blockFrames) && blockFrames > 0) {
-      this.state.blockFrames = blockFrames;
+    if (Number.isInteger(blockSamples) && blockSamples > 0) {
+      this.state.blockSamples = blockSamples;
     }
     this.state.error = "";
     this.state.sourceDirty = false;

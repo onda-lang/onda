@@ -5,6 +5,54 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.26]
+
+### Added
+
+- Playback shortcuts in egui, webview, and the browser playground: Ctrl/Command+S or
+  Ctrl/Command+Enter plays, and Ctrl/Command+. stops and releases held virtual MIDI notes.
+
+### Changed
+
+- Compact run headers across egui, webview, and the browser playground, with the version centered
+  below the logo, the filename and status aligned to the left, and a single labeled Play/Stop
+  button. Device selection and Refresh move into a Devices popover; Save as project and Unload
+  have direct icon buttons with accessible names and tooltips.
+- Both native run hosts default to 720 × 840 logical units. Shared panel spacing, flat fills,
+  and a 160-unit scope let eight knobs fit in two rows with the docked MIDI keyboard visible.
+  Narrow views wrap header controls and parameter settings without overflowing.
+- Keep the scope and MIDI keyboard visible while a source is loaded, including when stopped.
+  Stopping leaves only the scope's gray zero-reference lines and keeps the content viewport stable.
+- Let the final content gutter scroll into view at the end instead of keeping an extra strip
+  above the docked MIDI keyboard; its border separates the dock.
+- Use matching compact number fields for MIDI octave and velocity, replacing the velocity slider.
+  Params and Events use circular-arrow reset icons; section headings and disclosure arrows stay
+  vertically centered, and parameter names and types share a baseline.
+- Keep two compact knob columns in narrow native and web views, and place both reset icons beside
+  their section headings.
+- Share playground workspace and responsive-control styling between the website and standalone
+  example, with a quieter outer run-pane frame.
+- Simplify buffer waveform previews: show exact minimum and maximum values on hover, omit leading
+  plus signs from positive axis labels, and retain the zero reference without outer guide lines.
+- Move egui's loaded run layout, header, transport, and device controls into a dedicated
+  `run_view` module with layout and interaction regression coverage.
+
+### Fixed
+
+- Ignore in-flight scope captures after playback stops so stale samples cannot restore the waveform.
+- Preserve Play/Stop keyboard focus across playback state updates and header wrapping, and return
+  focus to Devices when its popover closes with Escape. Device popovers stay within narrow windows.
+- Preserve egui Devices, Save, and Unload focus when the header wraps, and center the painted
+  Play/Stop icon and label together.
+- Keep egui section keyboard focus in visual order and MIDI labels beside their fields when wrapping.
+- Let native Devices popovers scroll in short windows and match their selector and Refresh heights.
+- Keep stopped MIDI keyboards clickable across hosts without delivering events to paused processors.
+- Suppress unmatched virtual MIDI note-offs when a stopped or disconnected hold is released after
+  playback resumes. Sparse headers measure their source details before wrapping, and high-zoom
+  utility actions wrap inside the header gutters.
+- Rasterize egui logos at their displayed pixel size when unloading or changing display scale.
+- Keep the homepage example's playground button within its code panel on narrow screens.
+
 ## [0.8.25]
 
 ### Fixed
@@ -1117,6 +1165,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.26]: https://github.com/onda-lang/onda/compare/0.8.25...0.8.26
 [0.8.25]: https://github.com/onda-lang/onda/compare/0.8.24...0.8.25
 [0.8.24]: https://github.com/onda-lang/onda/compare/0.8.22...0.8.24
 [0.8.22]: https://github.com/onda-lang/onda/compare/0.8.21...0.8.22

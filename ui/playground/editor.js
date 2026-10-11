@@ -382,10 +382,8 @@ const ondaEditorTheme = EditorView.theme({
   ),
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
-  "@media (pointer: coarse), (max-width: 720px)": {
-    // Keep the entire editor on one metric and prevent focus zoom from
-    // creating an independently panned visual viewport on mobile browsers.
-    "&": { fontSize: "max(16px, var(--onda-editor-font-size, .84rem))" },
+  "@media (pointer: coarse)": {
+    "&": { fontSize: "max(16px, var(--onda-editor-font-size, 16px))" },
   },
 });
 
@@ -568,7 +566,11 @@ export class OndaProjectEditor {
   }
 
   setFontSize(fontSize) {
-    this.view.dom.style.setProperty("--onda-editor-font-size", `${fontSize}px`);
+    if (fontSize === null) {
+      this.view.dom.style.removeProperty("--onda-editor-font-size");
+    } else {
+      this.view.dom.style.setProperty("--onda-editor-font-size", `${fontSize}px`);
+    }
     this.view.requestMeasure();
   }
 

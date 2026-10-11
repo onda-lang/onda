@@ -10,11 +10,11 @@ use onda_run::{
 use serde_json::{Number, Value};
 
 mod number_input;
+mod run_view;
 use number_input::{NumberInput, NumberValue};
 
 const LOGO_DARK_URI: &str = "bytes://onda-logo-dark-rect.svg";
 const LOGO_LIGHT_URI: &str = "bytes://onda-logo-rect.svg";
-const ONDA_VERSION_LABEL: &str = concat!("Onda ", env!("CARGO_PKG_VERSION"));
 const LOGO_DARK_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-dark-rect.svg");
 const LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../../../assets/svg/onda-logo-rect.svg");
 #[cfg(target_os = "macos")]
@@ -33,6 +33,7 @@ const FLOAT_CONTROL_MAX_STEP: f64 = 0.1;
 const PARAM_NUMBER_DRAG_POINTS_PER_RANGE: f64 = 375.0;
 const PARAM_KNOB_DRAG_POINTS_PER_RANGE: f64 = 250.0;
 const DEFAULT_KEYBOARD_VELOCITY: f32 = 1.0;
+const MIDI_NUMBER_SIZE: [f32; 2] = [56.0, 26.0];
 const EVENT_ARRAY_VISIBLE_LIMIT: usize = 16;
 const EVENT_STRUCTURED_MIN_VISIBLE_LINES: usize = 4;
 const EVENT_STRUCTURED_MAX_VISIBLE_LINES: usize = 20;
@@ -66,7 +67,7 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id(RUN_APP_ID)
-            .with_inner_size([680.0, 820.0])
+            .with_inner_size([720.0, 840.0])
             .with_icon(load_app_icon(startup_icon_dark)?),
         persist_window: false,
         ..Default::default()
@@ -149,6 +150,18 @@ fn app_icon_png(is_dark: bool) -> &'static [u8] {
     }
 }
 
+fn run_logo(ctx: &egui::Context, is_dark: bool, size: f32) -> egui::Image<'static> {
+    let (uri, bytes) = if is_dark {
+        (LOGO_DARK_URI, LOGO_DARK_BYTES)
+    } else {
+        (LOGO_LIGHT_URI, LOGO_LIGHT_BYTES)
+    };
+    // egui's texture cache keys by URI, ignoring the SVG rasterization size.
+    let pixels = (size * ctx.pixels_per_point()).round() as u32;
+    let uri = format!("{}-{pixels}.svg", uri.trim_end_matches(".svg"));
+    egui::Image::from_bytes(uri, bytes).fit_to_exact_size(egui::Vec2::splat(size))
+}
+
 fn load_app_icon(is_dark: bool) -> Result<egui::IconData, String> {
     eframe::icon_data::from_png_bytes(app_icon_png(is_dark))
         .map_err(|err| format!("failed to decode run app icon: {err}"))
@@ -221,8 +234,10 @@ struct RunApp {
     current_icon_dark: Option<bool>,
     applied_theme_dark: Option<bool>,
     param_layout: ParamLayout,
+    devices_open: bool,
     keyboard_octave: i32,
     keyboard_velocity: f32,
+    midi_running: bool,
     computer_notes: HashMap<egui::Key, i32>,
     pointer_note: Option<i32>,
 }
@@ -246,8 +261,10 @@ impl RunApp {
             current_icon_dark,
             applied_theme_dark: None,
             param_layout,
+            devices_open: false,
             keyboard_octave: 4,
             keyboard_velocity: DEFAULT_KEYBOARD_VELOCITY,
+            midi_running: false,
             computer_notes: HashMap::new(),
             pointer_note: None,
         };
@@ -299,8 +316,7 @@ impl RunApp {
             self.release_virtual_notes();
             return;
         };
-        let enabled = state.connected
-            && state.midi.note_on
+        let enabled = state.midi.note_on
             && state.current_midi_input_device.as_deref() == Some(COMPUTER_KEYBOARD_MIDI_INPUT);
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(true));
         if !focused {
@@ -371,7 +387,8 @@ impl RunApp {
         let previous_octave = self.keyboard_octave;
         let octave = |ui: &mut egui::Ui, app: &mut Self| {
             let mut number = NumberValue::Integer(i64::from(app.keyboard_octave));
-            let response = ui.add(
+            let response = ui.add_sized(
+                MIDI_NUMBER_SIZE,
                 NumberInput::new(&mut number, NumberValue::Integer(4), 0.1)
                     .range(-1.0, 7.0)
                     .help("Z / X: octave down / up."),
@@ -379,92 +396,148 @@ impl RunApp {
             if response.changed() {
                 app.keyboard_octave = number.as_i64() as i32;
             }
-            ui.label("Octave");
-        };
-        let velocity = |ui: &mut egui::Ui, app: &mut Self, slider_width| {
-            ui.scope(|ui| {
-                ui.spacing_mut().slider_width = slider_width;
-                ui.add(
-                    egui::Slider::new(&mut app.keyboard_velocity, 0.0..=1.0)
-                        .show_value(false)
-                        .step_by(0.01)
-                        .max_decimals(2),
-                );
-            });
-            render_midi_velocity_number(ui, &mut app.keyboard_velocity);
-            ui.label("Velocity");
         };
         let controls = |ui: &mut egui::Ui, app: &mut Self| {
             set_control_font_size(ui, SMALL_FONT_SIZE);
-            let width = ui.available_width();
-            let height = ui.spacing().interact_size.y;
-            let layout = egui::Layout::right_to_left(egui::Align::Center);
-            if width < 350.0 {
-                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
-                    octave(ui, app);
-                });
-                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
-                    let slider_width = (ui.available_width() - 140.0).clamp(64.0, 180.0);
-                    velocity(ui, app, slider_width);
-                });
-            } else {
-                ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
-                    let slider_width = (ui.available_width() - 220.0).clamp(64.0, 180.0);
-                    velocity(ui, app, slider_width);
-                    ui.separator();
-                    octave(ui, app);
-                });
-            }
-        };
-        if ui.available_width() < 390.0 {
-            ui.label(
-                egui::RichText::new("MIDI Keyboard")
-                    .strong()
-                    .size(HEADING_FONT_SIZE),
+            type MidiEditor = fn(&mut egui::Ui, &mut RunApp);
+            let editors: [(&str, MidiEditor); 2] = [
+                ("Octave", octave),
+                ("Velocity", |ui, app| {
+                    render_midi_velocity_number(ui, &mut app.keyboard_velocity);
+                }),
+            ];
+            let widths = editors.map(|(label, _)| {
+                (ui.painter()
+                    .layout_no_wrap(
+                        label.to_owned(),
+                        egui::FontId::proportional(SMALL_FONT_SIZE),
+                        ui.visuals().text_color(),
+                    )
+                    .size()
+                    .x
+                    + 6.0
+                    + MIDI_NUMBER_SIZE[0])
+                    .ceil()
+            });
+            let controls_width = widths.iter().sum::<f32>() + 12.0;
+            let stacked = ui.available_width() < controls_width;
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), MIDI_NUMBER_SIZE[1]),
+                if stacked {
+                    egui::Layout::top_down(egui::Align::Max)
+                } else {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                },
+                |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(12.0, 6.0);
+                    ui.spacing_mut().interact_size.y = MIDI_NUMBER_SIZE[1];
+                    if !stacked {
+                        ui.add_space((ui.available_width() - controls_width).max(0.0));
+                    }
+                    for ((label, editor), width) in editors.into_iter().zip(widths) {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(width, MIDI_NUMBER_SIZE[1]),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.label(egui::RichText::new(label).color(theme.muted_text));
+                                editor(ui, app);
+                            },
+                        );
+                    }
+                },
             );
-            controls(ui, self);
+        };
+        let mut keyboard = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.make_persistent_id("midi-expanded"),
+            true,
+        );
+        let was_open = keyboard.is_open();
+        let heading =
+            |ui: &mut egui::Ui, keyboard: &mut egui::collapsing_header::CollapsingState| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(MIDI_NUMBER_SIZE[1]);
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    keyboard
+                        .show_toggle_button(ui, egui::collapsing_header::paint_default_icon)
+                        .on_hover_text("Show or hide MIDI keyboard");
+                    ui.label(
+                        egui::RichText::new("MIDI Keyboard")
+                            .strong()
+                            .size(HEADING_FONT_SIZE),
+                    );
+                });
+            };
+        if ui.available_width() < 410.0 {
+            heading(ui, &mut keyboard);
+            if keyboard.is_open() {
+                controls(ui, self);
+            }
         } else {
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("MIDI Keyboard")
-                        .strong()
-                        .size(HEADING_FONT_SIZE),
-                );
-                controls(ui, self);
+                heading(ui, &mut keyboard);
+                if keyboard.is_open() {
+                    controls(ui, self);
+                }
             });
+        }
+        keyboard.store(ui.ctx());
+        if !keyboard.is_open() {
+            if was_open {
+                self.release_virtual_notes();
+            }
+            return;
         }
         if self.keyboard_octave != previous_octave {
             self.release_virtual_notes();
         }
         ui.add_space(6.0);
 
-        const WHITE_NOTES: [i32; 14] = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23];
-        const BLACK_NOTES: [(i32, usize); 10] = [
-            (1, 1),
-            (3, 2),
-            (6, 4),
-            (8, 5),
-            (10, 6),
-            (13, 8),
-            (15, 9),
-            (18, 11),
-            (20, 12),
-            (22, 13),
-        ];
-
-        let desired_size = egui::vec2(ui.available_width(), 104.0);
-        let (response, painter) = ui.allocate_painter(desired_size, egui::Sense::drag());
+        const WHITE_NOTES: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+        const BLACK_NOTES: [(i32, usize); 5] = [(1, 1), (3, 2), (6, 4), (8, 5), (10, 6)];
+        let base_note = (self.keyboard_octave + 1) * 12;
+        // Match ui/run/run.html::updateMidiKeyboardLayout: 48px target white keys,
+        // at least two octaves, and a bounded height that leaves room in short windows.
+        let available_width = ui.available_width();
+        let octaves =
+            ((available_width / (7.0 * 48.0)).floor() as i32).clamp(2, (128 - base_note) / 12);
+        let white_count = octaves as usize * WHITE_NOTES.len();
+        let width = available_width.min(white_count as f32 * 72.0);
+        let height = (width / 7.0)
+            .clamp(104.0, 156.0)
+            .min((ui.ctx().screen_rect().height() * 0.25).max(104.0));
+        let (response, painter) = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space((available_width - width) * 0.5);
+                ui.allocate_painter(egui::vec2(width, height), egui::Sense::drag())
+            })
+            .inner;
         let rect = response.rect;
-        let white_width = rect.width() / WHITE_NOTES.len() as f32;
+        let white_width = rect.width() / white_count as f32;
         let black_width = white_width * 0.62;
         let black_height = rect.height() * 0.62;
-        let base_note = (self.keyboard_octave + 1) * 12;
+        let black_keys = || {
+            (0..octaves).flat_map(|octave| {
+                BLACK_NOTES.into_iter().map(move |(offset, boundary)| {
+                    (
+                        octave * 12 + offset,
+                        octave as usize * WHITE_NOTES.len() + boundary,
+                    )
+                })
+            })
+        };
+        let white_note = |index: usize| {
+            base_note
+                + index as i32 / WHITE_NOTES.len() as i32 * 12
+                + WHITE_NOTES[index % WHITE_NOTES.len()]
+        };
 
         let note_at = |position| {
-            BLACK_NOTES
-                .iter()
+            black_keys()
                 .find_map(|(offset, boundary)| {
-                    let center = rect.left() + *boundary as f32 * white_width;
+                    let center = rect.left() + boundary as f32 * white_width;
                     let key_rect = egui::Rect::from_min_size(
                         egui::pos2(center - black_width * 0.5, rect.top()),
                         egui::vec2(black_width, black_height),
@@ -475,9 +548,9 @@ impl RunApp {
                     rect.contains(position).then(|| {
                         let index = ((position.x - rect.left()) / white_width)
                             .floor()
-                            .clamp(0.0, WHITE_NOTES.len() as f32 - 1.0)
+                            .clamp(0.0, white_count as f32 - 1.0)
                             as usize;
-                        base_note + WHITE_NOTES[index]
+                        white_note(index)
                     })
                 })
         };
@@ -485,8 +558,17 @@ impl RunApp {
             .input(|input| input.pointer.hover_pos())
             .and_then(note_at);
         let pointer_note = response.interact_pointer_pos().and_then(note_at);
-        let pointer_down = ui.input(|input| input.pointer.primary_down());
-        let next_pointer_note = pointer_down.then_some(pointer_note).flatten();
+        let next_pointer_note = ui.input(|input| {
+            if !input.pointer.primary_down() {
+                None
+            } else if input.pointer.primary_pressed() || input.pointer.delta() != egui::Vec2::ZERO {
+                pointer_note
+            } else {
+                // Reflow alone must not retune a held note or restart a removed key.
+                self.pointer_note
+                    .filter(|note| *note >= base_note && *note < base_note + octaves * 12)
+            }
+        });
         if next_pointer_note != self.pointer_note {
             if let Some(previous) = self.pointer_note.take() {
                 if !self.computer_notes.values().any(|note| *note == previous) {
@@ -507,8 +589,8 @@ impl RunApp {
                 || self.computer_notes.values().any(|held| *held == note)
         };
         painter.rect_filled(rect, 0.0, theme.piano.bed);
-        for (index, offset) in WHITE_NOTES.iter().enumerate() {
-            let note = base_note + offset;
+        for index in 0..white_count {
+            let note = white_note(index);
             let key_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + index as f32 * white_width, rect.top()),
                 egui::pos2(
@@ -531,7 +613,7 @@ impl RunApp {
                 egui::StrokeKind::Inside,
             );
         }
-        for (offset, boundary) in BLACK_NOTES {
+        for (offset, boundary) in black_keys() {
             let note = base_note + offset;
             let center = rect.left() + boundary as f32 * white_width;
             let key_rect = egui::Rect::from_min_size(
@@ -643,8 +725,10 @@ impl RunApp {
         self.load_error = None;
         self.project_notice = None;
         self.event_inputs.clear();
+        self.devices_open = false;
         self.event_json_drafts.clear();
         self.event_input_signatures.clear();
+        ctx.memory_mut(|memory| memory.close_popup());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(run_window_title(None)));
     }
 
@@ -697,12 +781,10 @@ impl RunApp {
             },
             egui::StrokeKind::Inside,
         );
-        paint_onda_version(ui, panel_rect.right_top() + egui::vec2(-12.0, 10.0));
-
         let content_height = if self.load_error.is_some() {
-            276.0
+            293.0
         } else {
-            238.0
+            255.0
         };
         let content_rect = egui::Rect::from_center_size(
             panel_rect.center(),
@@ -713,16 +795,16 @@ impl RunApp {
                 .max_rect(content_rect)
                 .layout(egui::Layout::top_down(egui::Align::Center)),
         );
-        let logo = if theme.is_dark {
-            egui::Image::from_bytes(LOGO_DARK_URI, LOGO_DARK_BYTES)
-        } else {
-            egui::Image::from_bytes(LOGO_LIGHT_URI, LOGO_LIGHT_BYTES)
-        };
-        content_ui.add(
-            logo.fit_to_exact_size(egui::vec2(72.0, 72.0))
-                .maintain_aspect_ratio(true)
-                .texture_options(egui::TextureOptions::LINEAR),
-        );
+        content_ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add(run_logo(ui.ctx(), theme.is_dark, 72.0));
+            ui.label(
+                egui::RichText::new(env!("CARGO_PKG_VERSION"))
+                    .monospace()
+                    .size(SMALL_FONT_SIZE)
+                    .color(theme.muted_text),
+            );
+        });
         content_ui.add_space(18.0);
         let choose_clicked = if file_hovered {
             content_ui.add_sized(
@@ -818,13 +900,13 @@ impl RunApp {
                         |ui| {
                             egui::ComboBox::from_id_salt("run-block-size")
                                 .width(ui.available_width())
-                                .selected_text(format!("{} frames", self.options.block_frames))
+                                .selected_text(format!("{} samples", self.options.block_samples))
                                 .show_ui(ui, |ui| {
-                                    for block_frames in RUN_BLOCK_SIZE_CHOICES {
+                                    for block_samples in RUN_BLOCK_SIZE_CHOICES {
                                         ui.selectable_value(
-                                            &mut self.options.block_frames,
-                                            block_frames,
-                                            format!("{block_frames} frames"),
+                                            &mut self.options.block_samples,
+                                            block_samples,
+                                            format!("{block_samples} samples"),
                                         );
                                     }
                                 });
@@ -1013,29 +1095,15 @@ impl RunApp {
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    let heading_height = if args.is_empty() { 30.0 } else { 38.0 };
                     ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), heading_height),
+                        egui::vec2(ui.available_width(), 30.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             let name_text = egui::RichText::new(name)
                                 .strong()
                                 .size(HEADING_FONT_SIZE)
                                 .monospace();
-                            if args.is_empty() {
-                                ui.label(name_text).on_hover_text(name);
-                            } else {
-                                ui.vertical(|ui| {
-                                    ui.label(name_text).on_hover_text(name);
-                                    let summary = match args.len() {
-                                        1 => "1 argument".to_owned(),
-                                        count => format!("{count} arguments"),
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(summary).size(SMALL_FONT_SIZE).weak(),
-                                    );
-                                });
-                            }
+                            ui.label(name_text).on_hover_text(name);
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1143,7 +1211,13 @@ impl RunApp {
     }
 
     fn render_params(&mut self, ui: &mut egui::Ui, params: Vec<Value>) {
-        for group in params.chunk_by(|a, b| a.pointer("/array/name") == b.pointer("/array/name")) {
+        for (index, group) in params
+            .chunk_by(|a, b| a.pointer("/array/name") == b.pointer("/array/name"))
+            .enumerate()
+        {
+            if index > 0 {
+                ui.add_space(8.0);
+            }
             ui.push_id(param_name(&group[0]), |ui| {
                 if let Some(name) = group[0].pointer("/array/name").and_then(Value::as_str) {
                     egui::CollapsingHeader::new(format!("{name} [{}]", group.len()))
@@ -1153,7 +1227,6 @@ impl RunApp {
                     self.render_param_grid(ui, group);
                 }
             });
-            ui.add_space(8.0);
         }
     }
 
@@ -1171,17 +1244,14 @@ impl RunApp {
         let ty = param_type(param);
         let default = param.get("default").and_then(Value::as_f64);
         let domain = prepared_param_domain(param);
-        let unit = domain.and_then(ParamDomain::unit);
-        let display_name = unit
-            .filter(|unit| !unit.is_empty())
-            .map(|unit| format!("{name} ({unit})"))
-            .unwrap_or_else(|| name.clone());
+        let unit = param.get("unit").and_then(Value::as_str);
         let value = param
             .get("value")
             .cloned()
             .unwrap_or_else(|| default_value_for_type(ty));
         let spec = ParamControlSpec {
-            label: &display_name,
+            label: &name,
+            unit,
             ty,
             default,
             domain,
@@ -1238,6 +1308,7 @@ impl eframe::App for RunApp {
                 self.sync_event_inputs();
             }
         }
+        self.handle_run_shortcuts(ctx);
         self.handle_computer_keyboard(ctx);
         if self.controller.is_some() {
             ctx.request_repaint_after(CONTROLLER_POLL_INTERVAL);
@@ -1253,470 +1324,18 @@ impl eframe::App for RunApp {
                 .frame(
                     egui::Frame::default()
                         .fill(theme.app_fill)
-                        .inner_margin(egui::Margin::same(14)),
+                        .inner_margin(egui::Margin::same(12)),
                 )
                 .show(ctx, |ui| self.render_file_picker(ui, &theme, file_hovered));
             return;
         }
-        let show_midi_keyboard = self.controller.as_ref().is_some_and(|controller| {
-            let state = controller.state();
-            state.connected && state.midi.note_on
-        });
-        if show_midi_keyboard {
-            egui::TopBottomPanel::bottom("midi-keyboard")
-                .resizable(false)
-                .frame(
-                    egui::Frame::default()
-                        .fill(theme.panel_fill)
-                        .inner_margin(egui::Margin::symmetric(14, 10))
-                        .stroke(egui::Stroke::new(1.0_f32, theme.border)),
-                )
-                .show(ctx, |ui| self.render_midi_keyboard(ui, &theme));
-        } else {
-            self.release_virtual_notes();
-        }
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::default()
-                    .fill(theme.app_fill)
-                    .inner_margin(egui::Margin::same(14)),
-            )
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let state = self
-                            .controller
-                            .as_ref()
-                            .expect("loaded run controller")
-                            .state()
-                            .clone();
-
-                        section_box(ui, "", |ui| {
-                            paint_onda_version(ui, ui.max_rect().right_top());
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), 258.0),
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| {
-                                    let logo = if theme.is_dark {
-                                        egui::Image::from_bytes(LOGO_DARK_URI, LOGO_DARK_BYTES)
-                                    } else {
-                                        egui::Image::from_bytes(LOGO_LIGHT_URI, LOGO_LIGHT_BYTES)
-                                    };
-                                    ui.add(
-                                        logo.fit_to_exact_size(egui::vec2(68.0, 68.0))
-                                            .maintain_aspect_ratio(true)
-                                            .texture_options(egui::TextureOptions::LINEAR),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.separator();
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        egui::RichText::new(&state.path).monospace().size(BODY_FONT_SIZE),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.separator();
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        egui::RichText::new(format_run_status(
-                                            &state.status,
-                                            self.options.sample_rate_hz,
-                                            self.options.block_frames,
-                                        ))
-                                        .size(BODY_FONT_SIZE),
-                                    );
-                                    ui.add_space(10.0);
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(ui.available_width(), 30.0),
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let button_width = 116.0;
-                                            let button_gap = 8.0;
-                                            let total_width = button_width * 4.0 + button_gap * 3.0;
-                                            let leading_space =
-                                                ((ui.available_width() - total_width) * 0.5)
-                                                    .max(0.0);
-                                            ui.add_space(leading_space);
-                                            ui.spacing_mut().item_spacing.x = button_gap;
-                                            let button_size = [button_width, 30.0];
-                                            if ui
-                                                .add_enabled(
-                                                    !state.running,
-                                                    run_button("Play")
-                                                        .min_size(egui::vec2(button_width, 30.0)),
-                                                )
-                                                .clicked()
-                                            {
-                                                let _ = self
-                                                    .controller
-                                                    .as_mut()
-                                                    .expect("loaded run controller")
-                                                    .start();
-                                            }
-                                            if ui
-                                                .add_enabled(
-                                                    state.running,
-                                                    run_button("Stop")
-                                                        .min_size(egui::vec2(button_width, 30.0)),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.release_virtual_notes();
-                                                self.controller
-                                                    .as_mut()
-                                                    .expect("loaded run controller")
-                                                    .stop();
-                                            }
-                                            if ui
-                                                .add_sized(
-                                                    button_size,
-                                                    run_button("Save as project"),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.save_as_project();
-                                            }
-                                            if ui
-                                                .add_sized(button_size, run_button("Unload"))
-                                                .clicked()
-                                            {
-                                                self.release_virtual_notes();
-                                                self.unload(ctx);
-                                            }
-                                        },
-                                    );
-                                    if let Some(notice) = &self.project_notice {
-                                        ui.add_space(6.0);
-                                        match notice {
-                                            Ok(message) => {
-                                                ui.label(egui::RichText::new(message).size(SMALL_FONT_SIZE));
-                                            }
-                                            Err(error) => {
-                                                ui.colored_label(
-                                                    theme.error,
-                                                    error_text(error),
-                                                );
-                                            }
-                                        }
-                                    }
-                                    if self.controller.is_none() {
-                                        return;
-                                    }
-                                    ui.add_space(12.0);
-                                    let combo_width = 140.0;
-                                    let refresh_width = 128.0;
-                                    let control_gap = 12.0;
-                                    let combo_count =
-                                        (!state.input_devices.is_empty() as usize)
-                                            + (!state.output_devices.is_empty() as usize)
-                                            + (state.midi.available as usize);
-                                    let control_count = combo_count + 1;
-                                    let total_width = combo_width * combo_count as f32
-                                        + refresh_width
-                                        + control_gap
-                                            * control_count.saturating_sub(1) as f32;
-                                    ui.with_layout(
-                                        egui::Layout::top_down(egui::Align::Center),
-                                        |ui| {
-                                            ui.allocate_ui(
-                                                egui::vec2(total_width, 56.0),
-                                                |ui| {
-                                                    ui.spacing_mut().item_spacing.x = control_gap;
-                                                    ui.horizontal(|ui| {
-                                                        if !state.input_devices.is_empty() {
-                                                            ui.allocate_ui(
-                                                                egui::vec2(combo_width, 56.0),
-                                                                |ui| {
-                                                                    render_device_combo(
-                                                                    ui,
-                                                                    "Input Device",
-                                                                    Some("Default"),
-                                                                    &state.input_devices,
-                                                                    state
-                                                                        .current_input_device
-                                                                        .as_deref(),
-                                                                    |selection| {
-                                                                        let _ = self
-                                                                            .controller
-                                                                            .as_mut()
-                                                                            .expect(
-                                                                                "loaded run controller",
-                                                                            )
-                                                                            .set_input_device(
-                                                                                selection,
-                                                                            );
-                                                                    },
-                                                                    );
-                                                                },
-                                                            );
-                                                        }
-                                                        if !state.output_devices.is_empty() {
-                                                            ui.allocate_ui(
-                                                                egui::vec2(combo_width, 56.0),
-                                                                |ui| {
-                                                                    render_device_combo(
-                                                                    ui,
-                                                                    "Output Device",
-                                                                    Some("Default"),
-                                                                    &state.output_devices,
-                                                                    state
-                                                                        .current_output_device
-                                                                        .as_deref(),
-                                                                    |selection| {
-                                                                        let _ = self
-                                                                            .controller
-                                                                            .as_mut()
-                                                                            .expect(
-                                                                                "loaded run controller",
-                                                                            )
-                                                                            .set_output_device(
-                                                                                selection,
-                                                                            );
-                                                                    },
-                                                                    );
-                                                                },
-                                                            );
-                                                        }
-                                                        if state.midi.available {
-                                                            ui.allocate_ui(
-                                                                egui::vec2(combo_width, 56.0),
-                                                                |ui| {
-                                                                    render_device_combo(
-                                                                        ui,
-                                                                        "MIDI Input",
-                                                                        None,
-                                                                        &state.midi_input_devices,
-                                                                        state
-                                                                            .current_midi_input_device
-                                                                            .as_deref(),
-                                                                        |selection| {
-                                                                            self.release_virtual_notes();
-                                                                            let _ = self
-                                                                                .controller
-                                                                                .as_mut()
-                                                                                .expect(
-                                                                                    "loaded run controller",
-                                                                                )
-                                                                                .set_midi_input_device(
-                                                                                    selection,
-                                                                                );
-                                                                        },
-                                                                    );
-                                                                },
-                                                            );
-                                                        }
-                                                        ui.allocate_ui(
-                                                            egui::vec2(refresh_width, 56.0),
-                                                            |ui| {
-                                                                let selector_offset = ui
-                                                                    .text_style_height(
-                                                                        &egui::TextStyle::Small,
-                                                                    )
-                                                                    + ui
-                                                                        .spacing()
-                                                                        .item_spacing
-                                                                        .y;
-                                                                let control_height =
-                                                                    ui.spacing().interact_size.y;
-                                                                ui.with_layout(
-                                                                    egui::Layout::top_down(
-                                                                        egui::Align::Center,
-                                                                    ),
-                                                                    |ui| {
-                                                                        ui.add_space(
-                                                                            selector_offset,
-                                                                        );
-                                                                        if ui
-                                                                            .add_sized(
-                                                                                [
-                                                                                    refresh_width,
-                                                                                    control_height,
-                                                                                ],
-                                                                                run_button(
-                                                                                    "Refresh Devices",
-                                                                                ),
-                                                                            )
-                                                                            .clicked()
-                                                                        {
-                                                                            self.controller
-                                                                                .as_mut()
-                                                                                .expect(
-                                                                                    "loaded run controller",
-                                                                                )
-                                                                                .refresh_devices();
-                                                                        }
-                                                                    },
-                                                                );
-                                                            },
-                                                        );
-                                                    });
-                                                },
-                                            );
-                                        },
-                                    );
-                                    if let Some(error) =
-                                        self.load_error.as_ref().or(state.error.as_ref())
-                                    {
-                                        ui.add_space(8.0);
-                                        ui.colored_label(theme.error, error_text(error));
-                                    }
-                                },
-                            );
-                        });
-
-                        if self.controller.is_none() {
-                            return;
-                        }
-
-                        if state.running {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut scope_state =
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(
-                                        ui.ctx(),
-                                        ui.make_persistent_id("scope-section"),
-                                        true,
-                                    );
-                                render_section_header(ui, &mut scope_state, "Scope", |_| {});
-                                scope_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    draw_scope(
-                                        ui,
-                                        state.scope_channels,
-                                        &state.scope_samples,
-                                        egui::vec2(ui.available_width(), 140.0),
-                                        &theme,
-                                    );
-                                });
-                            });
-                        }
-
-                        if state.log_revealed {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut log_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                                    ui.ctx(),
-                                    ui.make_persistent_id("log-section"),
-                                    true,
-                                );
-                                let mut clear_log = false;
-                                render_section_header(ui, &mut log_state, "Log", |ui| {
-                                    clear_log = ui
-                                        .add(compact_button("Clear").min_size(egui::vec2(48.0, 26.0)))
-                                        .clicked();
-                                });
-                                if clear_log {
-                                    self.controller
-                                        .as_mut()
-                                        .expect("loaded run controller")
-                                        .clear_log();
-                                }
-                                log_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    self.render_log(ui, &state);
-                                });
-                            });
-                        }
-
-                        if !state.buffers.is_empty() {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut buffers_state =
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(
-                                        ui.ctx(),
-                                        ui.make_persistent_id("buffers-section"),
-                                        true,
-                                    );
-                                render_section_header(
-                                    ui,
-                                    &mut buffers_state,
-                                    "Buffers",
-                                    |_| {},
-                                );
-                                buffers_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    self.render_buffers(ui, &state.buffers);
-                                });
-                            });
-                        }
-
-                        if !state.events.is_empty() {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut events_state =
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(
-                                        ui.ctx(),
-                                        ui.make_persistent_id("events-section"),
-                                        true,
-                                    );
-                                render_section_header(
-                                    ui,
-                                    &mut events_state,
-                                    "Events",
-                                    |ui| {
-                                        if ui
-                                            .add(
-                                                compact_button("Reset")
-                                                    .min_size(egui::vec2(52.0, 26.0)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.controller
-                                                .as_mut()
-                                                .expect("loaded run controller")
-                                                .reset_event_arguments();
-                                            self.reset_event_inputs();
-                                        }
-                                    },
-                                );
-                                events_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    self.render_events(ui, &state.events, state.connected);
-                                });
-                            });
-                        }
-
-                        if !state.params.is_empty() {
-                            ui.add_space(12.0);
-                            section_box(ui, "", |ui| {
-                                let mut param_layout = self.param_layout;
-                                let mut params_state =
-                                    egui::collapsing_header::CollapsingState::load_with_default_open(
-                                        ui.ctx(),
-                                        ui.make_persistent_id("params-section"),
-                                        true,
-                                    );
-                                render_section_header(
-                                    ui,
-                                    &mut params_state,
-                                    "Params",
-                                    |ui| {
-                                        let mut seconds = self.options.param_smoothing_seconds;
-                                        let actions = render_param_header_actions(ui, &mut param_layout, &mut seconds, self.default_param_smoothing_seconds);
-                                        let controller = self.controller.as_mut().expect("loaded run controller");
-                                        if actions.reset {
-                                            controller.reset_params();
-                                        }
-                                        if actions.smoothing_changed {
-                                            match controller.set_param_smoothing_seconds(seconds) {
-                                                Ok(()) => {
-                                                    self.options.param_smoothing_seconds = seconds;
-                                                    self.load_error = None;
-                                                },
-                                                Err(error) => self.load_error = Some(error),
-                                            }
-                                        }
-                                    },
-                                );
-                                self.param_layout = param_layout;
-                                params_state.show_body_unindented(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    self.render_params(ui, state.params);
-                                });
-                            });
-                        }
-                    });
-            });
+        let state = self
+            .controller
+            .as_ref()
+            .expect("loaded run controller")
+            .state()
+            .clone();
+        self.render_run_panels(ctx, state, &theme);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1807,49 +1426,79 @@ struct ParamHeaderActions {
     smoothing_changed: bool,
 }
 
-fn render_param_header_actions(
+fn render_param_header(
     ui: &mut egui::Ui,
+    state: &mut egui::collapsing_header::CollapsingState,
     layout: &mut ParamLayout,
     seconds: &mut f64,
     default_seconds: f64,
 ) -> ParamHeaderActions {
-    set_control_font_size(ui, COMPACT_FONT_SIZE);
-    let reset = ui
-        .add(run_button("Reset").min_size(egui::vec2(52.0, PARAM_HEADER_CONTROL_HEIGHT)))
-        .on_hover_text("Restore parameter defaults")
-        .clicked();
-    let smoothing_changed = ui
-        .with_layout(
-            egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                render_param_layout_toggle(ui, layout);
-                render_param_smoothing(ui, seconds, default_seconds)
-            },
-        )
-        .inner;
-    ParamHeaderActions {
-        reset,
-        smoothing_changed,
+    let narrow = ui.available_width() <= 340.0;
+    let mut actions = ParamHeaderActions {
+        reset: false,
+        smoothing_changed: false,
+    };
+    render_section_header(ui, state, "Params", |ui| {
+        set_control_font_size(ui, COMPACT_FONT_SIZE);
+        actions.reset = run_view::reset_icon_button(ui, "Reset parameters to defaults").clicked();
+        if !narrow {
+            actions.smoothing_changed = render_param_settings(ui, layout, seconds, default_seconds);
+        }
+    });
+    if narrow {
+        ui.add_space(6.0);
+        actions.smoothing_changed = render_param_settings(ui, layout, seconds, default_seconds);
     }
+    actions
+}
+
+fn render_param_settings(
+    ui: &mut egui::Ui,
+    layout: &mut ParamLayout,
+    seconds: &mut f64,
+    default_seconds: f64,
+) -> bool {
+    let width = ui.available_size_before_wrap().x;
+    let settings_width = 112.0 + 6.0 + 112.0;
+    let stacked = width < settings_width;
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, PARAM_HEADER_CONTROL_HEIGHT),
+        if stacked {
+            egui::Layout::top_down(egui::Align::Max)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Center)
+        },
+        |ui| {
+            set_control_font_size(ui, COMPACT_FONT_SIZE);
+            ui.spacing_mut().item_spacing = egui::Vec2::splat(6.0);
+            if !stacked {
+                ui.add_space((ui.available_width() - settings_width).max(0.0));
+            }
+            let changed = render_param_smoothing(ui, seconds, default_seconds);
+            render_param_layout_toggle(ui, layout);
+            changed
+        },
+    )
+    .inner
 }
 
 fn render_param_smoothing(ui: &mut egui::Ui, seconds: &mut f64, default_seconds: f64) -> bool {
+    let width = ui.available_width().min(112.0);
     ui.allocate_ui_with_layout(
-        egui::vec2(112.0, PARAM_HEADER_CONTROL_HEIGHT),
+        egui::vec2(width, PARAM_HEADER_CONTROL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             ui.style_mut().drag_value_text_style = egui::TextStyle::Body;
             ui.spacing_mut().interact_size.y = PARAM_HEADER_CONTROL_HEIGHT;
             let mut milliseconds = NumberValue::Float(*seconds * 1000.0);
             let response = ui.add_sized(
-                [112.0, PARAM_HEADER_CONTROL_HEIGHT],
+                [width, PARAM_HEADER_CONTROL_HEIGHT],
                 NumberInput::new(
                     &mut milliseconds,
                     NumberValue::Float(default_seconds * 1000.0),
                     1.0,
                 )
-                .prefix("Smooth ")
+                .prefix(if width < 100.0 { "" } else { "Smooth " })
                 .suffix(" ms")
                 .help("Smoothing duration for continuous parameter changes. Set to 0 to disable.")
                 .range(0.0, f64::MAX)
@@ -1875,7 +1524,7 @@ fn render_param_smoothing(ui: &mut egui::Ui, seconds: &mut f64, default_seconds:
 fn render_midi_velocity_number(ui: &mut egui::Ui, velocity: &mut f32) -> egui::Response {
     let mut number = NumberValue::Float(f64::from(*velocity));
     let response = ui.add_sized(
-        [56.0, 26.0],
+        MIDI_NUMBER_SIZE,
         NumberInput::new(
             &mut number,
             NumberValue::Float(f64::from(DEFAULT_KEYBOARD_VELOCITY)),
@@ -1905,25 +1554,35 @@ fn render_param_layout_toggle(ui: &mut egui::Ui, layout: &mut ParamLayout) {
         .inner_margin(egui::Margin::same(1));
     let margin = frame.total_margin().sum();
     let width = buttons.iter().map(|(_, _, width)| width).sum::<f32>() + spacing + margin.x;
+    let fitted_width = width.min(ui.available_width());
     ui.allocate_ui_with_layout(
-        egui::vec2(width, PARAM_HEADER_CONTROL_HEIGHT),
+        egui::vec2(fitted_width, PARAM_HEADER_CONTROL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
             let button_height = PARAM_HEADER_CONTROL_HEIGHT - margin.y;
             frame.show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = spacing;
+                let scale = ((fitted_width - spacing - margin.x) / (width - spacing - margin.x))
+                    .clamp(0.0, 1.0);
                 for (label, choice, width) in buttons {
-                    if ui
-                        .add_sized(
-                            [width, button_height],
-                            run_button(label)
-                                .selected(*layout == choice)
-                                .stroke(egui::Stroke::NONE)
-                                .frame(false)
-                                .corner_radius(3),
-                        )
-                        .clicked()
-                    {
+                    let response = ui.add_sized(
+                        [width * scale, button_height],
+                        run_button(label)
+                            .truncate()
+                            .selected(*layout == choice)
+                            .stroke(egui::Stroke::NONE)
+                            .frame(false)
+                            .corner_radius(3),
+                    );
+                    if response.hovered() || response.has_focus() {
+                        ui.painter().rect_stroke(
+                            response.rect,
+                            3,
+                            ui.visuals().selection.stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if response.clicked() {
                         *layout = choice;
                     }
                 }
@@ -1938,100 +1597,60 @@ fn render_section_header(
     title: &str,
     add_actions: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 30.0),
-        egui::Layout::left_to_right(egui::Align::Center),
+    let bounds = ui.available_rect_before_wrap();
+    let title_width = ui
+        .painter()
+        .layout_no_wrap(
+            title.to_owned(),
+            egui::FontId::proportional(HEADING_FONT_SIZE),
+            ui.visuals().strong_text_color(),
+        )
+        .size()
+        .x;
+    let heading_width = (ui.spacing().indent + title_width).min(bounds.width());
+    let actions_left =
+        (bounds.left() + heading_width + ui.spacing().item_spacing.x).min(bounds.right());
+    ui.allocate_new_ui(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_size(
+                bounds.min,
+                egui::vec2(heading_width, PARAM_HEADER_CONTROL_HEIGHT),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
-                ui.label(egui::RichText::new(title).strong().size(HEADING_FONT_SIZE));
-            });
+            ui.set_min_height(PARAM_HEADER_CONTROL_HEIGHT);
+            ui.spacing_mut().item_spacing.x = 0.0;
+            state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+            ui.label(egui::RichText::new(title).strong().size(HEADING_FONT_SIZE));
+        },
+    );
+    ui.allocate_new_ui(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(
+                egui::pos2(actions_left, bounds.top()),
+                egui::pos2(bounds.right(), bounds.top() + PARAM_HEADER_CONTROL_HEIGHT),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)),
+        |ui| {
+            ui.set_min_height(PARAM_HEADER_CONTROL_HEIGHT);
             add_actions(ui);
         },
     );
 }
 
-fn section_box(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+fn section_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::group(ui.style())
         .fill(ui.visuals().panel_fill)
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
         .corner_radius(SECTION_CORNER_RADIUS)
         .inner_margin(egui::Margin::symmetric(8, 10))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            if !title.is_empty() {
-                ui.label(
-                    egui::RichText::new(title)
-                        .strong()
-                        .size(HEADING_FONT_SIZE)
-                        .color(ui.visuals().strong_text_color()),
-                );
-                ui.add_space(8.0);
-            }
-            add_contents(ui);
-        });
 }
 
-fn paint_onda_version(ui: &egui::Ui, position: egui::Pos2) {
-    ui.painter().text(
-        position,
-        egui::Align2::RIGHT_TOP,
-        ONDA_VERSION_LABEL,
-        egui::FontId::monospace(CAPTION_FONT_SIZE),
-        ui.visuals().weak_text_color(),
-    );
-}
-
-fn render_device_combo(
-    ui: &mut egui::Ui,
-    label: &str,
-    default_label: Option<&str>,
-    devices: &[String],
-    current: Option<&str>,
-    mut on_change: impl FnMut(Option<&str>),
-) {
-    ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(label).size(SMALL_FONT_SIZE));
-        let selected = current
-            .or_else(|| devices.first().map(String::as_str))
-            .or(default_label)
-            .unwrap_or("");
-        egui::ComboBox::from_id_salt(label)
-            .width(ui.available_width())
-            .selected_text(ellipsize_middle(selected, 18))
-            .show_ui(ui, |ui| {
-                if let Some(default_label) = default_label {
-                    if ui
-                        .selectable_label(current.is_none(), default_label)
-                        .clicked()
-                    {
-                        on_change(None);
-                    }
-                }
-                for device in devices {
-                    if ui
-                        .selectable_label(current == Some(device.as_str()), device)
-                        .clicked()
-                    {
-                        on_change(Some(device));
-                    }
-                }
-            });
+fn section_box(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    section_frame(ui).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        add_contents(ui);
     });
-}
-
-fn ellipsize_middle(text: &str, max_chars: usize) -> String {
-    let chars = text.chars().collect::<Vec<_>>();
-    if chars.len() <= max_chars || max_chars <= 3 {
-        return text.to_owned();
-    }
-
-    let head_len = (max_chars - 3) / 2;
-    let tail_len = max_chars - 3 - head_len;
-    let head = chars[..head_len].iter().collect::<String>();
-    let tail = chars[chars.len() - tail_len..].iter().collect::<String>();
-    format!("{head}...{tail}")
 }
 
 fn structured_event_type(ty: &str) -> bool {
@@ -2352,12 +1971,20 @@ enum ParamEditOutcome {
 #[derive(Clone, Copy)]
 struct ParamControlSpec<'a> {
     label: &'a str,
+    unit: Option<&'a str>,
     ty: &'a str,
     default: Option<f64>,
     domain: Option<ParamDomain<'a>>,
 }
 
 impl ParamControlSpec<'_> {
+    fn display_name(self) -> String {
+        match self.unit.filter(|unit| !unit.is_empty()) {
+            Some(unit) => format!("{} ({unit})", self.label),
+            None => self.label.to_owned(),
+        }
+    }
+
     fn bounds(self) -> Option<(f64, f64)> {
         self.domain
             .map(|domain| (domain.minimum(), domain.maximum()))
@@ -2410,16 +2037,28 @@ fn render_param_grid(
                     card_rect,
                     CARD_CORNER_RADIUS,
                     ui.visuals().faint_bg_color,
-                    ui.visuals().widgets.noninteractive.bg_stroke,
+                    egui::Stroke::new(
+                        1.0_f32,
+                        ui.visuals()
+                            .widgets
+                            .noninteractive
+                            .bg_stroke
+                            .color
+                            .gamma_multiply(0.55),
+                    ),
                     egui::StrokeKind::Inside,
                 );
 
-                let mut card_ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt(("param-card", param_name(param), param_type(param)))
-                        .max_rect(card_rect.shrink2(egui::vec2(9.0, 8.0)))
-                        .layout(egui::Layout::top_down(egui::Align::Center)),
-                );
+                let mut card_ui =
+                    ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("param-card", param_name(param), param_type(param)))
+                            .max_rect(card_rect.shrink2(egui::vec2(
+                                if card_width < 140.0 { 7.0 } else { 9.0 },
+                                8.0,
+                            )))
+                            .layout(egui::Layout::top_down(egui::Align::Center)),
+                    );
                 render_param(&mut card_ui, param);
             }
         });
@@ -2431,17 +2070,16 @@ fn render_param_value_editor(
     spec: ParamControlSpec<'_>,
     value: &Value,
 ) -> ParamEditOutcome {
-    let ParamControlSpec { label, ty, .. } = spec;
+    let ty = spec.ty;
     let (min, max) = spec.bounds().unzip();
     if ty == "bool" {
         let mut checked = value.as_bool().unwrap_or(false);
         if ui
             .add(egui::Checkbox::new(
                 &mut checked,
-                egui::RichText::new(label)
-                    .monospace()
-                    .size(HEADING_FONT_SIZE),
+                event_arg_heading(ui, &spec.display_name(), ty),
             ))
+            .on_hover_text(format!("{} ({ty})", spec.display_name()))
             .changed()
         {
             return ParamEditOutcome::Commit(Value::Bool(checked));
@@ -2457,7 +2095,7 @@ fn render_param_value_editor(
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
             let heading_width = (ui.available_width() - 112.0).max(36.0);
-            render_param_heading(ui, label, ty, heading_width, egui::Align::Min);
+            render_param_heading(ui, spec, heading_width, egui::Align::Min);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 outcome = render_param_number_input(
                     ui,
@@ -2528,13 +2166,7 @@ fn render_compact_param_value_editor(
     value: &Value,
 ) -> ParamEditOutcome {
     let mut outcome = ParamEditOutcome::None;
-    render_param_heading(
-        ui,
-        spec.label,
-        spec.ty,
-        ui.available_width(),
-        egui::Align::Center,
-    );
+    render_param_heading(ui, spec, ui.available_width(), egui::Align::Center);
     ui.add_space(4.0);
 
     if spec.ty == "bool" {
@@ -2571,54 +2203,86 @@ fn render_compact_param_value_editor(
     outcome
 }
 
-fn render_param_heading(ui: &mut egui::Ui, label: &str, ty: &str, width: f32, align: egui::Align) {
-    let name_font = egui::FontId::monospace(HEADING_FONT_SIZE);
-    let type_font = egui::FontId::monospace(COMPACT_FONT_SIZE);
-    let name_width = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), name_font, ui.visuals().text_color())
-        .size()
-        .x;
-    let type_width = ui
-        .painter()
-        .layout_no_wrap(ty.to_owned(), type_font, ui.visuals().weak_text_color())
-        .size()
-        .x;
-    let spacing = 5.0;
-    let visible_name_width = name_width.min((width - type_width - spacing).max(0.0));
-    let content_width = visible_name_width + spacing + type_width;
+fn render_param_heading(
+    ui: &mut egui::Ui,
+    spec: ParamControlSpec<'_>,
+    width: f32,
+    align: egui::Align,
+) {
+    let compact = align == egui::Align::Center && ui.ctx().screen_rect().width() <= 400.0;
+    let name_color = ui.visuals().strong_text_color();
+    let font = egui::FontId::monospace(if compact {
+        COMPACT_FONT_SIZE
+    } else {
+        HEADING_FONT_SIZE
+    });
+    let unit_galley = spec.unit.filter(|unit| !unit.is_empty()).map(|unit| {
+        ui.painter()
+            .layout_no_wrap(format!("({unit})"), font.clone(), name_color)
+    });
+    let unit_width = unit_galley.as_ref().map_or(0.0, |galley| galley.size().x);
+    let type_color = ui.visuals().weak_text_color();
+    let type_galley = ui.painter().layout_no_wrap(
+        spec.ty.to_owned(),
+        egui::FontId::monospace(COMPACT_FONT_SIZE),
+        type_color,
+    );
+    let gap = 6.0;
+    let suffix_width =
+        type_galley.size().x + unit_width + if unit_galley.is_some() { gap } else { 0.0 };
+    let name_width = (width - suffix_width - gap).max(0.0);
+    let mut name_job =
+        egui::text::LayoutJob::simple_singleline(spec.label.to_owned(), font, name_color);
+    name_job.wrap = egui::text::TextWrapping {
+        max_width: name_width,
+        max_rows: 1,
+        break_anywhere: true,
+        ..Default::default()
+    };
+    let name_galley = ui.painter().layout_job(name_job);
+    let heading_width = name_galley.size().x + gap + suffix_width;
     let leading_space = match align {
         egui::Align::Min => 0.0,
-        egui::Align::Center => (width - content_width).max(0.0) / 2.0,
-        egui::Align::Max => (width - content_width).max(0.0),
+        egui::Align::Center => (width - heading_width).max(0.0) / 2.0,
+        egui::Align::Max => (width - heading_width).max(0.0),
     };
-
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, 20.0),
-        egui::Layout::left_to_right(egui::Align::Center)
-            .with_main_wrap(false)
-            .with_main_align(egui::Align::Min),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = spacing;
-            ui.add_space(leading_space);
-            ui.add_sized(
-                [visible_name_width, 20.0],
-                egui::Label::new(
-                    egui::RichText::new(label)
-                        .strong()
-                        .monospace()
-                        .size(HEADING_FONT_SIZE),
-                )
-                .truncate(),
-            );
-            ui.label(
-                egui::RichText::new(ty)
-                    .size(COMPACT_FONT_SIZE)
-                    .weak()
-                    .monospace(),
-            );
-        },
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::hover());
+    let name_pos = egui::pos2(
+        rect.left() + leading_space,
+        rect.center().y - name_galley.size().y / 2.0,
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Label,
+            ui.is_enabled(),
+            format!("{} {}", spec.display_name(), spec.ty),
+        )
+    });
+    response.on_hover_text(format!("{} ({})", spec.display_name(), spec.ty));
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let mut suffix_x = (name_pos.x + name_galley.size().x + gap).min(rect.right() - suffix_width);
+    for (galley, color) in unit_galley
+        .into_iter()
+        .map(|galley| (galley, name_color))
+        .chain(std::iter::once((type_galley, type_color)))
+    {
+        let next_x = suffix_x + galley.size().x + gap;
+        painter.galley(
+            egui::pos2(suffix_x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+        suffix_x = next_x;
+    }
+    painter
+        .with_clip_rect(
+            egui::Rect::from_min_size(
+                egui::pos2(name_pos.x, rect.top()),
+                egui::vec2(name_width, rect.height()),
+            )
+            .intersect(painter.clip_rect()),
+        )
+        .galley(name_pos, name_galley, name_color);
 }
 
 fn render_param_number_input(
@@ -2650,7 +2314,7 @@ fn render_param_number_input(
     } else {
         input
     };
-    let response = ui.add_sized([104.0, 26.0], input);
+    let response = ui.add_sized([ui.available_width().min(104.0), 26.0], input);
     let next_value = number.as_f64();
     if response.double_clicked_by(egui::PointerButton::Primary) {
         return ParamEditOutcome::Commit(json_number(next_value));
@@ -2675,7 +2339,7 @@ fn render_param_knob(
         .expect("knob controls must have a prepared parameter domain");
     let size = egui::vec2(64.0, 64.0);
     let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.label));
+    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.display_name()));
     if response.clicked() {
         response.request_focus();
     }
@@ -2728,8 +2392,13 @@ fn render_param_knob(
     let radius = 27.0;
     ui.painter()
         .circle_filled(center, radius, ui.visuals().extreme_bg_color);
-    ui.painter()
-        .circle_stroke(center, radius, visuals.bg_stroke);
+    if response.has_focus() {
+        ui.painter().circle_stroke(
+            center,
+            radius + 7.0,
+            egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
+        );
+    }
 
     let ratio = domain.plain_to_normalized(*value) as f32;
     let start = 135.0_f32.to_radians();
@@ -2810,11 +2479,15 @@ fn paint_knob_arc(
 }
 
 fn param_grid_columns(available_width: f32, layout: ParamLayout) -> usize {
+    if layout == ParamLayout::Knobs && available_width <= 358.0 {
+        return (((available_width + 8.0) / 88.0).floor() as usize).clamp(1, 2);
+    }
     let minimum_card_width = match layout {
         ParamLayout::Sliders => 200.0,
         ParamLayout::Knobs => 140.0,
     };
-    (((available_width + 8.0) / (minimum_card_width + 8.0)).floor() as usize).max(1)
+    // Keep the eight-column limit aligned with ui/run/run.html::.param-list.
+    (((available_width + 8.0) / (minimum_card_width + 8.0)).floor() as usize).clamp(1, 8)
 }
 
 fn scalar_step(ty: &str, min: Option<f64>, max: Option<f64>) -> f64 {
@@ -2898,16 +2571,8 @@ fn draw_buffer_waveform(
 
     let label_font = egui::FontId::monospace(CAPTION_FONT_SIZE);
     let label_color = ui.visuals().weak_text_color();
-    painter.text(
-        rect.left_top() + egui::vec2(5.0, 4.0),
-        egui::Align2::LEFT_TOP,
-        buffer_waveform_range_label(waveform),
-        label_font.clone(),
-        label_color,
-    );
-
     let plot = egui::Rect::from_min_max(
-        rect.left_top() + egui::vec2(38.0, 19.0),
+        rect.left_top() + egui::vec2(38.0, 5.0),
         rect.right_bottom() - egui::vec2(5.0, 5.0),
     );
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -2917,13 +2582,6 @@ fn draw_buffer_waveform(
     let zero_y = snap_to_pixel_center(plot.center().y);
     let value_y = |value: f64| zero_y - (value / scale) as f32 * (plot.height() * 0.5);
     let guide_y = |value: f64| snap_to_pixel_center(value_y(value));
-    for value in [-scale, scale] {
-        let y = guide_y(value);
-        painter.line_segment(
-            [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
-            egui::Stroke::new(guide_width, theme.scope_grid),
-        );
-    }
     painter.line_segment(
         [
             egui::pos2(plot.left(), zero_y),
@@ -2985,12 +2643,12 @@ fn draw_buffer_waveform(
         painter.text(
             position,
             alignment,
-            format_waveform_axis(value),
+            format_waveform_value(value),
             label_font.clone(),
             label_color,
         );
     }
-    response.on_hover_text(buffer_waveform_range_label(waveform));
+    response.on_hover_text(buffer_waveform_summary(waveform));
 }
 
 fn draw_scope(
@@ -3003,16 +2661,12 @@ fn draw_scope(
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 10.0, theme.scope_background);
-    if channels == 0 || samples.is_empty() {
+    if channels == 0 {
         return;
     }
 
     let stroke_color = theme.scope_strokes[0];
     let frames = samples.len() / channels;
-    if frames == 0 {
-        return;
-    }
-
     let ch_height = rect.height() / channels as f32;
     let silent = samples.iter().all(|sample| *sample == 0.0);
     for ch in 0..channels {
@@ -3022,7 +2676,9 @@ fn draw_scope(
             egui::pos2(rect.right(), center_y),
         ];
         painter.line_segment(baseline, egui::Stroke::new(1.0_f32, theme.scope_grid));
-
+        if frames == 0 {
+            continue;
+        }
         if silent {
             painter.line_segment(baseline, egui::Stroke::new(1.5_f32, stroke_color));
             continue;
@@ -3047,6 +2703,7 @@ fn draw_scope(
 struct RunTheme {
     is_dark: bool,
     app_fill: egui::Color32,
+    muted_text: egui::Color32,
     accent: egui::Color32,
     accent_soft: egui::Color32,
     accent_hover: egui::Color32,
@@ -3054,6 +2711,7 @@ struct RunTheme {
     panel_fill: egui::Color32,
     panel_tint: egui::Color32,
     menu_fill: egui::Color32,
+    success: egui::Color32,
     error: egui::Color32,
     scope_background: egui::Color32,
     scope_grid: egui::Color32,
@@ -3079,6 +2737,7 @@ impl RunTheme {
             Self {
                 is_dark: true,
                 app_fill: egui::Color32::from_rgb(13, 25, 41),
+                muted_text: egui::Color32::from_rgb(146, 168, 191),
                 accent: egui::Color32::from_rgb(201, 219, 242),
                 accent_soft: egui::Color32::from_rgb(35, 61, 92),
                 accent_hover: egui::Color32::from_rgb(224, 235, 250),
@@ -3086,6 +2745,7 @@ impl RunTheme {
                 panel_fill: egui::Color32::from_rgb(12, 30, 51),
                 panel_tint: egui::Color32::from_rgb(18, 31, 49),
                 menu_fill: egui::Color32::from_rgb(13, 24, 39),
+                success: egui::Color32::from_rgb(122, 215, 186),
                 error: egui::Color32::from_rgb(255, 126, 126),
                 scope_background: egui::Color32::from_rgb(10, 22, 36),
                 scope_grid: egui::Color32::from_rgba_unmultiplied(201, 219, 242, 36),
@@ -3110,6 +2770,7 @@ impl RunTheme {
             Self {
                 is_dark: false,
                 app_fill: egui::Color32::from_rgb(219, 232, 247),
+                muted_text: egui::Color32::from_rgb(78, 106, 134),
                 accent: egui::Color32::from_rgb(20, 58, 99),
                 accent_soft: egui::Color32::from_rgb(219, 232, 247),
                 accent_hover: egui::Color32::from_rgb(10, 33, 59),
@@ -3117,6 +2778,7 @@ impl RunTheme {
                 panel_fill: egui::Color32::from_rgb(245, 249, 255),
                 panel_tint: egui::Color32::from_rgb(244, 249, 255),
                 menu_fill: egui::Color32::from_rgb(246, 250, 255),
+                success: egui::Color32::from_rgb(19, 108, 76),
                 error: egui::Color32::from_rgb(181, 51, 51),
                 scope_background: egui::Color32::from_rgb(236, 244, 253),
                 scope_grid: egui::Color32::from_rgba_unmultiplied(20, 58, 99, 28),
@@ -3176,6 +2838,15 @@ fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     }
     let visuals = &mut style.visuals;
 
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.fg_stroke.color = theme.accent;
+    }
     visuals.panel_fill = theme.panel_fill;
     visuals.window_fill = theme.app_fill;
     visuals.faint_bg_color = theme.panel_tint;
@@ -3187,7 +2858,7 @@ fn apply_run_theme(ctx: &egui::Context, theme: &RunTheme) {
     visuals.widgets.inactive.bg_fill = theme.accent_soft;
     visuals.widgets.inactive.weak_bg_fill = theme.panel_tint;
     visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, theme.border);
-    visuals.widgets.hovered.bg_fill = theme.accent;
+    visuals.widgets.hovered.bg_fill = theme.accent_soft;
     visuals.widgets.hovered.weak_bg_fill = theme.accent_soft;
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, theme.accent_hover);
     visuals.widgets.active.bg_fill = theme.accent_soft;
@@ -3354,23 +3025,12 @@ fn format_waveform_value(value: f64) -> String {
     rendered.replace('-', "−")
 }
 
-fn format_waveform_axis(value: f64) -> String {
-    if value > 0.0 {
-        format!("+{}", format_waveform_value(value))
-    } else {
-        format_waveform_value(value)
-    }
-}
-
-fn buffer_waveform_range_label(waveform: BufferWaveformPreview<'_>) -> String {
-    let scale = buffer_waveform_scale(waveform);
+fn buffer_waveform_summary(waveform: BufferWaveformPreview<'_>) -> String {
     format!(
-        "range {} … {} · scale {} / {}",
-        format_waveform_value(waveform.min_value),
-        format_waveform_value(waveform.max_value),
-        format_waveform_axis(-scale),
-        format_waveform_axis(scale),
+        "Minimum: {}\nMaximum: {}",
+        waveform.min_value, waveform.max_value,
     )
+    .replace('-', "−")
 }
 
 fn format_grouped_count(value: u64) -> String {
@@ -3398,9 +3058,9 @@ fn format_sample_rate(sample_rate: f64) -> String {
     }
 }
 
-fn format_run_status(status: &str, sample_rate_hz: u32, block_frames: usize) -> String {
+fn format_run_status(status: &str, sample_rate_hz: u32, block_samples: usize) -> String {
     format!(
-        "{status} — {} · {block_frames} frames",
+        "{status} — {} · {block_samples} samples",
         format_sample_rate(sample_rate_hz as f64)
     )
 }
@@ -3461,16 +3121,16 @@ mod tests {
     use onda_run::RunHostOptions;
 
     use super::{
-        apply_run_theme, buffer_loaded_summary, buffer_waveform, buffer_waveform_range_label,
-        buffer_waveform_scale, computer_key_offset, computer_key_press_blocked, control_decimals,
+        apply_run_theme, buffer_loaded_summary, buffer_waveform, buffer_waveform_scale,
+        buffer_waveform_summary, computer_key_offset, computer_key_press_blocked, control_decimals,
         event_arg_signature, event_array_grid_columns, event_array_len, event_array_scalar_type,
         format_run_status, log_entry_context, param_grid_columns, prepared_param_domain,
         render_compact_param_value_editor, render_event_scalar_editor, render_midi_velocity_number,
-        render_param_header_actions, render_param_number_input, render_param_smoothing,
-        render_param_value_editor, render_section_header, scalar_drag_speed, scalar_step,
-        section_box, structured_event_visible_lines, KnobDragState, ParamControlSpec, ParamDomain,
-        ParamEditOutcome, ParamLayout, ParamScalarType, ParamScale, RunApp, RunTheme,
-        PARAM_LAYOUT_STORAGE_KEY,
+        render_param_header, render_param_heading, render_param_number_input,
+        render_param_smoothing, render_param_value_editor, render_section_header,
+        scalar_drag_speed, scalar_step, section_box, structured_event_visible_lines, KnobDragState,
+        ParamControlSpec, ParamDomain, ParamEditOutcome, ParamLayout, ParamScalarType, ParamScale,
+        RunApp, RunTheme, PARAM_LAYOUT_STORAGE_KEY,
     };
     #[derive(Default)]
     struct TestStorage(HashMap<String, String>);
@@ -3544,6 +3204,7 @@ mod tests {
                 let ctx = egui::Context::default();
                 let spec = ParamControlSpec {
                     label: "value",
+                    unit: None,
                     ty,
                     default: Some(4.0),
                     domain: ranged.then(|| {
@@ -3594,6 +3255,7 @@ mod tests {
         let ctx = egui::Context::default();
         let spec = ParamControlSpec {
             label: "value",
+            unit: None,
             ty: "f64",
             default: Some(0.0),
             domain: None,
@@ -3641,6 +3303,7 @@ mod tests {
                 let ctx = egui::Context::default();
                 let spec = ParamControlSpec {
                     label: "value",
+                    unit: None,
                     ty,
                     default: Some(4.0),
                     domain: None,
@@ -3674,6 +3337,7 @@ mod tests {
         let ctx = egui::Context::default();
         let spec = ParamControlSpec {
             label: "value",
+            unit: None,
             ty: "f64",
             default: Some(4.0),
             domain: None,
@@ -3704,6 +3368,7 @@ mod tests {
         let ctx = egui::Context::default();
         let spec = ParamControlSpec {
             label: "value",
+            unit: None,
             ty: "f64",
             default: Some(4.0),
             domain: None,
@@ -3731,6 +3396,7 @@ mod tests {
             let ctx = egui::Context::default();
             let spec = ParamControlSpec {
                 label: "gain",
+                unit: None,
                 ty: "f64",
                 default: Some(4.0),
                 domain: ParamDomain::new(
@@ -3924,6 +3590,7 @@ mod tests {
             let ctx = egui::Context::default();
             let spec = ParamControlSpec {
                 label: "value",
+                unit: None,
                 ty: old_type,
                 default: Some(0.0),
                 domain: None,
@@ -3994,6 +3661,7 @@ mod tests {
             let ctx = egui::Context::default();
             let spec = ParamControlSpec {
                 label: "value",
+                unit: None,
                 ty: old_type,
                 default: Some(0.0),
                 domain: None,
@@ -4028,6 +3696,7 @@ mod tests {
         let ctx = egui::Context::default();
         let spec = ParamControlSpec {
             label: "gain",
+            unit: None,
             ty: "f64",
             default: Some(0.5),
             domain: ParamDomain::new(
@@ -4074,6 +3743,7 @@ mod tests {
             let initial = 0.0020037;
             let spec = ParamControlSpec {
                 label: "tiny",
+                unit: None,
                 ty: "f64",
                 default: Some(initial),
                 domain: ParamDomain::new(
@@ -4332,6 +4002,7 @@ mod tests {
         for maximum in [1.0e308, f64::MAX] {
             let spec = ParamControlSpec {
                 label: "wide",
+                unit: None,
                 ty: "f64",
                 default: Some(0.0),
                 domain: ParamDomain::new(
@@ -4388,6 +4059,7 @@ mod tests {
             .expect("valid test domain");
             let spec = ParamControlSpec {
                 label: "value",
+                unit: None,
                 ty,
                 default: Some(0.0),
                 domain: Some(domain),
@@ -4596,6 +4268,7 @@ mod tests {
         assert_eq!(control_decimals(0.001), 3);
         let spec = ParamControlSpec {
             label: "fine",
+            unit: None,
             ty: "f64",
             default: Some(0.0),
             domain: ParamDomain::new(
@@ -4728,8 +4401,8 @@ mod tests {
         let waveform = buffer_waveform(&in_range).expect("valid waveform");
         assert_eq!(buffer_waveform_scale(waveform), 1.0);
         assert_eq!(
-            buffer_waveform_range_label(waveform),
-            "range −0.75 … 0.5 · scale −1 / +1"
+            buffer_waveform_summary(waveform),
+            "Minimum: −0.75\nMaximum: 0.5"
         );
 
         let overflow = serde_json::json!({
@@ -4742,48 +4415,71 @@ mod tests {
         });
         let waveform = buffer_waveform(&overflow).expect("valid overflow waveform");
         assert_eq!(buffer_waveform_scale(waveform), 4.0);
-        assert_eq!(
-            buffer_waveform_range_label(waveform),
-            "range −2 … 4 · scale −4 / +4"
-        );
+        assert_eq!(buffer_waveform_summary(waveform), "Minimum: −2\nMaximum: 4");
     }
 
     #[test]
     fn run_status_includes_active_compile_settings() {
         assert_eq!(
             format_run_status("Running", 48_000, 256),
-            "Running — 48 kHz · 256 frames"
+            "Running — 48 kHz · 256 samples"
         );
     }
 
     #[test]
-    fn collapsed_run_section_uses_only_its_header_height() {
-        egui::__run_test_ui(|ui| {
-            apply_run_theme(ui.ctx(), &RunTheme::from_dark_mode(true));
-            ui.set_style(ui.ctx().style());
-            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(),
-                ui.make_persistent_id("collapsed-scope-test"),
-                false,
-            );
-            let top = ui.cursor().top();
-            section_box(ui, "", |ui| {
-                render_section_header(ui, &mut state, "Scope", |_| {});
-                state.show_body_unindented(ui, |ui| {
-                    ui.allocate_space(egui::vec2(1.0, 140.0));
+    fn collapsed_run_section_centers_its_heading_and_uses_only_header_height() {
+        let ctx = egui::Context::default();
+        apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    ui.make_persistent_id("collapsed-scope-test"),
+                    false,
+                );
+                section_box(ui, |ui| {
+                    render_section_header(ui, &mut state, "Scope", |_| {});
+                    state.show_body_unindented(ui, |ui| {
+                        ui.allocate_space(egui::vec2(1.0, 180.0));
+                    });
                 });
+                assert!(!state.is_open());
             });
-            assert!(!state.is_open());
-            assert!(ui.cursor().top() - top < 80.0);
         });
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.corner_radius == crate::SECTION_CORNER_RADIUS.into() =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("collapsed section panel");
+        assert!(panel.height() < 80.0, "{panel:?}");
+        for clipped in &output.shapes {
+            let heading = match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Scope" => {
+                    text.galley.rect.translate(text.pos.to_vec2())
+                }
+                egui::Shape::Path(path) => path.visual_bounding_rect(),
+                _ => continue,
+            };
+            assert!(
+                (heading.center().y - panel.center().y).abs() < 1.0,
+                "heading {heading:?}, panel {panel:?}"
+            );
+        }
     }
 
     #[test]
     fn params_header_keeps_its_controls_inside_narrow_windows() {
-        for width in [300.0, 400.0, 680.0] {
+        for width in [144.0, 160.0, 180.0, 240.0, 300.0, 400.0, 680.0] {
             let ctx = egui::Context::default();
             apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
-            let _ = ctx.run(
+            let output = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -4793,7 +4489,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        section_box(ui, "", |ui| {
+                        section_box(ui, |ui| {
                             let bounds = ui.max_rect();
                             let mut state =
                                 egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -4802,20 +4498,19 @@ mod tests {
                                     true,
                                 );
                             let top = ui.cursor().top();
-                            render_section_header(ui, &mut state, "Params", |ui| {
-                                render_param_header_actions(
-                                    ui,
-                                    &mut ParamLayout::Knobs,
-                                    &mut 0.03,
-                                    RunHostOptions::default().param_smoothing_seconds,
-                                );
-                                assert!(ui.min_rect().left() >= bounds.left(), "width: {width}");
-                                assert!(
-                                    ui.min_rect().right() <= bounds.right(),
-                                    "width: {width}, controls: {:?}, bounds: {bounds:?}",
-                                    ui.min_rect(),
-                                );
-                            });
+                            render_param_header(
+                                ui,
+                                &mut state,
+                                &mut ParamLayout::Knobs,
+                                &mut 0.03,
+                                RunHostOptions::default().param_smoothing_seconds,
+                            );
+                            assert!(ui.min_rect().left() >= bounds.left(), "width: {width}");
+                            assert!(
+                                ui.min_rect().right() <= bounds.right(),
+                                "width: {width}, controls: {:?}, bounds: {bounds:?}",
+                                ui.min_rect(),
+                            );
                             if width >= 400.0 {
                                 assert!(
                                     ui.cursor().top() - top < 40.0,
@@ -4825,6 +4520,21 @@ mod tests {
                         });
                     });
                 },
+            );
+            let smoothing = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.job.text.ends_with("30 ms") => Some((
+                        text.galley.rect.translate(text.pos.to_vec2()),
+                        clipped.clip_rect,
+                    )),
+                    _ => None,
+                })
+                .expect("smoothing value and units");
+            assert!(
+                smoothing.1.contains_rect(smoothing.0),
+                "smoothing must remain readable at width {width}: {smoothing:?}"
             );
         }
     }
@@ -4860,6 +4570,136 @@ mod tests {
     }
 
     #[test]
+    fn hovered_checkboxes_keep_their_checkmark_visible_in_both_themes() {
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            apply_run_theme(&ctx, &RunTheme::from_dark_mode(dark));
+            let mut rect = egui::Rect::NOTHING;
+            let mut icon_rect = egui::Rect::NOTHING;
+            let mut hovered = false;
+            for frame in 0..2 {
+                let events = if frame == 0 {
+                    vec![]
+                } else {
+                    vec![egui::Event::PointerMoved(rect.center())]
+                };
+                let output = ctx.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let response = ui.checkbox(&mut true, "Enabled");
+                            rect = response.rect;
+                            icon_rect = ui.spacing().icon_rectangles(rect).1;
+                            hovered = response.hovered();
+                        });
+                    },
+                );
+                if !hovered {
+                    continue;
+                }
+                let checkmark = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Path(path) if path.points.len() == 3 => Some(path),
+                        _ => None,
+                    })
+                    .expect("checked box paints a checkmark");
+                let background = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(shape)
+                            if shape.rect.center() == icon_rect.center()
+                                && shape.rect.contains(checkmark.points[1]) =>
+                        {
+                            Some(shape.fill)
+                        }
+                        _ => None,
+                    })
+                    .expect("checkbox background");
+                assert_ne!(
+                    checkmark.stroke.color,
+                    egui::epaint::ColorMode::Solid(background)
+                );
+            }
+            assert!(hovered, "probe must hover the checkbox");
+        }
+    }
+
+    #[test]
+    fn parameter_headings_reserve_visible_units_and_types_when_the_name_truncates() {
+        for dark in [false, true] {
+            for (screen_width, width, align) in [
+                (720.0, 72.0, egui::Align::Min),
+                (720.0, 76.0, egui::Align::Min),
+                (720.0, 122.0, egui::Align::Center),
+                (320.0, 76.0, egui::Align::Center),
+            ] {
+                let ctx = egui::Context::default();
+                apply_run_theme(&ctx, &RunTheme::from_dark_mode(dark));
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(screen_width, 200.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            render_param_heading(
+                                ui,
+                                ParamControlSpec {
+                                    label: "oscillator_frequency_with_a_long_parameter_name",
+                                    unit: Some("Hz"),
+                                    ty: "f32",
+                                    default: None,
+                                    domain: None,
+                                },
+                                width,
+                                align,
+                            );
+                        });
+                    },
+                );
+                let text = |label: &str| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text == label => {
+                                Some((text, shape.clip_rect))
+                            }
+                            _ => None,
+                        })
+                        .expect("heading text")
+                };
+                let (name, name_clip) = text("oscillator_frequency_with_a_long_parameter_name");
+                let (unit, clip) = text("(Hz)");
+                let (ty, _) = text("f32");
+                let name_rect = name.galley.rect.translate(name.pos.to_vec2());
+                let unit_rect = unit.galley.rect.translate(unit.pos.to_vec2());
+                let type_rect = ty.galley.rect.translate(ty.pos.to_vec2());
+                assert!(name.galley.elided);
+                assert!(!unit.galley.elided);
+                assert!(!ty.galley.elided);
+                assert!(unit_rect.left() >= clip.left() && unit_rect.right() <= clip.right() + 0.5);
+                assert!(
+                    unit_rect.right() < type_rect.left() && type_rect.right() <= clip.right() + 0.5
+                );
+                assert!(name_rect.intersect(name_clip).right() <= unit_rect.left());
+                if align == egui::Align::Center {
+                    assert!((name_rect.union(type_rect).center().x - clip.center().x).abs() < 0.5);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn compact_knob_contents_stay_inside_the_card() {
         egui::__run_test_ui(|ui| {
             apply_run_theme(ui.ctx(), &RunTheme::from_dark_mode(true));
@@ -4874,6 +4714,7 @@ mod tests {
                 &mut card_ui,
                 ParamControlSpec {
                     label: "a_very_long_parameter_name",
+                    unit: None,
                     ty: "f32",
                     default: Some(880.0),
                     domain: ParamDomain::new(

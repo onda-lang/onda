@@ -12,7 +12,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const SAMPLE_RATE: u32 = 48_000;
 const DURATION_SECONDS: u32 = 3;
-const BLOCK_FRAMES: usize = 480;
+const BLOCK_SAMPLES: usize = 480;
 
 const SINE: &str = r#"
 outs {
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         parsed,
         AnalysisOptions {
             sample_rate: SAMPLE_RATE as f32,
-            block_size: BLOCK_FRAMES,
+            block_size: BLOCK_SAMPLES,
         },
     )
     .map_err(|d| format_diagnostics("semantic analysis failed", &d))?;
@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         jit,
         InstanceConfig {
             sample_rate: SAMPLE_RATE as f32,
-            frames_per_block: BLOCK_FRAMES,
+            frames_per_block: BLOCK_SAMPLES,
             in_channels,
             out_channels,
         },
@@ -77,28 +77,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     .map_err(|d| format!("instance creation failed: {d:?}"))?;
 
     let total_frames = SAMPLE_RATE as usize * DURATION_SECONDS as usize;
-    if !total_frames.is_multiple_of(BLOCK_FRAMES) {
+    if !total_frames.is_multiple_of(BLOCK_SAMPLES) {
         return Err(format!(
-            "total_frames ({total_frames}) must be a multiple of BLOCK_FRAMES ({BLOCK_FRAMES})"
+            "total_frames ({total_frames}) must be a multiple of BLOCK_SAMPLES ({BLOCK_SAMPLES})"
         )
         .into());
     }
 
-    let blocks = total_frames / BLOCK_FRAMES;
+    let blocks = total_frames / BLOCK_SAMPLES;
     let mut rendered = Vec::with_capacity(total_frames * out_channels);
-    let mut out_bound = vec![0_u8; BLOCK_FRAMES * std::mem::size_of::<f32>()];
+    let mut out_bound = vec![0_u8; BLOCK_SAMPLES * std::mem::size_of::<f32>()];
     unsafe { bind_output(&mut instance, 0, out_bound.as_mut_ptr(), out_bound.len()) }
         .map_err(|d| format!("bind output failed: {d:?}"))?;
 
     for _ in 0..blocks {
         process_checked(
             &mut instance,
-            BLOCK_FRAMES,
+            BLOCK_SAMPLES,
             onda_runtime::ExecutionOutput::none(),
         )
         .map_err(|d| format!("processing failed: {d:?}"))?;
         let out_f32 =
-            unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_FRAMES) };
+            unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_SAMPLES) };
         rendered.extend_from_slice(out_f32);
     }
 

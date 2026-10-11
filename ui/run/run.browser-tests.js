@@ -30,6 +30,827 @@ function pointerControl(input, captureTarget = input) {
 function refresh() {
   send({ events, params, logText: "background update", logRevealed: true });
 }
+
+async function checkDefaultLayout() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    const path = "/a/long/project/directory/orbit_flanger.onda";
+    const state = {
+      running: true, connected: true, path, status: "Running",
+      outputChannels: 2, buffers: [], events: [], logRevealed: false,
+      params: Array.from({ length: 8 }, (_, index) => ({
+        name: `parameter_${index}`, type: "f32", scalar: true, value: 0.5, default: 0.5,
+        rangeMin: 0, rangeMax: 1, scale: "linear",
+      })),
+      inputDevices: ["Default input"], outputDevices: ["Default output"],
+      midiInputDevices: ["Computer Keyboard"],
+      supportsSourceSelection: true, supportsTransport: true,
+      supportsDeviceSelection: true, supportsParamSmoothing: true,
+      paramSmoothingMs: 30, paramSmoothingDefaultMs: 30,
+      supportsScope: true, supportsProjectExport: true, canExportProject: true,
+      sampleRateHz: 48000, blockSamples: 512,
+    };
+    for (const themeMode of ["light", "dark"]) {
+      for (const available of [false, true]) {
+        view._onHostMessage({ type: "state", state: {
+          ...state, themeMode, midi: { available, noteOn: available },
+          currentMidiInputDevice: "Computer Keyboard",
+        }});
+        view._onHostMessage({ type: "scopeData", channels: 2, samples: Array(512).fill(0) });
+        doc.querySelector('[data-param-layout="knobs"]').click();
+        await waitFrames(2);
+        const shell = doc.querySelector(".shell");
+        const cards = [...doc.querySelectorAll("#params .param")];
+        const rows = new Set(cards.map(card => Math.round(card.getBoundingClientRect().top)));
+        check(view.innerWidth === 720 && view.innerHeight === 840,
+          "run layout coverage uses the actual 720 × 840 viewport");
+        check(rows.size === 2 && cards.length === 8,
+          `${themeMode}, MIDI ${available}: eight knobs stay in two rows`);
+        check(shell.scrollHeight === shell.clientHeight,
+          `${themeMode}, MIDI ${available}: the scope and two knob rows fit without scrolling`);
+        check(doc.getElementById("midi-keyboard").hidden === !available,
+          "the fit check includes the visible MIDI keyboard when supported");
+        check(doc.getElementById("params-section").getBoundingClientRect().bottom
+          <= shell.getBoundingClientRect().bottom - parseFloat(getComputedStyle(shell).paddingBottom) + 1,
+          "the whole second knob row is visible within the content area");
+        check(doc.getElementById("scope-canvas").getBoundingClientRect().height === 160
+          && cards.every(card => card.getBoundingClientRect().height === 140),
+          "the scope plot is 160 pixels tall and knob cards retain their sizes");
+        check(doc.getElementById("path").textContent === "orbit_flanger.onda"
+          && doc.getElementById("path").title === path,
+          "the header shows the filename and retains the full path on hover");
+        const transport = [...doc.querySelectorAll(".actions button")]
+          .filter(control => control.getClientRects().length > 0)
+          .map(control => control.getBoundingClientRect());
+        const header = doc.getElementById("run-header").getBoundingClientRect();
+        check(header.height < 90 && transport.length === 3
+          && transport.every(rect => rect.height === 32 && rect.width === 32
+            && Math.abs(rect.top - transport[0].top) < 1),
+          `${themeMode}, MIDI ${available}: the compact header keeps three equally sized icon buttons`);
+        check([...doc.querySelectorAll(".actions button, .transport button")].every(button =>
+          button.getAttribute("aria-label") && button.title),
+        "every header icon has an accessible name and tooltip");
+        const version = doc.getElementById("onda-version").getBoundingClientRect();
+        const logo = doc.getElementById("hero-logo").getBoundingClientRect();
+        check(Math.abs(Math.min(logo.left, version.left) - header.left - 13) < 1
+          && Math.abs(version.top - logo.bottom - 4) < 1
+          && Math.abs(version.left + version.width / 2 - logo.left - logo.width / 2) < 1
+          && doc.getElementById("onda-version").textContent === "0.0.0-test"
+          && Math.abs((logo.top + version.bottom) / 2 - transport[0].top - transport[0].height / 2) < 1,
+          "the version sits centered below the logo, with the brand centered beside the controls");
+        check(Math.abs(transport.at(-1).right - header.right + 13) < 1,
+          "the toolbar aligns with the header's right edge");
+        const source = doc.getElementById("hero-source").getBoundingClientRect();
+        const brand = doc.getElementById("hero-brand").getBoundingClientRect();
+        check(["path", "status"].every(id => {
+          const label = doc.getElementById(id);
+          const rect = label.getBoundingClientRect();
+          return getComputedStyle(label).textAlign === "left"
+            && Math.abs(rect.left - source.left) < 1
+            && Math.abs(rect.left - brand.right - 16) < 1
+            && rect.right <= transport[0].left - 12 + 1;
+        }), "the filename and status share a left edge after the brand divider");
+        const filename = doc.getElementById("path").getBoundingClientRect();
+        const details = doc.querySelector(".hero-file-details").getBoundingClientRect();
+        const playStop = doc.querySelector(".transport button:not([hidden])").getBoundingClientRect();
+        check(Math.abs(playStop.left - filename.right - 16) < 1
+          && Math.abs(playStop.top + playStop.height / 2 - details.top - details.height / 2) < 1
+          && Math.abs(playStop.top + playStop.height / 2 - transport[0].top - transport[0].height / 2) < 1
+          && playStop.width === 72 && playStop.height === 28
+          && doc.querySelector(".transport button:not([hidden]) span").textContent === "Stop",
+          "the labeled Play/Stop button leads the toolbar, aligned with the utility icons");
+        const settings = doc.getElementById("settings-toggle");
+        const panel = doc.getElementById("settings-popover");
+        check(!panel.matches(":popover-open") && settings.getAttribute("aria-expanded") === "false",
+          "device settings are hidden by default");
+        settings.click();
+        await waitFrames(2);
+        const bounds = panel.getBoundingClientRect();
+        const devices = [...panel.querySelectorAll("select, #refresh-devices")]
+          .filter(control => control.getClientRects().length > 0)
+          .map(control => control.getBoundingClientRect());
+        check(panel.matches(":popover-open") && settings.getAttribute("aria-expanded") === "true"
+          && bounds.left >= 12 && bounds.right <= view.innerWidth - 12
+          && bounds.top >= 12 && bounds.bottom <= view.innerHeight - 12
+          && doc.getElementById("run-header").getBoundingClientRect().height === header.height,
+        "Settings opens within the viewport without enlarging the header");
+        check(!panel.querySelector("h2"), "device settings have no redundant title");
+        check(devices.every(rect => rect.height === 32
+          && Math.abs(rect.width - devices[0].width) < 1),
+        "device selectors and Refresh use consistent sizes in Settings");
+        const input = doc.getElementById("input-device");
+        input.value = "Default input";
+        input.dispatchEvent(new view.Event("change", { bubbles: true }));
+        check(view.__testMessages.at(-1).type === "setInputDevice"
+          && view.__testMessages.at(-1).name === "Default input" && panel.matches(":popover-open"),
+        "changing a device sends its selection and keeps Settings open");
+        doc.getElementById("refresh-devices").click();
+        check(view.__testMessages.at(-1).type === "refreshDevices",
+          "Refresh remains available in Settings and sends its host command");
+        doc.getElementById("save-project").click();
+        await waitFrames(2);
+        check(!panel.matches(":popover-open")
+          && view.__testMessages.at(-1).type === "saveProjectAs",
+        "the direct Save as Project icon sends its command and dismisses Settings");
+      }
+    }
+    // Scrollbar appearance must not change the grid or leave it in a different
+    // layout after Log is hidden or the viewport approaches from another width.
+    const gridGeometry = () => {
+      const cards = [...doc.querySelectorAll("#params .param")]
+        .map(card => card.getBoundingClientRect());
+      return JSON.stringify({
+        contentWidth: doc.querySelector(".shell").clientWidth,
+        cardWidths: cards.map(rect => rect.width),
+        rows: new Set(cards.map(rect => Math.round(rect.top))).size,
+      });
+    };
+    for (const width of [626, 638]) {
+      frame.style.width = "720px";
+      view._onHostMessage({ type: "state", state: { logRevealed: false } });
+      await waitFrames(2);
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const geometry = gridGeometry();
+      for (const logRevealed of [true, false]) {
+        view._onHostMessage({ type: "state", state: { logRevealed, logText: "ready" } });
+        await waitFrames(2);
+        check(gridGeometry() === geometry,
+          `the ${width}-pixel parameter grid stays stable when Log is ${logRevealed ? "shown" : "hidden"}`);
+      }
+      frame.style.width = "520px";
+      await waitFrames(2);
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      check(gridGeometry() === geometry,
+        `the ${width}-pixel parameter grid is independent of resize direction`);
+    }
+    for (const width of [240, 280, 320, 400]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const header = doc.getElementById("run-header").getBoundingClientRect();
+      const inset = parseFloat(getComputedStyle(doc.getElementById("run-header")).paddingLeft) + 1;
+      check(["path", "status"].every(id => {
+        const rect = doc.getElementById(id).getBoundingClientRect();
+        return Math.abs(rect.left - header.left - inset) < 1;
+      }), `the file details stay left aligned in a ${width}-pixel header`);
+      const brand = doc.getElementById("hero-brand").getBoundingClientRect();
+      const source = doc.querySelector(".hero-source").getBoundingClientRect();
+      const playStop = doc.querySelector(".transport button:not([hidden])").getBoundingClientRect();
+      check(Math.abs(playStop.left - source.right - 12) < 1,
+        `the ${width}-pixel source row uses all space before Play/Stop, independently of utilities`);
+      check([...doc.querySelectorAll(".actions button")]
+        .filter(button => !button.hidden)
+        .every(button => {
+          const rect = button.getBoundingClientRect();
+          return [brand, source].every(bounds => rect.right <= bounds.left
+            || rect.left >= bounds.right || rect.bottom <= bounds.top || rect.top >= bounds.bottom);
+        }), `header controls stay clear of the brand and file details at ${width} pixels`);
+      const cards = [...doc.querySelectorAll("#params .param")];
+      if (width <= 320) {
+        const heading = doc.querySelector("#params-section .section-heading");
+        const settings = doc.querySelector("#params-section .section-actions");
+        check(heading.lastElementChild.id === "reset-params"
+          && settings.getBoundingClientRect().top >= heading.getBoundingClientRect().bottom,
+          `a ${width}-pixel Params panel puts its settings below the title and reset button`);
+      }
+      const rows = new Set(cards.map(card => Math.round(card.getBoundingClientRect().top)));
+      check(rows.size === 4 && cards.length === 8,
+        `a ${width}-pixel narrow view keeps two knobs per row`);
+      check(cards.every(card => {
+        const bounds = card.getBoundingClientRect();
+        return [...card.querySelectorAll(".param-head, .param-knob, .param-number")].every(control => {
+          const rect = control.getBoundingClientRect();
+          return rect.left >= bounds.left && rect.right <= bounds.right
+            && rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+        });
+      }) && doc.querySelector(".shell").scrollWidth === doc.querySelector(".shell").clientWidth,
+      `the controls fit inside narrow knob cards at ${width} pixels without horizontal scrolling`);
+      doc.querySelector('[data-param-layout="sliders"]').click();
+      await waitFrames(2);
+      check([...doc.querySelectorAll("#params .param")].every(card => {
+        const name = card.querySelector(".param-name").getBoundingClientRect();
+        const value = card.querySelector(".param-number").getBoundingClientRect();
+        return name.width >= 48 && (name.right <= value.left || name.bottom <= value.top);
+      }), `a ${width}-pixel slider view keeps parameter names readable beside or above their values`);
+      doc.querySelector('[data-param-layout="knobs"]').click();
+      await waitFrames(2);
+      const settings = doc.getElementById("settings-toggle");
+      check(settings.getBoundingClientRect().width === 44
+        && settings.getBoundingClientRect().height === 44,
+      "narrow views give header icons larger touch targets");
+      settings.click();
+      await waitFrames(2);
+      const panel = doc.getElementById("settings-popover");
+      const bounds = panel.getBoundingClientRect();
+      check(bounds.left >= 12 && bounds.right <= width - 12,
+        `Settings stays inside a ${width}-pixel view`);
+      panel.hidePopover();
+      await waitFrames(1);
+      const shell = doc.querySelector(".shell");
+      shell.scrollTop = shell.scrollHeight;
+      await waitFrames(2);
+      check(Math.abs(doc.getElementById("midi-keyboard").getBoundingClientRect().top
+        - doc.getElementById("params-section").getBoundingClientRect().bottom - 12) < 1,
+      `the end of scrolling leaves a 12-pixel gutter above the keyboard at ${width} pixels`);
+      shell.scrollTop = 0;
+      await waitFrames(2);
+    }
+    for (const width of [144, 160, 180, 240, 320, 720]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const panel = doc.getElementById("params-section").getBoundingClientRect();
+      const smoothing = doc.getElementById("param-smoothing-control").getBoundingClientRect();
+      const input = doc.getElementById("param-smoothing-ms");
+      const layout = doc.querySelector(".param-layout-toggle").getBoundingClientRect();
+      check([smoothing, layout].every(rect => rect.left >= panel.left + 8.5
+        && rect.right <= panel.right - 8.5)
+        && input.scrollWidth <= input.clientWidth,
+      `Params settings and the complete smoothing value fit at ${width} pixels`);
+      if (width <= 240) {
+        check(smoothing.bottom + 6 <= layout.top + 1,
+          `smoothing and layout wrap in visual order at ${width} pixels`);
+      }
+    }
+    const stoppedTransportBounds = doc.getElementById("stop").getBoundingClientRect();
+    const keyboardBounds = doc.getElementById("midi-keyboard").getBoundingClientRect();
+    doc.getElementById("stop").click();
+    check(view.__testMessages.at(-1).type === "stop", "the Stop icon sends its transport command");
+    view._onHostMessage({ type: "state", state: { running: false, connected: false, status: "Stopped" } });
+    check(!doc.getElementById("midi-keyboard").hidden
+      && doc.getElementById("midi-keyboard").getBoundingClientRect().y === keyboardBounds.y
+      && doc.getElementById("midi-keyboard").getBoundingClientRect().height === keyboardBounds.height,
+      "Stop preserves the MIDI keyboard dock and content viewport");
+    check(!doc.getElementById("start").hidden && doc.getElementById("stop").hidden,
+      "stopping replaces Stop with Play in the same toolbar position");
+    const playBounds = doc.getElementById("start").getBoundingClientRect();
+    check(playBounds.x === stoppedTransportBounds.x && playBounds.y === stoppedTransportBounds.y
+      && playBounds.width === stoppedTransportBounds.width && playBounds.height === stoppedTransportBounds.height,
+      "switching playback state preserves the transport button's position and size");
+    doc.getElementById("start").click();
+    check(view.__testMessages.at(-1).type === "start", "the Play icon sends its transport command");
+    view._onHostMessage({ type: "state", state: { running: true, connected: true, status: "Running" } });
+    view._onHostMessage({ type: "state", state: {
+      supportsDeviceSelection: false, midi: { available: true, noteOn: false },
+    }});
+    await waitFrames(2);
+    doc.getElementById("settings-toggle").click();
+    await waitFrames(2);
+    const midiSelect = doc.getElementById("midi-input-device").getBoundingClientRect();
+    const refresh = doc.getElementById("refresh-devices").getBoundingClientRect();
+    check(Math.abs(midiSelect.width - refresh.width) < 1
+      && midiSelect.height === 32 && refresh.height === 32,
+      "MIDI-only hosts retain their selector and Refresh in Settings");
+    check(doc.activeElement.id === "midi-input-device",
+      "MIDI-only Settings focuses its first visible control");
+    doc.getElementById("settings-popover").hidePopover();
+    await waitFrames(1);
+    // A playground source without MIDI has no device or file actions.
+    view._onHostMessage({ type: "state", state: {
+      supportsSourceSelection: false, supportsProjectExport: false,
+      midi: { available: false, noteOn: false },
+    }});
+    for (const width of [240, 400, 480, 560, 720]) {
+      frame.style.width = `${width}px`;
+      for (const running of [false, true]) {
+        view._onHostMessage({ type: "state", state: { running } });
+        await waitFrames(2);
+        const header = doc.getElementById("run-header").getBoundingClientRect();
+        const transport = doc.querySelector(".transport button:not([hidden])").getBoundingClientRect();
+        check(Math.abs(transport.right - header.right + 13) < 1,
+          `a ${width}-pixel playground without utility actions aligns Play/Stop with the right gutter`);
+        check(doc.querySelector(".actions").getClientRects().length === 0,
+          "an empty utility group reserves no toolbar space or extra row");
+        if (width >= 480) {
+          check(header.height < 90 && !doc.getElementById("run-header").classList.contains("narrow"),
+            `a ${width}-pixel playground keeps a sparse toolbar on one row`);
+        }
+      }
+    }
+    // Allow room for the block-size unit when checking an untruncated single row.
+    frame.style.width = "420px";
+    for (const running of [false, true]) {
+      view._onHostMessage({ type: "state", state: {
+        path: "sine.onda", ondaVersion: "0.8.26",
+        status: running ? "Running" : "Stopped", running,
+      }});
+      await waitFrames(2);
+      check(doc.getElementById("run-header").getBoundingClientRect().height < 90
+        && ["path", "status"].every(id => {
+          const label = doc.getElementById(id);
+          return label.scrollWidth <= label.clientWidth;
+        }), "a 420-pixel sparse playground keeps short source details and transport on one row");
+    }
+    view._onHostMessage({ type: "state", state: {
+      supportsSourceSelection: true, supportsProjectExport: true,
+      midi: { available: true, noteOn: false },
+    }});
+    view._onHostMessage({ type: "state", state: { supportsDeviceSelection: true } });
+    frame.style.width = "180px";
+    await waitFrames(2);
+    const zoomHeader = doc.getElementById("run-header").getBoundingClientRect();
+    const utilityBounds = [...doc.querySelectorAll(".actions button")]
+      .filter(button => !button.hidden).map(button => button.getBoundingClientRect());
+    check(utilityBounds.every(rect => rect.left >= zoomHeader.left + 13
+      && rect.right <= zoomHeader.right - 13)
+      && new Set(utilityBounds.map(rect => Math.round(rect.top))).size === 2,
+      "at high zoom the utility buttons wrap inside the header gutters");
+    const longName = "long_name_".repeat(100) + ".onda";
+    view._onHostMessage({ type: "state", state: { path: `C:\\project\\${longName}` } });
+    check(doc.getElementById("path").textContent === longName,
+      "the source header also recognizes Windows paths");
+    for (const width of [320, 400, 720]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const shell = doc.querySelector(".shell");
+      const bounds = doc.getElementById("run-header").getBoundingClientRect();
+      const controls = [...doc.querySelectorAll(".actions button, .transport button")]
+        .filter(control => control.getClientRects().length > 0);
+      check(shell.scrollWidth === shell.clientWidth && controls.every(control => {
+        const rect = control.getBoundingClientRect();
+        return rect.left >= bounds.left && rect.right <= bounds.right;
+      }), `source header controls stay inside a ${width}-pixel window with a long filename`);
+      const filename = doc.getElementById("path");
+      const playStop = doc.querySelector(".transport button:not([hidden])").getBoundingClientRect();
+      check(filename.title === `C:\\project\\${longName}`
+        && getComputedStyle(filename).textOverflow === "ellipsis"
+        && filename.scrollWidth > filename.clientWidth
+        && filename.getBoundingClientRect().right <= playStop.left - 12 + 1,
+        `long filenames truncate before Play/Stop and retain the full path on hover at ${width} pixels`);
+    }
+    const sections = ["scope", "log", "buffers", "events", "params"];
+    view._onHostMessage({ type: "state", state: {
+      logRevealed: true, logText: "ready", supportsBufferEmbedding: true,
+      buffers: [{ name: "buffer", type: "f32[]" }], events: [{ name: "ping", args: [] }],
+    }});
+    for (const section of ["events", "params"]) {
+      const heading = doc.querySelector(`#${section}-section .section-heading`);
+      const reset = heading.querySelector(".reset-action");
+      check(reset && Math.abs(reset.getBoundingClientRect().left
+        - heading.querySelector(".params-title").getBoundingClientRect().right - 8) < 1,
+        `${section} reset stays beside its heading`);
+    }
+    for (const section of sections) {
+      const toggle = doc.getElementById(`${section}-toggle`);
+      if (toggle.getAttribute("aria-expanded") === "true") toggle.click();
+    }
+    for (const themeMode of ["light", "dark"]) {
+      view._onHostMessage({ type: "state", state: { themeMode } });
+      for (const width of [240, 280, 320, 400, 720]) {
+        frame.style.width = `${width}px`;
+        await waitFrames(2);
+        for (const section of sections) {
+          const panel = doc.getElementById(`${section}-section`);
+          const bounds = (section === "params"
+            ? panel.querySelector(".section-heading") : panel).getBoundingClientRect();
+          check(doc.getElementById(`${section}-body`).hidden
+            && [...panel.querySelector(".section-heading").children].filter(node =>
+              node.matches(".section-toggle, .params-title")).every(node => {
+                const rect = node.getBoundingClientRect();
+                return Math.abs(rect.top + rect.height / 2 - bounds.top - bounds.height / 2) < 1;
+              }), `${themeMode}, ${width}px: collapsed ${section} arrow and title are vertically centered`);
+        }
+        check(doc.querySelector(".shell").scrollWidth === doc.querySelector(".shell").clientWidth,
+          "collapsed headers keep their actions inside narrow views");
+      }
+    }
+    frame.style.width = "720px";
+    view._onHostMessage({ type: "state", state: {
+      running: false, connected: false, path: "", params: [], buffers: [], events: [], logRevealed: false,
+      midi: { available: false, noteOn: false }, supportsRunSettings: true,
+    }});
+    await waitFrames(2);
+    const picker = doc.getElementById("file-picker");
+    const version = doc.getElementById("onda-version");
+    const versionBounds = version.getBoundingClientRect();
+    const logoBounds = doc.getElementById("file-picker-logo").getBoundingClientRect();
+    check(!picker.hidden && !version.hidden
+      && Math.abs(versionBounds.top - logoBounds.bottom - 4) < 1
+      && Math.abs(versionBounds.left + versionBounds.width / 2
+        - logoBounds.left - logoBounds.width / 2) < 1
+      && version.textContent === doc.getElementById("onda-version-number").textContent,
+      "unloading centers only the version number below the file picker logo");
+    check(doc.querySelector(".shell").scrollHeight === 840,
+      "the empty file picker also fits the default window without scrolling");
+  } finally {
+    frame.remove();
+  }
+}
+async function checkResponsiveParameterGrid() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;width:640px;height:2400px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    const params = Array.from({ length: 17 }, (_, index) => ({
+      name: `parameter_${index}`, type: "f32", scalar: true, value: 0.5, default: 0.5,
+      rangeMin: 0, rangeMax: 1, scale: "linear",
+    }));
+    view._onHostMessage({ type: "state", state: {
+      running: true, connected: true, path: "many_parameters.onda", status: "Running",
+      supportsTransport: true, supportsScope: true, supportsParamSmoothing: true,
+      outputChannels: 2, paramSmoothingMs: 30, sampleRateHz: 48000, blockSamples: 512,
+      buffers: [], events: [], params: [...params, ...params.map((param, index) => ({
+        ...param, name: `levels[${index}]`, array: { name: "levels", length: 17, index },
+      }))],
+    }});
+    for (const layout of ["knobs", "sliders"]) {
+      doc.querySelector(`[data-param-layout="${layout}"]`).click();
+      for (const [width, knobColumns, sliderColumns] of [
+        [640, 4, 2], [800, 5, 3], [960, 6, 4], [1120, 7, 5], [1280, 8, 5],
+        [1440, 8, 6], [1600, 8, 7], [1760, 8, 8], [3200, 8, 8],
+        [1280, 8, 5], [640, 4, 2],
+      ]) {
+        frame.style.width = `${width}px`;
+        await waitFrames(2);
+        const expected = layout === "knobs" ? knobColumns : sliderColumns;
+        for (const grid of doc.querySelectorAll(".param-list")) {
+          const cards = [...grid.querySelectorAll(":scope > .param")]
+            .map(card => card.getBoundingClientRect());
+          const columns = cards.filter(rect => Math.abs(rect.top - cards[0].top) < 1).length;
+          const rows = new Set(cards.map(rect => Math.round(rect.top)));
+          check(cards.length === 17 && columns === expected && rows.size === Math.ceil(17 / expected),
+            `${width}-pixel ${layout} grid, ${grid.id || "array"}: ${expected} readable controls per row`);
+          check(cards.every(rect => rect.width >= (layout === "knobs" ? 140 : 200)),
+            `the ${width}-pixel ${layout} grid preserves the minimum card width`);
+        }
+        check([...doc.querySelectorAll("#params :is(.param-number, .param-knob, .param-slider)")].every(control => {
+          const rect = control.getBoundingClientRect();
+          const card = control.closest(".param").getBoundingClientRect();
+          return rect.left >= card.left && rect.right <= card.right
+            && rect.top >= card.top && rect.bottom <= card.bottom;
+        }), `number fields and ${layout} stay inside their cards at ${width} pixels`);
+        check(doc.querySelector(".shell").scrollWidth === doc.querySelector(".shell").clientWidth,
+          `the ${width}-pixel run window has no horizontal overflow`);
+      }
+    }
+    frame.style.width = "720px";
+    for (const layout of ["knobs", "sliders"]) {
+      doc.querySelector(`[data-param-layout="${layout}"]`).click();
+      view._onHostMessage({ type: "state", state: { params } });
+      await waitFrames(2);
+      const width = doc.querySelector("#params .param").getBoundingClientRect().width;
+      view._onHostMessage({ type: "state", state: { params: [
+        { ...params[0], name: "frequency", unit: "Hz" },
+        { ...params[1], name: "levels[0]", array: { name: "levels", length: 1, index: 0 } },
+      ] }});
+      await waitFrames(2);
+      check([...doc.querySelectorAll("#params .param")].every(card =>
+        Math.abs(card.getBoundingClientRect().width - width) < 1),
+        `${layout}: sparse scalar and array groups keep the same widths as a full grid`);
+      const name = doc.querySelector("#params .param-name");
+      check(name.textContent === "frequency" && name.title === "frequency (Hz) (f32)"
+        && name.nextElementSibling.textContent === "(Hz)"
+        && name.parentElement.querySelector(".param-type").textContent === "f32",
+        `${layout}: units and scalar types stay visible beside parameter names`);
+    }
+    const longName = "oscillator_frequency_with_a_long_parameter_name";
+    view._onHostMessage({ type: "state", state: { params: [
+      { ...params[0], name: longName, unit: "Hz" },
+      { ...params[0], name: "unbounded", label: longName, unit: "dB", rangeMin: null, rangeMax: null },
+      { ...params[1], name: "times[0]", label: longName, unit: "ms",
+        array: { name: "times", length: 1, index: 0 } },
+    ] }});
+    for (const width of [320, 360, 400, 640, 720]) {
+      frame.style.width = `${width}px`;
+      for (const layout of ["knobs", "sliders"]) {
+        doc.querySelector(`[data-param-layout="${layout}"]`).click();
+        await waitFrames(2);
+        for (const head of doc.querySelectorAll("#params .param-head")) {
+          const name = head.querySelector(".param-name");
+          const unit = head.querySelector(".param-unit");
+          const type = head.querySelector(".param-type");
+          const headRect = head.getBoundingClientRect();
+          const unitRect = unit.getBoundingClientRect();
+          const typeRect = type.getBoundingClientRect();
+          check(name.scrollWidth > name.clientWidth && unit.scrollWidth === unit.clientWidth
+            && unitRect.left >= headRect.left && unitRect.right <= headRect.right + 1
+            && name.getBoundingClientRect().right + 5 <= unitRect.left
+            && type.textContent === "f32" && type.scrollWidth === type.clientWidth
+            && unitRect.right + 5 <= typeRect.left && typeRect.right <= headRect.right + 1,
+            `${width}-pixel ${layout}: the full ${unit.textContent} unit and type stay visible beside the truncated name`);
+        }
+      }
+    }
+  } finally {
+    frame.remove();
+  }
+}
+
+async function checkResponsiveMidiKeyboard() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    view._onHostMessage({ type: "state", state: {
+      running: true, connected: true, path: "keyboard.onda", supportsTransport: true,
+      supportsScope: true, outputChannels: 2, midi: { available: true, noteOn: true },
+      currentMidiInputDevice: "Computer Keyboard", events: [], params: [], buffers: [],
+    }});
+    const piano = doc.getElementById("piano");
+    const dock = doc.getElementById("midi-keyboard");
+    const octave = doc.getElementById("midi-octave");
+    const messages = () => view.__testMessages.filter(message => message.type === "midiNote");
+    const resize = async (width, height = 840) => {
+      frame.style.width = `${width}px`;
+      frame.style.height = `${height}px`;
+      await waitFrames(3);
+    };
+    for (const [width, octaves] of [
+      [320, 2], [720, 2], [960, 2], [1040, 3], [1440, 4], [1760, 5],
+      [2560, 5], [4000, 5], [1040, 3], [720, 2],
+    ]) {
+      await resize(width);
+      const white = [...piano.querySelectorAll(".white")];
+      const black = [...piano.querySelectorAll(".black")];
+      const rect = piano.getBoundingClientRect();
+      check(white.length === octaves * 7 && black.length === octaves * 5,
+        `the ${width}-pixel MIDI keyboard shows ${octaves} full octaves`);
+      check(rect.height >= 104 && rect.height <= 156
+        && white.every(key => key.getBoundingClientRect().width <= 72),
+        `the ${width}-pixel MIDI keyboard keeps its height and key width bounded`);
+      check(Math.abs(rect.left + rect.width / 2 - dock.getBoundingClientRect().width / 2) < 1
+        && doc.querySelector(".shell").scrollWidth === doc.querySelector(".shell").clientWidth,
+        `the ${width}-pixel MIDI keyboard stays centered without horizontal overflow`);
+      check(black.every((key, index) => {
+        const boundary = Math.floor(index / 5) * 7 + [1, 2, 4, 5, 6][index % 5];
+        const blackRect = key.getBoundingClientRect();
+        return Math.abs(blackRect.left + blackRect.width / 2
+          - white[boundary - 1].getBoundingClientRect().right) < 0.75;
+      }), `the ${width}-pixel MIDI keyboard aligns black keys with the white-key boundaries`);
+    }
+    check(piano.getBoundingClientRect().height === 104,
+      "returning to the default run window restores the compact two-octave piano");
+    const firstKey = piano.querySelector('[data-note-offset="0"]');
+    firstKey.focus();
+    view._onHostMessage({ type: "computerKey", code: "KeyA", pressed: true });
+    const heldCount = messages().length;
+    await resize(1760);
+    check(doc.activeElement === firstKey && firstKey.classList.contains("active")
+      && piano.querySelector('[data-note-offset="0"]') === firstKey
+      && messages().length === heldCount,
+      "expanding the piano preserves retained keys, focus, and held computer notes");
+    const highKey = piano.querySelector('[data-note-offset="48"]');
+    const pointer = pointerControl(highKey);
+    pointer("pointerdown", 10);
+    check(highKey.classList.contains("active") && messages().at(-1).key === 108
+      && messages().at(-1).pressed,
+      "newly visible octaves play their actual MIDI notes");
+    await resize(720);
+    check(!highKey.isConnected && messages().length === heldCount + 2
+      && messages().at(-1).key === 108 && !messages().at(-1).pressed
+      && firstKey.classList.contains("active"),
+      "shrinking the piano releases a disappearing pointer note while retaining other holds");
+    pointer("lostpointercapture", 10);
+    check(messages().length === heldCount + 2,
+      "removing a held piano key sends exactly one note-off");
+    view._onHostMessage({ type: "computerKey", code: "KeyA", pressed: false });
+    check(!firstKey.classList.contains("active"), "retained computer notes still release after resizing");
+    await resize(1760, 400);
+    check(piano.getBoundingClientRect().height === 104
+      && doc.querySelector(".shell").clientHeight > 0,
+      "short run windows reserve space for controls above the piano");
+    await resize(720, 620);
+    view._onHostMessage({ type: "state", state: { supportsViewState: true }});
+    const toggle = doc.getElementById("midi-toggle");
+    const expandedHeight = dock.getBoundingClientRect().height;
+    view._onHostMessage({ type: "computerKey", code: "KeyA", pressed: true });
+    toggle.click();
+    await waitFrames(2);
+    check(piano.hidden && toggle.getAttribute("aria-expanded") === "false"
+      && dock.getBoundingClientRect().height < expandedHeight - 100
+      && !messages().at(-1).pressed,
+      "folding the MIDI dock releases held notes and gives space back to the controls");
+    const folded = view.__testMessages.filter(message => message.type === "viewState").at(-1).state;
+    view._onHostMessage({ type: "state", state: { running: false } });
+    view._onHostMessage({ type: "state", state: { running: true } });
+    check(piano.hidden, "Play/Stop preserves the folded MIDI dock");
+    view._onHostMessage({ type: "computerKey", code: "KeyS", pressed: true });
+    view._onHostMessage({ type: "state", state: { status: "Running" } });
+    check(messages().at(-1).pressed, "computer MIDI keeps playing through updates with the piano folded");
+    view._onHostMessage({ type: "computerKey", code: "KeyS", pressed: false });
+    toggle.click();
+    view._onHostMessage({ type: "viewState", state: folded });
+    await waitFrames(3);
+    check(piano.hidden, "restoring the run view retains its MIDI fold state");
+    toggle.click();
+    await waitFrames(2);
+    check(!piano.hidden && toggle.getAttribute("aria-expanded") === "true",
+      "the folded MIDI dock can be reopened");
+    for (const [value, octaves, lowest, highest] of [[7, 2, 96, 119], [-1, 10, 0, 119]]) {
+      octave.value = String(value);
+      octave.dispatchEvent(new view.Event("change", { bubbles: true }));
+      await resize(4000);
+      const notes = [...piano.children].map(key => Number(key.getAttribute("aria-label").slice(10)));
+      check(notes.length === octaves * 12 && new Set(notes).size === notes.length
+        && Math.min(...notes) === lowest && Math.max(...notes) === highest,
+        `the expanded octave-${value} piano contains distinct valid MIDI notes`);
+    }
+    await resize(720);
+    view._onHostMessage({ type: "state", state: { midiKeyboardInteractive: false }});
+    view._onHostMessage({ type: "midiActivity", activeNotes: [48] });
+    await resize(1760);
+    check([...piano.children].every(key => key.tabIndex === -1)
+      && piano.querySelector('[data-note-offset="48"]').classList.contains("active"),
+      "expanded monitor keyboards keep new keys passive and display external notes");
+  } finally {
+    frame.remove();
+  }
+}
+
+async function checkPlaygroundLayout() {
+  const controlGeometry = new Map();
+  const params = Array.from({ length: 17 }, (_, index) => ({
+    name: `parameter_${index}`, type: "f32", scalar: true, value: 0.5, default: 0.5,
+    rangeMin: 0, rangeMax: 1, scale: "linear",
+  }));
+  for (const host of ["website", "example"]) {
+    const stackedWidth = 1280;
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "position:absolute;left:-10000px;width:1440px;height:1080px;border:0";
+    const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+    frame.src = `/${host}-layout`;
+    document.body.append(frame);
+    try {
+      await loaded;
+      const doc = frame.contentDocument;
+      const runFrame = doc.querySelector("[data-run-view]");
+      const run = runFrame.contentWindow;
+      const runDoc = run.document;
+      run._onHostMessage({ type: "state", state: {
+        running: true, connected: true, path: "main.onda", status: "Running",
+        outputChannels: 2, params, buffers: [], events: [], logRevealed: false,
+        midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+        midiInputDevices: ["Computer Keyboard"],
+        supportsTransport: true, supportsSourceSelection: false, supportsDeviceSelection: false,
+        supportsParamSmoothing: true, paramSmoothingMs: 30, supportsScope: true,
+        sampleRateHz: 48000, blockSamples: 512,
+      }});
+      const editor = doc.querySelector("[data-editor]");
+      let desktopEditorWidth;
+      let desktopEditorHeight;
+      let previousWidePanes;
+      for (const [width, height, websiteColumns, exampleColumns] of [
+        [320, 720], [480, 840], [768, 900], [1024, 900], [1280, 900], [1281, 900],
+        [1366, 768], [1366, 900], [1440, 1080], [1441, 1080], [1536, 1080], [1706, 1080],
+        [1920, 1080], [2000, 1200, [5, 3]], [2560, 1440, [5, 3], [5, 3]],
+        [2844, 1600, [5, 4], [5, 4]], [3413, 1800, [7, 5], [7, 5]],
+        [3840, 2000, [7, 5], [7, 5]], [5120, 2600, [8, 7], [8, 7]],
+        [6400, 3300, [8, 8], [8, 8]],
+      ]) {
+        frame.style.width = `${width}px`;
+        frame.style.height = `${height}px`;
+        await waitFrames(3);
+        const editorPanel = editor.closest("section").getBoundingClientRect();
+        const runPanel = runFrame.closest("aside").getBoundingClientRect();
+        const status = doc.querySelector("[data-status]").getBoundingClientRect();
+        const shortcuts = doc.querySelector("[aria-label='Playground keyboard shortcuts']")
+          .getBoundingClientRect();
+        check(status.top < shortcuts.bottom && shortcuts.top < status.bottom
+          && status.right <= shortcuts.left,
+          `${host}: Playing and the shortcuts stay on one line at ${width} pixels`);
+        check(doc.documentElement.scrollWidth <= doc.documentElement.clientWidth
+          && runDoc.querySelector(".shell").scrollWidth === runDoc.querySelector(".shell").clientWidth,
+          `${host}: the ${width}-pixel playground and run controls avoid horizontal overflow`);
+        check(width <= stackedWidth ? runPanel.top >= editorPanel.bottom :
+          Math.abs(runPanel.top - editorPanel.top) < 1 && runPanel.left >= editorPanel.right,
+        `${host}: the workspace ${width <= stackedWidth ? "stacks" : "uses two columns"} at ${width} pixels`);
+        check(doc.querySelector(".cm-editor").getBoundingClientRect().height >= editor.clientHeight - 1,
+          `${host}: the real CodeMirror editor fills its available height at ${width} pixels`);
+        const geometry = JSON.stringify([
+          ".project-file", ".project-file-select", ".project-file-add",
+          ".project-file-menu-trigger", ".project-file-actions button",
+        ].map(selector => {
+          const style = getComputedStyle(doc.querySelector(selector));
+          return ["fontSize", "lineHeight", "paddingTop", "paddingBottom", "paddingLeft",
+            "paddingRight", "height", selector === ".project-file-actions button" ? "minWidth" : "width", "borderTopWidth", "borderRadius"]
+            .map(property => style[property]);
+        }));
+        if (host === "website") controlGeometry.set(width, geometry);
+        else check(controlGeometry.get(width) === geometry,
+          `project tabs and actions have matching geometry in both playgrounds at ${width} pixels`);
+        const expectedEditorFont = width <= 720 ? 12 : 16;
+        check(getComputedStyle(doc.querySelector(".cm-content")).fontSize === `${expectedEditorFont}px`
+          && getComputedStyle(doc.querySelector(".cm-lineNumbers")).fontSize === `${expectedEditorFont}px`
+          && doc.querySelector("[data-editor-font-size]").value === String(expectedEditorFont),
+          `${host}: the editor, line numbers, and font control use ${expectedEditorFont} pixels at ${width} pixels`);
+        if (width > stackedWidth) {
+          check(editorPanel.bottom <= height && runPanel.bottom <= height,
+            `${host}: the editor and full run pane fit within the desktop viewport`);
+          check(editorPanel.width > runPanel.width
+            && editor.getBoundingClientRect().width > runFrame.getBoundingClientRect().width,
+            `${host}: the editor stays wider than the run view at ${width} pixels`);
+        }
+        for (const layout of ["knobs", "sliders"]) {
+          runDoc.querySelector(`[data-param-layout="${layout}"]`).click();
+          await waitFrames(2);
+          if (width > stackedWidth) {
+            const cards = [...runDoc.querySelectorAll("#params .param")]
+              .map(card => card.getBoundingClientRect());
+            const columns = cards.filter(rect => Math.abs(rect.top - cards[0].top) < 1).length;
+            const wide = width >= 1706;
+            const expected = (host === "website" ? websiteColumns : exampleColumns)
+              ?? [wide ? 4 : 3, wide ? 3 : 2];
+            check(columns === expected[layout === "knobs" ? 0 : 1],
+              `${host}: the ${width}-pixel desktop fits ${columns} ${layout} per row`);
+          }
+        }
+        if (width === 1366 && height === 768) {
+          runDoc.querySelector('[data-param-layout="knobs"]').click();
+          await waitFrames(2);
+          const card = runDoc.querySelector("#params .param").getBoundingClientRect();
+          const shell = runDoc.querySelector(".shell").getBoundingClientRect();
+          check(runDoc.getElementById("scope-canvas").getBoundingClientRect().height === 96
+            && card.bottom <= shell.bottom,
+            `${host}: compact scope leaves a full knob row visible on a 1366 × 768 laptop`);
+        }
+        if (width === 1920) {
+          desktopEditorWidth = editor.clientWidth;
+          desktopEditorHeight = editor.clientHeight;
+        } else if (width === 2560) {
+          check(editor.clientWidth > desktopEditorWidth,
+            `${host}: a wider desktop gives its extra space to the editor`);
+          check(editor.clientHeight > desktopEditorHeight,
+            `${host}: a taller desktop increases the editor height`);
+        }
+        if (width >= 2560) {
+          const panes = {
+            editorWidth: editor.clientWidth, editorHeight: editor.clientHeight,
+            runWidth: runFrame.getBoundingClientRect().width, runHeight: runPanel.height,
+          };
+          if (previousWidePanes) {
+            check(Object.entries(panes).every(([key, value]) => value > previousWidePanes[key]),
+              `${host}: both panes grow in width and height at ${width} pixels, beyond their old caps`);
+          }
+          previousWidePanes = panes;
+        }
+      }
+      const fontInput = doc.querySelector("[data-editor-font-size]");
+      const storageKey = "onda.browser-ide.editor-font-size.v1";
+      const storedFont = () => frame.contentWindow.localStorage.getItem(storageKey);
+      const typeFont = value => {
+        fontInput.focus();
+        fontInput.value = value;
+        fontInput.dispatchEvent(new frame.contentWindow.Event("input", { bubbles: true }));
+      };
+      const cancelFont = () => fontInput.dispatchEvent(new frame.contentWindow.KeyboardEvent(
+        "keydown", { key: "Escape", bubbles: true, cancelable: true },
+      ));
+      const resizeFont = async width => {
+        frame.style.width = `${width}px`;
+        await waitFrames(3);
+      };
+      await resizeFont(1440);
+      typeFont("");
+      fontInput.blur();
+      fontInput.focus();
+      cancelFont();
+      check(storedFont() === null,
+        `${host}: cancelling an unchanged font field preserves automatic sizing`);
+      typeFont("23");
+      check(storedFont() === "23"
+        && getComputedStyle(doc.querySelector(".cm-content")).fontSize === "23px",
+        `${host}: font edits preview and persist the selected size`);
+      cancelFont();
+      await resizeFont(600);
+      check(storedFont() === null && fontInput.value === "12"
+        && getComputedStyle(doc.querySelector(".cm-content")).fontSize === "12px",
+        `${host}: cancelling a preview restores automatic sizing across breakpoints`);
+      typeFont("20");
+      fontInput.blur();
+      typeFont("28");
+      cancelFont();
+      check(storedFont() === "20" && fontInput.value === "20"
+        && getComputedStyle(doc.querySelector(".cm-content")).fontSize === "20px",
+        `${host}: cancelling a fixed font edit restores its previous preference`);
+      await resizeFont(1440);
+      check(fontInput.value === "20",
+        `${host}: explicit font sizes survive viewport changes`);
+      fontInput.dispatchEvent(new frame.contentWindow.MouseEvent("dblclick", { bubbles: true }));
+      check(storedFont() === null && fontInput.value === "16",
+        `${host}: double-click restores automatic font sizing`);
+    } finally {
+      frame.remove();
+    }
+  }
+}
+
 const events = [{
   name: "shape",
   args: [
@@ -44,12 +865,16 @@ const params = [
   { name: "offset", type: "f32", value: 2, default: 2 },
 ];
 try {
+  await checkDefaultLayout();
+  await checkResponsiveParameterGrid();
+  await checkResponsiveMidiKeyboard();
+  await checkPlaygroundLayout();
   const shell = document.querySelector(".shell");
   const scrollNode = shell;
   const paramsList = document.getElementById("params");
   const resetButton = document.getElementById("reset-params");
   const ondaVersion = document.getElementById("onda-version");
-  check(!ondaVersion.hidden && ondaVersion.textContent === "Onda 0.0.0-test",
+  check(!ondaVersion.hidden && ondaVersion.querySelector("#onda-version-number").textContent === "0.0.0-test",
     "the run view shows the host-provided Onda version");
   check(getComputedStyle(shell).visibility === "hidden",
     "run view stays hidden until its first host state");
@@ -183,7 +1008,7 @@ try {
     "the run view defaults to knobs without a saved layout preference");
   check(getComputedStyle(shell).visibility === "visible",
     "a first host state without view state reveals the run view");
-  check(ondaVersion.textContent === "Onda 0.0.1-browser",
+  check(ondaVersion.querySelector("#onda-version-number").textContent === "0.0.1-browser",
     "the run view accepts the browser host's Onda version state");
   check(getComputedStyle(resetButton).transitionDuration === "0.12s, 0.12s, 0.12s",
     "button transitions resume after the view is ready");
@@ -224,19 +1049,19 @@ try {
   check(["scope-section", "events-section", "params-section"].every(id =>
     document.getElementById(id).getBoundingClientRect().height < 80),
   "collapsed run sections stay at header height when the viewport has spare space");
+  const collapsedScope = document.getElementById("scope-section");
+  const scopeBounds = collapsedScope.getBoundingClientRect();
+  check([...collapsedScope.querySelector(".section-heading").children].every(node => {
+    const rect = node.getBoundingClientRect();
+    return Math.abs(rect.top + rect.height / 2 - scopeBounds.top - scopeBounds.height / 2) < 1;
+  }), "the collapsed Scope arrow and title are vertically centered");
+  check(Math.abs(scopeBounds.height
+    - document.getElementById("params-section").getBoundingClientRect().height) < 1,
+  "collapsed Scope and Params use the same header height");
   for (const section of ["scope", "events", "params"]) {
     document.getElementById(`${section}-toggle`).click();
   }
   send({ supportsScope: false });
-  const midiVelocity = document.getElementById("midi-velocity");
-  check(midiVelocity?.getAttribute("role") === "slider",
-    "MIDI velocity uses the shared slider control");
-  midiVelocity.focus();
-  midiVelocity.dispatchEvent(new KeyboardEvent("keydown", {
-    key: "ArrowLeft", bubbles: true, cancelable: true,
-  }));
-  check(document.querySelector("#midi-velocity-value").value === "0.99",
-    "MIDI velocity slider supports precise keyboard adjustment");
   const numberEvents = [{ name: "numbers", args: [
     { name: "single", type: "f32", default: 0.25 },
     { name: "double", type: "f64", default: -2 },
@@ -1049,20 +1874,22 @@ try {
       const boolCards = [...paramsNode.querySelectorAll(".param-bool")];
       for (const card of boolCards) {
         const name = card.querySelector(".param-name");
-        const type = card.querySelector(".param-type");
         const head = card.querySelector(".param-head");
         check(name.textContent === longName
           ? name.scrollWidth > name.clientWidth
           : name.scrollWidth <= name.clientWidth,
         `${layout} at ${width}px truncates ${name.textContent} only when it exceeds the available width`);
-        check(type.getBoundingClientRect().right <= head.getBoundingClientRect().right + 1,
-          `${layout} at ${width}px keeps ${name.textContent}'s type inside its heading`);
+        const type = card.querySelector(".param-type");
+        check(type.textContent === "bool" && name.title.endsWith("(bool)")
+          && name.getBoundingClientRect().right <= type.getBoundingClientRect().left
+          && type.getBoundingClientRect().right <= head.getBoundingClientRect().right + 1,
+          `${layout} at ${width}px keeps the name readable and its type visible beside it`);
       }
       const number = paramsNode.querySelector('input[type="number"]');
       const numericCard = number.closest(".param");
       check(number.clientWidth > 0
         && number.getBoundingClientRect().right <= numericCard.getBoundingClientRect().right
-        && (layout === "knobs" || numericCard.querySelector(".param-type")
+        && (layout === "knobs" || numericCard.querySelector(".param-name")
           .getBoundingClientRect().right <= number.getBoundingClientRect().left + 1),
       `${layout} at ${width}px preserves the numeric value layout`);
     }
@@ -1157,7 +1984,7 @@ try {
     "structured event controls dispatch complete nested values");
   send({ events });
 
-  send({ running: true, supportsScope: true });
+  send({ running: true, supportsScope: true, outputChannels: 1 });
   const scopeCanvas = document.getElementById("scope-canvas");
   window._onHostMessage({ type: "scopeData", channels: 1, samples: Array(1024).fill(0) });
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -1167,6 +1994,42 @@ try {
   check(initialScopeWidth > 0 && scopeCanvas.width !== initialScopeWidth,
     "scope backing canvas follows layout changes without new audio data");
   scopeCanvas.style.width = "";
+  const scopeWaveform = Array.from({ length: 1024 }, (_, index) => Math.sin(index * 0.03) * 0.7);
+  window._onHostMessage({ type: "scopeData", channels: 1, samples: scopeWaveform });
+  await waitFrames(2);
+  const activeScope = scopeCanvas.toDataURL();
+  const scopeBeforeStop = document.getElementById("scope-section").getBoundingClientRect();
+  const paramsBeforeStop = document.getElementById("params-section").getBoundingClientRect();
+  send({ running: false, connected: false, status: "Stopped" });
+  await waitFrames(2);
+  const stoppedScope = scopeCanvas.toDataURL();
+  const scopeAlpha = () => scopeCanvas.getContext("2d")
+    .getImageData(0, 0, scopeCanvas.width, scopeCanvas.height).data
+    .filter((_, index) => index % 4 === 3);
+  check(scopeAlpha().some(alpha => alpha > 0) && scopeAlpha().every(alpha => alpha < 64),
+    "stopping leaves only the faint gray reference guide, without a bright waveform or zero trace");
+  check(getComputedStyle(document.getElementById("scope-section")).display === "block"
+    && stoppedScope !== activeScope
+    && document.getElementById("scope-section").getBoundingClientRect().height === scopeBeforeStop.height
+    && document.getElementById("params-section").getBoundingClientRect().top === paramsBeforeStop.top,
+    "Stop keeps the scope and parameter layout in place while removing the waveform");
+  window._onHostMessage({ type: "scopeData", channels: 1, samples: Array(1024).fill(0) });
+  await waitFrames(2);
+  check(scopeCanvas.toDataURL() === stoppedScope,
+    "a late silent scope capture cannot add a bright zero trace while stopped");
+  window._onHostMessage({ type: "scopeData", channels: 0, samples: [] });
+  await waitFrames(2);
+  check(scopeCanvas.toDataURL() === stoppedScope,
+    "clearing captured samples keeps the gray guide for the known output channel");
+  send({ path: "another-scope.onda" });
+  await waitFrames(2);
+  check(scopeCanvas.toDataURL() === stoppedScope,
+    "selecting another source retains only the reference guide while stopped");
+  send({ path: "test.onda", running: true, connected: true, status: "Active" });
+  window._onHostMessage({ type: "scopeData", channels: 1, samples: scopeWaveform });
+  await waitFrames(2);
+  check(scopeCanvas.toDataURL() === activeScope,
+    "playing again restores the waveform over the reference guide");
 
   send({ midi: { noteOn: true }, currentMidiInputDevice: "Computer Keyboard" });
   const octaveInput = document.getElementById("midi-octave");
@@ -1175,11 +2038,11 @@ try {
   await waitFrames(1);
   const whiteKeys = [...piano.querySelectorAll(".piano-key.white")];
   const blackKeys = [...piano.querySelectorAll(".piano-key.black")];
-  const blackKeyBoundaries = [1, 2, 4, 5, 6, 8, 9, 11, 12, 13];
   check(blackKeys.every((blackKey, index) => {
     const blackCenter = blackKey.getBoundingClientRect().left
       + blackKey.getBoundingClientRect().width / 2;
-    const whiteBoundary = whiteKeys[blackKeyBoundaries[index] - 1]
+    const boundary = Math.floor(index / 5) * 7 + [1, 2, 4, 5, 6][index % 5];
+    const whiteBoundary = whiteKeys[boundary - 1]
       .getBoundingClientRect().right;
     return Math.abs(blackCenter - whiteBoundary) < 0.75;
   }), "black piano keys remain aligned when the keyboard is narrow");
@@ -1187,18 +2050,52 @@ try {
   const key = (code, type = "keydown", target = document) => target.dispatchEvent(
     new KeyboardEvent(type, { code, bubbles: true, cancelable: true }),
   );
+  send({ running: false, connected: false });
+  const midiMessages = () => window.__testMessages.filter(message => message.type === "midiNote");
+  const stoppedMessageCount = midiMessages().length;
+  const stoppedPointer = pointerControl(whiteKeys[0]);
+  stoppedPointer("pointerdown", 10);
+  check(whiteKeys[0].classList.contains("active") && !document.getElementById("midi-keyboard").hidden,
+    "stopped piano clicks keep the dock visible and highlight the pressed key");
+  stoppedPointer("pointerup", 10);
+  key("KeyA");
+  check(whiteKeys[0].classList.contains("active"), "computer MIDI keys also highlight while stopped");
+  key("KeyA", "keyup");
+  check(!whiteKeys[0].classList.contains("active") && midiMessages().length === stoppedMessageCount,
+    "stopped piano and computer key presses send no processor events");
+  send({ running: true, connected: true });
+  check(midiMessages().length === stoppedMessageCount, "restarting does not replay stopped MIDI clicks");
+  for (const inactive of [{ running: false, connected: false }, { running: true, connected: false }]) {
+    for (const pointer of [false, true]) {
+      send(inactive);
+      const count = midiMessages().length;
+      if (pointer) stoppedPointer("pointerdown", 10);
+      else key("KeyA");
+      send({ running: true, connected: true });
+      check(whiteKeys[0].classList.contains("active"), "resuming preserves a stopped key's visual hold");
+      if (pointer) stoppedPointer("pointerup", 10);
+      else key("KeyA", "keyup");
+      check(midiMessages().length === count,
+        "releasing a stopped or disconnected hold after resuming sends no unmatched MIDI note-off");
+    }
+  }
   const velocityNumber = document.getElementById("midi-velocity-value");
+  const octaveRect = octaveInput.getBoundingClientRect();
+  const velocityRect = velocityNumber.getBoundingClientRect();
+  check(octaveRect.width === 56 && velocityRect.width === octaveRect.width
+    && octaveRect.height === 26 && velocityRect.height === octaveRect.height
+    && !document.querySelector(".midi-control .param-slider"),
+    "MIDI octave and velocity use matching number boxes without a velocity slider");
   check(velocityNumber.readOnly && velocityNumber.dataset.draggable !== undefined,
-    "MIDI velocity also has the shared draggable number control");
+    "MIDI velocity uses the shared draggable number control");
   edit(velocityNumber, "0.81");
   velocityNumber.blur();
   const velocityPointer = pointerControl(velocityNumber);
   velocityPointer("pointerdown", 100);
   velocityPointer("pointermove", 120);
   velocityPointer("pointerup", 120);
-  check(velocityNumber.value === "0.86"
-    && Math.abs(Number(midiVelocity.getAttribute("aria-valuenow")) - 0.86) < 1e-6,
-    "MIDI velocity number drags use the ranged sensitivity and synchronize its slider");
+  check(velocityNumber.value === "0.86",
+    "MIDI velocity number drags use the ranged sensitivity");
   velocityPointer("pointerdown", 100);
   velocityPointer("pointermove", 150, { shiftKey: true });
   velocityPointer("pointerup", 150, { shiftKey: true });
@@ -1206,8 +2103,7 @@ try {
   edit(velocityNumber, "0.42");
   check(document.activeElement === velocityNumber, "MIDI velocity accepts focus for typing");
   velocityNumber.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-  check(velocityNumber.value === "0.42" && velocityNumber.readOnly
-    && Math.abs(Number(midiVelocity.getAttribute("aria-valuenow")) - 0.42) < 1e-6,
+  check(velocityNumber.value === "0.42" && velocityNumber.readOnly,
     "MIDI velocity supports typing and Enter");
   velocityNumber.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   check(velocityNumber.value === "1.00", "MIDI velocity double-click restores its default");
@@ -1259,8 +2155,9 @@ try {
   key("KeyA");
   check(window.__testMessages.at(-1).type === "midiNote"
     && window.__testMessages.at(-1).key === 60
+    && Math.abs(window.__testMessages.at(-1).velocity - 0.81) < 1e-6
     && window.__testMessages.at(-1).pressed,
-    "computer keyboard plays from the selected octave");
+    "computer keyboard plays with the selected octave and velocity");
   key("KeyZ");
   check(octaveInput.value === "3" && window.__testMessages.at(-1).key === 60
     && !window.__testMessages.at(-1).pressed,
@@ -1291,12 +2188,10 @@ try {
   document.getElementById("events-toggle").click();
   octaveInput.value = "2";
   octaveInput.dispatchEvent(new Event("change", { bubbles: true }));
-  const velocitySlider = document.getElementById("midi-velocity");
-  velocitySlider.dispatchEvent(new KeyboardEvent("keydown", {
-    key: "ArrowRight", bubbles: true, cancelable: true,
-  }));
+  edit(velocityNumber, "0.82");
+  velocityNumber.blur();
   check(velocityNumber.value === "0.82",
-    "velocity slider remains synchronized after editing its number");
+    "velocity number edits set the value saved with the view state");
   paramsList.style.minHeight = `${window.innerHeight + 400}px`;
   check(scrollNode.scrollHeight > scrollNode.clientHeight
     && document.scrollingElement.scrollTop === 0,
@@ -1411,7 +2306,7 @@ try {
 
   await waitFrames(3);
   const beforeSuperseded = restoreCount();
-  shell.style.minHeight = `${window.innerHeight + 400}px`;
+  paramsList.style.minHeight = `${window.innerHeight + 400}px`;
   send({ path: "test.onda", connected: true, status: "Active",
     events: structuredEvents, viewState: savedView });
   await waitFrames(2);

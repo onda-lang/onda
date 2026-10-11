@@ -235,7 +235,7 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
         output: None,
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -345,7 +345,7 @@ fn compile_library_checks_constants_without_evaluating_unused_arrays() {
             output: None,
             meta_out: None,
             sample_rate_hz: 48_000,
-            block_frames: 32,
+            block_samples: 32,
             dump_graph: false,
             const_overrides: &[],
             list_consts: false,
@@ -387,7 +387,7 @@ fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
         output: None,
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &overrides,
         list_consts: false,
@@ -447,7 +447,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
         output: None,
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -470,7 +470,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
         output: None,
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &overrides,
         list_consts: false,
@@ -514,7 +514,7 @@ fn cli_constant_literals_cover_all_supported_value_const_types() {
         output: None,
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &overrides,
         list_consts: false,
@@ -560,12 +560,12 @@ fn parse_compile_accepts_target_codegen_flags() {
     match cmd {
         Command::Compile {
             sample_rate_hz,
-            block_frames,
+            block_samples,
             target,
             ..
         } => {
             assert_eq!(sample_rate_hz, 44_100);
-            assert_eq!(block_frames, 256);
+            assert_eq!(block_samples, 256);
             assert_eq!(target.triple.as_deref(), Some("aarch64-unknown-linux-gnu"));
             assert_eq!(target.cpu, TargetCpu::Explicit("cortex-a72".to_owned()));
             assert_eq!(target.features.as_deref(), Some("+neon,+fp-armv8"));
@@ -796,7 +796,7 @@ fn compile_emits_complete_portable_mir_slice() {
         output: Some(&output_path),
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -842,7 +842,7 @@ fn compile_emits_versioned_mir_json() {
         output: Some(&output_path),
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -888,7 +888,7 @@ fn compile_emits_versioned_mir_messagepack() {
         output: Some(&output_path),
         meta_out: None,
         sample_rate_hz: 48_000,
-        block_frames: 32,
+        block_samples: 32,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -943,7 +943,7 @@ events {
         output: Some(&object_path),
         meta_out: Some(&metadata_path),
         sample_rate_hz: 48_000,
-        block_frames: 64,
+        block_samples: 64,
         dump_graph: false,
         const_overrides: &[],
         list_consts: false,
@@ -1042,11 +1042,11 @@ fn parse_daemon_diagnose_accepts_block_and_sample_rate() {
     .expect("daemon diagnose args should parse");
     match cmd {
         Command::Daemon(DaemonCommand::Diagnose {
-            block_frames,
+            block_samples,
             sample_rate_hz,
             ..
         }) => {
-            assert_eq!(block_frames, 256);
+            assert_eq!(block_samples, 256);
             assert_eq!(sample_rate_hz, 44_100);
         }
         _ => panic!("expected daemon diagnose command"),
@@ -1164,11 +1164,11 @@ fn parse_run_window_accepts_no_input_file() {
     match cmd {
         Command::Run(RunCommand::Window {
             input,
-            block_frames,
+            block_samples,
             ..
         }) => {
             assert_eq!(input, None);
-            assert_eq!(block_frames, 512);
+            assert_eq!(block_samples, 512);
         }
         _ => panic!("expected run window command"),
     }
@@ -1371,11 +1371,11 @@ fn parse_run_play_accepts_forever() {
     match cmd {
         Command::Run(RunCommand::Play {
             duration,
-            block_frames,
+            block_samples,
             ..
         }) => {
             assert_eq!(duration, None);
-            assert_eq!(block_frames, 512);
+            assert_eq!(block_samples, 512);
         }
         _ => panic!("expected run play command"),
     }

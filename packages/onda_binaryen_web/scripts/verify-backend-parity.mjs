@@ -460,7 +460,7 @@ async function renderNativeBlocks(scenario, metadata) {
     await request({
       command: "initialize",
       sample_rate_hz: sampleRate,
-      block_frames: blockSize,
+      block_samples: blockSize,
       fast_math: false,
       // Match `onda compile`; interactive daemon defaults add persistent ramp state.
     });

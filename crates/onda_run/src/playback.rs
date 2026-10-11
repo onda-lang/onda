@@ -51,7 +51,7 @@ pub struct PlaybackLaunch {
     pub compile_inputs: onda_semantics::CompileInputs,
     pub duration: Option<Duration>,
     pub sample_rate_hz: u32,
-    pub block_frames: usize,
+    pub block_samples: usize,
     pub param_smoothing_seconds: f64,
     pub opt_level: TargetOptLevel,
     pub input_device: Option<String>,
@@ -319,11 +319,11 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         &audio_host,
         launch.output_device.as_deref(),
         launch.sample_rate_hz,
-        launch.block_frames,
+        launch.block_samples,
     )?;
     let output_device_channels = output_endpoint.channels();
 
-    let queue_capacity = (launch.block_frames * output_device_channels.max(2) * 16)
+    let queue_capacity = (launch.block_samples * output_device_channels.max(2) * 16)
         .next_power_of_two()
         .max(1024);
     let (sample_producer, sample_consumer) = sample_ring(queue_capacity);
@@ -504,7 +504,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             &audio_host,
             launch.input_device.as_deref(),
             launch.sample_rate_hz,
-            launch.block_frames,
+            launch.block_samples,
         )?;
         Some(input_endpoint.build_stream(
             startup.input_channels,
@@ -534,7 +534,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     wait_for_prefill(
         &sample_consumer,
         render_ahead_samples(
-            launch.block_frames,
+            launch.block_samples,
             startup.output_channels,
             sample_consumer.capacity(),
         ),
@@ -798,7 +798,7 @@ fn spawn_run_render_thread(
         let mut buffer_worker = BufferWorker::new();
         let run_options = RunOptions {
             sample_rate: launch.sample_rate_hz as f32,
-            block_size: launch.block_frames,
+            block_size: launch.block_samples,
             param_smoothing_seconds: launch.param_smoothing_seconds,
             fast_math: launch.fast_math,
             opt_level: launch.opt_level,
@@ -932,9 +932,10 @@ fn spawn_run_render_thread(
         let mut delegate_subscription_id = 0_u64;
         let mut play_requested = true;
         let mut playing = session.run(&launch.input).is_some();
-        let mut captured = vec![0.0_f32; launch.block_frames.saturating_mul(render_input_channels)];
+        let mut captured =
+            vec![0.0_f32; launch.block_samples.saturating_mul(render_input_channels)];
         let mut interleaved =
-            vec![0.0_f32; launch.block_frames.saturating_mul(render_output_channels)];
+            vec![0.0_f32; launch.block_samples.saturating_mul(render_output_channels)];
 
         while !stop_flag.load(Ordering::Acquire) {
             if let Some(control_rx) = &control_rx {
@@ -1267,7 +1268,7 @@ fn spawn_run_render_thread(
             }
 
             let render_ahead_samples = render_ahead_samples(
-                launch.block_frames,
+                launch.block_samples,
                 render_output_channels,
                 sample_queue.capacity(),
             );
@@ -1334,7 +1335,7 @@ fn spawn_run_render_thread(
             }
 
             pending_run_events.sort_by_key(|event| (event.frame, event.sequence));
-            let block_end = rendered_frame.saturating_add(launch.block_frames as u64);
+            let block_end = rendered_frame.saturating_add(launch.block_samples as u64);
             let due_count = pending_run_events.partition_point(|event| event.frame < block_end);
             let future_events = pending_run_events.split_off(due_count);
             let due_events = std::mem::replace(&mut pending_run_events, future_events);
@@ -1605,11 +1606,11 @@ fn wait_for_prefill(
     Ok(())
 }
 
-fn render_ahead_samples(block_frames: usize, channels: usize, capacity: usize) -> usize {
+fn render_ahead_samples(block_samples: usize, channels: usize, capacity: usize) -> usize {
     if channels == 0 {
         return 0;
     }
-    let requested = block_frames
+    let requested = block_samples
         .saturating_mul(channels)
         .saturating_mul(RENDER_AHEAD_BLOCKS);
     requested.min(capacity - capacity % channels)

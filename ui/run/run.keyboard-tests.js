@@ -74,6 +74,122 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
   const escape = "\uE00C";
   const tab = "\uE004";
   const up = "\uE013";
+  await initialize("knobs");
+  await evaluate(`
+    window._onHostMessage({ type: "state", state: {
+      supportsTransport: true, supportsSourceSelection: true,
+      supportsDeviceSelection: true, supportsProjectExport: true, canExportProject: true,
+      inputDevices: ['Input'], outputDevices: ['Output'],
+    }});
+    document.getElementById('settings-toggle').focus();
+  `);
+  await keys([enter]);
+  assert.equal(await evaluate("document.getElementById('settings-popover').matches(':popover-open')"), true);
+  assert.equal(await evaluate("document.activeElement.id"), "input-device");
+  await keys([escape]);
+  assert.equal(await evaluate("document.getElementById('settings-popover').matches(':popover-open')"), false);
+  assert.equal(await evaluate("document.activeElement.id"), "settings-toggle");
+  await keys([enter]);
+  await call("input.performActions", {
+    context,
+    actions: [{ type: "pointer", id: "header-pointer", parameters: { pointerType: "mouse" }, actions: [
+      { type: "pointerMove", x: 30, y: 30, duration: 0 },
+      { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 },
+    ] }],
+  });
+  assert.equal(await evaluate("document.getElementById('settings-popover').matches(':popover-open')"), false);
+  await evaluate("document.getElementById('save-project').focus()");
+  await keys([enter]);
+  assert.equal(await evaluate("__testMessages.at(-1).type"), "saveProjectAs");
+  await keys([tab]);
+  assert.equal(await evaluate("document.activeElement.id"), "unload");
+  await keys([enter]);
+  assert.equal(await evaluate("__testMessages.at(-1).type"), "unload");
+  t.diagnostic("device settings support Escape, outside clicks, and focus return; direct file icons support keyboard activation");
+  await initialize("knobs");
+  await evaluate(`window._onHostMessage({ type: 'state', state: {
+    supportsTransport: true, supportsDeviceSelection: true, running: false,
+  }}); document.getElementById('start').focus(); __testMessages.length = 0;`);
+  await keys([enter]);
+  assert.equal(await evaluate("__testMessages.at(-1).type"), "start");
+  await evaluate("window._onHostMessage({ type: 'state', state: { running: true } })");
+  assert.equal(await evaluate("document.activeElement.id"), "stop");
+  await keys([enter]);
+  assert.equal(await evaluate("__testMessages.at(-1).type"), "stop");
+  await evaluate("window._onHostMessage({ type: 'state', state: { running: false } })");
+  assert.equal(await evaluate("document.activeElement.id"), "start");
+  await keys([tab]);
+  assert.equal(await evaluate("document.activeElement.id"), "settings-toggle");
+  t.diagnostic("Play/Stop retain keyboard focus through host updates and Tab advances to Devices");
+  await evaluate(`window._onHostMessage({ type: 'state', state: {
+    supportsSourceSelection: true, supportsProjectExport: true, canExportProject: true,
+  }})`);
+  for (const width of [720, 400, 320, 240, 180, 720]) {
+    await call("browsingContext.setViewport", {
+      context, viewport: { width, height: 840 }, devicePixelRatio: 1,
+    });
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const order = JSON.parse(await evaluate(`JSON.stringify(
+      ['start', 'settings-toggle', 'save-project', 'unload']
+        .map(id => ({ id, rect: document.getElementById(id).getBoundingClientRect() }))
+        .sort((a, b) => Math.round(a.rect.top + a.rect.height / 2)
+          - Math.round(b.rect.top + b.rect.height / 2) || a.rect.left - b.rect.left)
+        .map(control => control.id)
+    )`));
+    await evaluate(`document.getElementById(${JSON.stringify(order[0])}).focus()`);
+    for (const id of order.slice(1)) {
+      await keys([tab]);
+      assert.equal(await evaluate("document.activeElement.id"), id,
+        `Tab follows the visible header rows at ${width}px`);
+    }
+  }
+  for (const id of ["start", "settings-toggle"]) {
+    await evaluate(`document.getElementById(${JSON.stringify(id)}).focus()`);
+    for (const width of [320, 180, 720]) {
+      await call("browsingContext.setViewport", {
+        context, viewport: { width, height: 840 }, devicePixelRatio: 1,
+      });
+      await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert.equal(await evaluate("document.activeElement.id"), id,
+        `resizing to ${width}px preserves ${id} focus`);
+    }
+  }
+  t.diagnostic("compact and stacked headers follow visual Tab order and retain focus while resizing");
+  const chord = (modifier, key) => call("input.performActions", {
+    context,
+    actions: [{ type: "key", id: "keyboard", actions: [
+      { type: "keyDown", value: modifier }, { type: "keyDown", value: key },
+      { type: "keyUp", value: key }, { type: "keyUp", value: modifier },
+    ] }],
+  });
+  for (const modifier of ["\uE009", "\uE03D"]) {
+    for (const key of ["s", enter]) {
+      await initialize("knobs");
+      await evaluate(`window._onHostMessage({ type: 'state', state: {
+        supportsTransport: true, running: false,
+      }}); __testMessages.length = 0;`);
+      await chord(modifier, key);
+      assert.deepEqual(JSON.parse(await evaluate("JSON.stringify(__testMessages)")),
+        [{ type: "start", path: "keyboard.onda" }],
+        "save/run shortcuts play once while a number field is focused without committing its draft");
+      assert.equal(await evaluate("document.activeElement === number"), true);
+    }
+    await initialize("knobs");
+    await evaluate(`window._onHostMessage({ type: 'state', state: {
+      supportsTransport: true, midi: { available: true, noteOn: true },
+      currentMidiInputDevice: 'Computer Keyboard',
+    }}); number.blur(); __testMessages.length = 0;`);
+    await call("input.performActions", { context, actions: [{ type: "key", id: "keyboard",
+      actions: [{ type: "keyDown", value: "a" }] }] });
+    await chord(modifier, ".");
+    await call("input.performActions", { context, actions: [{ type: "key", id: "keyboard",
+      actions: [{ type: "keyUp", value: "a" }] }] });
+    const sent = JSON.parse(await evaluate("JSON.stringify(__testMessages)"));
+    assert.deepEqual(sent.map(message => [message.type, message.pressed]),
+      [["midiNote", true], ["midiNote", false], ["stop", undefined]],
+      "the stop shortcut releases held MIDI notes before stopping, without duplicate releases");
+  }
+  t.diagnostic("Ctrl/Command+S and Enter play from focused fields; Ctrl/Command+. releases held notes and stops");
   for (const layout of ["knobs", "sliders"]) {
     for (const end of [enter, escape, tab]) {
       await initialize(layout);

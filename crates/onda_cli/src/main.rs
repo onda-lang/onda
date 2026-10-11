@@ -19,7 +19,7 @@ use run_cmd::{run_daemon, run_run};
 
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_DURATION: Duration = Duration::from_secs(5);
-const DEFAULT_BLOCK_FRAMES: usize = onda_run::DEFAULT_REALTIME_BLOCK_FRAMES;
+const DEFAULT_BLOCK_SAMPLES: usize = onda_run::DEFAULT_REALTIME_BLOCK_SAMPLES;
 const DEFAULT_DAEMON_OUTPUT: &str = "./onda_daemon_out.wav";
 const ONDA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -147,7 +147,7 @@ enum Command {
         output: Option<PathBuf>,
         meta_out: Option<PathBuf>,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
         dump_graph: bool,
         const_overrides: Vec<(String, String)>,
         list_consts: bool,
@@ -175,7 +175,7 @@ enum RunCommand {
         input: PathBuf,
         duration: Option<Duration>,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
         param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         input_device: Option<String>,
@@ -192,7 +192,7 @@ enum RunCommand {
         output: PathBuf,
         duration: Duration,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
         param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         fast_math: bool,
@@ -203,7 +203,7 @@ enum RunCommand {
     Window {
         input: Option<PathBuf>,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
         param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
         input_device: Option<String>,
@@ -228,7 +228,7 @@ enum DaemonCommand {
     Diagnose {
         input: PathBuf,
         sample_rate_hz: u32,
-        block_frames: usize,
+        block_samples: usize,
     },
 }
 
@@ -261,7 +261,7 @@ fn main() {
             output,
             meta_out,
             sample_rate_hz,
-            block_frames,
+            block_samples,
             dump_graph,
             const_overrides,
             list_consts,
@@ -274,7 +274,7 @@ fn main() {
             output: output.as_deref(),
             meta_out: meta_out.as_deref(),
             sample_rate_hz,
-            block_frames,
+            block_samples,
             dump_graph,
             const_overrides: &const_overrides,
             list_consts,

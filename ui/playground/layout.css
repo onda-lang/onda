@@ -1,0 +1,228 @@
+/* Shared workspace geometry and controls; hosts own branding and colors. */
+.play-workspace {
+  display: grid;
+  grid-template-columns: var(--play-columns, minmax(0, 1fr) clamp(38%, 46rem, 42%));
+  gap: 1rem;
+  align-items: stretch;
+  height: var(--play-height, max(620px, calc(100svh - var(--play-viewport-offset, 12rem))));
+}
+
+.play-editor {
+  display: flex;
+  flex-direction: column;
+}
+
+.play-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: .75rem;
+  font: 13px/1.45 var(--sans, system-ui, sans-serif);
+}
+
+.play-control-grid label { display: grid; min-width: 0; gap: 5px; color: var(--text); font-size: 13px; }
+
+.play-toolbar .play-control-grid :is(input, select) {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 5px;
+  font: 14px/1.45 var(--mono);
+}
+
+.play-control-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(5.5rem, .6fr);
+  flex: 0 1 28rem;
+  min-width: 0;
+  max-width: 100%;
+  margin-right: auto;
+  gap: .75rem;
+}
+
+.project-file-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: .25rem;
+}
+
+/* File tabs, actions, and menus have identical geometry in both hosts. */
+.project-files { display: grid; gap: 0; grid-template-columns: minmax(0, 1fr) 30px; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
+.project-file-tabs { display: flex; grid-column: 1; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
+button.project-file-add { display: grid; grid-column: 2; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); font: 16px/1 var(--sans, system-ui, sans-serif); }
+button.project-file-add:hover, button.project-file-add:focus-visible { background: var(--soft); color: var(--ink); }
+.project-file-actions button { padding: 5px 7px; font-size: 12px; }
+.project-file-actions button:is(:hover, :focus-visible):not(:disabled) { border-color: var(--ink); background: var(--soft); }
+.project-file {
+  display: flex;
+  align-items: center;
+  flex: 0 0 152px;
+  width: 152px;
+  min-width: 152px;
+  max-width: 152px;
+  min-height: 30px;
+  margin-bottom: -1px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-bottom-color: var(--line);
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font: 11px/1.2 var(--mono);
+  white-space: nowrap;
+  cursor: grab;
+}
+.project-file[data-dragging="true"] { opacity: .55; cursor: grabbing; }
+.project-file-tabs[data-dragging="true"] { cursor: grabbing; }
+.project-file-tabs[data-dragging="true"] .project-file { user-select: none; }
+button.project-file-select {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  padding: 6px 2px 6px 8px;
+  gap: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: grab;
+}
+.project-file-tabs[data-dragging="true"] button.project-file-select { cursor: grabbing; }
+button.project-file-menu-trigger, button.project-file-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 22px;
+  align-self: stretch;
+  width: 22px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font: 13px/1 var(--sans, system-ui, sans-serif);
+}
+button.project-file-close:hover:not(:disabled), button.project-file-close:focus-visible { background: var(--soft); color: var(--ink); }
+button.project-file-close:disabled { cursor: default; opacity: .28; }
+button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-visible { background: var(--soft); color: var(--ink); }
+.project-file-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
+}
+.project-file-menu button { display: block; width: 100%; padding: 6px 7px; border: 0; background: transparent; font-size: 11px; text-align: left; }
+.project-file-menu button:hover:not(:disabled), .project-file-menu button:focus-visible { background: var(--soft); outline: none; }
+.project-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 8px/1.25 var(--sans, system-ui, sans-serif); letter-spacing: .04em; text-transform: uppercase; }
+.project-file-main { background: var(--soft); color: var(--ink); }
+.project-file-library { border: 1px solid var(--line); color: var(--muted); }
+.project-file-errors { min-width: 16px; background: #8a3a45; color: #fff; text-align: center; }
+.project-file[data-active="true"] { border-color: var(--line) var(--line) var(--code-bg); background: var(--code-bg); color: var(--ink); }
+.project-file[data-kind="library"] .project-file-name { font-style: italic; }
+
+.play-source-editor {
+  --onda-editor-font-size: 16px;
+  font-size: var(--onda-editor-font-size);
+  flex: 1 1 auto;
+  height: var(--play-editor-height, 0px);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0 0 5px 5px;
+  background: var(--code-bg);
+}
+
+.play-source-editor * {
+  scrollbar-color: var(--line) var(--code-bg);
+  scrollbar-width: thin;
+}
+
+.play-run-panel {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.play-run-view {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: var(--play-run-height, 620px);
+  border: 0;
+  border-radius: 5px;
+  background: var(--code-bg);
+}
+
+/* Keep editing and playback together on laptops; stack when either pane gets too narrow. */
+@media (max-width: 1280px) {
+  .play-workspace {
+    --play-columns: 1fr;
+    --play-height: auto;
+    --play-editor-height: min(64svh, 50rem);
+    --play-run-height: clamp(620px, calc(100svh - var(--play-stacked-offset, 12rem)), 1000px);
+  }
+}
+
+@media (max-width: 720px) {
+  .play-editor { padding: .75rem; }
+  .play-source-editor {
+    --onda-editor-font-size: 12px;
+    height: min(62svh, 540px);
+    min-height: 360px;
+  }
+  .play-control-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(4.5rem, .6fr);
+  }
+  .project-file-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .5rem;
+    width: 100%;
+  }
+  .play-run-view { min-height: 680px; }
+  .project-files {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .project-file-actions button { min-height: 44px; }
+  button.project-file-add { width: 44px; min-height: 44px; font-size: 20px; }
+  .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
+  button.project-file-select { padding-left: 11px; }
+  button.project-file-menu-trigger, button.project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
+}
+
+@media (max-width: 390px) {
+  .play-control-grid label { font-size: 12px; }
+  .play-toolbar .play-control-grid :is(input, select) { font-size: 12px; }
+  .play-control-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 4.25rem;
+    gap: .45rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .play-control-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Touch keyboards zoom editable text smaller than 16px on iOS. */
+@media (pointer: coarse) {
+  .play-source-editor { --onda-editor-font-size: 16px; }
+  .play-toolbar .play-control-grid :is(input, select) { font-size: 16px; }
+}
+
+@media (pointer: coarse) and (max-width: 390px) {
+  .play-control-grid { grid-template-columns: minmax(0, 1fr); }
+}

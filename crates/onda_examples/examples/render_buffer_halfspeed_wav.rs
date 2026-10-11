@@ -15,7 +15,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
 const DEFAULT_OUTPUT: &str = "target/garden_half_speed.wav";
-const BLOCK_FRAMES: usize = 512;
+const BLOCK_SAMPLES: usize = 512;
 const PLAYBACK_RATE: f32 = 0.5;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         parsed,
         AnalysisOptions {
             sample_rate: sample_rate_hz as f32,
-            block_size: BLOCK_FRAMES,
+            block_size: BLOCK_SAMPLES,
         },
     )
     .map_err(|d| format_diagnostics("semantic analysis failed", &d))?;
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         jit,
         InstanceConfig {
             sample_rate: sample_rate_hz as f32,
-            frames_per_block: BLOCK_FRAMES,
+            frames_per_block: BLOCK_SAMPLES,
             in_channels: 0,
             out_channels,
         },
@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     .map_err(|d| format!("bind buffer failed: {d:?}"))?;
 
     let mut bound_out = (0..out_channels)
-        .map(|_| vec![0_u8; BLOCK_FRAMES * std::mem::size_of::<f32>()])
+        .map(|_| vec![0_u8; BLOCK_SAMPLES * std::mem::size_of::<f32>()])
         .collect::<Vec<_>>();
     for (idx, out_buf) in bound_out.iter_mut().enumerate() {
         unsafe { bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len()) }
@@ -101,20 +101,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|d| format!("instance initialization failed: {d:?}"))?;
 
     let render_frames = ((input_frames as f32) / PLAYBACK_RATE).ceil() as usize;
-    let full_blocks = render_frames / BLOCK_FRAMES;
-    let tail_frames = render_frames % BLOCK_FRAMES;
+    let full_blocks = render_frames / BLOCK_SAMPLES;
+    let tail_frames = render_frames % BLOCK_SAMPLES;
     let mut rendered = Vec::<f32>::with_capacity(render_frames * out_channels);
 
     for _ in 0..full_blocks {
         process_checked(
             &mut instance,
-            BLOCK_FRAMES,
+            BLOCK_SAMPLES,
             onda_runtime::ExecutionOutput::none(),
         )
         .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
-            BLOCK_FRAMES,
+            BLOCK_SAMPLES,
             out_channels,
             &mut rendered,
         )?;
@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if tail_frames > 0 {
         process_checked(
             &mut instance,
-            BLOCK_FRAMES,
+            BLOCK_SAMPLES,
             onda_runtime::ExecutionOutput::none(),
         )
         .map_err(|d| format!("processing failed: {d:?}"))?;

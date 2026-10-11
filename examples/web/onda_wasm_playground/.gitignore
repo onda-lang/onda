@@ -1,5 +1,6 @@
 onda-wasm-compiler/
 onda-webaudio/
+playground.css
 # Ignore legacy staged names until the next build removes them.
 binaryen.js
 onda-binaryen-web.js

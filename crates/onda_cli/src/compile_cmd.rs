@@ -25,7 +25,7 @@ pub(crate) struct CompileRequest<'a> {
     pub output: Option<&'a Path>,
     pub meta_out: Option<&'a Path>,
     pub sample_rate_hz: u32,
-    pub block_frames: usize,
+    pub block_samples: usize,
     pub dump_graph: bool,
     pub const_overrides: &'a [(String, String)],
     pub list_consts: bool,
@@ -41,7 +41,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         output,
         meta_out,
         sample_rate_hz,
-        block_frames,
+        block_samples,
         dump_graph,
         const_overrides,
         list_consts,
@@ -55,7 +55,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         .map_err(|diags| format_diagnostics("parse failed", &diags))?;
     let analysis_options = AnalysisOptions {
         sample_rate: sample_rate_hz as f32,
-        block_size: block_frames,
+        block_size: block_samples,
     };
     let mut constant_literals = project_input
         .project()

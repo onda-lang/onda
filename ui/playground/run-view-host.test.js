@@ -458,7 +458,7 @@ test("allows browser playback while buffers are unbound", async () => {
     assert.equal(host.state.status, "Stopped");
     assert.equal(host.state.running, false);
     assert.equal(host.state.sampleRateHz, 44_100);
-    assert.equal(host.state.blockFrames, 256);
+    assert.equal(host.state.blockSamples, 256);
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 1);
 

@@ -24,8 +24,8 @@ pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
         DaemonCommand::Diagnose {
             input,
             sample_rate_hz,
-            block_frames,
-        } => run_daemon_diagnose(&input, sample_rate_hz, block_frames),
+            block_samples,
+        } => run_daemon_diagnose(&input, sample_rate_hz, block_samples),
     }
 }
 
@@ -35,7 +35,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             input,
             duration,
             sample_rate_hz,
-            block_frames,
+            block_samples,
             param_smoothing_seconds,
             opt_level,
             input_device,
@@ -49,7 +49,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         } => {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
-                block_size: block_frames,
+                block_size: block_samples,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -61,7 +61,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 compile_inputs: project.compile_inputs,
                 duration,
                 sample_rate_hz,
-                block_frames,
+                block_samples,
                 param_smoothing_seconds,
                 opt_level,
                 input_device,
@@ -88,7 +88,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             output,
             duration,
             sample_rate_hz,
-            block_frames,
+            block_samples,
             param_smoothing_seconds,
             opt_level,
             fast_math,
@@ -98,7 +98,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         } => {
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
-                block_size: block_frames,
+                block_size: block_samples,
             };
             let project = crate::project_cmd::resolve_run_project(
                 &input,
@@ -110,7 +110,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 output: &output,
                 duration,
                 sample_rate_hz,
-                block_frames,
+                block_samples,
                 param_smoothing_seconds,
                 opt_level,
                 fast_math,
@@ -124,7 +124,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         RunCommand::Window {
             input,
             sample_rate_hz,
-            block_frames,
+            block_samples,
             param_smoothing_seconds,
             opt_level,
             input_device,
@@ -143,7 +143,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 input.as_deref(),
                 RunHostOptions {
                     sample_rate_hz,
-                    block_frames,
+                    block_samples,
                     param_smoothing_seconds,
                     opt_level: opt_level.as_str().to_owned(),
                     input_device,
@@ -195,13 +195,13 @@ fn run_webview_run(_input: Option<&Path>, _options: RunHostOptions) -> Result<()
 fn run_daemon_diagnose(
     input: &Path,
     sample_rate_hz: u32,
-    block_frames: usize,
+    block_samples: usize,
 ) -> Result<(), String> {
     let project_input = crate::project_cmd::resolve_entry(input)?;
     let input = project_input.entry_path();
     let analysis_options = AnalysisOptions {
         sample_rate: sample_rate_hz as f32,
-        block_size: block_frames,
+        block_size: block_samples,
     };
     let compile_inputs = match project_input.project() {
         Some(project) if !project.manifest.constants.is_empty() => {
@@ -213,7 +213,7 @@ fn run_daemon_diagnose(
     };
     let session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
         sample_rate: sample_rate_hz as f32,
-        block_size: block_frames,
+        block_size: block_samples,
         param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
         ..RunOptions::default()
     }));
@@ -236,7 +236,7 @@ struct DaemonRenderRequest<'a> {
     output: &'a Path,
     duration: Duration,
     sample_rate_hz: u32,
-    block_frames: usize,
+    block_samples: usize,
     param_smoothing_seconds: f64,
     opt_level: TargetOptLevel,
     fast_math: bool,
@@ -253,7 +253,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         output,
         duration,
         sample_rate_hz,
-        block_frames,
+        block_samples,
         param_smoothing_seconds,
         opt_level,
         fast_math,
@@ -266,7 +266,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     let total_frames = render_frame_count(duration, sample_rate_hz)?;
     let run_options = RunOptions {
         sample_rate: sample_rate_hz as f32,
-        block_size: block_frames,
+        block_size: block_samples,
         param_smoothing_seconds,
         fast_math,
         opt_level,
@@ -318,8 +318,8 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
 
-    let full_blocks = total_frames / block_frames;
-    let tail_frames = total_frames % block_frames;
+    let full_blocks = total_frames / block_samples;
+    let tail_frames = total_frames % block_samples;
     let mut rendered = Vec::<f32>::new();
 
     for _ in 0..full_blocks {

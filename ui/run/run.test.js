@@ -5,12 +5,14 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { build } from "esbuild";
 import { testNumberKeyboardEditing } from "./run.keyboard-tests.js";
 
 // Real browser coverage with no DOM emulation or browser-driver dependency.
 // FIREFOX_BIN may select a locally installed Firefox executable.
-test("run view preserves editing across host updates", { timeout: 30_000 }, async (t) => {
+test("run view and playground preserve editing and responsive layouts", { timeout: 30_000 }, async (t) => {
   const profile = await mkdtemp(join(tmpdir(), "onda-run-view-test-"));
   let browser;
   let server;
@@ -37,10 +39,39 @@ test("run view preserves editing across host updates", { timeout: 30_000 }, asyn
   </script>`;
   const html = (await readFile(new URL("./run.html", import.meta.url), "utf8"))
     .replace("<head>", "<head>" + bridge);
+  const website = await readFile(new URL("../../website/playground/index.html", import.meta.url), "utf8");
+  const siteHeader = (await readFile(new URL("../../website/_includes/header.html", import.meta.url), "utf8"))
+    .replace(/{% if[^%]*%}[\s\S]*?{% endif %}/g, "")
+    .replace(/{{\s*'([^']*)'[^}]*}}/g, "$1");
+  const example = await readFile(new URL("../../examples/web/onda_wasm_playground/index.html", import.meta.url), "utf8");
+  const editor = await build({
+    entryPoints: [fileURLToPath(new URL("../playground/layout.fixture.js", import.meta.url))],
+    outfile: "layout-editor.js",
+    bundle: true, write: false, format: "esm", loader: { ".onda": "text" },
+  });
+  const playgroundFixture = (page, styles, header = "") => `<!doctype html>
+    <html lang="en" data-theme="dark"><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">${styles}
+    <link rel="stylesheet" href="/playground.css"></head>
+    <body class="play-page">${header}${page.match(/<main[\s\S]*?<\/main>/)[0]
+      .replace("data-run-view", 'src="/layout" data-run-view')}
+    <script type="module" src="/layout-editor.js"></script></body></html>`;
   const routes = new Map([
     ["/", ["text/html", html.replace("</body>",
       '<script type="module" src="/tests.js"></script></body>')]],
     ["/keyboard", ["text/html", html]],
+    ["/layout", ["text/html", html]],
+    ["/website-layout", ["text/html", playgroundFixture(website,
+      '<link rel="stylesheet" href="/site.css">', siteHeader)]],
+    ["/example-layout", ["text/html", playgroundFixture(example,
+      example.match(/<style>[\s\S]*?<\/style>/)[0])]],
+    ["/site.css", ["text/css", await readFile(new URL("../../website/assets/site/styles.css", import.meta.url))]],
+    ["/layout-editor.js", ["text/javascript", editor.outputFiles.find(file => file.path.endsWith(".js")).text]],
+    ["/playground.css", ["text/css", editor.outputFiles.find(file => file.path.endsWith(".css")).text]],
+    ["/assets/svg/onda-logo-circle.svg", ["image/svg+xml",
+      await readFile(new URL("../../assets/svg/onda-logo-circle.svg", import.meta.url))]],
+    ["/assets/svg/onda-logo-dark-circle.svg", ["image/svg+xml",
+      await readFile(new URL("../../assets/svg/onda-logo-dark-circle.svg", import.meta.url))]],
     ["/tests.js", ["text/javascript",
       await readFile(new URL("./run.browser-tests.js", import.meta.url))]],
     ["/number-input.js", ["text/javascript",

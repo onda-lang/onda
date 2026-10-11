@@ -374,7 +374,8 @@ Non-crate directories of note:
 - `diag_print.rs` — terminal diagnostic rendering.
 
 ### `onda_egui` (`crates/onda_egui/src`)
-- `lib.rs` — native egui run host (param/buffer panels, device selectors, transport controls).
+- `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
+- `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
 - `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
 
 ### `onda_webview` (`crates/onda_webview/src`)

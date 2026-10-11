@@ -28,36 +28,36 @@ permalink: /playground/
           <label>
             <span>Sample rate</span>
             <select data-sample-rate>
-              <option value="48000" selected>48000 Hz</option>
               <option value="44100">44100 Hz</option>
+              <option value="48000" selected>48000 Hz</option>
             </select>
           </label>
           <label>
             <span>Block size</span>
             <select data-block-size>
-              <option value="128">128 frames</option>
-              <option value="256">256 frames</option>
-              <option value="512" selected>512 frames</option>
-              <option value="1024">1024 frames</option>
-              <option value="2048">2048 frames</option>
+              <option value="128">128 samples</option>
+              <option value="256">256 samples</option>
+              <option value="512" selected>512 samples</option>
+              <option value="1024">1024 samples</option>
+              <option value="2048">2048 samples</option>
             </select>
           </label>
           <label>
             <span>Font size</span>
-            <input type="number" min="8" max="40" step="1" value="14" inputmode="numeric" aria-label="Editor font size in pixels" data-editor-font-size>
+            <input type="number" min="8" max="40" step="1" value="16" inputmode="numeric" aria-label="Editor font size in pixels" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
           </label>
         </div>
-      </div>
-
-      <div class="project-files">
-        <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
-        <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
         <div class="project-file-actions">
           <button type="button" data-new-project>New project</button>
           <button type="button" data-open-project>Open project</button>
           <button type="button" data-download-project>Download project</button>
           <button type="button" data-share-project>Share</button>
         </div>
+      </div>
+
+      <div class="project-files">
+        <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
+        <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
       </div>
       <div class="play-source-editor" aria-label="Onda project editor" data-editor></div>
     </section>

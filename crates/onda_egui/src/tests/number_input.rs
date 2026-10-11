@@ -10,6 +10,7 @@ fn parameter_presses_preserve_host_updates_until_dragging() {
                 let ctx = egui::Context::default();
                 let spec = ParamControlSpec {
                     label: "value",
+                    unit: None,
                     ty,
                     default: Some(20.0),
                     domain: ranged.then(|| {
@@ -121,6 +122,7 @@ fn number_editors_shorten_float_drafts_without_committing_rounding() {
                 let ctx = egui::Context::default();
                 let spec = ParamControlSpec {
                     label: "value",
+                    unit: None,
                     ty,
                     default: Some(initial),
                     domain: None,
@@ -155,6 +157,7 @@ fn rounded_number_drafts_accept_full_precision_and_increment_the_exact_value() {
     let initial = 1023.095538565032;
     let spec = ParamControlSpec {
         label: "value",
+        unit: None,
         ty: "f64",
         default: Some(initial),
         domain: None,
@@ -211,6 +214,7 @@ fn knobs_apply_shift_to_each_movement_and_reverse_at_bounds() {
         .unwrap();
         let spec = ParamControlSpec {
             label: "cutoff",
+            unit: None,
             ty: "f64",
             default: Some(80.0),
             domain: Some(domain),
@@ -282,6 +286,7 @@ fn logarithmic_parameter_numbers_drag_by_equal_ratios() {
         .unwrap();
         let spec = ParamControlSpec {
             label: "cutoff",
+            unit: None,
             ty: if scalar == ParamScalarType::F32 {
                 "f32"
             } else {
@@ -361,6 +366,7 @@ fn scaled_parameter_numbers_follow_knobs_and_reverse_at_bounds() {
         .unwrap();
         let spec = ParamControlSpec {
             label: "cutoff",
+            unit: None,
             ty: "f64",
             default: Some(80.0),
             domain: Some(domain),
@@ -404,6 +410,7 @@ fn logarithmic_parameter_numbers_commit_typed_plain_values() {
     let ctx = egui::Context::default();
     let spec = ParamControlSpec {
         label: "cutoff",
+        unit: None,
         ty: "f64",
         default: Some(800.0),
         domain: ParamDomain::new(
@@ -468,6 +475,7 @@ fn parameter_number_domain_changes_cancel_active_drags() {
         let ctx = egui::Context::default();
         let spec = ParamControlSpec {
             label: "value",
+            unit: None,
             ty: "f64",
             default: Some(0.5),
             domain: Some(domain(0.0, 1.0)),
@@ -549,6 +557,7 @@ fn parameter_number_drags_preserve_extreme_range_precision() {
         .expect("valid range");
         let spec = ParamControlSpec {
             label: "extreme",
+            unit: None,
             ty: "f64",
             default: Some(minimum),
             domain: Some(domain),
@@ -648,6 +657,7 @@ fn grid_frame(
             let name = param_name(param).unwrap();
             let spec = ParamControlSpec {
                 label: name,
+                unit: None,
                 ty: "f64",
                 default: Some(0.0),
                 domain: None,
@@ -1091,6 +1101,7 @@ fn integer_parameter_drags_snap_fractional_motion_once() {
             .unwrap();
             let spec = ParamControlSpec {
                 label: "stepped",
+                unit: None,
                 ty,
                 default: Some(0.0),
                 domain: Some(domain),
