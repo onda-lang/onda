@@ -49,6 +49,7 @@
         --radius-window: 14px;
         --radius-round: 999px;
         --header-control-size: 32px;
+        --header-transport-width: 72px;
         --header-gap: 12px;
         --header-identity-gap: 16px;
         --header-action-gap: 8px;
@@ -331,8 +332,8 @@
         align-items: center;
         justify-content: center;
         gap: 6px;
-        width: 72px;
-        height: calc(var(--header-control-size) - 4px);
+        width: var(--header-transport-width);
+        height: 44px;
         padding: 0;
         font-size: 12px;
         font-weight: 600;
@@ -518,30 +519,48 @@
       #reset-params,
       .param-smoothing,
       .param-layout-toggle {
-        height: 26px;
-        min-height: 26px;
-        font-size: 12px;
+        height: calc(2.2em + 2px);
+        min-height: 0;
+        font-size: min(11px, calc((100cqi - var(--params-control-spacing)) / var(--params-control-em)));
       }
 
       .params {
         container-type: inline-size;
       }
 
+      .params > .params-toolbar {
+        gap: 4px;
+      }
+
+      .params .section-heading {
+        gap: 4px;
+      }
+
       .params .section-actions {
-        flex-wrap: wrap;
+        /* Three control widths, their borders, and two gaps determine the fit. */
+        --params-control-em: 20.5;
+        --params-control-spacing: 14px;
+        container-type: inline-size;
+        flex-wrap: nowrap;
         justify-content: end;
-        gap: 6px;
+        gap: 4px;
       }
 
-      @container (max-width: 340px) {
-        .params-toolbar {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 6px;
-        }
+      .params .section-actions:has(> .param-smoothing[hidden]) {
+        --params-control-em: 11;
+        --params-control-spacing: 8px;
       }
 
-      @container (max-width: 110px) {
-        .param-smoothing-label { display: none; }
+      #reset-params {
+        flex-basis: calc(2em + 2px);
+        width: calc(2em + 2px);
+        min-width: 0;
+        margin-right: auto;
+      }
+
+      #reset-params svg {
+        width: 1.4em;
+        height: 1.4em;
       }
 
       .reset-action {
@@ -565,13 +584,13 @@
 
       .param-smoothing {
         display: inline-flex;
-        flex: 0 0 112px;
-        width: 112px;
+        flex: 0 0 calc(9.5em + 2px);
+        width: calc(9.5em + 2px);
         max-width: 100%;
         min-width: 0;
         align-items: center;
         gap: 0.25em;
-        padding: 0 8px;
+        padding: 0 .5em;
         border: 1px solid var(--border);
         border-radius: var(--radius-control);
         background: var(--field-bg);
@@ -614,10 +633,11 @@
 
       .param-layout-toggle {
         display: inline-flex;
-        flex: 0 0 auto;
+        flex: 0 0 calc(9em + 2px);
+        width: calc(9em + 2px);
         max-width: 100%;
-        gap: 2px;
-        padding: 1px;
+        gap: .2em;
+        padding: .1em;
         border: 1px solid var(--border);
         border-radius: var(--radius-control);
         background: var(--field-bg);
@@ -627,7 +647,7 @@
         min-width: 0;
         flex: 1;
         min-height: 0;
-        padding: 2px 8px;
+        padding: .15em .55em;
         border: 0;
         border-radius: 3px;
         background: transparent;
@@ -1320,9 +1340,10 @@
         margin: 0 auto;
         cursor: ns-resize;
         touch-action: none;
+        outline: none;
       }
 
-      .param-knob:focus {
+      .param-knob:focus-visible:not([data-pointer-focus]) {
         border-radius: 50%;
         outline: 2px solid var(--accent);
         outline-offset: 2px;
@@ -1549,6 +1570,9 @@
         /* Utilities span the last two tracks; only transport reserves source-row space. */
         grid-template-columns: minmax(0, 1fr) auto max-content;
         gap: var(--header-gap);
+        /* Keep the full-size transport inside the gutters at extreme zoom. */
+        column-gap: min(var(--header-gap), max(0px,
+          calc((100% - var(--header-transport-width) - 1px) / 2)));
       }
 
       .header.narrow .hero-brand {
@@ -1600,10 +1624,6 @@
 
         .header {
           --header-control-size: 44px;
-        }
-
-        .transport button {
-          height: var(--header-control-size);
         }
 
         #params[data-layout="knobs"] {
@@ -1855,12 +1875,12 @@
               aria-label="Toggle Params"
             ></button>
             <div class="params-title">Params</div>
+          </div>
+          <div class="section-actions">
             <button class="secondary reset-action" id="reset-params" type="button"
               aria-label="Reset parameters to defaults" title="Reset parameters to defaults">
               <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
             </button>
-          </div>
-          <div class="section-actions">
             <div class="param-smoothing" id="param-smoothing-control" hidden>
               <span class="param-smoothing-label">Smooth</span>
               <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1"
@@ -2133,12 +2153,13 @@
         const utilityWidth = actions.reduce((width, node) => width + node.offsetWidth, 0)
           + Math.max(0, actions.length - 1) * actionGap;
         const transportWidth = transportNode.hidden ? 0 : transportNode.offsetWidth;
-        // Measure untruncated text; cap long paths so they can still elide.
-        const sourceWidth = Math.min(200, Math.max(120, ...[pathNode, statusNode].map(node => {
+        // A source-only header clips text before moving the brand to another row.
+        // With utilities, reserve readable source text when choosing the toolbar layout.
+        const sourceWidth = actions.length ? Math.min(200, Math.max(120, ...[pathNode, statusNode].map(node => {
           const range = document.createRange();
           range.selectNodeContents(node);
           return Math.ceil(range.getBoundingClientRect().width);
-        })));
+        }))) : 0;
         const toolbarWidth = transportWidth + utilityWidth
           + (transportWidth && utilityWidth ? 2 * gap + dividerWidth : 0);
         const brandPanelWidth = brandWidth + identityGap + dividerWidth;
@@ -3400,8 +3421,13 @@
         });
 
         if (canEdit) {
+          // Programmatic pointer focus can inherit the previous field's keyboard outline.
+          const clearPointerFocus = () => knob.removeAttribute("data-pointer-focus");
+          knob.addEventListener("blur", clearPointerFocus);
+          knob.addEventListener("keydown", clearPointerFocus);
           knob.addEventListener("pointerdown", (event) => {
             event.preventDefault();
+            knob.setAttribute("data-pointer-focus", "");
             knob.focus({ preventScroll: true });
             knob.setPointerCapture(event.pointerId);
             let previousY = event.clientY;

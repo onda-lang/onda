@@ -1475,7 +1475,7 @@ fn header_controls_have_consistent_sizes_and_alignment() {
             .find_map(|clipped| match &clipped.shape {
                 egui::Shape::Rect(shape)
                     if (shape.rect.width() - 72.0).abs() < 1.0
-                        && (shape.rect.height() - 28.0).abs() < 1.0 =>
+                        && (shape.rect.height() - 44.0).abs() < 1.0 =>
                 {
                     Some(shape.rect)
                 }

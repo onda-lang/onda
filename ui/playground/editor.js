@@ -382,9 +382,6 @@ const ondaEditorTheme = EditorView.theme({
   ),
   "&.cm-onda-definition-mode .cm-content": { cursor: "pointer" },
   "&.cm-focused": { outline: "none" },
-  "@media (pointer: coarse)": {
-    "&": { fontSize: "max(16px, var(--onda-editor-font-size, 16px))" },
-  },
 });
 
 export function validProjectPath(value) {

@@ -5,8 +5,6 @@ const storageKey = "onda.browser-ide.editor-font-size.v1";
 // Own the preference and its editing mode together, including live previews.
 export function bindEditorFontSize(input, editor) {
   const view = input.ownerDocument.defaultView;
-  const touch = view.matchMedia("(pointer: coarse)");
-  input.min = touch.matches ? "16" : "8";
   let value = null;
   let beforeEdit = null;
   const valid = text => {
@@ -52,10 +50,6 @@ export function bindEditorFontSize(input, editor) {
   input.addEventListener("blur", normalize);
   view.addEventListener("resize", () => {
     if (value === null && input !== input.ownerDocument.activeElement) sync();
-  });
-  touch.addEventListener("change", () => {
-    input.min = touch.matches ? "16" : "8";
-    if (value !== null && value < Number(input.min)) set(Number(input.min));
   });
   globalThis.__ONDA_NUMBER_INPUT__.bindDraggableNumber(input, {
     speed: 0.25,

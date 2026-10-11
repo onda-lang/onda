@@ -15,6 +15,7 @@ import {
   prepareBufferBindings,
 } from "./browser-buffers.js";
 import { compilationKey } from "./compile-cache.js";
+import { bindCompileSettingLabels } from "./compile-setting-labels.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
 import { bindEditorFontSize } from "./editor-font-size.js";
 import { loadExampleProject } from "./examples.js";
@@ -47,6 +48,7 @@ const sampleRateEl = document.querySelector("[data-sample-rate]");
 const blockSizeEl = document.querySelector("[data-block-size]");
 const editorFontSizeEl = document.querySelector("[data-editor-font-size]");
 const runViewFrame = document.querySelector("[data-run-view]");
+bindCompileSettingLabels(document);
 
 const pageParams = new URLSearchParams(window.location.search);
 const smokeMode = pageParams.has("smoke");

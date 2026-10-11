@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import { testNumberKeyboardEditing } from "./run.keyboard-tests.js";
 
 // Real browser coverage with no DOM emulation or browser-driver dependency.
 // FIREFOX_BIN may select a locally installed Firefox executable.
-test("run view and playground preserve editing and responsive layouts", { timeout: 30_000 }, async (t) => {
+async function testBrowserLayouts(t, coarsePointer) {
   const profile = await mkdtemp(join(tmpdir(), "onda-run-view-test-"));
   let browser;
   let server;
@@ -30,7 +30,10 @@ test("run view and playground preserve editing and responsive layouts", { timeou
     }
     await rm(profile, { recursive: true, force: true });
   });
+  await writeFile(join(profile, "user.js"),
+    `user_pref("ui.primaryPointerCapabilities", ${coarsePointer ? 1 : 6});\n`);
   const bridge = `<script>
+    window.__testCoarsePointer = ${coarsePointer};
     window.__hostBridge = { mode: "wry", theme: "light", ondaVersion: "0.0.0-test" };
     window.__testMessages = [];
     window.ipc = { postMessage(message) {
@@ -40,6 +43,9 @@ test("run view and playground preserve editing and responsive layouts", { timeou
   const html = (await readFile(new URL("./run.html", import.meta.url), "utf8"))
     .replace("<head>", "<head>" + bridge);
   const website = await readFile(new URL("../../website/playground/index.html", import.meta.url), "utf8");
+  const homepage = (await readFile(new URL("../../website/index.md", import.meta.url), "utf8"))
+    .replace("{% include home-example.onda %}", await readFile(new URL(
+      "../../examples/basic/saw_filter_saturator.onda", import.meta.url), "utf8"));
   const siteHeader = (await readFile(new URL("../../website/_includes/header.html", import.meta.url), "utf8"))
     .replace(/{% if[^%]*%}[\s\S]*?{% endif %}/g, "")
     .replace(/{{\s*'([^']*)'[^}]*}}/g, "$1");
@@ -61,6 +67,9 @@ test("run view and playground preserve editing and responsive layouts", { timeou
       '<script type="module" src="/tests.js"></script></body>')]],
     ["/keyboard", ["text/html", html]],
     ["/layout", ["text/html", html]],
+    ["/homepage-layout", ["text/html", `<!doctype html><html><head>
+      <link rel="stylesheet" href="/site.css"></head><body>
+      ${homepage.match(/<main[\s\S]*?<\/main>/)[0]}</body></html>`]],
     ["/website-layout", ["text/html", playgroundFixture(website,
       '<link rel="stylesheet" href="/site.css">', siteHeader)]],
     ["/example-layout", ["text/html", playgroundFixture(example,
@@ -124,4 +133,9 @@ test("run view and playground preserve editing and responsive layouts", { timeou
   assert.ok(result.results.length >= 20);
   for (const message of result.results) t.diagnostic(message);
   await testNumberKeyboardEditing(t, endpoint, `http://127.0.0.1:${server.address().port}/keyboard`);
-});
+}
+
+for (const coarsePointer of [false, true]) {
+  test(`run view and playground preserve editing and responsive layouts (${coarsePointer ? "touch" : "mouse"})`,
+    { timeout: 30_000 }, t => testBrowserLayouts(t, coarsePointer));
+}

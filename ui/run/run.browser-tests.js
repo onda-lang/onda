@@ -123,7 +123,7 @@ async function checkDefaultLayout() {
         check(Math.abs(playStop.left - filename.right - 16) < 1
           && Math.abs(playStop.top + playStop.height / 2 - details.top - details.height / 2) < 1
           && Math.abs(playStop.top + playStop.height / 2 - transport[0].top - transport[0].height / 2) < 1
-          && playStop.width === 72 && playStop.height === 28
+          && playStop.width === 72 && playStop.height === 44
           && doc.querySelector(".transport button:not([hidden]) span").textContent === "Stop",
           "the labeled Play/Stop button leads the toolbar, aligned with the utility icons");
         const settings = doc.getElementById("settings-toggle");
@@ -214,13 +214,6 @@ async function checkDefaultLayout() {
             || rect.left >= bounds.right || rect.bottom <= bounds.top || rect.top >= bounds.bottom);
         }), `header controls stay clear of the brand and file details at ${width} pixels`);
       const cards = [...doc.querySelectorAll("#params .param")];
-      if (width <= 320) {
-        const heading = doc.querySelector("#params-section .section-heading");
-        const settings = doc.querySelector("#params-section .section-actions");
-        check(heading.lastElementChild.id === "reset-params"
-          && settings.getBoundingClientRect().top >= heading.getBoundingClientRect().bottom,
-          `a ${width}-pixel Params panel puts its settings below the title and reset button`);
-      }
       const rows = new Set(cards.map(card => Math.round(card.getBoundingClientRect().top)));
       check(rows.size === 4 && cards.length === 8,
         `a ${width}-pixel narrow view keeps two knobs per row`);
@@ -263,22 +256,52 @@ async function checkDefaultLayout() {
       shell.scrollTop = 0;
       await waitFrames(2);
     }
-    for (const width of [144, 160, 180, 240, 320, 720]) {
+    for (const [width, zoom] of [
+      [144, 1], [160, 1], [180, 1], [240, 1], [280, 1], [320, 1], [400, 1], [720, 1],
+      [720, 2], [720, 3], [720, 4],
+    ]) {
       frame.style.width = `${width}px`;
+      doc.body.style.zoom = String(zoom);
       await waitFrames(2);
       const panel = doc.getElementById("params-section").getBoundingClientRect();
       const smoothing = doc.getElementById("param-smoothing-control").getBoundingClientRect();
       const input = doc.getElementById("param-smoothing-ms");
       const layout = doc.querySelector(".param-layout-toggle").getBoundingClientRect();
-      check([smoothing, layout].every(rect => rect.left >= panel.left + 8.5
-        && rect.right <= panel.right - 8.5)
+      const controls = [
+        doc.querySelector("#params-section .section-heading").getBoundingClientRect(),
+        doc.getElementById("reset-params").getBoundingClientRect(),
+        smoothing, layout,
+      ];
+      check(controls.every(rect => rect.left >= panel.left + 8.5 * zoom
+        && rect.right <= panel.right - 8.5 * zoom)
         && input.scrollWidth <= input.clientWidth,
-      `Params settings and the complete smoothing value fit at ${width} pixels`);
-      if (width <= 240) {
-        check(smoothing.bottom + 6 <= layout.top + 1,
-          `smoothing and layout wrap in visual order at ${width} pixels`);
-      }
+      `Params settings and the complete smoothing value fit at ${width} pixels and ${zoom}× zoom`);
+      check(controls.every(rect => Math.abs(rect.top + rect.height / 2
+        - controls[0].top - controls[0].height / 2) < 1)
+        && controls.slice(1).every((rect, index) => controls[index].right <= rect.left + 1)
+        && doc.querySelector(".param-smoothing-label").getBoundingClientRect().width > 0,
+        `Params, reset, Smooth, Sliders, and Knobs share one line at ${width} pixels and ${zoom}× zoom`);
+      check(getComputedStyle(doc.querySelector("#params-section .params-title")).fontSize === "14px",
+        `the Params title keeps its standard size at ${width} pixels and ${zoom}× zoom`);
+      const actions = doc.querySelector("#params-section .section-actions");
+      const controlFont = parseFloat(getComputedStyle(input).fontSize);
+      check(Math.abs(controlFont - 11) < .01
+        || Math.abs(actions.getBoundingClientRect().width
+          - controls.slice(1).reduce((sum, rect) => sum + rect.width, 8 * zoom)) < 1,
+        `Params controls use their normal size or fill the available row before shrinking at ${width} pixels and ${zoom}× zoom`);
+      view._onHostMessage({ type: "state", state: { supportsParamSmoothing: false } });
+      await waitFrames(2);
+      const resetWithoutSmoothing = doc.getElementById("reset-params").getBoundingClientRect();
+      const layoutWithoutSmoothing = doc.querySelector(".param-layout-toggle").getBoundingClientRect();
+      check(parseFloat(getComputedStyle(doc.getElementById("reset-params")).fontSize) >= controlFont
+        && (getComputedStyle(doc.getElementById("reset-params")).fontSize === "11px"
+          || Math.abs(actions.getBoundingClientRect().width
+            - resetWithoutSmoothing.width - layoutWithoutSmoothing.width - 4 * zoom) < 1),
+        `hidden smoothing does not reserve space or unnecessarily shrink the remaining controls at ${width} pixels and ${zoom}× zoom`);
+      view._onHostMessage({ type: "state", state: { supportsParamSmoothing: true } });
     }
+    doc.body.style.zoom = "";
+    await waitFrames(3);
     const stoppedTransportBounds = doc.getElementById("stop").getBoundingClientRect();
     const keyboardBounds = doc.getElementById("midi-keyboard").getBoundingClientRect();
     doc.getElementById("stop").click();
@@ -316,16 +339,29 @@ async function checkDefaultLayout() {
     view._onHostMessage({ type: "state", state: {
       supportsSourceSelection: false, supportsProjectExport: false,
       midi: { available: false, noteOn: false },
+      ondaVersion: "0.8.26",
     }});
-    for (const width of [240, 400, 480, 560, 720]) {
+    for (const width of [320, 144, 160, 180, 240, 400, 480, 560, 720]) {
       frame.style.width = `${width}px`;
       for (const running of [false, true]) {
-        view._onHostMessage({ type: "state", state: { running } });
+        view._onHostMessage({ type: "state", state: {
+          running, path: running ? "karplus_strong.onda" : "long_filename_".repeat(100) + ".onda",
+        }});
         await waitFrames(2);
         const header = doc.getElementById("run-header").getBoundingClientRect();
         const transport = doc.querySelector(".transport button:not([hidden])").getBoundingClientRect();
+        const source = doc.getElementById("hero-source").getBoundingClientRect();
+        const brand = doc.getElementById("hero-brand").getBoundingClientRect();
+        if (width >= 240) {
+          check(brand.top < source.bottom && source.top < brand.bottom,
+            `a ${width}-pixel playground keeps branding, source details, and Play/Stop on one row`);
+        }
         check(Math.abs(transport.right - header.right + 13) < 1,
           `a ${width}-pixel playground without utility actions aligns Play/Stop with the right gutter`);
+        check(source.width > 0 && source.top < transport.bottom && transport.top < source.bottom
+          && source.right <= transport.left
+          && transport.width === 72 && transport.height === 44,
+          `a ${width}-pixel playground keeps source details beside a 72-by-44 Play/Stop button`);
         check(doc.querySelector(".actions").getClientRects().length === 0,
           "an empty utility group reserves no toolbar space or extra row");
         if (width >= 480) {
@@ -366,7 +402,7 @@ async function checkDefaultLayout() {
     view._onHostMessage({ type: "state", state: { path: `C:\\project\\${longName}` } });
     check(doc.getElementById("path").textContent === longName,
       "the source header also recognizes Windows paths");
-    for (const width of [320, 400, 720]) {
+    for (const width of [144, 160, 180, 240, 320, 400, 720]) {
       frame.style.width = `${width}px`;
       await waitFrames(2);
       const shell = doc.querySelector(".shell");
@@ -382,8 +418,11 @@ async function checkDefaultLayout() {
       check(filename.title === `C:\\project\\${longName}`
         && getComputedStyle(filename).textOverflow === "ellipsis"
         && filename.scrollWidth > filename.clientWidth
-        && filename.getBoundingClientRect().right <= playStop.left - 12 + 1,
+        && filename.getBoundingClientRect().right <= playStop.left,
         `long filenames truncate before Play/Stop and retain the full path on hover at ${width} pixels`);
+      const source = doc.getElementById("hero-source").getBoundingClientRect();
+      check(source.width > 0 && source.top < playStop.bottom && playStop.top < source.bottom,
+        `long filenames never push Play/Stop below the source row at ${width} pixels`);
     }
     const sections = ["scope", "log", "buffers", "events", "params"];
     view._onHostMessage({ type: "state", state: {
@@ -392,9 +431,11 @@ async function checkDefaultLayout() {
     }});
     for (const section of ["events", "params"]) {
       const heading = doc.querySelector(`#${section}-section .section-heading`);
-      const reset = heading.querySelector(".reset-action");
+      const reset = section === "params" ? doc.getElementById("reset-params")
+        : heading.querySelector(".reset-action");
       check(reset && Math.abs(reset.getBoundingClientRect().left
-        - heading.querySelector(".params-title").getBoundingClientRect().right - 8) < 1,
+        - heading.querySelector(".params-title").getBoundingClientRect().right
+        - parseFloat(getComputedStyle(heading).columnGap)) < 1,
         `${section} reset stays beside its heading`);
     }
     for (const section of sections) {
@@ -674,6 +715,36 @@ async function checkResponsiveMidiKeyboard() {
   }
 }
 
+async function checkHomepageLayout() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/homepage-layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const doc = frame.contentDocument;
+    for (const width of [320, 360, 720, 1440]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const block = doc.querySelector(".home-example-code").getBoundingClientRect();
+      const code = doc.querySelector(".home-example-code pre").getBoundingClientRect();
+      const button = doc.querySelector(".home-example-code .primary-button").getBoundingClientRect();
+      check(code.top === block.top && button.top >= code.top && button.bottom < code.bottom
+        && button.left >= code.left && button.right <= code.right,
+        `the homepage playground button overlays the code without reserving a row at ${width} pixels`);
+      const text = doc.querySelector(".home-example-code code").firstChild;
+      const firstLine = doc.createRange();
+      firstLine.setStart(text, 0);
+      firstLine.setEnd(text, text.textContent.indexOf("\n"));
+      check(firstLine.getBoundingClientRect().right <= button.left,
+        `the homepage playground button leaves the first import readable at ${width} pixels`);
+    }
+  } finally {
+    frame.remove();
+  }
+}
+
 async function checkPlaygroundLayout() {
   const controlGeometry = new Map();
   const params = Array.from({ length: 17 }, (_, index) => ({
@@ -703,6 +774,35 @@ async function checkPlaygroundLayout() {
         sampleRateHz: 48000, blockSamples: 512,
       }});
       const editor = doc.querySelector("[data-editor]");
+      if (host === "website") {
+        for (const theme of ["light", "dark"]) {
+          doc.documentElement.dataset.theme = theme;
+          check(getComputedStyle(doc.documentElement).colorScheme === theme,
+            `website: native controls follow the selected ${theme} theme`);
+        }
+      }
+      for (const width of [280, 320, 360, 390, 399, 400, 480, 720, 320, 480]) {
+        frame.style.width = `${width}px`;
+        await waitFrames(3);
+        const grid = doc.querySelector(".play-control-grid").getBoundingClientRect();
+        const controls = [...doc.querySelectorAll(".play-control-grid input, .play-control-grid select")];
+        const bounds = controls.map(control => control.getBoundingClientRect());
+        check(bounds.every(rect => Math.abs(rect.top - bounds[0].top) < 1
+          && rect.left >= grid.left - 1 && rect.right <= grid.right + 1)
+          && bounds.every((rect, index) => index === 0 || rect.left >= bounds[index - 1].right),
+          `${host}: compile settings shrink together on one row at ${width} pixels`);
+        const context = doc.createElement("canvas").getContext("2d");
+        for (const select of controls.filter(control => control.tagName === "SELECT")) {
+          const style = getComputedStyle(select);
+          context.font = `${style.fontSize} ${style.fontFamily}`;
+          check([...select.options].every(option =>
+            option.label === (width < 400 ? option.value : option.textContent)
+            && option.getAttribute("aria-label") === option.textContent
+            && context.measureText(option.label).width <= select.clientWidth
+              - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 24),
+          `${host}: select values fit and retain accessible units at ${width} pixels`);
+        }
+      }
       let desktopEditorWidth;
       let desktopEditorHeight;
       let previousWidePanes;
@@ -725,6 +825,17 @@ async function checkPlaygroundLayout() {
         check(status.top < shortcuts.bottom && shortcuts.top < status.bottom
           && status.right <= shortcuts.left,
           `${host}: Playing and the shortcuts stay on one line at ${width} pixels`);
+        check([...doc.querySelectorAll("[aria-label='Playground keyboard shortcuts'] kbd")]
+          .every(hint => hint.getBoundingClientRect().width > 0),
+          `${host}: both keyboard shortcut hints remain visible at ${width} pixels`);
+        if (width >= 480) {
+          check([...doc.querySelectorAll("[aria-label='Playground keyboard shortcuts'] > span")]
+            .every(shortcut => {
+              const label = shortcut.firstElementChild.getBoundingClientRect();
+              const keys = shortcut.lastElementChild.getBoundingClientRect();
+              return label.right <= keys.left && label.top < keys.bottom && keys.top < label.bottom;
+            }), `${host}: shortcut labels and keys stay horizontal when space is available at ${width} pixels`);
+        }
         check(doc.documentElement.scrollWidth <= doc.documentElement.clientWidth
           && runDoc.querySelector(".shell").scrollWidth === runDoc.querySelector(".shell").clientWidth,
           `${host}: the ${width}-pixel playground and run controls avoid horizontal overflow`);
@@ -745,7 +856,7 @@ async function checkPlaygroundLayout() {
         if (host === "website") controlGeometry.set(width, geometry);
         else check(controlGeometry.get(width) === geometry,
           `project tabs and actions have matching geometry in both playgrounds at ${width} pixels`);
-        const expectedEditorFont = width <= 720 ? 12 : 16;
+        const expectedEditorFont = width <= 720 && !frame.contentWindow.matchMedia("(pointer: coarse)").matches ? 12 : 16;
         check(getComputedStyle(doc.querySelector(".cm-content")).fontSize === `${expectedEditorFont}px`
           && getComputedStyle(doc.querySelector(".cm-lineNumbers")).fontSize === `${expectedEditorFont}px`
           && doc.querySelector("[data-editor-font-size]").value === String(expectedEditorFont),
@@ -801,6 +912,13 @@ async function checkPlaygroundLayout() {
           previousWidePanes = panes;
         }
       }
+      const shortcutHelp = doc.querySelector("[aria-label='Playground keyboard shortcuts']");
+      shortcutHelp.style.width = "160px";
+      await waitFrames(2);
+      check([...shortcutHelp.children].every(shortcut =>
+        shortcut.lastElementChild.getBoundingClientRect().top >= shortcut.firstElementChild.getBoundingClientRect().bottom),
+        `${host}: shortcut labels wrap above their keys when the available row width is constrained`);
+      shortcutHelp.style.width = "";
       const fontInput = doc.querySelector("[data-editor-font-size]");
       const storageKey = "onda.browser-ide.editor-font-size.v1";
       const storedFont = () => frame.contentWindow.localStorage.getItem(storageKey);
@@ -829,11 +947,20 @@ async function checkPlaygroundLayout() {
         `${host}: font edits preview and persist the selected size`);
       cancelFont();
       await resizeFont(600);
-      check(storedFont() === null && fontInput.value === "12"
-        && getComputedStyle(doc.querySelector(".cm-content")).fontSize === "12px",
+      const automaticFont = frame.contentWindow.matchMedia("(pointer: coarse)").matches ? 16 : 12;
+      check(storedFont() === null && fontInput.value === String(automaticFont)
+        && getComputedStyle(doc.querySelector(".cm-content")).fontSize === `${automaticFont}px`,
         `${host}: cancelling a preview restores automatic sizing across breakpoints`);
       typeFont("20");
       fontInput.blur();
+      for (const size of [6, 8, 12]) {
+        typeFont(String(size));
+        check(storedFont() === String(size)
+          && getComputedStyle(doc.querySelector(".cm-content")).fontSize === `${size}px`
+          && getComputedStyle(doc.querySelector(".cm-lineNumbers")).fontSize === `${size}px`,
+          `${host}: the editor and line numbers honor an explicit ${size}-pixel font`);
+        cancelFont();
+      }
       typeFont("28");
       cancelFont();
       check(storedFont() === "20" && fontInput.value === "20"
@@ -865,6 +992,9 @@ const params = [
   { name: "offset", type: "f32", value: 2, default: 2 },
 ];
 try {
+  check(matchMedia("(pointer: coarse)").matches === window.__testCoarsePointer,
+    "the browser uses the requested primary pointer capability");
+  await checkHomepageLayout();
   await checkDefaultLayout();
   await checkResponsiveParameterGrid();
   await checkResponsiveMidiKeyboard();
@@ -901,7 +1031,7 @@ try {
   send({ paramSmoothingMs: 30 });
   shell.style.width = "480px";
   const header = document.querySelector("#params-section .params-toolbar");
-  check(header.querySelector(".section-heading").lastElementChild === resetButton
+  check(header.querySelector(".section-actions").firstElementChild === resetButton
     && resetButton.classList.contains("secondary"),
     "Reset is a button beside the Params title");
   check([...header.children].every(node => Math.abs(

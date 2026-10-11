@@ -5,6 +5,30 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.27]
+
+### Changed
+
+- Use a consistent 72-by-44 Play/Stop button in native, webview, and browser run headers.
+- Keep browser sample rate, block size, and editor font settings on one row as screens narrow,
+  scaling their controls and omitting unit suffixes below 400 px.
+- Lower the browser playground's minimum editor font size to 6 px, including on touch screens.
+- Compact the shared webview and browser Params header so its title, reset button, smoothing,
+  and Sliders/Knobs controls stay on one row in narrow and zoomed views. Keep the title at its
+  standard size and shrink controls only after using the available row width.
+
+### Fixed
+
+- Remove the outer knob highlight during and after mouse or touch interaction while preserving
+  visible keyboard focus.
+- Overlay the homepage's Open in playground button on the code example on narrow screens
+  without reserving a separate row, scaling the code font so the first import stays readable.
+- Keep Play and Stop keyboard-shortcut hints visible on narrow playground screens, wrapping
+  their labels above the keys only when horizontal space runs out.
+- Truncate source text in narrow browser headers before moving the branding to another row,
+  preserving the Play/Stop button size.
+- Match native website controls to the selected theme so select values stay readable in WebKit.
+
 ## [0.8.26]
 
 ### Added
@@ -1165,6 +1189,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.27]: https://github.com/onda-lang/onda/compare/0.8.26...0.8.27
 [0.8.26]: https://github.com/onda-lang/onda/compare/0.8.25...0.8.26
 [0.8.25]: https://github.com/onda-lang/onda/compare/0.8.24...0.8.25
 [0.8.24]: https://github.com/onda-lang/onda/compare/0.8.22...0.8.24

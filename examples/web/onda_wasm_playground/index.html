@@ -49,7 +49,7 @@
       p { color: var(--muted); }
       .header-meta { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 14px; }
       .header-divider { flex-shrink: 0; width: 1px; height: 16px; background: var(--line); }
-      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; flex-shrink: 0; gap: 16px; margin: 0; color: var(--muted); }
+      .shortcut-help { display: flex; align-items: center; flex-wrap: nowrap; gap: 16px; margin: 0; color: var(--muted); }
       .shortcut { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
       .shortcut > span { color: var(--text); font-size: 11px; font-weight: 650; }
       .shortcut-help kbd { padding: 0; border: 0; background: none; color: var(--muted); font: 600 11px/1 var(--mono); }
@@ -101,14 +101,10 @@
       @media (max-width: 720px) {
         main { --play-viewport-offset: 160px; --play-stacked-offset: 192px; width: calc(100% - 20px); padding-top: 16px; }
         .header-meta { min-width: 0; flex-wrap: nowrap; justify-content: flex-start; width: 100%; gap: 10px; }
-
       }
       @media (max-width: 390px) {
         .header-meta { gap: 6px; }
         .shortcut-help { gap: 12px; }
-      }
-      @media (max-width: 360px) {
-        .shortcut-help kbd { display: none; }
       }
     </style>
     <link rel="stylesheet" href="./playground.css" />
@@ -152,7 +148,7 @@
               </label>
               <label>
                 <span>Font size</span>
-                <input type="number" min="8" max="40" step="1" value="16" inputmode="numeric" aria-label="Editor font size in pixels" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
+                <input type="number" min="6" max="40" step="1" value="16" inputmode="numeric" aria-label="Editor font size in pixels" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
               </label>
             </div>
             <div class="project-file-actions">

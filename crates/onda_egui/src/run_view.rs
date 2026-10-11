@@ -12,7 +12,7 @@ use super::{
 #[cfg(test)]
 mod tests;
 
-const TRANSPORT_BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 28.0);
+const TRANSPORT_BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 44.0);
 const HEADER_CONTROL_SIZE: f32 = 32.0;
 const HEADER_LOGO_SIZE: f32 = 32.0;
 const HEADER_GAP: f32 = 12.0;

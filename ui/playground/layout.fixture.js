@@ -1,6 +1,7 @@
 // Render the real editor in the layout fixtures without starting the compiler.
 import { OndaProjectEditor } from "./editor.js";
 import { bindEditorFontSize } from "./editor-font-size.js";
+import { bindCompileSettingLabels } from "./compile-setting-labels.js";
 import "./layout.css";
 import source from "./default.onda";
 
@@ -18,3 +19,4 @@ status.textContent = "Playing";
 status.classList.add("playing");
 const fontSize = document.querySelector("[data-editor-font-size]");
 bindEditorFontSize(fontSize, editor);
+bindCompileSettingLabels(document);

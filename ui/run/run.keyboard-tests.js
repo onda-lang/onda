@@ -226,6 +226,34 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     }
     t.diagnostic(`${layout}: trusted keyboard edits preserve cancellation precision and commit on Enter or blur`);
   }
+  await initialize("knobs");
+  await evaluate(`window._onHostMessage({ type: "state", state: { params: [{
+    name: "gain", type: "f32", value: 0.5, default: 0.5,
+    rangeMin: 0, rangeMax: 1, scale: "linear",
+  }] }}); window.knob = document.querySelector('.param-knob');`);
+  const knobPosition = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const rect = knob.getBoundingClientRect();
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  })())`));
+  for (const pointerType of ["mouse", "touch"]) {
+    await call("input.performActions", { context, actions: [{
+      type: "pointer", id: `knob-${pointerType}`, parameters: { pointerType }, actions: [
+        { type: "pointerMove", ...knobPosition, duration: 0 },
+        { type: "pointerDown", button: 0 },
+      ],
+    }] });
+    assert.equal(await evaluate("document.activeElement === knob"), true);
+    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "none",
+      `${pointerType} interaction does not draw an outer knob highlight`);
+    await call("input.releaseActions", { context });
+    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "none",
+      `${pointerType} release does not leave an outer knob highlight`);
+    await keys([tab]);
+    await evaluate("knob.focus()");
+    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "solid",
+      "keyboard interaction keeps a visible knob focus indicator");
+  }
+  t.diagnostic("touching or clicking knobs removes the outer highlight; keyboard focus remains visible");
   const eventValues = [initial, 0.0000123456789];
   const initializeEvent = async index => {
     await initialize("knobs");

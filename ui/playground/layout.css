@@ -1,4 +1,15 @@
 /* Shared workspace geometry and controls; hosts own branding and colors. */
+:is(.play-shortcuts, .shortcut-help) {
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+:is(.play-shortcut, .shortcut) {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
 .play-workspace {
   display: grid;
   grid-template-columns: var(--play-columns, minmax(0, 1fr) clamp(38%, 46rem, 42%));
@@ -20,24 +31,26 @@
   font: 13px/1.45 var(--sans, system-ui, sans-serif);
 }
 
-.play-control-grid label { display: grid; min-width: 0; gap: 5px; color: var(--text); font-size: 13px; }
+.play-control-grid label { display: grid; min-width: 0; gap: 5px; color: var(--text); font-size: clamp(10px, 4.3cqi, 13px); }
 
 .play-toolbar .play-control-grid :is(input, select) {
   width: 100%;
   min-width: 0;
-  padding: 7px 9px;
+  height: calc(1.45em + 16px);
+  padding: 7px clamp(4px, 2cqi, 9px);
   border-radius: 5px;
-  font: 14px/1.45 var(--mono);
+  font: clamp(10px, 3.4cqi, 14px)/1.45 var(--mono);
 }
 
 .play-control-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(5.5rem, .6fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .6fr);
+  container-type: inline-size;
   flex: 0 1 28rem;
   min-width: 0;
   max-width: 100%;
   margin-right: auto;
-  gap: .75rem;
+  gap: clamp(4px, 1.5vw, 12px);
 }
 
 .project-file-actions {
@@ -184,9 +197,6 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
     height: min(62svh, 540px);
     min-height: 360px;
   }
-  .play-control-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(4.5rem, .6fr);
-  }
   .project-file-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -204,25 +214,7 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
   button.project-file-menu-trigger, button.project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
 }
 
-@media (max-width: 390px) {
-  .play-control-grid label { font-size: 12px; }
-  .play-toolbar .play-control-grid :is(input, select) { font-size: 12px; }
-  .play-control-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 4.25rem;
-    gap: .45rem;
-  }
-}
-
-@media (max-width: 360px) {
-  .play-control-grid { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* Touch keyboards zoom editable text smaller than 16px on iOS. */
+/* Use a comfortable automatic editor font size on touch screens. */
 @media (pointer: coarse) {
   .play-source-editor { --onda-editor-font-size: 16px; }
-  .play-toolbar .play-control-grid :is(input, select) { font-size: 16px; }
-}
-
-@media (pointer: coarse) and (max-width: 390px) {
-  .play-control-grid { grid-template-columns: minmax(0, 1fr); }
 }
