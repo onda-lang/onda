@@ -221,11 +221,11 @@ fn knobs_apply_shift_to_each_movement_and_reverse_at_bounds() {
         };
         let mut value = 80.0;
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-            crate::render_param_knob(ui, &mut value, 80.0, 12_000.0, spec)
+            crate::render_param_knob(ui, &mut value, spec)
         });
         let start = rect.center();
         widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
-            crate::render_param_knob(ui, &mut value, 80.0, 12_000.0, spec)
+            crate::render_param_knob(ui, &mut value, spec)
         });
         for (index, (pixels, shift, normalized)) in [
             (25.0, true, 0.01),
@@ -248,7 +248,7 @@ fn knobs_apply_shift_to_each_movement_and_reverse_at_bounds() {
                     shift,
                     ..Default::default()
                 },
-                |ui| crate::render_param_knob(ui, &mut value, 80.0, 12_000.0, spec),
+                |ui| crate::render_param_knob(ui, &mut value, spec),
             );
             let expected = domain.normalized_to_plain(normalized);
             assert!((value / expected - 1.0).abs() < 1e-12,
@@ -263,7 +263,7 @@ fn knobs_apply_shift_to_each_movement_and_reverse_at_bounds() {
                 shift: true,
                 ..Default::default()
             },
-            |ui| crate::render_param_knob(ui, &mut value, 80.0, 12_000.0, spec),
+            |ui| crate::render_param_knob(ui, &mut value, spec),
         );
         assert_eq!(value, before_release);
     }

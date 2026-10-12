@@ -5,6 +5,23 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.28]
+
+### Changed
+
+- Keep parameter knobs and the virtual MIDI piano out of Tab navigation in egui, webview,
+  and the browser playground, and skip web sliders so Tab advances between number fields.
+  Remove knob focus highlights and keep keyboard parameter editing in the number fields.
+
+### Fixed
+
+- Commit web number drafts when clicking or touching a knob or piano key, leaving computer
+  MIDI notes and octave shortcuts available after the interaction.
+- Keep web piano pointer capture on its container so notes release even when committing an
+  octave edit removes the pressed key.
+- Use Onda's theme for web form focus outlines, text selection, and checkbox fills, including
+  in VS Code webviews. Keep native form controls aligned with the selected light or dark theme.
+
 ## [0.8.27]
 
 ### Changed
@@ -1189,6 +1206,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.28]: https://github.com/onda-lang/onda/compare/0.8.27...0.8.28
 [0.8.27]: https://github.com/onda-lang/onda/compare/0.8.26...0.8.27
 [0.8.26]: https://github.com/onda-lang/onda/compare/0.8.25...0.8.26
 [0.8.25]: https://github.com/onda-lang/onda/compare/0.8.24...0.8.25

@@ -6,7 +6,7 @@
     <title>Onda Run</title>
     <style>
       :root {
-        color-scheme: dark light;
+        color-scheme: dark;
         --bg: #0d1929;
         --panel: #0c1e33;
         --panel-strong: #122134;
@@ -97,6 +97,21 @@
         scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
         scrollbar-width: thin;
       }
+
+      ::selection {
+        background: var(--accent);
+        color: var(--button-text);
+      }
+
+      :is(input, select, textarea):focus {
+        outline: 1px solid var(--accent);
+        outline-offset: -1px;
+      }
+
+      input[type="checkbox"] {
+        accent-color: var(--accent);
+      }
+
       html {
         height: 100%;
         min-height: 100%;
@@ -387,9 +402,9 @@
         background: color-mix(in srgb, var(--success) 85%, var(--text));
       }
 
-      .actions button:focus-visible,
-      .transport button:focus-visible,
-      .header-popover :is(button, select):focus-visible {
+      button:focus-visible,
+      summary:focus-visible,
+      .header-popover select:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
@@ -662,6 +677,10 @@
       .param-layout-toggle button:is(:hover, :focus-visible):not(:disabled) {
         box-shadow: inset 0 0 0 1px var(--accent);
         color: var(--text);
+      }
+
+      .param-layout-toggle button:focus-visible {
+        outline: none;
       }
 
       .section-toggle {
@@ -1200,12 +1219,6 @@
         transition: filter 100ms ease;
       }
 
-      .piano-key:focus-visible {
-        z-index: 3;
-        outline: 2px solid var(--accent);
-        outline-offset: -3px;
-      }
-
       .piano-key.white { background: var(--piano-white); }
       .piano-key.white:hover:not(.active) { background: var(--piano-white-hover); }
       .piano-key.white.active { background: var(--piano-white-active); }
@@ -1295,11 +1308,6 @@
         touch-action: none;
       }
 
-      .param-slider:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-      }
-
       .param-slider-track {
         position: absolute;
         left: 10px;
@@ -1340,13 +1348,6 @@
         margin: 0 auto;
         cursor: ns-resize;
         touch-action: none;
-        outline: none;
-      }
-
-      .param-knob:focus-visible:not([data-pointer-focus]) {
-        border-radius: 50%;
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
       }
 
       .param-knob-dial {
@@ -2728,19 +2729,22 @@
         key.type = "button";
         key.className = "piano-key " + className;
         key.dataset.noteOffset = String(offset);
-        key.tabIndex = state.midiKeyboardInteractive === false ? -1 : 0;
+        key.tabIndex = -1;
         if (boundary !== undefined) key.dataset.whiteBoundary = String(boundary);
         key.addEventListener("pointerdown", (event) => {
           event.preventDefault();
-          key.setPointerCapture(event.pointerId);
+          document.activeElement?.blur?.();
+          // Committing an octave edit can remove this key; the piano stays mounted.
+          pianoNode.setPointerCapture(event.pointerId);
           pressVirtualMidiNote("pointer:" + event.pointerId, midiBaseNote() + offset);
         });
-        const release = (event) => releaseVirtualMidiNote("pointer:" + event.pointerId);
-        key.addEventListener("pointerup", release);
-        key.addEventListener("pointercancel", release);
-        key.addEventListener("lostpointercapture", release);
         pianoNode.appendChild(key);
       }
+
+      const releasePianoPointer = (event) => releaseVirtualMidiNote("pointer:" + event.pointerId);
+      pianoNode.addEventListener("pointerup", releasePianoPointer);
+      pianoNode.addEventListener("pointercancel", releasePianoPointer);
+      pianoNode.addEventListener("lostpointercapture", releasePianoPointer);
 
       function updateMidiKeyboardLayout() {
         if (midiKeyboardNode.hidden) return;
@@ -2761,9 +2765,7 @@
             for (const [source, note] of virtualMidiSources) {
               if (note === midiBaseNote() + offset && source.startsWith("pointer:")) releaseVirtualMidiNote(source);
             }
-            const focused = document.activeElement === key;
             key.remove();
-            if (focused) pianoNode.querySelector(".piano-key")?.focus({ preventScroll: true });
           }
           for (let octave = 0; octave < octaves; octave++) {
             for (const offset of WHITE_MIDI_NOTES) {
@@ -3230,25 +3232,7 @@
         };
       }
 
-      function bindRangeControlKeys(control, controller, param, step) {
-        const min = Number(param.rangeMin);
-        const max = Number(param.rangeMax);
-        control.addEventListener("keydown", (event) => {
-          let nextValue;
-          if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
-            nextValue = controller.value - step;
-          } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
-            nextValue = controller.value + step;
-          } else if (event.key === "Home") {
-            nextValue = min;
-          } else if (event.key === "End") {
-            nextValue = max;
-          } else {
-            return;
-          }
-          event.preventDefault();
-          controller.commit(nextValue);
-        });
+      function bindRangeControlReset(control, controller, param) {
         control.addEventListener("dblclick", (event) => {
           event.preventDefault();
           controller.commit(initialParamValue(param));
@@ -3257,7 +3241,6 @@
 
       function initializeRangeControl(control, param, editable = canEditRunControls()) {
         const canEdit = Boolean(editable);
-        control.tabIndex = canEdit ? 0 : -1;
         control.setAttribute("role", "slider");
         control.setAttribute("aria-label", paramDisplayName(param));
         control.setAttribute("aria-valuemin", String(param.rangeMin));
@@ -3269,7 +3252,6 @@
       function createSliderControl(
         param,
         currentValue,
-        step,
         onInputValue,
         onCommitValue,
         editable,
@@ -3343,7 +3325,7 @@
             slider.addEventListener("pointercancel", onEnd);
           });
 
-          bindRangeControlKeys(slider, controller, param, Number(step));
+          bindRangeControlReset(slider, controller, param);
         }
 
         controller.render();
@@ -3372,7 +3354,7 @@
         });
       }
 
-      function createKnobControl(param, currentValue, step, onInputValue, onCommitValue) {
+      function createKnobControl(param, currentValue, onInputValue, onCommitValue) {
         const knob = document.createElement("div");
         knob.className = "param-knob";
         knob.title = "Drag vertically to adjust; Shift for fine adjustment; double-click to reset";
@@ -3421,14 +3403,9 @@
         });
 
         if (canEdit) {
-          // Programmatic pointer focus can inherit the previous field's keyboard outline.
-          const clearPointerFocus = () => knob.removeAttribute("data-pointer-focus");
-          knob.addEventListener("blur", clearPointerFocus);
-          knob.addEventListener("keydown", clearPointerFocus);
           knob.addEventListener("pointerdown", (event) => {
             event.preventDefault();
-            knob.setAttribute("data-pointer-focus", "");
-            knob.focus({ preventScroll: true });
+            document.activeElement?.blur?.();
             knob.setPointerCapture(event.pointerId);
             let previousY = event.clientY;
             let normalized = paramPlainToNormalized(param, controller.value);
@@ -3456,7 +3433,7 @@
             knob.addEventListener("pointerup", onEnd);
             knob.addEventListener("pointercancel", onEnd);
           });
-          bindRangeControlKeys(knob, controller, param, Number(step));
+          bindRangeControlReset(knob, controller, param);
         }
 
         controller.render();
@@ -4290,7 +4267,6 @@
         const monitorOnly = state.midiKeyboardInteractive === false;
         midiKeyboardNode.classList.toggle("monitor-only", monitorOnly);
         setSectionOpen("midi", sectionState.midi);
-        for (const key of pianoNode.children) key.tabIndex = monitorOnly ? -1 : 0;
         if (!showMidiKeyboard && virtualMidiSources.size > 0) releaseAllVirtualMidiNotes();
         updateMidiKeyboardLayout();
         updateHeaderLayout();
@@ -4506,7 +4482,6 @@
               )(
                 param,
                 currentValue,
-                step,
                 (nextValue) => {
                   activeParamGestures.add(param.name);
                   param.value = nextValue;

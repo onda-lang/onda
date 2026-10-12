@@ -70,6 +70,9 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
   const messages = async () => JSON.parse(await evaluate(
     `JSON.stringify(__testMessages.filter(message => message.type === "setParam"))`,
   ));
+  const midiMessages = async () => JSON.parse(await evaluate(
+    `JSON.stringify(__testMessages.filter(message => message.type === "midiNote"))`,
+  ));
   const enter = "\uE007";
   const escape = "\uE00C";
   const tab = "\uE004";
@@ -226,34 +229,136 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     }
     t.diagnostic(`${layout}: trusted keyboard edits preserve cancellation precision and commit on Enter or blur`);
   }
+  for (const layout of ["knobs", "sliders"]) {
+    await initialize(layout);
+    await evaluate(`window._onHostMessage({ type: "state", state: {
+      midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+      params: ["gain", "mix"].map(name => ({
+        name, type: "f32", value: 0.5, default: 0.5,
+        rangeMin: 0, rangeMax: 1, scale: "linear",
+      })),
+    }}); window.range = document.querySelector('#params [role="slider"]');
+    window.number = document.querySelector('#params input');`);
+    const position = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const rect = range.getBoundingClientRect();
+      return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+    })())`));
+    for (const pointerType of ["mouse", "touch"]) {
+      await evaluate("number.focus(); number.select(); __testMessages.length = 0");
+      await keys(["0", ".", "7"]);
+      await call("input.performActions", { context, actions: [{
+        type: "pointer", id: `${layout}-${pointerType}`, parameters: { pointerType }, actions: [
+          { type: "pointerMove", ...position, duration: 0 },
+          { type: "pointerDown", button: 0 },
+        ],
+      }] });
+      assert.equal(await evaluate("document.activeElement === range"), false,
+        `${layout}: ${pointerType} interaction does not focus the range control`);
+      if (layout === "knobs") {
+        assert.equal((await messages())[0]?.value, 0.7,
+          `${pointerType}: clicking the knob commits the number draft before using its value`);
+      }
+      await call("input.releaseActions", { context });
+      assert.equal(await evaluate("number.readOnly"), true,
+        `${layout}: ${pointerType} interaction ends number editing`);
+      if (layout === "knobs") {
+        assert.equal(await evaluate("number.value"), "0.7",
+          `${pointerType}: releasing the knob preserves the committed number draft`);
+      }
+      await keys(["a"]);
+      assert.deepEqual((await midiMessages()).map(note => [note.key, note.pressed]), [[60, true], [60, false]],
+        `${layout}: ${pointerType} interaction leaves computer MIDI available`);
+      await evaluate("__testMessages.length = 0");
+      await evaluate("range.focus()");
+      assert.equal(await evaluate("document.activeElement === range"), false,
+        `${layout}: range controls cannot receive programmatic focus`);
+      await evaluate("number.focus()");
+      await keys([tab]);
+      assert.equal(await evaluate("document.activeElement === document.querySelectorAll('#params input')[1]"), true,
+        `${layout}: Tab skips range controls and advances between number fields`);
+    }
+  }
+  t.diagnostic("knobs commit number drafts before pointer interaction; range controls leave MIDI available and Tab advances between number fields");
   await initialize("knobs");
-  await evaluate(`window._onHostMessage({ type: "state", state: { params: [{
-    name: "gain", type: "f32", value: 0.5, default: 0.5,
-    rangeMin: 0, rangeMax: 1, scale: "linear",
-  }] }}); window.knob = document.querySelector('.param-knob');`);
-  const knobPosition = JSON.parse(await evaluate(`JSON.stringify((() => {
-    const rect = knob.getBoundingClientRect();
-    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
+  await evaluate(`window._onHostMessage({ type: "state", state: {
+    midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+  }});
+  window.afterPiano = document.createElement('button');
+  afterPiano.textContent = 'After piano';
+  afterPiano.style.cssText = 'position:fixed;bottom:0;right:0';
+  document.body.appendChild(afterPiano);
+  document.getElementById('midi-velocity-value').focus();`);
+  await keys([tab]);
+  assert.equal(await evaluate("document.activeElement === afterPiano"), true,
+    "Tab skips all piano keys");
+  const pianoPosition = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const rect = document.querySelector('.piano-key.white').getBoundingClientRect();
+    return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.bottom - 10) };
   })())`));
   for (const pointerType of ["mouse", "touch"]) {
+    await evaluate("document.getElementById('midi-velocity-value').focus()");
     await call("input.performActions", { context, actions: [{
-      type: "pointer", id: `knob-${pointerType}`, parameters: { pointerType }, actions: [
-        { type: "pointerMove", ...knobPosition, duration: 0 },
+      type: "pointer", id: `piano-${pointerType}`, parameters: { pointerType }, actions: [
+        { type: "pointerMove", ...pianoPosition, duration: 0 },
+        { type: "pointerDown", button: 0 },
+        { type: "pointerUp", button: 0 },
+      ],
+    }] });
+    assert.equal(await evaluate("document.getElementById('midi-velocity-value').readOnly"), true,
+      `${pointerType}: playing the piano ends number editing`);
+    await evaluate("__testMessages.length = 0");
+    await keys(["a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p"]);
+    const notes = await midiMessages();
+    assert.deepEqual(notes.map(note => [note.key, note.pressed]),
+      Array.from({ length: 16 }, (_, offset) => [[60 + offset, true], [60 + offset, false]]).flat(),
+      `${pointerType}: all computer MIDI keys play and release after piano interaction`);
+    await keys(["z"]);
+    assert.equal(await evaluate("document.getElementById('midi-octave').value"), "3");
+    await keys(["x"]);
+    assert.equal(await evaluate("document.getElementById('midi-octave').value"), "4");
+  }
+  t.diagnostic("piano keys are skipped by Tab; all MIDI note keys and octave shortcuts work after mouse and touch interaction");
+  for (const pointerType of ["mouse", "touch"]) {
+    await initialize("knobs");
+    await call("browsingContext.setViewport", {
+      context, viewport: { width: 1400, height: 900 }, devicePixelRatio: 1,
+    });
+    await evaluate(`window._onHostMessage({ type: "state", state: {
+      midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+    }});
+    new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));`);
+    await evaluate(`window.pianoKey = document.querySelector('#piano [data-note-offset="24"]');
+    window.octave = document.getElementById('midi-octave');
+    window.pianoErrors = [];
+    window.addEventListener('error', event => pianoErrors.push(event.message));
+    octave.focus(); octave.select(); __testMessages.length = 0;`);
+    const position = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const rect = pianoKey.getBoundingClientRect();
+      return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.bottom - 10) };
+    })())`));
+    await keys(["7"]);
+    await call("input.performActions", { context, actions: [{
+      type: "pointer", id: `octave-${pointerType}`, parameters: { pointerType }, actions: [
+        { type: "pointerMove", ...position, duration: 0 },
         { type: "pointerDown", button: 0 },
       ],
     }] });
-    assert.equal(await evaluate("document.activeElement === knob"), true);
-    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "none",
-      `${pointerType} interaction does not draw an outer knob highlight`);
-    await call("input.releaseActions", { context });
-    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "none",
-      `${pointerType} release does not leave an outer knob highlight`);
-    await keys([tab]);
-    await evaluate("knob.focus()");
-    assert.equal(await evaluate("getComputedStyle(knob).outlineStyle"), "solid",
-      "keyboard interaction keeps a visible knob focus indicator");
+    assert.equal(await evaluate("octave.readOnly && !pianoKey.isConnected"), true,
+      `${pointerType}: committing octave seven removes the pressed third-octave key`);
+    assert.deepEqual(JSON.parse(await evaluate("JSON.stringify(pianoErrors)")), [],
+      `${pointerType}: octave editing cannot invalidate pointer capture`);
+    assert.deepEqual((await midiMessages()).map(note => [note.key, note.pressed]), [[120, true]],
+      `${pointerType}: the piano plays using the committed octave`);
+    await call("input.performActions", { context, actions: [{
+      type: "pointer", id: `octave-${pointerType}`, parameters: { pointerType }, actions: [
+        { type: "pointerMove", x: 5, y: 5, duration: 0 },
+        { type: "pointerUp", button: 0 },
+      ],
+    }] });
+    assert.deepEqual((await midiMessages()).map(note => [note.key, note.pressed]), [[120, true], [120, false]],
+      `${pointerType}: releasing outside the piano ends the note even when its key disappeared`);
   }
-  t.diagnostic("touching or clicking knobs removes the outer highlight; keyboard focus remains visible");
+  t.diagnostic("piano notes play and release across the layout change caused by committing an octave edit");
   const eventValues = [initial, 0.0000123456789];
   const initializeEvent = async index => {
     await initialize("knobs");

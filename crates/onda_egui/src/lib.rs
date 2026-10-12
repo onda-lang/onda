@@ -511,7 +511,10 @@ impl RunApp {
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space((available_width - width) * 0.5);
-                ui.allocate_painter(egui::vec2(width, height), egui::Sense::drag())
+                ui.allocate_painter(
+                    egui::vec2(width, height),
+                    egui::Sense::drag().difference(egui::Sense::FOCUSABLE),
+                )
             })
             .inner;
         let rect = response.rect;
@@ -2180,9 +2183,9 @@ fn render_compact_param_value_editor(
     let committed_number = value.as_f64().unwrap_or(0.0);
     let mut displayed_number = committed_number;
 
-    if let Some((min, max)) = spec.bounds() {
+    if spec.bounds().is_some() {
         let mut knob_value = committed_number;
-        if render_param_knob(ui, &mut knob_value, min, max, spec).changed() {
+        if render_param_knob(ui, &mut knob_value, spec).changed() {
             displayed_number = knob_value;
             outcome = ParamEditOutcome::Commit(json_number(knob_value));
         }
@@ -2329,20 +2332,15 @@ fn render_param_number_input(
 fn render_param_knob(
     ui: &mut egui::Ui,
     value: &mut f64,
-    min: f64,
-    max: f64,
     spec: ParamControlSpec<'_>,
 ) -> egui::Response {
-    let step = spec.effective_step();
     let domain = spec
         .domain
         .expect("knob controls must have a prepared parameter domain");
     let size = egui::vec2(64.0, 64.0);
-    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let sense = egui::Sense::click_and_drag().difference(egui::Sense::FOCUSABLE);
+    let (rect, mut response) = ui.allocate_exact_size(size, sense);
     response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.display_name()));
-    if response.clicked() {
-        response.request_focus();
-    }
 
     let mut next_value = *value;
     if response.drag_started() {
@@ -2361,22 +2359,6 @@ fn render_param_knob(
     if response.drag_stopped() {
         ui.data_mut(|data| data.remove::<KnobDragState>(response.id));
     }
-    if response.has_focus() {
-        ui.input(|input| {
-            if input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowDown) {
-                next_value -= step;
-            }
-            if input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::ArrowUp) {
-                next_value += step;
-            }
-            if input.key_pressed(egui::Key::Home) {
-                next_value = min;
-            }
-            if input.key_pressed(egui::Key::End) {
-                next_value = max;
-            }
-        });
-    }
     if response.double_clicked() {
         next_value = spec.initial_value();
     }
@@ -2392,13 +2374,6 @@ fn render_param_knob(
     let radius = 27.0;
     ui.painter()
         .circle_filled(center, radius, ui.visuals().extreme_bg_color);
-    if response.has_focus() {
-        ui.painter().circle_stroke(
-            center,
-            radius + 7.0,
-            egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
-        );
-    }
 
     let ratio = domain.plain_to_normalized(*value) as f32;
     let start = 135.0_f32.to_radians();

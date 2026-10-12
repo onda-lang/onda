@@ -31,6 +31,79 @@ function refresh() {
   send({ events, params, logText: "background update", logRevealed: true });
 }
 
+async function checkThemedFormControls() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    // VS Code injects this focus rule; use orange explicitly across browser engines.
+    const hostStyle = doc.createElement("style");
+    hostStyle.textContent = `@layer vscode-default {
+      input:focus, select:focus, textarea:focus {
+        outline: 1px solid orange;
+        outline-offset: -1px;
+      }
+    }`;
+    doc.head.append(hostStyle);
+    view._onHostMessage({ type: "state", state: {
+      running: true, connected: true, path: "focus.onda",
+      params: [params[0], { name: "enabled", type: "bool", value: true }],
+      events: [{ name: "configure", args: [
+        { name: "level", type: "f32", default: 0.5 },
+        { name: "patch", type: "Patch", default: { gain: 0.5 } },
+      ] }],
+      midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+      supportsSourceSelection: true,
+      supportsRunSettings: true, sampleRateHz: 48000, blockSamples: 512,
+      supportsParamSmoothing: true, paramSmoothingMs: 30,
+    }});
+    for (const theme of ["dark", "light"]) {
+      view._onHostMessage({ type: "state", state: { themeMode: theme } });
+      const accent = theme === "dark" ? "rgb(201, 219, 242)" : "rgb(20, 58, 99)";
+      for (const selector of ["#params input[type=number]", "#events input[type=number]",
+        "#midi-octave", "#midi-velocity-value", "#params input[type=checkbox]", "#run-sample-rate"]) {
+        const control = doc.querySelector(selector);
+        // The sample-rate select is visible in the empty view.
+        if (control.tagName === "SELECT") {
+          view._onHostMessage({ type: "state", state: { path: "" } });
+          await waitFrames(2);
+        }
+        control.focus();
+        check(doc.activeElement === control && view.getComputedStyle(control).outlineColor === accent,
+          `${theme}: ${selector} focus uses Onda's accent despite the host outline`);
+        if (control.tagName === "SELECT") {
+          view._onHostMessage({ type: "state", state: { path: "focus.onda" } });
+          await waitFrames(2);
+        }
+      }
+      check(view.getComputedStyle(doc.documentElement).colorScheme === theme,
+        `${theme}: native form controls follow Onda's selected theme`);
+      check(view.getComputedStyle(doc.querySelector('#params input[type=checkbox]')).accentColor === accent,
+        `${theme}: checkbox fills use Onda's accent`);
+      const number = doc.querySelector('#params input[type=number]');
+      check(view.getComputedStyle(number, "::selection").backgroundColor === accent,
+        `${theme}: selected number text uses Onda's accent`);
+      for (const selector of ["#reset-params", "#params-toggle", "#events summary", ".event-trigger"]) {
+        number.focus();
+        const control = doc.querySelector(selector);
+        control.focus();
+        check(control.matches(":focus-visible") && view.getComputedStyle(control).outlineColor === accent,
+          `${theme}: ${selector} keyboard focus uses Onda's accent`);
+      }
+      doc.getElementById("param-smoothing-ms").focus();
+      check(view.getComputedStyle(doc.getElementById("param-smoothing-control")).borderColor === accent,
+        `${theme}: smoothing keeps its themed focus on the enclosing control`);
+    }
+  } finally {
+    frame.remove();
+  }
+}
+
 async function checkDefaultLayout() {
   const frame = document.createElement("iframe");
   frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
@@ -648,7 +721,7 @@ async function checkResponsiveMidiKeyboard() {
       && messages().length === heldCount,
       "expanding the piano preserves retained keys, focus, and held computer notes");
     const highKey = piano.querySelector('[data-note-offset="48"]');
-    const pointer = pointerControl(highKey);
+    const pointer = pointerControl(highKey, piano);
     pointer("pointerdown", 10);
     check(highKey.classList.contains("active") && messages().at(-1).key === 108
       && messages().at(-1).pressed,
@@ -996,6 +1069,7 @@ try {
     "the browser uses the requested primary pointer capability");
   await checkHomepageLayout();
   await checkDefaultLayout();
+  await checkThemedFormControls();
   await checkResponsiveParameterGrid();
   await checkResponsiveMidiKeyboard();
   await checkPlaygroundLayout();
@@ -2183,7 +2257,7 @@ try {
   send({ running: false, connected: false });
   const midiMessages = () => window.__testMessages.filter(message => message.type === "midiNote");
   const stoppedMessageCount = midiMessages().length;
-  const stoppedPointer = pointerControl(whiteKeys[0]);
+  const stoppedPointer = pointerControl(whiteKeys[0], piano);
   stoppedPointer("pointerdown", 10);
   check(whiteKeys[0].classList.contains("active") && !document.getElementById("midi-keyboard").hidden,
     "stopped piano clicks keep the dock visible and highlight the pressed key");
