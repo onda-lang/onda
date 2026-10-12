@@ -7,9 +7,9 @@ function check(condition, message) {
 function send(state) {
   window._onHostMessage({ type: "state", state: structuredClone(state) });
 }
-async function waitFrames(count) {
+async function waitFrames(count, view = window) {
   for (let index = 0; index < count; index++) {
-    await new Promise(resolve => requestAnimationFrame(resolve));
+    await new Promise(resolve => view.requestAnimationFrame(resolve));
   }
 }
 function edit(input, value) {
@@ -29,6 +29,47 @@ function pointerControl(input, captureTarget = input) {
 }
 function refresh() {
   send({ events, params, logText: "background update", logRevealed: true });
+}
+
+async function checkContentBoxScope() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;left:0;top:0;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/content-box-layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    check(!("devicePixelContentBoxSize" in view.ResizeObserverEntry.prototype),
+      "the scope fixture models a browser without device-pixel observation");
+    check(view.__testErrors.length === 0,
+      "the run view initializes without errors when only content-box observation is supported");
+    view._onHostMessage({ type: "state", state: {
+      running: false, connected: false, path: "scope.onda", status: "Stopped",
+      supportsScope: true, supportsViewState: true, params: [], events: [],
+      viewState: { reset: true, readyId: 84 },
+    }});
+    await waitFrames(4, view);
+    check(view.__testMessages.some(message =>
+      message.type === "runViewReady" && message.readyId === 84),
+      "content-box scope observation preserves the native view readiness handshake");
+    view._onHostMessage({ type: "scopeData", channels: 1, samples: [0, 0.25, -0.25, 0] });
+    await waitFrames(2, view);
+    const canvas = doc.getElementById("scope-canvas");
+    const initialWidth = canvas.width;
+    for (const width of [540, 720]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(3, view);
+      const expectedWidth = Math.round(canvas.getBoundingClientRect().width * view.devicePixelRatio);
+      check(canvas.width === expectedWidth && (width !== 540 || canvas.width !== initialWidth),
+        `content-box scope observation resizes the bitmap at ${width} pixels without new host data`);
+    }
+    check(view.__testErrors.length === 0,
+      "content-box scope observation remains free of errors after state restoration and resizing");
+  } finally {
+    frame.remove();
+  }
 }
 
 async function checkThemedFormControls() {
@@ -1069,6 +1110,7 @@ try {
     "the browser uses the requested primary pointer capability");
   await checkHomepageLayout();
   await checkDefaultLayout();
+  await checkContentBoxScope();
   await checkThemedFormControls();
   await checkResponsiveParameterGrid();
   await checkResponsiveMidiKeyboard();

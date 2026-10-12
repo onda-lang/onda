@@ -5,6 +5,13 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.29]
+
+### Fixed
+
+- Avoid unsupported ResizeObserver options in WebKit so the shared run view initializes
+  fully and redraws the scope and buffer waveforms when resized.
+
 ## [0.8.28]
 
 ### Changed
@@ -1206,6 +1213,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.29]: https://github.com/onda-lang/onda/compare/0.8.28...0.8.29
 [0.8.28]: https://github.com/onda-lang/onda/compare/0.8.27...0.8.28
 [0.8.27]: https://github.com/onda-lang/onda/compare/0.8.26...0.8.27
 [0.8.26]: https://github.com/onda-lang/onda/compare/0.8.25...0.8.26

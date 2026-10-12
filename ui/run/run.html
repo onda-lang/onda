@@ -4774,7 +4774,11 @@
           ? { width: size.inlineSize, height: size.blockSize }
           : null;
         scheduleScopeDraw(latestScopeData.channels, latestScopeData.samples);
-      }).observe(scopeCanvas, { box: "device-pixel-content-box" });
+      }).observe(scopeCanvas, {
+        box: "devicePixelContentBoxSize" in ResizeObserverEntry.prototype
+          ? "device-pixel-content-box"
+          : "content-box",
+      });
       window.addEventListener("resize", () => {
         updateMidiKeyboardLayout();
         window.requestAnimationFrame(drawVisibleBufferWaveforms);

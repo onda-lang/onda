@@ -42,6 +42,18 @@ async function testBrowserLayouts(t, coarsePointer) {
   </script>`;
   const html = (await readFile(new URL("./run.html", import.meta.url), "utf8"))
     .replace("<head>", "<head>" + bridge);
+  const contentBoxHtml = html.replace("<head>", `<head><script>
+    window.__testErrors = [];
+    window.addEventListener("error", event => window.__testErrors.push(event.message));
+    delete ResizeObserverEntry.prototype.devicePixelContentBoxSize;
+    const observe = ResizeObserver.prototype.observe;
+    ResizeObserver.prototype.observe = function(target, options) {
+      if (options?.box === "device-pixel-content-box") {
+        throw new TypeError("Unsupported ResizeObserver box");
+      }
+      return observe.call(this, target, options);
+    };
+  </script>`);
   const website = await readFile(new URL("../../website/playground/index.html", import.meta.url), "utf8");
   const homepage = (await readFile(new URL("../../website/index.md", import.meta.url), "utf8"))
     .replace("{% include home-example.onda %}", await readFile(new URL(
@@ -67,6 +79,7 @@ async function testBrowserLayouts(t, coarsePointer) {
       '<script type="module" src="/tests.js"></script></body>')]],
     ["/keyboard", ["text/html", html]],
     ["/layout", ["text/html", html]],
+    ["/content-box-layout", ["text/html", contentBoxHtml]],
     ["/homepage-layout", ["text/html", `<!doctype html><html><head>
       <link rel="stylesheet" href="/site.css"></head><body>
       ${homepage.match(/<main[\s\S]*?<\/main>/)[0]}</body></html>`]],
