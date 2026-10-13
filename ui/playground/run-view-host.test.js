@@ -391,6 +391,7 @@ test("allows browser playback while buffers are unbound", async () => {
     src: "https://onda.test/play/run.html",
     contentWindow: { postMessage() {} },
     addEventListener() {},
+    removeEventListener() {},
     style: {},
   };
 
@@ -523,6 +524,7 @@ test("browser run view waits for reset readiness and forwards MIDI activity", as
     src: "https://onda.test/play/run.html",
     contentWindow: { postMessage: (message) => messages.push(message) },
     addEventListener() {},
+    removeEventListener() {},
     style: {},
   };
 

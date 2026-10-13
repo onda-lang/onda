@@ -1,36 +1,10 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
+import { openBrowserSession } from "../browser-test-session.js";
 
 // Trusted keyboard actions exercise native input/change behavior that dispatched
 // DOM events cannot reproduce. Firefox exposes BiDi without a separate driver.
 export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
-  const socket = new WebSocket(`${endpoint}/session`);
-  t.after(() => socket.close());
-  await once(socket, "open", { signal: t.signal });
-  let nextId = 0;
-  const pending = new Map();
-  socket.addEventListener("message", ({ data }) => {
-    const reply = JSON.parse(data);
-    const request = pending.get(reply.id);
-    if (!request) return;
-    pending.delete(reply.id);
-    if (reply.type === "error") request.reject(new Error(JSON.stringify(reply)));
-    else request.resolve(reply.result);
-  });
-  const failPending = error => {
-    for (const request of pending.values()) request.reject(error);
-    pending.clear();
-  };
-  socket.addEventListener("close", () => failPending(new Error("Browser connection closed")));
-  t.signal.addEventListener("abort", () => failPending(new Error("Keyboard test timed out")), { once: true });
-  const call = (method, params) => {
-    const request = Promise.withResolvers();
-    const id = ++nextId;
-    pending.set(id, request);
-    socket.send(JSON.stringify({ id, method, params }));
-    return request.promise;
-  };
-  await call("session.new", { capabilities: {} });
+  const call = await openBrowserSession(t, endpoint);
   let context;
   const evaluate = async expression => {
     const reply = await call("script.evaluate", {

@@ -2,6 +2,7 @@
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
 import { canonicalF32Number } from "@onda-lang/processor-abi";
 import { partitionHostEvents } from "./midi.js";
+import { bindAudioActivation } from "./audio-activation.js";
 
 export class BrowserRunViewHost {
   constructor(iframe, handlers = {}) {
@@ -61,10 +62,13 @@ export class BrowserRunViewHost {
       attributes: true,
       attributeFilter: ["data-theme"],
     });
-    this.iframe.addEventListener("load", () => {
+    this.onFrameLoad = () => {
       this.ready = false;
       this.requestViewReset();
-    });
+      this.unbindAudioActivation?.();
+      this.unbindAudioActivation = bindAudioActivation(this.iframe.contentDocument, this.handlers);
+    };
+    this.iframe.addEventListener("load", this.onFrameLoad);
   }
 
   setPath(path) {
@@ -327,6 +331,8 @@ export class BrowserRunViewHost {
 
   dispose() {
     window.removeEventListener("message", this.onWindowMessage);
+    this.iframe.removeEventListener("load", this.onFrameLoad);
+    this.unbindAudioActivation?.();
     this.themeObserver.disconnect();
   }
 }

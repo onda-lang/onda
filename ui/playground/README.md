@@ -10,6 +10,7 @@ Shared browser IDE for the website `/playground/` route and the standalone
 - `editor-font-size.js` manages editor font preferences.
 - `layout.css` owns the shared layout; hosts supply colors and branding.
 - `run-view-host.js` adapts the [shared run view](../run/README.md) to the browser.
+- `audio-activation.js` handles trusted audio-enabling gestures in both documents.
 - `browser-buffers.js`, `microphone.js`, and `midi.js` handle browser audio and MIDI input.
 - `param-smoothing.js` preserves smoothing preferences across recompiles.
 - `examples.js`, `project-archive.js`, and `share.js` load and share projects.
@@ -24,6 +25,11 @@ Hosts provide the DOM and `globalThis.__ONDA_PLAYGROUND_ASSETS__`.
 Ctrl/Command+S or Ctrl/Command+Enter plays; Ctrl/Command+. stops. Ctrl/Command+click
 follows definitions, including into read-only standard-library tabs. Closing a
 project tab deletes its file; closing a standard-library tab dismisses the view.
+
+The loaded project starts automatically when the compiler is ready. If the browser
+blocks autoplay, a click, tap, or key press anywhere in the playground, including
+the embedded controls, enables audio. The prompt clears when audio starts. Stop
+cancels pending playback; ordinary interactions leave a stopped project stopped.
 
 The project persists in local storage. Play creates a fresh processor and reuses
 the compiled artifact when sources and compile settings are unchanged.
@@ -43,5 +49,5 @@ npm run test:playground
 npm run test:run-view
 ```
 
-The run-view suite also checks both playground hosts' layouts and requires
-Node.js 22+ and Firefox.
+The playground audio and run-view suites use a real browser. The run-view suite
+also checks both playground hosts' layouts. They require Node.js 22+ and Firefox.

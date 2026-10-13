@@ -58,8 +58,9 @@ inside the run view. Cmd/Ctrl+click navigates to project definitions and opens s
 definitions
 in read-only tabs. Each compact tab has a close control: project tabs delete the browser-project file,
 while standard-library tabs are merely dismissed. Definition navigation continues to work inside open
-standard-library tabs. Browser autoplay rules may require another click on the page before output becomes
-audible.
+standard-library tabs. If the browser blocks autoplay, click, tap, or press a key anywhere in the
+playground, including the embedded run view, to enable audio. The prompt clears when audio starts.
+Stop cancels pending playback without enabling sound; subsequent interactions leave it stopped.
 
 After the initial build, UI-only changes can be previewed quickly on macOS/Linux:
 

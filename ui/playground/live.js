@@ -24,6 +24,7 @@ import { BrowserMidiInputs, isMidiKeyboardEditingTarget } from "./midi.js";
 import { BrowserMicrophoneInput } from "./microphone.js";
 import { BrowserParamSmoothing } from "./param-smoothing.js";
 import { BrowserRunViewHost, BrowserScopeSource } from "./run-view-host.js";
+import { bindAudioActivation } from "./audio-activation.js";
 import {
   decodeSharedSession,
   encodeSharedSession,
@@ -88,6 +89,7 @@ let midiInputs = null;
 runViewFrame.src = hostedAssets.runViewUrl ?? "./run.html";
 const runView = new BrowserRunViewHost(runViewFrame, {
   start: () => runProject(),
+  resume: resumeAudio,
   stop: () => stopExecution(),
   resetParams: () => resetRunParams(),
   setParam: (name, value) => audioProcessor?.setParam(name, value),
@@ -265,7 +267,7 @@ async function runProject() {
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
     await startAudio();
-    setStatus("Playing", "playing");
+    if (generation !== runGeneration) return;
     const runViewDocument = runViewFrame.contentDocument;
     const editorBindings = smokeMode ? await smokeEditorBindings() : {};
     const themeFollowsPage = smokeMode
@@ -747,11 +749,7 @@ async function startAudio() {
     throw new Error("Web Audio supports at most 32 flattened channels per node");
   }
 
-  const AudioContextConstructor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
-  if (typeof AudioContextConstructor !== "function") {
-    throw new Error("Web Audio is not available in this browser");
-  }
-  context ??= new AudioContextConstructor({ sampleRate: requestedSampleRate });
+  context ??= createAudioContext(requestedSampleRate);
   try {
     if (context.sampleRate !== requestedSampleRate) {
       if (!supportedSampleRates.has(context.sampleRate)) {
@@ -794,14 +792,8 @@ async function startAudio() {
       audioProcessor.node.connect(context.destination);
       scopeSource.start(context, audioProcessor.node, outputChannels);
     }
-    await Promise.race([
-      context.resume().catch(() => {}),
-      new Promise((resolve) => setTimeout(resolve, 250)),
-    ]);
-    runView.setRunning(
-      context.sampleRate,
-      context.state === "running" ? undefined : "Audio ready — click the page to enable output",
-    );
+    resumeAudio();
+    updateAudioStatus();
   } catch (error) {
     scopeSource.stop();
     microphoneInput.disconnect();
@@ -842,12 +834,36 @@ function reserveAudioContext(sampleRate) {
   audioProcessor?.close();
   audioProcessor = null;
   if (context) void context.close();
+  context = createAudioContext(sampleRate);
+  resumeAudio();
+}
+
+function createAudioContext(sampleRate) {
   const AudioContextConstructor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
   if (typeof AudioContextConstructor !== "function") {
     throw new Error("Web Audio is not available in this browser");
   }
-  context = new AudioContextConstructor({ sampleRate });
-  void context.resume().catch(() => {});
+  const created = new AudioContextConstructor({ sampleRate });
+  created.addEventListener("statechange", () => {
+    if (context === created) updateAudioStatus();
+  });
+  return created;
+}
+
+function resumeAudio() {
+  if (!processingRequested || context?.state !== "suspended") return;
+  const resuming = context;
+  void resuming.resume().catch(error => {
+    if (context === resuming && processingRequested) runView.showError(error);
+  });
+}
+
+function updateAudioStatus() {
+  if (!processingRequested || !audioProcessor || !context) return;
+  const playing = context.state === "running";
+  runView.setRunning(context.sampleRate,
+    playing ? undefined : "Click, tap, or press a key to enable audio");
+  setStatus(playing ? "Playing" : "Audio ready", playing ? "playing" : "ready");
 }
 
 async function closeAudioContext() {
@@ -1192,11 +1208,13 @@ for (const select of [sampleRateEl, blockSizeEl]) {
   select.addEventListener("change", () => void applyCompileOptions());
 }
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
-document.addEventListener("pointerdown", () => {
-  if (context?.state === "suspended") void context.resume().catch(() => {});
-}, { capture: true });
+const unbindAudioActivation = bindAudioActivation(document, {
+  resume: resumeAudio,
+  stop: stopExecution,
+});
 
 window.addEventListener("pagehide", () => {
+  unbindAudioActivation();
   scopeSource.stop();
   microphoneInput.close();
   runView.dispose();
