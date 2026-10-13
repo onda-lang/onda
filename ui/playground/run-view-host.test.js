@@ -505,7 +505,7 @@ test("allows browser playback while buffers are unbound", async () => {
   }
 });
 
-test("browser run view waits for reset readiness and forwards MIDI activity", async () => {
+test("browser run view handles readiness, MIDI activity, and audio gesture binding", async t => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
   const previousMutationObserver = globalThis.MutationObserver;
@@ -523,13 +523,15 @@ test("browser run view waits for reset readiness and forwards MIDI activity", as
   const iframe = {
     src: "https://onda.test/play/run.html",
     contentWindow: { postMessage: (message) => messages.push(message) },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener: t.mock.fn(),
+    removeEventListener: t.mock.fn(),
     style: {},
   };
 
   try {
-    const host = new BrowserRunViewHost(iframe);
+    const resume = t.mock.fn();
+    const stop = t.mock.fn();
+    const host = new BrowserRunViewHost(iframe, { resume, stop });
     assert.equal(iframe.style.opacity, "0");
     host.setPath("main.onda");
     assert.equal(messages.length, 0);
@@ -559,7 +561,33 @@ test("browser run view waits for reset readiness and forwards MIDI activity", as
       __ondaRunHost: true,
       message: { type: "midiActivity", activeNotes: [60, 64, 127] },
     });
+
+    const onLoad = iframe.addEventListener.mock.calls
+      .find(call => call.arguments[0] === "load").arguments[1];
+    const frameDocuments = Array.from({ length: 2 }, () => ({
+      addEventListener: t.mock.fn(),
+      removeEventListener: t.mock.fn(),
+    }));
+    for (const ownerDocument of frameDocuments) {
+      iframe.contentDocument = ownerDocument;
+      onLoad();
+      assert.equal(host.ready, false);
+      assert.equal(iframe.style.opacity, "0");
+      const onPointer = ownerDocument.addEventListener.mock.calls
+        .find(call => call.arguments[0] === "pointerdown").arguments[1];
+      onPointer({ type: "pointerdown", pointerType: "mouse", isTrusted: true });
+      onPointer({ type: "pointerdown", pointerType: "mouse", isTrusted: true,
+        target: { closest: () => ({ disabled: false }) } });
+    }
+    assert.equal(resume.mock.callCount(), 2);
+    assert.equal(stop.mock.callCount(), 2);
+    assert.equal(frameDocuments[1].removeEventListener.mock.callCount(), 0);
     host.dispose();
+    for (const ownerDocument of frameDocuments) {
+      assert.deepEqual(ownerDocument.removeEventListener.mock.calls.map(call => call.arguments),
+        ownerDocument.addEventListener.mock.calls.map(call => call.arguments));
+    }
+    assert.deepEqual(iframe.removeEventListener.mock.calls.map(call => call.arguments), [["load", onLoad]]);
   } finally {
     globalThis.window = previousWindow;
     globalThis.document = previousDocument;

@@ -49,5 +49,11 @@ npm run test:playground
 npm run test:run-view
 ```
 
-The playground audio and run-view suites use a real browser. The run-view suite
-also checks both playground hosts' layouts. They require Node.js 22+ and Firefox.
+The playground suite runs in Node.js 22+ and checks audio gesture handling without
+opening an audio device. The run-view suite uses Firefox and also checks both
+playground hosts' layouts.
+
+Browser autoplay policy is checked manually: with autoplay blocked, click, tap,
+or press a key in the editor or embedded controls to enable audio. Stop must
+cancel pending playback without enabling audio. With autoplay allowed, audio
+should start when the compiler is ready.
