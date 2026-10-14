@@ -178,7 +178,7 @@ async function checkDefaultLayout() {
           currentMidiInputDevice: "Computer Keyboard",
         }});
         view._onHostMessage({ type: "scopeData", channels: 2, samples: Array(512).fill(0) });
-        doc.querySelector('[data-param-layout="knobs"]').click();
+        doc.querySelector('#params-section [data-param-layout="knobs"]').click();
         await waitFrames(2);
         const shell = doc.querySelector(".shell");
         const cards = [...doc.querySelectorAll("#params .param")];
@@ -340,14 +340,14 @@ async function checkDefaultLayout() {
         });
       }) && doc.querySelector(".shell").scrollWidth === doc.querySelector(".shell").clientWidth,
       `the controls fit inside narrow knob cards at ${width} pixels without horizontal scrolling`);
-      doc.querySelector('[data-param-layout="sliders"]').click();
+      doc.querySelector('#params-section [data-param-layout="sliders"]').click();
       await waitFrames(2);
       check([...doc.querySelectorAll("#params .param")].every(card => {
         const name = card.querySelector(".param-name").getBoundingClientRect();
         const value = card.querySelector(".param-number").getBoundingClientRect();
         return name.width >= 48 && (name.right <= value.left || name.bottom <= value.top);
       }), `a ${width}-pixel slider view keeps parameter names readable beside or above their values`);
-      doc.querySelector('[data-param-layout="knobs"]').click();
+      doc.querySelector('#params-section [data-param-layout="knobs"]').click();
       await waitFrames(2);
       const settings = doc.getElementById("settings-toggle");
       check(settings.getBoundingClientRect().width === 44
@@ -380,7 +380,7 @@ async function checkDefaultLayout() {
       const panel = doc.getElementById("params-section").getBoundingClientRect();
       const smoothing = doc.getElementById("param-smoothing-control").getBoundingClientRect();
       const input = doc.getElementById("param-smoothing-ms");
-      const layout = doc.querySelector(".param-layout-toggle").getBoundingClientRect();
+      const layout = doc.querySelector("#params-section .param-layout-toggle").getBoundingClientRect();
       const controls = [
         doc.querySelector("#params-section .section-heading").getBoundingClientRect(),
         doc.getElementById("reset-params").getBoundingClientRect(),
@@ -393,7 +393,7 @@ async function checkDefaultLayout() {
       check(controls.every(rect => Math.abs(rect.top + rect.height / 2
         - controls[0].top - controls[0].height / 2) < 1)
         && controls.slice(1).every((rect, index) => controls[index].right <= rect.left + 1)
-        && doc.querySelector(".param-smoothing-label").getBoundingClientRect().width > 0,
+        && doc.querySelector("#params-section .param-smoothing-label").getBoundingClientRect().width > 0,
         `Params, reset, Smooth, Sliders, and Knobs share one line at ${width} pixels and ${zoom}× zoom`);
       check(getComputedStyle(doc.querySelector("#params-section .params-title")).fontSize === "14px",
         `the Params title keeps its standard size at ${width} pixels and ${zoom}× zoom`);
@@ -406,7 +406,7 @@ async function checkDefaultLayout() {
       view._onHostMessage({ type: "state", state: { supportsParamSmoothing: false } });
       await waitFrames(2);
       const resetWithoutSmoothing = doc.getElementById("reset-params").getBoundingClientRect();
-      const layoutWithoutSmoothing = doc.querySelector(".param-layout-toggle").getBoundingClientRect();
+      const layoutWithoutSmoothing = doc.querySelector("#params-section .param-layout-toggle").getBoundingClientRect();
       check(parseFloat(getComputedStyle(doc.getElementById("reset-params")).fontSize) >= controlFont
         && (getComputedStyle(doc.getElementById("reset-params")).fontSize === "11px"
           || Math.abs(actions.getBoundingClientRect().width
@@ -671,7 +671,7 @@ async function checkResponsiveParameterGrid() {
       }))],
     }});
     for (const layout of ["knobs", "sliders"]) {
-      doc.querySelector(`[data-param-layout="${layout}"]`).click();
+      doc.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
       doc.querySelector(`[data-control-bank="inputControls"][data-param-layout="${layout}"]`).click();
       for (const [width, knobColumns, sliderColumns] of [
         [640, 4, 2], [800, 5, 3], [960, 6, 4], [1120, 7, 5], [1280, 8, 5],
@@ -703,7 +703,7 @@ async function checkResponsiveParameterGrid() {
     }
     frame.style.width = "720px";
     for (const layout of ["knobs", "sliders"]) {
-      doc.querySelector(`[data-param-layout="${layout}"]`).click();
+      doc.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
       view._onHostMessage({ type: "state", state: { params } });
       await waitFrames(2);
       const width = doc.querySelector("#params .param").getBoundingClientRect().width;
@@ -731,7 +731,7 @@ async function checkResponsiveParameterGrid() {
     for (const width of [320, 360, 400, 640, 720]) {
       frame.style.width = `${width}px`;
       for (const layout of ["knobs", "sliders"]) {
-        doc.querySelector(`[data-param-layout="${layout}"]`).click();
+        doc.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
         await waitFrames(2);
         for (const head of doc.querySelectorAll("#params .param-head")) {
           const name = head.querySelector(".param-name");
@@ -1034,7 +1034,7 @@ async function checkPlaygroundLayout() {
             `${host}: the editor stays wider than the run view at ${width} pixels`);
         }
         for (const layout of ["knobs", "sliders"]) {
-          runDoc.querySelector(`[data-param-layout="${layout}"]`).click();
+          runDoc.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
           await waitFrames(2);
           if (width > stackedWidth) {
             const cards = [...runDoc.querySelectorAll("#params .param")]
@@ -1048,7 +1048,7 @@ async function checkPlaygroundLayout() {
           }
         }
         if (width === 1366 && height === 768) {
-          runDoc.querySelector('[data-param-layout="knobs"]').click();
+          runDoc.querySelector('#params-section [data-param-layout="knobs"]').click();
           await waitFrames(2);
           const card = runDoc.querySelector("#params .param").getBoundingClientRect();
           const shell = runDoc.querySelector(".shell").getBoundingClientRect();
@@ -1301,7 +1301,7 @@ try {
     "Params header controls wrap within a narrow run view");
   shell.style.width = "";
   check(document.getElementById("params").dataset.layout === "knobs"
-    && document.querySelector('[data-param-layout="knobs"]').getAttribute("aria-pressed") === "true"
+    && document.querySelector('#params-section [data-param-layout="knobs"]').getAttribute("aria-pressed") === "true"
     && document.querySelector("#params .param-knob"),
     "the run view defaults to knobs without a saved layout preference");
   check(getComputedStyle(shell).visibility === "visible",
@@ -1678,7 +1678,7 @@ try {
 
   const paramMessages = () => window.__testMessages.filter(message => message.type === "setParam");
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const type of ["f64", "i64"]) {
       for (const ranged of [false, true]) {
         for (const drag of [false, true]) {
@@ -1714,7 +1714,7 @@ try {
     }
   }
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const type of ["f32", "f64"]) {
       for (const [initial, text] of [[1023.095538565032, "1023.09554"], [8, "8"], [-0, "0"],
         [0.0000123456789, "1.23457e-5"], [-1.23456789e-8, "-1.23457e-8"],
@@ -1749,7 +1749,7 @@ try {
     }
   }
 
-  document.querySelector('[data-param-layout="knobs"]').click();
+  document.querySelector('#params-section [data-param-layout="knobs"]').click();
   for (const [scale, curve, step] of [["log", null, null], ["linear", -4, null],
     ["linear", 4, null], ["linear", null, 10]]) {
     send({ params: [{ name: "fineKnob", type: "f64", value: 80, default: 80,
@@ -1777,7 +1777,7 @@ try {
   }
 
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const shiftKey of [false, true]) {
       const initial = 0.0020037;
       send({ params: [{ name: "tiny", type: "f64", value: initial, default: initial,
@@ -1798,7 +1798,7 @@ try {
 
   // Match the egui poly_saw cutoff regression: equal movement gives equal ratios.
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const type of ["f32", "f64"]) {
       for (const initial of [80, 800, 4000]) {
         for (const shiftKey of [false, true]) {
@@ -1836,7 +1836,7 @@ try {
   }
 
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const [scale, curve] of [["log", null], ["linear", -4], ["linear", 4]]) {
       send({ params: [{ name: "scaled", type: "f64", value: 80, default: 80,
         rangeMin: 80, rangeMax: 12000, scale, curve }] });
@@ -1869,7 +1869,7 @@ try {
   }
 
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const type of ["f32", "f64"]) {
       for (const shiftKey of [false, true]) {
         const initial = 0.0020037;
@@ -1905,7 +1905,7 @@ try {
 
   for (const layout of ["knobs", "sliders"]) {
     send({ params });
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     const [gain, offset] = document.querySelectorAll('#params input[type="number"]');
     const gainPointer = pointerControl(gain);
     const before = paramMessages().length;
@@ -1998,7 +1998,7 @@ try {
       rangeMin: 0, rangeMax: 160, scale: "linear",
       step: type.startsWith("i") ? 1 : null, stepCount: type.startsWith("i") ? 160 : null }];
     send({ params: ranged });
-    document.querySelector('[data-param-layout="knobs"]').click();
+    document.querySelector('#params-section [data-param-layout="knobs"]').click();
     const number = document.querySelector('#params input');
     const numberPointer = pointerControl(number);
     numberPointer("pointerdown", 100);
@@ -2026,7 +2026,7 @@ try {
       `${type} knob drags reverse immediately after overshooting the upper bound`);
   }
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const maximum of [1e308, Number.MAX_VALUE]) {
       const wide = [{ name: "wide", type: "f64", value: 0, default: 0,
         rangeMin: -maximum, rangeMax: maximum, scale: "linear" }];
@@ -2045,7 +2045,7 @@ try {
     }
   }
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const [minimum, maximum] of [
       [0, 1e-321], [-1e-321, 1e-321], [0, Number.MIN_VALUE],
       [-1e308, 1], [1e16, 1e16 + 100],
@@ -2079,7 +2079,7 @@ try {
       }
     }
   }
-  document.querySelector('[data-param-layout="sliders"]').click();
+  document.querySelector('#params-section [data-param-layout="sliders"]').click();
   const stepped = [
     { name: "mode", type: "i32", value: 0, default: 0,
       rangeMin: 0, rangeMax: 10, scale: "linear", step: 2, stepCount: 5 },
@@ -2109,7 +2109,7 @@ try {
     .getAttribute("aria-valuenow")) / expectedPitch - 1) < 1e-12
     && Math.abs(Number(pitch.value) - expectedPitch) < 0.05,
     "logarithmic parameter number drags follow the log domain and synchronize the range control");
-  document.querySelector('[data-param-layout="knobs"]').click();
+  document.querySelector('#params-section [data-param-layout="knobs"]').click();
   check(paramMessages().at(-1)?.name === "pitch" && paramMessages().at(-1)?.commit === true,
     "changing layout during a number drag commits and releases the old gesture");
   const afterRebuild = paramMessages().length;
@@ -2167,7 +2167,7 @@ try {
   for (const width of [408, 476]) {
     paramsNode.style.width = `${width}px`;
     for (const layout of ["sliders", "knobs"]) {
-      document.querySelector(`[data-param-layout="${layout}"]`).click();
+      document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
       await waitFrames(1);
       const boolCards = [...paramsNode.querySelectorAll(".param-bool")];
       for (const card of boolCards) {
@@ -2228,7 +2228,7 @@ try {
     "double-click resets only the addressed parameter array element");
   arrayGroups[0].querySelector("summary").click();
   for (const layout of ["knobs", "sliders"]) {
-    document.querySelector(`[data-param-layout="${layout}"]`).click();
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     const group = document.querySelector(".param-array");
     check(!group.open && document.querySelectorAll(".param-array[open]").length === 4,
       `${layout} layout preserves each array's fold state`);

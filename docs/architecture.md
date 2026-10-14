@@ -389,9 +389,9 @@ Non-crate directories of note:
 ### Host-provided input controls
 
 The shared `ui/run/run.html` accepts an optional `inputControls` collection separately
-from `params`. Hosts decide which inputs belong in this collection; the compiler and
-runtime retain one uniform input model. Stock native and browser hosts supply no controls,
-so the section remains hidden.
+from `params` and displays it above Params when populated. Hosts decide which inputs belong
+in this collection; the compiler and runtime retain one uniform input model. Stock native
+and browser hosts supply no controls, so the section remains hidden.
 
 Each entry uses the scalar parameter presentation fields (`name`, optional `label`,
 `type`, `scalar`, `value`, `default`, `rangeMin`, `rangeMax`, and `scale`). An entry with

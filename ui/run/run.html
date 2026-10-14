@@ -1879,39 +1879,6 @@
           <div class="buffers-list" id="events"></div>
         </div>
       </section>
-      <section class="params" id="params-section">
-        <div class="params-header params-toolbar">
-          <div class="section-heading">
-            <button
-              class="section-toggle params-disclosure"
-              id="params-toggle"
-              type="button"
-              aria-expanded="true"
-              aria-label="Toggle Params"
-            ></button>
-            <div class="params-title">Params</div>
-          </div>
-          <div class="section-actions">
-            <button class="secondary reset-action" id="reset-params" type="button"
-              aria-label="Reset parameters to defaults" title="Reset parameters to defaults">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
-            </button>
-            <div class="param-smoothing" id="param-smoothing-control" hidden>
-              <span class="param-smoothing-label">Smooth</span>
-              <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1"
-                aria-label="Parameter smoothing duration in milliseconds" title="Smoothing for continuous parameters. 0 disables smoothing." />
-              ms
-            </div>
-            <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
-              <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
-              <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
-            </div>
-          </div>
-        </div>
-        <div class="section-body" id="params-body">
-          <div class="param-list" id="params"></div>
-        </div>
-      </section>
       <section class="params" id="input-controls-section">
         <div class="params-header params-toolbar">
           <div class="section-heading">
@@ -1943,6 +1910,39 @@
         </div>
         <div class="section-body" id="input-controls-body">
           <div class="param-list" id="input-controls"></div>
+        </div>
+      </section>
+      <section class="params" id="params-section">
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="params-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Params"
+            ></button>
+            <div class="params-title">Params</div>
+          </div>
+          <div class="section-actions">
+            <button class="secondary reset-action" id="reset-params" type="button"
+              aria-label="Reset parameters to defaults" title="Reset parameters to defaults">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
+            </button>
+            <div class="param-smoothing" id="param-smoothing-control" hidden>
+              <span class="param-smoothing-label">Smooth</span>
+              <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1"
+                aria-label="Parameter smoothing duration in milliseconds" title="Smoothing for continuous parameters. 0 disables smoothing." />
+              ms
+            </div>
+            <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
+              <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
+              <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
+            </div>
+          </div>
+        </div>
+        <div class="section-body" id="params-body">
+          <div class="param-list" id="params"></div>
         </div>
       </section>
     </div>

@@ -32,7 +32,7 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
         params: [{ name: "precision", type: "f64",
           value: ${initial}, default: ${initial} }],
       }});
-      document.querySelector('[data-param-layout="${layout}"]').click();
+      document.querySelector('#params-section [data-param-layout="${layout}"]').click();
       window.__testMessages.length = 0;
       window.number = document.querySelector('#params input');
       number.focus();
