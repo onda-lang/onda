@@ -225,17 +225,17 @@ test("the shared run view offers a device-cached knob layout", async () => {
   assert.match(runView, /data-param-layout="sliders" aria-pressed="false">Sliders/);
   assert.match(runView, /data-param-layout="knobs" aria-pressed="true">Knobs/);
   assert.match(runView, /onda\.run-view\.param-layout\.v1/);
-  assert.match(runView, /localStorage\.setItem\(PARAM_LAYOUT_STORAGE_KEY, paramLayout\)/);
+  assert.match(runView, /localStorage\.setItem\(key, controlLayouts\[bank\]\)/);
   assert.match(runView, /function createKnobControl\(/);
-  assert.match(runView, /knob\.setAttribute\("role", "slider"\)|initializeRangeControl\(knob, param\)/);
+  assert.match(runView, /knob\.setAttribute\("role", "slider"\)|initializeRangeControl\(knob, param, editable\)/);
   assert.match(runView, /paramLayout === "knobs" \? createKnobControl : createSliderControl/);
   assert.match(
     runView,
-    /#params\[data-layout="sliders"\] \.param \{[\s\S]*?height: 80px;/,
+    /:is\(#params, #input-controls\)\[data-layout="sliders"\] \.param \{[\s\S]*?height: 80px;/,
   );
   assert.match(
     runView,
-    /#params\[data-layout="knobs"\] \{\s+--param-card-min: 140px;/,
+    /:is\(#params, #input-controls\)\[data-layout="knobs"\] \{\s+--param-card-min: 140px;/,
   );
   assert.match(
     runView,
@@ -268,7 +268,7 @@ test("the shared run view preserves controls across independent parameter update
   );
   assert.match(
     runView,
-    /if \(updateRenderedParams\(state\.params\)\) \{\s+return;\s+\}[\s\S]*?resetRenderedParams\(paramSignature\);/,
+    /if \(updateRenderedParams\(params\)\) \{\s+return;\s+\}[\s\S]*?resetRenderedParams\(paramSignature\);/,
   );
   assert.equal(
     runView.match(/paramsNode\.replaceChildren\(\)/g)?.length,

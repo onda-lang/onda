@@ -9,6 +9,7 @@ use onda_run::{
 };
 use serde_json::{Number, Value};
 
+pub mod input_controls;
 mod number_input;
 mod run_view;
 use number_input::{NumberInput, NumberValue};
@@ -1214,68 +1215,11 @@ impl RunApp {
     }
 
     fn render_params(&mut self, ui: &mut egui::Ui, params: Vec<Value>) {
-        for (index, group) in params
-            .chunk_by(|a, b| a.pointer("/array/name") == b.pointer("/array/name"))
-            .enumerate()
-        {
-            if index > 0 {
-                ui.add_space(8.0);
-            }
-            ui.push_id(param_name(&group[0]), |ui| {
-                if let Some(name) = group[0].pointer("/array/name").and_then(Value::as_str) {
-                    egui::CollapsingHeader::new(format!("{name} [{}]", group.len()))
-                        .default_open(true)
-                        .show(ui, |ui| self.render_param_grid(ui, group));
-                } else {
-                    self.render_param_grid(ui, group);
-                }
-            });
-        }
-    }
-
-    fn render_param_grid(&mut self, ui: &mut egui::Ui, params: &[Value]) {
-        let layout = self.param_layout;
-        render_param_grid(ui, params, layout, |ui, param| {
-            self.render_param(ui, param, layout == ParamLayout::Knobs);
-        });
-    }
-
-    fn render_param(&mut self, ui: &mut egui::Ui, param: &Value, compact: bool) {
-        let Some(name) = param_name(param).map(str::to_owned) else {
-            return;
-        };
-        let ty = param_type(param);
-        let default = param.get("default").and_then(Value::as_f64);
-        let domain = prepared_param_domain(param);
-        let unit = param.get("unit").and_then(Value::as_str);
-        let value = param
-            .get("value")
-            .cloned()
-            .unwrap_or_else(|| default_value_for_type(ty));
-        let spec = ParamControlSpec {
-            label: &name,
-            unit,
-            ty,
-            default,
-            domain,
-        };
-        let outcome = if compact {
-            render_compact_param_value_editor(ui, spec, &value)
-        } else {
-            render_param_value_editor(ui, spec, &value)
-        };
-        match outcome {
-            ParamEditOutcome::None => {}
-            ParamEditOutcome::Commit(next_value) => {
-                let next_value = next_value
-                    .as_f64()
-                    .map(|value| json_number(spec.constrain_plain(value)))
-                    .unwrap_or(next_value);
-                self.controller
-                    .as_mut()
-                    .expect("loaded run controller")
-                    .set_param(&name, next_value);
-            }
+        for (name, value) in input_controls::render_control_values(ui, &params, self.param_layout) {
+            self.controller
+                .as_mut()
+                .expect("loaded run controller")
+                .set_param(&name, value);
         }
     }
 }
@@ -1380,7 +1324,7 @@ fn computer_key_press_blocked(pressed: bool, modifiers: egui::Modifiers) -> bool
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ParamLayout {
+pub enum ParamLayout {
     Sliders,
     #[default]
     Knobs,
@@ -1436,14 +1380,25 @@ fn render_param_header(
     seconds: &mut f64,
     default_seconds: f64,
 ) -> ParamHeaderActions {
+    render_control_header(ui, state, "Params", layout, seconds, default_seconds)
+}
+
+fn render_control_header(
+    ui: &mut egui::Ui,
+    state: &mut egui::collapsing_header::CollapsingState,
+    title: &str,
+    layout: &mut ParamLayout,
+    seconds: &mut f64,
+    default_seconds: f64,
+) -> ParamHeaderActions {
     let narrow = ui.available_width() <= 340.0;
     let mut actions = ParamHeaderActions {
         reset: false,
         smoothing_changed: false,
     };
-    render_section_header(ui, state, "Params", |ui| {
+    render_section_header(ui, state, title, |ui| {
         set_control_font_size(ui, COMPACT_FONT_SIZE);
-        actions.reset = run_view::reset_icon_button(ui, "Reset parameters to defaults").clicked();
+        actions.reset = run_view::reset_icon_button(ui, "Reset controls to defaults").clicked();
         if !narrow {
             actions.smoothing_changed = render_param_settings(ui, layout, seconds, default_seconds);
         }
@@ -2034,35 +1989,30 @@ fn render_param_grid(
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for param in row {
-                let (card_rect, _) = ui
-                    .allocate_exact_size(egui::vec2(card_width, card_height), egui::Sense::hover());
-                ui.painter().rect(
-                    card_rect,
-                    CARD_CORNER_RADIUS,
-                    ui.visuals().faint_bg_color,
-                    egui::Stroke::new(
-                        1.0_f32,
-                        ui.visuals()
-                            .widgets
-                            .noninteractive
-                            .bg_stroke
-                            .color
-                            .gamma_multiply(0.55),
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-
-                let mut card_ui =
-                    ui.new_child(
-                        egui::UiBuilder::new()
-                            .id_salt(("param-card", param_name(param), param_type(param)))
-                            .max_rect(card_rect.shrink2(egui::vec2(
-                                if card_width < 140.0 { 7.0 } else { 9.0 },
-                                8.0,
-                            )))
-                            .layout(egui::Layout::top_down(egui::Align::Center)),
-                    );
-                render_param(&mut card_ui, param);
+                let padding = egui::Margin::symmetric(if card_width < 140.0 { 7 } else { 9 }, 8);
+                ui.push_id(("param-card", param_name(param), param_type(param)), |ui| {
+                    egui::Frame::new()
+                        .corner_radius(CARD_CORNER_RADIUS)
+                        .fill(ui.visuals().faint_bg_color)
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            ui.visuals()
+                                .widgets
+                                .noninteractive
+                                .bg_stroke
+                                .color
+                                .gamma_multiply(0.55),
+                        ))
+                        // Padding includes the frame's one-point border.
+                        .inner_margin(padding - 1)
+                        .show(ui, |ui| {
+                            ui.set_width(card_width - padding.sum().x);
+                            ui.set_min_height(card_height - padding.sum().y);
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                render_param(ui, param);
+                            });
+                        });
+                });
             }
         });
     }

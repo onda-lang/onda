@@ -598,6 +598,55 @@ async function checkDefaultLayout() {
     frame.remove();
   }
 }
+async function checkInputControls() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    const send = state => view._onHostMessage({ type: "state", state });
+    const section = doc.getElementById("input-controls-section");
+    check(getComputedStyle(section).display === "none", "stock Onda hides Input Controls");
+    const control = { name: "cv", label: "cutoff CV", type: "f32", value: 0.5,
+      default: 0.25, rangeMin: 0, rangeMax: 1, scale: "linear", enabled: true };
+    send({ path: "host.onda", inputControls: [control], inputControlLayout: "knobs",
+      supportsInputControlSmoothing: true, inputControlSmoothingMs: 30,
+      inputControlSmoothingDefaultMs: 30, paramLayout: "knobs", params: [{ ...control, name: "level" }] });
+    check(getComputedStyle(section).display !== "none", "a host-provided input enables its section");
+    doc.querySelector('[data-control-bank="inputControls"][data-param-layout="sliders"]').click();
+    check(doc.getElementById("input-controls").dataset.layout === "sliders"
+      && doc.getElementById("params").dataset.layout === "knobs", "input layouts are independent of Params");
+    const number = doc.querySelector("#input-controls .param-number");
+    number.focus(); number.value = "0.75";
+    number.dispatchEvent(new Event("input", { bubbles: true }));
+    send({ inputControls: [{ ...control, value: 0.2 }] });
+    check(doc.querySelector("#input-controls .param-number") === number && number.value === "0.75",
+      "input automation retains the numeric draft and DOM node");
+    number.dispatchEvent(new Event("change", { bubbles: true })); number.blur();
+    check(view.__testMessages.some(message => message.type === "setInputControl"
+      && message.name === "cv" && message.value === 0.75 && message.commit), "input edits have a separate host command");
+    const smooth = doc.getElementById("input-control-smoothing-ms");
+    edit(smooth, "45"); smooth.dispatchEvent(new Event("change"));
+    doc.getElementById("reset-input-controls").click();
+    check(view.__testMessages.some(message => message.type === "setInputControlSmoothing" && message.milliseconds === 45)
+      && view.__testMessages.some(message => message.type === "resetInputControls"), "input Smooth and Reset have independent host commands");
+    send({ inputControls: [{ ...control, enabled: false, value: 0.4 }] });
+    check(doc.querySelector("#input-controls .param-number").disabled
+      && doc.querySelector("#input-controls .param-type").textContent === "External input"
+      && doc.querySelector("#input-controls .param-slider").getAttribute("aria-disabled") === "true",
+      "externally driven inputs disable every editor control");
+    send({ inputControls: [{ ...control, rangeMin: 2, rangeMax: 2, value: 2, default: 2 }] });
+    check(doc.querySelector("#input-controls .param-number").disabled
+      && doc.querySelector("#input-controls .param-number").value === "2", "constant input domains render safely as read-only values");
+    send({ inputControls: [] });
+    check(getComputedStyle(section).display === "none", "unloading input controls hides the section");
+  } finally { frame.remove(); }
+}
+
 async function checkResponsiveParameterGrid() {
   const frame = document.createElement("iframe");
   frame.style.cssText = "position:absolute;left:-10000px;width:640px;height:2400px;border:0";
@@ -616,12 +665,14 @@ async function checkResponsiveParameterGrid() {
       running: true, connected: true, path: "many_parameters.onda", status: "Running",
       supportsTransport: true, supportsScope: true, supportsParamSmoothing: true,
       outputChannels: 2, paramSmoothingMs: 30, sampleRateHz: 48000, blockSamples: 512,
+      inputControls: params.map(param => ({ ...param, name: `input_${param.name}` })),
       buffers: [], events: [], params: [...params, ...params.map((param, index) => ({
         ...param, name: `levels[${index}]`, array: { name: "levels", length: 17, index },
       }))],
     }});
     for (const layout of ["knobs", "sliders"]) {
       doc.querySelector(`[data-param-layout="${layout}"]`).click();
+      doc.querySelector(`[data-control-bank="inputControls"][data-param-layout="${layout}"]`).click();
       for (const [width, knobColumns, sliderColumns] of [
         [640, 4, 2], [800, 5, 3], [960, 6, 4], [1120, 7, 5], [1280, 8, 5],
         [1440, 8, 6], [1600, 8, 7], [1760, 8, 8], [3200, 8, 8],
@@ -1112,6 +1163,7 @@ try {
   await checkDefaultLayout();
   await checkContentBoxScope();
   await checkThemedFormControls();
+  await checkInputControls();
   await checkResponsiveParameterGrid();
   await checkResponsiveMidiKeyboard();
   await checkPlaygroundLayout();

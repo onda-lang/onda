@@ -2,6 +2,26 @@
 
 ## Language follow-ups
 
+- Input control metadata (deferred)
+  - Keep `ins` defaults and numeric min/max ranges as the current input contract. Hosts can expose
+    controls using those values; authors needing different scaling or quantization can express it
+    explicitly in the `sample` block. Existing input range clamping remains unchanged.
+  - Revisit input attributes such as `scale` (`linear` or `log`), `curve`, `step`, and `unit` after
+    deciding how they fit ordinary Onda sample-rate inputs. This is an open design question, not
+    a committed language extension.
+  - Decide whether these attributes would be presentation hints or a shared contract for
+    normalized host-control values, and who would perform conversions. Keep one uniform input
+    model; host-selected controls must not introduce an audio/control classification in Onda.
+  - Distinguish host-generated control samples from connected input buffers. Any future
+    control metadata must not implicitly scale or quantize externally supplied signal samples.
+  - If adopted, reuse parameter-domain metadata, validation, and conversion helpers across native
+    and WebAssembly interfaces and both run views, while retaining host-owned control selection,
+    smoothing, and automation policy.
+  - Evaluate the cost of sample-accurate nonlinear automation before choosing an implementation.
+    Include flat and changing spans, sparse and dense queues, numerical accuracy, and identical
+    results across processing-segment splits. Prepared mappings and exponential recurrences are
+    possible optimizations to assess, not requirements for the current input implementation.
+
 - Structured-data follow-ups
   - Revisit implicit struct-method receivers. The intended source model omits `self` from method
     declarations, makes fields and sibling methods available by bare name like proc-local state,

@@ -5,6 +5,16 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.30]
+
+### Added
+
+- An optional Input Controls section in the shared web and egui views, with independent
+  Sliders/Knobs, Smooth, and Reset controls. Hosts supply the editable input
+  metadata and values; stock Onda hosts leave the section hidden. External
+  inputs can be marked read-only without adding an audio/control distinction
+  to the language.
+
 ## [0.8.29]
 
 ### Fixed
@@ -1213,6 +1223,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.30]: https://github.com/onda-lang/onda/compare/0.8.29...0.8.30
 [0.8.29]: https://github.com/onda-lang/onda/compare/0.8.28...0.8.29
 [0.8.28]: https://github.com/onda-lang/onda/compare/0.8.27...0.8.28
 [0.8.27]: https://github.com/onda-lang/onda/compare/0.8.26...0.8.27

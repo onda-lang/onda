@@ -377,11 +377,36 @@ Non-crate directories of note:
 - `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
 - `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
 - `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
+- `input_controls.rs` — optional host-owned Input Controls section and scalar editor rendering
+  shared with Params. `InputControlSection::show` returns value, layout, smoothing, and reset
+  actions for the host to apply; an empty list renders no section. Stock Onda leaves it unused.
 
 ### `onda_webview` (`crates/onda_webview/src`)
 - `lib.rs` — webview run host.
 - `ipc.rs` — JSON IPC with the run control socket.
 - `process.rs` — `onda run play` child process management.
+
+### Host-provided input controls
+
+The shared `ui/run/run.html` accepts an optional `inputControls` collection separately
+from `params`. Hosts decide which inputs belong in this collection; the compiler and
+runtime retain one uniform input model. Stock native and browser hosts supply no controls,
+so the section remains hidden.
+
+Each entry uses the scalar parameter presentation fields (`name`, optional `label`,
+`type`, `scalar`, `value`, `default`, `rangeMin`, `rangeMax`, and `scale`). An entry with
+`enabled: false` displays **External input** and disables its editors. Equal finite range
+endpoints render a read-only constant. Values describe the stored host control, not a
+live measurement of an external signal. Names identify entries within each bank.
+
+The section emits `setInputControl` with `name`, plain `value`, and `commit`, plus
+`resetInputControls`, `setInputControlLayout` with `layout` (`sliders` or `knobs`), and
+`setInputControlSmoothing` with `milliseconds`. Hosts apply these independently of Params.
+Layout updates use `inputControlLayout`; hosts enable the smoothing editor with
+`supportsInputControlSmoothing`, `inputControlSmoothingMs`, and
+`inputControlSmoothingDefaultMs`. Section folds follow the existing `viewState` protocol;
+values and processing settings remain host-owned. Both banks share their scalar editors
+and preserve numeric drafts through independent value updates.
 
 ## Practical navigation entrypoints
 

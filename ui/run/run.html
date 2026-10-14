@@ -531,7 +531,7 @@
         gap: 8px;
       }
 
-      #reset-params,
+      :is(#reset-params, #reset-input-controls),
       .param-smoothing,
       .param-layout-toggle {
         height: calc(2.2em + 2px);
@@ -566,14 +566,14 @@
         --params-control-spacing: 8px;
       }
 
-      #reset-params {
+      :is(#reset-params, #reset-input-controls) {
         flex-basis: calc(2em + 2px);
         width: calc(2em + 2px);
         min-width: 0;
         margin-right: auto;
       }
 
-      #reset-params svg {
+      :is(#reset-params, #reset-input-controls) svg {
         width: 1.4em;
         height: 1.4em;
       }
@@ -1243,7 +1243,7 @@
       }
 
       /* Keep these card dimensions aligned with onda_egui::param_grid_columns. */
-      #params[data-layout="sliders"] .param {
+      :is(#params, #input-controls)[data-layout="sliders"] .param {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(88px, 104px);
         grid-template-rows: 26px 24px;
@@ -1257,36 +1257,36 @@
         padding: 8px 9px;
       }
 
-      #params[data-layout="sliders"] .param-head {
+      :is(#params, #input-controls)[data-layout="sliders"] .param-head {
         grid-area: heading;
         min-width: 0;
         align-self: center;
       }
 
-      #params[data-layout="sliders"] .param-controls {
+      :is(#params, #input-controls)[data-layout="sliders"] .param-controls {
         display: contents;
       }
 
-      #params[data-layout="sliders"] .param-slider {
+      :is(#params, #input-controls)[data-layout="sliders"] .param-slider {
         grid-area: control;
         align-self: center;
       }
 
-      #params[data-layout="sliders"] .param-number {
+      :is(#params, #input-controls)[data-layout="sliders"] .param-number {
         grid-area: value;
         align-self: center;
         height: 26px;
         padding: 3px 8px;
       }
 
-      #params[data-layout="sliders"] .param:not(:has(.param-number)) {
+      :is(#params, #input-controls)[data-layout="sliders"] .param:not(:has(.param-number)) {
         grid-template-columns: minmax(0, 1fr);
         grid-template-areas:
           "heading"
           "control";
       }
 
-      #params[data-layout="sliders"] .param:not(:has(.param-number)) .param-controls {
+      :is(#params, #input-controls)[data-layout="sliders"] .param:not(:has(.param-number)) .param-controls {
         display: grid;
         grid-area: control;
         align-self: center;
@@ -1391,17 +1391,17 @@
         vector-effect: non-scaling-stroke;
       }
 
-      #params[data-layout="knobs"] {
+      :is(#params, #input-controls)[data-layout="knobs"] {
         --param-card-min: 140px;
       }
 
-      #params[data-layout="knobs"] .param {
+      :is(#params, #input-controls)[data-layout="knobs"] .param {
         min-width: 0;
         height: 140px;
         padding: 8px 9px;
       }
 
-      #params[data-layout="knobs"] .param-head {
+      :is(#params, #input-controls)[data-layout="knobs"] .param-head {
         min-width: 0;
         min-height: 1.45em;
         flex-wrap: nowrap;
@@ -1411,18 +1411,18 @@
         text-align: center;
       }
 
-      #params[data-layout="knobs"] .param-name {
+      :is(#params, #input-controls)[data-layout="knobs"] .param-name {
         min-width: 0;
       }
 
-      #params[data-layout="knobs"] .param-controls {
+      :is(#params, #input-controls)[data-layout="knobs"] .param-controls {
         grid-template-columns: minmax(0, 1fr);
         min-width: 0;
         gap: 4px;
         margin-top: 4px;
       }
 
-      #params[data-layout="knobs"] .param-number {
+      :is(#params, #input-controls)[data-layout="knobs"] .param-number {
         justify-self: center;
         width: 104px;
         max-width: 100%;
@@ -1627,15 +1627,15 @@
           --header-control-size: 44px;
         }
 
-        #params[data-layout="knobs"] {
+        :is(#params, #input-controls)[data-layout="knobs"] {
           --param-card-min: max(80px, calc((100% - 8px) / 2));
         }
 
-        #params[data-layout="knobs"] .param {
+        :is(#params, #input-controls)[data-layout="knobs"] .param {
           padding: 8px 7px;
         }
 
-        #params[data-layout="knobs"] :is(.param-name, .param-unit) {
+        :is(#params, #input-controls)[data-layout="knobs"] :is(.param-name, .param-unit) {
           max-width: 100%;
           font-size: 12px;
         }
@@ -1643,7 +1643,7 @@
       }
 
       @media (max-width: 320px) {
-        #params[data-layout="sliders"] .param:has(.param-number) {
+        :is(#params, #input-controls)[data-layout="sliders"] .param:has(.param-number) {
           grid-template-columns: minmax(0, 1fr);
           grid-template-rows: auto 26px 24px;
           grid-template-areas: "heading" "value" "control";
@@ -1661,6 +1661,20 @@
         max-width: 100%;
         flex-wrap: wrap;
         justify-content: flex-end;
+      }
+      :is(#params, #input-controls) .param-head.external {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) max-content;
+        gap: 0 4px;
+      }
+      .param-head.external :is(.param-name, .param-unit) {
+        font-size: 12px;
+        line-height: 14px;
+      }
+      .param-head.external .param-type {
+        grid-column: 1 / -1;
+        font-size: 10px;
+        line-height: 12px;
       }
     </style>
     <script>
@@ -1898,6 +1912,39 @@
           <div class="param-list" id="params"></div>
         </div>
       </section>
+      <section class="params" id="input-controls-section">
+        <div class="params-header params-toolbar">
+          <div class="section-heading">
+            <button
+              class="section-toggle params-disclosure"
+              id="input-controls-toggle"
+              type="button"
+              aria-expanded="true"
+              aria-label="Toggle Input Controls"
+            ></button>
+            <div class="params-title">Input Controls</div>
+          </div>
+          <div class="section-actions">
+            <button class="secondary reset-action" id="reset-input-controls" type="button"
+              aria-label="Reset input controls to defaults" title="Reset input controls to defaults">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
+            </button>
+            <div class="param-smoothing" id="input-control-smoothing-control" hidden>
+              <span class="param-smoothing-label">Smooth</span>
+              <input class="param-number" id="input-control-smoothing-ms" type="number" min="0" step="1"
+                aria-label="Input control smoothing duration in milliseconds" title="Smooths manual input changes. DAW automation and external inputs bypass smoothing. 0 disables smoothing." />
+              ms
+            </div>
+            <div class="param-layout-toggle" role="group" aria-label="Input control layout">
+              <button type="button" data-control-bank="inputControls" data-param-layout="sliders" aria-pressed="false">Sliders</button>
+              <button type="button" data-control-bank="inputControls" data-param-layout="knobs" aria-pressed="true">Knobs</button>
+            </div>
+          </div>
+        </div>
+        <div class="section-body" id="input-controls-body">
+          <div class="param-list" id="input-controls"></div>
+        </div>
+      </section>
     </div>
     <section class="midi-keyboard" id="midi-keyboard" hidden>
       <div class="midi-toolbar">
@@ -2091,6 +2138,10 @@
         delegateOverflowCount: 0,
         delegateTransportDropCount: 0,
         params: [],
+        inputControls: [],
+        supportsInputControlSmoothing: false,
+        inputControlSmoothingMs: null,
+        inputControlSmoothingDefaultMs: null,
         midi: { available: false, noteOn: false, noteOff: false },
         midiKeyboardInteractive: true,
         inputDevices: [],
@@ -2259,12 +2310,10 @@
       const logoNode = document.getElementById("hero-logo");
       const filePickerLogoNode = document.getElementById("file-picker-logo");
       const PARAM_LAYOUT_STORAGE_KEY = "onda.run-view.param-layout.v1";
-      const pendingParamMessages = new Map();
-      const activeParamGestures = new Set();
-      const paramBindings = new Map();
-      let pendingParamFrame = 0;
-      let renderedParamSignature = "";
-      let renderedParamPath = "";
+      const inputControlsNode = document.getElementById("input-controls");
+      const inputControlsSection = document.getElementById("input-controls-section");
+      const inputControlsToggle = document.getElementById("input-controls-toggle");
+      const inputControlsBody = document.getElementById("input-controls-body");
       let renderedEvents = null;
       let renderedEventShape = "";
       let pendingScopeFrame = 0;
@@ -2282,8 +2331,12 @@
         events: true,
         log: true,
         params: true,
+        inputControls: true,
       };
-      let paramLayout = restoreParamLayout();
+      const controlLayouts = {
+        params: restoreParamLayout(PARAM_LAYOUT_STORAGE_KEY),
+        inputControls: restoreParamLayout("onda.run-view.input-control-layout.v1"),
+      };
       let viewStateReady = false;
       let restoringViewState = false;
       let lastViewStateJson = "";
@@ -2494,7 +2547,7 @@
         hostBridge.postMessage({ type: "webviewReady" });
       });
       const publishEditedViewState = event => {
-        if (!paramsNode.contains(event.target)) publishViewState();
+        if (!paramsNode.contains(event.target) && !inputControlsNode.contains(event.target)) publishViewState();
       };
       document.addEventListener("input", publishEditedViewState);
       document.addEventListener("change", publishEditedViewState);
@@ -2517,45 +2570,57 @@
       resetParamsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetParams" });
       });
-      const setSmoothing = milliseconds => {
-        smoothingInput.value = formatNumberForInput(milliseconds, 1);
-        if (milliseconds === state.paramSmoothingMs) return;
-        state.paramSmoothingMs = milliseconds;
-        hostBridge.postMessage({ type: "setParamSmoothing", milliseconds });
-      };
-      smoothingInput.addEventListener("focus", () => {
-        smoothingInput.value = String(state.paramSmoothingMs);
-      });
-      const commitSmoothing = () => {
-        if (smoothingInput.readOnly) return;
-        const value = smoothingInput.valueAsNumber;
-        if (!Number.isFinite(value) || value < 0) {
-          smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
-          return;
-        }
-        setSmoothing(value === state.paramSmoothingMs ? value : Math.round(value));
-      };
-      smoothingInput.addEventListener("change", commitSmoothing);
-      smoothingInput.addEventListener("blur", commitSmoothing);
-      smoothingInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          commitSmoothing();
-          smoothingInput.blur();
-        } else if (event.key === "Escape") {
-          smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
-          smoothingInput.readOnly = true;
-          smoothingInput.blur();
-        }
-      });
-      const smoothingNumber = bindDraggableNumber(smoothingInput, {
-        speed: 1,
-        updateValue(value, _commit, reason) {
-          // Reset restores the exact host option; manual adjustments use whole milliseconds.
-          setSmoothing(reason === "reset" ? value : Math.round(value));
-        },
-        readValue: () => state.paramSmoothingMs,
-        resetValue: () => state.paramSmoothingDefaultMs,
-        dragTarget: smoothingControl,
+      function bindSmoothing(smoothingControl, smoothingInput, valueKey, defaultKey, command) {
+        const setSmoothing = milliseconds => {
+          smoothingInput.value = formatNumberForInput(milliseconds, 1);
+          if (milliseconds === state[valueKey]) return;
+          state[valueKey] = milliseconds;
+          hostBridge.postMessage({ type: command, milliseconds });
+        };
+        smoothingInput.addEventListener("focus", () => {
+          smoothingInput.value = String(state[valueKey]);
+        });
+        const commitSmoothing = () => {
+          if (smoothingInput.readOnly) return;
+          const value = smoothingInput.valueAsNumber;
+          if (!Number.isFinite(value) || value < 0) {
+            smoothingInput.value = formatNumberForInput(state[valueKey], 1);
+            return;
+          }
+          setSmoothing(value === state[valueKey] ? value : Math.round(value));
+        };
+        smoothingInput.addEventListener("change", commitSmoothing);
+        smoothingInput.addEventListener("blur", commitSmoothing);
+        smoothingInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            commitSmoothing();
+            smoothingInput.blur();
+          } else if (event.key === "Escape") {
+            smoothingInput.value = formatNumberForInput(state[valueKey], 1);
+            smoothingInput.readOnly = true;
+            smoothingInput.blur();
+          }
+        });
+        const smoothingNumber = bindDraggableNumber(smoothingInput, {
+          speed: 1,
+          updateValue(value, _commit, reason) {
+            // Reset restores the exact host option; manual adjustments use whole milliseconds.
+            setSmoothing(reason === "reset" ? value : Math.round(value));
+          },
+          readValue: () => state[valueKey],
+          resetValue: () => state[defaultKey],
+          dragTarget: smoothingControl,
+        });
+        return smoothingNumber;
+      }
+      const smoothingNumber = bindSmoothing(smoothingControl, smoothingInput,
+        "paramSmoothingMs", "paramSmoothingDefaultMs", "setParamSmoothing");
+      const inputSmoothingControl = document.getElementById("input-control-smoothing-control");
+      const inputSmoothingInput = document.getElementById("input-control-smoothing-ms");
+      const inputSmoothingNumber = bindSmoothing(inputSmoothingControl, inputSmoothingInput,
+        "inputControlSmoothingMs", "inputControlSmoothingDefaultMs", "setInputControlSmoothing");
+      document.getElementById("reset-input-controls").addEventListener("click", () => {
+        hostBridge.postMessage({ type: "resetInputControls" });
       });
       resetEventArgumentsButton.addEventListener("click", () => {
         hostBridge.postMessage({ type: "resetEventArguments" });
@@ -2961,6 +3026,7 @@
           events: eventsToggle,
           log: logToggle,
           params: paramsToggle,
+          inputControls: inputControlsToggle,
         }[name];
         const body = {
           midi: pianoNode,
@@ -2969,6 +3035,7 @@
           events: eventsBody,
           log: logBody,
           params: paramsBody,
+          inputControls: inputControlsBody,
         }[name];
         if (toggle) {
           toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
@@ -2995,6 +3062,7 @@
           ["events", eventsToggle],
           ["log", logToggle],
           ["params", paramsToggle],
+          ["inputControls", inputControlsToggle],
         ].forEach(([name, toggle]) => {
           if (!toggle) {
             return;
@@ -3006,9 +3074,9 @@
         });
       }
 
-      function restoreParamLayout() {
+      function restoreParamLayout(key) {
         try {
-          return localStorage.getItem(PARAM_LAYOUT_STORAGE_KEY) === "sliders"
+          return localStorage.getItem(key) === "sliders"
             ? "sliders"
             : "knobs";
         } catch {
@@ -3016,34 +3084,36 @@
         }
       }
 
-      function setParamLayout(layout, persist = true) {
-        paramLayout = layout === "sliders" ? "sliders" : "knobs";
-        applyParamLayout();
-        if (persist) {
-          try {
-            localStorage.setItem(PARAM_LAYOUT_STORAGE_KEY, paramLayout);
-          } catch {
-            // The layout still applies for this view when storage is disabled.
-          }
-        }
+      function setParamLayout(layout, bank = "params") {
+        controlLayouts[bank] = layout === "sliders" ? "sliders" : "knobs";
+        try {
+          const key = bank === "params" ? PARAM_LAYOUT_STORAGE_KEY
+            : "onda.run-view.input-control-layout.v1";
+          localStorage.setItem(key, controlLayouts[bank]);
+        } catch {}
+        hostBridge.postMessage({
+          type: bank === "params" ? "setParamLayout" : "setInputControlLayout",
+          layout: controlLayouts[bank],
+        });
         render();
       }
 
       function applyParamLayout() {
-        paramsNode.dataset.layout = paramLayout;
+        paramsNode.dataset.layout = controlLayouts.params;
+        inputControlsNode.dataset.layout = controlLayouts.inputControls;
         for (const button of paramLayoutButtons) {
-          button.setAttribute(
-            "aria-pressed",
-            button.dataset.paramLayout === paramLayout ? "true" : "false",
-          );
+          const bank = button.dataset.controlBank || "params";
+          button.setAttribute("aria-pressed",
+            button.dataset.paramLayout === controlLayouts[bank] ? "true" : "false");
         }
       }
 
       function setupParamLayoutToggle() {
         for (const button of paramLayoutButtons) {
           button.addEventListener("click", () => {
-            if (button.dataset.paramLayout !== paramLayout) {
-              setParamLayout(button.dataset.paramLayout);
+            const bank = button.dataset.controlBank || "params";
+            if (button.dataset.paramLayout !== controlLayouts[bank]) {
+              setParamLayout(button.dataset.paramLayout, bank);
             }
           });
         }
@@ -3161,6 +3231,11 @@
       function paramControl(param) {
         let control = paramControlCache.get(param);
         if (control) return control;
+        if (Number.isFinite(param.rangeMin) && param.rangeMin === param.rangeMax) {
+          return { minimum: param.rangeMin, maximum: param.rangeMax,
+            constrainPlain: () => param.rangeMin, plainToNormalized: () => 0,
+            normalizedToPlain: () => param.rangeMin };
+        }
         control = globalThis.__ONDA_PARAM_CONTROL_V2__.createParamDomain({
           name: param.name,
           scalar: param.type,
@@ -3354,11 +3429,11 @@
         });
       }
 
-      function createKnobControl(param, currentValue, onInputValue, onCommitValue) {
+      function createKnobControl(param, currentValue, onInputValue, onCommitValue, editable) {
         const knob = document.createElement("div");
         knob.className = "param-knob";
         knob.title = "Drag vertically to adjust; Shift for fine adjustment; double-click to reset";
-        const canEdit = initializeRangeControl(knob, param);
+        const canEdit = initializeRangeControl(knob, param, editable);
 
         const dial = document.createElement("div");
         dial.className = "param-knob-dial";
@@ -3440,30 +3515,6 @@
         return { control: knob, setValue: controller.setValue };
       }
 
-      function flushPendingParamMessages() {
-        pendingParamFrame = 0;
-        if (pendingParamMessages.size === 0) {
-          return;
-        }
-        for (const [name, value] of pendingParamMessages.entries()) {
-          hostBridge.postMessage({ type: "setParam", name, value, commit: false });
-        }
-        pendingParamMessages.clear();
-      }
-
-      function scheduleParamMessage(name, value) {
-        pendingParamMessages.set(name, value);
-        if (pendingParamFrame !== 0) {
-          return;
-        }
-        pendingParamFrame = window.requestAnimationFrame(flushPendingParamMessages);
-      }
-
-      function commitParamMessage(name, value) {
-        pendingParamMessages.delete(name);
-        hostBridge.postMessage({ type: "setParam", name, value, commit: true });
-      }
-
       // ---------------------------------------------------------------------------
       // Param hydration
       // ---------------------------------------------------------------------------
@@ -3516,15 +3567,7 @@
           param.unit,
           param.step,
           param.stepCount,
-        ]);
-      }
-
-      function paramRenderSignature(params) {
-        return JSON.stringify([
-          state.path,
-          paramLayout,
-          canEditRunControls(),
-          params.map(paramControlSignature),
+          param.enabled,
         ]);
       }
 
@@ -3539,108 +3582,304 @@
           : param.name;
       }
 
-      function updateRenderedParams(params) {
-        const signature = paramRenderSignature(params);
-        if (signature !== renderedParamSignature) {
-          return false;
+      function createParameterSection(paramsNode, bank, command) {
+        const pendingParamMessages = new Map();
+        const activeParamGestures = new Set();
+        const paramBindings = new Map();
+        let pendingParamFrame = 0;
+        let renderedParamSignature = "";
+        let renderedParamPath = "";
+        function flushPendingParamMessages() {
+          pendingParamFrame = 0;
+          if (pendingParamMessages.size === 0) {
+            return;
+          }
+          for (const [name, value] of pendingParamMessages.entries()) {
+            hostBridge.postMessage({ type: command, name, value, commit: false });
+          }
+          pendingParamMessages.clear();
         }
 
-        for (const incoming of params) {
-          if (!paramBindings.has(incoming.name)) {
+        function scheduleParamMessage(name, value) {
+          pendingParamMessages.set(name, value);
+          if (pendingParamFrame !== 0) {
+            return;
+          }
+          pendingParamFrame = window.requestAnimationFrame(flushPendingParamMessages);
+        }
+
+        function commitParamMessage(name, value) {
+          pendingParamMessages.delete(name);
+          hostBridge.postMessage({ type: command, name, value, commit: true });
+        }
+
+        function paramRenderSignature(params) {
+          return JSON.stringify([
+            state.path,
+            controlLayouts[bank],
+            canEditRunControls(),
+            params.map(paramControlSignature),
+          ]);
+        }
+
+        function updateRenderedParams(params) {
+          const signature = paramRenderSignature(params);
+          if (signature !== renderedParamSignature) {
             return false;
           }
-        }
 
-        for (let index = 0; index < params.length; index += 1) {
-          const incoming = params[index];
-          const binding = paramBindings.get(incoming.name);
-          const localValue = binding.param.value;
-          Object.assign(binding.param, incoming);
-          if (activeParamGestures.has(incoming.name)) {
-            binding.param.value = localValue;
-          } else if (!binding.isEditing?.()) {
-            binding.setValue(incoming.value);
-          }
-          params[index] = binding.param;
-        }
-        return true;
-      }
-
-      function bindParamNumber(param, input, setValue) {
-        let edited = false;
-        input.addEventListener("focus", () => {
-          edited = false;
-          input.value = param.type === "i32" || param.type === "i64"
-            ? String(param.value) : globalThis.__ONDA_NUMBER_INPUT__.formatNumberForEditing(param.value);
-        });
-        input.addEventListener("input", () => {
-          if (!input.readOnly) edited = true;
-        });
-        const commitDraft = () => {
-          if (input.readOnly || !edited) return;
-          edited = false;
-          if (input.value !== "" && Number.isFinite(input.valueAsNumber)) {
-            setValue(input.valueAsNumber);
-            commitParamMessage(param.name, param.value);
-          }
-        };
-        input.addEventListener("change", commitDraft);
-        input.addEventListener("blur", () => {
-          // Some keyboard edits emit input without change, even on native blur.
-          commitDraft();
-          edited = false;
-          setValue(param.value);
-        });
-        input.setAttribute("aria-label", paramDisplayName(param));
-        const drag = bindDraggableNumber(input, {
-          speed: scalarDragSpeedForParam(param),
-          dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
-            && param.rangeMin < param.rangeMax ? paramNumberDragRange(param) : null,
-          readValue: () => param.value,
-          updateValue(value, commit) {
-            setValue(value);
-            if (commit) {
-              activeParamGestures.delete(param.name);
-              commitParamMessage(param.name, param.value);
-            } else {
-              activeParamGestures.add(param.name);
-              scheduleParamMessage(param.name, param.value);
+          for (const incoming of params) {
+            if (!paramBindings.has(incoming.name)) {
+              return false;
             }
-          },
-          resetValue: () => initialParamValue(param),
-        });
-        paramBindings.set(param.name, {
-          param,
-          isEditing: () => document.activeElement === input,
-          setValue,
-          finishDrag: drag.finish,
-          cancelDrag() {
-            edited = false;
-            input.readOnly = true;
-            drag.cancel();
-          },
-        });
-      }
+          }
 
-      function resetRenderedParams(signature) {
-        const incoming = new Map(state.params.map(param => [param.name, param]));
-        for (const [name, binding] of paramBindings) {
-          const next = incoming.get(name);
-          if (renderedParamPath === state.path && canEditRunControls() && next
-            && paramControlSignature(binding.param) === paramControlSignature(next)) {
-            binding.finishDrag?.();
-            if (activeParamGestures.has(name)) commitParamMessage(name, binding.param.value);
-          } else {
-            binding.cancelDrag?.();
+          for (let index = 0; index < params.length; index += 1) {
+            const incoming = params[index];
+            const binding = paramBindings.get(incoming.name);
+            const localValue = binding.param.value;
+            Object.assign(binding.param, incoming);
+            if (activeParamGestures.has(incoming.name)) {
+              binding.param.value = localValue;
+            } else if (!binding.isEditing?.()) {
+              binding.setValue(incoming.value);
+            }
+            params[index] = binding.param;
+          }
+          return true;
+        }
+
+        function bindParamNumber(param, input, setValue, editable) {
+          let edited = false;
+          input.addEventListener("focus", () => {
+            edited = false;
+            input.value = param.type === "i32" || param.type === "i64"
+              ? String(param.value) : globalThis.__ONDA_NUMBER_INPUT__.formatNumberForEditing(param.value);
+          });
+          input.addEventListener("input", () => {
+            if (!input.readOnly) edited = true;
+          });
+          const commitDraft = () => {
+            if (input.readOnly || !edited) return;
+            edited = false;
+            if (input.value !== "" && Number.isFinite(input.valueAsNumber)) {
+              setValue(input.valueAsNumber);
+              commitParamMessage(param.name, param.value);
+            }
+          };
+          input.addEventListener("change", commitDraft);
+          input.addEventListener("blur", () => {
+            // Some keyboard edits emit input without change, even on native blur.
+            commitDraft();
+            edited = false;
+            setValue(param.value);
+          });
+          input.setAttribute("aria-label", paramDisplayName(param));
+          const drag = editable ? bindDraggableNumber(input, {
+            speed: scalarDragSpeedForParam(param),
+            dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
+              && param.rangeMin < param.rangeMax ? paramNumberDragRange(param) : null,
+            readValue: () => param.value,
+            updateValue(value, commit) {
+              setValue(value);
+              if (commit) {
+                activeParamGestures.delete(param.name);
+                commitParamMessage(param.name, param.value);
+              } else {
+                activeParamGestures.add(param.name);
+                scheduleParamMessage(param.name, param.value);
+              }
+            },
+            resetValue: () => initialParamValue(param),
+          }) : { finish() {}, cancel() {} };
+          paramBindings.set(param.name, {
+            param,
+            isEditing: () => document.activeElement === input,
+            setValue,
+            finishDrag: drag.finish,
+            cancelDrag() {
+              edited = false;
+              input.readOnly = true;
+              drag.cancel();
+            },
+          });
+        }
+
+        function resetRenderedParams(signature) {
+          const incoming = new Map(state[bank].map(param => [param.name, param]));
+          for (const [name, binding] of paramBindings) {
+            const next = incoming.get(name);
+            if (renderedParamPath === state.path && canEditRunControls() && next
+              && paramControlSignature(binding.param) === paramControlSignature(next)) {
+              binding.finishDrag?.();
+              if (activeParamGestures.has(name)) commitParamMessage(name, binding.param.value);
+            } else {
+              binding.cancelDrag?.();
+            }
+          }
+          pendingParamMessages.clear();
+          activeParamGestures.clear();
+          paramBindings.clear();
+          paramsNode.replaceChildren();
+          renderedParamSignature = signature;
+          renderedParamPath = state.path;
+        }
+
+        function renderParameters(params) {
+          const paramLayout = controlLayouts[bank];
+          const canEditRun = canEditRunControls();
+          const paramSignature = paramRenderSignature(params);
+          if (updateRenderedParams(params)) {
+            return;
+          }
+          const arrayOpenStates = new Map(
+            [...paramsNode.querySelectorAll(".param-array")]
+              .map(group => [group.dataset.name, group.open]),
+          );
+          resetRenderedParams(paramSignature);
+          const arrayContainers = new Map();
+          for (const param of params) {
+            const editable = canEditRun && param.enabled !== false
+              && !(Number.isFinite(param.rangeMin) && param.rangeMin === param.rangeMax);
+            let container = paramsNode;
+            if (param.array) {
+              const { name, length } = param.array;
+              container = arrayContainers.get(name);
+              if (!container) {
+                const group = document.createElement("details");
+                group.className = "param-array";
+                group.dataset.name = name;
+                group.open = arrayOpenStates.get(name) ?? true;
+                const heading = document.createElement("summary");
+                heading.className = "param-array-heading";
+                heading.textContent = `${name} [${length}]`;
+                container = document.createElement("div");
+                container.className = "param-list";
+                group.append(heading, container);
+                paramsNode.appendChild(group);
+                arrayContainers.set(name, container);
+              }
+            }
+            const card = document.createElement("div");
+            card.className = "param";
+
+            const head = document.createElement("div");
+            head.className = param.enabled === false ? "param-head external" : "param-head";
+            head.innerHTML = '<div class="param-name"></div>';
+            const displayName = paramDisplayName(param);
+            const name = head.querySelector(".param-name");
+            name.textContent = paramLabel(param);
+            name.title = `${displayName} (${param.type})`;
+            if (param.unit) {
+              const unit = document.createElement("span");
+              unit.className = "param-unit";
+              unit.textContent = `(${param.unit})`;
+              head.appendChild(unit);
+            }
+            const type = document.createElement("div");
+            type.className = "param-type";
+            type.textContent = param.enabled === false ? "External input" : param.type;
+            head.appendChild(type);
+            card.appendChild(head);
+
+            const controls = document.createElement("div");
+            controls.className = "param-controls";
+            card.appendChild(controls);
+
+            if (param.type === "bool") {
+              card.classList.add("param-bool");
+              const label = document.createElement("label");
+              label.className = "param-toggle";
+              const input = document.createElement("input");
+              input.type = "checkbox";
+              input.checked = Boolean(param.value);
+              input.disabled = !editable;
+              const text = document.createElement("span");
+              text.textContent = input.checked ? "On" : "Off";
+              input.addEventListener("change", () => {
+                param.value = input.checked;
+                text.textContent = input.checked ? "On" : "Off";
+                hostBridge.postMessage({
+                  type: command,
+                  name: param.name,
+                  value: input.checked,
+                  commit: true,
+                });
+              });
+              label.append(input, text);
+              controls.appendChild(label);
+              paramBindings.set(param.name, {
+                param,
+                setValue(nextValue) {
+                  input.checked = Boolean(nextValue);
+                  text.textContent = input.checked ? "On" : "Off";
+                },
+              });
+            } else {
+              const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
+              card.classList.add(hasRange ? "param-ranged" : "param-unbounded");
+              const stepValue = scalarStepForParam(param);
+              const step = String(stepValue);
+              const currentValue = typeof param.value === "number" ? param.value : 0;
+              const number = document.createElement("input");
+              number.className = "param-number";
+              number.type = "number";
+              number.step = step;
+              number.value = formatNumberForInput(currentValue, stepValue);
+              number.disabled = !editable;
+              controls.appendChild(number);
+              let rangeControl;
+
+              if (hasRange) {
+                number.min = String(param.rangeMin);
+                number.max = String(param.rangeMax);
+
+                rangeControl = (
+                  paramLayout === "knobs" ? createKnobControl : createSliderControl
+                )(
+                  param,
+                  currentValue,
+                  (nextValue) => {
+                    if (paramBindings.get(param.name)?.param !== param) return;
+                    activeParamGestures.add(param.name);
+                    param.value = nextValue;
+                    const nextText = formatNumberForInput(nextValue, stepValue);
+                    number.value = nextText;
+                    scheduleParamMessage(param.name, nextValue);
+                  },
+                  (nextValue) => {
+                    if (paramBindings.get(param.name)?.param !== param) return;
+                    activeParamGestures.delete(param.name);
+                    param.value = nextValue;
+                    const nextText = formatNumberForInput(nextValue, stepValue);
+                    number.value = nextText;
+                    commitParamMessage(param.name, nextValue);
+                  },
+                  editable,
+                );
+                controls.prepend(rangeControl.control);
+              }
+              const sync = (nextValue) => {
+                const parsed = Number(nextValue);
+                if (!Number.isFinite(parsed)) return;
+                const quantized = hasRange
+                  ? constrainParamPlain(param, parsed)
+                  : quantizeToStep(parsed, 0,
+                    param.type === "i32" || param.type === "i64" ? stepValue : param.step);
+                param.value = quantized;
+                rangeControl?.setValue(quantized);
+                number.value = formatNumberForInput(quantized, stepValue);
+              };
+              bindParamNumber(param, number, sync, editable);
+            }
+
+            container.appendChild(card);
           }
         }
-        pendingParamMessages.clear();
-        activeParamGestures.clear();
-        paramBindings.clear();
-        paramsNode.replaceChildren();
-        renderedParamSignature = signature;
-        renderedParamPath = state.path;
+        return { render: renderParameters };
       }
+      const parameterSection = createParameterSection(paramsNode, "params", "setParam");
+      const inputControlSection = createParameterSection(inputControlsNode, "inputControls", "setInputControl");
 
       function parseEventI64(value) {
         if (typeof value === "number" && !Number.isSafeInteger(value)) return null;
@@ -3851,8 +4090,11 @@
           bridgeThemePreference = incoming.themeMode;
         }
         // Hydrate params with defaults if the host did not already do so.
-        if (incoming.params) {
-          incoming.params = hydrateParams(incoming.params);
+        for (const bank of ["params", "inputControls"]) {
+          if (incoming[bank]) incoming[bank] = hydrateParams(incoming[bank]);
+        }
+        for (const [key, bank] of [["paramLayout", "params"], ["inputControlLayout", "inputControls"]]) {
+          if (["sliders", "knobs"].includes(incoming[key])) controlLayouts[bank] = incoming[key];
         }
         if (incoming.resetEventArguments === true) renderedEvents = null;
         if (incoming.events) {
@@ -4167,6 +4409,10 @@
         const logWasAtBottom =
           logOutputNode.scrollHeight - logOutputNode.clientHeight - logOutputNode.scrollTop <= 1;
         applyTheme();
+        inputSmoothingControl.hidden = state.supportsInputControlSmoothing !== true;
+        if (document.activeElement !== inputSmoothingInput && !inputSmoothingNumber.isDragging()) {
+          inputSmoothingInput.value = formatNumberForInput(state.inputControlSmoothingMs, 1);
+        }
         smoothingControl.hidden = state.supportsParamSmoothing !== true;
         if (document.activeElement !== smoothingInput && !smoothingNumber.isDragging()) {
           smoothingInput.value = formatNumberForInput(state.paramSmoothingMs, 1);
@@ -4232,6 +4478,8 @@
         eventsSection.style.display = hasEvents ? "" : "none";
         logSection.style.display = state.logRevealed === true ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
+        inputControlsSection.style.display = state.inputControls.length > 0 ? "" : "none";
+        applyParamLayout();
         refreshDevicesButton.hidden = !supportsDeviceSelection && !supportsMidiInput;
         ioSettingsNode.hidden = !supportsDeviceSelection && !supportsMidiInput;
         ioSettingsNode.style.display = supportsDeviceSelection || supportsMidiInput ? "grid" : "none";
@@ -4373,148 +4621,8 @@
         logLossNode.style.display = losses.length > 0 ? "block" : "none";
         logLossNode.textContent = losses.join("\n");
 
-        const paramSignature = paramRenderSignature(state.params);
-        if (updateRenderedParams(state.params)) {
-          return;
-        }
-        const arrayOpenStates = new Map(
-          [...paramsNode.querySelectorAll(".param-array")]
-            .map(group => [group.dataset.name, group.open]),
-        );
-        resetRenderedParams(paramSignature);
-        const arrayContainers = new Map();
-        for (const param of state.params) {
-          let container = paramsNode;
-          if (param.array) {
-            const { name, length } = param.array;
-            container = arrayContainers.get(name);
-            if (!container) {
-              const group = document.createElement("details");
-              group.className = "param-array";
-              group.dataset.name = name;
-              group.open = arrayOpenStates.get(name) ?? true;
-              const heading = document.createElement("summary");
-              heading.className = "param-array-heading";
-              heading.textContent = `${name} [${length}]`;
-              container = document.createElement("div");
-              container.className = "param-list";
-              group.append(heading, container);
-              paramsNode.appendChild(group);
-              arrayContainers.set(name, container);
-            }
-          }
-          const card = document.createElement("div");
-          card.className = "param";
-
-          const head = document.createElement("div");
-          head.className = "param-head";
-          head.innerHTML = '<div class="param-name"></div>';
-          const displayName = paramDisplayName(param);
-          const name = head.querySelector(".param-name");
-          name.textContent = paramLabel(param);
-          name.title = `${displayName} (${param.type})`;
-          if (param.unit) {
-            const unit = document.createElement("span");
-            unit.className = "param-unit";
-            unit.textContent = `(${param.unit})`;
-            head.appendChild(unit);
-          }
-          const type = document.createElement("div");
-          type.className = "param-type";
-          type.textContent = param.type;
-          head.appendChild(type);
-          card.appendChild(head);
-
-          const controls = document.createElement("div");
-          controls.className = "param-controls";
-          card.appendChild(controls);
-
-          if (param.type === "bool") {
-            card.classList.add("param-bool");
-            const label = document.createElement("label");
-            label.className = "param-toggle";
-            const input = document.createElement("input");
-            input.type = "checkbox";
-            input.checked = Boolean(param.value);
-            input.disabled = !canEditRun;
-            const text = document.createElement("span");
-            text.textContent = input.checked ? "On" : "Off";
-            input.addEventListener("change", () => {
-              param.value = input.checked;
-              text.textContent = input.checked ? "On" : "Off";
-              hostBridge.postMessage({
-                type: "setParam",
-                name: param.name,
-                value: input.checked,
-                commit: true,
-              });
-            });
-            label.append(input, text);
-            controls.appendChild(label);
-            paramBindings.set(param.name, {
-              param,
-              setValue(nextValue) {
-                input.checked = Boolean(nextValue);
-                text.textContent = input.checked ? "On" : "Off";
-              },
-            });
-          } else {
-            const hasRange = Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax);
-            card.classList.add(hasRange ? "param-ranged" : "param-unbounded");
-            const stepValue = scalarStepForParam(param);
-            const step = String(stepValue);
-            const currentValue = typeof param.value === "number" ? param.value : 0;
-            const number = document.createElement("input");
-            number.className = "param-number";
-            number.type = "number";
-            number.step = step;
-            number.value = formatNumberForInput(currentValue, stepValue);
-            number.disabled = !canEditRun;
-            controls.appendChild(number);
-            let rangeControl;
-
-            if (hasRange) {
-              number.min = String(param.rangeMin);
-              number.max = String(param.rangeMax);
-
-              rangeControl = (
-                paramLayout === "knobs" ? createKnobControl : createSliderControl
-              )(
-                param,
-                currentValue,
-                (nextValue) => {
-                  activeParamGestures.add(param.name);
-                  param.value = nextValue;
-                  const nextText = formatNumberForInput(nextValue, stepValue);
-                  number.value = nextText;
-                  scheduleParamMessage(param.name, nextValue);
-                },
-                (nextValue) => {
-                  activeParamGestures.delete(param.name);
-                  param.value = nextValue;
-                  const nextText = formatNumberForInput(nextValue, stepValue);
-                  number.value = nextText;
-                  commitParamMessage(param.name, nextValue);
-                },
-              );
-              controls.prepend(rangeControl.control);
-            }
-            const sync = (nextValue) => {
-              const parsed = Number(nextValue);
-              if (!Number.isFinite(parsed)) return;
-              const quantized = hasRange
-                ? constrainParamPlain(param, parsed)
-                : quantizeToStep(parsed, 0,
-                  param.type === "i32" || param.type === "i64" ? stepValue : param.step);
-              param.value = quantized;
-              rangeControl?.setValue(quantized);
-              number.value = formatNumberForInput(quantized, stepValue);
-            };
-            bindParamNumber(param, number, sync);
-          }
-
-          container.appendChild(card);
-        }
+        parameterSection.render(state.params);
+        inputControlSection.render(state.inputControls);
       }
 
       // ---------------------------------------------------------------------------
