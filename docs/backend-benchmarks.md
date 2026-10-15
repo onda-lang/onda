@@ -176,11 +176,12 @@ frame, and dynamic-channel lookup, including forwarded buffer spans and buffer-d
 and fixed-channel shapes use their declared channel counts directly; sample-varying selections retain
 the descriptor loads that genuinely depend on the selected slot.
 
-Portable inlining and unconstrained scalar-state promotion were both rejected by measurement.
-Pre-inlining structured MIR regressed the larger reverb by roughly 30%, and promoting all 33
-oversampling state scalars more than doubled the object size by creating excessive SSA/PHI
-pressure. MIR therefore retains target inlining intent for the backend and caps portable state
-promotion at a small alias-safe working set. Binaryen's global
+Pre-inlining structured MIR regressed the larger reverb by roughly 30%, so MIR retains target
+inlining intent for the backend. An earlier state-promotion experiment more than doubled the
+object size when promoting all 33 oversampling state scalars. Code growth alone is not a reason
+to reject promotion: the subsequent [example measurements](performance-opportunities.md) test
+larger budgets against runtime, including both gains and regressions. Portable state promotion
+retains a bounded, alias-safe working set. Binaryen's global
 `allowInliningFunctionsWithLoops` lever is exposed but defaults off: an A/B improved oversampling
 while worsening the language and saturator workloads. These are target cost-model decisions, not
 portable semantic transforms.

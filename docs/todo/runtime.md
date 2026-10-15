@@ -16,14 +16,18 @@
   - `std/convolution`'s time-domain convolver uses a mirrored history ring so its hot loop reads
     two contiguous forward ranges without a per-tap wrap recurrence. Keep that layout covered by
     wraparound tests; it is intentionally a standard-library fix and does not promise that every
-    backend will vectorize the loop. Native LLVM currently recognizes the cleaned-up reduction with
-    `--fast-math`, but retains vector clamps and masked gathers; strict arithmetic remains scalar
-    because reassociation would change its floating-point semantics.
-  - Eliminate fixed-array clamps only when MIR proves the index range at the individual access.
-    This requires branch refinement, canonical loop-induction facts, and a proof-consuming rewrite
-    from `Clamp` to trusted `Unchecked`; the current integer-range summary alone is insufficient.
-    The range-refined integer binding design tracked in `language.md` should provide explicit facts
-    for persistent state where whole-program inference would otherwise be required.
+    backend will vectorize the loop. Current MIR already proves the time-domain convolver's
+    fixed-array accesses in bounds. Native LLVM recognizes the reduction with `--fast-math`;
+    strict arithmetic retains the ordered sum because reassociation would change its floating-point
+    semantics. Recheck generated code when tuning the remaining reduction and memory costs.
+  - Extend the existing MIR bounds proofs to relational and derived loop indices needed by FIR
+    and similar kernels. Range-refined integer bindings, constant-loop induction intervals,
+    branch-sensitive integer comparisons, widened loop invariants, derived interval arithmetic,
+    and proof-consuming rewrites from `Clamp`/`Checked` to trusted `Unchecked` are implemented.
+    Calls and indirect writes still discard path facts; the analysis does not represent relational
+    general constraints between variables. Direct guards against the same dynamic slice's
+    length now work; derived offsets and external-buffer length relationships remain open.
+    Remaining work is tracked in the [range-analysis follow-ups](language.md#language-follow-ups).
   - Design a backend-neutral dot-product or multiply-reduction operation if cleaned-up scalar loops
     still do not vectorize reliably in both LLVM and Binaryen. Define its floating-point contract
     first: scalar-order preservation, a fixed reduction tree, or explicitly reassociated arithmetic.

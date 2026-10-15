@@ -1,7 +1,12 @@
 use super::*;
 
+mod array_addressing;
+mod branch_bounds;
 mod control_flow;
+mod memory_aliasing;
 mod structured_data;
+mod vector_math;
+mod vectorization;
 
 use onda_frontend::parse_program;
 use onda_semantics::{

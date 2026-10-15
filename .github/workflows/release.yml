@@ -252,6 +252,7 @@ jobs:
           Copy-Item LICENSE $packageRoot
           Copy-Item THIRD_PARTY_NOTICES.md $packageRoot
           Copy-Item licenses\LLVM-LICENSE.txt $licensesDir
+          Copy-Item licenses\SLEEF-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-BLAKE3-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-XXHASH-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-MD5-LICENSE.txt $licensesDir
@@ -273,6 +274,7 @@ jobs:
               -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-LICENSE.txt")) -or
+              -not (Test-Path (Join-Path $licensesDir "SLEEF-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-BLAKE3-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-XXHASH-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-MD5-LICENSE.txt")) -or
@@ -395,6 +397,7 @@ jobs:
           cp LICENSE "$package_root/"
           cp THIRD_PARTY_NOTICES.md "$package_root/"
           cp licenses/LLVM-LICENSE.txt "$licenses_dir/"
+          cp licenses/SLEEF-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-BLAKE3-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-XXHASH-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-MD5-LICENSE.txt "$licenses_dir/"
@@ -416,6 +419,7 @@ jobs:
           test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
           test -s "$licenses_dir/LLVM-LICENSE.txt"
+          test -s "$licenses_dir/SLEEF-LICENSE.txt"
           test -s "$licenses_dir/LLVM-BLAKE3-LICENSE.txt"
           test -s "$licenses_dir/LLVM-XXHASH-LICENSE.txt"
           test -s "$licenses_dir/LLVM-MD5-LICENSE.txt"

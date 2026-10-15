@@ -17,7 +17,7 @@ def llvm_summary(text):
             current = None
         if current is None:
             continue
-        instruction = re.match(r"\s+(?:%[^=]+ = )?([a-z][a-z0-9]*)\b", line)
+        instruction = re.match(r"\s+(?:%[^=]+ = )?(?:(?:tail|musttail|notail) )?([a-z][a-z0-9]*)\b", line)
         if not instruction:
             continue
         operation = instruction[1]

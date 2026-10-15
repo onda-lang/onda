@@ -302,10 +302,29 @@ prefix of pre-zeroed `init` state, and compacts local IDs. Floating-point identi
 under the strict profile: NaNs, signed zero, and signaling behavior make transformations such as
 `x - x -> 0` invalid.
 
-The process pass may cache a small working set of scalar state slots in locals, loading once per
-segment and committing writable values once at the end. The portable budget is deliberately capped
-at eight scalars so a large process loop does not acquire a PHI web or Wasm spills that a target's
-register-pressure model would reject. Control mirrors, projected aggregates, and slots whose
+The process pass may cache scalar state slots in locals, loading once per segment and committing
+writable values once at the end. The portable budget is 64 scalars, selected by runtime measurements
+across the examples rather than a generated-code-size limit. This bounds the process-loop PHI web;
+target backends still control register allocation. When more slots qualify, the pass selects the
+first 64 profitable slots in deterministic state order rather than disabling promotion for the whole
+process. Profitability favors the deepest unconditionally entered loop depth at which eligible scalar state
+is accessed; array-only inner loops and loops inside ordinary branches do not displace enclosing
+scalar caching. Loop guards with a terminating branch preserve the enclosing priority. Flat loops
+also retain caching for state used outside the loop, which can improve block preparation.
+Within that working set, loop-mutated state and ordinary reference operands remain candidates.
+Direct loop-invariant loads stay in memory when all persistent state is scalar and there are no
+indirect writes: the backend can distinguish their fixed addresses from loop stores and hoist them.
+Aggregate state or descriptor-based writes retain direct-load caching because those memory
+dependencies can inhibit hoisting after lowering. This is a profitability choice, not an alias proof.
+For repeatedly
+invoked helpers, conditionally read, loop-invariant reference operands can stay in memory instead
+of increasing live ranges and forcing less profitable backend scheduling. Single helper instances
+retain their coefficient caching. Static invocation counts are capped at two and the read hint
+propagates through forwarding helpers. Call-transitive effects refine this choice;
+the existing conservative reference writeback policy and alias exclusions remain intact. These are
+measured cost heuristics, not semantic proofs or guarantees for every target.
+See [performance measurements](performance-opportunities.md) for gains and tradeoffs.
+Control mirrors, projected aggregates, and slots whose
 transitive callees also access the same state directly remain in memory to preserve alias
 coherence. Reference calls keep their aliasing semantics; a backend that cannot take the address of
 a register local must legalize that case explicitly.
@@ -343,6 +362,33 @@ surfaces uses the same canonical integer range normalization; the pass removes t
 when the selector interval already fits. Bounds proofs run after structural cleanup in each fixed-point
 round, allowing removed branches, unreachable assignments, and newly exposed constants to tighten
 the ranges used by the next proof.
+The bounds-proof walker also intersects integer intervals along true and false comparison
+edges. Facts apply only where the comparison dominates the access; they are joined on
+merging paths and invalidated by operand writes and calls. Slice writes use the existing
+reference-provenance analysis to invalidate only possibly aliased locals; unknown provenance
+still discards all path facts.
+Loop headers use bounded interval iteration with widening to establish facts valid on every
+backedge, including `continue` paths. If convergence is not established within eight rounds,
+the pass falls back to whole-function facts. Guards refine the header interval inside the loop;
+forward, reverse, and strided induction can therefore expose bounds for derived indices without
+assuming that wrapping arithmetic cannot overflow. Nested loops conservatively invalidate their
+written locals during the enclosing iteration; each nested header is analyzed independently.
+Loop exits retain only incoming facts unaffected by any loop write.
+Integer copies, casts, and arithmetic preserve a fact only when the complete resulting interval
+fits the destination range. Arithmetic uses the same overflow-aware transfer functions as the
+whole-function analysis. Floating-point comparisons never
+supply these integer proofs. These are semantic proofs, independent of processor names,
+helper-instance counts, SIMD width, or a target's register budget.
+Dynamic slice accesses also use relationships between current local values: a nonnegative
+index strictly below a length read from that same descriptor is in bounds. Value-preserving
+copies carry these relationships; descriptor, length, and index mutation invalidates them.
+Branch joins intersect relationships, and loop invariants must preserve them on every backedge.
+This is a limited relational proof, not general affine index analysis. Strides that may wrap
+below zero still need a nonnegative guard or a stronger range proof.
+LLVM lowering exports trusted fixed-array index bounds as unsigned `llvm.assume` predicates;
+removing a check must not discard the range information needed to simplify its address arithmetic.
+Dynamic slices consume the new unchecked proofs through their existing lowering;
+external-buffer addressing is unchanged.
 Source `for` variables default to `i32` and may explicitly select `i32` or `i64`. Constant loops use
 the selected induction width and a compile-time-computed final iteration, so every increment is
 proven not to overflow without adding a checked-arithmetic branch. Dynamic loops also retain the
@@ -438,6 +484,11 @@ The complete-program API supports ordinary generated processor functions, recurs
 arrays, direct indexed processor instances, and canonical top-level and per-processor oversampling.
 Oversampling expands to fixed MIR arrays, structured substep loops, explicit persistent sinc-filter
 taps, interpolation, and decimation; backends do not infer DSP scheduling from semantic metadata.
+Top-level oversampling output scratch is initialized once per process segment, before the host-frame
+loop. Each completed substep loop overwrites every element before decimation; a failed substep exits
+without exposing this private scratch. This keeps definite initialization explicit without clearing
+the arrays again for every host sample. Per-substep output defaults remain explicit.
+
 The source DSP body is represented once regardless of the oversampling factor. Sinc stages with
 only one or two iterations retain constant-index small kernels for scalar replacement, while larger
 stage traversals use structured strided loops so high factors do not clone the filter graph.

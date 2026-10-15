@@ -5,8 +5,10 @@
 The convolution project is the current stress case: it contains two convolver instances, four FFT
 sizes, large flattened state, and more than two hundred specialized MIR functions. Some of that work
 is inherent, but the compiler currently constructs uniform flattened helper ABIs and then removes
-most of their parameters. Keep the existing MIR unused-parameter pass as a correctness backstop,
-while moving avoidable work earlier in the pipeline.
+most of their parameters. MIR cleanup already removes dead scalar parameter materialization and
+prunes unused parameters and arguments to a fixed point, preserving potentially failing argument
+preparation. Keep that cleanup as a correctness backstop while moving avoidable work earlier in
+the pipeline.
 
 - Add call-transitive, leaf-level state-use analysis during processor ABI planning.
   - Emit only the scalar/array leaves each generated helper transitively accesses.
@@ -22,14 +24,6 @@ while moving avoidable work earlier in the pipeline.
     against one shared implementation.
   - Pass an explicit instance-state view instead of baking physical state names into each helper.
   - Preserve specialization by processor type, compile context, and genuinely distinct constants.
-
-- Make MIR unused-parameter pruning see through scalar parameter materialization.
-  - Lowering currently emits a `local = load @parameter` assignment for every scalar and tuple
-    component, so the load itself makes an otherwise unused parameter appear live.
-  - Remove the canonical materialization together with the parameter when its destination local is
-    otherwise dead, including after forwarding arguments disappear in a later pruning round.
-  - Continue preserving source argument evaluation whenever preparing an argument can fail or has
-    observable effects.
 
 - Evaluate compact typed state-region references in MIR.
   - Represent a processor or aggregate state region with one reference plus validated field access,
@@ -111,10 +105,18 @@ A 1,000-instance `Sine` bank exposes avoidable state traffic and a serial floati
 reduction in the sample loop. Calls and table lookups are already inlined; enabling fast math lets
 LLVM vectorize the bank. Use this workload to guide general processor and MIR optimizations.
 
-- Reduce processor state traffic using field-level liveness and effect analysis.
-  - Eliminate unobservable processor-output stores and reuse invariant parameters, increments, and
-    offsets across samples when writes and aliases permit it.
-  - Keep evolving state in locals where possible, committing it at observable boundaries.
+MIR already caches a bounded subset of eligible scalar state across each process segment, with
+alias exclusions and effect-informed selection. Top-level oversampling output scratch initialization
+runs once per segment instead of once per host frame. See the
+[implemented passes](../mir.md#backend-neutral-passes) and
+[measurements and remaining regressions](../performance-opportunities.md).
+
+- Extend state-traffic reduction beyond the current scalar promotion pass.
+  - Eliminate unobservable processor-output stores using field-level liveness.
+  - Evaluate loop-scoped promotion and invariant reuse for projected array and aggregate state,
+    which the current scalar pass excludes, when writes and aliases permit it.
+  - Improve promotion profitability across nested loops and helper calls using measured live-range
+    and register-pressure costs; the current bounded selection remains a heuristic.
   - Preserve event, exported-function, state-snapshot, and segmented-processing behavior, including
     state and effect ordering on failure.
 
@@ -184,8 +186,9 @@ algorithm tuning in [stdlib.md](stdlib.md).
 - Keep regression workloads for a tiny program, a medium nested-processor program, the convolution
   project, and a large processor array. Optimize from these measurements rather than total CLI time
   alone.
-- Add reproducible DSP benchmarks for processors, processor banks and reductions.
-  Include distinct frequencies, modulation, feedback, and segmented events;
-  compare default and fast-math compilation across block sizes and native/Wasm backends. Measure
-  generated DSP separately from host/UI/audio transport, inspect state accesses and SIMD, and
-  verify output and state behavior under the selected floating-point policy.
+- Extend the [existing DSP benchmark harness](../../scripts/bench/README.md) with controlled
+  processor-bank scaling and host-driven segmented events, parameter automation, and external
+  buffers. The harness already supports isolated DSP timing, example compilation, MIR/LLVM/Wasm
+  inspection, synthetic bounds/reduction probes, output comparisons, configurable block sizes, and
+  strict/fast-math native/Wasm runs. Add state-snapshot comparisons alongside output checks and
+  systematically exercise distinct frequencies, modulation, feedback, and block-size variations.

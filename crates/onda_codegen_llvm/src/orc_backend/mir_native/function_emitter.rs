@@ -821,15 +821,7 @@ impl FunctionEmitter<'_, '_> {
         let start = self.lower_value(start)?;
         let max_start = source_len - required_len;
         let start = self.normalize_fixed_window_start(start, max_start, bounds)?;
-        let zero = LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0);
-        let ptr = LLVMBuildGEP2(
-            self.builder,
-            self.module.types.get(array.ty),
-            array.ptr,
-            [zero, start].as_mut_ptr(),
-            2,
-            c_name("array_window")?.as_ptr(),
-        );
+        let ptr = self.bounded_array_element_ptr(array, start, "array_window")?;
         Ok(PlaceRef {
             ptr,
             ty: parameter_ty,
@@ -3972,16 +3964,7 @@ impl FunctionEmitter<'_, '_> {
             ));
         };
         let index = self.lower_fixed_index(index, len as usize, bounds)?;
-        let zero = LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0);
-        let mut indices = [zero, index];
-        let ptr = LLVMBuildGEP2(
-            self.builder,
-            self.module.types.get(place.ty),
-            place.ptr,
-            indices.as_mut_ptr(),
-            2,
-            c_name("array_element")?.as_ptr(),
-        );
+        let ptr = self.bounded_array_element_ptr(place, index, "array_element")?;
         Ok(PlaceRef {
             ptr,
             ty: element,
@@ -3989,6 +3972,32 @@ impl FunctionEmitter<'_, '_> {
                 .alignment
                 .min(self.module.layouts.type_alignments[element.index()]),
         })
+    }
+
+    /// The caller has clamped/checked the index or holds MIR's trusted unchecked
+    /// contract. A bounded byte extent additionally proves that GEP's signed
+    /// index multiplication cannot wrap on the selected target.
+    unsafe fn bounded_array_element_ptr(
+        &self,
+        array: PlaceRef,
+        index: LLVMValueRef,
+        name: &str,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
+        let size = self.module.layouts.type_sizes[array.ty.index()] as u64;
+        let build_gep = if size > 0 && size <= self.module.layouts.max_signed_index_offset {
+            LLVMBuildInBoundsGEP2
+        } else {
+            LLVMBuildGEP2
+        };
+        let zero = LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0);
+        Ok(build_gep(
+            self.builder,
+            self.module.types.get(array.ty),
+            array.ptr,
+            [zero, index].as_mut_ptr(),
+            2,
+            c_name(name)?.as_ptr(),
+        ))
     }
 
     unsafe fn lower_fixed_index(
@@ -4097,7 +4106,35 @@ impl FunctionEmitter<'_, '_> {
         let zero = LLVMConstInt(i32_ty, 0, 0);
         let max = LLVMConstInt(i32_ty, (len - 1) as u64, 0);
         match mode {
-            onda_mir::BoundsMode::Unchecked => Ok(index),
+            onda_mir::BoundsMode::Unchecked => {
+                // Trusted MIR proves the logical index, which is stronger than
+                // GEP's allocation-wide inbounds contract. Keep that fact after
+                // removing the clamp so LLVM can simplify derived arithmetic.
+                let valid = LLVMBuildICmp(
+                    self.builder,
+                    LLVMIntPredicate::LLVMIntULT,
+                    index,
+                    LLVMConstInt(i32_ty, len as u64, 0),
+                    c_name("proven_index")?.as_ptr(),
+                );
+                let mut parameter_types = [LLVMInt1TypeInContext(self.module.context)];
+                let fn_ty = LLVMFunctionType(
+                    LLVMVoidTypeInContext(self.module.context),
+                    parameter_types.as_mut_ptr(),
+                    1,
+                    0,
+                );
+                let assume = ensure_named_function(self.module.module, "llvm.assume", fn_ty)?;
+                LLVMBuildCall2(
+                    self.builder,
+                    fn_ty,
+                    assume,
+                    [valid].as_mut_ptr(),
+                    1,
+                    c"".as_ptr(),
+                );
+                Ok(index)
+            }
             onda_mir::BoundsMode::Clamp => {
                 let below = LLVMBuildICmp(
                     self.builder,

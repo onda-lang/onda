@@ -57,6 +57,25 @@ and measure both variants before concluding an operator or source rewrite is fas
 
 ## Inspect and replay IR
 
+`slice-loop-*` probes cover dynamically sized slice reductions and updates at two floating
+widths, two lengths, and two strides. `vector-math-*` probes apply sin/cos/exp/log/tan/tanh
+to independent array elements and expose every result over successive blocks. Compare
+the latter with `--fast-math` on both workers when measuring native vector math; compare
+numerical error as well as runtime. An unchanged strict-math result is not a fast-math baseline.
+
+Inspect every checked-in example, including reusable processor modules and project entry sources:
+
+```sh
+python3 scripts/bench/run.py --examples --inspect-only --assembly \
+  --timeout-seconds 120 --output target/bench/examples
+```
+
+Artifact names include the source directory, so identically named examples stay distinct.
+This compiles sources at their original paths. It does not load `.ondaproject` manifests,
+bind their assets, or execute events. Support modules with empty process functions count toward
+compilation coverage only. For runtime measurements, select executable scalar-port examples with
+`--source`; buffer-dependent and event-driven workloads require additional host setup.
+
 ```sh
 python3 scripts/bench/run.py --filter operator-arithmetic-f32 \
   --inspect-only --backend both --assembly --output target/bench/inspect
@@ -69,6 +88,13 @@ python3 scripts/bench/run.py --source target/bench/probe/probe.mir.msgpack \
 `--ir`, which saves readable MIR, MIR JSON, optimized host LLVM IR, Wasm WAT, and descriptive
 LLVM instruction counts by function. `--assembly` also saves a host object, target/ABI metadata,
 and disassembly using `llvm-objdump` or `objdump`.
+
+For cross-target inspection, add `--target-triple x86_64-pc-windows-msvc` or
+`--target-triple aarch64-apple-darwin` with `--inspect-only --backend native`.
+This uses the target's generic CPU, emits target LLVM IR and (with `--assembly`)
+objects, and never executes cross-target code. Use an `llvm-objdump` supporting the
+target on `PATH` when requesting disassembly. Native execution still needs a runner
+on that platform; IR counts alone do not establish runtime performance.
 
 Vector types, shuffles and alignment counts describe emitted IR. Check the saved assembly for
 actual instructions, register use and spills. These counts do not establish a throughput benefit.
@@ -151,3 +177,30 @@ ONDA_BENCH_INTEGRATION=1 python3 -m unittest discover -s scripts/bench -p 'test_
 
 Integration checks use short bounded native/Wasm runs to cover imports, typed ports, large integers,
 MIR replay, incompatible configurations and inspection without executing initialization.
+
+## Guarded indexing matrix
+
+`--filter bounds-guarded-` selects twelve synthetic programs: array lengths 8, 63,
+and 256 (including a non-power-of-two extent); i32/f32 and i64/f64 arithmetic; and valid accesses on either true or false
+comparison edges. Dynamic indices cross both ends of the array. This supplements
+application examples with a repeatable compiler-pattern matrix. Use saved baseline
+and candidate workers with the same input/settings and compare outputs within each
+backend; removing a MIR check alone is not evidence of a runtime improvement.
+
+```sh
+python3 scripts/bench/run.py --filter bounds-guarded- --backend native --ir \
+  --runner target/baseline-worker --output target/bench/guards-before
+python3 scripts/bench/run.py --filter bounds-guarded- --backend native --ir \
+  --runner target/candidate-worker --compare-to target/bench/guards-before \
+  --output target/bench/guards-after
+```
+
+Repeat with `--backend wasm` and separate output directories to measure the Wasm backend.
+
+`--filter bounds-loop-` selects sixteen derived-index loop variants: lengths 63 and 256,
+i32/f32 and i64/f64, forward/reverse iteration, and strides 1 and 3. Dynamic input selects
+the trip count, including rejected negative and oversized counts. Each loop updates a persistent
+array through an offset index. These cases exercise inductive bounds, overflow-aware index
+arithmetic, and preservation of invariant facts across loops under strict floating-point semantics.
+Use the same before/after workflow and inspect native objects: LLVM already recovers some of these
+proofs, so native and Wasm improvements can differ substantially.

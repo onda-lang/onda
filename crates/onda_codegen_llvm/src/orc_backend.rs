@@ -24,6 +24,7 @@ use onda_frontend::Diagnostic;
 mod jit_utils;
 mod llvm_helpers;
 mod mir_native;
+mod vector_math;
 pub use mir_native::{
     lower_mir_and_jit, lower_mir_and_jit_with_options, lower_mir_to_llvm_ir,
     lower_mir_to_llvm_ir_with_options, lower_mir_to_object, lower_mir_to_object_artifact,

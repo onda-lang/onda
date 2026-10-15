@@ -1193,6 +1193,30 @@ fn infer_local_reference_origins(program: &Program, function: &Function) -> Vec<
     }
 }
 
+/// Local storage a slice write may change, using the same provenance as range
+/// analysis. `None` means unknown provenance; an empty set proves disjointness
+/// from every local (for example, a slice into a caller's buffer).
+pub(crate) fn slice_local_writes(
+    program: &Program,
+    function: &Function,
+) -> Vec<Option<Vec<LocalId>>> {
+    infer_local_reference_origins(program, function)
+        .into_iter()
+        .enumerate()
+        .map(|(index, origins)| {
+            if origins.unknown || !local_is_slice(program, function, LocalId::new(index as u32)) {
+                return None;
+            }
+            Some(
+                (0..function.locals.len())
+                    .map(|index| LocalId::new(index as u32))
+                    .filter(|local| origins.may_alias(&Place::local(*local)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 fn collect_reference_origins(
     program: &Program,
     function: &Function,
@@ -1214,10 +1238,21 @@ fn collect_reference_origins(
                         .merge(rvalue_reference_origins(program, function, value, previous));
                 }
             }
-            StatementKind::Call { results, .. } => {
+            StatementKind::Call { results, args, .. } => {
                 for &local in results {
                     if local_is_slice(program, function, local) {
                         origins[local.index()].unknown = true;
+                    }
+                }
+                for argument in args {
+                    if let CallArgument::Place(Place {
+                        base: PlaceBase::Local(local),
+                        ..
+                    }) = argument
+                    {
+                        if local_is_slice(program, function, *local) {
+                            origins[local.index()].unknown = true;
+                        }
                     }
                 }
             }
@@ -1757,7 +1792,11 @@ fn range_of_rvalue(
     }
 }
 
-fn range_of_binary(op: BinaryOp, lhs: IntegerRange, rhs: IntegerRange) -> Option<IntegerRange> {
+pub(crate) fn range_of_binary(
+    op: BinaryOp,
+    lhs: IntegerRange,
+    rhs: IntegerRange,
+) -> Option<IntegerRange> {
     if lhs.scalar != rhs.scalar {
         return None;
     }

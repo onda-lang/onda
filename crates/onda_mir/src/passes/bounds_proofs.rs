@@ -1,6 +1,10 @@
+mod branch_ranges;
+
+use branch_ranges::BranchRanges;
+
 use crate::{
-    Block, BoundsMode, CallArgument, Function, FunctionId, FunctionRangeAnalysis, Place, PlaceBase,
-    Projection, Rvalue, ScalarValue, StatementKind, Type, TypeId, Value,
+    Block, BoundsMode, CallArgument, Function, FunctionId, Place, PlaceBase, Projection, Rvalue,
+    ScalarValue, StatementKind, Type, TypeId, Value,
 };
 
 use super::PassStats;
@@ -18,13 +22,13 @@ pub(super) fn eliminate_proven_bounds_checks(
             .expect("program range analysis covers every MIR function");
         let function = program.functions[function_index].clone();
         let mut body = std::mem::take(&mut program.functions[function_index].body);
-        let context = Context {
+        let mut context = Context {
             program,
             function: &function,
-            ranges,
+            branch_ranges: BranchRanges::new(program, &function, ranges),
             slice_lengths: fixed_slice_lengths(&function),
         };
-        let eliminated = prove_block(&context, &mut body);
+        let eliminated = prove_block(&mut context, &mut body);
         program.functions[function_index].body = body;
         stats.eliminated_bounds_checks = stats.eliminated_bounds_checks.saturating_add(eliminated);
         changed |= eliminated != 0;
@@ -32,10 +36,11 @@ pub(super) fn eliminate_proven_bounds_checks(
     changed
 }
 
+#[derive(Clone)]
 struct Context<'a> {
     program: &'a crate::Program,
     function: &'a Function,
-    ranges: &'a FunctionRangeAnalysis,
+    branch_ranges: BranchRanges,
     slice_lengths: Vec<Option<u32>>,
 }
 
@@ -108,7 +113,7 @@ fn slice_length(context: &Context<'_>, value: Value) -> Option<u32> {
     }
 }
 
-fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
+fn prove_block(context: &mut Context<'_>, block: &mut Block) -> u64 {
     let mut eliminated = 0;
     for statement in &mut block.statements {
         match &mut statement.kind {
@@ -163,14 +168,32 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
                 }
             }
             StatementKind::If {
+                condition,
                 then_block,
                 else_block,
-                ..
             } => {
-                eliminated += prove_block(context, then_block);
-                eliminated += prove_block(context, else_block);
+                let mut then_context = context.clone();
+                let mut else_context = context.clone();
+                then_context.branch_ranges.assume(*condition, true);
+                else_context.branch_ranges.assume(*condition, false);
+                eliminated += prove_block(&mut then_context, then_block);
+                eliminated += prove_block(&mut else_context, else_block);
+                context.branch_ranges = if !super::block_falls_through(then_block) {
+                    else_context.branch_ranges
+                } else if !super::block_falls_through(else_block) {
+                    then_context.branch_ranges
+                } else {
+                    then_context.branch_ranges.join(&else_context.branch_ranges);
+                    then_context.branch_ranges
+                };
             }
-            StatementKind::Loop { body } => eliminated += prove_block(context, body),
+            StatementKind::Loop { body } => {
+                let mut after_loop = context.branch_ranges.clone();
+                after_loop.forget_loop_writes(body);
+                context.branch_ranges = context.branch_ranges.loop_header(body);
+                eliminated += prove_block(context, body);
+                context.branch_ranges = after_loop;
+            }
             StatementKind::BufferStore { buffer, .. } => {
                 eliminated += prove_buffer_ref(context, buffer);
             }
@@ -183,9 +206,7 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
                 bounds,
                 ..
             } => {
-                if let Some(len) = slice_length(context, *slice) {
-                    eliminated += prove_index(context, *index, len, bounds);
-                }
+                eliminated += prove_slice_index(context, *slice, *index, bounds);
             }
             StatementKind::SliceFill { .. }
             | StatementKind::SliceCopy { .. }
@@ -194,6 +215,7 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
             | StatementKind::Return { .. } => {}
             StatementKind::PublishLog { .. } => {}
         }
+        context.branch_ranges.observe(&statement.kind);
     }
     eliminated
 }
@@ -269,9 +291,7 @@ fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
             slice,
             index,
             bounds,
-        } => {
-            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
-        }
+        } => prove_slice_index(context, *slice, *index, bounds),
         _ => 0,
     }
 }
@@ -288,9 +308,7 @@ fn prove_call_argument(
             slice,
             index,
             bounds,
-        } => {
-            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
-        }
+        } => prove_slice_index(context, *slice, *index, bounds),
         CallArgument::ArrayWindow {
             array,
             start,
@@ -424,6 +442,22 @@ fn prove_place(context: &Context<'_>, place: &mut Place) -> u64 {
     eliminated
 }
 
+fn prove_slice_index(
+    context: &Context<'_>,
+    slice: Value,
+    index: Value,
+    bounds: &mut BoundsMode,
+) -> u64 {
+    if *bounds == BoundsMode::Unchecked {
+        return 0;
+    }
+    if context.branch_ranges.slice_index_in_bounds(slice, index) {
+        *bounds = BoundsMode::Unchecked;
+        return 1;
+    }
+    slice_length(context, slice).map_or(0, |len| prove_index(context, index, len, bounds))
+}
+
 fn prove_index(context: &Context<'_>, index: Value, len: u32, bounds: &mut BoundsMode) -> u64 {
     if *bounds == BoundsMode::Unchecked || len == 0 {
         return 0;
@@ -440,16 +474,7 @@ fn prove_index(context: &Context<'_>, index: Value, len: u32, bounds: &mut Bound
 }
 
 fn value_range(context: &Context<'_>, value: Value) -> Option<crate::IntegerRange> {
-    match value {
-        Value::Constant(ScalarValue::I32(value)) => {
-            crate::IntegerRange::new(crate::ScalarType::I32, i64::from(value), i64::from(value))
-        }
-        Value::Constant(ScalarValue::I64(value)) => {
-            crate::IntegerRange::new(crate::ScalarType::I64, value, value)
-        }
-        Value::Constant(_) => None,
-        Value::Local(local) => context.ranges.local(local),
-    }
+    context.branch_ranges.value(value)
 }
 
 fn base_type(context: &Context<'_>, base: PlaceBase) -> Option<TypeId> {
@@ -798,3 +823,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod branch_tests;

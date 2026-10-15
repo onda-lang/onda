@@ -248,6 +248,13 @@ symbols the final application must retain at its chosen integration boundary.
 The `native_relocatable_object` profile requires no Onda-specific entry point. The user's normal
 platform linker combines the object with the host and any required runtime libraries.
 
+With fast math enabled at O2/O3, x86-64 and little-endian AArch64 objects can contain
+bundled SLEEF vector implementations of `sin`, `cos`, `exp`, and `log`. These helpers
+have internal linkage and require no additional library, DLL, or linker flags on Linux,
+Windows, or macOS. ISA selection follows the compilation target and its feature policy.
+The existing scalar math/runtime dependencies still apply to scalar operations and tails.
+Strict math keeps its existing lowering; vector results under fast math can round differently.
+
 The `webassembly_relocatable_object` profile additionally declares `no_entry: true` and
 `export_memory: true`. A typical final link therefore has no conventional `_start`, retains the
 processor symbols as exports, and exposes the selected linear memory. Exact linker flags belong to

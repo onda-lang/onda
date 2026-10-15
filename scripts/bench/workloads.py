@@ -140,10 +140,104 @@ def array_probe(width, expression, reduction=False):
                "    out1 = results[index]\n    index += 1\n    if index >= N:\n      index = 0\n"))
 
 
+def vector_math_probe(width, operation):
+    operand = "abs(values[i]) + 1.0" if operation == "log" else "values[i]"
+    return (f"const N = 512\nouts<{width}> 1\ninit:\n"
+            f"  values: {width}[N]\n  results: {width}[N]\n  index = 0\n"
+            f"  for i in 0..N:\n    values[i] = {width}(i) * {width}(0.01) - {width}(2.0)\n"
+            f"block:\n  for i in 0..N:\n    results[i] = {operation}({operand})\n"
+            "  sample:\n    out1 = results[index]\n    index += 1\n"
+            "    if index >= N:\n      index = 0\n")
+
+
+def guarded_index_probe(length, integer_width, floating_width, false_edge):
+    # Dynamic indices cross both array boundaries. Vary width, extent, and
+    # branch polarity so this measures a compiler pattern, not one DSP preset.
+    access = f"values[index] = values[index] * {floating_width}(0.99) + {floating_width}(in1)\n        total += values[index]"
+    if false_edge:
+        guarded = f"if index < {integer_width}(0):\n      total += {floating_width}(0.0)\n    else:\n      if index >= {integer_width}(N):\n        total += {floating_width}(0.0)\n      else:\n        {access}"
+    else:
+        guarded = f"if index >= {integer_width}(0):\n      if index < {integer_width}(N):\n        {access}"
+    return f"""const N = {length}
+init:
+  values: {floating_width}[N]
+  for i in 0..N:
+    values[i] = {floating_width}(i) * {floating_width}(0.001)
+sample:
+  offset = {integer_width}(in1 * f32(N * 2))
+  total: {floating_width} = 0.0
+  for i in 0..N:
+    index = offset + {integer_width}(i)
+    {guarded}
+  out1 = f32(total)
+"""
+
+
+def slice_loop_probe(length, width, step, writes):
+    body = (f"values[i] = values[i] * {width}(0.99) + input" if writes
+            else "total += values[i] * input")
+    result = "values[0]" if writes else "total"
+    return f"""def kernel(values: {width}[], input: {width}):
+  count = values.len()
+  total: {width} = 0.0
+  i = 0
+  while i < count:
+    {body}
+    i += {step}
+  if count > 0:
+    return {result}
+  return {width}(0.0)
+init:
+  values: {width}[{length}]
+  for i in 0..{length}:
+    values[i] = {width}(i) * {width}(0.001)
+sample:
+  count = i32((in1 + 1.0) * {length / 2:.1f})
+  out1 = f32(kernel(values[:count], {width}(in1)))
+"""
+
+
+def bounded_loop_probe(length, integer_width, floating_width, step, reverse):
+    initial = "count - 1" if reverse else "0"
+    condition = "i >= 0" if reverse else "i < count"
+    update = f"i -= {step}" if reverse else f"i += {step}"
+    return f"""const N = {length}
+init:
+  values: {floating_width}[N * 2]
+  for i in 0..(N * 2):
+    values[i] = {floating_width}(i) * 0.001
+sample:
+  count = {integer_width}(in1 * f32(N * 2))
+  out1 = 0.0
+  if count > 0:
+    if count <= N:
+      i: {integer_width} = {initial}
+      while {condition}:
+        index = N + i
+        values[index] = values[index] * 0.99 + {floating_width}(in1)
+        {update}
+      out1 = f32(values[N + count - 1])
+"""
+
+
 def catalog():
     # Factories defer expensive DFT generation until a case is actually selected.
     cases = {name: {"source": source, "warmup_blocks": 8192 if name.startswith("convolution") else 512}
              for name, source in scenarios().items()}
+    for length in [63, 256]:
+        for width in ["f32", "f64"]:
+            for step in [1, 3]:
+                for writes in [False, True]:
+                    mode = "update" if writes else "reduce"
+                    cases[f"slice-loop-{width}-{length}-{step}-{mode}"] = {
+                        "source": slice_loop_probe(length, width, step, writes),
+                        "warmup_blocks": 512,
+                    }
+    for width in ["f32", "f64"]:
+        for operation in ["sin", "cos", "exp", "log", "tanh", "tan"]:
+            cases[f"vector-math-{operation}-{width}"] = {
+                "source": vector_math_probe(width, operation), "warmup_blocks": 512,
+            }
     for name, case in cases.items():
         if name.startswith("fft-real-") or name in {"passthrough", "filter-onepole", "filter-dcblock", "filter-biquad", "filter-svf"}:
             case["reference"] = name
@@ -168,4 +262,21 @@ def catalog():
             "source": lambda width=width: array_probe(width, "", reduction=True),
             "warmup_blocks": 512,
         }
+    for length in [8, 63, 256]:
+        for integer_width, floating_width in [("i32", "f32"), ("i64", "f64")]:
+            for false_edge in [False, True]:
+                edge = "false" if false_edge else "true"
+                cases[f"bounds-guarded-{integer_width}-{floating_width}-{length}-{edge}"] = {
+                    "source": guarded_index_probe(length, integer_width, floating_width, false_edge),
+                    "warmup_blocks": 512,
+                }
+    for length in [63, 256]:
+        for integer_width, floating_width in [("i32", "f32"), ("i64", "f64")]:
+            for step in [1, 3]:
+                for reverse in [False, True]:
+                    direction = "reverse" if reverse else "forward"
+                    cases[f"bounds-loop-{integer_width}-{floating_width}-{length}-{step}-{direction}"] = {
+                        "source": bounded_loop_probe(length, integer_width, floating_width, step, reverse),
+                        "warmup_blocks": 512,
+                    }
     return cases

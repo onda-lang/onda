@@ -6,13 +6,15 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from compare import compare_runs, output_difference, read_samples
 from inspection import llvm_summary
 from limits import Limits
-from run import write_json
+from run import selected_cases, write_json
 from workloads import catalog
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +105,32 @@ class HarnessContracts(unittest.TestCase):
         self.assertIn("operator-division-f64", cases)
         self.assertFalse(any("four-accumulators" in key for key in cases))
 
+    def test_inspection_counts_calls_with_tail_modifiers(self):
+        result = llvm_summary('''define float @kernel(float %x) {
+  %a = tail call float @llvm.sin.f32(float %x)
+  %b = notail call float @helper(float %a)
+  %c = musttail call float @other(float %b)
+  ret float %c
+}
+''')["functions"]["kernel"]
+        self.assertEqual(result["instruction_lines"], 4)
+        self.assertEqual(result["call:llvm.sin.f32"], 1)
+        self.assertEqual(result["call:helper"], 1)
+        self.assertEqual(result["call:other"], 1)
+
+    def test_example_selection_preserves_paths_and_duplicate_stems(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("effects/voice.onda", "effects/processors/voice.onda", "project/code/main.on"):
+                path = root / "examples" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("sample:\n  out1 = 0.0\n")
+            (root / "examples/project/scene.ondaproject").write_text('{"entry":"code/main.on"}')
+            with patch("run.ROOT", root):
+                cases = selected_cases(SimpleNamespace(examples=True))
+            self.assertEqual(list(cases), ["effects--processors--voice", "effects--voice", "project--code--main"])
+            self.assertEqual(cases["effects--voice"]["path"], root / "examples/effects/voice.onda")
+
     def test_address_space_limit_stops_allocation_and_preserves_logs(self):
         with tempfile.TemporaryDirectory() as temporary:
             prefix = Path(temporary) / "child"
@@ -124,7 +152,18 @@ class HarnessContracts(unittest.TestCase):
                 Limits(CPU, memory_mib=128, timeout_seconds=1).run([sys.executable, script, pidfile], directory / "job")
             pid = int(pidfile.read_text())
             stat = Path(f"/proc/{pid}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+            # Waiting for the parent does not wait for the kernel to finish
+            # delivering SIGKILL to every other process in its group.
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    state = stat.read_text().split()[2]
+                except FileNotFoundError:
+                    break
+                if state == "Z":
+                    break
+                self.assertLess(time.monotonic(), deadline, "descendant survived SIGKILL")
+                time.sleep(0.01)
 
 
 @unittest.skipUnless(os.environ.get("ONDA_BENCH_INTEGRATION") == "1", "enable bounded integration checks explicitly")
@@ -206,6 +245,18 @@ sample:
         self.assertTrue((output / "inspect.ll").is_file())
         self.assertTrue((output / "inspect.wat").is_file())
         self.assertFalse((output / "inspect.native.output.bin").exists())
+        self.assertNotIn("ns_per_frame", json.loads((output / "native.json").read_text())[0])
+
+    def test_cross_target_inspection_rejects_execution(self):
+        source = self.directory / "cross.onda"
+        source.write_text("sample:\n  out1 = in1 * 0.5\n")
+        triple = "aarch64-apple-darwin"
+        rejected = self.run_case(source, self.directory / "rejected", "--target-triple", triple,
+                                 expect_success=False)
+        self.assertIn("requires --inspect-only --backend native", rejected.stderr)
+        output = self.directory / "cross-inspection"
+        self.run_case(source, output, "--inspect-only", "--target-triple", triple)
+        self.assertIn(f'target triple = "{triple}"', (output / "cross.ll").read_text())
         self.assertNotIn("ns_per_frame", json.loads((output / "native.json").read_text())[0])
 
 

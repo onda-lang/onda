@@ -68,12 +68,14 @@ def parse_args():
     selection.add_argument("--source", type=Path, action="append", help="Onda or MIR file; repeat for multiple cases")
     selection.add_argument("--filter", help="builtin-name substring; separate alternatives with |")
     selection.add_argument("--all", action="store_true", help="explicit complete sequential sweep")
+    selection.add_argument("--examples", action="store_true", help="inspect every checked-in .onda/.on example (requires --inspect-only)")
     parser.add_argument("--list", action="store_true", help="list builtin cases without executing")
     parser.add_argument("--output", type=Path, help="new or empty artifact directory")
     parser.add_argument("--backend", choices=("native", "wasm", "both"), default="native")
     parser.add_argument("--inspect-only", action="store_true", help="compile artifacts without initializing/executing DSP")
+    parser.add_argument("--target-triple", help="inspect LLVM IR/objects for a generic target (requires --inspect-only --backend native)")
     parser.add_argument("--ir", action="store_true", help="save readable MIR, LLVM IR and Wasm WAT")
-    parser.add_argument("--assembly", action="store_true", help="save host object, metadata and disassembly")
+    parser.add_argument("--assembly", action="store_true", help="save target object, metadata and disassembly")
     parser.add_argument("--trust-mir", action="store_true", help="retain proofs in compiler-produced MIR")
     parser.add_argument("--sample-rate", type=float, default=48000)
     parser.add_argument("--block-size", type=int, default=128)
@@ -103,8 +105,12 @@ def parse_args():
     args = parser.parse_args()
     if args.list:
         return args
-    if not (args.source or args.filter or args.all) or args.output is None:
-        parser.error("select --source, --filter or --all and provide --output")
+    if not (args.source or args.filter or args.all or args.examples) or args.output is None:
+        parser.error("select --source, --filter, --all or --examples and provide --output")
+    if args.examples and not args.inspect_only:
+        parser.error("--examples requires --inspect-only; benchmark executable cases with --source and their required host setup")
+    if args.target_triple and (not args.inspect_only or args.backend != "native"):
+        parser.error("--target-triple requires --inspect-only --backend native")
     for key in ("sample_rate", "block_size", "repetitions", "round_ms", "validation_blocks", "latency_blocks", "memory_mib", "timeout_seconds", "node_heap_mib"):
         value = getattr(args, key)
         if not math.isfinite(value) or value <= 0:
@@ -135,6 +141,19 @@ def parse_args():
 
 
 def selected_cases(args):
+    if args.examples:
+        examples = ROOT / "examples"
+        cases = {}
+        for source in sorted(examples.rglob("*")):
+            if not source.is_file() or source.suffix not in {".onda", ".on"}:
+                continue
+            name = "--".join(source.relative_to(examples).with_suffix("").parts)
+            if name in cases:
+                raise ValueError(f"example artifact names must be unique: {source}")
+            cases[name] = {"path": source, "warmup_blocks": 512}
+        if not cases:
+            raise ValueError("no example sources found")
+        return cases
     if args.source:
         cases = {}
         for source in args.source:
@@ -226,6 +245,7 @@ def main():
                       "opt_level": args.opt_level, "wasm_opt_level": args.wasm_opt_level,
                       "fast_math": args.fast_math, "ir": args.ir or args.inspect_only or args.assembly,
                       "assembly": args.assembly, "trust_mir": args.trust_mir,
+                      "target_triple": args.target_triple,
                       "max_output_abs": args.max_output_abs if args.max_output_abs is not None else case.get("max_output_abs"),
                       "compare_native": args.backend == "both" and not args.inspect_only}
             config_path = directory / f"{name}.config.json"

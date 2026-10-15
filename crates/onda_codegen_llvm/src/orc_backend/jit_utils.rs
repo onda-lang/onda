@@ -27,6 +27,7 @@ pub(super) unsafe fn run_default_pass_pipeline(
     module: LLVMModuleRef,
     tm: LLVMTargetMachineRef,
     opt_level: LLVMCodeGenOptLevel,
+    fast_math: bool,
 ) -> Result<(), Diagnostic> {
     let options = LLVMCreatePassBuilderOptions();
     if options.is_null() {
@@ -54,6 +55,15 @@ pub(super) unsafe fn run_default_pass_pipeline(
             ),
             run_err,
         ));
+    }
+    if fast_math
+        && matches!(
+            opt_level,
+            LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault
+                | LLVMCodeGenOptLevel::LLVMCodeGenLevelAggressive
+        )
+    {
+        super::vector_math::lower(module, tm)?;
     }
     Ok(())
 }

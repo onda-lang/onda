@@ -168,17 +168,7 @@ impl<'a> FunctionLowerer<'a> {
         // frontend unroll decision and can multiply code size dramatically.
         // Initialize the output scratch arrays up front so validation does not
         // need to prove that a dynamic loop index visits every element.
-        for output in &outputs {
-            for index in 0..factor_i32 {
-                self.store_local_array_value(
-                    destination,
-                    output.values,
-                    Value::Constant(ScalarValue::I32(index)),
-                    zero_value(output.ty),
-                    location,
-                );
-            }
-        }
+        self.initialize_oversampling_outputs(&outputs, destination, factor_i32, location);
 
         let substep = self.new_local(Some("$oversample.substep".to_owned()), PrimitiveType::I32);
         let mut substep_body = MirBlock::default();
@@ -218,6 +208,26 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) {
         self.emit_strided_loop(destination, counter, limit, 1, iteration_body, location);
+    }
+
+    fn initialize_oversampling_outputs(
+        &mut self,
+        outputs: &[OversampledOutputRuntime],
+        destination: &mut MirBlock,
+        factor: i32,
+        location: SourceLoc,
+    ) {
+        for output in outputs {
+            for index in 0..factor {
+                self.store_local_array_value(
+                    destination,
+                    output.values,
+                    Value::Constant(ScalarValue::I32(index)),
+                    zero_value(output.ty),
+                    location,
+                );
+            }
+        }
     }
 
     pub(super) fn emit_strided_loop(
@@ -457,6 +467,7 @@ impl<'a> FunctionLowerer<'a> {
         let sample_result = if sample_oversample_factor.max(1) > 1 {
             self.lower_top_level_oversampled_sample(
                 sample,
+                &mut body,
                 &mut sample_block,
                 logical_frame,
                 sample_oversample_factor.max(1),
@@ -555,6 +566,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn lower_top_level_oversampled_sample(
         &mut self,
         sample: &[Stmt],
+        scratch_initializers: &mut MirBlock,
         destination: &mut MirBlock,
         frame: LocalId,
         factor: usize,
@@ -771,20 +783,12 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         // Preserve the fixed oversampling schedule as one counted MIR loop so
-        // each backend can make its own target-aware unroll decision. The
-        // scratch arrays start fully initialized because validation cannot
-        // infer that a dynamic loop index visits every element.
-        for output in &outputs {
-            for index in 0..factor_i32 {
-                self.store_local_array_value(
-                    destination,
-                    output.values,
-                    Value::Constant(ScalarValue::I32(index)),
-                    zero_value(output.ty),
-                    location,
-                );
-            }
-        }
+        // each backend can make its own target-aware unroll decision. Initialize
+        // private scratch once per segment, outside the host-frame loop. Every
+        // completed substep loop below overwrites every element before decimation;
+        // failure exits the process without exposing scratch. Initializing once
+        // still establishes definite initialization without a loop-coverage proof.
+        self.initialize_oversampling_outputs(&outputs, scratch_initializers, factor_i32, location);
 
         let host_config = self.config;
         self.config.sample_rate = self.host_config.sample_rate * factor as f32;

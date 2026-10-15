@@ -2,8 +2,8 @@
 use std::{env, error::Error, fs, hint::black_box, path::PathBuf, time::Instant};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, lower_optimized_mir_to_llvm_ir_with_options,
-    lower_optimized_mir_to_object_artifact, MirCompileOptions, MirTargetOptions, TargetConfig,
+    jit_program_from_optimized_mir_with_options, lower_optimized_mir_to_object_artifact,
+    lower_optimized_mir_to_target_llvm_ir, MirCompileOptions, MirTargetOptions, TargetConfig,
     TargetOptLevel,
 };
 use onda_frontend::{
@@ -39,6 +39,7 @@ struct Config {
     ir: bool,
     assembly: bool,
     trust_mir: bool,
+    target_triple: Option<String>,
     max_output_abs: Option<f64>,
 }
 
@@ -49,6 +50,7 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         if self.schema_version != 1
+            || (self.target_triple.is_some() && self.mode != "inspect")
             || !matches!(self.mode.as_str(), "prepare" | "inspect" | "bench")
             || !matches!(
                 self.input_pattern.as_str(),
@@ -253,25 +255,25 @@ fn main() -> Result<()> {
         },
     };
     // Inspection costs are kept outside the reported JIT and processing times.
+    let mut target = config
+        .target_triple
+        .as_ref()
+        .map_or_else(TargetConfig::host, TargetConfig::for_triple);
+    target.opt_level = options.opt_level;
+    let target_options = MirTargetOptions {
+        fast_math: config.fast_math,
+        target,
+    };
     if config.ir {
         fs::write(
             config.artifact("ll"),
-            lower_optimized_mir_to_llvm_ir_with_options(&mir, options)
+            lower_optimized_mir_to_target_llvm_ir(&mir, &target_options)
                 .map_err(|e| format!("IR: {e:?}"))?,
         )?;
     }
     if config.assembly {
-        let artifact = lower_optimized_mir_to_object_artifact(
-            &mir,
-            &MirTargetOptions {
-                fast_math: config.fast_math,
-                target: TargetConfig {
-                    opt_level: options.opt_level,
-                    ..TargetConfig::host()
-                },
-            },
-        )
-        .map_err(|e| format!("object: {e:?}"))?;
+        let artifact = lower_optimized_mir_to_object_artifact(&mir, &target_options)
+            .map_err(|e| format!("object: {e:?}"))?;
         fs::write(config.artifact("o"), artifact.object_bytes)?;
         fs::write(
             config.artifact("object.json"),

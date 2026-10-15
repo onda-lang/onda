@@ -2003,6 +2003,29 @@ sample 2:
     let dump = format_program(&mir);
     assert!(dump.contains("$oversample.input.in1.stage0.a0"));
     assert!(dump.contains("$oversample.output.out1.stage0.a0"));
+    let scratch = process
+        .locals
+        .iter()
+        .position(|local| local.name.as_deref() == Some("$oversample.output.out1.values"))
+        .expect("oversampling scratch");
+    let frame_loop = process
+        .body
+        .statements
+        .iter()
+        .position(|statement| matches!(statement.kind, StatementKind::Loop { .. }))
+        .expect("host frame loop");
+    let initialized_elements = process.body.statements[..frame_loop]
+        .iter()
+        .filter(|statement| {
+            matches!(&statement.kind, StatementKind::Assign { destination, .. }
+            if destination.base == PlaceBase::Local(LocalId::new(scratch as u32))
+                && !destination.projections.is_empty())
+        })
+        .count();
+    assert_eq!(
+        initialized_elements, 2,
+        "scratch must be initialized before the host-frame loop"
+    );
     assert_eq!(
         dump.matches("intrinsic sin(").count(),
         1,
@@ -4674,3 +4697,6 @@ sample:
                 == 1
     }));
 }
+
+#[path = "tests/state_promotion.rs"]
+mod state_promotion;

@@ -1,0 +1,15 @@
+{
+  "sleef_version": "3.9.0",
+  "commit": "906ca7512ee483296780a81a21b9ca715d40dfe1",
+  "source_sha256": "76b779dba27aaf0b0551042ab59164754d859cd9a493695dcb6572a4cb5f3787",
+  "clang": "clang version 21.1.8",
+  "llvm": "21.1.2",
+  "files": {
+    "sse2-f32.bc": "e9242238c1db94af87ae170091b0946ecfb3aca191b39301081b367d9c5deccf",
+    "sse2-f64.bc": "9ded4899fe81d17b1ab8fbb2925a70f0f2a9d2e004c9982700278882320eab23",
+    "avx2-f32.bc": "56c4048502a29c43b3b7fa8e6870345dc5b35f9597088bbde4a0a14b39c750db",
+    "avx2-f64.bc": "48cdb44273bf99eff0ef18fc904eb2dd14129baf9736dbb82845680e665dee6b",
+    "advsimd-f32.bc": "2933d90e6cdf5fc4f7c6701393065bbfaf656844a8ff4e471e674633ef1be04e",
+    "advsimd-f64.bc": "d4b2e6b92792dac93a92b56c78feb0880543a6d1657bb169a69655dd659356e5"
+  }
+}

@@ -59,6 +59,16 @@ does not need LLVM, a server-side compiler, `wasm-ld`, or JavaScript math callba
 
 ## Optimization follow-ups
 
+- Bundled SLEEF sin/cos/exp/log lowering now covers x86-64 and little-endian AArch64 under
+  fast math at O2/O3, with internal helpers in JIT and exported objects. Extend runtime and
+  performance validation on Windows x64 and macOS arm64; cross-emission alone does not establish
+  gains there. Consider additional operations after numerical and application measurements.
+  The late pass preserves LLVM's existing loop/tail choices. Ordinary `tan`/`tanh` errno
+  effects and sequential DSP recurrences remain separate limitations.
+  Inspect helper calling-convention costs on native Windows: generic x64 COFF emission
+  passes vector arguments through a temporary and preserves XMM6–XMM15 around some helpers.
+  A late-inlining or private-ABI experiment needs native measurements; merely selecting
+  LLVM `fastcc` did not remove that overhead in the inspected code.
 - Keep Onda source scalar and select SIMD inside backends. Consume shared alignment, range, and
   dependence facts from [compiler analyses](compiler.md#dsp-loop-proofs-and-diagnostics).
 - Improve native vectorization decisions for small strided kernels. The current f32 FFT's fused

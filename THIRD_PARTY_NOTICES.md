@@ -1,12 +1,13 @@
 # Third-party notices
 
-Onda's native distributions include LLVM and statically linked Rust crates.
+Onda's native distributions include LLVM, SLEEF vector math kernels, and statically linked Rust crates.
 Browser distributions additionally include Binaryen, the Onda math kernel, and
 bundled JavaScript packages.
 
 The complete applicable license texts accompany each distribution:
 
 - `licenses/LLVM-LICENSE.txt` — LLVM, used by native compiler and runtime builds.
+- `licenses/SLEEF-LICENSE.txt` — SLEEF 3.9.0, embedded in native fast-math processors.
 - `licenses/LLVM-BLAKE3-LICENSE.txt` — BLAKE3 code included in LLVM Support.
 - `licenses/LLVM-XXHASH-LICENSE.txt` — xxHash code included in LLVM Support.
 - `licenses/LLVM-MD5-LICENSE.txt` — MD5 code included in LLVM Support.

@@ -294,11 +294,15 @@
 - Range-analysis follow-ups
   - Add source syntax for refined integer function parameters. Ranged `i32`/`i64` locals and state,
     normalization on stores, erased physical representation, conservative MIR range propagation,
-    loop induction facts, call-boundary propagation, and fixed-array bounds-check elimination are
-    implemented.
-  - Extend bounds proofs from fixed storage to relational dynamic slice and external-buffer facts,
-    such as an index derived from the same descriptor's `.len()`. Explicit `read_unsafe` and
-    `write_unsafe` are available when the programmer can establish such a proof today.
+    constant-loop induction intervals, call-boundary propagation, branch-sensitive integer bounds
+    proofs, widened loop invariants, derived interval arithmetic, and fixed-array bounds-check
+    elimination are implemented. Path facts are local to the bounds-proof pass; loop facts require
+    an inductive proof and calls still discard them. See
+    [MIR passes](../mir.md#backend-neutral-passes).
+  - Dynamic slice guards now prove a nonnegative index below the same descriptor's `.len()`,
+    including value-preserving copies and alias-aware invalidation. Extend these relationships
+    to external buffers, derived indices, and descriptor shapes across calls. Explicit
+    `read_unsafe` and `write_unsafe` remain available for proofs outside compiler coverage.
   - Extend loop range analysis with relational induction, divisibility, and derived-index facts so
     nested kernels such as FFT butterflies can prove `start + k` and
     `start + k + stage / 2` remain in bounds. Ordinary indexing should then optimize to unchecked

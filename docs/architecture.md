@@ -258,10 +258,25 @@ Non-crate directories of note:
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
 - `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
-  canonicalization, integer-range-based bounds proofs, pure-expression value numbering, bounded
-  alias-safe scalar-state promotion, and cleanup.
+  canonicalization, integer-range-based bounds proofs (including scoped comparison facts in
+  `passes/bounds_proofs/branch_ranges.rs`, widened loop invariants in `loops.rs`, and
+  current-value slice-length relationships in `relations.rs`),
+  pure-expression value numbering, bounded
+  alias-safe scalar-state promotion (up to 64 slots selected by scalar loop depth and reference-use
+  profitability, including in larger processors),
+  and cleanup.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production MIR contract is documented in `docs/mir.md`.
+
+Optimization decisions must generalize to user-written programs. The examples are one
+validation corpus, not a catalog of patterns to special-case. Prefer MIR transformations
+justified by control flow, ranges, effects, aliasing, and dependence proofs so both
+backends benefit. Keep target-dependent profitability (vector width, register pressure,
+inlining and instruction selection) separate from legality. A heuristic needs validation
+across synthetic variations and representative applications; source names and one favorable
+SIMD packing accident are not a cost model. Runtime and output checks determine whether
+an experiment is retained. Static vector counts alone do not establish a performance gain.
+
 
 ### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
 - `lib.rs` — public JIT/AOT API. The sole `TypedProgram` JIT path lowers to validated MIR before
@@ -281,6 +296,9 @@ Non-crate directories of note:
     process/event handles.
   - `jit_utils.rs`, `llvm_helpers.rs` — target-machine, pass-pipeline, ORC, and LLVM initialization
     support shared by MIR JIT and AOT emission.
+  - `vector_math.rs` — late fast-math vector-intrinsic lowering to bundled SLEEF helpers,
+    selecting SSE2, AVX2/FMA, or AdvSIMD from the compilation target. The generated bitcode
+    under `math-kernel/` is embedded in JIT code and exported objects with internal linkage.
 
 ### `onda_compiler_web` (`crates/onda_compiler_web/src`)
 - `lib.rs` — browser-safe source-to-MIR front half. The Wasm exports compile one source or a virtual
@@ -460,6 +478,13 @@ and preserve numeric drafts through independent value updates.
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
 - Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
   override LLVM's loop or SLP vectorization heuristics.
+- Fixed-array element and window addresses preserve their established bounds with LLVM `inbounds`
+  when the array's target allocation size fits the signed pointer-index width. The data-layout
+  index width, including an explicit width narrower than the pointer representation, governs this
+  proof. Clamped, checked, and trusted MIR accesses keep their respective bounds contracts.
+- Trusted fixed-array indices also emit `llvm.assume(index < length)` using an unsigned comparison.
+  This preserves the logical index proof after MIR removes a clamp, allowing LLVM to simplify
+  address arithmetic as well as the memory access. It does not assert disjointness between aliases.
 - Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
   on x86 this enables FTZ/DAZ once per thread before executing DSP.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).

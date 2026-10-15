@@ -2617,6 +2617,60 @@ mod tests {
     }
 
     #[test]
+    fn state_promotion_keeps_a_bounded_subset_in_large_processors() {
+        let mut program = empty_program();
+        for index in 0..68 {
+            program.state.push(StateSlot {
+                name: format!("counter_{index}"),
+                ty: TypeId::new(0),
+                persistence: StatePersistence::Snapshot,
+                authored: true,
+                pinned: false,
+                integer_range: None,
+            });
+            let process = &mut program.functions[1];
+            let value = LocalId::new(process.locals.len() as u32);
+            let next = LocalId::new(value.raw() + 1);
+            for _ in 0..2 {
+                process.locals.push(Local {
+                    name: None,
+                    ty: TypeId::new(0),
+                    integer_range: None,
+                });
+            }
+            let state = Place {
+                base: PlaceBase::State(StateId::new(index)),
+                projections: Vec::new(),
+            };
+            for (destination, value) in [
+                (Place::local(value), Rvalue::Load(state.clone())),
+                (
+                    Place::local(next),
+                    Rvalue::Binary {
+                        op: BinaryOp::Add,
+                        lhs: Value::Local(value),
+                        rhs: Value::Constant(ScalarValue::I32(1)),
+                    },
+                ),
+                (state, Rvalue::Use(Value::Local(next))),
+            ] {
+                process.body.statements.push(Statement {
+                    kind: StatementKind::Assign { destination, value },
+                    source: SourceSpan::UNKNOWN,
+                });
+            }
+        }
+        let validated = crate::validate_owned(program).expect("valid state fixture");
+        let (optimized, stats) = optimize(validated).expect("bounded promotion validates");
+        assert_eq!(stats.promoted_state_slots, 64);
+        assert_eq!(
+            optimized.state.len(),
+            68,
+            "all persistent storage is retained"
+        );
+    }
+
+    #[test]
     fn optimize_promotes_process_state_across_reference_calls() {
         let mut program = empty_program();
         let f32_ty = TypeId::new(program.types.len() as u32);

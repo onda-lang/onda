@@ -148,6 +148,7 @@ impl MirCodegenError {
 ///
 /// Sample rate and block size come exclusively from [`Program::config`].
 pub struct MirCompileOptions {
+    /// Relax floating-point semantics, including bundled vector math at O2/O3.
     pub fast_math: bool,
     pub opt_level: TargetOptLevel,
 }
@@ -155,6 +156,7 @@ pub struct MirCompileOptions {
 #[derive(Debug, Clone)]
 /// Target-machine policy for MIR-native IR and object emission.
 pub struct MirTargetOptions {
+    /// Relax floating-point semantics, including bundled vector math at O2/O3.
     pub fast_math: bool,
     pub target: crate::TargetConfig,
 }
@@ -298,6 +300,7 @@ struct NativeLayouts {
     params: RegionLayout,
     type_alignments: Vec<usize>,
     type_sizes: Vec<usize>,
+    max_signed_index_offset: u64,
     control_offsets: Vec<usize>,
     event_payloads: Vec<MessagePayloadLayout>,
     delegate_payloads: Vec<MessagePayloadLayout>,
@@ -478,6 +481,10 @@ unsafe fn compute_native_layouts(
             params,
             type_alignments,
             type_sizes,
+            max_signed_index_offset: max_signed_index_offset(
+                data_layout,
+                LLVMPointerSize(target_data) * 8,
+            ),
             control_offsets,
             event_payloads,
             delegate_payloads,
@@ -489,6 +496,24 @@ unsafe fn compute_native_layouts(
     })();
     LLVMDisposeTargetData(target_data);
     result
+}
+
+fn max_signed_index_offset(data_layout: &str, pointer_bits: u32) -> u64 {
+    // LLVM's C target-data API exposes pointer size but not index size. Only
+    // address space zero is used here. Its optional fourth pointer-layout field
+    // overrides index width; otherwise indexing uses the pointer width.
+    let index_bits = data_layout
+        .split('-')
+        .filter_map(|entry| {
+            entry
+                .strip_prefix("p:")
+                .or_else(|| entry.strip_prefix("p0:"))
+        })
+        .next_back()
+        .and_then(|entry| entry.split(':').nth(3))
+        .and_then(|bits| bits.parse::<u32>().ok())
+        .unwrap_or(pointer_bits);
+    (1_u64 << (index_bits.clamp(1, 64) - 1)) - 1
 }
 
 fn message_payload_layouts<'a>(
@@ -3543,6 +3568,7 @@ fn compile_native_jit(
                 module.get(),
                 target_machine.get(),
                 super::jit_utils::map_opt_level(options.opt_level),
+                options.fast_math,
             )
             .map_err(codegen_diagnostic)?;
             verify_module(module.get())?;
@@ -3643,6 +3669,7 @@ fn emit_native_ir(
             module.get(),
             target_machine.get(),
             super::jit_utils::map_opt_level(options.opt_level),
+            options.fast_math,
         )
         .map_err(codegen_diagnostic)?;
         verify_module(module.get())?;
@@ -3673,6 +3700,7 @@ fn emit_targeted_native_ir(
             module.get(),
             target_machine.get(),
             resolved.opt_level,
+            options.fast_math,
         )
         .map_err(codegen_diagnostic)?;
         verify_module(module.get())?;
@@ -3722,6 +3750,7 @@ fn emit_targeted_native_object_parts(
             module.get(),
             target_machine.get(),
             resolved.opt_level,
+            options.fast_math,
         )
         .map_err(codegen_diagnostic)?;
         verify_module(module.get())?;
