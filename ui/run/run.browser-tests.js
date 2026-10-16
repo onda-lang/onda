@@ -1,4 +1,5 @@
 // Executed against the real run view DOM by run.test.js.
+import { testBufferDrops } from "./buffer-tests.js";
 const results = [];
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -732,6 +733,23 @@ async function checkDefaultLayout() {
       && Math.abs(checkboxBounds.top + checkboxBounds.height / 2
         - blockBounds.top - blockBounds.height / 2) < 1,
       "the larger Fast Math checkbox aligns with the unloaded selectors' vertical center");
+    for (const width of [320, 400]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2);
+      const block = doc.getElementById("run-block-size").getBoundingClientRect();
+      const rate = doc.getElementById("run-sample-rate").getBoundingClientRect();
+      check(block.width >= 100 && rate.width >= 100
+        && fastMathControl.getBoundingClientRect().top >= block.bottom,
+        `${width}px: unloaded selectors stay readable with Fast Math on the next row`);
+      for (const label of doc.querySelectorAll(".file-picker-options .param-setting-label")) {
+        const range = doc.createRange();
+        range.selectNodeContents(label);
+        check(range.getClientRects().length === 1,
+          `${width}px: unloaded setting labels stay on one line`);
+      }
+    }
+    frame.style.width = "720px";
+    await waitFrames(2);
     fastMath.click();
     check(fastMathMessages().at(-1)?.enabled === false, "Fast Math edits request a host-owned compile option");
     view._onHostMessage({ type: "state", state: { fastMath: false } });
@@ -875,10 +893,10 @@ async function checkResponsiveParameterGrid() {
         Math.abs(card.getBoundingClientRect().width - width) < 1),
         `${layout}: sparse scalar and array groups keep the same widths as a full grid`);
       const name = doc.querySelector("#params .param-name");
-      check(name.textContent === "frequency" && name.title === "frequency (Hz) (f32)"
-        && name.nextElementSibling.textContent === "(Hz)"
+      check(name.textContent === "frequency (Hz)" && name.title === "frequency (Hz) (f32)"
+        && name.nextElementSibling.textContent === "f32"
         && name.parentElement.querySelector(".param-type").textContent === "f32",
-        `${layout}: units and scalar types stay visible beside parameter names`);
+        `${layout}: name and unit share one label beside the scalar type`);
     }
     const longName = "oscillator_frequency_with_a_long_parameter_name";
     view._onHostMessage({ type: "state", state: { params: [
@@ -892,19 +910,18 @@ async function checkResponsiveParameterGrid() {
       for (const layout of ["knobs", "sliders"]) {
         doc.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
         await waitFrames(2);
-        for (const head of doc.querySelectorAll("#params .param-head")) {
+        for (const [index, head] of [...doc.querySelectorAll("#params .param-head")].entries()) {
           const name = head.querySelector(".param-name");
-          const unit = head.querySelector(".param-unit");
           const type = head.querySelector(".param-type");
           const headRect = head.getBoundingClientRect();
-          const unitRect = unit.getBoundingClientRect();
           const typeRect = type.getBoundingClientRect();
-          check(name.scrollWidth > name.clientWidth && unit.scrollWidth === unit.clientWidth
-            && unitRect.left >= headRect.left && unitRect.right <= headRect.right + 1
-            && name.getBoundingClientRect().right + 5 <= unitRect.left
+          check(name.scrollWidth > name.clientWidth
+            && name.textContent === `${longName} (${["Hz", "dB", "ms"][index]})`
+            && name.title === `${name.textContent} (f32)`
             && type.textContent === "f32" && type.scrollWidth === type.clientWidth
-            && unitRect.right + 5 <= typeRect.left && typeRect.right <= headRect.right + 1,
-            `${width}-pixel ${layout}: the full ${unit.textContent} unit and type stay visible beside the truncated name`);
+            && name.getBoundingClientRect().right + 5 <= typeRect.left
+            && typeRect.right <= headRect.right + 1,
+            `${width}-pixel ${layout}: name and unit truncate together while the full type stays visible`);
         }
       }
     }
@@ -1332,6 +1349,7 @@ try {
   await checkDefaultLayout();
   await checkContentBoxScope();
   await checkEmbeddedHosts();
+  await testBufferDrops(check, waitFrames);
   await checkThemedFormControls();
   await checkInputControls();
   await checkResponsiveParameterGrid();

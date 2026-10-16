@@ -774,6 +774,9 @@ async function startAudio() {
       runView.setArtifact(artifact, bufferFiles);
     }
     const buffers = await prepareBufferBindings(metadata, bufferFiles, compiler);
+    runView.updateBufferFiles(Object.entries(buffers).map(([name, metadata]) => ({
+      name, file: bufferFiles.get(name), metadata,
+    })));
     const params = Object.fromEntries(
       runView.state.params.map((param) => [param.name, param.value]),
     );
@@ -892,11 +895,7 @@ async function bindBufferFile(name, file) {
     return;
   }
   bufferFiles.set(name, file);
-  runView.updateBufferFile(name, file, {
-    frames: binding.frames,
-    channels: binding.channels,
-    sampleRate: binding.sampleRate,
-  });
+  runView.updateBufferFile(name, file, binding);
   if (context) {
     await restartAudioForBuffers();
   } else if (processingRequested) {

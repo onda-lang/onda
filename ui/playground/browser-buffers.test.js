@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   decodeOndaBuffer,
   encodeOndaBuffer,
+  prepareBufferBinding,
   prepareBufferBindings,
 } from "./browser-buffers.js";
 
@@ -95,6 +96,12 @@ test("prepares bindings from validated WAV files", async () => {
 
   assert.deepEqual([...bindings.clip.data], [0.25, -0.25]);
   assert.equal(bindings.clip.frames, 2);
+  assert.deepEqual(bindings.clip.waveform, {
+    minValue: -0.25,
+    maxValue: 0.25,
+    minimums: [0.25, -0.25],
+    maximums: [0.25, -0.25],
+  });
 });
 
 test("canonical Onda buffers round-trip every typed payload byte", async () => {
@@ -126,5 +133,44 @@ test("canonical Onda buffers round-trip every typed payload byte", async () => {
     const decoded = await decodeOndaBuffer(encoded, projectApi);
     assert.equal(decoded.scalar, scalar);
     assert.deepEqual([...decoded.data], [...data]);
+  }
+});
+
+test("waveforms preserve stereo peaks and the final frame within 128 columns", async () => {
+  const data = new Float32Array(257 * 2);
+  data[128 * 2 + 1] = -9.5;
+  data[data.length - 1] = 7.75;
+  const binding = await prepareBufferBinding(
+    { scalar: "f32" },
+    new File([], "stereo.wav"),
+    { decodeBufferFile: async () => ({ element: "f32", frames: 257, channels: 2, data }) },
+  );
+  assert.equal(binding.waveform.minimums.length, 128);
+  assert.equal(binding.waveform.maximums.length, 128);
+  assert.equal(binding.waveform.minValue, -9.5);
+  assert.equal(binding.waveform.maxValue, 7.75);
+  assert.ok(binding.waveform.minimums.includes(-9.5));
+  assert.equal(binding.waveform.maximums.at(-1), 7.75);
+});
+
+test("waveforms handle typed, empty, and non-finite samples", async () => {
+  for (const [element, data, minimums, maximums] of [
+    ["bool", new Uint8Array([0, 1]), [0, 1], [0, 1]],
+    ["i32", new Int32Array([-2, 7]), [-2, 7], [-2, 7]],
+    ["i64", new BigInt64Array([-2n, 9n]), [-2, 9], [-2, 9]],
+    ["f32", new Float32Array([]), [], []],
+    ["f64", new Float64Array([NaN, Infinity, -Infinity, 0.5]), [0, 0, 0, 0.5], [0, 0, 0, 0.5]],
+  ]) {
+    const { waveform } = await prepareBufferBinding(
+      { scalar: element },
+      new File([], "typed.ondabuffer"),
+      { decodeBufferFile: async () => ({ element, frames: data.length, channels: 1, data }) },
+    );
+    assert.deepEqual(waveform, {
+      minValue: minimums.length ? Math.min(...minimums) : 0,
+      maxValue: maximums.length ? Math.max(...maximums) : 0,
+      minimums,
+      maximums,
+    });
   }
 });

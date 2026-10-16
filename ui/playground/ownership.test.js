@@ -73,7 +73,7 @@ test("the shared MIDI keyboard uses themed keys without a computer-key legend", 
 
 test("the native buffer cards render bounded peak-preserving waveform previews", async () => {
   const [runView, daemon] = await Promise.all([
-    readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
+    readFile(resolve(repoRoot, "ui/run/buffers.js"), "utf8"),
     readFile(resolve(repoRoot, "crates/onda_daemon/src/run_session.rs"), "utf8"),
   ]);
 

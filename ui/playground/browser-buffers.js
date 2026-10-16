@@ -32,7 +32,38 @@ export async function prepareBufferBinding(buffer, file, projectApi) {
       `Onda buffer '${buffer.name}' requires ${declaredChannels} channel(s), but '${file.name}' has ${decoded.channels}`,
     );
   }
-  return decoded;
+  return { ...decoded, waveform: bufferWaveform(decoded) };
+}
+
+function bufferWaveform({ data, frames, channels }) {
+  const columns = Math.min(frames, 128);
+  const minimums = [];
+  const maximums = [];
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (let column = 0; column < columns; column++) {
+    const start = Math.floor(column * frames / columns) * channels;
+    const end = Math.min(Math.floor((column + 1) * frames / columns) * channels, data.length);
+    let minimum = Infinity;
+    let maximum = -Infinity;
+    for (let index = start; index < end; index++) {
+      const value = Number(data[index]);
+      if (!Number.isFinite(value)) continue;
+      minimum = Math.min(minimum, value);
+      maximum = Math.max(maximum, value);
+    }
+    if (!Number.isFinite(minimum)) minimum = maximum = 0;
+    minimums.push(minimum);
+    maximums.push(maximum);
+    minValue = Math.min(minValue, minimum);
+    maxValue = Math.max(maxValue, maximum);
+  }
+  return {
+    minValue: Number.isFinite(minValue) ? minValue : 0,
+    maxValue: Number.isFinite(maxValue) ? maxValue : 0,
+    minimums,
+    maximums,
+  };
 }
 
 const ONDA_BUFFER_MAGIC = new TextEncoder().encode("ONDABUF\0");

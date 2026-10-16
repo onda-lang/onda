@@ -5,6 +5,16 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.33]
+
+### Added
+
+- Load or replace buffers by dropping a single WAV or `.ondabuffer` file onto a buffer card
+  in `onda run` with egui or native webviews and in the browser editor playground.
+  The target card highlights during the drag, including drags from Wayland applications
+  into the native egui window through XWayland. Repeated native reports of the same
+  file keep the highlight visible instead of being mistaken for multiple files.
+
 ## [0.8.32]
 
 ### Removed
@@ -1268,6 +1278,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.33]: https://github.com/onda-lang/onda/compare/0.8.32...0.8.33
 [0.8.32]: https://github.com/onda-lang/onda/compare/0.8.31...0.8.32
 [0.8.31]: https://github.com/onda-lang/onda/compare/0.8.30...0.8.31
 [0.8.30]: https://github.com/onda-lang/onda/compare/0.8.29...0.8.30

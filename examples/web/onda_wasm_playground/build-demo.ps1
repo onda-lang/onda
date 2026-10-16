@@ -50,6 +50,7 @@ Copy-Item (Join-Path $webAudioPackage "src\processor-constants.js") (Join-Path $
 Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\execution-output-ring.js") (Join-Path $webAudioOut "execution-output-ring.js") -Force
 Copy-Item (Join-Path $repoRoot "ui\run\run.html") (Join-Path $demoDir "run.html") -Force
+Copy-Item (Join-Path $repoRoot "ui\run\buffers.js") (Join-Path $demoDir "buffers.js") -Force
 Copy-Item (Join-Path $repoRoot "ui\number-input.js") (Join-Path $demoDir "number-input.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $demoDir "param-control.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $demoDir "payload.js") -Force

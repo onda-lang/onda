@@ -214,9 +214,16 @@ fn section_tab_order_starts_with_disclosure_then_actions() {
                                 ui.make_persistent_id("events"),
                                 true,
                             );
-                        crate::render_section_header(ui, &mut state, "Events", |ui| {
-                            reset_rect = super::reset_icon_button(ui, "Reset event arguments").rect;
-                        });
+                        crate::render_section_header(
+                            ui,
+                            &mut state,
+                            "Events",
+                            crate::PARAM_HEADER_CONTROL_HEIGHT,
+                            |ui| {
+                                reset_rect =
+                                    super::reset_icon_button(ui, "Reset event arguments").rect;
+                            },
+                        );
                     });
                 },
             );
@@ -2182,6 +2189,144 @@ fn folding_midi_releases_holds_and_preserves_computer_playback_while_folded() {
             }
             if frame == 6 {
                 assert_eq!(app.computer_notes.get(&egui::Key::A), Some(&60));
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_buffer_cards_keep_long_names_and_actions_inside_the_panel() {
+    for width in [240.0, 320.0, 400.0, 720.0] {
+        let ctx = egui::Context::default();
+        apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+        let mut app = RunApp::new(None, RunHostOptions::default(), None, ParamLayout::Knobs);
+        let buffer = json!({
+            "name": "secondary_recording_with_a_long_name", "type": "buffer<f32[]>",
+            "loadedPath": "recording_of_the_rehearsal_with_a_very_long_filename.wav",
+            "loadedFrames": 458496, "loadedChannels": 1, "loadedSampleRate": 44100,
+        });
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 500.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.render_buffers(ui, std::slice::from_ref(&buffer))
+                });
+            },
+        );
+        for shape in output.shapes {
+            match shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.corner_radius == crate::CARD_CORNER_RADIUS.into() =>
+                {
+                    assert!(
+                        rect.rect.right() <= width - 7.0,
+                        "card overflows at {width}: {:?}",
+                        rect.rect
+                    );
+                }
+                egui::Shape::Text(text)
+                    if ["Replace", "Clear"].contains(&text.galley.job.text.as_str()) =>
+                {
+                    assert!(
+                        text.pos.x >= 8.0 && text.pos.x + text.galley.size().x <= width - 8.0,
+                        "action clipped at {width}: {:?}",
+                        text.galley.job.text
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_log_rows_keep_messages_visible_beside_long_source_context() {
+    let ctx = egui::Context::default();
+    apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+    let app = RunApp::new(None, RunHostOptions::default(), None, ParamLayout::Knobs);
+    let mut state = stereo_state(false);
+    state.log_text = "Visual review: processor initialized".to_owned();
+    state.log_entries = vec![json!({"source": {
+        "file": "sampler_with_a_long_descriptive_project_name.onda", "line": 19,
+    }})];
+    let output = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 200.0),
+            )),
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.render_log(ui, &state));
+        },
+    );
+    let message = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == state.log_text => Some(text),
+            _ => None,
+        })
+        .expect("log message");
+    assert!(
+        message.pos.x >= 8.0,
+        "log message is pushed outside the panel: {:?}",
+        message.pos
+    );
+    assert!(
+        message.galley.rows.len() <= 4,
+        "source context leaves too little room for the message"
+    );
+}
+
+#[test]
+fn unloaded_settings_stay_inside_narrow_panels() {
+    for width in [240.0, 320.0, 400.0, 720.0] {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let theme = RunTheme::from_dark_mode(true);
+        apply_run_theme(&ctx, &theme);
+        let mut app = RunApp::new(
+            None,
+            RunHostOptions {
+                show_fast_math: true,
+                ..Default::default()
+            },
+            None,
+            ParamLayout::Knobs,
+        );
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 640.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| app.render_file_picker(ui, &theme, false));
+            },
+        );
+        for shape in output.shapes {
+            if let egui::Shape::Text(text) = shape.shape {
+                if ["Sample rate", "Block size", "Fast Math"]
+                    .contains(&text.galley.job.text.as_str())
+                {
+                    assert!(
+                        text.pos.x >= 20.0 && text.pos.x + text.galley.size().x <= width - 20.0,
+                        "settings label {:?} overflows a {width}px panel at {:?}",
+                        text.galley.job.text,
+                        text.pos
+                    );
+                }
             }
         }
     }

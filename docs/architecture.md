@@ -375,6 +375,9 @@ Non-crate directories of note:
 
 ### `onda_egui` (`crates/onda_egui/src`)
 - `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
+- `buffer_drop.rs`, `buffer_drop/x11.rs` — buffer-card drop targeting and native drag coordinates.
+  Linux observes XDND coordinates through Xlib's event converter while preserving winit's
+  original events; core pointer queries can remain stale during Wayland-to-XWayland drags.
 - `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
 - `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
 - `input_controls.rs` — optional host-owned Input Controls section and scalar editor rendering

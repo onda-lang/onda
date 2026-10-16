@@ -54,6 +54,7 @@ mod platform {
     const PARAM_CONTROL_JS: &str =
         include_str!("../../../packages/onda_processor_abi/src/param-control.js");
     const NUMBER_INPUT_JS: &str = include_str!("../../../ui/number-input.js");
+    const BUFFERS_JS: &str = include_str!("../../../ui/run/buffers.js");
     #[cfg(target_os = "macos")]
     const APP_ICON_DARK_PNG: &[u8] =
         include_bytes!("../../../assets/png/onda-app-icon-dark-1024.png");
@@ -73,7 +74,7 @@ mod platform {
         },
         OndaFileDialogResult(Option<PathBuf>),
         ProjectSaveDialogResult(Option<PathBuf>),
-        OndaFileDropped(PathBuf),
+        FileDrag(DragDropEvent),
     }
 
     pub fn run_run_window(
@@ -103,6 +104,7 @@ mod platform {
             r#"
             {PARAM_CONTROL_JS}
             {NUMBER_INPUT_JS}
+            {BUFFERS_JS}
             window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}", ondaVersion: {onda_version} }};
             window.__ondaForcedTheme = "{theme_mode}";
             if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
@@ -119,11 +121,7 @@ mod platform {
                 let _ = ipc_proxy.send_event(UserEvent::WebviewMessage(msg.body().to_owned()));
             })
             .with_drag_drop_handler(move |event| {
-                if let DragDropEvent::Drop { paths, .. } = event {
-                    if let Some(path) = paths.into_iter().find(|path| is_loadable_path(path)) {
-                        let _ = drop_proxy.send_event(UserEvent::OndaFileDropped(path));
-                    }
-                }
+                let _ = drop_proxy.send_event(UserEvent::FileDrag(event));
                 true
             })
             .build(&window)
@@ -248,16 +246,24 @@ mod platform {
                         );
                     }
                 }
-                Event::UserEvent(UserEvent::OndaFileDropped(path)) => {
+                Event::UserEvent(UserEvent::FileDrag(event)) => {
                     if controller.is_none() {
-                        load_run_controller(
-                            &path,
-                            &options,
-                            &window,
-                            &mut controller,
-                            &mut load_error,
-                        );
-                        pending_state_sync = true;
+                        if let DragDropEvent::Drop { paths, .. } = event {
+                            if let Some(path) =
+                                paths.into_iter().find(|path| is_loadable_path(path))
+                            {
+                                load_run_controller(
+                                    &path,
+                                    &options,
+                                    &window,
+                                    &mut controller,
+                                    &mut load_error,
+                                );
+                                pending_state_sync = true;
+                            }
+                        }
+                    } else {
+                        send_file_drag(&webview, event, window.scale_factor());
                     }
                 }
                 _ => {}
@@ -727,6 +733,41 @@ mod platform {
 
     fn eval_js(webview: &wry::WebView, script: &str) {
         let _ = webview.evaluate_script(script);
+    }
+
+    fn send_file_drag(webview: &wry::WebView, event: DragDropEvent, scale_factor: f64) {
+        let (phase, paths, position) = match event {
+            DragDropEvent::Enter { paths, position } => ("enter", Some(paths), Some(position)),
+            DragDropEvent::Over { position } => ("over", None, Some(position)),
+            DragDropEvent::Drop { paths, position } => ("drop", Some(paths), Some(position)),
+            DragDropEvent::Leave => ("leave", None, None),
+            _ => return,
+        };
+        // Wry reports physical pixels on Windows and logical AppKit points on macOS.
+        let scale = if cfg!(target_os = "windows") {
+            scale_factor
+        } else {
+            1.0
+        };
+        let paths = paths.map(|paths| {
+            paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        });
+        let message = serde_json::json!({
+            "type": "bufferFileDrag",
+            "phase": phase,
+            "paths": paths,
+            "position": position.map(|(x, y)| serde_json::json!({
+                "x": f64::from(x) / scale,
+                "y": f64::from(y) / scale,
+            })),
+        });
+        eval_js(
+            webview,
+            &format!("if(window._onHostMessage)window._onHostMessage({message})"),
+        );
     }
 
     fn load_app_icon(is_dark: bool) -> Result<Icon, String> {

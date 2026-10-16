@@ -198,17 +198,24 @@ export class BrowserRunViewHost {
   }
 
   updateBufferFile(name, file, metadata = null) {
-    this.state.buffers = this.state.buffers.map((buffer) =>
-      buffer.name === name
-        ? {
-            ...buffer,
-            loadedPath: file?.name ?? null,
-            loadedFrames: file ? metadata?.frames ?? null : null,
-            loadedChannels: file ? metadata?.channels ?? null : null,
-            loadedSampleRate: file ? metadata?.sampleRate ?? null : null,
-          }
-        : buffer
-    );
+    this.updateBufferFiles([{ name, file, metadata }]);
+  }
+
+  updateBufferFiles(updates) {
+    const byName = new Map(updates.map(update => [update.name, update]));
+    this.state.buffers = this.state.buffers.map(buffer => {
+      const update = byName.get(buffer.name);
+      if (!update) return buffer;
+      const { file, metadata } = update;
+      return {
+        ...buffer,
+        loadedPath: file?.name ?? null,
+        loadedFrames: file ? metadata?.frames ?? null : null,
+        loadedChannels: file ? metadata?.channels ?? null : null,
+        loadedSampleRate: file ? metadata?.sampleRate ?? null : null,
+        waveform: file ? metadata?.waveform ?? null : null,
+      };
+    });
     this.state.error = "";
     this.postState();
   }
@@ -446,6 +453,7 @@ function mergeBuffers(buffers, existing, bufferFiles) {
       loadedFrames: preservesLoadedFile ? previous.loadedFrames ?? null : null,
       loadedChannels: preservesLoadedFile ? previous.loadedChannels ?? null : null,
       loadedSampleRate: preservesLoadedFile ? previous.loadedSampleRate ?? null : null,
+      waveform: preservesLoadedFile ? previous.waveform ?? null : null,
     };
   });
 }

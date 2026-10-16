@@ -95,6 +95,7 @@ cp "$webaudio_package/src/param-metadata.js" "$webaudio_out/param-metadata.js"
 cp "$webaudio_package/src/execution-output-ring.js" \
   "$webaudio_out/execution-output-ring.js"
 cp "$repo_root/ui/run/run.html" "$demo_dir/run.html"
+cp "$repo_root/ui/run/buffers.js" "$demo_dir/buffers.js"
 cp "$repo_root/ui/number-input.js" "$demo_dir/number-input.js"
 cp "$abi_package/src/param-control.js" "$demo_dir/param-control.js"
 cp "$abi_package/src/payload.js" "$demo_dir/payload.js"

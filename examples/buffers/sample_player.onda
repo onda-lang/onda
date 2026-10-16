@@ -4,9 +4,7 @@ buffers:
   clip: f32[]
 
 params:
-  speed = 1.0 {0.25, 4.0, scale = log, unit = "x"}
-
-delegate playback_finished()
+  speed = 1.0 {0.25, 4.0, scale = log}
 
 init:
   player = std::sample::Player(clip = clip)
@@ -17,9 +15,6 @@ events:
 
   stop():
     player.stop()
-
-when player.finished():
-  playback_finished()
 
 sample:
   out1, out2 = player(speed = speed)

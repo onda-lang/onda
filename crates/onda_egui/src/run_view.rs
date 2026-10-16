@@ -6,7 +6,7 @@ use onda_run::RunState;
 use super::{
     compact_button, draw_scope, error_text, format_run_status, render_param_header,
     render_section_header, run_logo, section_box, section_frame, RunApp, RunTheme,
-    COMPACT_FONT_SIZE, PARAM_HEADER_CONTROL_HEIGHT, SMALL_FONT_SIZE,
+    ACTION_BUTTON_HEIGHT, COMPACT_FONT_SIZE, PARAM_HEADER_CONTROL_HEIGHT, SMALL_FONT_SIZE,
 };
 
 #[cfg(test)]
@@ -115,7 +115,13 @@ impl RunApp {
                 ui.make_persistent_id("scope-section"),
                 true,
             );
-            render_section_header(ui, &mut scope_state, "Scope", |_| {});
+            render_section_header(
+                ui,
+                &mut scope_state,
+                "Scope",
+                PARAM_HEADER_CONTROL_HEIGHT,
+                |_| {},
+            );
             scope_state.show_body_unindented(ui, |ui| {
                 ui.add_space(8.0);
                 draw_scope(
@@ -153,10 +159,8 @@ impl RunApp {
                         true,
                     );
                 let mut clear_log = false;
-                render_section_header(ui, &mut log_state, "Log", |ui| {
-                    clear_log = ui
-                        .add(compact_button("Clear").min_size(egui::vec2(48.0, 26.0)))
-                        .clicked();
+                render_section_header(ui, &mut log_state, "Log", ACTION_BUTTON_HEIGHT, |ui| {
+                    clear_log = ui.add(compact_button("Clear", 48.0)).clicked();
                 });
                 if clear_log {
                     self.controller
@@ -180,7 +184,13 @@ impl RunApp {
                         ui.make_persistent_id("buffers-section"),
                         true,
                     );
-                render_section_header(ui, &mut buffers_state, "Buffers", |_| {});
+                render_section_header(
+                    ui,
+                    &mut buffers_state,
+                    "Buffers",
+                    PARAM_HEADER_CONTROL_HEIGHT,
+                    |_| {},
+                );
                 buffers_state.show_body_unindented(ui, |ui| {
                     ui.add_space(8.0);
                     self.render_buffers(ui, &state.buffers);
@@ -197,15 +207,21 @@ impl RunApp {
                         ui.make_persistent_id("events-section"),
                         true,
                     );
-                render_section_header(ui, &mut events_state, "Events", |ui| {
-                    if reset_icon_button(ui, "Reset event arguments to defaults").clicked() {
-                        self.controller
-                            .as_mut()
-                            .expect("loaded run controller")
-                            .reset_event_arguments();
-                        self.reset_event_inputs();
-                    }
-                });
+                render_section_header(
+                    ui,
+                    &mut events_state,
+                    "Events",
+                    PARAM_HEADER_CONTROL_HEIGHT,
+                    |ui| {
+                        if reset_icon_button(ui, "Reset event arguments to defaults").clicked() {
+                            self.controller
+                                .as_mut()
+                                .expect("loaded run controller")
+                                .reset_event_arguments();
+                            self.reset_event_inputs();
+                        }
+                    },
+                );
                 events_state.show_body_unindented(ui, |ui| {
                     ui.add_space(8.0);
                     self.render_events(ui, &state.events, state.connected);
@@ -545,7 +561,7 @@ impl RunApp {
         if ui
             .add_sized(
                 [ui.available_width(), 32.0],
-                compact_button("Refresh Devices"),
+                compact_button("Refresh Devices", 0.0),
             )
             .clicked()
         {
@@ -720,8 +736,7 @@ fn device_settings_button<R>(
 pub(super) fn reset_icon_button(ui: &mut egui::Ui, label: &'static str) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().interact_size.y = PARAM_HEADER_CONTROL_HEIGHT;
-        let response =
-            ui.add(compact_button("").min_size(egui::Vec2::splat(PARAM_HEADER_CONTROL_HEIGHT)));
+        let response = ui.add(super::icon_button(""));
         HeaderIcon::Reset(label).decorate(ui, response)
     })
     .inner

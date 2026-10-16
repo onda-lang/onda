@@ -41,6 +41,8 @@ across recompiles.
 
 **Share** puts project sources and the main and active files in the URL fragment.
 Compile settings and selected buffer data stay local.
+Bind a WAV or `.ondabuffer` by dropping it onto the corresponding buffer card
+or using its Bind/Replace button.
 
 ## Tests
 

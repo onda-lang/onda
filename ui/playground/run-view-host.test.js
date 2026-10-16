@@ -370,6 +370,41 @@ test("distinguishes IEEE-special event defaults when preserving values", () => {
   assert.equal(infinity.args[0].value[0], Infinity);
 });
 
+test("publishes buffer previews together and preserves them through recompiles", () => {
+  const host = Object.create(BrowserRunViewHost.prototype);
+  host.state = { params: [], events: [], buffers: [] };
+  host.handlers = {};
+  let publications = 0;
+  host.postState = () => publications++;
+  const artifact = { metadata: { metadata: {
+    params: [], events: [], outputs: [],
+    buffers: ["clip", "other"].map(name => ({ name, type_repr: "buffer<f32>" })),
+  } } };
+  const files = new Map([ ["clip", { name: "clip.wav" }], ["other", { name: "other.wav" }] ]);
+  const waveform = { minValue: -0.5, maxValue: 1, minimums: [-0.5], maximums: [1] };
+  host.setArtifact(artifact, files);
+  const before = publications;
+  host.updateBufferFiles([...files].map(([name, file]) => ({
+    name, file, metadata: { frames: 2, channels: 1, sampleRate: 48_000, waveform },
+  })));
+  assert.equal(publications, before + 1);
+  assert.deepEqual(host.state.buffers.map(buffer => buffer.waveform), [waveform, waveform]);
+
+  host.setArtifact(artifact, files);
+  assert.deepEqual(host.state.buffers.map(buffer => buffer.waveform), [waveform, waveform]);
+  const replacement = { minValue: 0, maxValue: 0, minimums: [0], maximums: [0] };
+  host.updateBufferFile("clip", { name: "replacement.wav" }, {
+    frames: 1, channels: 1, sampleRate: 48_000, waveform: replacement,
+  });
+  assert.deepEqual(host.state.buffers[0].waveform, replacement);
+  host.updateBufferFile("clip", null);
+  assert.equal(host.state.buffers[0].waveform, null);
+  assert.equal(host.state.buffers[0].loadedFrames, null);
+
+  host.setArtifact(artifact, new Map([["other", { name: "different.wav" }]]));
+  assert.equal(host.state.buffers[1].waveform, null);
+});
+
 test("allows browser playback while buffers are unbound", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;

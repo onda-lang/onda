@@ -9,6 +9,7 @@ use onda_run::{
 };
 use serde_json::{Number, Value};
 
+mod buffer_drop;
 pub mod input_controls;
 mod number_input;
 mod run_view;
@@ -26,6 +27,7 @@ const APP_ICON_DARK_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-ic
 const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon-1024.png");
 #[cfg(not(target_os = "macos"))]
 const APP_ICON_LIGHT_PNG: &[u8] = include_bytes!("../../../assets/png/onda-app-icon.png");
+const BUFFER_FILE_PROMPT: &str = "Choose or drop a file to bind the buffer";
 const RUN_APP_ID: &str = "onda-run";
 const PARAM_LAYOUT_STORAGE_KEY: &str = "onda.run-view.param-layout.v1";
 const FLOAT_CONTROL_TARGET_STEPS: f64 = 2_000.0;
@@ -43,7 +45,9 @@ const EVENT_ARRAY_CELL_GAP: f32 = 7.0;
 const RUN_SAMPLE_RATE_CHOICES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 const RUN_BLOCK_SIZE_CHOICES: [usize; 6] = [64, 128, 256, 512, 1_024, 2_048];
 const CONTROL_CORNER_RADIUS: f32 = 5.0;
-const PARAM_HEADER_CONTROL_HEIGHT: f32 = 26.0;
+const ICON_BUTTON_SIZE: f32 = 26.0;
+const PARAM_HEADER_CONTROL_HEIGHT: f32 = ICON_BUTTON_SIZE;
+const ACTION_BUTTON_HEIGHT: f32 = 30.0;
 const CONTROL_GROUP_CORNER_RADIUS: f32 = 8.0;
 const CARD_CORNER_RADIUS: f32 = 9.0;
 const SECTION_CORNER_RADIUS: f32 = 12.0;
@@ -93,12 +97,14 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
             let initial_icon_dark = resolved_theme_is_dark(&cc.egui_ctx, theme_mode);
             let current_icon_dark =
                 set_app_icon(&cc.egui_ctx, initial_icon_dark).then_some(initial_icon_dark);
-            Ok(Box::new(RunApp::new(
+            let mut app = RunApp::new(
                 controller,
                 options,
                 current_icon_dark,
                 ParamLayout::load(cc.storage),
-            )))
+            );
+            app.file_drag = buffer_drop::FileDrag::new(cc);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|err| format!("failed to start egui run: {err}"))
@@ -241,6 +247,8 @@ struct RunApp {
     midi_running: bool,
     computer_notes: HashMap<egui::Key, i32>,
     pointer_note: Option<i32>,
+    file_drag: buffer_drop::FileDrag,
+    buffer_drop_position: Option<egui::Pos2>,
 }
 
 impl RunApp {
@@ -268,6 +276,8 @@ impl RunApp {
             midi_running: false,
             computer_notes: HashMap::new(),
             pointer_note: None,
+            file_drag: buffer_drop::FileDrag::default(),
+            buffer_drop_position: None,
         };
         app.sync_event_inputs();
         app
@@ -785,14 +795,18 @@ impl RunApp {
             },
             egui::StrokeKind::Inside,
         );
+        let content_width = (panel_rect.width() - 48.0).max(0.0);
+        let settings_width = content_width.min(380.0);
+        let inline_fast_math = self.options.show_fast_math && settings_width >= 360.0;
+        let stacked_fast_math = self.options.show_fast_math && !inline_fast_math;
         let content_height = if self.load_error.is_some() {
             293.0
         } else {
             255.0
-        };
+        } + if stacked_fast_math { 54.0 } else { 0.0 };
         let content_rect = egui::Rect::from_center_size(
             panel_rect.center(),
-            egui::vec2((panel_rect.width() - 48.0).max(0.0), content_height),
+            egui::vec2(content_width, content_height),
         );
         let mut content_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -821,29 +835,32 @@ impl RunApp {
             );
             content_ui.add_space(6.0);
             content_ui.add_sized(
-                [380.0, 19.0],
+                [content_width, 19.0],
                 egui::Label::new(
                     egui::RichText::new("Release anywhere in this window")
                         .weak()
                         .size(BODY_FONT_SIZE),
-                ),
+                )
+                .truncate(),
             );
             false
         } else {
             let clicked = content_ui
                 .add_sized(
-                    [220.0, 32.0],
-                    run_button(egui::RichText::new("Open Onda source or project").strong()),
+                    [content_width.min(220.0), 32.0],
+                    run_button(egui::RichText::new("Open Onda source or project").strong())
+                        .truncate(),
                 )
                 .clicked();
             content_ui.add_space(6.0);
             content_ui.add_sized(
-                [380.0, 19.0],
+                [content_width, 19.0],
                 egui::Label::new(
                     egui::RichText::new("or drop an .onda or .ondaproject file here")
                         .weak()
                         .size(BODY_FONT_SIZE),
-                ),
+                )
+                .truncate(),
             );
             clicked
         };
@@ -851,77 +868,77 @@ impl RunApp {
             self.choose_onda_file(content_ui.ctx());
         }
         content_ui.add_space(14.0);
-        let select_width = if self.options.show_fast_math {
-            138.0
-        } else {
-            184.0
-        };
-        content_ui.allocate_ui(egui::vec2(380.0, 62.0), |ui| {
+        let fast_math_help =
+            "Allow faster floating-point optimizations that can change numerical results.";
+        content_ui.allocate_ui(egui::vec2(settings_width, 62.0), |ui| {
             ui.spacing_mut().interact_size.y = 30.0;
-            ui.spacing_mut().item_spacing.y = 4.0;
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    for (label, width) in [
-                        ("Sample rate", select_width),
-                        ("Block size", select_width),
-                        ("Fast Math", 80.0),
-                    ].into_iter().take(if self.options.show_fast_math { 3 } else { 2 }) {
-                        ui.add_sized(
-                            [width, 16.0],
-                            egui::Label::new(egui::RichText::new(label).weak().size(SMALL_FONT_SIZE))
-                                .halign(egui::Align::Center),
-                        );
-                    }
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 4.0);
+            let label = |ui: &mut egui::Ui, text| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).weak().size(SMALL_FONT_SIZE))
+                        .truncate(),
+                );
+            };
+            ui.columns(if inline_fast_math { 3 } else { 2 }, |columns| {
+                columns[0].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    label(ui, "Sample rate");
+                    egui::ComboBox::from_id_salt("run-sample-rate")
+                        .width(ui.available_width())
+                        .truncate()
+                        .selected_text(format_sample_rate(self.options.sample_rate_hz as f64))
+                        .show_ui(ui, |ui| {
+                            for sample_rate in RUN_SAMPLE_RATE_CHOICES {
+                                ui.selectable_value(
+                                    &mut self.options.sample_rate_hz,
+                                    sample_rate,
+                                    format_sample_rate(sample_rate as f64),
+                                );
+                            }
+                        });
                 });
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(select_width, 30.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            egui::ComboBox::from_id_salt("run-sample-rate")
-                                .width(ui.available_width())
-                                .selected_text(format_sample_rate(
-                                    self.options.sample_rate_hz as f64,
-                                ))
-                                .show_ui(ui, |ui| {
-                                    for sample_rate in RUN_SAMPLE_RATE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.sample_rate_hz,
-                                            sample_rate,
-                                            format_sample_rate(sample_rate as f64),
-                                        );
-                                    }
-                                });
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(select_width, 30.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            egui::ComboBox::from_id_salt("run-block-size")
-                                .width(ui.available_width())
-                                .selected_text(format!("{} samples", self.options.block_samples))
-                                .show_ui(ui, |ui| {
-                                    for block_samples in RUN_BLOCK_SIZE_CHOICES {
-                                        ui.selectable_value(
-                                            &mut self.options.block_samples,
-                                            block_samples,
-                                            format!("{block_samples} samples"),
-                                        );
-                                    }
-                                });
-                        },
-                    );
-                    if self.options.show_fast_math {
-                        let response = centered_checkbox(ui, &mut self.options.fast_math, egui::vec2(80.0, 30.0), "Fast Math");
-                        response.on_hover_text(
-                            "Allow faster floating-point optimizations that can change numerical results.",
-                        );
-                    }
+                columns[1].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    label(ui, "Block size");
+                    egui::ComboBox::from_id_salt("run-block-size")
+                        .width(ui.available_width())
+                        .truncate()
+                        .selected_text(format!("{} samples", self.options.block_samples))
+                        .show_ui(ui, |ui| {
+                            for block_samples in RUN_BLOCK_SIZE_CHOICES {
+                                ui.selectable_value(
+                                    &mut self.options.block_samples,
+                                    block_samples,
+                                    format!("{block_samples} samples"),
+                                );
+                            }
+                        });
                 });
+                if inline_fast_math {
+                    columns[2].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        label(ui, "Fast Math");
+                        let width = ui.available_width();
+                        centered_checkbox(
+                            ui,
+                            &mut self.options.fast_math,
+                            egui::vec2(width, 30.0),
+                            "Fast Math",
+                        )
+                        .on_hover_text(fast_math_help);
+                    });
+                }
             });
+            if stacked_fast_math {
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    label(ui, "Fast Math");
+                    centered_checkbox(
+                        ui,
+                        &mut self.options.fast_math,
+                        egui::vec2(80.0, 30.0),
+                        "Fast Math",
+                    )
+                    .on_hover_text(fast_math_help);
+                });
+            }
         });
         if let Some(error) = &self.load_error {
             content_ui.add_space(12.0);
@@ -944,124 +961,117 @@ impl RunApp {
             let loaded_path = buffer.get("loadedPath").and_then(Value::as_str);
             let is_bound = buffer.get("loadedFrames").and_then(Value::as_u64).is_some();
             let loaded_summary = buffer_loaded_summary(buffer);
-            egui::Frame::group(ui.style())
+            let mut card = egui::Frame::group(ui.style())
                 .fill(ui.visuals().panel_fill)
                 .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                 .corner_radius(CARD_CORNER_RADIUS)
                 .inner_margin(egui::Margin::symmetric(8, 6))
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        ui.label(
-                            egui::RichText::new(name)
-                                .strong()
-                                .monospace()
-                                .size(HEADING_FONT_SIZE),
-                        );
-                        ui.label(
-                            egui::RichText::new(buffer_type_summary(buffer))
-                                .size(SMALL_FONT_SIZE)
-                                .weak()
-                                .monospace(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let clear_clicked = is_bound
-                                && ui
-                                    .add(compact_button("Clear").min_size(egui::vec2(48.0, 26.0)))
-                                    .clicked();
-                            let bind_label = if is_bound { "Replace" } else { "Bind" };
-                            let bind_clicked = ui
-                                .add(compact_button(bind_label).min_size(egui::vec2(56.0, 26.0)))
-                                .on_hover_text("Bind a WAV or .ondabuffer file to this buffer")
-                                .clicked();
+                .begin(ui);
+            {
+                let ui = &mut card.content_ui;
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let clear_clicked =
+                            is_bound && ui.add(compact_button("Clear", 48.0)).clicked();
+                        let bind_label = if is_bound { "Replace" } else { "Bind" };
+                        let bind_clicked = ui
+                            .add(compact_button(bind_label, 56.0))
+                            .on_hover_text(BUFFER_FILE_PROMPT)
+                            .clicked();
 
-                            if clear_clicked {
-                                self.controller
-                                    .as_mut()
-                                    .expect("loaded run controller")
-                                    .clear_buffer(name);
-                            }
-                            if bind_clicked {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("Onda buffer", &["wav", "ondabuffer"])
-                                    .set_title(format!("Bind '{name}' buffer"))
-                                    .pick_file()
-                                {
-                                    if let Some(file_path) = path.to_str() {
-                                        self.controller
-                                            .as_mut()
-                                            .expect("loaded run controller")
-                                            .bind_buffer_file(name, file_path);
-                                    }
+                        if clear_clicked {
+                            self.controller
+                                .as_mut()
+                                .expect("loaded run controller")
+                                .clear_buffer(name);
+                        }
+                        if bind_clicked {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Onda buffer", &["wav", "ondabuffer"])
+                                .set_title(format!("Bind '{name}' buffer"))
+                                .pick_file()
+                            {
+                                if let Some(file_path) = path.to_str() {
+                                    self.controller
+                                        .as_mut()
+                                        .expect("loaded run controller")
+                                        .bind_buffer_file(name, file_path);
                                 }
                             }
-                        });
-                    });
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        let file_name = match loaded_path {
-                            Some(path) => buffer_file_name(path),
-                            None if is_bound => "Embedded project asset".to_owned(),
-                            None => "No file bound".to_owned(),
-                        };
-                        if let Some(summary) = loaded_summary.as_deref() {
-                            let summary_width = ui
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let type_text = buffer_type_summary(buffer);
+                            let type_width = ui
                                 .painter()
                                 .layout_no_wrap(
-                                    summary.to_owned(),
+                                    type_text.clone(),
                                     egui::FontId::monospace(SMALL_FONT_SIZE),
                                     ui.visuals().weak_text_color(),
                                 )
                                 .size()
-                                .x;
-                            let file_width = (ui.available_width() - summary_width - 6.0).max(24.0);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(file_width, 18.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(file_name)
-                                                .size(COMPACT_FONT_SIZE)
-                                                .weak()
-                                                .monospace(),
-                                        )
-                                        .truncate(),
-                                    );
-                                },
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(summary)
-                                            .size(SMALL_FONT_SIZE)
-                                            .weak()
-                                            .monospace(),
-                                    );
-                                },
-                            );
-                        } else {
-                            ui.add(
+                                .x
+                                .min(ui.available_width() * 0.45);
+                            let name_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    name.to_owned(),
+                                    egui::FontId::monospace(HEADING_FONT_SIZE),
+                                    ui.visuals().strong_text_color(),
+                                )
+                                .size()
+                                .x
+                                .min((ui.available_width() - type_width - 7.0).max(0.0));
+                            ui.add_sized(
+                                [name_width, ACTION_BUTTON_HEIGHT],
                                 egui::Label::new(
-                                    egui::RichText::new(file_name)
-                                        .size(COMPACT_FONT_SIZE)
+                                    egui::RichText::new(name)
+                                        .strong()
+                                        .monospace()
+                                        .size(HEADING_FONT_SIZE),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(name);
+                            ui.add_sized(
+                                [type_width, ACTION_BUTTON_HEIGHT],
+                                egui::Label::new(
+                                    egui::RichText::new(&type_text)
+                                        .size(SMALL_FONT_SIZE)
                                         .weak()
                                         .monospace(),
                                 )
                                 .truncate(),
-                            );
-                        }
+                            )
+                            .on_hover_text(type_text);
+                        });
                     });
-                    if let Some(waveform) = buffer_waveform(buffer) {
-                        ui.add_space(4.0);
-                        let width = ui.available_width();
-                        let theme = RunTheme::from_dark_mode(ui.visuals().dark_mode);
-                        draw_buffer_waveform(ui, waveform, egui::vec2(width, 62.0), &theme);
-                    }
                 });
+                ui.add_space(2.0);
+                let file_name = match loaded_path {
+                    Some(path) => buffer_file_name(path),
+                    None if is_bound => "Embedded project asset".to_owned(),
+                    None => BUFFER_FILE_PROMPT.to_owned(),
+                };
+                render_buffer_details(ui, &file_name, loaded_summary.as_deref());
+                if let Some(waveform) = buffer_waveform(buffer) {
+                    ui.add_space(4.0);
+                    let width = ui.available_width();
+                    let theme = RunTheme::from_dark_mode(ui.visuals().dark_mode);
+                    draw_buffer_waveform(ui, waveform, egui::vec2(width, 62.0), &theme);
+                }
+            }
+            let rect = card.allocate_space(ui).rect;
+            let dropped =
+                buffer_drop::file_drop(ui, rect, self.buffer_drop_position, &mut card.frame);
+            card.paint(ui);
+            if let Some(path) = dropped {
+                self.controller
+                    .as_mut()
+                    .expect("loaded run controller")
+                    .bind_buffer_file(name, &path.to_string_lossy());
+            }
             ui.add_space(3.0);
         }
     }
@@ -1104,7 +1114,7 @@ impl RunApp {
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
                     ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), 30.0),
+                        egui::vec2(ui.available_width(), ACTION_BUTTON_HEIGHT),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             let name_text = egui::RichText::new(name)
@@ -1118,8 +1128,10 @@ impl RunApp {
                                     if ui
                                         .add_enabled(
                                             connected && valid,
-                                            compact_button(egui::RichText::new("Trigger").strong())
-                                                .min_size(egui::vec2(72.0, 30.0)),
+                                            compact_button(
+                                                egui::RichText::new("Trigger").strong(),
+                                                72.0,
+                                            ),
                                         )
                                         .clicked()
                                     {
@@ -1172,29 +1184,49 @@ impl RunApp {
                 .show(ui, |ui| {
                     for (index, line) in state.log_text.lines().enumerate() {
                         let context = log_entry_context(state.log_entries.get(index));
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), 0.0),
-                            egui::Layout::right_to_left(egui::Align::TOP),
-                            |ui| {
-                                if !context.is_empty() {
-                                    ui.label(
-                                        egui::RichText::new(context)
+                        let context_width = if context.is_empty() {
+                            0.0
+                        } else {
+                            ui.painter()
+                                .layout_no_wrap(
+                                    context.clone(),
+                                    egui::FontId::monospace(CAPTION_FONT_SIZE),
+                                    ui.visuals().weak_text_color(),
+                                )
+                                .size()
+                                .x
+                                .min(ui.available_width() * 0.4)
+                        };
+                        let message_width = (ui.available_width()
+                            - context_width
+                            - if context.is_empty() { 0.0 } else { 8.0 })
+                        .max(0.0);
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(message_width, 0.0),
+                                egui::Layout::left_to_right(egui::Align::TOP),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(line).monospace())
+                                            .wrap(),
+                                    );
+                                },
+                            );
+                            if !context.is_empty() {
+                                ui.add_sized(
+                                    [context_width, 14.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(&context)
                                             .size(CAPTION_FONT_SIZE)
                                             .weak()
                                             .monospace(),
-                                    );
-                                }
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::TOP),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(egui::RichText::new(line).monospace())
-                                                .wrap(),
-                                        );
-                                    },
-                                );
-                            },
-                        );
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(context);
+                            }
+                        });
                     }
                 });
         }
@@ -1230,6 +1262,7 @@ impl RunApp {
 
 impl eframe::App for RunApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.buffer_drop_position = self.file_drag.pointer_position(ctx);
         let file_hovered =
             self.controller.is_none() && ctx.input(|input| !input.raw.hovered_files.is_empty());
         if self.controller.is_none() {
@@ -1354,8 +1387,13 @@ fn run_button(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
     egui::Button::new(text).corner_radius(CONTROL_CORNER_RADIUS)
 }
 
-fn compact_button(text: impl Into<egui::RichText>) -> egui::Button<'static> {
+fn compact_button(text: impl Into<egui::RichText>, min_width: f32) -> egui::Button<'static> {
     run_button(text.into().size(COMPACT_FONT_SIZE))
+        .min_size(egui::vec2(min_width, ACTION_BUTTON_HEIGHT))
+}
+
+fn icon_button(text: impl Into<egui::RichText>) -> egui::Button<'static> {
+    run_button(text.into().size(COMPACT_FONT_SIZE)).min_size(egui::Vec2::splat(ICON_BUTTON_SIZE))
 }
 
 fn set_control_font_size(ui: &mut egui::Ui, size: f32) {
@@ -1400,7 +1438,7 @@ fn render_control_header(
         reset: false,
         smoothing_changed: false,
     };
-    render_section_header(ui, state, title, |ui| {
+    render_section_header(ui, state, title, PARAM_HEADER_CONTROL_HEIGHT, |ui| {
         set_control_font_size(ui, COMPACT_FONT_SIZE);
         actions.reset = run_view::reset_icon_button(ui, "Reset controls to defaults").clicked();
         if !narrow {
@@ -1557,6 +1595,7 @@ fn render_section_header(
     ui: &mut egui::Ui,
     state: &mut egui::collapsing_header::CollapsingState,
     title: &str,
+    height: f32,
     add_actions: impl FnOnce(&mut egui::Ui),
 ) {
     let bounds = ui.available_rect_before_wrap();
@@ -1576,11 +1615,11 @@ fn render_section_header(
         egui::UiBuilder::new()
             .max_rect(egui::Rect::from_min_size(
                 bounds.min,
-                egui::vec2(heading_width, PARAM_HEADER_CONTROL_HEIGHT),
+                egui::vec2(heading_width, height),
             ))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            ui.set_min_height(PARAM_HEADER_CONTROL_HEIGHT);
+            ui.set_min_height(height);
             ui.spacing_mut().item_spacing.x = 0.0;
             state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
             ui.label(egui::RichText::new(title).strong().size(HEADING_FONT_SIZE));
@@ -1590,11 +1629,11 @@ fn render_section_header(
         egui::UiBuilder::new()
             .max_rect(egui::Rect::from_min_max(
                 egui::pos2(actions_left, bounds.top()),
-                egui::pos2(bounds.right(), bounds.top() + PARAM_HEADER_CONTROL_HEIGHT),
+                egui::pos2(bounds.right(), bounds.top() + height),
             ))
             .layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)),
         |ui| {
-            ui.set_min_height(PARAM_HEADER_CONTROL_HEIGHT);
+            ui.set_min_height(height);
             add_actions(ui);
         },
     );
@@ -1765,7 +1804,7 @@ fn render_event_array_editor(
                 if ui
                     .add_enabled(
                         connected && values.len() < EVENT_ARRAY_VISIBLE_LIMIT,
-                        run_button("+").small(),
+                        icon_button("+"),
                     )
                     .on_hover_text("Add element")
                     .clicked()
@@ -1773,7 +1812,7 @@ fn render_event_array_editor(
                     values.push(default_value_for_type(scalar_ty));
                 }
                 if ui
-                    .add_enabled(connected && !values.is_empty(), run_button("−").small())
+                    .add_enabled(connected && !values.is_empty(), icon_button("−"))
                     .on_hover_text("Remove last element")
                     .clicked()
                 {
@@ -2198,11 +2237,6 @@ fn render_param_heading(
     } else {
         HEADING_FONT_SIZE
     });
-    let unit_galley = spec.unit.filter(|unit| !unit.is_empty()).map(|unit| {
-        ui.painter()
-            .layout_no_wrap(format!("({unit})"), font.clone(), name_color)
-    });
-    let unit_width = unit_galley.as_ref().map_or(0.0, |galley| galley.size().x);
     let type_color = ui.visuals().weak_text_color();
     let type_galley = ui.painter().layout_no_wrap(
         spec.ty.to_owned(),
@@ -2210,11 +2244,9 @@ fn render_param_heading(
         type_color,
     );
     let gap = 6.0;
-    let suffix_width =
-        type_galley.size().x + unit_width + if unit_galley.is_some() { gap } else { 0.0 };
-    let name_width = (width - suffix_width - gap).max(0.0);
+    let name_width = (width - type_galley.size().x - gap).max(0.0);
     let mut name_job =
-        egui::text::LayoutJob::simple_singleline(spec.label.to_owned(), font, name_color);
+        egui::text::LayoutJob::simple_singleline(spec.display_name(), font, name_color);
     name_job.wrap = egui::text::TextWrapping {
         max_width: name_width,
         max_rows: 1,
@@ -2222,7 +2254,7 @@ fn render_param_heading(
         ..Default::default()
     };
     let name_galley = ui.painter().layout_job(name_job);
-    let heading_width = name_galley.size().x + gap + suffix_width;
+    let heading_width = name_galley.size().x + gap + type_galley.size().x;
     let leading_space = match align {
         egui::Align::Min => 0.0,
         egui::Align::Center => (width - heading_width).max(0.0) / 2.0,
@@ -2242,20 +2274,12 @@ fn render_param_heading(
     });
     response.on_hover_text(format!("{} ({})", spec.display_name(), spec.ty));
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    let mut suffix_x = (name_pos.x + name_galley.size().x + gap).min(rect.right() - suffix_width);
-    for (galley, color) in unit_galley
-        .into_iter()
-        .map(|galley| (galley, name_color))
-        .chain(std::iter::once((type_galley, type_color)))
-    {
-        let next_x = suffix_x + galley.size().x + gap;
-        painter.galley(
-            egui::pos2(suffix_x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            color,
-        );
-        suffix_x = next_x;
-    }
+    let type_x = (name_pos.x + name_galley.size().x + gap).min(rect.right() - type_galley.size().x);
+    painter.galley(
+        egui::pos2(type_x, rect.center().y - type_galley.size().y / 2.0),
+        type_galley,
+        type_color,
+    );
     painter
         .with_clip_rect(
             egui::Rect::from_min_size(
@@ -2913,6 +2937,54 @@ fn buffer_file_name(path: &str) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_owned())
+}
+
+fn render_buffer_details(ui: &mut egui::Ui, file_name: &str, summary: Option<&str>) {
+    let file = egui::Label::new(
+        egui::RichText::new(file_name)
+            .size(COMPACT_FONT_SIZE)
+            .weak()
+            .monospace(),
+    )
+    .truncate();
+    let Some(summary) = summary else {
+        ui.add(file).on_hover_text(file_name);
+        return;
+    };
+    let summary_width = ui
+        .painter()
+        .layout_no_wrap(
+            summary.to_owned(),
+            egui::FontId::monospace(SMALL_FONT_SIZE),
+            ui.visuals().weak_text_color(),
+        )
+        .size()
+        .x;
+    let metadata = egui::Label::new(
+        egui::RichText::new(summary)
+            .size(SMALL_FONT_SIZE)
+            .weak()
+            .monospace(),
+    )
+    .truncate();
+    if ui.available_width() < summary_width + 96.0 + 6.0 {
+        ui.add(file).on_hover_text(file_name);
+        ui.add(metadata);
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let file_width = (ui.available_width() - summary_width - 6.0).max(0.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(file_width, 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_width(file_width);
+                    ui.add(file).on_hover_text(file_name);
+                },
+            );
+            ui.add(metadata);
+        });
+    }
 }
 
 fn buffer_loaded_summary(buffer: &Value) -> Option<String> {
@@ -4412,7 +4484,13 @@ mod tests {
                     false,
                 );
                 section_box(ui, |ui| {
-                    render_section_header(ui, &mut state, "Scope", |_| {});
+                    render_section_header(
+                        ui,
+                        &mut state,
+                        "Scope",
+                        super::PARAM_HEADER_CONTROL_HEIGHT,
+                        |_| {},
+                    );
                     state.show_body_unindented(ui, |ui| {
                         ui.allocate_space(egui::vec2(1.0, 180.0));
                     });
@@ -4605,7 +4683,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_headings_reserve_visible_units_and_types_when_the_name_truncates() {
+    fn parameter_headings_truncate_name_and_unit_together_beside_the_type() {
         for dark in [false, true] {
             for (screen_width, width, align) in [
                 (720.0, 72.0, egui::Align::Min),
@@ -4652,20 +4730,15 @@ mod tests {
                         })
                         .expect("heading text")
                 };
-                let (name, name_clip) = text("oscillator_frequency_with_a_long_parameter_name");
-                let (unit, clip) = text("(Hz)");
-                let (ty, _) = text("f32");
+                let (name, name_clip) =
+                    text("oscillator_frequency_with_a_long_parameter_name (Hz)");
+                let (ty, clip) = text("f32");
                 let name_rect = name.galley.rect.translate(name.pos.to_vec2());
-                let unit_rect = unit.galley.rect.translate(unit.pos.to_vec2());
                 let type_rect = ty.galley.rect.translate(ty.pos.to_vec2());
                 assert!(name.galley.elided);
-                assert!(!unit.galley.elided);
                 assert!(!ty.galley.elided);
-                assert!(unit_rect.left() >= clip.left() && unit_rect.right() <= clip.right() + 0.5);
-                assert!(
-                    unit_rect.right() < type_rect.left() && type_rect.right() <= clip.right() + 0.5
-                );
-                assert!(name_rect.intersect(name_clip).right() <= unit_rect.left());
+                assert!(type_rect.right() <= clip.right() + 0.5);
+                assert!(name_rect.intersect(name_clip).right() + 5.0 <= type_rect.left());
                 if align == egui::Align::Center {
                     assert!((name_rect.union(type_rect).center().x - clip.center().x).abs() < 0.5);
                 }

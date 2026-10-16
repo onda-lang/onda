@@ -85,6 +85,7 @@ const [playgroundBuild] = await Promise.all([
     `${JSON.stringify(catalog)}\n`,
   )),
   cp(resolve(repoRoot, "ui/run/run.html"), resolve(assetsRoot, "run.html")),
+  cp(resolve(repoRoot, "ui/run/buffers.js"), resolve(assetsRoot, "buffers.js")),
   cp(resolve(repoRoot, "ui/number-input.js"), resolve(assetsRoot, "number-input.js")),
 ]);
 

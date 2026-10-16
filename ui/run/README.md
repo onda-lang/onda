@@ -17,12 +17,17 @@ to host capabilities. The native egui host lives in
   restore all parameters or event arguments.
 - The smoothing control sets the duration of parameter changes. Double-click
   restores the host's initial setting.
+- Drop a file onto a buffer card to bind or replace its contents. Only the card
+  under the cursor gains a tinted background and accent border. This works in
+  egui, native webviews, and the browser playground; Bind and Replace also open a
+  file picker. Native run and the playground accept WAV and `.ondabuffer` files.
 
 ## Host integration
 
 Browser hosts serve [number-input.js](../number-input.js) and
 [param-control.js](../../packages/onda_processor_abi/src/param-control.js) beside
-`run.html`; the native webview host injects them into the page.
+`run.html`, along with [buffers.js](buffers.js) for buffer cards and file drops;
+the native webview host injects them into the page.
 See [BrowserRunViewHost](../playground/run-view-host.js) for the browser adapter.
 
 Host publications preserve authored values without applying the editing range
@@ -58,3 +63,12 @@ npm run test:run-view
 Requires Node.js 22+ and Firefox. Set `FIREFOX_BIN` if Firefox is outside `PATH`.
 The suite exercises the shared page's controls, keyboard input, host updates,
 and responsive layouts in a real browser.
+
+The native egui XDND integration test requires a Linux X11 display and runs with:
+
+```sh
+cargo test -p onda_egui xdnd_coordinates --lib -- --ignored
+```
+
+It checks drag coordinates independently of core pointer motion, preservation of
+file events for winit, and event-listener cleanup.

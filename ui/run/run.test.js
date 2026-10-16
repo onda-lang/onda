@@ -98,6 +98,7 @@ async function testBrowserLayouts(t, coarsePointer) {
       '<script type="module" src="/tests.js"></script></body>')]],
     ["/keyboard", ["text/html", html]],
     ["/layout", ["text/html", html]],
+    ["/browser-layout", ["text/html", html.replace('mode: "wry"', 'mode: "browser"')]],
     ["/content-box-layout", ["text/html", contentBoxHtml]],
     ["/no-popover-layout", ["text/html", noPopoverHtml]],
     ["/homepage-layout", ["text/html", `<!doctype html><html><head>
@@ -116,8 +117,12 @@ async function testBrowserLayouts(t, coarsePointer) {
       await readFile(new URL("../../assets/svg/onda-logo-dark-circle.svg", import.meta.url))]],
     ["/tests.js", ["text/javascript",
       await readFile(new URL("./run.browser-tests.js", import.meta.url))]],
+    ["/buffer-tests.js", ["text/javascript",
+      await readFile(new URL("./run.buffer-tests.js", import.meta.url))]],
     ["/number-input.js", ["text/javascript",
       await readFile(new URL("../number-input.js", import.meta.url))]],
+    ["/buffers.js", ["text/javascript",
+      await readFile(new URL("./buffers.js", import.meta.url))]],
     ["/param-control.js", ["text/javascript", await readFile(new URL(
       "../../packages/onda_processor_abi/src/param-control.js", import.meta.url))]],
   ]);
