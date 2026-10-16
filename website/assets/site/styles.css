@@ -295,7 +295,7 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 }
 
 @media (max-width: 720px) {
-  :root { font-size: 100%; --site-gutter: .75rem; }
+  :root { font-size: 100%; --code-font-size: 12px; --site-gutter: .75rem; }
   .docs-shell { display: block; padding-top: 1.25rem; }
   .docs-sidebar { display: none; }
   .home-main { padding-top: 1.25rem; }
