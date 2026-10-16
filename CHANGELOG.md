@@ -5,6 +5,13 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.34]
+
+### Changed
+
+- Fit buffer waveform gutters to the widest displayed amplitude label in egui and the
+  shared webview, with 5 px outer padding and a 5 px gap before the waveform.
+
 ## [0.8.33]
 
 ### Added
@@ -1278,6 +1285,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.34]: https://github.com/onda-lang/onda/compare/0.8.33...0.8.34
 [0.8.33]: https://github.com/onda-lang/onda/compare/0.8.32...0.8.33
 [0.8.32]: https://github.com/onda-lang/onda/compare/0.8.31...0.8.32
 [0.8.31]: https://github.com/onda-lang/onda/compare/0.8.30...0.8.31

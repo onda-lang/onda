@@ -267,13 +267,16 @@
     const monoFont = computed.getPropertyValue("--mono-font").trim();
     context.clearRect(0, 0, width, height);
 
-    const left = 42 * dpr;
+    const scale = bufferWaveformScale(waveform);
+    const labels = [scale, 0, -scale].map(formatWaveformValue);
+    context.font = `${9.5 * dpr}px ${monoFont}`;
+    const labelWidth = Math.max(...labels.map(label => context.measureText(label).width));
+    const left = 5 * dpr + labelWidth + 5 * dpr;
     const right = width - 5 * dpr;
     const top = 5 * dpr;
     const bottom = height - 5 * dpr;
     const center = (top + bottom) / 2;
     const amplitude = (bottom - top) / 2;
-    const scale = bufferWaveformScale(waveform);
     const snapToPixelCenter = coordinate => Math.floor(coordinate) + 0.5;
     const zeroY = snapToPixelCenter(center);
     const valueY = value => zeroY - value / scale * amplitude;
@@ -345,15 +348,14 @@
     context.fill();
 
     context.fillStyle = textColor;
-    context.font = `${9.5 * dpr}px ${monoFont}`;
     context.textAlign = "right";
-    for (const [value, y, baseline] of [
-      [scale, top, "top"],
-      [0, center, "middle"],
-      [-scale, bottom, "bottom"],
+    for (const [label, y, baseline] of [
+      [labels[0], top, "top"],
+      [labels[1], center, "middle"],
+      [labels[2], bottom, "bottom"],
     ]) {
       context.textBaseline = baseline;
-      context.fillText(formatWaveformValue(value), left - 4 * dpr, y);
+      context.fillText(label, left - 5 * dpr, y);
     }
   }
 

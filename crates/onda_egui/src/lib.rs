@@ -2549,8 +2549,18 @@ fn draw_buffer_waveform(
 
     let label_font = egui::FontId::monospace(CAPTION_FONT_SIZE);
     let label_color = ui.visuals().weak_text_color();
+    let labels = [scale, 0.0, -scale].map(format_waveform_value);
+    let label_width = labels
+        .iter()
+        .map(|label| {
+            painter
+                .layout_no_wrap(label.clone(), label_font.clone(), label_color)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
     let plot = egui::Rect::from_min_max(
-        rect.left_top() + egui::vec2(38.0, 5.0),
+        rect.left_top() + egui::vec2(5.0 + label_width + 5.0, 5.0),
         rect.right_bottom() - egui::vec2(5.0, 5.0),
     );
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -2601,30 +2611,24 @@ fn draw_buffer_waveform(
         }
     }
 
-    for (value, alignment, position) in [
+    for (label, alignment, position) in [
         (
-            scale,
+            &labels[0],
             egui::Align2::RIGHT_TOP,
-            egui::pos2(plot.left() - 4.0, plot.top()),
+            egui::pos2(plot.left() - 5.0, plot.top()),
         ),
         (
-            0.0,
+            &labels[1],
             egui::Align2::RIGHT_CENTER,
-            egui::pos2(plot.left() - 4.0, plot.center().y),
+            egui::pos2(plot.left() - 5.0, plot.center().y),
         ),
         (
-            -scale,
+            &labels[2],
             egui::Align2::RIGHT_BOTTOM,
-            egui::pos2(plot.left() - 4.0, plot.bottom()),
+            egui::pos2(plot.left() - 5.0, plot.bottom()),
         ),
     ] {
-        painter.text(
-            position,
-            alignment,
-            format_waveform_value(value),
-            label_font.clone(),
-            label_color,
-        );
+        painter.text(position, alignment, label, label_font.clone(), label_color);
     }
     response.on_hover_text(buffer_waveform_summary(waveform));
 }
