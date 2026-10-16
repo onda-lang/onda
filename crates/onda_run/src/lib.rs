@@ -74,6 +74,8 @@ pub struct RunHostOptions {
     pub output_device: Option<String>,
     pub midi_input_device: Option<String>,
     pub fast_math: bool,
+    /// Offer the Fast Math control in the unloaded native UI.
+    pub show_fast_math: bool,
     pub show_meta: bool,
     pub theme: RunThemeMode,
     pub onda_bin: String,
@@ -90,6 +92,7 @@ impl Default for RunHostOptions {
             output_device: None,
             midi_input_device: None,
             fast_math: false,
+            show_fast_math: true,
             show_meta: false,
             theme: RunThemeMode::Auto,
             onda_bin: "onda".to_owned(),

@@ -42,6 +42,7 @@ export class BrowserRunViewHost {
       supportsScope: true,
       sampleRateHz: 48_000,
       blockSamples: 512,
+      fastMath: false,
       themeMode: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {
@@ -98,6 +99,7 @@ export class BrowserRunViewHost {
       error: "",
       sampleRateHz: options?.sampleRate ?? this.state.sampleRateHz,
       blockSamples: options?.blockSize ?? this.state.blockSamples,
+      fastMath: options?.codegen?.fastMath ?? this.state.fastMath,
     });
   }
 
@@ -112,6 +114,7 @@ export class BrowserRunViewHost {
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
     const sampleRateHz = Number(artifact.metadata.compile?.sample_rate);
     const blockSamples = Number(artifact.metadata.compile?.block_size);
+    this.state.fastMath = artifact.metadata.compile?.fast_math === true;
     if (Number.isFinite(sampleRateHz) && sampleRateHz > 0) {
       this.state.sampleRateHz = sampleRateHz;
     }
@@ -132,6 +135,7 @@ export class BrowserRunViewHost {
       error: "",
       sourceDirty: false,
       outputChannels: 0,
+      fastMath: false,
       buffers: [],
       events: [],
       midi: { available: false, noteOn: false, noteOff: false },

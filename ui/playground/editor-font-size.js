@@ -8,6 +8,7 @@ export function bindEditorFontSize(input, editor) {
   let value = null;
   let beforeEdit = null;
   const valid = text => {
+    if (!/^[0-9]+$/.test(text ?? "")) return null;
     const size = Number(text);
     return Number.isInteger(size) && size >= Number(input.min) && size <= Number(input.max)
       ? size : null;

@@ -33,6 +33,8 @@ cancels pending playback; ordinary interactions leave a stopped project stopped.
 
 The project persists in local storage. Play creates a fresh processor and reuses
 the compiled artifact when sources and compile settings are unchanged.
+Sample Rate and Block Size are local compile preferences. Changing a compile
+setting recompiles and restarts the project; the settings persist across page reloads.
 **New project** stops playback and replaces the project with an empty `main.onda`.
 Programs with audio inputs request microphone permission and reuse the stream
 across recompiles.

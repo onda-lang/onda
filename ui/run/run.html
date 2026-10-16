@@ -109,8 +109,34 @@
       }
 
       input[type="checkbox"] {
-        accent-color: var(--accent);
+        appearance: none;
+        display: inline-grid;
+        place-content: center;
+        flex-shrink: 0;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--field-bg);
+        color: var(--button-text);
+        cursor: pointer;
       }
+      input[type="checkbox"]:checked {
+        border-color: var(--accent);
+        background: var(--accent);
+      }
+      input[type="checkbox"]:checked::before {
+        content: "";
+        width: 12px;
+        height: 7px;
+        border-left: 2px solid currentColor;
+        border-bottom: 2px solid currentColor;
+        transform: translateY(-1px) rotate(-45deg);
+      }
+      input[type="checkbox"]:is(:hover, :focus-visible):not(:disabled) { border-color: var(--accent); }
+      input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      input[type="checkbox"]:disabled { opacity: .55; cursor: default; }
 
       html {
         height: 100%;
@@ -159,6 +185,7 @@
         scrollbar-width: auto;
         scrollbar-gutter: stable;
       }
+      .shell:has(> .file-picker:not([hidden])) { scrollbar-gutter: auto; }
       html[data-run-view-pending] .shell { visibility: hidden; }
       /* The final grid gap scrolls with the content instead of staying above the dock. */
       .shell::after { content: ""; height: 0; }
@@ -186,6 +213,7 @@
         display: grid;
         justify-items: center;
         gap: 12px;
+        width: 100%;
         max-width: 380px;
       }
 
@@ -198,18 +226,37 @@
         color: var(--muted);
       }
 
-      .file-picker-settings {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+      .file-picker-options {
+        display: flex;
+        align-items: end;
+        justify-content: center;
         gap: 10px;
         width: 100%;
         margin-top: 4px;
+      }
+
+      .file-picker-settings {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        flex: 1;
+        min-width: 0;
+        gap: 10px;
+        width: 100%;
         text-align: left;
       }
 
-      .file-picker-settings .param-setting-label {
+      .file-picker-options .param-setting-label {
         text-align: center;
       }
+
+      .file-picker-fast-math { flex: 0 0 80px; }
+      .file-picker-fast-math .param-toggle {
+        justify-content: center;
+        align-items: center;
+        min-height: calc(1.45em + 18px);
+        padding: 0 10px;
+      }
+      .file-picker-fast-math input { margin: 0; }
 
       [hidden] {
         display: none !important;
@@ -659,6 +706,9 @@
       }
 
       .param-layout-toggle button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         min-width: 0;
         flex: 1;
         min-height: 0;
@@ -924,7 +974,7 @@
       }
 
       .event-arg > .param-toggle {
-        justify-self: end;
+        justify-content: center;
         min-height: 30px;
         padding: 0 3px;
       }
@@ -1021,6 +1071,8 @@
       }
 
       .event-array-element .param-toggle {
+        flex: 1;
+        justify-content: center;
         min-height: 28px;
       }
 
@@ -1431,6 +1483,23 @@
         text-align: center;
       }
 
+      :is(#params, #input-controls)[data-layout] .param.param-bool {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-areas: "heading" "control";
+        align-content: stretch;
+      }
+      :is(#params, #input-controls)[data-layout] .param-bool .param-head { grid-area: heading; justify-content: center; }
+      :is(#params, #input-controls)[data-layout] .param.param-bool .param-controls {
+        display: flex;
+        grid-area: control;
+        align-self: stretch;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+      }
+
       .param-number {
         width: 100%;
         border: 1px solid var(--border);
@@ -1464,6 +1533,7 @@
         gap: 8px;
         color: var(--text);
       }
+      .param-toggle input[type="checkbox"] { margin: 0; }
 
       .buffer-embedding-control {
         min-width: 0;
@@ -1705,27 +1775,36 @@
             Open Onda source or project
           </button>
           <div class="file-picker-copy">or drop an .onda or .ondaproject file here</div>
-          <div class="file-picker-settings" id="file-picker-settings">
-            <div class="param-setting">
-              <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
-              <select class="param-select" id="run-sample-rate">
-                <option value="44100">44.1 kHz</option>
-                <option value="48000">48 kHz</option>
-                <option value="88200">88.2 kHz</option>
-                <option value="96000">96 kHz</option>
-                <option value="192000">192 kHz</option>
-              </select>
+          <div class="file-picker-options" id="file-picker-options">
+            <div class="file-picker-settings" id="file-picker-settings">
+              <div class="param-setting">
+                <label class="param-setting-label" for="run-sample-rate">Sample Rate</label>
+                <select class="param-select" id="run-sample-rate">
+                  <option value="44100">44.1 kHz</option>
+                  <option value="48000">48 kHz</option>
+                  <option value="88200">88.2 kHz</option>
+                  <option value="96000">96 kHz</option>
+                  <option value="192000">192 kHz</option>
+                </select>
+              </div>
+              <div class="param-setting">
+                <label class="param-setting-label" for="run-block-size">Block Size</label>
+                <select class="param-select" id="run-block-size">
+                  <option value="64">64 samples</option>
+                  <option value="128">128 samples</option>
+                  <option value="256">256 samples</option>
+                  <option value="512">512 samples</option>
+                  <option value="1024">1024 samples</option>
+                  <option value="2048">2048 samples</option>
+                </select>
+              </div>
             </div>
-            <div class="param-setting">
-              <label class="param-setting-label" for="run-block-size">Block Size</label>
-              <select class="param-select" id="run-block-size">
-                <option value="64">64 samples</option>
-                <option value="128">128 samples</option>
-                <option value="256">256 samples</option>
-                <option value="512">512 samples</option>
-                <option value="1024">1024 samples</option>
-                <option value="2048">2048 samples</option>
-              </select>
+            <div class="param-setting file-picker-fast-math" id="file-picker-fast-math" hidden
+              title="Allow faster floating-point optimizations that can change numerical results.">
+              <label class="param-setting-label" for="run-fast-math">Fast Math</label>
+              <label class="param-toggle">
+                <input type="checkbox" id="run-fast-math" aria-label="Fast Math" />
+              </label>
             </div>
           </div>
           <div class="error" id="file-picker-error"></div>
@@ -2120,7 +2199,7 @@
           </svg>
         `),
       };
-      const { bindDraggableNumber } = globalThis.__ONDA_NUMBER_INPUT__;
+      const { bindDraggableNumber, numberInputValue } = globalThis.__ONDA_NUMBER_INPUT__;
       const state = {
         running: false,
         connected: false,
@@ -2159,6 +2238,8 @@
         supportsTransport: false,
         supportsDeviceSelection: false,
         supportsRunSettings: false,
+        supportsFastMath: false,
+        fastMath: false,
         supportsParamSmoothing: false,
         paramSmoothingMs: null,
         paramSmoothingDefaultMs: null,
@@ -2183,6 +2264,9 @@
       const filePickerNode = document.getElementById("file-picker");
       const filePickerBrandNode = document.getElementById("file-picker-brand");
       const filePickerSettingsNode = document.getElementById("file-picker-settings");
+      const filePickerOptionsNode = document.getElementById("file-picker-options");
+      const fastMathControl = document.getElementById("file-picker-fast-math");
+      const fastMathInput = document.getElementById("run-fast-math");
       const filePickerErrorNode = document.getElementById("file-picker-error");
       const runSampleRateNode = document.getElementById("run-sample-rate");
       const runBlockSizeNode = document.getElementById("run-block-size");
@@ -2231,6 +2315,9 @@
       new ResizeObserver(updateHeaderLayout).observe(heroIdentityNode);
       const settingsButton = document.getElementById("settings-toggle");
       const settingsPopover = document.getElementById("settings-popover");
+      const deviceSettingsOpen = () =>
+        CSS.supports("selector(:popover-open)")
+          && settingsPopover.matches(":popover-open");
       const positionDeviceSettings = () => {
         const anchor = settingsButton.getBoundingClientRect();
         const bounds = settingsPopover.getBoundingClientRect();
@@ -2240,7 +2327,7 @@
           window.innerHeight - bounds.height - 12)) + "px";
       };
       const closeDeviceSettings = () => {
-        if (settingsPopover.matches(":popover-open")) settingsPopover.hidePopover();
+        if (deviceSettingsOpen()) settingsPopover.hidePopover();
       };
       settingsPopover.addEventListener("toggle", event => {
         const open = event.newState === "open";
@@ -2252,7 +2339,7 @@
         }
       });
       window.addEventListener("resize", () => {
-        if (settingsPopover.matches(":popover-open")) positionDeviceSettings();
+        if (deviceSettingsOpen()) positionDeviceSettings();
       });
       scrollNode.addEventListener("scroll", closeDeviceSettings);
       const pathNode = document.getElementById("path");
@@ -2290,6 +2377,8 @@
         step: 0.01,
         stepCount: 100,
       };
+      // Rendering and saved state use the committed octave while the field holds a draft.
+      let midiOctave = Number(midiOctaveNode.defaultValue);
       let midiVelocityValue = defaultMidiVelocity;
       const scopeSection = document.getElementById("scope-section");
       const scopeToggle = document.getElementById("scope-toggle");
@@ -2356,7 +2445,7 @@
           path: state.path,
           scrollY: scrollNode.scrollTop,
           logScrollY: logOutputNode.scrollTop,
-          octave: midiOctave(),
+          octave: midiOctave,
           velocity: midiVelocityValue,
           sections: { ...sectionState },
           paramFolds: [...paramsNode.querySelectorAll(".param-array")]
@@ -2431,8 +2520,7 @@
         try {
           if (Number.isInteger(snapshot.octave)) {
             releaseAllVirtualMidiNotes();
-            midiOctaveNode.value = String(clamp(snapshot.octave, -1, 7));
-            updateMidiKeyboardLayout();
+            setMidiOctave(snapshot.octave);
           }
           if (typeof snapshot.velocity === "number" && Number.isFinite(snapshot.velocity)) {
             setMidiVelocityValue(snapshot.velocity);
@@ -2582,7 +2670,7 @@
         });
         const commitSmoothing = () => {
           if (smoothingInput.readOnly) return;
-          const value = smoothingInput.valueAsNumber;
+          const value = numberInputValue(smoothingInput);
           if (!Number.isFinite(value) || value < 0) {
             smoothingInput.value = formatNumberForInput(state[valueKey], 1);
             return;
@@ -2653,6 +2741,11 @@
       };
       runSampleRateNode.addEventListener("change", updateRunSettings);
       runBlockSizeNode.addEventListener("change", updateRunSettings);
+      fastMathInput.addEventListener("change", () => {
+        if (state.supportsFastMath === true && !state.path) {
+          hostBridge.postMessage({ type: "setFastMath", enabled: fastMathInput.checked });
+        }
+      });
       unloadButton.addEventListener("click", () => {
         closeDeviceSettings();
         releaseAllVirtualMidiNotes();
@@ -2699,21 +2792,22 @@
       const BLACK_MIDI_NOTES = [[1, 1], [3, 2], [6, 4], [8, 5], [10, 6]];
       let pianoOctaves = 0;
 
-      function midiOctave() {
-        return clamp(Math.round(Number(midiOctaveNode.value) || 0), -1, 7);
+      function midiBaseNote() {
+        return (midiOctave + 1) * 12;
       }
 
-      function midiBaseNote() {
-        return (midiOctave() + 1) * 12;
+      function setMidiOctave(value) {
+        const next = Number.isFinite(value) ? clamp(Math.round(value), -1, 7) : midiOctave;
+        if (next !== midiOctave) releaseAllVirtualMidiNotes();
+        midiOctave = next;
+        midiOctaveNode.value = String(next);
+        updateMidiKeyboardLayout();
       }
 
       function shiftMidiOctave(delta) {
-        const octave = midiOctave();
-        const next = Math.max(-1, Math.min(7, octave + delta));
-        if (next === octave) return;
-        releaseAllVirtualMidiNotes();
-        midiOctaveNode.value = String(next);
-        updateMidiKeyboardLayout();
+        const next = clamp(midiOctave + delta, -1, 7);
+        if (next === midiOctave) return;
+        setMidiOctave(next);
         queueMicrotask(publishViewState);
       }
 
@@ -2850,9 +2944,7 @@
       }
 
       midiOctaveNode.addEventListener("change", () => {
-        releaseAllVirtualMidiNotes();
-        midiOctaveNode.value = String(midiOctave());
-        updateMidiKeyboardLayout();
+        setMidiOctave(numberInputValue(midiOctaveNode));
       });
       midiOctaveNode.setAttribute("aria-label", "MIDI octave");
       bindDraggableNumber(midiOctaveNode, {
@@ -3203,6 +3295,7 @@
       }
 
       function formatNumberForInput(value, step) {
+        if (typeof value === "string" && /^-?[0-9]+$/.test(value)) return value;
         const numericValue = Number(value);
         if (!Number.isFinite(numericValue)) {
           return "0";
@@ -3415,8 +3508,8 @@
 
       function setupMidiVelocityNumber() {
         const commitNumber = () => {
-          setMidiVelocityValue(Number.isFinite(midiVelocityValueNode.valueAsNumber)
-            ? midiVelocityValueNode.valueAsNumber : midiVelocityValue);
+          setMidiVelocityValue(Number.isFinite(numberInputValue(midiVelocityValueNode))
+            ? numberInputValue(midiVelocityValueNode) : midiVelocityValue);
         };
         midiVelocityValueNode.addEventListener("change", commitNumber);
         midiVelocityValueNode.addEventListener("blur", commitNumber);
@@ -3649,7 +3742,7 @@
           return true;
         }
 
-        function bindParamNumber(param, input, setValue, editable) {
+        function bindParamNumber(param, input, setValue) {
           let edited = false;
           input.addEventListener("focus", () => {
             edited = false;
@@ -3662,8 +3755,8 @@
           const commitDraft = () => {
             if (input.readOnly || !edited) return;
             edited = false;
-            if (input.value !== "" && Number.isFinite(input.valueAsNumber)) {
-              setValue(input.valueAsNumber);
+            if (input.value !== "" && Number.isFinite(numberInputValue(input))) {
+              setValue(numberInputValue(input), true);
               commitParamMessage(param.name, param.value);
             }
           };
@@ -3675,13 +3768,13 @@
             setValue(param.value);
           });
           input.setAttribute("aria-label", paramDisplayName(param));
-          const drag = editable ? bindDraggableNumber(input, {
+          const drag = bindDraggableNumber(input, {
             speed: scalarDragSpeedForParam(param),
             dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
               && param.rangeMin < param.rangeMax ? paramNumberDragRange(param) : null,
-            readValue: () => param.value,
+            readValue: () => Number(param.value),
             updateValue(value, commit) {
-              setValue(value);
+              setValue(value, true);
               if (commit) {
                 activeParamGestures.delete(param.name);
                 commitParamMessage(param.name, param.value);
@@ -3691,7 +3784,7 @@
               }
             },
             resetValue: () => initialParamValue(param),
-          }) : { finish() {}, cancel() {} };
+          });
           paramBindings.set(param.name, {
             param,
             isEditing: () => document.activeElement === input,
@@ -3792,13 +3885,11 @@
               label.className = "param-toggle";
               const input = document.createElement("input");
               input.type = "checkbox";
+              input.setAttribute("aria-label", paramLabel(param));
               input.checked = Boolean(param.value);
               input.disabled = !editable;
-              const text = document.createElement("span");
-              text.textContent = input.checked ? "On" : "Off";
               input.addEventListener("change", () => {
                 param.value = input.checked;
-                text.textContent = input.checked ? "On" : "Off";
                 hostBridge.postMessage({
                   type: command,
                   name: param.name,
@@ -3806,13 +3897,12 @@
                   commit: true,
                 });
               });
-              label.append(input, text);
+              label.append(input);
               controls.appendChild(label);
               paramBindings.set(param.name, {
                 param,
                 setValue(nextValue) {
                   input.checked = Boolean(nextValue);
-                  text.textContent = input.checked ? "On" : "Off";
                 },
               });
             } else {
@@ -3820,7 +3910,7 @@
               card.classList.add(hasRange ? "param-ranged" : "param-unbounded");
               const stepValue = scalarStepForParam(param);
               const step = String(stepValue);
-              const currentValue = typeof param.value === "number" ? param.value : 0;
+              const currentValue = param.value;
               const number = document.createElement("input");
               number.className = "param-number";
               number.type = "number";
@@ -3859,18 +3949,21 @@
                 );
                 controls.prepend(rangeControl.control);
               }
-              const sync = (nextValue) => {
+              const sync = (nextValue, edit = false) => {
                 const parsed = Number(nextValue);
                 if (!Number.isFinite(parsed)) return;
-                const quantized = hasRange
+                // Host values retain exact defaults, including i64 text and
+                // values outside a host-provided editing range. Only edits
+                // apply that range and its step grid.
+                const value = !edit ? nextValue : hasRange
                   ? constrainParamPlain(param, parsed)
                   : quantizeToStep(parsed, 0,
                     param.type === "i32" || param.type === "i64" ? stepValue : param.step);
-                param.value = quantized;
-                rangeControl?.setValue(quantized);
-                number.value = formatNumberForInput(quantized, stepValue);
+                param.value = value;
+                rangeControl?.setValue(value);
+                number.value = formatNumberForInput(value, stepValue);
               };
-              bindParamNumber(param, number, sync, editable);
+              bindParamNumber(param, number, sync);
             }
 
             container.appendChild(card);
@@ -3982,13 +4075,10 @@
           input.type = "checkbox";
           input.checked = Boolean(value);
           input.disabled = !state.connected;
-          const text = document.createElement("span");
-          text.textContent = input.checked ? "On" : "Off";
           input.addEventListener("change", () => {
             onChange(input.checked);
-            text.textContent = input.checked ? "On" : "Off";
           });
-          toggle.append(input, text);
+          toggle.append(input);
           return toggle;
         }
 
@@ -4014,7 +4104,7 @@
         input.disabled = !state.connected;
         const parsedValue = () => {
           if (type === "i64") return parseEventI64(input.value);
-          const nextValue = input.value === "" ? NaN : Number(input.value);
+          const nextValue = numberInputValue(input);
           if (!Number.isFinite(nextValue)) return null;
           return integer ? clamp(Math.round(nextValue), Number(input.min), Number(input.max)) : nextValue;
         };
@@ -4379,7 +4469,7 @@
               setting.addEventListener("input", refreshTrigger);
               setting.addEventListener("change", refreshTrigger);
               setting.addEventListener("focusout", refreshTrigger);
-              for (const input of setting.querySelectorAll("input[data-draggable]")) {
+              for (const input of setting.querySelectorAll("input")) {
                 const index = input.closest(".event-array-element")?.querySelector(".event-array-index");
                 input.setAttribute("aria-label", arg.name + (index ? " " + index.textContent : ""));
               }
@@ -4428,6 +4518,9 @@
         const hasSource = Boolean(state.path);
         filePickerNode.hidden = !supportsSourceSelection || hasSource;
         filePickerSettingsNode.hidden = !supportsRunSettings;
+        filePickerOptionsNode.hidden = !supportsRunSettings && state.supportsFastMath !== true;
+        fastMathControl.hidden = state.supportsFastMath !== true;
+        fastMathInput.checked = state.fastMath === true;
         runHeaderNode.hidden = supportsSourceSelection && !hasSource;
         const versionOwner = runHeaderNode.hidden ? filePickerBrandNode : heroBrandNode;
         if (ondaVersionNode.parentElement !== versionOwner) {
@@ -4446,7 +4539,7 @@
           ? state.status + " (connecting controls...)"
           : state.status;
         statusNode.textContent = hasSource
-          ? formatRunStatus(status, state.sampleRateHz, state.blockSamples)
+          ? formatRunStatus(status, state.sampleRateHz, state.blockSamples, state.fastMath)
           : status;
         statusNode.title = statusNode.textContent;
         errorNode.textContent = state.error || "";
@@ -4487,6 +4580,7 @@
         outputDeviceNode.closest(".param-setting").hidden = !supportsDeviceSelection;
         midiInputSettingNode.hidden = !supportsMidiInput;
         settingsButton.hidden = !supportsDeviceSelection && !supportsMidiInput;
+        settingsPopover.hidden = settingsButton.hidden;
         utilityActionsNode.hidden = settingsButton.hidden && saveProjectButton.hidden && unloadButton.hidden;
         if (runHeaderNode.hidden || settingsButton.hidden) closeDeviceSettings();
         heroControlsNode.classList.toggle("has-transport", supportsTransport);
@@ -4511,7 +4605,7 @@
         );
         const showMidiKeyboard = state.midi?.noteOn === true;
         midiKeyboardNode.hidden = !showMidiKeyboard;
-        if (settingsPopover.matches(":popover-open")) positionDeviceSettings();
+        if (deviceSettingsOpen()) positionDeviceSettings();
         const monitorOnly = state.midiKeyboardInteractive === false;
         midiKeyboardNode.classList.toggle("monitor-only", monitorOnly);
         setSectionOpen("midi", sectionState.midi);
@@ -4811,7 +4905,7 @@
         return (Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)) + " kHz";
       }
 
-      function formatRunStatus(status, sampleRate, blockSamples) {
+      function formatRunStatus(status, sampleRate, blockSamples, fastMath) {
         if (
           !Number.isFinite(sampleRate)
           || sampleRate <= 0
@@ -4820,7 +4914,8 @@
         ) return status;
         return status
           + " \u2014 " + formatBufferSampleRate(sampleRate)
-          + " \u00b7 " + blockSamples + " samples";
+          + " \u00b7 " + blockSamples + " samples"
+          + (fastMath === true ? " \u00b7 Fast Math" : "");
       }
 
       function selectRunSetting(select, value, label) {

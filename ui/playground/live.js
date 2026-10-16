@@ -280,6 +280,7 @@ async function runProject() {
       backend: artifact.metadata.backend,
       schemaVersion: artifact.metadata.mir_schema_version,
       blockSize: artifact.metadata.compile.block_size,
+      fastMath: artifact.metadata.compile.fast_math,
       projectFiles: projectEditor.paths().length,
       projectPaths: projectEditor.paths(),
       sharedSessionLoaded: Boolean(sharedSession),
@@ -1204,8 +1205,8 @@ newFileButton.addEventListener("click", () => {
 });
 shareProjectButton.addEventListener("click", () => void shareProject());
 
-for (const select of [sampleRateEl, blockSizeEl]) {
-  select.addEventListener("change", () => void applyCompileOptions());
+for (const control of [sampleRateEl, blockSizeEl]) {
+  control.addEventListener("change", () => void applyCompileOptions());
 }
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
 const unbindAudioActivation = bindAudioActivation(document, {

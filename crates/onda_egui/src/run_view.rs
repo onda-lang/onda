@@ -295,6 +295,7 @@ impl RunApp {
                     &state.status,
                     self.options.sample_rate_hz,
                     self.options.block_samples,
+                    self.options.fast_math,
                 ),
             ];
             let source_allowance = source_lines

@@ -72,6 +72,104 @@ async function checkContentBoxScope() {
   }
 }
 
+async function checkEmbeddedHosts() {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;left:0;top:0;width:720px;height:840px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/no-popover-layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    const publish = state => view._onHostMessage({ type: "state", state });
+    publish({ supportsSourceSelection: true, supportsViewState: true,
+      supportsDeviceSelection: false, supportsMidiInput: false,
+      viewState: { reset: true, readyId: 85 } });
+    await waitFrames(4, view);
+    check(view.__testMessages.some(message => message.type === "runViewReady" && message.readyId === 85)
+      && view.getComputedStyle(doc.querySelector(".shell")).visibility === "visible",
+    "embedded hosts without popovers complete startup and reveal the view");
+    const parameter = { name: "value", type: "f64", scalar: true, value: 440, default: 440,
+      rangeMin: 0, rangeMax: 1, scale: "linear" };
+    publish({ path: "host.onda", running: true, connected: true,
+      params: [parameter], inputControls: [{ ...parameter, enabled: true }] });
+    const writes = () => view.__testMessages.filter(message =>
+      message.type === "setParam" || message.type === "setInputControl");
+    for (const layout of ["sliders", "knobs"]) {
+      publish({ paramLayout: layout, inputControlLayout: layout });
+      for (const bank of ["params", "inputControls"]) {
+        const field = () => doc.querySelector(`#${bank === "params" ? "params" : "input-controls"} .param-number`);
+        publish({ [bank]: [{ ...parameter }] });
+        publish({ [bank]: [{ ...parameter }] });
+        const before = writes().length;
+        field().focus();
+        field().blur();
+        check(field().value === "440" && writes().length === before,
+          `${bank} ${layout}: publications and unedited blur preserve out-of-range host defaults`);
+        for (const value of ["9007199254740993", "-9007199254740993",
+          "9223372036854775807", "-9223372036854775808"]) {
+          const integer = { ...parameter, type: "i64", value, default: value, step: 1, stepCount: 1 };
+          publish({ [bank]: [integer] });
+          publish({ [bank]: [{ ...integer }] });
+          field().focus();
+          check(field().value === value, `${bank} ${layout}: exact i64 defaults survive publication and focus`);
+          field().blur();
+          check(field().value === value && writes().length === before,
+            `${bank} ${layout}: unedited i64 blur preserves all digits without host writes`);
+        }
+        publish({ [bank]: [{ ...parameter, value: 0.25, default: 0.25 }] });
+        field().focus();
+        field().select();
+        check(view.getSelection().toString() === "0.25",
+          `${bank} ${layout}: visible decimal text uses a dot in an Italian document`);
+        field().blur();
+        for (const invalid of ["", "0,5", "0x10", "1e", "Infinity"]) {
+          field().focus();
+          field().value = invalid;
+          field().dispatchEvent(new view.Event("input", { bubbles: true }));
+          field().blur();
+          check(field().value === "0.25" && writes().length === before,
+            `${bank} ${layout}: invalid numeric drafts restore the host value without writing`);
+        }
+      }
+    }
+    publish({ events: [{ name: "trigger", args: [{ name: "amount", type: "f64", default: 0.25 }] }] });
+    const eventNumber = doc.querySelector("#events .param-number");
+    eventNumber.focus();
+    eventNumber.select();
+    check(view.getSelection().toString() === "0.25", "event decimals also display dots in an Italian document");
+    for (const invalid of ["0,5", "0x10", "1e", "Infinity"]) {
+      eventNumber.value = invalid;
+      eventNumber.dispatchEvent(new view.Event("input", { bubbles: true }));
+      check(eventNumber.validity.customError && doc.querySelector(".event-trigger").disabled,
+        "invalid event number drafts disable triggering");
+    }
+    eventNumber.blur();
+    check(eventNumber.value === "0.25" && !eventNumber.validity.customError,
+      "leaving an invalid event number restores its last valid value");
+    for (const width of [360, 480, 720]) {
+      frame.style.width = `${width}px`;
+      await waitFrames(2, view);
+      for (const button of doc.querySelectorAll("[data-param-layout]")) {
+        const bounds = button.getBoundingClientRect();
+        const range = doc.createRange();
+        range.selectNodeContents(button);
+        const text = range.getBoundingClientRect();
+        check(bounds.width > 0 && Math.abs(text.left + text.right - bounds.left - bounds.right) <= 1,
+          `${width}px: layout button labels remain centered`);
+      }
+      doc.querySelector(".shell").dispatchEvent(new view.Event("scroll"));
+      check(doc.querySelector("#settings-popover").getClientRects().length === 0,
+        `${width}px: unavailable device panels leave no floating capsule`);
+    }
+    check(view.__testErrors.length === 0,
+      "unsupported popovers never interrupt rendering or resizing: " + view.__testErrors.join("; "));
+  } finally {
+    frame.remove();
+  }
+}
+
 async function checkThemedFormControls() {
   const frame = document.createElement("iframe");
   frame.style.cssText = "position:absolute;left:-10000px;width:720px;height:840px;border:0";
@@ -97,16 +195,27 @@ async function checkThemedFormControls() {
       events: [{ name: "configure", args: [
         { name: "level", type: "f32", default: 0.5 },
         { name: "patch", type: "Patch", default: { gain: 0.5 } },
+        { name: "reset", type: "bool", default: false },
+        { name: "gates", type: "bool[2]", default: [true, false] },
       ] }],
       midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
       supportsSourceSelection: true,
       supportsRunSettings: true, sampleRateHz: 48000, blockSamples: 512,
       supportsParamSmoothing: true, paramSmoothingMs: 30,
     }});
+    for (const checkbox of doc.querySelectorAll('#events input[type="checkbox"]')) {
+      const toggle = checkbox.closest('.param-toggle');
+      const field = toggle.getBoundingClientRect();
+      const box = checkbox.getBoundingClientRect();
+      check(toggle.textContent.trim() === '' && checkbox.getAttribute('aria-label')
+        && Math.abs(box.left + box.width / 2 - field.left - field.width / 2) < 1
+        && Math.abs(box.top + box.height / 2 - field.top - field.height / 2) < 1,
+        'scalar and array boolean event controls center without redundant value labels');
+    }
     for (const theme of ["dark", "light"]) {
       view._onHostMessage({ type: "state", state: { themeMode: theme } });
       const accent = theme === "dark" ? "rgb(201, 219, 242)" : "rgb(20, 58, 99)";
-      for (const selector of ["#params input[type=number]", "#events input[type=number]",
+      for (const selector of ["#params input.param-number", "#events input.param-number",
         "#midi-octave", "#midi-velocity-value", "#params input[type=checkbox]", "#run-sample-rate"]) {
         const control = doc.querySelector(selector);
         // The sample-rate select is visible in the empty view.
@@ -124,9 +233,17 @@ async function checkThemedFormControls() {
       }
       check(view.getComputedStyle(doc.documentElement).colorScheme === theme,
         `${theme}: native form controls follow Onda's selected theme`);
-      check(view.getComputedStyle(doc.querySelector('#params input[type=checkbox]')).accentColor === accent,
-        `${theme}: checkbox fills use Onda's accent`);
-      const number = doc.querySelector('#params input[type=number]');
+      for (const checkbox of doc.querySelectorAll('input[type="checkbox"]')) {
+        const original = checkbox.checked;
+        for (const checked of [false, true]) {
+          checkbox.checked = checked;
+          check(view.getComputedStyle(checkbox).backgroundColor === (checked ? accent
+            : theme === "dark" ? "rgb(13, 24, 39)" : "rgb(255, 255, 255)"),
+            `${theme}: ${checkbox.id || "boolean parameter"} uses themed ${checked ? "checked" : "unchecked"} colors`);
+        }
+        checkbox.checked = original;
+      }
+      const number = doc.querySelector('#params input.param-number');
       check(view.getComputedStyle(number, "::selection").backgroundColor === accent,
         `${theme}: selected number text uses Onda's accent`);
       for (const selector of ["#reset-params", "#params-toggle", "#events summary", ".event-trigger"]) {
@@ -594,6 +711,48 @@ async function checkDefaultLayout() {
       "unloading centers only the version number below the file picker logo");
     check(doc.querySelector(".shell").scrollHeight === 840,
       "the empty file picker also fits the default window without scrolling");
+    const pickerBounds = picker.getBoundingClientRect();
+    check(Math.abs(pickerBounds.left - (view.innerWidth - pickerBounds.right)) < 1
+      && Math.abs(logoBounds.left + logoBounds.width / 2 - view.innerWidth / 2) < 1,
+      "the unloaded picker and logo center in the full window without reserving a scrollbar gutter");
+    const fastMath = doc.getElementById("run-fast-math");
+    const fastMathControl = doc.getElementById("file-picker-fast-math");
+    const fastMathMessages = () => view.__testMessages.filter(message => message.type === "setFastMath");
+    check(fastMathControl.hidden, "hosts opt in to the Fast Math control");
+    view._onHostMessage({ type: "state", state: { supportsFastMath: true, fastMath: true } });
+    check(!fastMathControl.hidden && fastMath.checked, "Fast Math starts from the host's compile option");
+    const fastMathBounds = fastMathControl.getBoundingClientRect();
+    const blockBounds = doc.getElementById("run-block-size").getBoundingClientRect();
+    const toggleBounds = fastMath.closest("label").getBoundingClientRect();
+    const checkboxBounds = fastMath.getBoundingClientRect();
+    check(fastMathBounds.left >= blockBounds.right
+      && Math.abs(toggleBounds.top - blockBounds.top) < 1
+      && Math.abs(toggleBounds.height - blockBounds.height) < 1
+      && checkboxBounds.width === 24 && checkboxBounds.height === 24
+      && Math.abs(checkboxBounds.top + checkboxBounds.height / 2
+        - blockBounds.top - blockBounds.height / 2) < 1,
+      "the larger Fast Math checkbox aligns with the unloaded selectors' vertical center");
+    fastMath.click();
+    check(fastMathMessages().at(-1)?.enabled === false, "Fast Math edits request a host-owned compile option");
+    view._onHostMessage({ type: "state", state: { fastMath: false } });
+    check(!fastMath.checked, "host Fast Math publications update the checkbox");
+    view._onHostMessage({ type: "state", state: { path: "loaded.onda" } });
+    const before = fastMathMessages().length;
+    fastMath.dispatchEvent(new view.Event("change", { bubbles: true }));
+    check(fastMathControl.getClientRects().length === 0 && fastMathMessages().length === before,
+      "loaded patches hide Fast Math and cannot change it through the unloaded control");
+    for (const enabled of [true, false]) {
+      view._onHostMessage({ type: "state", state: { fastMath: enabled } });
+      check(doc.getElementById("status").textContent.endsWith(" · Fast Math") === enabled,
+        "the loaded header shows fast math only when the active compile option is enabled");
+    }
+    view._onHostMessage({ type: "state", state: { path: "", supportsRunSettings: false } });
+    check(fastMathControl.getClientRects().length > 0 && !fastMath.checked,
+      "Fast Math remains available independently of sample-rate and block-size controls");
+    view._onHostMessage({ type: "state", state: { supportsFastMath: false } });
+    fastMath.dispatchEvent(new view.Event("change", { bubbles: true }));
+    check(fastMathControl.hidden && fastMathMessages().length === before,
+      "disabling the Fast Math capability hides the control and rejects edits");
   } finally {
     frame.remove();
   }
@@ -939,6 +1098,9 @@ async function checkPlaygroundLayout() {
         sampleRateHz: 48000, blockSamples: 512,
       }});
       const editor = doc.querySelector("[data-editor]");
+      check(getComputedStyle(doc.querySelector("[data-editor-font-size]")).backgroundColor
+        === getComputedStyle(doc.querySelector("[data-sample-rate]")).backgroundColor,
+        `${host}: the font number field keeps the compile controls' themed background while editing text`);
       if (host === "website") {
         for (const theme of ["light", "dark"]) {
           doc.documentElement.dataset.theme = theme;
@@ -1118,7 +1280,14 @@ async function checkPlaygroundLayout() {
         `${host}: cancelling a preview restores automatic sizing across breakpoints`);
       typeFont("20");
       fontInput.blur();
-      for (const size of [6, 8, 12]) {
+      for (const invalid of ["0x10", "0b10000", "16.5", "16.0", "1.6e1", "5", "41", "Infinity"]) {
+        typeFont(invalid);
+        fontInput.blur();
+        check(storedFont() === "20" && fontInput.value === "20"
+          && getComputedStyle(doc.querySelector(".cm-content")).fontSize === "20px",
+          `${host}: invalid font draft ${invalid} preserves the integer font preference`);
+      }
+      for (const size of [6, 8, 12, 40]) {
         typeFont(String(size));
         check(storedFont() === String(size)
           && getComputedStyle(doc.querySelector(".cm-content")).fontSize === `${size}px`
@@ -1162,6 +1331,7 @@ try {
   await checkHomepageLayout();
   await checkDefaultLayout();
   await checkContentBoxScope();
+  await checkEmbeddedHosts();
   await checkThemedFormControls();
   await checkInputControls();
   await checkResponsiveParameterGrid();
@@ -1620,7 +1790,7 @@ try {
   check(window.__testMessages.at(-1).values[0] === 0.75,
     "retained event handlers dispatch the edited arguments");
 
-  const integer = document.querySelector('#events input[type="text"]');
+  const integer = document.querySelector('#events input[pattern]');
   edit(integer, "-");
   integer.setSelectionRange(1, 1);
   refresh();
@@ -1628,7 +1798,7 @@ try {
     && integer.selectionStart === 1,
     "incomplete i64 drafts and caret survive refreshes");
   send({ events, resetEventArguments: true });
-  check(document.querySelector('#events input[type="text"]').value === "0",
+  check(document.querySelector('#events input[pattern]').value === "0",
     "explicit reset discards a draft even when its canonical value is unchanged");
   check(document.querySelector("#events input").value === "0.75",
     "reset flag alone does not invent replacement values");
@@ -1655,7 +1825,7 @@ try {
     "slice shape changes rebuild the necessary controls");
 
   for (let index = 0; index < params.length; ++index) {
-    const input = document.querySelectorAll('#params input[type="number"]')[index];
+    const input = document.querySelectorAll('#params input.param-number')[index];
     edit(input, "0.83");
     refresh();
     check(input.value === "0.83" && document.activeElement === input,
@@ -1906,7 +2076,7 @@ try {
   for (const layout of ["knobs", "sliders"]) {
     send({ params });
     document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
-    const [gain, offset] = document.querySelectorAll('#params input[type="number"]');
+    const [gain, offset] = document.querySelectorAll('#params input.param-number');
     const gainPointer = pointerControl(gain);
     const before = paramMessages().length;
     check(gain.readOnly && getComputedStyle(gain).cursor === "ew-resize",
@@ -2087,7 +2257,7 @@ try {
       rangeMin: 20, rangeMax: 1000, scale: "log" },
   ];
   send({ params: stepped });
-  const [mode, pitch] = document.querySelectorAll('#params input[type="number"]');
+  const [mode, pitch] = document.querySelectorAll('#params input.param-number');
   const modePointer = pointerControl(mode);
   modePointer("pointerdown", 100);
   for (const [pixels, expected] of [[18.75, "0"], [37, "0"], [37.5, "2"], [37, "0"], [37.5, "2"]]) {
@@ -2138,7 +2308,7 @@ try {
     check(paramMessages().length === beforeReplacement && !number.hasPointerCapture(1),
       `${description} discards obsolete number drags and pending live updates without committing`);
     const replacement = document.querySelector('#params input');
-    if (replacement && replacement.type === "number") {
+    if (replacement && replacement.classList.contains("param-number")) {
       check(Number(replacement.value) === nextState.params[0].value,
         `${description} preserves the replacement parameter value`);
     }
@@ -2182,8 +2352,17 @@ try {
           && name.getBoundingClientRect().right <= type.getBoundingClientRect().left
           && type.getBoundingClientRect().right <= head.getBoundingClientRect().right + 1,
           `${layout} at ${width}px keeps the name readable and its type visible beside it`);
+        const toggle = card.querySelector('.param-toggle');
+        const checkbox = toggle.querySelector('input');
+        const box = checkbox.getBoundingClientRect();
+        const controls = card.querySelector('.param-controls').getBoundingClientRect();
+        check(toggle.textContent.trim() === '' && checkbox.getAttribute('aria-label') === name.textContent
+          && box.width === 24 && box.height === 24
+          && Math.abs(box.left + box.width / 2 - controls.left - controls.width / 2) < 1
+          && Math.abs(box.top + box.height / 2 - controls.top - controls.height / 2) < 1,
+          `${layout} at ${width}px centers boolean checkboxes without redundant value text`);
       }
-      const number = paramsNode.querySelector('input[type="number"]');
+      const number = paramsNode.querySelector('input.param-number');
       const numericCard = number.closest(".param");
       check(number.clientWidth > 0
         && number.getBoundingClientRect().right <= numericCard.getBoundingClientRect().right
@@ -2219,9 +2398,9 @@ try {
     "collapsed arrays survive host refreshes");
   arrayGroups[0].querySelector("summary").click();
   check(arrayGroups[0].open
-    && Number(arrayGroups[0].querySelector('input[type="number"]').value) === 3,
+    && Number(arrayGroups[0].querySelector('input.param-number').value) === 3,
     "expanding an array shows values updated while collapsed");
-  arrayGroups[0].querySelector('input[type="number"]').dispatchEvent(
+  arrayGroups[0].querySelector('input.param-number').dispatchEvent(
     new MouseEvent("dblclick", { bubbles: true, cancelable: true }),
   );
   check(paramMessages().at(-1)?.name === "f32Values[0]" && paramMessages().at(-1)?.value === 0,
@@ -2468,9 +2647,11 @@ try {
   check(octaveInput.value === "4" && !window.__testMessages.at(-1).pressed,
     "forwarded X raises the octave and releases held notes");
   octaveInput.value = "7";
+  octaveInput.dispatchEvent(new Event("change", { bubbles: true }));
   key("KeyX");
   check(octaveInput.value === "7", "octave shortcuts respect the upper limit");
   octaveInput.value = "-1";
+  octaveInput.dispatchEvent(new Event("change", { bubbles: true }));
   key("KeyZ");
   check(octaveInput.value === "-1", "octave shortcuts respect the lower limit");
   key("KeyX", "keydown", octaveInput);

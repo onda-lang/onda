@@ -72,9 +72,9 @@ This refreshes all staged UI and JavaScript assets using the existing compiler b
 Omit `--serve` if the server is already running, then reload the page.
 Omit `--skip-build` when changing the Rust compiler or its packaged backend.
 
-Use **Share** to copy a URL-fragment snapshot containing every project source file, the main and active
-files, sample rate, and block size. The fragment stays in the browser and is compressed when supported.
-Selected buffer files remain local and are not embedded in the URL.
+Use **Share** to copy a URL-fragment snapshot containing every project source file and the main and
+active files. The fragment stays in the browser and is compressed when supported. Compile settings
+and selected buffer files remain local and are not embedded in the URL.
 
 Use **Open project** to replace the editor contents with a single `.onda` or `.on` file, or a project
 ZIP. The browser picker intentionally excludes bare `.ondaproject` files because selecting a manifest
@@ -105,8 +105,9 @@ The scripts:
 - optionally start `server.mjs` on `127.0.0.1:8787`
 
 The editor defaults to 48000 Hz and 512 frames, with 44100/48000 Hz sample rates and
-128/256/512/1024/2048-frame compile blocks available. Changing either setting recompiles and
-restarts the current project; these are editor controls, not build-script flags.
+128/256/512/1024/2048-frame compile blocks available. Changing a compile setting recompiles
+and restarts the current project. Settings persist locally across
+page reloads; these are editor controls, not build-script flags.
 
 If PowerShell script execution is blocked:
 

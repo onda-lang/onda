@@ -214,7 +214,7 @@ test("the empty native run view owns its compile settings", async () => {
 test("the loaded run view includes active compile settings in its status", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
-  assert.match(runView, /formatRunStatus\(status, state\.sampleRateHz, state\.blockSamples\)/);
+  assert.match(runView, /formatRunStatus\(status, state\.sampleRateHz, state\.blockSamples, state\.fastMath\)/);
   assert.match(runView, /" \\u2014 " \+ formatBufferSampleRate\(sampleRate\)/);
   assert.match(runView, /" \\u00b7 " \+ blockSamples \+ " samples"/);
 });
@@ -350,7 +350,7 @@ test("browser compile settings default to 512 samples and recompile on change", 
   );
   assert.match(
     playground,
-    /select\.addEventListener\("change", \(\) => void applyCompileOptions\(\)\)/,
+    /control\.addEventListener\("change", \(\) => void applyCompileOptions\(\)\)/,
   );
 });
 

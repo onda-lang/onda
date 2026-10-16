@@ -150,6 +150,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                     output_device,
                     midi_input_device,
                     fast_math,
+                    show_fast_math: true,
                     show_meta,
                     theme,
                     onda_bin,

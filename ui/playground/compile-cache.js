@@ -8,5 +8,6 @@ export function compilationKey(project, options) {
     sources,
     sampleRate: Number(options.sampleRate),
     blockSize: Number(options.blockSize),
+    fastMath: options.codegen?.fastMath === true,
   });
 }

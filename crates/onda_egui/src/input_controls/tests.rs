@@ -54,6 +54,94 @@ fn empty_host_controls_hide_the_section() {
 }
 
 #[test]
+fn boolean_controls_center_in_their_cards_and_commit_without_value_labels() {
+    for layout in [ParamLayout::Sliders, ParamLayout::Knobs] {
+        for enabled in [false, true] {
+            let ctx = egui::Context::default();
+            apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+            let controls = [json!({"name":"enabled", "type":"bool", "scalar":true,
+                "value":false, "default":false, "enabled":enabled})];
+            let render = |events| {
+                let mut edits = Vec::new();
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(360.0, 300.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            edits = super::render_control_values(ui, &controls, layout);
+                        });
+                    },
+                );
+                (output, edits)
+            };
+            let _ = render(vec![]);
+            let (output, edits) = render(vec![]);
+            assert!(edits.is_empty());
+            let rectangles: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) => Some(rect.rect),
+                    _ => None,
+                })
+                .collect();
+            let card = rectangles
+                .iter()
+                .find(|rect| rect.height() >= 80.0 && rect.height() < 300.0)
+                .expect("boolean card");
+            let checkbox = rectangles
+                .iter()
+                .find(|rect| rect.size() == egui::Vec2::splat(24.0))
+                .expect("bare checkbox");
+            assert!(
+                (checkbox.center().x - card.center().x).abs() < 1.0,
+                "{layout:?}: {checkbox:?} in {card:?}"
+            );
+            assert!(
+                checkbox.center().y > card.center().y && checkbox.bottom() <= card.bottom() - 8.0,
+                "{layout:?}: the checkbox centers below the heading: {checkbox:?} in {card:?}"
+            );
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "On" | "Off"))));
+            text_center(&output, "enabled");
+            let pos = checkbox.center();
+            let _ = render(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            let (_, edits) = render(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            assert_eq!(
+                edits,
+                if enabled {
+                    vec![("enabled".into(), json!(true))]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn input_layout_actions_and_read_only_sources_work_in_both_layouts() {
     let controls = [json!({ "name": "cv", "label": "cutoff CV", "type": "f32",
         "scalar": true, "value": 0.5, "default": 0.25,

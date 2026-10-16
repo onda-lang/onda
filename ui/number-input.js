@@ -2,6 +2,12 @@
 (() => {
   const styledDocuments = new WeakSet();
 
+  function numberInputValue(input) {
+    const text = input.value.trim();
+    return /^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(text)
+      ? Number(text) : NaN;
+  }
+
   function formatNumberForEditing(value) {
     if (value === 0) return "0";
     const text = Math.abs(value) < 0.0001 || Math.abs(value) >= 1e9
@@ -17,13 +23,21 @@
     updateValue,
     resetValue = () => Number(input.defaultValue),
     dragTarget = input,
-    readValue = () => input.valueAsNumber,
+    readValue = () => numberInputValue(input),
   }) {
     const document = input.ownerDocument;
+    // Native number fields localize their visible text independently of value.
+    // Keep the authored decimal notation while retaining native step arithmetic.
+    const nativeNumber = input.type === "number";
+    if (nativeNumber) {
+      input.type = "text";
+      input.inputMode = Number.isInteger(Number(input.step)) ? "numeric" : "decimal";
+      input.spellcheck = false;
+    }
     if (!styledDocuments.has(document)) {
       const style = document.createElement("style");
       style.textContent = `
-        input[data-draggable]:read-only {
+        input[data-draggable]:read-only:not(:disabled) {
           appearance: textfield;
           cursor: ew-resize;
           touch-action: none;
@@ -41,6 +55,7 @@
 
     let gesture = null;
     let editValue = null;
+    let pendingStepChange = false;
     input.dataset.draggable = "";
     input.readOnly = true;
     input.title = [input.title,
@@ -52,7 +67,12 @@
       editValue = String(readValue());
       input.readOnly = false;
     });
+    input.addEventListener("change", () => { pendingStepChange = false; });
     input.addEventListener("blur", () => {
+      // Scripted steps do not trigger the native change event on blur.
+      const notifyChange = pendingStepChange && !input.readOnly;
+      pendingStepChange = false;
+      if (notifyChange) input.dispatchEvent(new Event("change", { bubbles: true }));
       editValue = null;
       input.readOnly = true;
     });
@@ -68,6 +88,20 @@
       } else if (event.key === "Enter") {
         event.preventDefault();
         input.blur();
+      } else if (nativeNumber && input.step !== "any"
+          && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        event.preventDefault();
+        const stepper = document.createElement("input");
+        stepper.type = "number";
+        for (const attribute of ["min", "max", "step"])
+          if (input.hasAttribute(attribute)) stepper.setAttribute(attribute, input.getAttribute(attribute));
+        stepper.defaultValue = input.defaultValue;
+        const value = numberInputValue(input);
+        stepper.value = Number.isFinite(value) ? String(value) : "";
+        stepper.stepUp(event.key === "ArrowUp" ? 1 : -1);
+        input.value = stepper.value;
+        pendingStepChange = true;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
 
@@ -168,5 +202,5 @@
     };
   }
 
-  globalThis.__ONDA_NUMBER_INPUT__ = { bindDraggableNumber, formatNumberForEditing };
+  globalThis.__ONDA_NUMBER_INPUT__ = { bindDraggableNumber, formatNumberForEditing, numberInputValue };
 })();

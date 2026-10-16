@@ -54,6 +54,25 @@ async function testBrowserLayouts(t, coarsePointer) {
       return observe.call(this, target, options);
     };
   </script>`);
+  const noPopoverHtml = html.replace('<html lang="en"', '<html lang="it-IT"')
+    .replace("<head>", `<head><script>
+    window.__testErrors = [];
+    window.addEventListener("error", event => {
+      if (event.error) window.__testErrors.push(event.message);
+    });
+    const supports = CSS.supports.bind(CSS);
+    CSS.supports = (...args) => args[0] === "selector(:popover-open)" ? false : supports(...args);
+    const matches = Element.prototype.matches;
+    Element.prototype.matches = function(selector) {
+      if (selector === ":popover-open") throw new DOMException("Unsupported selector", "SyntaxError");
+      return matches.call(this, selector);
+    };
+    HTMLElement.prototype.showPopover = undefined;
+    HTMLElement.prototype.hidePopover = undefined;
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelectorAll("[popover]").forEach(node => node.removeAttribute("popover"));
+    });
+  </script>`);
   const website = await readFile(new URL("../../website/playground/index.html", import.meta.url), "utf8");
   const homepage = (await readFile(new URL("../../website/index.md", import.meta.url), "utf8"))
     .replace("{% include home-example.onda %}", await readFile(new URL(
@@ -80,6 +99,7 @@ async function testBrowserLayouts(t, coarsePointer) {
     ["/keyboard", ["text/html", html]],
     ["/layout", ["text/html", html]],
     ["/content-box-layout", ["text/html", contentBoxHtml]],
+    ["/no-popover-layout", ["text/html", noPopoverHtml]],
     ["/homepage-layout", ["text/html", `<!doctype html><html><head>
       <link rel="stylesheet" href="/site.css"></head><body>
       ${homepage.match(/<main[\s\S]*?<\/main>/)[0]}</body></html>`]],

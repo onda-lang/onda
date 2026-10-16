@@ -5,6 +5,42 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.31]
+
+### Added
+
+- A Fast Math checkbox beside sample rate and block size in the unloaded `onda run` view,
+  initialized from `--fast-math`. Native hosts can hide the control, and embedded hosts can
+  opt in through the shared webview.
+- Show `Fast Math` beside sample rate and block size in loaded run headers when enabled.
+
+### Changed
+
+- Enlarge boolean checkboxes to 24 px and center them beneath parameter and input-control
+  headings and within event fields in egui and the shared webview. Remove redundant On/Off
+  labels while preserving accessible names, keyboard interaction, and read-only controls.
+- Use Onda's light and dark theme colors for both checked and unchecked webview checkboxes.
+
+### Fixed
+
+- Display and accept dot decimals in web number fields independently of regional settings,
+  including macOS WebKit. Preserve arrow-key stepping and reject invalid numeric drafts.
+- Commit arrow-key number edits on Enter or blur so MIDI octave changes release held notes
+  and refresh the keyboard. Keep the committed octave and held-note highlights through host
+  updates while editing; Escape cancels without changing the committed value.
+- Preserve host-provided parameter and input-control values and defaults in web controls,
+  including exact `i64` values and values outside editing ranges. Apply range and step
+  constraints only to user edits.
+- Initialize shared webviews when embedded hosts lack the Popover API and leave unused device
+  controls hidden.
+- Center the unloaded webview across the full content area without reserving space for the
+  loaded patch's scrollbar, including on Windows. Keep native browser scrollbar behavior.
+- Center Sliders/Knobs button labels in narrow webviews.
+- Keep the standalone browser playground's font-size field themed while editing and accept
+  only decimal integer font sizes.
+- Correct the playground's Share documentation: compile settings and selected buffer files
+  stay local rather than being included in shared URLs.
+
 ## [0.8.30]
 
 ### Added
@@ -1223,6 +1259,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.31]: https://github.com/onda-lang/onda/compare/0.8.30...0.8.31
 [0.8.30]: https://github.com/onda-lang/onda/compare/0.8.29...0.8.30
 [0.8.29]: https://github.com/onda-lang/onda/compare/0.8.28...0.8.29
 [0.8.28]: https://github.com/onda-lang/onda/compare/0.8.27...0.8.28

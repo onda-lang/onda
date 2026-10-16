@@ -17,6 +17,7 @@ test("shares only a versioned multi-file project through a URL fragment", async 
     },
     sampleRate: 48_000,
     blockSize: 256,
+    codegen: { fastMath: true },
   };
   const encoded = await encodeSharedSession(session);
   const decoded = await decodeSharedSession(sharedSessionHash(encoded));
@@ -29,6 +30,7 @@ test("shares only a versioned multi-file project through a URL fragment", async 
   });
   assert.equal(decoded.sampleRate, undefined);
   assert.equal(decoded.blockSize, undefined);
+  assert.equal(decoded.codegen, undefined);
   assert.match(encoded, /^[zj][A-Za-z0-9_-]+$/);
   assert.doesNotMatch(sharedSessionHash(encoded), /gzip|json|share=/);
 });

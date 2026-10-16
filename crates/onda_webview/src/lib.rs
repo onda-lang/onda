@@ -24,9 +24,21 @@ fn update_run_settings(message: &serde_json::Value, options: &mut RunHostOptions
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn update_fast_math(message: &serde_json::Value, options: &mut RunHostOptions) -> bool {
+    let Some(enabled) = message.get("enabled").and_then(serde_json::Value::as_bool) else {
+        return false;
+    };
+    if !options.show_fast_math {
+        return false;
+    }
+    options.fast_math = enabled;
+    true
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod platform {
-    use super::update_run_settings;
+    use super::{update_fast_math, update_run_settings};
     use std::path::{Path, PathBuf};
 
     use image::ImageReader;
@@ -386,6 +398,12 @@ mod platform {
                 }
                 update_run_settings(msg, options)
             }
+            "setFastMath" => {
+                if controller.is_some() {
+                    return false;
+                }
+                update_fast_math(msg, options)
+            }
             "setParamSmoothing" => {
                 let Some(milliseconds) = msg
                     .get("milliseconds")
@@ -591,6 +609,8 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
+            "supportsFastMath": options.show_fast_math,
+            "fastMath": options.fast_math,
             "supportsParamSmoothing": true,
             "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
             "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
@@ -642,6 +662,8 @@ mod platform {
             "supportsTransport": true,
             "supportsDeviceSelection": true,
             "supportsRunSettings": true,
+            "supportsFastMath": options.show_fast_math,
+            "fastMath": options.fast_math,
             "supportsParamSmoothing": true,
             "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
             "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
@@ -790,7 +812,40 @@ pub fn run_run_window(_onda_path: Option<&Path>, _options: RunHostOptions) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::{update_run_settings, RunHostOptions};
+    use super::{update_fast_math, update_run_settings, RunHostOptions};
+
+    #[test]
+    fn fast_math_updates_only_when_supported_and_preserves_other_settings() {
+        let mut options = RunHostOptions {
+            fast_math: true,
+            ..RunHostOptions::default()
+        };
+        for message in [serde_json::json!({}), serde_json::json!({ "enabled": 0 })] {
+            assert!(!update_fast_math(&message, &mut options));
+            assert!(options.fast_math);
+        }
+        assert!(update_fast_math(
+            &serde_json::json!({ "enabled": false }),
+            &mut options
+        ));
+        assert!(!options.fast_math);
+        assert_eq!(options.sample_rate_hz, 48_000);
+        assert_eq!(
+            options.block_samples,
+            onda_run::DEFAULT_REALTIME_BLOCK_SAMPLES
+        );
+        assert!(update_fast_math(
+            &serde_json::json!({ "enabled": true }),
+            &mut options
+        ));
+        assert!(options.fast_math);
+        options.show_fast_math = false;
+        assert!(!update_fast_math(
+            &serde_json::json!({ "enabled": false }),
+            &mut options
+        ));
+        assert!(options.fast_math);
+    }
 
     #[test]
     fn run_settings_update_together_and_reject_invalid_values() {

@@ -434,13 +434,15 @@ test("allows browser playback while buffers are unbound", async () => {
     }
     assert.deepEqual(smoothingChanges, [15.5, 0]);
     host.clearArtifact();
+    assert.equal(host.state.fastMath, false);
     assert.equal(host.state.paramSmoothingMs, 0);
     assert.equal(host.state.paramSmoothingDefaultMs, 50);
-    host.setArtifact({
+    const artifact = {
       metadata: {
         compile: {
           sample_rate: 44_100,
           block_size: 256,
+          fast_math: true,
         },
         metadata: {
           params: [],
@@ -454,7 +456,12 @@ test("allows browser playback while buffers are unbound", async () => {
           }],
         },
       },
-    }, new Map());
+    };
+    host.setArtifact(artifact, new Map());
+    assert.equal(host.state.fastMath, true);
+    artifact.metadata.compile.fast_math = false;
+    host.setArtifact(artifact, new Map());
+    assert.equal(host.state.fastMath, false);
 
     assert.equal(host.state.status, "Stopped");
     assert.equal(host.state.running, false);

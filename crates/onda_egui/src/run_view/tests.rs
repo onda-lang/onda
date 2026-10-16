@@ -5,6 +5,180 @@ use serde_json::json;
 use crate::{apply_run_theme, ParamLayout, RunApp, RunTheme};
 
 #[test]
+fn boolean_event_controls_center_and_keep_their_editing_behavior() {
+    for width in [104.0, 112.0] {
+        for connected in [false, true] {
+            for initial in [false, true] {
+                let ctx = egui::Context::default();
+                apply_run_theme(&ctx, &RunTheme::from_dark_mode(true));
+                let mut value = json!(initial);
+                let mut field = egui::Rect::NOTHING;
+                let mut render = |events| {
+                    ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(320.0, 200.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                field = ui
+                                    .allocate_ui_with_layout(
+                                        egui::vec2(width, 24.0),
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            crate::render_event_scalar_editor(
+                                                ui, "gate", "bool", &mut value, None, connected,
+                                                width,
+                                            );
+                                        },
+                                    )
+                                    .response
+                                    .rect;
+                            });
+                        },
+                    )
+                };
+                let _ = render(vec![]);
+                let output = render(vec![]);
+                let checkbox = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect) if rect.rect.size() == egui::Vec2::splat(24.0) => {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("boolean event checkbox");
+                assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if matches!(text.galley.job.text.as_str(), "On" | "Off"))));
+                let pos = checkbox.center();
+                for pressed in [true, false] {
+                    let _ = render(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                }
+                assert!(
+                    (checkbox.center() - field.center()).length() < 1.0,
+                    "{checkbox:?} in {field:?}"
+                );
+                assert_eq!(value, json!(if connected { !initial } else { initial }));
+            }
+        }
+    }
+}
+
+#[test]
+fn unloaded_fast_math_control_is_optional_and_edits_the_launch_option() {
+    for show_fast_math in [false, true] {
+        for fast_math in [false, true] {
+            let ctx = egui::Context::default();
+            egui_extras::install_image_loaders(&ctx);
+            let theme = RunTheme::from_dark_mode(true);
+            apply_run_theme(&ctx, &theme);
+            let mut app = RunApp::new(
+                None,
+                RunHostOptions {
+                    fast_math,
+                    show_fast_math,
+                    ..RunHostOptions::default()
+                },
+                None,
+                ParamLayout::Knobs,
+            );
+            let render = |app: &mut RunApp, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(720.0, 840.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            app.render_file_picker(ui, &theme, false);
+                        });
+                    },
+                )
+            };
+            let _ = render(&mut app, Vec::new());
+            let output = render(&mut app, Vec::new());
+            assert_eq!(app.options.fast_math, fast_math);
+            let label = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Fast Math" => {
+                        Some(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    _ => None,
+                });
+            assert_eq!(label.is_some(), show_fast_math);
+            if let Some(label) = label {
+                let icon_width = 24.0;
+                let checkbox = output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Rect(shape)
+                            if (shape.rect.width() - icon_width).abs() < 0.01
+                                && (shape.rect.height() - icon_width).abs() < 0.01 =>
+                        {
+                            Some(shape.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("Fast Math checkbox");
+                assert!(checkbox.top() > label.bottom());
+                assert!((checkbox.center().x - label.center().x).abs() < 1.0);
+                assert!(
+                    output.shapes.iter().any(|clipped| matches!(&clipped.shape,
+                        egui::Shape::Rect(shape) if shape.rect.width() > 80.0
+                            && (shape.rect.height() - 30.0).abs() < 0.01
+                            && (shape.rect.center().y - checkbox.center().y).abs() < 1.0
+                    )),
+                    "the checkbox aligns with the dropdowns' vertical center"
+                );
+                let pos = checkbox.center();
+                for pressed in [true, false] {
+                    let _ = render(
+                        &mut app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                assert_eq!(app.options.fast_math, !fast_math);
+            }
+            assert_eq!(app.options.sample_rate_hz, 48_000);
+            assert_eq!(
+                app.options.block_samples,
+                onda_run::DEFAULT_REALTIME_BLOCK_SAMPLES
+            );
+            assert!(app.controller.is_none());
+        }
+    }
+}
+
+#[test]
 fn section_tab_order_starts_with_disclosure_then_actions() {
     for width in [240.0, 720.0] {
         let ctx = egui::Context::default();
@@ -1409,6 +1583,7 @@ fn header_controls_have_consistent_sizes_and_alignment() {
             &state.status,
             app.options.sample_rate_hz,
             app.options.block_samples,
+            app.options.fast_math,
         );
         let mut render = |events| {
             ctx.run(

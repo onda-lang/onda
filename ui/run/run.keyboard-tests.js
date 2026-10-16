@@ -27,6 +27,7 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     ({ context } = await call("browsingContext.create", { type: "tab" }));
     await call("browsingContext.navigate", { context, url: pageUrl, wait: "complete" });
     await evaluate(`
+      document.documentElement.lang = "it-IT";
       window._onHostMessage({ type: "state", state: {
         running: true, connected: true, path: "keyboard.onda", events: [],
         params: [{ name: "precision", type: "f64",
@@ -40,6 +41,8 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     `);
     assert.equal(await evaluate("number.readOnly"), false, "field must enter editing before keyboard actions");
     assert.equal(await evaluate("number.value"), "1023.09554");
+    assert.equal(await evaluate("getSelection().toString()"), "1023.09554",
+      "visible decimals use a dot with an Italian document locale");
   };
   const messages = async () => JSON.parse(await evaluate(
     `JSON.stringify(__testMessages.filter(message => message.type === "setParam"))`,
@@ -51,6 +54,68 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
   const escape = "\uE00C";
   const tab = "\uE004";
   const up = "\uE013";
+  const down = "\uE015";
+  await initialize("knobs");
+  await evaluate(`window._onHostMessage({ type: "state", state: {
+    params: [{ name: "precision", type: "f64", value: 10, default: 10,
+      rangeMin: 0, rangeMax: 100, scale: "linear", step: 1, stepCount: 100 }],
+  }}); window.number = document.querySelector('#params input');
+  window.numberChanges = 0;
+  number.addEventListener('change', () => numberChanges++);`);
+  for (const draft of ["10.", "+10", " 10 "]) {
+    for (const [arrow, expected] of [[up, 11], [down, 9]]) {
+      await evaluate("number.focus(); number.select(); __testMessages.length = 0; numberChanges = 0");
+      await keys([...draft, arrow]);
+      assert.equal(await evaluate("number.value"), String(expected),
+        `arrow stepping parses the decimal draft ${JSON.stringify(draft)}`);
+      assert.deepEqual(await messages(), [], "arrow edits remain drafts until committed");
+      await keys([enter]);
+      assert.deepEqual((await messages()).map(message => [message.value, message.commit]),
+        [[expected, true]], "Enter commits the stepped decimal once");
+      assert.equal(await evaluate("numberChanges"), 1, "arrow edits emit one change on commit");
+    }
+  }
+  t.diagnostic("arrow keys step accepted decimal notation without losing its value");
+  for (const [arrow, end, octave] of [[up, enter, 5], [down, tab, 3], [up, escape, 4], [null, enter, 4]]) {
+    await initialize("knobs");
+    await evaluate(`window._onHostMessage({ type: "state", state: {
+      midi: { available: true, noteOn: true }, currentMidiInputDevice: "Computer Keyboard",
+      supportsViewState: true,
+    }}); number.blur(); __testMessages.length = 0;`);
+    await call("input.performActions", { context, actions: [{ type: "key", id: "keyboard",
+      actions: [{ type: "keyDown", value: "a" }] }] });
+    await evaluate("document.getElementById('midi-octave').focus()");
+    if (arrow) await keys([arrow]);
+    await evaluate(`window._onHostMessage({ type: "state", state: { status: "Playing" } });
+      window.dispatchEvent(new Event("resize"));`);
+    if (arrow) {
+      assert.equal(await evaluate("__testMessages.findLast(message => message.type === 'viewState').state.octave"),
+        4, "saved view state keeps the committed octave while editing");
+    }
+    assert.equal(await evaluate("document.querySelector('#piano .piano-key').getAttribute('aria-label')"),
+      "MIDI note 60", "host updates and resizing keep the committed octave while editing");
+    assert.equal(await evaluate("document.querySelector('#piano [aria-label=\"MIDI note 60\"]').classList.contains('active')"),
+      true, "host updates preserve the held note highlight while editing the octave");
+    await keys([end]);
+    assert.equal(await evaluate("document.getElementById('midi-octave').value"), String(octave));
+    if (arrow) {
+      assert.equal(await evaluate("__testMessages.findLast(message => message.type === 'viewState').state.octave"),
+        octave, "saved view state reflects the committed octave after Enter, blur, or cancellation");
+    }
+    assert.deepEqual((await midiMessages()).map(note => [note.key, note.pressed]),
+      octave === 4 ? [[60, true]] : [[60, true], [60, false]],
+      "octave edits release held notes on commit while cancelled or untouched drafts retain them");
+    assert.equal(await evaluate("document.querySelector('#piano .piano-key').getAttribute('aria-label')"),
+      "MIDI note " + (octave + 1) * 12, "piano labels reflect the committed octave");
+    if (octave === 4) {
+      assert.equal(await evaluate("document.querySelector('#piano [aria-label=\"MIDI note 60\"]').classList.contains('active')"),
+        true, "cancelled and untouched drafts retain the held note highlight");
+    }
+    await call("input.performActions", { context, actions: [{ type: "key", id: "keyboard",
+      actions: [{ type: "keyUp", value: "a" }] }] });
+    assert.equal((await midiMessages()).length, 2, "releasing the key does not send a duplicate note-off");
+  }
+  t.diagnostic("octave arrow edits commit on Enter or blur, releasing notes and refreshing the piano");
   await initialize("knobs");
   await evaluate(`
     window._onHostMessage({ type: "state", state: {

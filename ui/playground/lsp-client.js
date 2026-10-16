@@ -29,8 +29,8 @@ export class OndaBrowserLsp {
     this.queue = Promise.resolve();
   }
 
-  async initialize(options) {
-    await this.compiler.setLspAnalysisOptions(options);
+  async initialize({ sampleRate, blockSize }) {
+    await this.compiler.setLspAnalysisOptions({ sampleRate, blockSize });
     const result = await this.request("initialize", {
       processId: null,
       rootUri: projectRootUri.slice(0, -1),
@@ -46,9 +46,9 @@ export class OndaBrowserLsp {
     return result;
   }
 
-  setAnalysisOptions(options) {
+  setAnalysisOptions({ sampleRate, blockSize }) {
     return this.enqueue(async () => {
-      await this.compiler.setLspAnalysisOptions(options);
+      await this.compiler.setLspAnalysisOptions({ sampleRate, blockSize });
       await this.notify("workspace/didChangeWatchedFiles", { changes: [] });
     });
   }

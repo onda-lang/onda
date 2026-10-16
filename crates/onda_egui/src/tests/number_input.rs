@@ -996,7 +996,15 @@ fn event_number_reset_discards_a_draft_when_the_click_is_in_one_frame() {
                 if response.clicked() {
                     value = original.clone();
                 }
-                render_event_scalar_editor(ui, ty, &mut value, Some(&original), true, 112.0);
+                render_event_scalar_editor(
+                    ui,
+                    "test",
+                    ty,
+                    &mut value,
+                    Some(&original),
+                    true,
+                    112.0,
+                );
             });
             if index == 0 {
                 number = number_position(&output, display);

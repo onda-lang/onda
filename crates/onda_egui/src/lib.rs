@@ -851,35 +851,33 @@ impl RunApp {
             self.choose_onda_file(content_ui.ctx());
         }
         content_ui.add_space(14.0);
+        let select_width = if self.options.show_fast_math {
+            138.0
+        } else {
+            184.0
+        };
         content_ui.allocate_ui(egui::vec2(380.0, 62.0), |ui| {
             ui.spacing_mut().interact_size.y = 30.0;
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.add_sized(
-                        [184.0, 16.0],
-                        egui::Label::new(
-                            egui::RichText::new("Sample rate")
-                                .weak()
-                                .size(SMALL_FONT_SIZE),
-                        )
-                        .halign(egui::Align::Center),
-                    );
-                    ui.add_sized(
-                        [184.0, 16.0],
-                        egui::Label::new(
-                            egui::RichText::new("Block size")
-                                .weak()
-                                .size(SMALL_FONT_SIZE),
-                        )
-                        .halign(egui::Align::Center),
-                    );
+                    for (label, width) in [
+                        ("Sample rate", select_width),
+                        ("Block size", select_width),
+                        ("Fast Math", 80.0),
+                    ].into_iter().take(if self.options.show_fast_math { 3 } else { 2 }) {
+                        ui.add_sized(
+                            [width, 16.0],
+                            egui::Label::new(egui::RichText::new(label).weak().size(SMALL_FONT_SIZE))
+                                .halign(egui::Align::Center),
+                        );
+                    }
                 });
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.allocate_ui_with_layout(
-                        egui::vec2(184.0, 30.0),
+                        egui::vec2(select_width, 30.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             egui::ComboBox::from_id_salt("run-sample-rate")
@@ -899,7 +897,7 @@ impl RunApp {
                         },
                     );
                     ui.allocate_ui_with_layout(
-                        egui::vec2(184.0, 30.0),
+                        egui::vec2(select_width, 30.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             egui::ComboBox::from_id_salt("run-block-size")
@@ -916,6 +914,12 @@ impl RunApp {
                                 });
                         },
                     );
+                    if self.options.show_fast_math {
+                        let response = centered_checkbox(ui, &mut self.options.fast_math, egui::vec2(80.0, 30.0), "Fast Math");
+                        response.on_hover_text(
+                            "Allow faster floating-point optimizations that can change numerical results.",
+                        );
+                    }
                 });
             });
         });
@@ -1688,7 +1692,7 @@ fn render_event_arg_editor(
             },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            render_event_scalar_editor(ui, ty, value, default, connected, 112.0)
+            render_event_scalar_editor(ui, label, ty, value, default, connected, 112.0)
         });
     });
 }
@@ -1825,6 +1829,7 @@ fn render_event_array_editor(
                                         ui.push_id(("event-array-element", index), |ui| {
                                             render_event_scalar_editor(
                                                 ui,
+                                                &format!("{label}[{index}]"),
                                                 scalar_ty,
                                                 element,
                                                 default.and_then(|values| values.get(index)),
@@ -1858,6 +1863,7 @@ fn render_event_array_editor(
 
 fn render_event_scalar_editor(
     ui: &mut egui::Ui,
+    label: &str,
     ty: &str,
     value: &mut Value,
     default: Option<&Value>,
@@ -1866,11 +1872,9 @@ fn render_event_scalar_editor(
 ) {
     if ty == "bool" {
         let mut checked = value.as_bool().unwrap_or(false);
-        let label = if checked { "On" } else { "Off" };
         let changed = ui
             .add_enabled_ui(connected, |ui| {
-                ui.add_sized([width, 24.0], egui::Checkbox::new(&mut checked, label))
-                    .changed()
+                centered_checkbox(ui, &mut checked, egui::vec2(width, 24.0), label).changed()
             })
             .inner;
         if changed {
@@ -2009,12 +2013,53 @@ fn render_param_grid(
                             ui.set_width(card_width - padding.sum().x);
                             ui.set_min_height(card_height - padding.sum().y);
                             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                if param_type(param) == "bool" {
+                                    ui.set_max_height(card_height - padding.sum().y);
+                                }
                                 render_param(ui, param);
                             });
                         });
                 });
             }
         });
+    }
+}
+
+fn centered_checkbox(
+    ui: &mut egui::Ui,
+    checked: &mut bool,
+    size: egui::Vec2,
+    label: &str,
+) -> egui::Response {
+    let response = ui
+        .scope(|ui| {
+            let scale = 24.0 / ui.spacing().icon_width;
+            ui.spacing_mut().icon_width = 24.0;
+            ui.spacing_mut().icon_width_inner *= scale;
+            ui.spacing_mut().interact_size.y = 24.0;
+            ui.spacing_mut().button_padding.y = 0.0;
+            ui.add_sized(size, egui::Checkbox::without_text(checked))
+        })
+        .inner;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *checked, label)
+    });
+    response
+}
+
+fn render_boolean_param_editor(
+    ui: &mut egui::Ui,
+    spec: ParamControlSpec<'_>,
+    value: &Value,
+) -> ParamEditOutcome {
+    render_param_heading(ui, spec, ui.available_width(), egui::Align::Center);
+    ui.add_space(4.0);
+    let mut checked = value.as_bool().unwrap_or(false);
+    let size = egui::vec2(ui.available_width(), ui.available_height().max(24.0));
+    if centered_checkbox(ui, &mut checked, size, &spec.display_name()).changed() {
+        ParamEditOutcome::Commit(Value::Bool(checked))
+    } else {
+        ParamEditOutcome::None
     }
 }
 
@@ -2026,18 +2071,7 @@ fn render_param_value_editor(
     let ty = spec.ty;
     let (min, max) = spec.bounds().unzip();
     if ty == "bool" {
-        let mut checked = value.as_bool().unwrap_or(false);
-        if ui
-            .add(egui::Checkbox::new(
-                &mut checked,
-                event_arg_heading(ui, &spec.display_name(), ty),
-            ))
-            .on_hover_text(format!("{} ({ty})", spec.display_name()))
-            .changed()
-        {
-            return ParamEditOutcome::Commit(Value::Bool(checked));
-        }
-        return ParamEditOutcome::None;
+        return render_boolean_param_editor(ui, spec, value);
     }
 
     let committed_number = value.as_f64().unwrap_or(0.0);
@@ -2118,17 +2152,12 @@ fn render_compact_param_value_editor(
     spec: ParamControlSpec<'_>,
     value: &Value,
 ) -> ParamEditOutcome {
+    if spec.ty == "bool" {
+        return render_boolean_param_editor(ui, spec, value);
+    }
     let mut outcome = ParamEditOutcome::None;
     render_param_heading(ui, spec, ui.available_width(), egui::Align::Center);
     ui.add_space(4.0);
-
-    if spec.ty == "bool" {
-        let mut checked = value.as_bool().unwrap_or(false);
-        if ui.checkbox(&mut checked, "").changed() {
-            outcome = ParamEditOutcome::Commit(Value::Bool(checked));
-        }
-        return outcome;
-    }
 
     let committed_number = value.as_f64().unwrap_or(0.0);
     let mut displayed_number = committed_number;
@@ -2983,9 +3012,15 @@ fn format_sample_rate(sample_rate: f64) -> String {
     }
 }
 
-fn format_run_status(status: &str, sample_rate_hz: u32, block_samples: usize) -> String {
+fn format_run_status(
+    status: &str,
+    sample_rate_hz: u32,
+    block_samples: usize,
+    fast_math: bool,
+) -> String {
+    let math = if fast_math { " · Fast Math" } else { "" };
     format!(
-        "{status} — {} · {block_samples} samples",
+        "{status} — {} · {block_samples} samples{math}",
         format_sample_rate(sample_rate_hz as f64)
     )
 }
@@ -3444,7 +3479,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = initial;
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
             });
             let start = rect.center();
             let end = start + egui::vec2(20.0, 0.0);
@@ -3454,7 +3489,7 @@ mod tests {
                 (0.3, pointer_button(end, false)),
             ] {
                 widget_frame(&ctx, time, events, |ui| {
-                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                    render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
                 });
             }
             assert_eq!(value, expected, "{ty} drag must match the web view");
@@ -3471,18 +3506,20 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = serde_json::json!(initial.to_string());
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
             });
             let start = rect.center();
             widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
-                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
             });
             for (index, x) in movement.iter().enumerate() {
                 widget_frame(
                     &ctx,
                     0.2 + index as f64 * 0.1,
                     vec![egui::Event::PointerMoved(start + egui::vec2(*x, 0.0))],
-                    |ui| render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0),
+                    |ui| {
+                        render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+                    },
                 );
             }
             assert_eq!(value, serde_json::json!(expected.to_string()));
@@ -3494,17 +3531,17 @@ mod tests {
         let ctx = egui::Context::default();
         let mut value = serde_json::json!(0.0);
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0)
         });
         let start = rect.center();
         widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
-            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0)
         });
         widget_frame(
             &ctx,
             0.2,
             vec![egui::Event::PointerMoved(start + egui::vec2(20.0, 20.0))],
-            |ui| render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0),
+            |ui| render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0),
         );
         assert_eq!(value, serde_json::json!(0.2));
     }
@@ -3730,7 +3767,7 @@ mod tests {
         let initial = "9007199254740993";
         let mut value = serde_json::json!(initial);
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
         });
         let pos = rect.center();
         for (time, events) in [
@@ -3739,12 +3776,12 @@ mod tests {
             (0.2, vec![egui::Event::Text("9007199254740998".into())]),
         ] {
             widget_frame(&ctx, time, events, |ui| {
-                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
             });
         }
         assert_eq!(value, serde_json::json!("9007199254740998"));
         widget_frame(&ctx, 0.3, key_event(egui::Key::Escape), |ui| {
-            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
         });
         assert_eq!(value, serde_json::json!(initial));
         assert!(ctx.memory(|memory| memory.focused().is_none()));
@@ -3754,7 +3791,7 @@ mod tests {
             (0.8, key_event(egui::Key::ArrowUp)),
         ] {
             widget_frame(&ctx, time, events, |ui| {
-                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
             });
         }
         assert_eq!(value, serde_json::json!("9007199254740994"));
@@ -3836,7 +3873,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = initial;
             let render = |ui: &mut egui::Ui| {
-                render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
+                render_event_scalar_editor(ui, "test", ty, &mut value, Some(&default), true, 112.0)
             };
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
             let pos = rect.center();
@@ -3849,7 +3886,15 @@ mod tests {
                 (0.4, vec![]),
             ] {
                 widget_frame(&ctx, time, events, |ui| {
-                    render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
+                    render_event_scalar_editor(
+                        ui,
+                        "test",
+                        ty,
+                        &mut value,
+                        Some(&default),
+                        true,
+                        112.0,
+                    )
                 });
                 if time >= 0.3 {
                     assert_eq!(value, default, "{ty} default must survive the next frame");
@@ -3864,11 +3909,11 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = serde_json::json!(9);
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
             });
             for (time, pressed) in [(0.1, true), (0.15, false), (0.2, true), (0.25, false)] {
                 widget_frame(&ctx, time, pointer_button(rect.center(), pressed), |ui| {
-                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
+                    render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
                 });
             }
             let expected = if ty == "i64" {
@@ -4346,8 +4391,12 @@ mod tests {
     #[test]
     fn run_status_includes_active_compile_settings() {
         assert_eq!(
-            format_run_status("Running", 48_000, 256),
+            format_run_status("Running", 48_000, 256, false),
             "Running — 48 kHz · 256 samples"
+        );
+        assert_eq!(
+            format_run_status("Running", 48_000, 256, true),
+            "Running — 48 kHz · 256 samples · Fast Math"
         );
     }
 
