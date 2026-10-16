@@ -657,7 +657,7 @@ async function checkDefaultLayout() {
     }
     const sections = ["scope", "log", "buffers", "events", "params"];
     view._onHostMessage({ type: "state", state: {
-      logRevealed: true, logText: "ready", supportsBufferEmbedding: true,
+      logRevealed: true, logText: "ready",
       buffers: [{ name: "buffer", type: "f32[]" }], events: [{ name: "ping", args: [] }],
     }});
     for (const section of ["events", "params"]) {

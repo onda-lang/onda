@@ -1535,14 +1535,6 @@
       }
       .param-toggle input[type="checkbox"] { margin: 0; }
 
-      .buffer-embedding-control {
-        min-width: 0;
-        max-width: 100%;
-        color: var(--muted);
-        font-size: 12px;
-        white-space: normal;
-      }
-
       .empty {
         color: var(--muted);
       }
@@ -1922,16 +1914,6 @@
             ></button>
             <div class="params-title">Buffers</div>
           </div>
-          <div class="section-actions">
-            <label
-              class="param-toggle buffer-embedding-control"
-              id="buffer-embedding-control"
-              title="Store the original encoded audio files in the DAW project state; this can significantly increase project size"
-            >
-              <input id="embed-buffers" type="checkbox" />
-              <span id="embed-buffers-label">Embed in DAW project</span>
-            </label>
-          </div>
         </div>
         <div class="section-body buffers-list" id="buffers-body">
           <div class="buffers-list" id="buffers"></div>
@@ -2232,9 +2214,6 @@
         supportsSourceSelection: false,
         supportsProjectExport: false,
         canExportProject: false,
-        supportsBufferEmbedding: false,
-        embedBuffers: false,
-        embeddedBuffersReady: false,
         supportsTransport: false,
         supportsDeviceSelection: false,
         supportsRunSettings: false,
@@ -2257,9 +2236,6 @@
       const refreshDevicesButton = document.getElementById("refresh-devices");
       const unloadButton = document.getElementById("unload");
       const saveProjectButton = document.getElementById("save-project");
-      const bufferEmbeddingControl = document.getElementById("buffer-embedding-control");
-      const embedBuffersInput = document.getElementById("embed-buffers");
-      const embedBuffersLabel = document.getElementById("embed-buffers-label");
       const chooseOndaFileButton = document.getElementById("choose-onda-file");
       const filePickerNode = document.getElementById("file-picker");
       const filePickerBrandNode = document.getElementById("file-picker-brand");
@@ -2725,12 +2701,6 @@
       saveProjectButton.addEventListener("click", () => {
         closeDeviceSettings();
         hostBridge.postMessage({ type: "saveProjectAs" });
-      });
-      embedBuffersInput.addEventListener("change", () => {
-        hostBridge.postMessage({
-          type: "setEmbedBuffers",
-          enabled: embedBuffersInput.checked,
-        });
       });
       const updateRunSettings = () => {
         hostBridge.postMessage({
@@ -4509,7 +4479,6 @@
         }
         const supportsSourceSelection = state.supportsSourceSelection === true;
         const supportsProjectExport = state.supportsProjectExport === true;
-        const supportsBufferEmbedding = state.supportsBufferEmbedding === true;
         const supportsTransport = state.supportsTransport === true;
         const supportsDeviceSelection = state.supportsDeviceSelection === true;
         const supportsMidiInput = state.midi?.available === true;
@@ -4562,12 +4531,6 @@
         const hasParams = state.params.length > 0;
         const canEditRun = canEditRunControls();
         buffersSection.style.display = hasBuffers ? "" : "none";
-        bufferEmbeddingControl.hidden = !supportsBufferEmbedding || !hasBuffers;
-        embedBuffersInput.checked = state.embedBuffers === true;
-        embedBuffersLabel.textContent =
-          state.embedBuffers === true && state.embeddedBuffersReady !== true
-            ? "Embedding buffers..."
-            : "Embed in DAW project";
         eventsSection.style.display = hasEvents ? "" : "none";
         logSection.style.display = state.logRevealed === true ? "" : "none";
         paramsSection.style.display = hasParams ? "" : "none";
