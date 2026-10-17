@@ -179,3 +179,108 @@ export async function testBufferDrops(check, waitFrames) {
     }
   }
 }
+
+// Parameter publications must preserve the surrounding document, even in webviews
+// without scroll anchoring. Real buffer changes must commit before canvas layout.
+export async function testBufferRendering(check, waitFrames, pointerControl) {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;left:0;top:0;width:720px;height:480px;border:0";
+  const loaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+  frame.src = "/layout";
+  document.body.append(frame);
+  try {
+    await loaded;
+    const view = frame.contentWindow;
+    const doc = view.document;
+    const publish = state => view._onHostMessage({ type: "state", state: structuredClone(state) });
+    const values = state => view._onHostMessage({ type: "parameterValues", state });
+    const waveform = { minValue: -1, maxValue: 1, minimums: [-1, 0], maximums: [0, 1] };
+    const buffers = Array.from({ length: 4 }, (_, index) => ({
+      name: "waves[" + index + "]", type: "buffer<f32>", loadedFrames: 32,
+      loadedChannels: 1, loadedSampleRate: 48000, waveform,
+    }));
+    const params = [
+      { name: "auto_play", type: "bool", scalar: true, value: true, default: true },
+      { name: "level", type: "f32", scalar: true, value: 0.5, default: 0.5,
+        rangeMin: 0, rangeMax: 1, scale: "linear" },
+    ];
+    publish({ path: "garden.ondaproject", running: true, connected: true,
+      supportsScope: true, paramLayout: "knobs", buffers, params, inputControls: [],
+      events: [{ name: "bang", args: [{ name: "amount", type: "f32", value: 0.5, default: 0.5 }] }],
+    });
+    await waitFrames(3, view);
+    const shell = doc.querySelector(".shell");
+    shell.style.overflowAnchor = "none";
+    shell.scrollTop = shell.scrollHeight;
+    const before = shell.scrollTop;
+    check(before > 0, "the buffer regression fixture scrolls to its parameters");
+    const card = doc.querySelector(".buffer-card");
+    const canvas = card.querySelector("canvas");
+    const toggle = doc.querySelector('#params input[type="checkbox"]');
+    const number = doc.querySelector("#params .param-number");
+    const event = doc.querySelector(".event-card");
+    toggle.click();
+    params[0].value = false;
+    publish({ params, buffers });
+    await waitFrames(2, view);
+    check(shell.scrollTop === before && doc.querySelector(".buffer-card") === card
+      && doc.querySelector(".buffer-card canvas") === canvas,
+    "full parameter publications preserve scroll and unchanged buffer cards and canvases");
+
+    // A values-only publication must bypass unrelated rendering altogether.
+    const mutations = [];
+    const observer = new view.MutationObserver(records => mutations.push(...records));
+    observer.observe(doc.querySelector("#buffers"), { subtree: true, childList: true, attributes: true });
+    observer.observe(doc.querySelector("#events"), { subtree: true, childList: true, attributes: true });
+    values({ params: [{ name: "auto_play", value: true }, { name: "level", value: 0.75 }] });
+    await waitFrames(2, view);
+    observer.disconnect();
+    check(toggle.checked && Number(number.value) === 0.75 && mutations.length === 0
+      && doc.querySelector(".event-card") === event && shell.scrollTop === before,
+    "value publications update controls without touching buffers, event drafts, or scroll");
+    number.focus({ preventScroll: true });
+    number.value = "0.625";
+    number.dispatchEvent(new view.Event("input", { bubbles: true }));
+    values({ params: [{ name: "level", value: 0.25 }] });
+    check(number.value === "0.625" && doc.activeElement === number,
+      "value publications preserve the focused numeric draft");
+    number.blur();
+
+    const knob = doc.querySelector("#params .param-knob");
+    const pointer = pointerControl(knob);
+    pointer("pointerdown", 0, { clientY: 100 });
+    pointer("pointermove", 0, { clientY: 80 });
+    const draggedValue = knob.dataset.value;
+    const dragScroll = shell.scrollTop;
+    values({ params: [{ name: "level", value: 0.1 }] });
+    await waitFrames(2, view);
+    check(knob.dataset.value === draggedValue && shell.scrollTop === dragScroll
+      && doc.querySelector("#params .param-knob") === knob,
+    "host value publications preserve the active knob gesture and scroll position");
+    pointer("pointerup", 0, { clientY: 80 });
+    values({ params: [{ name: "level", value: 0.25 }] });
+    check(Number(number.value) === 0.25,
+      "host values resume updating the knob after its gesture commits");
+
+    shell.scrollTop = shell.scrollHeight;
+    const beforeBufferChange = shell.scrollTop;
+    buffers[3].loadedPath = "/replacement.wav";
+    buffers[3].waveform = { ...waveform, maximums: [1, 0] };
+    publish({ buffers });
+    await waitFrames(2, view);
+    check(shell.scrollTop === beforeBufferChange
+      && doc.querySelectorAll(".buffer-card")[3].textContent.includes("replacement.wav"),
+    "real buffer changes commit complete cards before measuring waveforms and preserve scroll");
+    publish({ running: false, connected: false });
+    check([...doc.querySelectorAll("#buffers button")].every(button => !button.disabled),
+      "loaded stopped programs retain editable buffer bindings");
+    publish({ path: "" });
+    check([...doc.querySelectorAll("#buffers button")].every(button => button.disabled),
+      "buffer editability changes even when the buffer descriptions are unchanged");
+    publish({ buffers: [] });
+    check(doc.querySelectorAll(".buffer-card").length === 0,
+      "removing buffers clears their retained cards");
+  } finally {
+    frame.remove();
+  }
+}

@@ -405,6 +405,57 @@ test("publishes buffer previews together and preserves them through recompiles",
   assert.equal(host.state.buffers[1].waveform, null);
 });
 
+test("parameter edits and resets publish values after the view receives its schema", async () => {
+  const messages = [];
+  const edits = [];
+  const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+    ready: false,
+    pendingViewReset: true,
+    viewResetId: 1,
+    state: {
+      path: "sampler.onda",
+      params: [
+        { name: "gain", type: "f32", default: 1, value: 0.5 },
+        { name: "gate", type: "bool", default: false, value: true },
+        { name: "count", type: "i64", default: "9223372036854775807", value: "0" },
+      ],
+      buffers: [{ name: "clip", loadedPath: "clip.wav" }],
+      events: [{ name: "bang", args: [{ name: "amount", value: 0.25 }] }],
+    },
+    handlers: { setParam: async (...edit) => edits.push(edit) },
+    post: message => messages.push(structuredClone(message)),
+  });
+  await host.handleMessage({ type: "setParam", name: "gain", value: 0.75 });
+  assert.equal(messages.length, 0);
+  await host.handleMessage({ type: "webviewReady" });
+  assert.equal(messages.at(-1).type, "state");
+  assert.equal(messages.at(-1).state.params[0].value, 0.75);
+  assert.deepEqual(messages.at(-1).state.viewState, { reset: true, readyId: 1 });
+
+  for (const [name, value] of [["gain", 0.25], ["gate", false], ["count", "9007199254740993"]]) {
+    await host.handleMessage({ type: "setParam", name, value });
+    assert.deepEqual(messages.at(-1), {
+      type: "parameterValues", state: { params: [{ name, value }] },
+    });
+    assert.equal(host.state.params.find(param => param.name === name).value, value);
+    assert.deepEqual(edits.at(-1), [name, value]);
+  }
+  await host.handleMessage({ type: "resetParams" });
+  assert.deepEqual(messages.at(-1), { type: "parameterValues", state: { params: [
+    { name: "gain", value: 1 }, { name: "gate", value: false },
+    { name: "count", value: "9223372036854775807" },
+  ] } });
+  assert.equal(host.state.events[0].args[0].value, 0.25);
+
+  host.setState({ params: [{ name: "level", type: "f32", value: 0.5 }] });
+  assert.equal(messages.at(-1).type, "state");
+  host.pendingViewReset = true;
+  await host.handleMessage({ type: "setParam", name: "level", value: 0.75 });
+  assert.equal(messages.at(-1).type, "state");
+  assert.equal(messages.at(-1).state.params[0].value, 0.75);
+  assert.equal(messages.at(-1).state.viewState.reset, true);
+});
+
 test("allows browser playback while buffers are unbound", async () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;

@@ -1,5 +1,5 @@
 // Executed against the real run view DOM by run.test.js.
-import { testBufferDrops } from "./buffer-tests.js";
+import { testBufferDrops, testBufferRendering } from "./buffer-tests.js";
 const results = [];
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -1349,6 +1349,7 @@ try {
   await checkDefaultLayout();
   await checkContentBoxScope();
   await checkEmbeddedHosts();
+  await testBufferRendering(check, waitFrames, pointerControl);
   await testBufferDrops(check, waitFrames);
   await checkThemedFormControls();
   await checkInputControls();

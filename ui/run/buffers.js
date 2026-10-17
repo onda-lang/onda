@@ -12,6 +12,7 @@
       this.browserPosition = null;
       this.nativePaths = [];
       this.nativePosition = null;
+      this.renderedKey = null;
 
       const document = node.ownerDocument;
       for (const type of ["dragenter", "dragover"]) {
@@ -104,7 +105,21 @@
 
     render(buffers) {
       const canEditRun = this.canEdit();
-      this.node.replaceChildren();
+      const key = JSON.stringify([canEditRun, buffers]);
+      if (key !== this.renderedKey) {
+        this.renderCards(buffers, canEditRun);
+        this.renderedKey = key;
+      }
+
+      if (canEditRun) {
+        this.setTarget(this.nativePosition ? this.nativeTarget() : this.cardAt(this.browserPosition));
+      } else {
+        this.clearDrag();
+      }
+    }
+
+    renderCards(buffers, canEditRun) {
+      const fragment = this.node.ownerDocument.createDocumentFragment();
       for (const buffer of buffers) {
         const card = document.createElement("div");
         card.className = "buffer-card";
@@ -165,7 +180,7 @@
         actions.append(choose, clear);
         card.appendChild(actions);
 
-        this.node.appendChild(card);
+        fragment.appendChild(card);
         const waveform = bufferWaveform(buffer);
         if (waveform) {
           const preview = document.createElement("div");
@@ -177,15 +192,13 @@
           canvas.__ondaBufferWaveform = waveform;
           preview.appendChild(canvas);
           card.appendChild(preview);
-          drawBufferWaveform(canvas, waveform);
         }
       }
 
-      if (canEditRun) {
-        this.setTarget(this.nativePosition ? this.nativeTarget() : this.cardAt(this.browserPosition));
-      } else {
-        this.clearDrag();
-      }
+      // Canvas measurement forces layout. Commit every card before drawing so
+      // the scroller never observes an incomplete, shorter buffer section.
+      this.node.replaceChildren(fragment);
+      this.drawWaveforms();
     }
   }
 

@@ -411,6 +411,22 @@ Layout updates use `inputControlLayout`; hosts enable the smoothing editor with
 values and processing settings remain host-owned. Both banks share their scalar editors
 and preserve numeric drafts through independent value updates.
 
+Hosts can update existing bindings with `{ type: "parameterValues", state: {
+params: [{ name, value }], inputControls: [{ name, value }] } }`. Values are in
+plain units; either bank may be omitted. These messages preserve focused drafts
+and active gestures and do not render other sections. Names must belong to the
+most recently published schema; unknown names are ignored. Schema, layout, and
+editability changes use ordinary `state` messages.
+The browser host publishes parameter edits and resets through `parameterValues`.
+The native webview host uses the same message when a publication changes only
+parameter values; any schema or other host-state change publishes full state.
+
+`ui/run/buffers.js` retains cards while their descriptions and editability are
+unchanged. When those inputs change, it builds the complete replacement off-DOM
+and commits it before measuring waveform canvases, keeping partial layouts from
+clamping the document's scroll position. Theme, resize, and section visibility
+changes redraw existing waveform canvases independently.
+
 ## Practical navigation entrypoints
 
 - Language/front-end behavior: `onda_frontend/src/parser/*`, `onda_semantics/src/lib.rs`.

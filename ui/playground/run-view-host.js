@@ -186,7 +186,7 @@ export class BrowserRunViewHost {
       ...param,
       value: initialParamValue(param),
     }));
-    this.postState();
+    this.postParameterValues(this.state.params);
   }
 
   resetEventArguments() {
@@ -247,6 +247,17 @@ export class BrowserRunViewHost {
     this.pendingViewReset = false;
   }
 
+  postParameterValues(params) {
+    if (!this.ready) return;
+    if (this.pendingViewReset) {
+      this.postState();
+      return;
+    }
+    this.post({ type: "parameterValues", state: {
+      params: params.map(({ name, value }) => ({ name, value })),
+    } });
+  }
+
   postScope(channels, samples) {
     this.post({ type: "scopeData", channels, samples });
   }
@@ -300,6 +311,7 @@ export class BrowserRunViewHost {
           this.state.params = this.state.params.map((param) =>
             param.name === message.name ? { ...param, value: message.value } : param
           );
+          this.postParameterValues([{ name: message.name, value: message.value }]);
           await this.handlers.setParam?.(message.name, message.value);
           break;
         case "triggerEvent":

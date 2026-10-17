@@ -3698,9 +3698,16 @@
             }
           }
 
-          for (let index = 0; index < params.length; index += 1) {
-            const incoming = params[index];
+          updateValues(params);
+          for (let index = 0; index < params.length; index += 1)
+            params[index] = paramBindings.get(params[index].name).param;
+          return true;
+        }
+
+        function updateValues(values) {
+          for (const incoming of values || []) {
             const binding = paramBindings.get(incoming.name);
+            if (!binding) continue;
             const localValue = binding.param.value;
             Object.assign(binding.param, incoming);
             if (activeParamGestures.has(incoming.name)) {
@@ -3708,9 +3715,7 @@
             } else if (!binding.isEditing?.()) {
               binding.setValue(incoming.value);
             }
-            params[index] = binding.param;
           }
-          return true;
         }
 
         function bindParamNumber(param, input, setValue) {
@@ -3934,7 +3939,7 @@
             container.appendChild(card);
           }
         }
-        return { render: renderParameters };
+        return { render: renderParameters, updateValues };
       }
       const parameterSection = createParameterSection(paramsNode, "params", "setParam");
       const inputControlSection = createParameterSection(inputControlsNode, "inputControls", "setInputControl");
@@ -4134,6 +4139,11 @@
         }
         if (message.type === "scopeData") {
           scheduleScopeDraw(message.channels, message.samples);
+          return;
+        }
+        if (message.type === "parameterValues") {
+          parameterSection.updateValues(message.state.params);
+          inputControlSection.updateValues(message.state.inputControls);
           return;
         }
         if (message.type === "viewState") {
