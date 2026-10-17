@@ -1143,7 +1143,7 @@ async function checkPlaygroundLayout() {
             option.label === (width < 400 ? option.value : option.textContent)
             && option.getAttribute("aria-label") === option.textContent
             && context.measureText(option.label).width <= select.clientWidth
-              - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 24),
+              - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
           `${host}: select values fit and retain accessible units at ${width} pixels`);
         }
       }

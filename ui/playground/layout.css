@@ -42,6 +42,16 @@
   font: clamp(10px, 3.4cqi, 14px)/1.45 var(--mono);
 }
 
+.play-toolbar .play-control-grid select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  padding-right: 24px;
+}
+
 .play-control-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .6fr);
