@@ -2548,7 +2548,7 @@ fn source_snapshot_from_paths(entry: &Path, previous: &[PathBuf]) -> SourceSnaps
     let loaded = load_program_file(entry);
     let (manifest, load_succeeded) = match loaded {
         Ok(loaded) => (loaded.sources, true),
-        Err(error) => (error.sources, false),
+        Err(error) => (*error.sources, false),
     };
     let mut document_contents = manifest
         .documents

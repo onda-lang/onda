@@ -46,7 +46,7 @@ pub(crate) fn resolve_run_project(
             Some(project_file) if !project_file.manifest.constants.is_empty() => {
                 let loaded = onda_frontend::load_program_file(&entry).map_err(|error| {
                     if report_sources {
-                        sources = error.sources;
+                        sources = *error.sources;
                     }
                     crate::diag_print::format_diagnostics("parse failed", &error.diagnostics)
                 })?;

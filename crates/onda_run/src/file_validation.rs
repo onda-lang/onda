@@ -121,7 +121,7 @@ mod tests {
         ));
         fs::write(&path, b"before").unwrap();
         let mut cache = FileValidationCache::default();
-        assert!(!cache.matches(&[path.clone()], |_| {
+        assert!(!cache.matches(std::slice::from_ref(&path), |_| {
             fs::write(&path, b"after").unwrap();
             true
         }));

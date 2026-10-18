@@ -113,7 +113,7 @@ impl AnalysisSession {
                     path,
                     version,
                     diagnostics: error.diagnostics,
-                    sources: error.sources,
+                    sources: *error.sources,
                     parsed: None,
                     typed: None,
                     mir: None,

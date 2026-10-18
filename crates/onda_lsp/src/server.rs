@@ -971,7 +971,7 @@ impl LspServer {
         let loaded = load_program_file_with_overlays(&normalized, overlays);
         let (parsed, sources) = match loaded {
             Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources),
-            Err(error) => (None, error.sources),
+            Err(error) => (None, *error.sources),
         };
         self.parse_cache.insert(
             normalized,
@@ -1003,7 +1003,7 @@ impl LspServer {
         let loaded = load_program_file_with_overlays(&normalized, &overlays);
         let (parsed, sources) = match loaded {
             Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources),
-            Err(error) => (None, error.sources),
+            Err(error) => (None, *error.sources),
         };
         self.parse_cache.insert(
             normalized,
@@ -1056,7 +1056,7 @@ impl LspServer {
         let loaded = load_program_file_with_overlays(&normalized, overlays);
         let (parsed, mut sources, succeeded) = match loaded {
             Ok(loaded) => (Some(Arc::new(loaded.program)), loaded.sources, true),
-            Err(error) => (None, error.sources, false),
+            Err(error) => (None, *error.sources, false),
         };
         if !succeeded {
             for path in previous_sources.files {
@@ -1744,7 +1744,7 @@ impl DependencyFingerprintCache {
         let loaded = load_program_file_with_overlays(path, overlays);
         let sources = match loaded {
             Ok(loaded) => loaded.sources,
-            Err(error) => error.sources,
+            Err(error) => *error.sources,
         };
         source_manifest_contains_path(&sources, &target)
     }

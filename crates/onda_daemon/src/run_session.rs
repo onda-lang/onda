@@ -223,7 +223,7 @@ pub enum RunBufferChannels {
 pub struct RunBuildError {
     pub diagnostics: Vec<Diagnostic>,
     /// Source reads consumed by this attempt, including failed analysis.
-    pub sources: onda_frontend::SourceManifest,
+    pub sources: Box<onda_frontend::SourceManifest>,
 }
 
 /// An external buffer supplied before a run instance is initialized.
@@ -531,7 +531,7 @@ impl RunSession {
         })();
         result.map_err(|diagnostics| RunBuildError {
             diagnostics,
-            sources,
+            sources: Box::new(sources),
         })
     }
 

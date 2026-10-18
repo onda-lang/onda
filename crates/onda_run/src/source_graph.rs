@@ -98,7 +98,7 @@ pub fn run_source_graph(input: &Path) -> RunSourceGraph {
         .map_or(input.as_path(), |paths| paths.entry.as_path());
     let (sources, complete) = match load_program_file(entry) {
         Ok(loaded) => (loaded.sources, true),
-        Err(error) => (error.sources, false),
+        Err(error) => (*error.sources, false),
     };
     if sources.files.is_empty() {
         file_digests.insert(entry.to_path_buf(), FileReadDigest::Unavailable);

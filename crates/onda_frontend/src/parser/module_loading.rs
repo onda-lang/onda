@@ -158,7 +158,7 @@ pub struct LoadedProgram {
 #[derive(Debug, Clone)]
 pub struct LoadError {
     pub diagnostics: Vec<Diagnostic>,
-    pub sources: SourceManifest,
+    pub sources: Box<SourceManifest>,
 }
 
 pub type LoadResult = Result<LoadedProgram, LoadError>;
@@ -651,7 +651,7 @@ pub fn load_program_file_from_virtual_sources(
 ) -> LoadResult {
     let loader = SourceLoader::virtual_tree(root, sources).map_err(|message| LoadError {
         diagnostics: vec![Diagnostic::syntax(message, 0, 0)],
-        sources: SourceManifest::default(),
+        sources: Box::default(),
     })?;
     load_program_file_with_loader(path, &loader)
 }
@@ -665,7 +665,7 @@ pub fn load_program_file_from_snapshot(
 ) -> LoadResult {
     let loader = SourceLoader::snapshot(sources, resolutions).map_err(|message| LoadError {
         diagnostics: vec![Diagnostic::syntax(message, 0, 0)],
-        sources: SourceManifest::default(),
+        sources: Box::default(),
     })?;
     load_program_file_with_loader(path, &loader)
 }
@@ -677,7 +677,7 @@ fn load_program_file_with_loader(path: &Path, loader: &SourceLoader) -> LoadResu
             0,
             0,
         )],
-        sources: SourceManifest::default(),
+        sources: Box::default(),
     })?;
     let mut state = LoadState::default();
     state
@@ -690,7 +690,7 @@ fn load_program_file_with_loader(path: &Path, loader: &SourceLoader) -> LoadResu
         }),
         Err(diagnostics) => Err(LoadError {
             diagnostics,
-            sources: state.source_manifest(),
+            sources: Box::new(state.source_manifest()),
         }),
     }
 }
