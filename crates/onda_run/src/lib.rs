@@ -29,13 +29,17 @@ use sha2::{Digest, Sha256};
 mod midi;
 mod playback;
 mod project_io;
+mod source_graph;
+pub use source_graph::{run_source_graph, RunSourceGraph};
 
 mod event_value_json;
+mod file_validation;
 pub use event_value_json::{event_value_from_json, event_value_to_json};
+use file_validation::FileValidationCache;
 
 pub use playback::{
-    append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
-    ProjectBufferBinding,
+    append_interleaved_block, format_run_param_info, play_run_realtime, run_session_metadata,
+    PlaybackLaunch, ProjectBufferBinding,
 };
 pub use project_io::{
     create_empty_project, package_project_from_files, package_project_plan,
@@ -45,7 +49,7 @@ pub use project_io::{
 const SCOPE_MAX_FRAMES: usize = 1024;
 const MAX_VISIBLE_LOG_ENTRIES: usize = 4096;
 const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
-const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_millis(500);
+const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
 /// Periodic controller polling interval used while a native run frontend is loaded.
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_REALTIME_BLOCK_SAMPLES: usize = 512;
@@ -322,6 +326,7 @@ pub struct RunController {
     source_watch_revision: SourceWatchRevision,
     compiled_watch_revision: Option<u64>,
     last_source_fallback_validation: Instant,
+    source_fallback_cache: FileValidationCache,
     preserved_params: Vec<(String, Value)>,
     preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
@@ -392,6 +397,7 @@ impl RunController {
             source_watch_revision,
             compiled_watch_revision: Some(compiled_watch_revision),
             last_source_fallback_validation: Instant::now(),
+            source_fallback_cache: FileValidationCache::default(),
             preserved_params: Vec::new(),
             preserved_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
@@ -526,16 +532,19 @@ impl RunController {
                         // just appeared. Retarget the watch as the path becomes
                         // reachable without recompiling for directory-only
                         // changes.
-                        let refreshed = self.refresh_source_watcher(&changed_paths);
-                        if !self.source_compilation.matches(&refreshed) {
+                        let (refreshed, sources_are_current) =
+                            self.refresh_source_watcher(&changed_paths);
+                        if !sources_are_current || !self.source_compilation.matches(&refreshed) {
                             self.recompile_after_source_change(&changed_paths);
                             result.state_changed = true;
                         } else {
                             self.acknowledge_source_watch_revision(watch_batch);
                         }
-                    } else {
-                        self.refresh_kqueue_file_watches(&changed_paths);
+                    } else if self.refresh_changed_watch_roots(&changed_paths) {
                         self.acknowledge_source_watch_revision(watch_batch);
+                    } else {
+                        self.recompile_after_source_change(&changed_paths);
+                        result.state_changed = true;
                     }
                 }
             }
@@ -784,7 +793,7 @@ impl RunController {
         changed_paths: &[PathBuf],
     ) -> Result<(), String> {
         let compiled_watch_revision = self.source_watch_revision.current();
-        let pending_sources = self.refresh_source_watcher(changed_paths);
+        let (pending_sources, _) = self.refresh_source_watcher(changed_paths);
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
@@ -852,7 +861,13 @@ impl RunController {
         if validation_paths.is_empty() {
             return false;
         }
-        if self.sources_require_recompile(&validation_paths) {
+        let snapshot = self.source_compilation.snapshot().expect("checked above");
+        if !self
+            .source_fallback_cache
+            .matches(&validation_paths, |paths| {
+                snapshot.matches_disk_changes(paths)
+            })
+        {
             self.recompile_after_source_change(&validation_paths);
             return true;
         }
@@ -861,8 +876,8 @@ impl RunController {
         // without an event from a partially covered watcher. Move the watch
         // inward as soon as the reachable, non-symlink topology changes.
         if source_watch_root_map(&self.watched_paths) != self.watched_roots {
-            let refreshed = self.refresh_source_watcher(&[]);
-            if !self.source_compilation.matches(&refreshed) {
+            let (refreshed, sources_are_current) = self.refresh_source_watcher(&[]);
+            if !sources_are_current || !self.source_compilation.matches(&refreshed) {
                 self.recompile_after_source_change(&validation_paths);
                 return true;
             }
@@ -1001,7 +1016,8 @@ impl RunController {
         self.last_scope_poll = Instant::now();
     }
 
-    fn refresh_source_watcher(&mut self, changed_paths: &[PathBuf]) -> SourceSnapshot {
+    /// Returns the captured sources and whether they still match after registration.
+    fn refresh_source_watcher(&mut self, changed_paths: &[PathBuf]) -> (SourceSnapshot, bool) {
         let previous_assets = self
             .source_compilation
             .snapshot()
@@ -1041,27 +1057,37 @@ impl RunController {
         self.watched_sources = snapshot.paths();
         let watched_paths = snapshot.watch_paths();
         let previous_fallback_paths = self.source_watch_fallback_paths().to_vec();
-        let gap_validation_paths = watcher_gap_validation_paths(
-            &watched_paths,
-            &self.watched_paths,
-            &previous_fallback_paths,
-        );
         let (watcher, watched_roots) = start_source_watcher(
             &watched_paths,
             self.source_watch_revision.clone(),
             self.events_tx.clone(),
         );
-        if !snapshot.matches_disk_changes(&gap_validation_paths) {
-            // Validate the discovery gap for imports/assets that were not part
-            // of a complete previous watch. Force the in-flight compilation
-            // generation stale if one changed before registration.
+        let mut changed_roots = changed_paths.to_vec();
+        changed_roots.extend(
+            watched_roots
+                .iter()
+                .filter(|(root, mode)| self.watched_roots.get(*root) != Some(*mode))
+                .map(|(root, _)| root.clone()),
+        );
+        let gap_validation_paths = watcher_gap_validation_paths(
+            &watched_paths,
+            &self.watched_paths,
+            &previous_fallback_paths,
+            &changed_roots,
+        );
+        let sources_are_current = snapshot.matches_disk_changes(&gap_validation_paths);
+        if !sources_are_current {
+            // Previous subscriptions cannot cover new or replaced roots. Check
+            // their files after registration and invalidate pending compilation
+            // if an edit crossed the handoff.
             self.source_watch_revision.observe_change();
         }
         self.watcher = watcher;
         self.watched_roots = watched_roots;
         self.watched_paths = watched_paths;
         self.last_source_fallback_validation = Instant::now();
-        snapshot
+        self.source_fallback_cache.clear();
+        (snapshot, sources_are_current)
     }
 
     fn compiled_sources_are_current(&self, snapshot: &SourceSnapshot) -> bool {
@@ -1088,30 +1114,23 @@ impl RunController {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn refresh_kqueue_file_watches(&mut self, changed_paths: &[PathBuf]) {
-        let Some(paths) = self
-            .source_compilation
-            .snapshot()
-            .map(SourceSnapshot::watch_paths)
-        else {
-            return;
-        };
-        let affected = paths
-            .into_iter()
-            .filter(|path| {
+    /// Reattaches roots and validates the contents their old subscriptions missed.
+    fn refresh_changed_watch_roots(&mut self, changed_paths: &[PathBuf]) -> bool {
+        let affected = self
+            .watched_roots
+            .keys()
+            .filter(|root| {
                 changed_paths
                     .iter()
-                    .any(|changed| paths_overlap(path, changed))
+                    .any(|changed| root.starts_with(changed))
             })
+            .cloned()
             .collect::<Vec<_>>();
         if let Some(watcher) = self.watcher.as_mut() {
             watcher.reattach_existing_paths(&affected);
         }
+        !self.sources_require_recompile(&affected)
     }
-
-    #[cfg(not(target_os = "macos"))]
-    fn refresh_kqueue_file_watches(&mut self, _changed_paths: &[PathBuf]) {}
 
     fn advance_child_generation(&mut self) {
         self.active_virtual_notes.clear();
@@ -1457,16 +1476,10 @@ struct ChildSession {
 }
 
 fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
-    match err {
-        RunBuildError::Diagnostics(diags) => {
-            if let Some(first) = diags.first() {
-                format_single_diagnostic(prefix, first)
-            } else {
-                format!("{prefix}: run diagnostics")
-            }
-        }
-        RunBuildError::Runtime(diag) => format_single_diagnostic(prefix, diag),
-    }
+    err.diagnostics.first().map_or_else(
+        || format!("{prefix}: run diagnostics"),
+        |diag| format_single_diagnostic(prefix, diag),
+    )
 }
 
 fn format_single_diagnostic(prefix: &str, diag: &Diagnostic) -> String {
@@ -2153,9 +2166,11 @@ impl FileWatcher {
         self.coverage.fallback_validation_paths()
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn reattach_existing_paths(&mut self, paths: &[PathBuf]) {
         for path in paths {
+            if onda_frontend::ensure_no_symlink_components(path).is_err() {
+                continue;
+            }
             match fs::symlink_metadata(path) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     // Filesystem-backed Onda paths reject symlinks. Keep only
@@ -2185,8 +2200,8 @@ impl FileWatcher {
             )
             .is_err()
             {
-                // Kqueue parent watches detect replacement but not subsequent
-                // in-place writes to the new inode. Fall back to disk validation.
+                // An ancestor watch detects replacement, but a failed reattach
+                // cannot cover later writes to the new inode.
                 self.coverage.coverage_lost.store(true, Ordering::Release);
             }
         }
@@ -2197,10 +2212,15 @@ fn watcher_gap_validation_paths(
     watched_paths: &[PathBuf],
     previous_paths: &[PathBuf],
     previous_fallback_paths: &[PathBuf],
+    changed_roots: &[PathBuf],
 ) -> Vec<PathBuf> {
     watched_paths
         .iter()
-        .filter(|path| !previous_paths.contains(path) || previous_fallback_paths.contains(path))
+        .filter(|path| {
+            !previous_paths.contains(path)
+                || previous_fallback_paths.contains(path)
+                || changed_roots.iter().any(|root| paths_overlap(path, root))
+        })
         .cloned()
         .collect()
 }
@@ -2279,27 +2299,24 @@ fn source_watch_root(path: &Path) -> (PathBuf, notify::RecursiveMode) {
     }
 
     let existing = deepest_directory.unwrap_or_else(|| PathBuf::from("."));
-    if existing == desired {
-        return (existing, notify::RecursiveMode::NonRecursive);
-    }
-    let mode = if existing.parent().is_some() {
-        notify::RecursiveMode::Recursive
-    } else {
-        // Never recursively subscribe to an entire filesystem while waiting
-        // for the first component of an absolute include path.
-        notify::RecursiveMode::NonRecursive
-    };
-    (existing, mode)
+    (existing, notify::RecursiveMode::NonRecursive)
 }
 
 fn source_watch_roots(path: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
+    let (directory, _) = source_watch_root(path);
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut roots = vec![source_watch_root(path)];
+    let mut roots = directory
+        .ancestors()
+        .filter(|root| !root.as_os_str().is_empty())
+        .map(|root| (root.to_path_buf(), notify::RecursiveMode::NonRecursive))
+        .collect::<Vec<_>>();
     // Kqueue does not report writes to a directory's children through a
     // non-recursive directory watch. Watch the current inode as well, while
     // retaining the parent subscription for atomic replacement.
     #[cfg(target_os = "macos")]
-    if fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink()) {
+    if onda_frontend::ensure_no_symlink_components(path).is_ok()
+        && fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink())
+    {
         roots.push((path.to_path_buf(), notify::RecursiveMode::NonRecursive));
     }
     roots
@@ -2310,14 +2327,7 @@ fn source_watch_plan(paths: &[PathBuf]) -> SourceWatchPlan {
     let mut requirements = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
     for path in paths {
         for (root, mode) in source_watch_roots(path) {
-            watch_roots
-                .entry(root.clone())
-                .and_modify(|existing| {
-                    if mode == notify::RecursiveMode::Recursive {
-                        *existing = mode;
-                    }
-                })
-                .or_insert(mode);
+            watch_roots.insert(root.clone(), mode);
             requirements.entry(path.clone()).or_default().push(root);
         }
     }
@@ -2956,6 +2966,7 @@ mod tests {
             source_watch_revision: Default::default(),
             compiled_watch_revision: None,
             last_source_fallback_validation: std::time::Instant::now(),
+            source_fallback_cache: Default::default(),
             preserved_params: Vec::new(),
             preserved_buffers: Default::default(),
             preserved_events: Vec::new(),
@@ -3337,7 +3348,7 @@ mod tests {
         let watched = vec![first.clone(), second.clone()];
 
         assert_eq!(
-            watcher_gap_validation_paths(&watched, &watched, &watched),
+            watcher_gap_validation_paths(&watched, &watched, &watched, &[]),
             watched,
             "every uncovered path must be checked across watcher recreation"
         );
@@ -3346,15 +3357,87 @@ mod tests {
                 &[first.clone(), second.clone()],
                 std::slice::from_ref(&first),
                 &[],
+                &[],
             ),
             vec![second.clone()],
             "new paths must be checked even after complete previous coverage"
         );
         assert_eq!(
-            watcher_gap_validation_paths(&watched, &watched, std::slice::from_ref(&first)),
+            watcher_gap_validation_paths(&watched, &watched, std::slice::from_ref(&first), &[]),
             vec![first],
             "covered paths must rely on revisions instead of redundant disk reads"
         );
+    }
+
+    #[test]
+    fn watcher_recreation_validates_known_paths_below_new_or_replaced_roots() {
+        let root = std::env::temp_dir().join("onda_watch_gap");
+        let missing = root.join("new").join("dependency.onda");
+        let asset = root.join("assets").join("sample.wav");
+        let paths = vec![root.join("main.onda"), missing.clone(), asset.clone()];
+        assert_eq!(
+            watcher_gap_validation_paths(&paths, &paths, &[], &[root.join("new"), asset]),
+            vec![missing, paths[2].clone()],
+            "previous ancestor coverage cannot cover registration of a replacement root",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reattached_watches_validate_edits_missed_during_directory_replacement() {
+        for changed_file in ["main.onda", "sample.wav"] {
+            let root = std::env::temp_dir().join(format!(
+                "onda_run_handoff_{}_{}_{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                changed_file,
+            ));
+            fs::create_dir_all(root.join("code")).unwrap();
+            let root = fs::canonicalize(root).unwrap();
+            let directory = root.join("code");
+            let entry = directory.join("main.onda");
+            let asset = directory.join("sample.wav");
+            let contents = "sample:\n  out1 = 0.0\n";
+            fs::write(&entry, contents).unwrap();
+            fs::write(&asset, b"original asset").unwrap();
+            let mut snapshot = source_snapshot(&entry, &[]);
+            snapshot.assets.push(super::AssetFileSnapshot {
+                digest: super::digest_file(&asset),
+                path: asset.clone(),
+            });
+            let mut controller = controller_without_child();
+            controller.watched_paths = snapshot.watch_paths();
+            (controller.watcher, controller.watched_roots) = super::start_source_watcher(
+                &controller.watched_paths,
+                controller.source_watch_revision.clone(),
+                controller.events_tx.clone(),
+            );
+            controller.source_compilation = SourceCompilationState::Ready(snapshot);
+
+            fs::rename(&directory, root.join("old")).unwrap();
+            fs::create_dir(&directory).unwrap();
+            fs::write(&entry, contents).unwrap();
+            fs::write(&asset, b"original asset").unwrap();
+            controller
+                .events_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let changes = [directory];
+            assert!(!controller.sources_require_recompile(&changes));
+
+            // The initial check passed, but the replacement directory is still
+            // unwatched. This edit must be caught after reattachment.
+            fs::write(root.join("code").join(changed_file), b"changed").unwrap();
+            assert!(
+                !controller.refresh_changed_watch_roots(&changes),
+                "the handoff must validate {changed_file} after attaching its watch",
+            );
+            drop(controller);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -3389,6 +3472,63 @@ mod tests {
             .expect("second replace should trigger");
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_ancestor_replacement_reattaches_before_later_edits() {
+        let root = std::env::temp_dir().join(format!(
+            "onda_run_ancestor_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let directory = root.join("code");
+        fs::create_dir_all(&directory).unwrap();
+        let entry = directory.join("main.onda");
+        let contents = "sample:\n  out1 = 0.0\n";
+        fs::write(&entry, contents).unwrap();
+        let entry = fs::canonicalize(&entry).unwrap();
+        let mut controller = controller_without_child();
+        controller.processing_requested = false;
+        controller.scope_polling_active = false;
+        let snapshot = source_snapshot(&entry, &[]);
+        controller.watched_sources = snapshot.paths();
+        controller.watched_paths = snapshot.watch_paths();
+        (controller.watcher, controller.watched_roots) = super::start_source_watcher(
+            &controller.watched_paths,
+            controller.source_watch_revision.clone(),
+            controller.events_tx.clone(),
+        );
+        assert!(controller
+            .watched_roots
+            .values()
+            .all(|mode| *mode == notify::RecursiveMode::NonRecursive));
+        controller.compiled_watch_revision = Some(controller.source_watch_revision.current());
+        controller.source_compilation = SourceCompilationState::Ready(snapshot);
+
+        fs::rename(&directory, root.join("old")).unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::write(&entry, contents).unwrap();
+        let event = controller
+            .events_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        controller.events_tx.send(event).unwrap();
+        controller.poll();
+        assert!(matches!(
+            controller.source_compilation,
+            SourceCompilationState::Ready(_)
+        ));
+        fs::write(&entry, "sample:\n  out1 = 1.0\n").unwrap();
+        controller
+            .events_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a later edit must reach the reattached directory watch");
+        drop(controller);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3640,7 +3780,7 @@ mod tests {
         let watched = alias.join("sample.wav");
         assert_eq!(
             source_watch_root(&watched),
-            (assets.clone(), notify::RecursiveMode::Recursive),
+            (assets.clone(), notify::RecursiveMode::NonRecursive),
             "the watcher must observe replacement of the rejected alias"
         );
 

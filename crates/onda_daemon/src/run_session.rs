@@ -220,9 +220,10 @@ pub enum RunBufferChannels {
 }
 
 #[derive(Debug)]
-pub enum RunBuildError {
-    Diagnostics(Vec<Diagnostic>),
-    Runtime(Diagnostic),
+pub struct RunBuildError {
+    pub diagnostics: Vec<Diagnostic>,
+    /// Source reads consumed by this attempt, including failed analysis.
+    pub sources: onda_frontend::SourceManifest,
 }
 
 /// An external buffer supplied before a run instance is initialized.
@@ -263,6 +264,7 @@ impl InitialBufferBinding {
 #[derive(Debug)]
 pub struct RunSession {
     path: PathBuf,
+    sources: onda_frontend::SourceManifest,
     version: Option<DocumentVersion>,
     options: RunOptions,
     compile_inputs: CompileInputs,
@@ -388,139 +390,157 @@ impl RunSession {
         let path = normalize_session_path(path.as_ref());
         let snapshot =
             analysis.analyze_document_with_inputs(&path, options.analysis_options(), inputs);
-        let version = snapshot.version;
-        let Some(typed) = snapshot.typed else {
-            return Err(RunBuildError::Diagnostics(snapshot.diagnostics));
-        };
-        let Some(mir) = snapshot.mir else {
-            return Err(RunBuildError::Diagnostics(vec![Diagnostic::internal(
-                "analysis succeeded without producing executable MIR",
-            )]));
-        };
-        let jit = jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())
-            .map_err(RunBuildError::Diagnostics)?;
+        let mut sources = snapshot.sources;
+        let result = (|| {
+            let version = snapshot.version;
+            let Some(typed) = snapshot.typed else {
+                return Err(snapshot.diagnostics);
+            };
+            let Some(mir) = snapshot.mir else {
+                return Err(vec![Diagnostic::internal(
+                    "analysis succeeded without producing executable MIR",
+                )]);
+            };
+            let jit =
+                jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())?;
 
-        let mut input_buffers = jit
-            .inputs()
-            .iter()
-            .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
-            .collect::<Vec<_>>();
-        let mut output_buffers = jit
-            .outputs()
-            .iter()
-            .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
-            .collect::<Vec<_>>();
-        let mut buffer_bindings = std::iter::repeat_with(|| None)
-            .take(jit.buffer_count())
-            .collect::<Vec<_>>();
-        for binding in initial_buffers {
-            let binding_name = binding.name;
-            let (index, binding) =
-                validated_buffer_binding(&jit, &binding_name, binding.asset, binding.loaded_path)
-                    .map_err(RunBuildError::Runtime)?;
-            if buffer_bindings[index].is_some() {
-                return Err(RunBuildError::Runtime(Diagnostic::runtime(
-                    format!("buffer '{binding_name}' has more than one initial binding"),
-                    0,
-                    0,
-                )));
+            let mut input_buffers = jit
+                .inputs()
+                .iter()
+                .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
+                .collect::<Vec<_>>();
+            let mut output_buffers = jit
+                .outputs()
+                .iter()
+                .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
+                .collect::<Vec<_>>();
+            let mut buffer_bindings = std::iter::repeat_with(|| None)
+                .take(jit.buffer_count())
+                .collect::<Vec<_>>();
+            for binding in initial_buffers {
+                let binding_name = binding.name;
+                let (index, binding) = validated_buffer_binding(
+                    &jit,
+                    &binding_name,
+                    binding.asset,
+                    binding.loaded_path,
+                )
+                .map_err(|diag| vec![diag])?;
+                if buffer_bindings[index].is_some() {
+                    return Err(vec![Diagnostic::runtime(
+                        format!("buffer '{binding_name}' has more than one initial binding"),
+                        0,
+                        0,
+                    )]);
+                }
+                buffer_bindings[index] = Some(binding);
             }
-            buffer_bindings[index] = Some(binding);
-        }
-        let param_values = HashMap::new();
-        let param_smoothing = ParamSmoothing::new(&jit, options.param_smoothing_seconds)
-            .map_err(RunBuildError::Runtime)?;
-        let delegate_storage = if jit.delegate_count() == 0 {
-            Vec::new()
-        } else {
-            vec![0; RUN_DELEGATE_CAPACITY_BYTES]
-        };
-        let mut print_storage = if jit.mir().log_sites.is_empty() {
-            Vec::new()
-        } else {
-            vec![0; RUN_PRINT_CAPACITY_BYTES]
-        };
-        let mut prints = Self::next_print_batch(&mut print_storage, 0);
-        let instance_result = create_bound_instance(
-            &jit,
-            options,
-            &mut input_buffers,
-            &mut output_buffers,
-            &mut buffer_bindings,
-            None,
-            &param_values,
-            ExecutionOutput {
-                delegate_batch: None,
-                print_batch: prints.as_mut(),
-            },
-        );
-        let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
-            (batch.used_bytes, batch.record_count, batch.overflow_count)
-        });
-        let mut instance = instance_result.map_err(RunBuildError::Runtime)?;
-        let event_plans = (0..jit.event_count())
-            .map(|index| {
-                jit.event_descriptor(index)
-                    .expect("declared event")
-                    .payload_plan()
-                    .clone()
+            let param_values = HashMap::new();
+            let param_smoothing = ParamSmoothing::new(&jit, options.param_smoothing_seconds)
+                .map_err(|diag| vec![diag])?;
+            let delegate_storage = if jit.delegate_count() == 0 {
+                Vec::new()
+            } else {
+                vec![0; RUN_DELEGATE_CAPACITY_BYTES]
+            };
+            let mut print_storage = if jit.mir().log_sites.is_empty() {
+                Vec::new()
+            } else {
+                vec![0; RUN_PRINT_CAPACITY_BYTES]
+            };
+            let mut prints = Self::next_print_batch(&mut print_storage, 0);
+            let instance_result = create_bound_instance(
+                &jit,
+                options,
+                &mut input_buffers,
+                &mut output_buffers,
+                &mut buffer_bindings,
+                None,
+                &param_values,
+                ExecutionOutput {
+                    delegate_batch: None,
+                    print_batch: prints.as_mut(),
+                },
+            );
+            let print_result = prints.as_ref().map_or((0, 0, 0), |batch| {
+                (batch.used_bytes, batch.record_count, batch.overflow_count)
+            });
+            let mut instance = instance_result.map_err(|diag| vec![diag])?;
+            let event_plans = (0..jit.event_count())
+                .map(|index| {
+                    jit.event_descriptor(index)
+                        .expect("declared event")
+                        .payload_plan()
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+            let required_workspace = event_plans
+                .iter()
+                .filter(|plan| plan.fixed_wire_size().is_none())
+                .try_fold(instance.event_workspace_capacity(), |required, plan| {
+                    plan.workspace_capacity_for_wire_capacity(plan.wire_capacity(
+                        onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
+                    ))
+                    .map(|capacity| required.max(capacity))
+                })
+                .map_err(|error| vec![Diagnostic::runtime(error.to_string(), 0, 0)])?;
+            instance
+                .reserve_event_workspace(required_workspace)
+                .map_err(|diag| vec![diag])?;
+            let wire_capacity = event_plans
+                .iter()
+                .map(|plan| {
+                    plan.wire_capacity(
+                        onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
+                    )
+                })
+                .max()
+                .unwrap_or(0);
+            let event_encoder = onda_processor_abi::payload::PayloadEncoderWorkspace::new(
+                &event_plans,
+                wire_capacity,
+            )
+            .map_err(|error| Diagnostic::runtime(error.to_string(), 0, 0))
+            .map_err(|diag| vec![diag])?;
+            Ok(Self {
+                event_plans,
+                event_encoder,
+                path,
+                sources: std::mem::take(&mut sources),
+                version,
+                options,
+                compile_inputs: inputs.clone(),
+                typed,
+                jit,
+                instance,
+                param_values,
+                param_smoothing,
+                buffer_bindings,
+                input_buffers,
+                output_buffers,
+                delegate_storage,
+                delegate_collection_enabled: false,
+                delegate_used: 0,
+                delegate_record_count: 0,
+                delegate_overflow_count: 0,
+                print_storage,
+                print_used: print_result.0 as usize,
+                print_record_count: print_result.1,
+                print_overflow_count: print_result.2,
             })
-            .collect::<Vec<_>>();
-        let required_workspace = event_plans
-            .iter()
-            .filter(|plan| plan.fixed_wire_size().is_none())
-            .try_fold(instance.event_workspace_capacity(), |required, plan| {
-                plan.workspace_capacity_for_wire_capacity(plan.wire_capacity(
-                    onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES,
-                ))
-                .map(|capacity| required.max(capacity))
-            })
-            .map_err(|error| {
-                RunBuildError::Runtime(Diagnostic::runtime(error.to_string(), 0, 0))
-            })?;
-        instance
-            .reserve_event_workspace(required_workspace)
-            .map_err(RunBuildError::Runtime)?;
-        let wire_capacity = event_plans
-            .iter()
-            .map(|plan| {
-                plan.wire_capacity(onda_processor_abi::payload::DEFAULT_DYNAMIC_WIRE_CAPACITY_BYTES)
-            })
-            .max()
-            .unwrap_or(0);
-        let event_encoder =
-            onda_processor_abi::payload::PayloadEncoderWorkspace::new(&event_plans, wire_capacity)
-                .map_err(|error| Diagnostic::runtime(error.to_string(), 0, 0))
-                .map_err(RunBuildError::Runtime)?;
-        Ok(Self {
-            event_plans,
-            event_encoder,
-            path,
-            version,
-            options,
-            compile_inputs: inputs.clone(),
-            typed,
-            jit,
-            instance,
-            param_values,
-            param_smoothing,
-            buffer_bindings,
-            input_buffers,
-            output_buffers,
-            delegate_storage,
-            delegate_collection_enabled: false,
-            delegate_used: 0,
-            delegate_record_count: 0,
-            delegate_overflow_count: 0,
-            print_storage,
-            print_used: print_result.0 as usize,
-            print_record_count: print_result.1,
-            print_overflow_count: print_result.2,
+        })();
+        result.map_err(|diagnostics| RunBuildError {
+            diagnostics,
+            sources,
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn source_manifest(&self) -> &onda_frontend::SourceManifest {
+        &self.sources
     }
 
     pub fn version(&self) -> Option<DocumentVersion> {

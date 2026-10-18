@@ -341,7 +341,27 @@ Non-crate directories of note:
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
   filesystem watcher for the entry, transitive non-stdlib sources, project manifest/entry/assets,
   unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
-  watcher coverage.
+  watcher coverage. Recovery uses shared non-recursive ancestor subscriptions, including paths
+  whose parent directories do not exist yet. Degraded paths are checked once per second;
+  metadata validated against a content check avoids rereading unchanged files during fallback.
+  Native invalidations always validate contents, regardless of metadata. Reattached and newly
+  reachable watch roots receive a content check after registration, so edits during the handoff
+  invalidate the compiled snapshot before the controller acknowledges the change.
+- `source_graph.rs` — frontend dependency discovery for editor reloads, sharing native Run’s
+  source manifest and project recovery paths, including incomplete graphs. Graphs carry SHA-256
+  hashes of captured documents and project files so editors can validate the discovery-to-watch
+  gap; playback and metadata replies, including failed builds, report the exact
+  compiled source manifest and hashes of the manifest/asset bytes actually loaded. The frontend
+  retains rejected UTF-8 bytes and failed reads so failure fingerprints never reread restored files.
+  Playback reports these
+  graphs only with `--report-sources`, which editor hosts opt into alongside `--control-json`;
+  native Run owns its watcher and skips this work.
+  Project recovery paths and manifest fingerprints come from one read, including invalid manifests.
+  Metadata errors carry their graph in `result.sources`; playback failures emit a `sources` event
+  before exiting, including failures while resolving project manifests, constants, and assets.
+  Resolution retains fingerprints before parsing or decoding can fail; unavailable paths have
+  null hashes, while paths rejected before reading remain watchable without a content hash.
+  Failed graphs retain previous dependencies until a complete graph replaces them.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
 - `playback/buffer_worker.rs` — bounded background file loading, decoding, validation,
   waveform preparation, and retired-storage reclamation. Per-buffer revisions reject

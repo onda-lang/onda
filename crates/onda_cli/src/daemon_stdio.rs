@@ -80,6 +80,12 @@ enum Request {
     Diagnose {
         path: String,
     },
+    RunSources {
+        path: String,
+    },
+    RunMetadata {
+        path: String,
+    },
     RunStart {
         path: String,
     },
@@ -244,6 +250,56 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 "diagnostics": snapshot.diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>(),
             }))
         }
+        Request::RunSources { path } => {
+            serde_json::to_value(onda_run::run_source_graph(Path::new(&path)))
+                .map_err(|error| format!("failed to encode source graph: {error}"))
+        }
+        Request::RunMetadata { path } => (|| {
+            let options = session.config().run;
+            let mut project = crate::project_cmd::resolve_run_project(
+                Path::new(&path),
+                &[],
+                options.analysis_options(),
+                true,
+            )
+            .map_err(|error| {
+                if let Some(sources) = error.sources {
+                    error_result = Some(json!({ "sources": sources }));
+                }
+                error.message
+            })?;
+            let buffers = project.buffers.into_iter().map(|(name, asset, path)| {
+                onda_daemon::InitialBufferBinding::from_asset(name, asset, path)
+            });
+            // Metadata queries must not register or replace an active run.
+            let run = onda_daemon::RunSession::build_with_inputs_and_initial_buffers(
+                session.analysis(),
+                &project.entry,
+                options,
+                &project.compile_inputs,
+                buffers,
+            )
+            .map_err(|error| {
+                error_result = Some(json!({
+                    "sources": onda_run::RunSourceGraph::from_failed_sources(
+                        &error.sources,
+                        project.file_digests.take().expect("source reporting requested"),
+                    ),
+                }));
+                run_build_error_string("run_metadata failed", &error)
+            })?;
+            let mut sources = onda_run::RunSourceGraph::from_compiled_sources(
+                run.source_manifest(),
+                project.file_digests.expect("source reporting requested"),
+            );
+            let mut metadata = onda_run::run_session_metadata(&run).inspect_err(|_| {
+                sources.complete = false;
+                error_result = Some(json!({ "sources": sources }));
+            })?;
+            metadata["sources"] = serde_json::to_value(sources)
+                .map_err(|error| format!("failed to encode source graph: {error}"))?;
+            Ok(metadata)
+        })(),
         Request::RunStart { path } => match session.start_run(&path) {
             Ok(run) => {
                 let result = json!({
@@ -545,10 +601,7 @@ fn run_param_json(param: &RunParamInfo) -> Value {
 }
 
 fn run_build_error_string(context: &str, err: &RunBuildError) -> String {
-    match err {
-        RunBuildError::Diagnostics(diags) => diagnostics_string(context, diags),
-        RunBuildError::Runtime(diag) => diagnostic_string(context, diag),
-    }
+    diagnostics_string(context, &err.diagnostics)
 }
 
 fn diagnostics_string(context: &str, diagnostics: &[Diagnostic]) -> String {
@@ -603,6 +656,331 @@ mod tests {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(path, text).expect("write test file");
+    }
+
+    #[test]
+    fn project_resolution_failures_report_consumed_files() {
+        for (name, manifest, source, asset, failed_file) in [
+            ("manifest", "{", "", None, "project.ondaproject"),
+            (
+                "entry",
+                r#"{"entry":"missing.onda"}"#,
+                "",
+                None,
+                "missing.onda",
+            ),
+            (
+                "parse",
+                r#"{"entry":"main.onda","constants":{"Selected":1}}"#,
+                "import missing\nconfig const Selected: i32 = 0\n",
+                None,
+                "main.onda",
+            ),
+            (
+                "constant",
+                r#"{"entry":"main.onda","constants":{"Unknown":1}}"#,
+                "config const Selected: i32 = 0\n",
+                None,
+                "main.onda",
+            ),
+            (
+                "asset",
+                r#"{"entry":"main.onda","buffers":{"clip":{"file":"clip.ondabuffer"}}}"#,
+                "buffers:\n  clip: buffer<f32>\nsample:\n  out1 = clip[0]\n",
+                Some(b"invalid".as_slice()),
+                "clip.ondabuffer",
+            ),
+            (
+                "missing_asset",
+                r#"{"entry":"main.onda","buffers":{"clip":{"file":"clip.ondabuffer"}}}"#,
+                "buffers:\n  clip: buffer<f32>\nsample:\n  out1 = clip[0]\n",
+                None,
+                "clip.ondabuffer",
+            ),
+        ] {
+            let dir = fs::canonicalize(mk_temp_dir(name)).unwrap();
+            let input = dir.join("project.ondaproject");
+            write_file(&input, manifest);
+            write_file(&dir.join("main.onda"), source);
+            if let Some(asset) = asset {
+                fs::write(dir.join("clip.ondabuffer"), asset).unwrap();
+            }
+            let observed = onda_run::run_source_graph(&input);
+            let mut session = DaemonSession::default();
+            let response = handle_request(
+                &mut session,
+                RequestEnvelope {
+                    id: Some(1),
+                    request: Request::RunMetadata {
+                        path: input.to_string_lossy().into_owned(),
+                    },
+                },
+            );
+            assert!(!response.ok, "{name} must fail");
+            let graph = &response
+                .result
+                .expect("resolution failure must carry sources")["sources"];
+            assert_eq!(graph["complete"], false, "{name}");
+            for file in [&input, &dir.join(failed_file)] {
+                assert!(
+                    graph["files"].as_array().unwrap().contains(&json!(file)),
+                    "{name}: {}",
+                    file.display()
+                );
+                assert_eq!(
+                    graph["contentHashes"][file.to_str().unwrap()],
+                    json!(observed.content_hashes[file]),
+                    "{name}"
+                );
+            }
+            if name == "parse" {
+                assert!(graph["files"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(dir.join("missing.onda"))));
+            }
+            assert!(session.run(dir.join("main.onda")).is_none());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn run_sources_reports_failed_imports_without_starting_audio() {
+        let dir = mk_temp_dir("run_sources");
+        let main = dir.join("main.onda");
+        write_file(&main, "import missing\n");
+        let mut session = DaemonSession::default();
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunSources {
+                    path: display_path(&main),
+                },
+            },
+        );
+        assert!(response.ok);
+        let graph = response.result.unwrap();
+        assert_eq!(graph["complete"], false);
+        assert!(graph["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(display_path(&dir.join("missing.onda")))));
+        assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_metadata_reports_the_consumed_sources() {
+        let dir = mk_temp_dir("failed_metadata_sources");
+        let main = dir.join("main.onda");
+        let original = "sample:\n  out1 = 1.0\n";
+        write_file(&main, original);
+        let preliminary = onda_run::run_source_graph(&main);
+        let mut session = DaemonSession::default();
+        // An overlay makes the transient compiler read deterministic while disk
+        // already contains the restored version the editor will validate.
+        session.open_document(
+            &main,
+            DocumentVersion(1),
+            "import missing\nsample:\n  out1 = unknown\n",
+        );
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunMetadata {
+                    path: display_path(&main),
+                },
+            },
+        );
+        assert!(!response.ok);
+        let result = response
+            .result
+            .expect("failure must carry its source graph");
+        assert_eq!(result["sources"]["complete"], false);
+        assert_ne!(
+            result["sources"]["contentHashes"][display_path(&main)],
+            json!(preliminary.content_hashes[&main]),
+        );
+        assert!(result["sources"]["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(display_path(&dir.join("missing.onda")))));
+        assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn host_event_validation_failure_reports_the_consumed_sources() {
+        let dir = fs::canonicalize(mk_temp_dir("invalid_host_event_sources")).unwrap();
+        let main = dir.join("main.onda");
+        let original = "sample:\n  out1 = 1.0\n";
+        let transient = "import voice\nevent note_on(value: f32):\n  print(value)\nsample:\n  out1 = voice_gain\n";
+        write_file(&main, transient);
+        write_file(&dir.join("voice.onda"), "const voice_gain = 0.5\n");
+        let mut expected = onda_run::run_source_graph(&main);
+        expected.complete = false;
+        write_file(&main, original);
+
+        let mut session = DaemonSession::default();
+        session.open_document(&main, DocumentVersion(1), transient);
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunMetadata {
+                    path: display_path(&main),
+                },
+            },
+        );
+        assert!(!response.ok);
+        assert!(response
+            .error
+            .unwrap()
+            .contains("canonical host event 'note_on'"));
+        assert_eq!(
+            response
+                .result
+                .expect("host validation failure must carry sources")["sources"],
+            serde_json::to_value(expected).unwrap(),
+        );
+        assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn run_metadata_compiles_project_constants_without_audio() {
+        let dir = mk_temp_dir("run_metadata_project");
+        write_file(&dir.join("main.onda"), "config const Selected: i32 = 1\nparams:\n  gain = f32(Selected)\nsample:\n  out1 = gain\n");
+        let manifest = dir.join("project.ondaproject");
+        write_file(
+            &manifest,
+            r#"{"entry":"main.onda","constants":{"Selected":7}}"#,
+        );
+        let mut session = DaemonSession::default();
+        let response = handle_request(
+            &mut session,
+            RequestEnvelope {
+                id: Some(1),
+                request: Request::RunMetadata {
+                    path: display_path(&manifest),
+                },
+            },
+        );
+        assert!(response.ok, "{:?}", response.error);
+        let result = response.result.unwrap();
+        assert_eq!(result["outputChannels"], 1);
+        assert_eq!(result["params"][0]["defaultRepr"], "7");
+        assert!(session.run(dir.join("main.onda")).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn run_metadata_reports_dependencies_added_after_discovery() {
+        let dir = mk_temp_dir("run_metadata_sources");
+        let main = dir.join("main.onda");
+        let voice = dir.join("voice.onda");
+        let child = dir.join("child.onda");
+        write_file(
+            &main,
+            "import voice\nparams:\n  gain = voice_gain\nsample:\n  out1 = gain\n",
+        );
+        write_file(&voice, "const voice_gain = 1.0\n");
+        let mut session = DaemonSession::default();
+        let request = |session: &mut DaemonSession, command: &str| {
+            let response = handle_request(
+                session,
+                serde_json::from_value(json!({
+                    "command": command, "path": display_path(&main),
+                }))
+                .unwrap(),
+            );
+            assert!(response.ok, "{:?}", response.error);
+            response.result.unwrap()
+        };
+        let discovered = request(&mut session, "run_sources");
+        write_file(&voice, "import child\nconst voice_gain = child_gain\n");
+        write_file(&child, "const child_gain = 9.0\n");
+        let metadata = request(&mut session, "run_metadata");
+        assert_eq!(metadata["params"][0]["defaultRepr"], "9");
+        let sources = &metadata["sources"];
+        assert_eq!(sources, &request(&mut session, "run_sources"));
+        assert!(sources["files"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(display_path(&child))));
+        assert_ne!(sources["contentHashes"], discovered["contentHashes"]);
+        assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn run_metadata_preserves_active_run_state() {
+        let dir = mk_temp_dir("run_metadata_active");
+        let main = dir.join("main.onda");
+        write_file(
+            &main,
+            "buffers:\n  src: buffer<f32>\nparams:\n  gain = 1.0\ndelegate report(value: f32)\nevent trigger():\n  report(gain)\ninit:\n  phase = 0.0\nsample:\n  phase = phase + 1.0\n  out1 = phase + gain + src[0]\n",
+        );
+        let path = display_path(&main);
+        let mut session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
+            block_size: 1,
+            param_smoothing_seconds: 0.0,
+            ..RunOptions::default()
+        }));
+        let request = |session: &mut DaemonSession, command: Value| {
+            let response = handle_request(
+                session,
+                serde_json::from_value(command).expect("valid request"),
+            );
+            assert!(response.ok, "request failed: {:?}", response.error);
+            response.result.expect("request result")
+        };
+
+        request(
+            &mut session,
+            json!({ "command": "run_start", "path": path }),
+        );
+        request(
+            &mut session,
+            json!({
+                "command": "run_bind_buffer", "path": path, "name": "src",
+                "samples": [0.5], "channels": 1, "sample_rate_hz": 48000.0,
+            }),
+        );
+        request(
+            &mut session,
+            json!({ "command": "run_set_param", "path": path, "name": "gain", "value": 2.0 }),
+        );
+        let before = request(
+            &mut session,
+            json!({ "command": "run_render", "path": path }),
+        );
+        assert_eq!(before["channels"], json!([[3.5]]));
+        let snapshot = session.run(&main).unwrap().snapshot_state_bytes().unwrap();
+
+        let metadata = request(
+            &mut session,
+            json!({ "command": "run_metadata", "path": path }),
+        );
+        assert_eq!(metadata["params"][0]["defaultRepr"], "1");
+        assert_eq!(metadata["buffers"][0]["loadedFrames"], Value::Null);
+        let run = session.run(&main).expect("active run retained");
+        assert_eq!(run.snapshot_state_bytes().unwrap(), snapshot);
+        assert_eq!(run.buffer_info()[0].loaded_frames, Some(1));
+        let after = request(
+            &mut session,
+            json!({ "command": "run_render", "path": path }),
+        );
+        assert_eq!(after["channels"], json!([[4.5]]));
+        let event = request(
+            &mut session,
+            json!({ "command": "run_trigger_event", "path": path, "name": "trigger", "values": [] }),
+        );
+        assert_eq!(event["delegate_occurrences"][0]["values"]["value"], 2.0);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

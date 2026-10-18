@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use onda_frontend::Program;
 use onda_project::{
-    resolve_project_input, validate_buffer_asset_metadata, BufferAsset, ProjectInput, ProjectLimits,
+    resolve_project_input, resolve_project_input_with_file_digests, validate_buffer_asset_metadata,
+    BufferAsset, FileReadDigests, ProjectInput, ProjectLimits,
 };
 use onda_semantics::TypedProgram;
 use onda_semantics::{compile_inputs_from_literals, AnalysisOptions, CompileInputs};
@@ -11,47 +12,85 @@ pub(crate) fn resolve_entry(input: &Path) -> Result<ProjectInput, String> {
     resolve_project_input(input, ProjectLimits::default()).map_err(|error| error.to_string())
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedRunProject {
     pub entry: PathBuf,
     pub compile_inputs: CompileInputs,
     pub buffers: Vec<(String, BufferAsset, Option<PathBuf>)>,
+    pub file_digests: Option<FileReadDigests>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RunProjectError {
+    pub message: String,
+    pub sources: Option<onda_run::RunSourceGraph>,
 }
 
 pub(crate) fn resolve_run_project(
     input: &Path,
     overrides: &[(String, PathBuf)],
     analysis_options: AnalysisOptions,
-) -> Result<ResolvedRunProject, String> {
-    let project = resolve_entry(input)?;
-    let entry = project.entry_path().to_path_buf();
-    let compile_inputs = match project.project() {
-        Some(project_file) if !project_file.manifest.constants.is_empty() => {
-            let parsed = onda_frontend::parse_program_file(&entry)
-                .map_err(|diags| crate::diag_print::format_diagnostics("parse failed", &diags))?;
-            project_compile_inputs(&project, &parsed, analysis_options)?
-        }
-        Some(_) | None => CompileInputs::default(),
-    };
-    let buffers = match project.project() {
-        Some(project_file) => {
-            let overridden = overrides
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<std::collections::BTreeSet<_>>();
-            project_file
-                .load_buffer_assets_excluding(ProjectLimits::default(), &overridden)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|(name, (asset, path))| (name, asset, path))
-                .collect()
-        }
-        None => Vec::new(),
-    };
-    Ok(ResolvedRunProject {
-        entry,
-        compile_inputs,
-        buffers,
-    })
+    report_sources: bool,
+) -> Result<ResolvedRunProject, RunProjectError> {
+    let mut file_digests = report_sources.then(FileReadDigests::new);
+    let mut sources = onda_frontend::SourceManifest::default();
+    let result = (|| {
+        let project = resolve_project_input_with_file_digests(
+            input,
+            ProjectLimits::default(),
+            file_digests.as_mut(),
+        )
+        .map_err(|error| error.to_string())?;
+        let entry = project.entry_path().to_path_buf();
+        let compile_inputs = match project.project() {
+            Some(project_file) if !project_file.manifest.constants.is_empty() => {
+                let loaded = onda_frontend::load_program_file(&entry).map_err(|error| {
+                    if report_sources {
+                        sources = error.sources;
+                    }
+                    crate::diag_print::format_diagnostics("parse failed", &error.diagnostics)
+                })?;
+                if report_sources {
+                    sources = loaded.sources;
+                }
+                project_compile_inputs(&project, &loaded.program, analysis_options)?
+            }
+            Some(_) | None => CompileInputs::default(),
+        };
+        let buffers = match project.project() {
+            Some(project_file) => {
+                let overridden = overrides
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<std::collections::BTreeSet<_>>();
+                project_file
+                    .load_buffer_assets_excluding(
+                        ProjectLimits::default(),
+                        &overridden,
+                        file_digests.as_mut(),
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|(name, (asset, path))| (name, asset, path))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        Ok((entry, compile_inputs, buffers))
+    })();
+    match result {
+        Ok((entry, compile_inputs, buffers)) => Ok(ResolvedRunProject {
+            entry,
+            compile_inputs,
+            buffers,
+            file_digests,
+        }),
+        Err(message) => Err(RunProjectError {
+            message,
+            sources: file_digests
+                .map(|digests| onda_run::RunSourceGraph::from_failed_sources(&sources, digests)),
+        }),
+    }
 }
 
 pub(crate) fn project_compile_inputs(

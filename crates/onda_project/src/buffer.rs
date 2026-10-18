@@ -660,11 +660,20 @@ pub fn load_buffer_file(
     path: impl AsRef<Path>,
     limits: ProjectLimits,
 ) -> Result<BufferAsset, ProjectError> {
-    let path = path.as_ref();
+    load_buffer_file_recording_digest(path.as_ref(), limits, None)
+}
+
+/// Optionally hashes the exact encoded bytes used to decode the asset.
+pub(crate) fn load_buffer_file_recording_digest(
+    path: &Path,
+    limits: ProjectLimits,
+    digest: Option<&mut crate::FileReadDigest>,
+) -> Result<BufferAsset, ProjectError> {
     let encoded_limit = limits
         .max_asset_bytes
         .saturating_add(ONDA_BUFFER_HEADER_BYTES);
-    let bytes = crate::read_bounded_file(path, encoded_limit, "buffer asset", "encoded-file")?;
+    let bytes =
+        crate::read_bounded_file(path, encoded_limit, "buffer asset", "encoded-file", digest)?;
     decode_buffer_bytes(&bytes, path, limits)
 }
 

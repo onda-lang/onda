@@ -5,10 +5,7 @@ use onda_daemon::RunBuildError;
 use onda_frontend::Diagnostic;
 
 pub(crate) fn format_run_build_error(context: &str, err: &RunBuildError) -> String {
-    match err {
-        RunBuildError::Diagnostics(diags) => format_diagnostics(context, diags),
-        RunBuildError::Runtime(diag) => format_single_diagnostic(context, diag),
-    }
+    format_diagnostics(context, &err.diagnostics)
 }
 
 pub(crate) fn format_diagnostics(context: &str, diags: &[Diagnostic]) -> String {

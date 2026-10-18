@@ -50,7 +50,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
-    [--set <name=value>] [--buffer <name=path>] [--control-json] [--meta]
+    [--set <name=value>] [--buffer <name=path>] [--control-json] [--report-sources] [--meta]
   
   onda run render <input>            Render offline through the run pipeline
     
@@ -109,6 +109,7 @@ Run Options:
   --set                  Override a scalar run param with `name=value`
   --buffer               Bind a declared buffer to a WAV or .ondabuffer file with `name=path`
   --control-json         Emit run control handshake on stdout and serve param control over localhost
+  --report-sources       Include source graphs and hashes in startup output (requires --control-json)
   --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
   --webview              Use the webview run host instead of egui
 
@@ -184,6 +185,7 @@ enum RunCommand {
         fast_math: bool,
         show_meta: bool,
         control_json: bool,
+        report_sources: bool,
         param_sets: Vec<(String, f64)>,
         buffer_bindings: Vec<(String, PathBuf)>,
     },

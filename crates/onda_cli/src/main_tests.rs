@@ -153,6 +153,7 @@ fn project_packages_an_existing_source_and_typed_buffer() {
         &project_path,
         &[],
         onda_semantics::AnalysisOptions::default(),
+        false,
     )
     .expect("resolve packaged project");
     assert_eq!(resolved.buffers.len(), 1);
@@ -188,10 +189,190 @@ fn run_override_skips_the_superseded_manifest_asset() {
         &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         &[("clip".to_owned(), root.join("override.wav"))],
         onda_semantics::AnalysisOptions::default(),
+        false,
     )
     .expect("override should supersede the missing manifest asset before loading");
     assert!(resolved.buffers.is_empty());
+    assert!(resolved.file_digests.is_none());
     std::fs::remove_dir_all(root).expect("remove override test directory");
+}
+
+#[test]
+fn failed_run_projects_keep_consumed_fingerprints_after_restored_edits() {
+    use onda_project::{BufferAsset, BufferSamples};
+    use onda_run::run_source_graph;
+
+    for changed in [
+        "manifest",
+        "parse",
+        "constant",
+        "asset",
+        "missing_asset",
+        "entry",
+    ] {
+        let root = std::env::temp_dir().join(format!(
+            "onda-failed-project-{}-{}-{changed}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let input = root.join("project.ondaproject");
+        let entry = root.join("main.onda");
+        let voice = root.join("voice.onda");
+        let asset = root.join("clip.ondabuffer");
+        let manifest = r#"{"entry":"main.onda","constants":{"Selected":1},"buffers":{"clip":{"file":"clip.ondabuffer"}}}"#;
+        let source = "import voice\nconfig const Selected: i32 = 0\nbuffers:\n  clip: buffer<f32>\nsample:\n  out1 = f32(Selected) + clip[0]\n";
+        let samples = onda_project::encode_ondabuffer(
+            &BufferAsset::new(1, 1, 48_000.0, BufferSamples::F32(vec![1.0])).unwrap(),
+        )
+        .unwrap();
+        let restore = || {
+            std::fs::write(&input, manifest).unwrap();
+            std::fs::write(&entry, source).unwrap();
+            std::fs::write(&voice, "const value = 1.0\n").unwrap();
+            std::fs::write(&asset, &samples).unwrap();
+        };
+        restore();
+        let original = run_source_graph(&input);
+        let failed_file = match changed {
+            "manifest" => {
+                std::fs::write(&input, "{").unwrap();
+                &input
+            }
+            "parse" => {
+                std::fs::write(&voice, "import missing\n").unwrap();
+                &voice
+            }
+            "constant" => {
+                std::fs::write(&input, r#"{"entry":"main.onda","constants":{"Unknown":1}}"#)
+                    .unwrap();
+                &input
+            }
+            "asset" => {
+                std::fs::write(&asset, b"invalid").unwrap();
+                &asset
+            }
+            "missing_asset" => {
+                std::fs::remove_file(&asset).unwrap();
+                &asset
+            }
+            "entry" => {
+                std::fs::remove_file(&entry).unwrap();
+                &entry
+            }
+            _ => unreachable!(),
+        };
+        let transient = run_source_graph(&input);
+        let error = project_cmd::resolve_run_project(
+            &input,
+            &[],
+            onda_semantics::AnalysisOptions::default(),
+            true,
+        )
+        .unwrap_err();
+        restore();
+        assert_eq!(
+            run_source_graph(&input).content_hashes,
+            original.content_hashes
+        );
+        let graph = error.sources.expect("failed project reads");
+        assert!(!graph.complete);
+        assert_eq!(
+            graph.content_hashes[failed_file], transient.content_hashes[failed_file],
+            "{changed}"
+        );
+        assert_ne!(
+            graph.content_hashes[failed_file], original.content_hashes[failed_file],
+            "{changed}"
+        );
+        if changed == "parse" {
+            assert_eq!(graph.content_hashes[&root.join("missing.onda")], None);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn run_project_hashes_follow_loaded_constants_and_assets_after_reverted_edits() {
+    use onda_daemon::{InitialBufferBinding, RunOptions, RunSession};
+    use onda_project::{BufferAsset, BufferSamples};
+    use onda_run::{run_source_graph, RunSourceGraph};
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "onda-project-hashes-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let entry = root.join("main.onda");
+    let manifest = root.join("project.ondaproject");
+    let asset_path = root.join("clip.ondabuffer");
+    std::fs::write(&entry, "config const Selected: i32 = 0\nbuffers:\n  clip: buffer<f32>\nparams:\n  gain = f32(Selected)\nsample:\n  out1 = gain + clip[0]\n").unwrap();
+    let original_manifest = r#"{"entry":"main.onda","constants":{"Selected":1}}"#;
+    let loaded_manifest = r#"{"entry":"main.onda","constants":{"Selected":2},"buffers":{"clip":{"file":"clip.ondabuffer"}}}"#;
+    let original_asset = onda_project::encode_ondabuffer(
+        &BufferAsset::new(1, 1, 48_000.0, BufferSamples::F32(vec![1.0])).unwrap(),
+    )
+    .unwrap();
+    let loaded_asset = onda_project::encode_ondabuffer(
+        &BufferAsset::new(1, 1, 48_000.0, BufferSamples::F32(vec![2.0])).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&manifest, original_manifest).unwrap();
+    std::fs::write(&asset_path, &original_asset).unwrap();
+    let preliminary = run_source_graph(&manifest);
+
+    std::fs::write(&manifest, loaded_manifest).unwrap();
+    std::fs::write(&asset_path, &loaded_asset).unwrap();
+    let expected = run_source_graph(&manifest);
+    let options = RunOptions {
+        block_size: 1,
+        ..RunOptions::default()
+    };
+    let resolved =
+        project_cmd::resolve_run_project(&manifest, &[], options.analysis_options(), true).unwrap();
+    std::fs::write(&manifest, original_manifest).unwrap();
+    std::fs::write(&asset_path, original_asset).unwrap();
+
+    let mut run = RunSession::build_with_inputs_and_initial_buffers(
+        &onda_daemon::AnalysisSession::new(),
+        &resolved.entry,
+        options,
+        &resolved.compile_inputs,
+        resolved
+            .buffers
+            .into_iter()
+            .map(|(name, asset, path)| InitialBufferBinding::from_asset(name, asset, path)),
+    )
+    .unwrap();
+    assert_eq!(run.param_info()[0].default, Some(2.0));
+    assert_eq!(run.render_block().unwrap(), vec![vec![4.0]]);
+    let graph = RunSourceGraph::from_compiled_sources(
+        run.source_manifest(),
+        resolved.file_digests.unwrap(),
+    );
+    assert_eq!(graph.content_hashes, expected.content_hashes);
+    assert_ne!(
+        graph.content_hashes[&manifest],
+        preliminary.content_hashes[&manifest]
+    );
+    assert!(!preliminary.files.contains(&asset_path));
+    assert_ne!(
+        graph.content_hashes[&asset_path],
+        run_source_graph(&manifest)
+            .content_hashes
+            .get(&asset_path)
+            .cloned()
+            .flatten()
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -432,6 +613,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
         &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         &[],
         onda_semantics::AnalysisOptions::default(),
+        false,
     )
     .expect("resolve project constants for run");
     assert!(matches!(
@@ -1107,6 +1289,7 @@ fn parse_run_play_accepts_meta_and_param_sets() {
         Command::Run(RunCommand::Play {
             show_meta,
             control_json,
+            report_sources,
             fast_math,
             param_sets,
             buffer_bindings,
@@ -1114,6 +1297,7 @@ fn parse_run_play_accepts_meta_and_param_sets() {
         }) => {
             assert!(show_meta);
             assert!(control_json);
+            assert!(!report_sources);
             assert!(fast_math);
             assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
             assert_eq!(
@@ -1122,6 +1306,39 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             );
         }
         _ => panic!("expected run play command"),
+    }
+}
+
+#[test]
+fn source_reporting_requires_explicit_control_opt_in() {
+    let error = parse_args(
+        ["onda", "run", "play", "x.onda", "--report-sources"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .err()
+    .expect("source reporting requires control output");
+    assert_eq!(error, "--report-sources requires --control-json");
+
+    for flags in [
+        ["--control-json", "--report-sources"],
+        ["--report-sources", "--control-json"],
+    ] {
+        let command = parse_args(
+            ["onda", "run", "play", "x.onda"]
+                .into_iter()
+                .chain(flags)
+                .map(str::to_owned),
+        )
+        .expect("explicit source reporting should parse");
+        assert!(matches!(
+            command,
+            Command::Run(RunCommand::Play {
+                control_json: true,
+                report_sources: true,
+                ..
+            })
+        ));
     }
 }
 

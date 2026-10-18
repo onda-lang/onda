@@ -48,6 +48,8 @@ static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[derive(Clone)]
 pub struct PlaybackLaunch {
     pub input: PathBuf,
+    /// Enables source reporting with hashes of the manifest and assets actually loaded.
+    pub project_file_digests: Option<onda_project::FileReadDigests>,
     pub compile_inputs: onda_semantics::CompileInputs,
     pub duration: Option<Duration>,
     pub sample_rate_hz: u32,
@@ -74,6 +76,7 @@ pub struct ProjectBufferBinding {
 
 struct PlaybackStartup {
     path: PathBuf,
+    sources: Option<crate::RunSourceGraph>,
     input_channels: usize,
     output_channels: usize,
     params: Vec<RunParamInfo>,
@@ -89,6 +92,11 @@ struct PlaybackStartup {
     current_midi_input_device: Option<String>,
 }
 
+struct PlaybackStartupError {
+    message: String,
+    sources: Option<crate::RunSourceGraph>,
+}
+
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 
 struct RenderThreadContext {
@@ -101,7 +109,7 @@ struct RenderThreadContext {
     scope_ring: Arc<Mutex<ScopeRing>>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: PlaybackReply<PlaybackStartup>,
+    startup_tx: mpsc::Sender<Result<PlaybackStartup, PlaybackStartupError>>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
     output_transport: Option<OutputTransport>,
     print_transport: PrintTransport,
@@ -402,7 +410,13 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     );
     let startup = startup_rx
         .recv()
-        .map_err(|_| "run render thread exited before startup completed".to_owned())??;
+        .map_err(|_| "run render thread exited before startup completed".to_owned())?
+        .or_else(|error| {
+            if let Some(sources) = error.sources {
+                sources.write_event(&mut std::io::stdout().lock())?;
+            }
+            Err(error.message)
+        })?;
 
     let control_server = if launch.control_json {
         let Some(control_tx) = control_tx else {
@@ -414,16 +428,10 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to query run control socket: {err}"))?
             .port();
-        let startup_message = json!({
+        let mut startup_message = json!({
             "event": "ready",
             "path": display_path(&startup.path),
             "port": port,
-            "params": startup.params.iter().map(run_param_json).collect::<Vec<_>>(),
-            "buffers": startup.buffers.iter().map(run_buffer_json).collect::<Vec<_>>(),
-            "events": startup.events.iter().map(run_event_json).collect::<Vec<_>>(),
-            "midi": startup.midi,
-            "delegates": startup.delegates.iter().map(run_delegate_json).collect::<Vec<_>>(),
-            "outputChannels": startup.output_channels,
             "inputDevices": startup.input_devices,
             "outputDevices": startup.output_devices,
             "midiInputDevices": startup.midi_input_devices,
@@ -431,6 +439,19 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             "currentOutputDevice": startup.current_output_device,
             "currentMidiInputDevice": startup.current_midi_input_device,
         });
+        if let Some(sources) = &startup.sources {
+            startup_message["sources"] = json!(sources);
+        }
+        for (name, value) in run_metadata_json(
+            &startup.params,
+            &startup.buffers,
+            &startup.events,
+            &startup.midi,
+            &startup.delegates,
+            startup.output_channels,
+        ) {
+            startup_message[&name] = value;
+        }
         write_json_line(
             &mut BufWriter::new(std::io::stdout().lock()),
             &startup_message,
@@ -624,6 +645,49 @@ pub fn append_interleaved_block(rendered: &mut Vec<f32>, block: &[Vec<f32>]) {
     }
 }
 
+/// Metadata for a compiled session, using the same wire format as live playback.
+pub fn run_session_metadata(run: &RunSession) -> Result<Value, String> {
+    let (events, midi) = classify_host_events(run.event_info())?;
+    Ok(Value::Object(run_metadata_json(
+        &run.param_info(),
+        &run.buffer_info(),
+        &events,
+        &midi,
+        &run.delegate_info(),
+        run.output_channel_count(),
+    )))
+}
+
+fn run_metadata_json(
+    params: &[RunParamInfo],
+    buffers: &[RunBufferInfo],
+    events: &[RunEventInfo],
+    midi: &RunMidiCapabilities,
+    delegates: &[RunDelegateInfo],
+    output_channels: usize,
+) -> serde_json::Map<String, Value> {
+    serde_json::Map::from_iter([
+        (
+            "params".into(),
+            json!(params.iter().map(run_param_json).collect::<Vec<_>>()),
+        ),
+        (
+            "buffers".into(),
+            Value::Array(buffers.iter().map(run_buffer_json).collect()),
+        ),
+        (
+            "events".into(),
+            Value::Array(events.iter().map(run_event_json).collect()),
+        ),
+        ("midi".into(), json!(midi)),
+        (
+            "delegates".into(),
+            Value::Array(delegates.iter().map(run_delegate_json).collect()),
+        ),
+        ("outputChannels".into(), json!(output_channels)),
+    ])
+}
+
 pub fn format_run_param_info(params: &[RunParamInfo]) -> String {
     let mut lines = Vec::with_capacity(params.len() + 1);
     lines.push("Run params:".to_owned());
@@ -807,6 +871,7 @@ fn spawn_run_render_thread(
         let mut midi_event_names = HashSet::new();
         let mut active_midi_notes = HashSet::<(i32, i32)>::new();
 
+        let mut startup_sources = None;
         let startup = (|| -> Result<PlaybackStartup, String> {
             let mut initial_buffers = Vec::with_capacity(
                 launch.project_buffer_bindings.len() + launch.buffer_bindings.len(),
@@ -830,14 +895,27 @@ fn spawn_run_render_thread(
                     })?,
                 );
             }
-            session
-                .start_run_with_options_inputs_and_initial_buffers(
-                    &launch.input,
-                    run_options,
-                    &launch.compile_inputs,
-                    initial_buffers,
+            if let Err(error) = session.start_run_with_options_inputs_and_initial_buffers(
+                &launch.input,
+                run_options,
+                &launch.compile_inputs,
+                initial_buffers,
+            ) {
+                startup_sources = launch.project_file_digests.take().map(|digests| {
+                    crate::RunSourceGraph::from_failed_sources(&error.sources, digests)
+                });
+                return Err(format_run_build_error("daemon play start failed", &error));
+            }
+            // Retain compiler reads before parameter or host-event validation can fail.
+            startup_sources = launch.project_file_digests.take().map(|digests| {
+                crate::RunSourceGraph::from_compiled_sources(
+                    session
+                        .run(&launch.input)
+                        .expect("run should be active")
+                        .source_manifest(),
+                    digests,
                 )
-                .map_err(|error| format_run_build_error("daemon play start failed", &error))?;
+            });
 
             for (name, value) in &launch.param_sets {
                 session
@@ -891,6 +969,7 @@ fn spawn_run_render_thread(
 
             Ok(PlaybackStartup {
                 path,
+                sources: startup_sources.take(),
                 input_channels,
                 output_channels,
                 params,
@@ -920,7 +999,13 @@ fn spawn_run_render_thread(
                 channel_counts
             }
             Err(err) => {
-                let _ = startup_tx.send(Err(err));
+                if let Some(sources) = &mut startup_sources {
+                    sources.complete = false;
+                }
+                let _ = startup_tx.send(Err(PlaybackStartupError {
+                    message: err,
+                    sources: startup_sources,
+                }));
                 return;
             }
         };
@@ -2469,15 +2554,123 @@ mod tests {
         render_ahead_samples, run_control_response, run_device_lists_json,
         write_pending_delegate_batch, write_pending_output_batches, write_pending_print_batches,
         DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
-        RunOutputBatch, ScopeRing,
+        PlaybackLaunch, PrintTransport, RenderThreadContext, RunOutputBatch, ScopeRing,
     };
+    use onda_cpal::{sample_ring, StreamErrorState};
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
         RunPrintEntry, RunPrintValue,
     };
     use serde_json::Value;
-    use std::sync::{atomic::AtomicU32, mpsc, Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::fs;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU32},
+        mpsc, Arc, Mutex,
+    };
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn playback_startup_failures_preserve_consumed_sources_when_requested() {
+        let root = std::env::temp_dir().join(format!(
+            "onda_playback_startup_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let main = root.join("main.onda");
+        let voice = root.join("voice.onda");
+        for (source, param_sets, expected_error) in [
+            (
+                "import voice\nevent note_on(value: f32):\n  print(value)\nsample:\n  out1 = voice_gain\n",
+                Vec::new(),
+                "canonical host event 'note_on'",
+            ),
+            (
+                "import voice\nsample:\n  out1 = voice_gain\n",
+                vec![("unknown".to_owned(), 1.0)],
+                "daemon play param failed",
+            ),
+            (
+                "import voice\nsample:\n  out1 = unknown\n",
+                Vec::new(),
+                "daemon play start failed",
+            ),
+        ] {
+            for report_sources in [false, true] {
+                fs::write(&main, source).unwrap();
+                fs::write(&voice, "const voice_gain = 0.5\n").unwrap();
+                let mut expected = crate::run_source_graph(&main);
+                expected.complete = false;
+                let (sample_queue, _samples) = sample_ring(1024);
+                let (_input, input_queue) = sample_ring(1024);
+                let (_midi, midi_rx) = mpsc::sync_channel(1);
+                let (startup_tx, startup_rx) = mpsc::channel();
+                let (sender, _prints) = mpsc::sync_channel(1);
+                let thread = super::spawn_run_render_thread(
+                    PlaybackLaunch {
+                        input: main.clone(),
+                        project_file_digests: report_sources.then(Default::default),
+                        compile_inputs: Default::default(),
+                        duration: None,
+                        sample_rate_hz: 48_000,
+                        block_samples: 64,
+                        param_smoothing_seconds: 0.0,
+                        opt_level: Default::default(),
+                        input_device: None,
+                        output_device: None,
+                        midi_input_device: None,
+                        fast_math: false,
+                        show_meta: false,
+                        control_json: true,
+                        param_sets: param_sets.clone(),
+                        buffer_bindings: Vec::new(),
+                        project_buffer_bindings: Vec::new(),
+                    },
+                    RenderThreadContext {
+                        sample_queue,
+                        input_queue,
+                        stream_errors: StreamErrorState::default(),
+                        midi_rx,
+                        midi_overflowed: Arc::new(AtomicBool::new(false)),
+                        midi_reset_requested: Arc::new(AtomicBool::new(false)),
+                        scope_ring: Arc::new(Mutex::new(ScopeRing::new(0, 0))),
+                        stop_flag: Arc::new(AtomicBool::new(false)),
+                        render_error: Arc::new(Mutex::new(None)),
+                        startup_tx,
+                        control_rx: None,
+                        output_transport: None,
+                        print_transport: PrintTransport {
+                            sender,
+                            dropped_occurrences: Arc::new(AtomicU32::new(0)),
+                            pending_overflow: Arc::new(AtomicU32::new(0)),
+                        },
+                    },
+                );
+                let result = startup_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                thread.join().unwrap();
+                let Err(error) = result else {
+                    panic!("startup must reject {expected_error}");
+                };
+                assert!(error.message.contains(expected_error), "{}", error.message);
+                // Reporting must retain compiler reads after disk is restored.
+                fs::write(&main, "sample:\n  out1 = 0.0\n").unwrap();
+                fs::write(&voice, "const voice_gain = 1.0\n").unwrap();
+                if report_sources {
+                    assert_eq!(
+                        serde_json::to_value(error.sources.expect("failed startup sources")).unwrap(),
+                        serde_json::to_value(expected).unwrap(),
+                    );
+                } else {
+                    assert!(error.sources.is_none());
+                }
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn render_ahead_is_bounded_by_frame_aligned_queue_capacity() {

@@ -5,6 +5,7 @@ use super::loading_support::{
 };
 use super::preprocess::{preprocess_indentation_blocks, split_comment};
 use super::*;
+use std::collections::BTreeMap;
 use std::path::Component;
 
 mod namespaces;
@@ -24,6 +25,7 @@ struct LoadState {
     unresolved_resolution_set: HashSet<UnresolvedSourceResolution>,
     source_documents: Vec<SourceDocument>,
     source_document_set: HashSet<PathBuf>,
+    failed_reads: BTreeMap<PathBuf, Option<Vec<u8>>>,
     resolutions: Vec<SourceResolution>,
     resolution_set: HashSet<SourceResolution>,
     stack: Vec<PathBuf>,
@@ -72,6 +74,7 @@ impl LoadState {
             unresolved_files: self.unresolved_source_files.clone(),
             unresolved_resolutions: self.unresolved_resolutions.clone().into_boxed_slice(),
             documents: self.source_documents.clone().into_boxed_slice(),
+            failed_reads: self.failed_reads.clone(),
             resolutions: self.resolutions.clone().into_boxed_slice(),
         }
     }
@@ -139,6 +142,9 @@ pub struct SourceManifest {
     ///
     /// On a read failure this can be a strict subset of `files`.
     pub documents: Box<[SourceDocument]>,
+    /// Exact bytes rejected as UTF-8, or `None` when a source read failed.
+    /// These observations let hosts validate failed loads without rereading disk.
+    pub failed_reads: BTreeMap<PathBuf, Option<Vec<u8>>>,
     /// Successful non-standard-library resolutions, in source discovery order.
     pub resolutions: Box<[SourceResolution]>,
 }
@@ -919,9 +925,14 @@ fn load_program_blocks_from_file(
 
     let result = (|| {
         let source = loader.read(&canonical).map_err(|err| {
+            state.failed_reads.insert(canonical.clone(), err.contents);
             annotate_diagnostics_with_file(
                 vec![Diagnostic::syntax(
-                    format!("failed to read '{}': {err}", display_path(&canonical)),
+                    format!(
+                        "failed to read '{}': {}",
+                        display_path(&canonical),
+                        err.message
+                    ),
                     0,
                     0,
                 )],
@@ -1147,6 +1158,11 @@ struct SourceResolutionKey {
     specifier: String,
 }
 
+struct SourceReadError {
+    message: String,
+    contents: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone)]
 struct SourceLoader {
     overlays: HashMap<PathBuf, String>,
@@ -1265,16 +1281,28 @@ impl SourceLoader {
         }
     }
 
-    fn read(&self, path: &Path) -> Result<String, String> {
+    fn read(&self, path: &Path) -> Result<String, SourceReadError> {
         if let Some(source) = self.overlays.get(path) {
             return Ok(source.clone());
         }
         match self.policy {
-            SourcePolicy::Filesystem => fs::read_to_string(path).map_err(|error| error.to_string()),
-            SourcePolicy::Virtual { .. } | SourcePolicy::Snapshot { .. } => Err(format!(
-                "virtual source '{}' is not present in the source map",
-                path.display()
-            )),
+            SourcePolicy::Filesystem => {
+                let bytes = fs::read(path).map_err(|error| SourceReadError {
+                    message: error.to_string(),
+                    contents: None,
+                })?;
+                String::from_utf8(bytes).map_err(|error| SourceReadError {
+                    message: error.to_string(),
+                    contents: Some(error.into_bytes()),
+                })
+            }
+            SourcePolicy::Virtual { .. } | SourcePolicy::Snapshot { .. } => Err(SourceReadError {
+                message: format!(
+                    "virtual source '{}' is not present in the source map",
+                    path.display()
+                ),
+                contents: None,
+            }),
         }
     }
 

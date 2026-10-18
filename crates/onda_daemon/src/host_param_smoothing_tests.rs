@@ -331,10 +331,7 @@ fn finite_extremes_do_not_overflow_during_interpolation() {
 #[test]
 fn invalid_host_durations_are_rejected() {
     for seconds in [-1.0, f64::NAN, f64::INFINITY, f64::MAX] {
-        assert!(matches!(
-            build(&control("f32", ""), 48, seconds),
-            Err(RunBuildError::Runtime(_))
-        ));
+        assert!(build(&control("f32", ""), 48, seconds).is_err());
     }
 }
 

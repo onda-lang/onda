@@ -661,9 +661,7 @@ mod tests {
         let error = session
             .start_run(&main)
             .expect_err("division by zero should fail generated initialization");
-        let RunBuildError::Runtime(diagnostic) = error else {
-            panic!("expected a runtime initialization failure");
-        };
+        let diagnostic = &error.diagnostics[0];
         assert!(diagnostic.message.contains("runtime safety check"));
 
         fs::remove_dir_all(&dir).ok();

@@ -730,6 +730,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut fast_math = false;
     let mut show_meta = false;
     let mut control_json = false;
+    let mut report_sources = false;
     let mut param_sets = Vec::new();
     let mut buffer_bindings = Vec::new();
     let mut forever = false;
@@ -808,6 +809,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--control-json" => control_json = true,
+            "--report-sources" => report_sources = true,
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--dur=") => {
                 if forever {
@@ -850,6 +852,10 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         }
     }
 
+    if report_sources && !control_json {
+        return Err("--report-sources requires --control-json".to_owned());
+    }
+
     Ok(RunCommand::Play {
         input: PathBuf::from(input),
         duration: if forever {
@@ -867,6 +873,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         fast_math,
         show_meta,
         control_json,
+        report_sources,
         param_sets,
         buffer_bindings,
     })

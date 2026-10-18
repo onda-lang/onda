@@ -161,8 +161,9 @@ escapes; other control characters and the Unicode line and paragraph separators 
 ## CLI, control clients, and Web Audio
 
 Ordinary `onda run play` and `onda run render` write authored print text to stdout after generated
-execution. In `--control-json` mode stdout remains reserved for the startup handshake; the localhost
-control socket sends ordered `print` notifications with `text`, structured `entries`,
+execution. In `--control-json` mode stdout remains reserved for the control startup handshake,
+plus source graphs when `--report-sources` is requested. The localhost control socket sends ordered
+`print` notifications with `text`, structured `entries`,
 `overflowCount`, and `transportDropCount`.
 
 The Web Audio worklet transports raw records through a bounded `SharedArrayBuffer` ring and performs

@@ -18,16 +18,38 @@ pub use image::{
     SourceReferenceKind, SourceReplayError, SourceResolution, ONDA_PROJECT_IMAGE_FORMAT_VERSION,
 };
 pub use manifest::{
-    is_project_file_path, resolve_project_input, resolve_project_watch_paths, InlineBuffer,
+    is_project_file_path, resolve_project_input, resolve_project_input_with_file_digests,
+    resolve_project_watch_paths, resolve_project_watch_snapshot, InlineBuffer,
     ManifestBufferBinding, ManifestBufferElementBinding, ProjectConstValue, ProjectFile,
-    ProjectInput, ProjectManifest, ProjectWatchPaths, ONDA_PROJECT_DEFAULT_FILE_NAME,
-    ONDA_PROJECT_FILE_EXTENSION,
+    ProjectInput, ProjectManifest, ProjectWatchPaths, ProjectWatchSnapshot,
+    ONDA_PROJECT_DEFAULT_FILE_NAME, ONDA_PROJECT_FILE_EXTENSION,
 };
 pub use materialize::{new_project_plan, MaterializationPlan, PlannedFile};
 
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
+
+/// A fingerprint of a file read, retained even when parsing or decoding fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileReadDigest {
+    Content([u8; 32]),
+    Unavailable,
+    /// Rejected before a complete read, for example by a file-size limit.
+    Unchecked,
+}
+
+impl FileReadDigest {
+    pub fn content_digest(self) -> Option<[u8; 32]> {
+        match self {
+            Self::Content(digest) => Some(digest),
+            Self::Unavailable | Self::Unchecked => None,
+        }
+    }
+}
+
+/// Absolute paths observed while resolving a project and loading its assets.
+pub type FileReadDigests = std::collections::BTreeMap<std::path::PathBuf, FileReadDigest>;
 
 /// Resource limits applied before allocating project-controlled payloads.
 #[derive(Debug, Clone, Copy)]
@@ -153,8 +175,15 @@ pub(crate) fn read_bounded_file(
     limit: usize,
     label: &str,
     limit_label: &str,
+    mut digest: Option<&mut FileReadDigest>,
 ) -> Result<Vec<u8>, ProjectError> {
+    if let Some(digest) = digest.as_deref_mut() {
+        *digest = FileReadDigest::Unchecked;
+    }
     let file = std::fs::File::open(path).map_err(|error| {
+        if let Some(digest) = digest.as_deref_mut() {
+            *digest = FileReadDigest::Unavailable;
+        }
         ProjectError::new(format!(
             "failed to open {label} '{}': {error}",
             path.display()
@@ -182,6 +211,9 @@ pub(crate) fn read_bounded_file(
     file.take(read_limit)
         .read_to_end(&mut bytes)
         .map_err(|error| {
+            if let Some(digest) = digest.as_deref_mut() {
+                *digest = FileReadDigest::Unavailable;
+            }
             ProjectError::new(format!(
                 "failed to read {label} '{}': {error}",
                 path.display()
@@ -192,6 +224,10 @@ pub(crate) fn read_bounded_file(
             "{label} '{}' exceeds the {limit} byte {limit_label} limit",
             path.display()
         )));
+    }
+    if let Some(digest) = digest {
+        use sha2::Digest;
+        *digest = FileReadDigest::Content(sha2::Sha256::digest(&bytes).into());
     }
     Ok(bytes)
 }

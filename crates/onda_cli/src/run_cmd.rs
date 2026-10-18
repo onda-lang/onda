@@ -44,20 +44,34 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             control_json,
+            report_sources,
             param_sets,
             buffer_bindings,
         } => {
+            if report_sources {
+                onda_run::run_source_graph(&input).write_event(&mut std::io::stdout().lock())?;
+            }
             let analysis_options = AnalysisOptions {
                 sample_rate: sample_rate_hz as f32,
                 block_size: block_samples,
             };
-            let project = crate::project_cmd::resolve_run_project(
+            let project = match crate::project_cmd::resolve_run_project(
                 &input,
                 &buffer_bindings,
                 analysis_options,
-            )?;
+                report_sources,
+            ) {
+                Ok(project) => project,
+                Err(error) => {
+                    if let Some(sources) = error.sources {
+                        sources.write_event(&mut std::io::stdout().lock())?;
+                    }
+                    return Err(error.message);
+                }
+            };
             play_run_realtime(PlaybackLaunch {
                 input: project.entry,
+                project_file_digests: project.file_digests,
                 compile_inputs: project.compile_inputs,
                 duration,
                 sample_rate_hz,
@@ -104,7 +118,9 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 &input,
                 &buffer_bindings,
                 analysis_options,
-            )?;
+                false,
+            )
+            .map_err(|error| error.message)?;
             run_daemon_run(DaemonRenderRequest {
                 input: &project.entry,
                 output: &output,

@@ -7,7 +7,8 @@ use serde_json::Value;
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 
 use crate::{
-    BufferAsset, BufferAssetMetadata, BufferElement, BufferSamples, ProjectError, ProjectLimits,
+    BufferAsset, BufferAssetMetadata, BufferElement, BufferSamples, FileReadDigest,
+    FileReadDigests, ProjectError, ProjectLimits,
 };
 
 pub const ONDA_PROJECT_FILE_EXTENSION: &str = "ondaproject";
@@ -113,6 +114,8 @@ pub struct ProjectFile {
     pub root: PathBuf,
     pub manifest_path: PathBuf,
     pub manifest: ProjectManifest,
+    /// SHA-256 of the exact bytes used to parse the manifest.
+    pub manifest_digest: [u8; 32],
     pub entry_path: PathBuf,
 }
 
@@ -125,6 +128,14 @@ pub struct ProjectWatchPaths {
     pub manifest: PathBuf,
     pub entry: PathBuf,
     pub assets: Vec<PathBuf>,
+}
+
+/// Recovery paths and the fingerprint of the manifest read that produced them.
+/// A readable but invalid manifest still has a fingerprint for watch validation.
+#[derive(Debug)]
+pub struct ProjectWatchSnapshot {
+    pub paths: Result<ProjectWatchPaths, ProjectError>,
+    pub manifest_digest: FileReadDigest,
 }
 
 #[derive(Debug, Clone)]
@@ -360,13 +371,15 @@ impl ProjectFile {
         &self,
         limits: ProjectLimits,
     ) -> Result<BTreeMap<String, (BufferAsset, Option<PathBuf>)>, ProjectError> {
-        self.load_buffer_assets_excluding(limits, &BTreeSet::new())
+        self.load_buffer_assets_excluding(limits, &BTreeSet::new(), None)
     }
 
+    /// Optionally records hashes of the encoded files actually decoded.
     pub fn load_buffer_assets_excluding(
         &self,
         limits: ProjectLimits,
         excluded: &BTreeSet<&str>,
+        mut file_digests: Option<&mut FileReadDigests>,
     ) -> Result<BTreeMap<String, (BufferAsset, Option<PathBuf>)>, ProjectError> {
         let mut assets = BTreeMap::new();
         let mut loaded_files = BTreeMap::<PathBuf, String>::new();
@@ -376,13 +389,18 @@ impl ProjectFile {
         visit_manifest_buffer_bindings(&self.manifest, excluded, |name, source| {
             match source {
                 ManifestBufferSource::File(file) => {
-                    let path = resolve_contained_path(&self.root, file)?;
+                    let path = resolve_contained_path_recording_failure(
+                        &self.root,
+                        file,
+                        file_digests.as_deref_mut(),
+                    )?;
                     let asset = clone_or_load_buffer_asset(
                         &path,
                         &loaded_files,
                         &assets,
                         limits,
                         &mut resident_bytes,
+                        file_digests.as_deref_mut(),
                     )?;
                     assets.insert(name.clone(), (asset, Some(path.clone())));
                     loaded_files.entry(path).or_insert_with(|| name.clone());
@@ -484,6 +502,7 @@ fn clone_or_load_buffer_asset(
     assets: &BTreeMap<String, (BufferAsset, Option<PathBuf>)>,
     limits: ProjectLimits,
     resident_bytes: &mut usize,
+    file_digests: Option<&mut FileReadDigests>,
 ) -> Result<BufferAsset, ProjectError> {
     if let Some(logical_name) = loaded_files.get(path) {
         let asset = assets
@@ -493,7 +512,16 @@ fn clone_or_load_buffer_asset(
         reserve_resident_asset_bytes(resident_bytes, asset.payload_bytes(), &limits)?;
         return Ok(asset.clone());
     }
-    let asset = crate::load_buffer_file(path, limits.with_remaining_asset_budget(*resident_bytes))?;
+    let mut digest = FileReadDigest::Unchecked;
+    let asset = crate::buffer::load_buffer_file_recording_digest(
+        path,
+        limits.with_remaining_asset_budget(*resident_bytes),
+        file_digests.as_ref().map(|_| &mut digest),
+    );
+    if let Some(file_digests) = file_digests {
+        file_digests.insert(path.to_path_buf(), digest);
+    }
+    let asset = asset?;
     reserve_resident_asset_bytes(resident_bytes, asset.payload_bytes(), &limits)?;
     Ok(asset)
 }
@@ -530,47 +558,92 @@ pub fn resolve_project_input(
     input: impl AsRef<Path>,
     limits: ProjectLimits,
 ) -> Result<ProjectInput, ProjectError> {
+    resolve_project_input_with_file_digests(input, limits, None)
+}
+
+/// Records the exact manifest read and unavailable paths, including on failure.
+pub fn resolve_project_input_with_file_digests(
+    input: impl AsRef<Path>,
+    limits: ProjectLimits,
+    mut file_digests: Option<&mut FileReadDigests>,
+) -> Result<ProjectInput, ProjectError> {
     let input = input.as_ref();
-    onda_frontend::ensure_no_symlink_components(input).map_err(|error| {
-        ProjectError::new(format!(
-            "failed to resolve project input '{}': {error}",
-            input.display()
-        ))
-    })?;
-    let metadata = fs::metadata(input).map_err(|error| {
-        ProjectError::new(format!(
-            "failed to inspect project input '{}': {error}",
-            input.display()
-        ))
-    })?;
-    if metadata.is_dir() {
-        return Err(ProjectError::new(format!(
-            "project input '{}' is a directory; choose an .onda or .ondaproject file",
-            input.display()
-        )));
+    let observation_path = onda_frontend::absolute_lexical_path(input)
+        .map_err(|error| ProjectError::new(error.to_string()))?;
+    let result = (|| {
+        onda_frontend::ensure_no_symlink_components(input).map_err(|error| {
+            ProjectError::new(format!(
+                "failed to resolve project input '{}': {error}",
+                input.display()
+            ))
+        })?;
+        let metadata = fs::metadata(input).map_err(|error| {
+            if let Some(digests) = file_digests.as_deref_mut() {
+                digests.insert(observation_path.clone(), FileReadDigest::Unavailable);
+            }
+            ProjectError::new(format!(
+                "failed to inspect project input '{}': {error}",
+                input.display()
+            ))
+        })?;
+        if metadata.is_dir() {
+            if let Some(digests) = file_digests.as_deref_mut() {
+                digests.insert(observation_path.clone(), FileReadDigest::Unavailable);
+            }
+            return Err(ProjectError::new(format!(
+                "project input '{}' is a directory; choose an .onda or .ondaproject file",
+                input.display()
+            )));
+        }
+        if !is_project_file_path(input) {
+            return Ok(ProjectInput::Source(input.to_path_buf()));
+        }
+        let mut manifest_digest = FileReadDigest::Unchecked;
+        let manifest = load_project_manifest(input, &limits, &mut manifest_digest);
+        if let Some(digests) = file_digests.as_deref_mut() {
+            digests.insert(observation_path.clone(), manifest_digest);
+        }
+        let (root, manifest_path, manifest) = manifest?;
+        if let Some(digests) = file_digests.as_deref_mut() {
+            digests.insert(manifest_path.clone(), manifest_digest);
+        }
+        let entry_path = resolve_contained_path_recording_failure(
+            &root,
+            &manifest.entry,
+            file_digests.as_deref_mut(),
+        )?;
+        if entry_path == manifest_path {
+            return Err(ProjectError::new(
+                "project entry cannot be its .ondaproject file",
+            ));
+        }
+        if !entry_path.is_file() {
+            if let Some(digests) = file_digests.as_deref_mut() {
+                digests.insert(entry_path.clone(), FileReadDigest::Unavailable);
+            }
+            return Err(ProjectError::new(format!(
+                "project entry '{}' is not a file",
+                entry_path.display()
+            )));
+        }
+        Ok(ProjectInput::Project(ProjectFile {
+            root,
+            manifest_path,
+            manifest,
+            manifest_digest: manifest_digest
+                .content_digest()
+                .expect("successfully read manifest"),
+            entry_path,
+        }))
+    })();
+    if result.is_err() {
+        if let Some(digests) = file_digests {
+            digests
+                .entry(observation_path)
+                .or_insert(FileReadDigest::Unchecked);
+        }
     }
-    if !is_project_file_path(input) {
-        return Ok(ProjectInput::Source(input.to_path_buf()));
-    }
-    let (root, manifest_path, manifest) = load_project_manifest(input, &limits)?;
-    let entry_path = resolve_contained_path(&root, &manifest.entry)?;
-    if entry_path == manifest_path {
-        return Err(ProjectError::new(
-            "project entry cannot be its .ondaproject file",
-        ));
-    }
-    if !entry_path.is_file() {
-        return Err(ProjectError::new(format!(
-            "project entry '{}' is not a file",
-            entry_path.display()
-        )));
-    }
-    Ok(ProjectInput::Project(ProjectFile {
-        root,
-        manifest_path,
-        manifest,
-        entry_path,
-    }))
+    result
 }
 
 /// Resolves the absolute lexical paths needed to watch an editable project.
@@ -583,20 +656,36 @@ pub fn resolve_project_watch_paths(
     input: impl AsRef<Path>,
     limits: ProjectLimits,
 ) -> Result<ProjectWatchPaths, ProjectError> {
+    resolve_project_watch_snapshot(input, limits).paths
+}
+
+pub fn resolve_project_watch_snapshot(
+    input: impl AsRef<Path>,
+    limits: ProjectLimits,
+) -> ProjectWatchSnapshot {
     let input = input.as_ref();
-    if !is_project_file_path(input) {
-        return Err(ProjectError::new(format!(
-            "project watch input '{}' is not an .ondaproject file",
-            input.display()
-        )));
+    let mut manifest_digest = FileReadDigest::Unchecked;
+    let paths = (|| {
+        if !is_project_file_path(input) {
+            return Err(ProjectError::new(format!(
+                "project watch input '{}' is not an .ondaproject file",
+                input.display()
+            )));
+        }
+        let (root, manifest_path, manifest) =
+            load_project_manifest(input, &limits, &mut manifest_digest)?;
+        recovery_project_watch_paths(&root, &manifest_path, &manifest)
+    })();
+    ProjectWatchSnapshot {
+        paths,
+        manifest_digest,
     }
-    let (root, manifest_path, manifest) = load_project_manifest(input, &limits)?;
-    recovery_project_watch_paths(&root, &manifest_path, &manifest)
 }
 
 fn load_project_manifest(
     manifest_path: &Path,
     limits: &ProjectLimits,
+    digest: &mut FileReadDigest,
 ) -> Result<(PathBuf, PathBuf, ProjectManifest), ProjectError> {
     onda_frontend::ensure_no_symlink_components(manifest_path).map_err(|error| {
         ProjectError::new(format!(
@@ -609,6 +698,7 @@ fn load_project_manifest(
         limits.max_manifest_bytes,
         "project manifest",
         "file",
+        Some(digest),
     )?;
     let manifest: ProjectManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
         ProjectError::new(format!(
@@ -898,6 +988,21 @@ pub(crate) fn is_windows_reserved_component(component: &str) -> bool {
 
 fn is_windows_reserved_port_suffix(suffix: &str) -> bool {
     matches!(suffix.as_bytes(), [b'1'..=b'9']) || matches!(suffix, "¹" | "²" | "³")
+}
+
+fn resolve_contained_path_recording_failure(
+    root: &Path,
+    relative: &str,
+    file_digests: Option<&mut FileReadDigests>,
+) -> Result<PathBuf, ProjectError> {
+    resolve_contained_path(root, relative).inspect_err(|_| {
+        if let (Some(digests), Ok(path)) = (
+            file_digests,
+            resolve_contained_lexical_watch_path(root, relative),
+        ) {
+            digests.insert(path, FileReadDigest::Unavailable);
+        }
+    })
 }
 
 fn resolve_contained_path(root: &Path, relative: &str) -> Result<PathBuf, ProjectError> {

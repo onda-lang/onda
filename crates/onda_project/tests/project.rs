@@ -1640,7 +1640,7 @@ fn project_buffer_overrides_exclude_individual_array_slots_before_loading() {
         panic!("expected project input");
     };
     let buffers = project
-        .load_buffer_assets_excluding(ProjectLimits::default(), &BTreeSet::from(["bank[0]"]))
+        .load_buffer_assets_excluding(ProjectLimits::default(), &BTreeSet::from(["bank[0]"]), None)
         .expect("the overridden missing slot must not be loaded");
     assert_eq!(buffers.len(), 1);
     assert_eq!(buffers["bank[1]"].0.samples, BufferSamples::F32(vec![0.75]));
