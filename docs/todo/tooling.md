@@ -38,7 +38,7 @@
   - connections are emitted into `graph`
   - user-authored Onda remains compilable without the visual editor
   - unsupported source shapes degrade to read-only or text-only views rather than lossy rewrites
-- MVP scope:
+- Initial scope:
   - single-file graph editing first
   - instantiate existing procs and stdlib procs
   - connect scalar and fixed-array endpoints using current graph rules
