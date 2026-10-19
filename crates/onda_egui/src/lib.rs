@@ -89,11 +89,7 @@ pub fn run_run_egui(onda_path: Option<&Path>, options: RunHostOptions) -> Result
         native_options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            match theme_mode {
-                RunThemeMode::Auto => {}
-                RunThemeMode::Dark => cc.egui_ctx.set_visuals(egui::Visuals::dark()),
-                RunThemeMode::Light => cc.egui_ctx.set_visuals(egui::Visuals::light()),
-            }
+            configure_run_theme(&cc.egui_ctx, theme_mode);
             let initial_icon_dark = resolved_theme_is_dark(&cc.egui_ctx, theme_mode);
             let current_icon_dark =
                 set_app_icon(&cc.egui_ctx, initial_icon_dark).then_some(initial_icon_dark);
@@ -209,6 +205,14 @@ fn startup_icon_is_dark(theme_mode: RunThemeMode) -> bool {
         RunThemeMode::Light => false,
         RunThemeMode::Auto => true,
     }
+}
+
+fn configure_run_theme(ctx: &egui::Context, theme_mode: RunThemeMode) {
+    ctx.set_theme(match theme_mode {
+        RunThemeMode::Auto => egui::ThemePreference::System,
+        RunThemeMode::Dark => egui::ThemePreference::Dark,
+        RunThemeMode::Light => egui::ThemePreference::Light,
+    });
 }
 
 fn resolved_theme_is_dark(ctx: &egui::Context, theme_mode: RunThemeMode) -> bool {
@@ -3151,6 +3155,7 @@ fn json_number(value: f64) -> Value {
 #[cfg(test)]
 mod tests {
     mod number_input;
+    mod theme;
     use std::collections::HashMap;
 
     use eframe::{egui, Storage};
