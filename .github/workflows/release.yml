@@ -155,6 +155,10 @@ jobs:
           cargo build --release -p onda_api
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cargo build --release -p onda_cli
+          cargo test --release -p onda_webview --lib windows_webview_startup_shows_run_controls
+          if ($LASTEXITCODE -ne 0) {
+            throw "The Windows webview failed to show the run controls"
+          }
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
             -S tests\cmake_sdk `

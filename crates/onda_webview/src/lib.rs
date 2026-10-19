@@ -81,6 +81,29 @@ mod platform {
         FileDrag(DragDropEvent),
     }
 
+    fn run_view_builder(theme_mode: &str) -> WebViewBuilder<'static> {
+        let onda_version = serde_json::to_string(env!("CARGO_PKG_VERSION"))
+            .expect("the package version is valid JSON text");
+        let init_script = format!(
+            r#"
+            {PARAM_CONTROL_JS}
+            {NUMBER_INPUT_JS}
+            {BUFFERS_JS}
+            window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}", ondaVersion: {onda_version} }};
+            window.__ondaForcedTheme = "{theme_mode}";
+            if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
+                document.documentElement.dataset.theme = "{theme_mode}";
+            }}
+            "#
+        );
+
+        WebViewBuilder::new()
+            .with_html(RUN_HTML)
+            // Wry's main-only Windows path uses ContentLoading, which can run
+            // after the page scripts. Register at document creation instead.
+            .with_initialization_script_for_main_only(&init_script, false)
+    }
+
     pub fn run_run_window(
         onda_path: Option<&Path>,
         mut options: RunHostOptions,
@@ -102,25 +125,9 @@ mod platform {
         set_app_icon(&window, resolved_window_icon_is_dark(&window, run_theme));
 
         let theme_mode = web_theme_mode(run_theme);
-        let onda_version = serde_json::to_string(env!("CARGO_PKG_VERSION"))
-            .expect("the package version is valid JSON text");
-        let init_script = format!(
-            r#"
-            {PARAM_CONTROL_JS}
-            {NUMBER_INPUT_JS}
-            {BUFFERS_JS}
-            window.__hostBridge = {{ mode: "wry", theme: "{theme_mode}", ondaVersion: {onda_version} }};
-            window.__ondaForcedTheme = "{theme_mode}";
-            if ("{theme_mode}" !== "auto" && document && document.documentElement) {{
-                document.documentElement.dataset.theme = "{theme_mode}";
-            }}
-            "#
-        );
         let ipc_proxy = proxy.clone();
         let drop_proxy = proxy.clone();
-        let webview = WebViewBuilder::new()
-            .with_html(RUN_HTML)
-            .with_initialization_script(&init_script)
+        let webview = run_view_builder(theme_mode)
             .with_ipc_handler(move |msg| {
                 let _ = ipc_proxy.send_event(UserEvent::WebviewMessage(msg.body().to_owned()));
             })
@@ -816,6 +823,96 @@ mod platform {
             RunThemeMode::Auto => "auto",
             RunThemeMode::Dark => "dark",
             RunThemeMode::Light => "light",
+        }
+    }
+
+    #[cfg(all(test, target_os = "windows"))]
+    mod startup_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+        use tao::platform::{
+            run_return::EventLoopExtRunReturn, windows::EventLoopBuilderExtWindows,
+        };
+
+        #[test]
+        fn windows_webview_startup_shows_run_controls() {
+            let mut event_loop = EventLoopBuilder::<String>::with_user_event()
+                .with_any_thread(true)
+                .build();
+            let proxy = event_loop.create_proxy();
+            let window = WindowBuilder::new()
+                .with_title("Onda webview startup test")
+                .build(&event_loop)
+                .expect("create test window");
+            let webview = run_view_builder("dark")
+                .with_initialization_script_for_main_only(
+                    r#"window.addEventListener("error", event => {
+                        window.ipc.postMessage(JSON.stringify({
+                            type: "startupError", error: event.message
+                        }));
+                    });"#,
+                    false,
+                )
+                .with_ipc_handler(move |message| {
+                    let _ = proxy.send_event(message.body().to_owned());
+                })
+                .build(&window)
+                .expect("create test WebView2 instance");
+            let mut panel_state = PanelState::default();
+            let initial_state = panel_state.message(
+                host_panel_state(None, None, &RunHostOptions::default(), "dark", 0.0),
+                true,
+            );
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut outcome = None;
+            let mut page_ready = false;
+            event_loop.run_return(|event, _, control_flow| {
+                *control_flow = ControlFlow::WaitUntil(deadline);
+                if outcome.is_some() || Instant::now() >= deadline {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                let Event::UserEvent(raw) = event else {
+                    return;
+                };
+                let message: serde_json::Value =
+                    serde_json::from_str(&raw).expect("decode page message");
+                match message["type"].as_str() {
+                    Some("webviewReady") if !page_ready => {
+                        page_ready = true;
+                        webview
+                            .evaluate_script(&format!("window._onHostMessage({initial_state})"))
+                            .expect("publish unloaded run state");
+                    }
+                    Some("runViewReady") => {
+                        webview
+                            .evaluate_script(
+                                r#"window.ipc.postMessage(JSON.stringify({
+                                    type: "startupVisible",
+                                    visible: getComputedStyle(document.querySelector(".shell"))
+                                        .visibility === "visible"
+                                        && !document.getElementById("file-picker").hidden
+                                }));"#,
+                            )
+                            .expect("inspect rendered run controls");
+                    }
+                    Some("startupVisible") => outcome = Some(message["visible"] == true),
+                    Some("startupError") => {
+                        eprintln!("Run view startup error: {}", message["error"]);
+                        outcome = Some(false);
+                    }
+                    _ => {}
+                }
+                if outcome.is_some() {
+                    *control_flow = ControlFlow::Exit;
+                }
+            });
+            assert!(page_ready, "run view never sent webviewReady");
+            assert_eq!(
+                outcome,
+                Some(true),
+                "run controls stayed hidden or failed to initialize"
+            );
         }
     }
 }
