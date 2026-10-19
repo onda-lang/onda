@@ -5,6 +5,15 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.38]
+
+### Fixed
+
+- Fix `onda run --webview` startup on Windows showing only the background color instead
+  of the run panel by initializing host scripts before page scripts.
+- Honor forced themes such as `onda run --theme dark` in egui on macOS, preserving the
+  requested theme across system theme reports.
+
 ## [0.8.37]
 
 ### Fixed
@@ -1325,6 +1334,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.38]: https://github.com/onda-lang/onda/compare/0.8.37...0.8.38
 [0.8.37]: https://github.com/onda-lang/onda/compare/0.8.36...0.8.37
 [0.8.36]: https://github.com/onda-lang/onda/compare/0.8.35...0.8.36
 [0.8.35]: https://github.com/onda-lang/onda/compare/0.8.34...0.8.35
