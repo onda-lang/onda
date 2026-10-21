@@ -8,8 +8,6 @@ eyebrow: Learn Onda
 
 # Getting started
 
-This guide takes you from trying Onda to a running sine oscillator. At the end, you will know how an Onda program is shaped, how to hear it in real time, and how to render it to a file.
-
 ## Try Onda in your browser
 
 The quickest way to get started is the [Onda playground]({{ '/playground/' | relative_url }}). It
@@ -23,9 +21,9 @@ application.
 
 [Precompiled release packages](https://github.com/onda-lang/onda/releases/latest) are available for:
 
-- Linux x64 (`.tar.xz`)
-- macOS arm64 (`.tar.xz`)
-- Windows x64 (`.zip`)
+- Linux x64
+- macOS arm64
+- Windows x64
 
 Each package contains the `onda` executable, static and shared C libraries, `onda.h`, the language
 guide, and the examples. Download the archive for your platform and extract it. For portable use,

@@ -1,6 +1,6 @@
 ---
 title: Documentation
-description: Learn Onda, explore the language reference, and understand the compiler toolchain.
+description: Getting started, language and standard library references, tools, and embedding APIs.
 permalink: /docs/
 section: learn
 eyebrow: Onda docs
@@ -8,40 +8,25 @@ eyebrow: Onda docs
 
 # Documentation
 
-Onda is a language and toolchain for real-time audio programming. These docs cover the path from a first oscillator to reusable processors, declarative signal graphs, host integration, and compiler internals.
+## Start here
 
-## Learn the language
+- [Getting started]({{ '/docs/getting-started/' | relative_url }}) — Install Onda, run a program, and render audio to a WAV file.
+- [Playground]({{ '/playground/' | relative_url }}) — Edit and run Onda programs in your browser.
+- [Examples]({{ '/docs/examples/' | relative_url }}) — Instruments, effects, and other programs you can open in the playground.
 
-Try Onda immediately in the [browser playground]({{ '/playground/' | relative_url }}): edit a patch,
-compile it, and hear the result without installing anything.
+## Language
 
-Continue with [Getting started]({{ '/docs/getting-started/' | relative_url }}) to install the CLI, run a local patch, and render audio. Then use the [Example cookbook]({{ '/docs/examples/' | relative_url }}) to explore complete programs by topic or open them directly in the playground.
+- [Language guide]({{ '/docs/language/' | relative_url }}) — Syntax and semantics.
+- [Standard library]({{ '/docs/stdlib/' | relative_url }}) — Built-in modules, functions, structs, and processors.
 
-The [Language guide]({{ '/docs/language/' | relative_url }}) is the complete syntax and semantics reference. It covers the program surface, execution rates, types, functions, structs, processors, graphs, generics, events, delegates, printing, and modules.
+## Tooling
 
-The [Standard library reference]({{ '/docs/stdlib/' | relative_url }}) is generated directly from
-the modules embedded in the compiler and lists their functions, structs, processors, parameters,
-ports, and events.
+- [CLI and editors]({{ '/docs/tooling/' | relative_url }}) — Command-line usage, VS Code, and Neovim.
+- [Releases](https://github.com/onda-lang/onda/releases/latest) — Precompiled packages for Linux, macOS, and Windows.
+- [VST3 plugins](https://github.com/onda-lang/onda-plugin) — OndaSynth and OndaFX for running Onda in a DAW.
 
-## Use the toolchain
+## Embedding
 
-[Precompiled releases](https://github.com/onda-lang/onda/releases/latest) are available for Linux
-x64, macOS arm64, and Windows x64. The precompiled macOS binaries are not signed. The
-[CLI and editor guide]({{ '/docs/tooling/' | relative_url }}) explains compilation, real-time playback,
-offline rendering, diagnostics, VS Code, Neovim, and the C embedding API.
-
-The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
-`OndaSynth` and `OndaFX` for using Onda instruments and effects in a DAW.
-
-The [C API reference]({{ '/docs/api/' | relative_url }}) documents the complete `libonda` surface,
-including compilation, metadata, instances, processing, events, delegates, printing, snapshots,
-ownership, and release-SDK linking.
-
-The [processor API and ABI reference]({{ '/docs/processor-api/' | relative_url }}) covers direct
-hosting of native and WebAssembly processor objects without `libonda`. It documents storage,
-entry points, parameters, events, delegates, printing, snapshots, target profiles, and every helper
-in the shipped `onda_processor_abi.h` header.
-
-The [Web API reference]({{ '/docs/web-api/' | relative_url }}) covers the complete public surface of
-the compiler, artifact, Binaryen backend, and Web Audio npm packages. The same reference is included
-as `api.md` in every published package.
+- [C API]({{ '/docs/api/' | relative_url }}) — Compile and run Onda programs with `libonda`.
+- [Processor API and ABI]({{ '/docs/processor-api/' | relative_url }}) — Host compiled native and WebAssembly processors without `libonda`.
+- [Web API]({{ '/docs/web-api/' | relative_url }}) — JavaScript packages for compilation, artifacts, and Web Audio playback.

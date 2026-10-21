@@ -10,7 +10,7 @@ eyebrow: Contributor guide
 
 This guide describes the architecture of `onda` and where each piece of the project lives.
 For language syntax and semantics, see the [language guide](https://onda-lang.org/docs/language/).
-For build, CLI usage, and editor integrations, see the [getting-started guide](https://onda-lang.org/docs/getting-started/).
+For build, CLI usage, and editor integrations, see [Getting started](https://onda-lang.org/docs/getting-started/).
 
 ## Workspace layout
 
