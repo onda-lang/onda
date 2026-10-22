@@ -7,7 +7,7 @@ fn indexed_graph_node_field_expr(
     loc: Option<SourceLoc>,
 ) -> Expr {
     Expr::Index {
-        loc: loc.into(),
+        loc: loc.clone().into(),
         base: format!("{base}.{field}"),
         index: Box::new(Expr::int(index as i64).with_loc(loc)),
     }
@@ -32,12 +32,12 @@ pub(super) fn rewrite_graph_source_expr(
                         let resolved_out = resolve_graph_proc_output_name(surface, field);
                         if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                             return Expr::ArrayLiteral {
-                                loc: expr_loc.into(),
+                                loc: expr_loc.clone().into(),
                                 values: slots
                                     .iter()
                                     .map(|slot_name| {
                                         Expr::var(format!("{node_name}.{slot_name}"))
-                                            .with_loc(expr_loc)
+                                            .with_loc(expr_loc.clone())
                                     })
                                     .collect(),
                             };
@@ -240,12 +240,15 @@ pub(super) fn rewrite_graph_source_expr(
                                 let resolved_out = resolve_graph_proc_output_name(surface, &field);
                                 if let Some(slots) = surface.out_array_slots.get(resolved_out) {
                                     return Expr::ArrayLiteral {
-                                        loc: expr_loc.into(),
+                                        loc: expr_loc.clone().into(),
                                         values: slots
                                             .iter()
                                             .map(|slot_name| {
                                                 indexed_graph_node_field_expr(
-                                                    &base, proc_idx, slot_name, expr_loc,
+                                                    &base,
+                                                    proc_idx,
+                                                    slot_name,
+                                                    expr_loc.clone(),
                                                 )
                                             })
                                             .collect(),

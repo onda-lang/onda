@@ -15,7 +15,7 @@ impl FunctionLowerer<'_> {
             .iter()
             .map(|shape| match shape {
                 StructFieldShape::Scalar { name, ty } => {
-                    self.scalar_reference_argument(&format!("{root}.{name}"), *ty, loc)
+                    self.scalar_reference_argument(&format!("{root}.{name}"), *ty, loc.clone())
                 }
                 StructFieldShape::Array { name, element, len } => {
                     let name = format!("{root}.{name}");
@@ -25,16 +25,17 @@ impl FunctionLowerer<'_> {
                             len: *len as usize,
                         })
                     {
-                        return Err(
-                            self.error(format!("struct array field '{name}' changed shape"), loc)
-                        );
+                        return Err(self.error(
+                            format!("struct array field '{name}' changed shape"),
+                            loc.clone(),
+                        ));
                     }
                     let slice = self.lower_named_slice(
                         &name,
                         SliceSelection::default(),
                         access,
                         block,
-                        loc,
+                        loc.clone(),
                     )?;
                     Ok(CallArgument::SliceWindow {
                         slice: slice.value,
@@ -133,7 +134,7 @@ impl FunctionLowerer<'_> {
                 source_scalar_type(element),
                 access,
                 block,
-                loc,
+                loc.clone(),
             )?);
         }
         Ok(())

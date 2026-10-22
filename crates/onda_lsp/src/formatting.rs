@@ -1,3 +1,5 @@
+mod expressions;
+
 use onda_frontend::{
     ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec, BufferBlock,
     BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg, CallTypeArg, CmpOp,
@@ -35,7 +37,7 @@ fn format_program_blocks(program: &Program, include: impl Fn(&Block) -> bool) ->
 }
 
 pub fn format_expr(expr: &Expr) -> String {
-    format_expr_prec(expr, 0)
+    expressions::format(expr)
 }
 
 pub fn format_const_decl(decl: &onda_frontend::ConstDecl) -> String {
@@ -956,137 +958,6 @@ fn format_graph_destinations(dests: &[GraphEndpoint]) -> String {
     }
 }
 
-fn format_expr_prec(expr: &Expr, parent_prec: u8) -> String {
-    let my_prec = expr_precedence(expr);
-    match expr {
-        Expr::Number { value, .. } => format_number(*value),
-        Expr::Int { value, .. } => value.to_string(),
-        Expr::Bool { value, .. } => value.to_string(),
-        Expr::ArrayLiteral { values, .. } => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(format_expr)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Expr::Var { name, .. } => name.clone(),
-        Expr::Index { base, index, .. } => format!("{base}[{}]", format_expr(index)),
-        Expr::Slice {
-            base,
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => format_slice_access(
-            base,
-            selector.as_deref(),
-            channel.as_deref(),
-            start.as_deref(),
-            end.as_deref(),
-        ),
-        Expr::ArrayCtor { spec, init, .. } => {
-            let mut text = format!("{}(", format_array_type_spec(spec));
-            if let Some(init) = init {
-                text.push_str(&init.iter().map(format_expr).collect::<Vec<_>>().join(", "));
-            }
-            text.push(')');
-            text
-        }
-        Expr::Compare { op, lhs, rhs, .. } => wrap_if_needed(
-            format!(
-                "{} {} {}",
-                format_expr_prec(lhs, my_prec),
-                format_cmp_op(*op),
-                format_expr_prec(rhs, my_prec + 1)
-            ),
-            my_prec,
-            parent_prec,
-        ),
-        Expr::Call { func, args, .. } => format!(
-            "{}({})",
-            format_builtin_fn(*func),
-            args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
-        ),
-        Expr::UserCall {
-            name,
-            type_args,
-            args,
-            ..
-        } => {
-            if let Some(access) = format_internal_buffer_access(name, args) {
-                return access;
-            }
-            let mut text = name.clone();
-            if !type_args.is_empty() {
-                text.push('<');
-                text.push_str(
-                    &type_args
-                        .iter()
-                        .map(format_call_type_arg)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                text.push('>');
-            }
-            text.push('(');
-            text.push_str(
-                &args
-                    .iter()
-                    .map(format_call_arg)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            text.push(')');
-            text
-        }
-        Expr::Cast { to, expr, .. } => {
-            format!("{}({})", primitive_type_name(*to), format_expr(expr))
-        }
-        Expr::UnaryNot { expr, .. } => wrap_if_needed(
-            format!("!{}", format_expr_prec(expr, my_prec)),
-            my_prec,
-            parent_prec,
-        ),
-        Expr::UnaryBitNot { expr, .. } => wrap_if_needed(
-            format!("~{}", format_expr_prec(expr, my_prec)),
-            my_prec,
-            parent_prec,
-        ),
-        Expr::Logical { op, lhs, rhs, .. } => wrap_if_needed(
-            format!(
-                "{} {} {}",
-                format_expr_prec(lhs, my_prec),
-                format_logical_op(*op),
-                format_expr_prec(rhs, my_prec + 1)
-            ),
-            my_prec,
-            parent_prec,
-        ),
-        Expr::Binary { op, lhs, rhs, .. } => wrap_if_needed(
-            format!(
-                "{} {} {}",
-                format_expr_prec(lhs, my_prec),
-                format_binary_op(*op),
-                format_expr_prec(rhs, my_prec + 1)
-            ),
-            my_prec,
-            parent_prec,
-        ),
-        Expr::Tuple { values, .. } => {
-            format!(
-                "({})",
-                values
-                    .iter()
-                    .map(format_expr)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    }
-}
-
 fn expr_precedence(expr: &Expr) -> u8 {
     match expr {
         Expr::Logical {
@@ -1122,69 +993,6 @@ fn expr_precedence(expr: &Expr) -> u8 {
         } => 9,
         Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => 10,
         _ => 11,
-    }
-}
-
-fn wrap_if_needed(text: String, my_prec: u8, parent_prec: u8) -> String {
-    if my_prec < parent_prec {
-        format!("({text})")
-    } else {
-        text
-    }
-}
-
-fn format_internal_buffer_access(name: &str, args: &[CallArg]) -> Option<String> {
-    let base = match &args.first()?.expr {
-        Expr::Var { name, .. } => name,
-        _ => return None,
-    };
-    let is_write = matches!(
-        name,
-        INTERNAL_BUFFER_WRITE2_FN | INTERNAL_BUFFER_WRITE3_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
-    );
-    let coordinates = if is_write {
-        args.get(1..args.len().checked_sub(1)?)?
-    } else {
-        args.get(1..)?
-    };
-    let target = match name {
-        INTERNAL_BUFFER_READ2_FN | INTERNAL_BUFFER_WRITE2_FN if coordinates.len() == 2 => {
-            format!(
-                "{base}[{}][{}]",
-                format_expr(&coordinates[0].expr),
-                format_expr(&coordinates[1].expr)
-            )
-        }
-        INTERNAL_BUFFER_READ_CHANNEL_FN | INTERNAL_BUFFER_WRITE_CHANNEL_FN
-            if coordinates.len() == 2 =>
-        {
-            format!(
-                "{base}[{}, {}]",
-                format_expr(&coordinates[0].expr),
-                format_expr(&coordinates[1].expr)
-            )
-        }
-        INTERNAL_BUFFER_READ3_FN | INTERNAL_BUFFER_WRITE3_FN if coordinates.len() == 3 => {
-            format!(
-                "{base}[{}][{}, {}]",
-                format_expr(&coordinates[0].expr),
-                format_expr(&coordinates[1].expr),
-                format_expr(&coordinates[2].expr)
-            )
-        }
-        _ => return None,
-    };
-    Some(if is_write {
-        format!("{target} = {}", format_expr(&args.last()?.expr))
-    } else {
-        target
-    })
-}
-
-fn format_call_arg(arg: &CallArg) -> String {
-    match &arg.name {
-        Some(name) => format!("{name} = {}", format_expr(&arg.expr)),
-        None => format_expr(&arg.expr),
     }
 }
 
@@ -1527,6 +1335,17 @@ fn push_line(out: &mut String, indent: usize, line: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn formats_long_parameter_default_without_recursion() {
+        let expression = std::iter::repeat_n("1.0", 15_000)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!("def f(x = {expression}):\n  return x\n");
+        let program = onda_frontend::parse_program(&source).unwrap();
+        let formatted = super::format_program(&program);
+        assert!(formatted.contains(&format!("x = {expression}")));
+    }
+
     use onda_frontend::parse_program;
 
     use super::{format_graph_inspection_program, format_program};

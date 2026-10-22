@@ -64,10 +64,10 @@ fn event_param_as_fn_param(param: &EventParamDecl) -> FnParamDecl {
     };
     FnParamDecl {
         readonly: true,
-        loc: param.loc,
+        loc: param.loc.clone(),
         name: param.name.clone(),
         ty: Some(ty),
-        ty_loc: param.ty_loc,
+        ty_loc: param.ty_loc.clone(),
         default: param.default.clone(),
     }
 }
@@ -131,7 +131,9 @@ use generic_specialization::*;
 use index_access::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
 use io_state_helpers::*;
-pub use mir_lowering::{lower_program_to_optimized_mir, MirLoweringError};
+pub use mir_lowering::{
+    lower_program_to_optimized_mir, lower_program_to_validated_mir, MirLoweringError,
+};
 use namespacing::*;
 pub use pipeline::{
     analyze, analyze_with_options, analyze_with_options_and_inputs, inspect_compile_constants,
@@ -350,7 +352,7 @@ fn compile_input_from_literal(
     };
     let synthetic = Program {
         blocks: vec![Block::Const(ConstDecl {
-            loc: decl.loc,
+            loc: decl.loc.clone(),
             name: name.to_owned(),
             ty: Some(ty),
             expr,

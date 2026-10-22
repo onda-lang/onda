@@ -9,8 +9,8 @@ pub use run_session::{
     InitialBufferBinding, PreparedRunBuffer, RetiredRunBuffer, RunBufferChannels, RunBufferInfo,
     RunBufferWaveform, RunBuildError, RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence,
     RunDelegateParamInfo, RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue,
-    RunOptions, RunParamArrayElement, RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue,
-    RunScheduledEvent, RunSession,
+    RunOptions, RunOutputCounts, RunOutputDecoder, RunPackedOutput, RunParamArrayElement,
+    RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent, RunSession,
 };
 
 use std::collections::HashMap;
@@ -184,7 +184,11 @@ impl DaemonSession {
     }
 
     pub fn run_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut RunSession> {
-        let normalized = normalize_session_path(path.as_ref());
+        let path = path.as_ref();
+        if self.runs.contains_key(path) {
+            return self.runs.get_mut(path);
+        }
+        let normalized = normalize_session_path(path);
         self.runs.get_mut(&normalized)
     }
 

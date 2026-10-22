@@ -123,3 +123,6 @@ fn value_key(value: Value, stable: &[bool]) -> Option<ValueKey> {
         _ => Some(value.into()),
     }
 }
+
+#[cfg(test)]
+mod tests;

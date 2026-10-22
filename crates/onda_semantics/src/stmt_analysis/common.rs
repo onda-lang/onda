@@ -104,7 +104,7 @@ pub(crate) fn validate_primitive_array_literal_replacement(
         Some(AssignmentBindingKind::Data),
         AssignmentBindingKind::Data,
         is_declaration,
-        target_loc,
+        target_loc.clone(),
         errors,
     );
     if let Some(binding) = env.local_array_aliases.get(name) {
@@ -137,7 +137,7 @@ pub(crate) fn validate_data_element_replacement(
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
     let selection = Expr::Index {
-        loc: target_loc.into(),
+        loc: target_loc.clone().into(),
         base: base.to_owned(),
         index: Box::new(index.clone()),
     };
@@ -145,7 +145,7 @@ pub(crate) fn validate_data_element_replacement(
         return false;
     };
     if let Some(binding) = env.local_array_aliases.get(base) {
-        validate_array_write(base, binding, target_loc, errors);
+        validate_array_write(base, binding, target_loc.clone(), errors);
     }
     let actual = infer_data_value_type(expr, env);
     if actual.as_ref() != Some(&data) {
@@ -181,7 +181,7 @@ pub(crate) fn validate_fixed_data_binding_replacement(
     {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign to immutable data alias '{name}'"),
-            target_loc,
+            &target_loc,
         ));
     }
     let actual = infer_data_value_type(expr, env);

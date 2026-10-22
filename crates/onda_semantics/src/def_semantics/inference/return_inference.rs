@@ -50,7 +50,7 @@ fn validate_declared_return_type(
     }
     errors.push(Diagnostic::semantic_span(
         format!("function '{display_name}' return type must resolve to a primitive, primitive tuple, struct, or fixed data array"),
-        def.return_ty_loc.or(def.loc),
+        def.return_ty_loc.or(def.loc.clone()),
     ));
     None
 }
@@ -501,7 +501,7 @@ pub(crate) fn validate_def_return_control_flow(
                     "function '{}' cannot mix bare returns with value returns or an explicit return type",
                     display_name
                 ),
-                def.loc,
+                def.loc.clone(),
             ));
         }
         if returns_value && !statements_must_return_value(&def.body) {
@@ -510,7 +510,7 @@ pub(crate) fn validate_def_return_control_flow(
                     "function '{}' returns a value, but not all reachable paths return a value",
                     display_name
                 ),
-                def.loc,
+                def.loc.clone(),
             ));
         }
     }
@@ -645,31 +645,63 @@ fn infer_def_return_types_impl(
                 .or_insert(ReturnType::Scalar(PrimitiveType::F32));
         }
     }
-    for _ in 0..defs
-        .len()
-        .saturating_add(generated_defs.len())
-        .saturating_add(1)
-    {
-        let mut changed = false;
-        for def in all_defs() {
-            let Some(sig) = generated_signatures
-                .get(&def.name)
-                .or_else(|| fn_signatures.get(&def.name))
-            else {
-                continue;
-            };
-            let Some(inferred) =
-                infer_def_return_type(def, sig, env_seed, &out, struct_defs, require_known_calls)
-            else {
-                continue;
-            };
-            if out.get(&def.name) != Some(&inferred) {
-                out.insert(def.name.clone(), inferred);
-                changed = true;
-            }
+    // Return types depend only on callees. Revisit a body when one of those
+    // dependencies changes instead of sweeping every definition at each depth.
+    let definitions: Vec<_> = all_defs().collect();
+    let indices: HashMap<_, _> = definitions
+        .iter()
+        .enumerate()
+        .map(|(index, def)| (def.name.as_str(), index))
+        .collect();
+    let mut callers = vec![Vec::new(); definitions.len()];
+    for (caller, def) in definitions.iter().enumerate() {
+        let mut dependencies = HashSet::new();
+        for stmt in &def.body {
+            stmt.visit_exprs(|root| {
+                for expr in root.walk() {
+                    if let Expr::UserCall { name, .. } = expr {
+                        if let Some(&callee) = indices.get(name.as_str()) {
+                            dependencies.insert(callee);
+                        }
+                    }
+                }
+            });
         }
-        if !changed {
-            break;
+        for callee in dependencies {
+            callers[callee].push(caller);
+        }
+    }
+    let mut pending: std::collections::VecDeque<_> = (0..definitions.len()).rev().collect();
+    let mut queued = vec![true; definitions.len()];
+    let mut visits = vec![0; definitions.len()];
+    while let Some(index) = pending.pop_front() {
+        queued[index] = false;
+        // Invalid recursive definitions are diagnosed later. Bound their
+        // convergence here as in the previous fixed-point inference.
+        if visits[index] > definitions.len() {
+            continue;
+        }
+        visits[index] += 1;
+        let def = definitions[index];
+        let Some(sig) = generated_signatures
+            .get(&def.name)
+            .or_else(|| fn_signatures.get(&def.name))
+        else {
+            continue;
+        };
+        let Some(inferred) =
+            infer_def_return_type(def, sig, env_seed, &out, struct_defs, require_known_calls)
+        else {
+            continue;
+        };
+        if out.get(&def.name) != Some(&inferred) {
+            out.insert(def.name.clone(), inferred);
+            for &caller in &callers[index] {
+                if !queued[caller] {
+                    queued[caller] = true;
+                    pending.push_back(caller);
+                }
+            }
         }
     }
     out

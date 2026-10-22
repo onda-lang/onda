@@ -75,7 +75,7 @@ pub(super) fn build_graph_lowering_plan(
             for (dest, dest_key, _) in &edge_dests {
                 if !single_writer.insert(dest_key.clone()) {
                     push_semantic(
-                        diag,
+                        diag.clone(),
                         errors,
                         format!("graph destination '{dest_key}' has more than one driver"),
                     );

@@ -4,7 +4,8 @@
 //! ABI.  Optimizers and backends can therefore make the same decisions about
 //! calls without reverse-engineering pointer provenance from lowered code.
 
-use std::collections::HashSet;
+use crate::call_graph::CallGraph;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::{
@@ -130,6 +131,8 @@ impl FunctionEffects {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EffectAnalysis {
     functions: Vec<FunctionEffects>,
+    /// Function bodies visited, useful for deterministic scaling checks.
+    pub function_visits: usize,
 }
 
 impl EffectAnalysis {
@@ -209,51 +212,57 @@ pub fn analyze_effects(program: &Program) -> EffectAnalysis {
         calls.push(function_calls);
     }
 
-    loop {
-        let snapshot = functions.clone();
+    let graph = CallGraph::new(program);
+    let mut pending = graph.worklist();
+    let mut function_visits = 0;
+    while let Some(caller_index) = pending.pop() {
+        function_visits += 1;
         let mut changed = false;
-        for (caller_index, call_sites) in calls.iter().enumerate() {
-            for call in call_sites {
-                let callee = &snapshot[call.callee.index()];
-                changed |= functions[caller_index]
-                    .reads
-                    .insert(callee.reads.without(MemoryRegionSet::ARGUMENTS));
-                changed |= functions[caller_index]
-                    .writes
-                    .insert(callee.writes.without(MemoryRegionSet::ARGUMENTS));
-                if callee.may_fail && !functions[caller_index].may_fail {
-                    functions[caller_index].may_fail = true;
-                    changed = true;
-                }
-                if callee.may_not_return && !functions[caller_index].may_not_return {
-                    functions[caller_index].may_not_return = true;
-                    changed = true;
-                }
+        for call in &calls[caller_index] {
+            let callee = functions[call.callee.index()].clone();
+            changed |= functions[caller_index]
+                .reads
+                .insert(callee.reads.without(MemoryRegionSet::ARGUMENTS));
+            changed |= functions[caller_index]
+                .writes
+                .insert(callee.writes.without(MemoryRegionSet::ARGUMENTS));
+            if callee.may_fail && !functions[caller_index].may_fail {
+                functions[caller_index].may_fail = true;
+                changed = true;
+            }
+            if callee.may_not_return && !functions[caller_index].may_not_return {
+                functions[caller_index].may_not_return = true;
+                changed = true;
+            }
 
-                for (parameter_index, parameter_effects) in
-                    callee.parameters.iter().copied().enumerate()
-                {
-                    if parameter_effects.is_unused() {
-                        continue;
-                    }
-                    let Some(argument) = call.args.get(parameter_index) else {
-                        continue;
-                    };
-                    changed |= merge_argument_effects(
-                        &mut functions[caller_index],
-                        &program.functions[caller_index],
-                        argument,
-                        parameter_effects,
-                    );
+            for (parameter_index, parameter_effects) in
+                callee.parameters.iter().copied().enumerate()
+            {
+                if parameter_effects.is_unused() {
+                    continue;
                 }
+                let Some(argument) = call.args.get(parameter_index) else {
+                    continue;
+                };
+                changed |= merge_argument_effects(
+                    &mut functions[caller_index],
+                    &program.functions[caller_index],
+                    argument,
+                    parameter_effects,
+                );
             }
         }
-        if !changed {
-            break;
+        if changed {
+            for &caller in &graph.callers[caller_index] {
+                pending.push(caller);
+            }
         }
     }
 
-    EffectAnalysis { functions }
+    EffectAnalysis {
+        functions,
+        function_visits,
+    }
 }
 
 fn normalize_value_parameter_effects(function: &crate::Function, effects: &mut FunctionEffects) {
@@ -335,29 +344,35 @@ pub fn analyze_buffer_writes(
     program: &Program,
 ) -> Result<BufferWriteAnalysis, BufferWriteAnalysisError> {
     let mut summaries = vec![FunctionBufferWriteSummary::default(); program.functions.len()];
-    loop {
-        let previous = summaries.clone();
-        let mut changed = false;
-        for (function_index, function) in program.functions.iter().enumerate() {
-            let aliases = infer_local_resource_aliases(program, function);
-            let unsupported_results = unsupported_resource_call_results(program, function);
-            let mut next = FunctionBufferWriteSummary::default();
-            collect_block_resource_writes(
-                program,
-                function,
-                &function.body,
-                &aliases,
-                &unsupported_results,
-                &previous,
-                &mut next,
-            )?;
-            if next != summaries[function_index] {
-                summaries[function_index] = next;
-                changed = true;
+    let graph = CallGraph::new(program);
+    let aliases: Vec<_> = program
+        .functions
+        .iter()
+        .map(|function| infer_local_resource_aliases(program, function))
+        .collect();
+    let unsupported: Vec<_> = program
+        .functions
+        .iter()
+        .map(|function| unsupported_resource_call_results(program, function))
+        .collect();
+    let mut pending = graph.worklist();
+    while let Some(index) = pending.pop() {
+        let function = &program.functions[index];
+        let mut next = FunctionBufferWriteSummary::default();
+        collect_block_resource_writes(
+            program,
+            function,
+            &function.body,
+            &aliases[index],
+            &unsupported[index],
+            &summaries,
+            &mut next,
+        )?;
+        if next != summaries[index] {
+            summaries[index] = next;
+            for &caller in &graph.callers[index] {
+                pending.push(caller);
             }
-        }
-        if !changed {
-            break;
         }
     }
 
@@ -944,6 +959,8 @@ impl FunctionRangeAnalysis {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ProgramRangeAnalysis {
     functions: Vec<FunctionRangeAnalysis>,
+    /// Function bodies visited by the dependency worklist.
+    pub function_visits: usize,
 }
 
 impl ProgramRangeAnalysis {
@@ -952,7 +969,7 @@ impl ProgramRangeAnalysis {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RangeSummary {
     seen: bool,
     range: Option<IntegerRange>,
@@ -1008,63 +1025,91 @@ pub fn analyze_program_integer_ranges_with_effects(
         .iter()
         .map(|function| vec![None; function.results.len()])
         .collect::<Vec<_>>();
-    loop {
-        let mut observations = program
-            .functions
-            .iter()
-            .map(|function| vec![RangeSummary::default(); function.params.len()])
-            .collect::<Vec<_>>();
-        let analyses = program
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(index, function)| {
-                analyze_function_integer_ranges(
-                    program,
-                    function,
-                    &parameters[index],
-                    &results,
-                    effects,
-                    &reference_origins[index],
-                    &mut observations,
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let next_parameters = program
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(function_index, function)| {
-                function
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(parameter_index, parameter)| {
-                        base_parameters[function_index][parameter_index].or_else(|| {
-                            matches!(
-                                parameter.mode,
-                                crate::PassingMode::Value | crate::PassingMode::ReadOnlyReference
-                            )
-                            .then_some(observations[function_index][parameter_index].range)
-                            .flatten()
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let next_results = analyses
-            .iter()
-            .map(|analysis| analysis.results.clone())
-            .collect::<Vec<_>>();
-
-        if next_parameters == parameters && next_results == results {
-            return ProgramRangeAnalysis {
-                functions: analyses,
-            };
+    let graph = CallGraph::new(program);
+    let mut pending = graph.worklist();
+    let mut observations = vec![None::<HashMap<usize, Vec<RangeSummary>>>; program.functions.len()];
+    let mut analyses = vec![None; program.functions.len()];
+    let mut parameters_dirty = vec![false; program.functions.len()];
+    let inferred_parameters: Vec<_> = program
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(parameter, declaration)| {
+                    (base_parameters[index][parameter].is_none()
+                        && matches!(
+                            declaration.mode,
+                            crate::PassingMode::Value | crate::PassingMode::ReadOnlyReference
+                        ))
+                    .then_some(parameter)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut function_visits = 0;
+    while let Some(index) = pending.pop() {
+        function_visits += 1;
+        // Merge incoming observations once when the callee is dequeued. Doing
+        // this in each caller turns a shared helper's fan-in into quadratic work.
+        if std::mem::take(&mut parameters_dirty[index]) {
+            for &parameter in &inferred_parameters[index] {
+                let mut summary = RangeSummary::default();
+                for &caller in &graph.callers[index] {
+                    match &observations[caller] {
+                        None => record_range(&mut summary, None),
+                        Some(outgoing) => {
+                            if let Some(observation) = outgoing
+                                .get(&index)
+                                .and_then(|values| values.get(parameter))
+                                .filter(|value| value.seen)
+                            {
+                                record_range(&mut summary, observation.range);
+                            }
+                        }
+                    }
+                }
+                parameters[index][parameter] = summary.range;
+            }
         }
-        parameters = next_parameters;
-        results = next_results;
+        let mut outgoing = HashMap::new();
+        let analysis = analyze_function_integer_ranges(
+            program,
+            &program.functions[index],
+            &parameters[index],
+            &results,
+            effects,
+            &reference_origins[index],
+            &mut outgoing,
+        );
+        if analysis.results != results[index] {
+            results[index] = analysis.results.clone();
+            for &caller in &graph.callers[index] {
+                pending.push(caller);
+            }
+        }
+        let changed_arguments = observations[index].as_ref() != Some(&outgoing);
+        observations[index] = Some(outgoing);
+        analyses[index] = Some(analysis);
+        if changed_arguments {
+            for &callee in &graph.callees[index] {
+                if !inferred_parameters[callee].is_empty() {
+                    parameters_dirty[callee] = true;
+                    pending.push(callee);
+                }
+            }
+        }
+    }
+
+    ProgramRangeAnalysis {
+        functions: analyses
+            .into_iter()
+            .map(|analysis| analysis.expect("all functions visited"))
+            .collect(),
+        function_visits,
     }
 }
 
@@ -1075,7 +1120,7 @@ fn analyze_function_integer_ranges(
     callee_results: &[Vec<Option<IntegerRange>>],
     effects: &EffectAnalysis,
     reference_origins: &[ReferenceOrigins],
-    observations: &mut [Vec<RangeSummary>],
+    observations: &mut HashMap<usize, Vec<RangeSummary>>,
 ) -> FunctionRangeAnalysis {
     let mut environment = function
         .locals
@@ -1128,7 +1173,7 @@ struct RangeAnalysisContext<'a> {
 struct RangeAnalysisSummaries<'a> {
     locals: &'a mut [RangeSummary],
     results: &'a mut [RangeSummary],
-    observations: &'a mut [Vec<RangeSummary>],
+    observations: &'a mut HashMap<usize, Vec<RangeSummary>>,
 }
 
 /// Ordinary MIR storage a local slice descriptor may reference. An empty,
@@ -1600,7 +1645,17 @@ fn analyze_range_block(
                             environment,
                         )
                     };
-                    record_range(&mut summaries.observations[callee.index()][index], range);
+                    let observations =
+                        summaries
+                            .observations
+                            .entry(callee.index())
+                            .or_insert_with(|| {
+                                vec![
+                                    RangeSummary::default();
+                                    context.program.functions[callee.index()].params.len()
+                                ]
+                            });
+                    record_range(&mut observations[index], range);
                 }
                 // Reference writes occur in the callee. Value results are
                 // assigned afterward and therefore supersede any clobber of

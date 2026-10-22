@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let jit = jit_program_from_optimized_mir_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },

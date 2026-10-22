@@ -1055,9 +1055,9 @@ proc Player<T>:
     finished()
     looped()
   events:
-    play(start_frame: T = 0.0):
+    play(start_frame: f64 = 0.0):
     stop():
-    seek(frame: T):
+    seek(frame: f64):
     reset():
 ```
 
@@ -1147,7 +1147,8 @@ struct FFT<T>:
 
 ```onda
 struct RealTransform<T>:
-  fft: FFT<T>
+  bin_real: T[(N >> 1) + 1]
+  bin_imag: T[(N >> 1) + 1]
   def size(self):
   def real_bin_count(self):
   def clear(self):

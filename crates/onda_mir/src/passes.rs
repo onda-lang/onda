@@ -13,6 +13,7 @@ use crate::{
 mod bounds_proofs;
 mod cse;
 mod dead_values;
+mod interprocedural;
 pub(crate) mod parameter_pruning;
 mod state_promotion;
 
@@ -31,24 +32,36 @@ pub struct PassStats {
     pub algebraic_simplifications: u64,
     pub eliminated_bounds_checks: u64,
     pub removed_function_parameters: u64,
+    pub removed_functions: u64,
 }
 
 /// A validated MIR program brought to the backend-neutral optimization fixed
 /// point by [`optimize`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct OptimizedProgram(ValidatedProgram);
+pub struct OptimizedProgram {
+    program: ValidatedProgram,
+    effects: crate::EffectAnalysis,
+    ranges: crate::ProgramRangeAnalysis,
+}
 
 impl OptimizedProgram {
+    pub fn effects(&self) -> &crate::EffectAnalysis {
+        &self.effects
+    }
+    pub fn ranges(&self) -> &crate::ProgramRangeAnalysis {
+        &self.ranges
+    }
+
     pub fn as_program(&self) -> &crate::Program {
-        self.0.as_program()
+        self.program.as_program()
     }
 
     pub fn into_validated(self) -> ValidatedProgram {
-        self.0
+        self.program
     }
 
     pub fn into_program(self) -> crate::Program {
-        self.0.into_program()
+        self.program.into_program()
     }
 }
 
@@ -69,6 +82,7 @@ impl AsRef<crate::Program> for OptimizedProgram {
 impl PassStats {
     fn merge(&mut self, other: Self) {
         self.iterations = self.iterations.saturating_add(other.iterations);
+        self.removed_functions += other.removed_functions;
         self.propagated_values = self
             .propagated_values
             .saturating_add(other.propagated_values);
@@ -116,6 +130,7 @@ impl PassStats {
             || self.algebraic_simplifications != 0
             || self.eliminated_bounds_checks != 0
             || self.removed_function_parameters != 0
+            || self.removed_functions != 0
     }
 }
 
@@ -219,7 +234,11 @@ pub fn optimize(
         // `optimize` owns the complete round, so canonicalization and dead
         // cleanup share one validation boundary instead of validating the
         // same intermediate program twice.
+        let effects = crate::analyze_effects(&raw);
+        let ranges = crate::analyze_program_integer_ranges_with_effects(&raw, &effects);
+        interprocedural::specialize_parameters(&mut raw, &ranges, &mut stats);
         canonicalize_program(&mut raw, &mut stats);
+        interprocedural::remove_unreachable_functions(&mut raw, &mut stats);
         prune_dead_values_and_parameters_round(&mut raw, &mut stats);
         // Cleanup can remove assignments that widened a whole-function range
         // or expose constant indices. Prove bounds afterward in every round so
@@ -234,7 +253,17 @@ pub fn optimize(
         total.merge(stats);
         if !changed {
             let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
-            return Ok((OptimizedProgram(program), total));
+            let effects = crate::analyze_effects(program.as_program());
+            let ranges =
+                crate::analyze_program_integer_ranges_with_effects(program.as_program(), &effects);
+            return Ok((
+                OptimizedProgram {
+                    program,
+                    effects,
+                    ranges,
+                },
+                total,
+            ));
         }
     }
 }
@@ -2600,6 +2629,61 @@ mod tests {
         );
     }
 
+    // Optimization owns the closed program: fixtures whose bodies are
+    // inspected must be reachable from a real host entry.
+    fn call_from_process(program: &mut Program, callee: u32) {
+        let params = program.functions[callee as usize].params.clone();
+        let result_types = program.functions[callee as usize].results.clone();
+        let process = &mut program.functions[1];
+        let mut args = Vec::new();
+        for param in params {
+            let value = match program.types[param.ty.index()] {
+                Type::Scalar(ScalarType::I32) => {
+                    let local = LocalId::new(process.locals.len() as u32);
+                    process.locals.push(Local {
+                        name: None,
+                        ty: param.ty,
+                        integer_range: None,
+                    });
+                    process.body.statements.push(Statement {
+                        kind: StatementKind::Assign {
+                            destination: Place::local(local),
+                            value: Rvalue::Load(Place {
+                                base: PlaceBase::Parameter(crate::ParameterId::new(1)),
+                                projections: Vec::new(),
+                            }),
+                        },
+                        source: SourceSpan::UNKNOWN,
+                    });
+                    Value::Local(local)
+                }
+                Type::Scalar(ScalarType::Bool) => Value::Constant(ScalarValue::Bool(true)),
+                _ => panic!("unsupported fixture parameter"),
+            };
+            args.push(CallArgument::Value(value));
+        }
+        let results = result_types
+            .into_iter()
+            .map(|ty| {
+                let local = LocalId::new(process.locals.len() as u32);
+                process.locals.push(Local {
+                    name: None,
+                    ty,
+                    integer_range: None,
+                });
+                local
+            })
+            .collect();
+        process.body.statements.push(Statement {
+            kind: StatementKind::Call {
+                results,
+                function: FunctionId::new(callee),
+                args,
+            },
+            source: SourceSpan::UNKNOWN,
+        });
+    }
+
     #[test]
     fn propagates_constant_chains_and_merges_equal_branch_facts() {
         let mut program = empty_program();
@@ -2691,6 +2775,7 @@ mod tests {
         ]);
         program.functions.push(user);
 
+        call_from_process(&mut program, 2);
         let validated = crate::validate_owned(program).expect("constant-chain fixture is valid");
         let (optimized, stats) =
             super::optimize(validated).expect("constant propagation preserves validity");
@@ -2761,6 +2846,7 @@ mod tests {
         ]);
         program.functions.push(user);
 
+        call_from_process(&mut program, 2);
         let validated = crate::validate_owned(program).expect("CSE fixture should validate");
         let (optimized, stats) = optimize(validated).expect("CSE should preserve validity");
         assert_eq!(stats.eliminated_common_subexpressions, 1);
@@ -2822,6 +2908,7 @@ mod tests {
         ]);
         program.functions.push(user);
 
+        call_from_process(&mut program, 2);
         let validated = crate::validate_owned(program).expect("loop fixture is valid");
         let (optimized, _) =
             super::optimize(validated).expect("loop invalidation preserves validity");
@@ -2900,6 +2987,7 @@ mod tests {
         ]);
         program.functions.push(caller);
 
+        call_from_process(&mut program, 3);
         let validated = crate::validate_owned(program).expect("reference-call fixture is valid");
         let (optimized, _) =
             super::optimize(validated).expect("reference invalidation preserves validity");
@@ -2978,6 +3066,7 @@ mod tests {
         ]);
         program.functions.push(user);
 
+        call_from_process(&mut program, 2);
         let validated = crate::validate_owned(program).expect("fixture is valid before cleanup");
         let (optimized, stats) =
             super::optimize(validated).expect("cleanup should expose the bounds proof");
@@ -3072,6 +3161,7 @@ mod tests {
         ]);
         program.functions.push(user);
 
+        call_from_process(&mut program, 2);
         let validated = crate::validate_owned(program).expect("fixture is valid before cleanup");
         let (optimized, stats) = super::optimize(validated).expect("passes preserve validity");
         assert!(stats.folded_rvalues >= 1);

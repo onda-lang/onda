@@ -1,5 +1,29 @@
 use super::*;
 
+#[test]
+fn real_transform_keeps_only_the_nonredundant_workspace() {
+    let source = "import std/fft\ninit:\n  input: f32[1024]\n  transform = std::fft<1024>::RealTransform<f32>()\nblock:\n  transform.forward(input)\nsample:\n  out1 = transform.real(7)\n";
+    let parsed = onda_frontend::parse_program(source).unwrap();
+    let typed = onda_semantics::analyze(parsed).unwrap();
+    let mir = onda_semantics::lower_program_to_optimized_mir(&typed).unwrap();
+    let bins: Vec<_> = mir
+        .state
+        .iter()
+        .filter(|slot| slot.name.contains("bin_real") || slot.name.contains("bin_imag"))
+        .map(|slot| match mir.types[slot.ty.index()] {
+            onda_mir::Type::Array { len, .. } => len,
+            ref other => panic!("expected bin array, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(bins, [513, 513]);
+    // A fixed transform must not retain the generic schedule through 2^30.
+    assert!(
+        mir.functions.len() < 25,
+        "{} retained functions",
+        mir.functions.len()
+    );
+}
+
 fn literal(values: &[f64]) -> String {
     values
         .iter()

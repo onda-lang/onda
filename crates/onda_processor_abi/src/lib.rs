@@ -3,6 +3,9 @@
 //! This crate deliberately has no compiler or backend dependencies. Code generators
 //! serialize these types and host adapters deserialize them.
 
+mod float_math;
+pub use float_math::FloatMathPolicy;
+
 use serde::{Deserialize, Serialize};
 
 pub mod payload;
@@ -210,6 +213,8 @@ pub struct ProcessorDescriptor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntegrationInfo {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub link_libraries: Vec<String>,
     pub required_symbols: Vec<String>,
     pub one_processor_per_artifact: bool,
     pub profile: IntegrationProfile,
@@ -251,6 +256,8 @@ pub struct TargetInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floating_point: Option<FloatMathPolicy>,
     pub sample_rate: f32,
     pub block_size: usize,
     pub fast_math: bool,

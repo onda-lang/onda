@@ -96,7 +96,7 @@ pub(super) fn retain_init_bindings(
                     format!(
                         "persistent data view '{root}' borrows init-local storage; declare independent fixed data to retain its contents"
                     ),
-                    **location,
+                    (*location).clone(),
                 ));
             }
         }
@@ -104,7 +104,7 @@ pub(super) fn retain_init_bindings(
             "persistent data view borrows init-local storage; declare independent fixed data to retain its contents",
             roots
                 .first()
-                .map(|(_, location)| **location)
+                .map(|(_, location)| (*location).clone())
                 .unwrap_or(SourceLoc::ZERO),
         ));
     }

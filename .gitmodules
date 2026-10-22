@@ -1,3 +1,7 @@
 [submodule "deps/llvm-bootstrap"]
 	path = deps/llvm-bootstrap
 	url = https://github.com/onda-lang/llvm-bootstrap
+[submodule "deps/sleef"]
+	path = deps/sleef
+	url = https://github.com/shibatch/sleef.git
+	shallow = true

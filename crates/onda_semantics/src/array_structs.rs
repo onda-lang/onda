@@ -608,7 +608,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
             .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
             .is_some_and(|raw| raw == PROC_INDEX_CALL_SENTINEL) =>
         {
-            let loc = *loc;
+            let loc = loc.clone();
             let Some((base, idx, field, access)) = extract_proc_index_field_args(args) else {
                 return true;
             };
@@ -671,7 +671,7 @@ pub(crate) fn rewrite_struct_array_inline_field_expr(
         }
         Expr::UserCall { name, .. } if name == STRUCT_ARRAY_FIELD_INDEX_SENTINEL => {
             let loc = match expr {
-                Expr::UserCall { loc, .. } => *loc,
+                Expr::UserCall { loc, .. } => loc.clone(),
                 _ => Span::ZERO,
             };
             let Expr::UserCall { args, .. } = expr else {

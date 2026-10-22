@@ -34,7 +34,7 @@ impl<'a> FunctionLowerer<'a> {
                     "processor step '{}' oversampling factor {factor} does not fit u32",
                     self.function.name
                 ),
-                location,
+                location.clone(),
             )
         })?;
         let factor_i32 = i32::try_from(factor).map_err(|_| {
@@ -43,7 +43,7 @@ impl<'a> FunctionLowerer<'a> {
                     "processor step '{}' oversampling factor {factor} exceeds the MIR index boundary",
                     self.function.name
                 ),
-                location,
+                location.clone(),
             )
         })?;
 
@@ -64,7 +64,12 @@ impl<'a> FunctionLowerer<'a> {
                 }
             };
             let raw = self.new_local(Some(format!("$oversample.{name}.raw")), ty);
-            self.assign_value(destination, raw, Value::Local(parameter_local), location);
+            self.assign_value(
+                destination,
+                raw,
+                Value::Local(parameter_local),
+                location.clone(),
+            );
             let stage_meta = &meta.input_state_fields[&name].up_stages;
             let values = if matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
                 if stage_meta.len() != expected_stages {
@@ -84,7 +89,7 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 let stages = stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location))
+                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.emit_interpolation_stages(
                     destination,
@@ -93,7 +98,7 @@ impl<'a> FunctionLowerer<'a> {
                     values,
                     &stages,
                     factor,
-                    location,
+                    location.clone(),
                 );
                 Some(values)
             } else {
@@ -124,7 +129,7 @@ impl<'a> FunctionLowerer<'a> {
         let mut outputs = Vec::with_capacity(output_names.len());
         for name in output_names {
             let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location)?;
+            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
             let stage_meta = &meta.output_state_fields[&name].down_stages;
             let down_stages = if matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
                 if stage_meta.len() != expected_stages {
@@ -139,7 +144,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location))
+                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 if !stage_meta.is_empty() {
@@ -175,7 +180,7 @@ impl<'a> FunctionLowerer<'a> {
                     output.values,
                     Value::Constant(ScalarValue::I32(index)),
                     zero_value(output.ty),
-                    location,
+                    location.clone(),
                 );
             }
         }
@@ -185,26 +190,46 @@ impl<'a> FunctionLowerer<'a> {
         let index = Value::Local(substep);
         for (parameter_local, input) in &inputs {
             let value = input.values.map_or(Value::Local(input.raw), |values| {
-                self.load_local_array_value(&mut substep_body, values, index, input.ty, location)
+                self.load_local_array_value(
+                    &mut substep_body,
+                    values,
+                    index,
+                    input.ty,
+                    location.clone(),
+                )
             });
-            self.assign_value(&mut substep_body, *parameter_local, value, location);
+            self.assign_value(&mut substep_body, *parameter_local, value, location.clone());
         }
         self.lower_statements(&self.function.body, &mut substep_body, ContinueMode::None)?;
         for output in &outputs {
             let OversampledOutputDestination::Place(place) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            let value = self.load_place_value(&mut substep_body, output.ty, place, location);
-            self.store_local_array_value(&mut substep_body, output.values, index, value, location);
+            let value =
+                self.load_place_value(&mut substep_body, output.ty, place, location.clone());
+            self.store_local_array_value(
+                &mut substep_body,
+                output.values,
+                index,
+                value,
+                location.clone(),
+            );
         }
-        self.emit_counted_loop(destination, substep, factor_i32, substep_body, location);
+        self.emit_counted_loop(
+            destination,
+            substep,
+            factor_i32,
+            substep_body,
+            location.clone(),
+        );
 
         for output in &outputs {
-            let decimated = self.emit_decimation_stages(output, factor, destination, location);
+            let decimated =
+                self.emit_decimation_stages(output, factor, destination, location.clone());
             let OversampledOutputDestination::Place(place) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            self.assign_place_value(destination, place.clone(), decimated, location);
+            self.assign_place_value(destination, place.clone(), decimated, location.clone());
         }
         Ok(())
     }
@@ -235,7 +260,7 @@ impl<'a> FunctionLowerer<'a> {
             destination,
             counter,
             Value::Constant(ScalarValue::I32(0)),
-            location,
+            location.clone(),
         );
         let mut loop_body = MirBlock::default();
         let in_range = self.compare_value(
@@ -243,7 +268,7 @@ impl<'a> FunctionLowerer<'a> {
             CompareOp::Less,
             Value::Local(counter),
             Value::Constant(ScalarValue::I32(limit)),
-            location,
+            location.clone(),
         );
         let next_counter = self.emit_binary_value(
             &mut iteration_body,
@@ -251,11 +276,11 @@ impl<'a> FunctionLowerer<'a> {
             MirBinaryOp::Add,
             Value::Local(counter),
             Value::Constant(ScalarValue::I32(step)),
-            location,
+            location.clone(),
         );
-        self.assign_value(&mut iteration_body, counter, next_counter, location);
+        self.assign_value(&mut iteration_body, counter, next_counter, location.clone());
         let mut finished = MirBlock::default();
-        self.push_statement(&mut finished, StatementKind::Break, location);
+        self.push_statement(&mut finished, StatementKind::Break, location.clone());
         self.push_statement(
             &mut loop_body,
             StatementKind::If {
@@ -263,7 +288,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: iteration_body,
                 else_block: finished,
             },
-            location,
+            location.clone(),
         );
         self.push_statement(
             destination,
@@ -307,7 +332,7 @@ impl<'a> FunctionLowerer<'a> {
         let mut places = Vec::with_capacity(8);
         for name in names {
             let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location)?;
+            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
             if ty != expected_ty {
                 return Err(self.error(
                     format!(
@@ -356,19 +381,19 @@ impl<'a> FunctionLowerer<'a> {
             &mut body,
             PrimitiveType::I32,
             load_process_param(onda_mir::PROCESS_START_FRAME_PARAM_INDEX),
-            process_location,
+            process_location.clone(),
         );
         let frames = self.emit_temp(
             &mut body,
             PrimitiveType::I32,
             load_process_param(onda_mir::PROCESS_FRAMES_PARAM_INDEX),
-            process_location,
+            process_location.clone(),
         );
         let flags = self.emit_temp(
             &mut body,
             PrimitiveType::I32,
             load_process_param(onda_mir::PROCESS_FLAGS_PARAM_INDEX),
-            process_location,
+            process_location.clone(),
         );
         let begin_bits = self.emit_temp(
             &mut body,
@@ -378,14 +403,14 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: flags.value,
                 rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESSOR_BEGIN_BLOCK)),
             },
-            process_location,
+            process_location.clone(),
         );
         let begin = self.compare_value(
             &mut body,
             CompareOp::NotEqual,
             begin_bits.value,
             Value::Constant(ScalarValue::I32(0)),
-            process_location,
+            process_location.clone(),
         );
         let mut block_pre_body = MirBlock::default();
         let block_local_start = self.locals.len();
@@ -394,12 +419,16 @@ impl<'a> FunctionLowerer<'a> {
             let mut activation = MirBlock::default();
             let flow = self.lower_statements(block_pre, &mut activation, ContinueMode::None)?;
             if flow == StatementFlow::Continues {
-                self.push_statement(&mut activation, StatementKind::Break, process_location);
+                self.push_statement(
+                    &mut activation,
+                    StatementKind::Break,
+                    process_location.clone(),
+                );
             }
             self.push_statement(
                 &mut block_pre_body,
                 StatementKind::Loop { body: activation },
-                process_location,
+                process_location.clone(),
             );
         } else {
             self.lower_statements(block_pre, &mut block_pre_body, ContinueMode::None)?;
@@ -419,7 +448,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: block_pre_body,
                 else_block: MirBlock::default(),
             },
-            process_location,
+            process_location.clone(),
         );
 
         let frame = self.new_local(Some("$segment.frame".to_owned()), PrimitiveType::I32);
@@ -427,7 +456,7 @@ impl<'a> FunctionLowerer<'a> {
             &mut body,
             frame,
             Value::Constant(ScalarValue::I32(0)),
-            process_location,
+            process_location.clone(),
         );
 
         let mut loop_body = MirBlock::default();
@@ -436,7 +465,7 @@ impl<'a> FunctionLowerer<'a> {
             CompareOp::Less,
             Value::Local(frame),
             frames.value,
-            process_location,
+            process_location.clone(),
         );
         let mut sample_block = MirBlock::default();
         let logical_frame = self.new_local(
@@ -451,7 +480,7 @@ impl<'a> FunctionLowerer<'a> {
                     offset: Value::Local(frame),
                 },
             },
-            process_location,
+            process_location.clone(),
         );
         self.current_frame = Some(Value::Local(logical_frame));
         let sample_result = if sample_oversample_factor.max(1) > 1 {
@@ -460,17 +489,17 @@ impl<'a> FunctionLowerer<'a> {
                 &mut sample_block,
                 logical_frame,
                 sample_oversample_factor.max(1),
-                process_location,
+                process_location.clone(),
             )
         } else {
-            self.begin_audio_output_frame(&mut sample_block, process_location)?;
+            self.begin_audio_output_frame(&mut sample_block, process_location.clone())?;
             let result = self
                 .lower_statements(sample, &mut sample_block, ContinueMode::None)
                 .and_then(|_| {
                     self.commit_audio_output_frame(
                         &mut sample_block,
                         Value::Local(logical_frame),
-                        process_location,
+                        process_location.clone(),
                     )
                 });
             self.clear_audio_output_caches();
@@ -488,10 +517,14 @@ impl<'a> FunctionLowerer<'a> {
                     rhs: Value::Constant(ScalarValue::I32(1)),
                 },
             },
-            process_location,
+            process_location.clone(),
         );
         let mut finished = MirBlock::default();
-        self.push_statement(&mut finished, StatementKind::Break, process_location);
+        self.push_statement(
+            &mut finished,
+            StatementKind::Break,
+            process_location.clone(),
+        );
         self.push_statement(
             &mut loop_body,
             StatementKind::If {
@@ -499,12 +532,12 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: sample_block,
                 else_block: finished,
             },
-            process_location,
+            process_location.clone(),
         );
         self.push_statement(
             &mut body,
             StatementKind::Loop { body: loop_body },
-            process_location,
+            process_location.clone(),
         );
 
         let end_bits = self.emit_temp(
@@ -515,14 +548,14 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: flags.value,
                 rhs: Value::Constant(ScalarValue::I32(onda_mir::PROCESSOR_END_BLOCK)),
             },
-            process_location,
+            process_location.clone(),
         );
         let end = self.compare_value(
             &mut body,
             CompareOp::NotEqual,
             end_bits.value,
             Value::Constant(ScalarValue::I32(0)),
-            process_location,
+            process_location.clone(),
         );
         let mut block_post_body = MirBlock::default();
         self.lower_statements(block_post, &mut block_post_body, ContinueMode::None)?;
@@ -533,7 +566,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: block_post_body,
                 else_block: MirBlock::default(),
             },
-            process_location,
+            process_location.clone(),
         );
         let source = self.source_span(process_location);
         let i32_type = intern_scalar_type(self.types, PrimitiveType::I32);
@@ -563,7 +596,7 @@ impl<'a> FunctionLowerer<'a> {
         let globals = self.runtime_globals.ok_or_else(|| {
             self.error(
                 "top-level oversampling requires runtime interface metadata",
-                location,
+                location.clone(),
             )
         })?;
         let mut input_specs = globals
@@ -654,13 +687,13 @@ impl<'a> FunctionLowerer<'a> {
         let factor_u32 = u32::try_from(factor).map_err(|_| {
             self.error(
                 format!("top-level oversampling factor {factor} does not fit u32"),
-                location,
+                location.clone(),
             )
         })?;
         let factor_i32 = i32::try_from(factor).map_err(|_| {
             self.error(
                 format!("top-level oversampling factor {factor} exceeds the MIR index boundary"),
-                location,
+                location.clone(),
             )
         })?;
         for (name, input, ty, len) in input_array_caches {
@@ -690,7 +723,7 @@ impl<'a> FunctionLowerer<'a> {
                         frame: Value::Local(frame),
                     },
                 },
-                location,
+                location.clone(),
             );
             let values = if stages.is_empty() {
                 None
@@ -707,7 +740,7 @@ impl<'a> FunctionLowerer<'a> {
                     values,
                     &stages.iter().map(mir_sinc_stage_places).collect::<Vec<_>>(),
                     factor,
-                    location,
+                    location.clone(),
                 );
                 Some(values)
             };
@@ -781,7 +814,7 @@ impl<'a> FunctionLowerer<'a> {
                     output.values,
                     Value::Constant(ScalarValue::I32(index)),
                     zero_value(output.ty),
-                    location,
+                    location.clone(),
                 );
             }
         }
@@ -793,13 +826,19 @@ impl<'a> FunctionLowerer<'a> {
         let index = Value::Local(substep);
         for input in &inputs {
             let value = input.values.map_or(Value::Local(input.raw), |values| {
-                self.load_local_array_value(&mut substep_body, values, index, input.ty, location)
+                self.load_local_array_value(
+                    &mut substep_body,
+                    values,
+                    index,
+                    input.ty,
+                    location.clone(),
+                )
             });
             let current = input
                 .current
                 .clone()
                 .expect("top-level oversampling inputs have current cache places");
-            self.assign_place_value(&mut substep_body, current, value, location);
+            self.assign_place_value(&mut substep_body, current, value, location.clone());
         }
         for output in &outputs {
             let OversampledOutputDestination::Interface { current, .. } = &output.destination
@@ -810,7 +849,7 @@ impl<'a> FunctionLowerer<'a> {
                 &mut substep_body,
                 current.clone(),
                 zero_value(output.ty),
-                location,
+                location.clone(),
             );
         }
 
@@ -830,16 +869,22 @@ impl<'a> FunctionLowerer<'a> {
                 unreachable!("top-level oversampling outputs target interface cache places")
             };
             let current_value =
-                self.load_place_value(&mut substep_body, output.ty, current, location);
+                self.load_place_value(&mut substep_body, output.ty, current, location.clone());
             self.store_local_array_value(
                 &mut substep_body,
                 output.values,
                 index,
                 current_value,
-                location,
+                location.clone(),
             );
         }
-        self.emit_counted_loop(destination, substep, factor_i32, substep_body, location);
+        self.emit_counted_loop(
+            destination,
+            substep,
+            factor_i32,
+            substep_body,
+            location.clone(),
+        );
 
         self.config = host_config;
         self.oversampled_inputs.clear();
@@ -850,7 +895,8 @@ impl<'a> FunctionLowerer<'a> {
         self.audio_output_array_caches.clear();
 
         for output in &outputs {
-            let decimated = self.emit_decimation_stages(output, factor, destination, location);
+            let decimated =
+                self.emit_decimation_stages(output, factor, destination, location.clone());
             let OversampledOutputDestination::Interface {
                 output: output_id,
                 element,
@@ -869,7 +915,7 @@ impl<'a> FunctionLowerer<'a> {
                     frame: Value::Local(frame),
                     value: decimated,
                 },
-                location,
+                location.clone(),
             );
         }
         Ok(())

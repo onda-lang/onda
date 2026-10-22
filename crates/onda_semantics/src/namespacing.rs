@@ -161,7 +161,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
         let array_elem_diag = array_elem_diag.take();
         match expr {
             Expr::UserCall { name, loc, .. } => {
-                let diag = DiagCtx::new(*loc);
+                let diag = DiagCtx::new(loc.clone());
                 if is_builtin_function_name(name)
                     || is_internal_buffer_2d_fn(name)
                     || name.contains('.')
@@ -195,7 +195,7 @@ pub(super) fn qualify_expr_namespaced_symbols(
                         nominal_symbols,
                         nominal_namespaces,
                         context,
-                        array_elem_diag.unwrap_or_else(|| DiagCtx::new(*loc)),
+                        array_elem_diag.unwrap_or_else(|| DiagCtx::new(loc.clone())),
                         false,
                         errors,
                     );
@@ -238,7 +238,7 @@ pub(super) fn qualify_stmt_namespaced_symbols(
                 );
             });
             let array_elem_diag = if *typed_decl_ty_loc != Span::ZERO {
-                Some(DiagCtx::new(*typed_decl_ty_loc))
+                Some(DiagCtx::new(typed_decl_ty_loc.clone()))
             } else {
                 None
             };

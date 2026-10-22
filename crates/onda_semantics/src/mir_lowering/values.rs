@@ -157,15 +157,15 @@ impl<'a> FunctionLowerer<'a> {
                 target,
                 std::slice::from_ref(&value),
                 block,
-                value_location,
-                statement_location,
+                value_location.clone(),
+                statement_location.clone(),
             )? {
                 continue;
             }
             let (local, target_ty) =
-                self.scalar_local_for_destructure(target, value.ty, statement_location)?;
-            let value = self.coerce(value, target_ty, block, value_location)?;
-            self.assign_value(block, local, value.value, statement_location);
+                self.scalar_local_for_destructure(target, value.ty, statement_location.clone())?;
+            let value = self.coerce(value, target_ty, block, value_location.clone())?;
+            self.assign_value(block, local, value.value, statement_location.clone());
         }
         Ok(())
     }
@@ -375,13 +375,13 @@ impl<'a> FunctionLowerer<'a> {
         }
         if value.ty == PrimitiveType::Bool {
             let result = self.new_local(None, to);
-            self.assign_value(block, result, zero_value(to), location);
+            self.assign_value(block, result, zero_value(to), location.clone());
             let mut then_block = MirBlock::default();
             self.assign_value(
                 &mut then_block,
                 result,
                 Value::Constant(scalar_from_f64(1.0, to)),
-                location,
+                location.clone(),
             );
             self.push_statement(
                 block,
@@ -477,13 +477,15 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) -> Result<PrimitiveType, MirLoweringError> {
         let mut diagnostics = Vec::new();
-        merge_numeric_types(lhs, rhs, context, location, &mut diagnostics).ok_or_else(|| {
-            let detail = diagnostics
-                .first()
-                .map(|diagnostic| diagnostic.message.as_str())
-                .unwrap_or("numeric types could not be merged");
-            self.error(format!("{detail} after semantic analysis"), location)
-        })
+        merge_numeric_types(lhs, rhs, context, location.clone(), &mut diagnostics).ok_or_else(
+            || {
+                let detail = diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("numeric types could not be merged");
+                self.error(format!("{detail} after semantic analysis"), location)
+            },
+        )
     }
 
     pub(super) fn snapshot(
@@ -632,15 +634,21 @@ impl<'a> FunctionLowerer<'a> {
         coefficient: f64,
         location: SourceLoc,
     ) -> Value {
-        let delta =
-            self.emit_binary_value(block, ty, MirBinaryOp::Subtract, input, history, location);
+        let delta = self.emit_binary_value(
+            block,
+            ty,
+            MirBinaryOp::Subtract,
+            input,
+            history,
+            location.clone(),
+        );
         let scaled = self.emit_binary_value(
             block,
             ty,
             MirBinaryOp::Multiply,
             delta,
             float_constant(ty, coefficient),
-            location,
+            location.clone(),
         );
         self.emit_binary_value(block, ty, MirBinaryOp::Add, accum, scaled, location)
     }
@@ -653,26 +661,69 @@ impl<'a> FunctionLowerer<'a> {
         input: Value,
         location: SourceLoc,
     ) -> (Value, Value) {
-        let old: [Value; 8] =
-            std::array::from_fn(|index| self.load_place_value(block, ty, &taps[index], location));
-        let a1 =
-            self.emit_sinc_multiply_add(block, ty, old[0], input, old[1], SINC_A1_COEFF, location);
-        let a2 =
-            self.emit_sinc_multiply_add(block, ty, old[1], a1, old[2], SINC_A2_COEFF, location);
-        let a3 =
-            self.emit_sinc_multiply_add(block, ty, old[2], a2, old[3], SINC_A3_COEFF, location);
-        let b1 =
-            self.emit_sinc_multiply_add(block, ty, old[4], input, old[5], SINC_B1_COEFF, location);
-        let b2 =
-            self.emit_sinc_multiply_add(block, ty, old[5], b1, old[6], SINC_B2_COEFF, location);
-        let b3 =
-            self.emit_sinc_multiply_add(block, ty, old[6], b2, old[7], SINC_B3_COEFF, location);
+        let old: [Value; 8] = std::array::from_fn(|index| {
+            self.load_place_value(block, ty, &taps[index], location.clone())
+        });
+        let a1 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[0],
+            input,
+            old[1],
+            SINC_A1_COEFF,
+            location.clone(),
+        );
+        let a2 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[1],
+            a1,
+            old[2],
+            SINC_A2_COEFF,
+            location.clone(),
+        );
+        let a3 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[2],
+            a2,
+            old[3],
+            SINC_A3_COEFF,
+            location.clone(),
+        );
+        let b1 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[4],
+            input,
+            old[5],
+            SINC_B1_COEFF,
+            location.clone(),
+        );
+        let b2 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[5],
+            b1,
+            old[6],
+            SINC_B2_COEFF,
+            location.clone(),
+        );
+        let b3 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[6],
+            b2,
+            old[7],
+            SINC_B3_COEFF,
+            location.clone(),
+        );
         for (place, value) in taps
             .iter()
             .cloned()
             .zip([input, a1, a2, a3, input, b1, b2, b3])
         {
-            self.assign_place_value(block, place, value, location);
+            self.assign_place_value(block, place, value, location.clone());
         }
         (a3, b3)
     }
@@ -686,28 +737,71 @@ impl<'a> FunctionLowerer<'a> {
         input2: Value,
         location: SourceLoc,
     ) -> Value {
-        let old: [Value; 8] =
-            std::array::from_fn(|index| self.load_place_value(block, ty, &taps[index], location));
-        let a1 =
-            self.emit_sinc_multiply_add(block, ty, old[0], input2, old[1], SINC_A1_COEFF, location);
-        let a2 =
-            self.emit_sinc_multiply_add(block, ty, old[1], a1, old[2], SINC_A2_COEFF, location);
-        let a3 =
-            self.emit_sinc_multiply_add(block, ty, old[2], a2, old[3], SINC_A3_COEFF, location);
-        let b1 =
-            self.emit_sinc_multiply_add(block, ty, old[4], input1, old[5], SINC_B1_COEFF, location);
-        let b2 =
-            self.emit_sinc_multiply_add(block, ty, old[5], b1, old[6], SINC_B2_COEFF, location);
-        let b3 =
-            self.emit_sinc_multiply_add(block, ty, old[6], b2, old[7], SINC_B3_COEFF, location);
+        let old: [Value; 8] = std::array::from_fn(|index| {
+            self.load_place_value(block, ty, &taps[index], location.clone())
+        });
+        let a1 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[0],
+            input2,
+            old[1],
+            SINC_A1_COEFF,
+            location.clone(),
+        );
+        let a2 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[1],
+            a1,
+            old[2],
+            SINC_A2_COEFF,
+            location.clone(),
+        );
+        let a3 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[2],
+            a2,
+            old[3],
+            SINC_A3_COEFF,
+            location.clone(),
+        );
+        let b1 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[4],
+            input1,
+            old[5],
+            SINC_B1_COEFF,
+            location.clone(),
+        );
+        let b2 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[5],
+            b1,
+            old[6],
+            SINC_B2_COEFF,
+            location.clone(),
+        );
+        let b3 = self.emit_sinc_multiply_add(
+            block,
+            ty,
+            old[6],
+            b2,
+            old[7],
+            SINC_B3_COEFF,
+            location.clone(),
+        );
         for (place, value) in taps
             .iter()
             .cloned()
             .zip([input2, a1, a2, a3, input1, b1, b2, b3])
         {
-            self.assign_place_value(block, place, value, location);
+            self.assign_place_value(block, place, value, location.clone());
         }
-        let sum = self.emit_binary_value(block, ty, MirBinaryOp::Add, a3, b3, location);
+        let sum = self.emit_binary_value(block, ty, MirBinaryOp::Add, a3, b3, location.clone());
         self.emit_binary_value(
             block,
             ty,
@@ -734,10 +828,11 @@ impl<'a> FunctionLowerer<'a> {
         let input = if stage_index == 0 {
             raw
         } else {
-            self.load_local_array_value(block, values, index, ty, location)
+            self.load_local_array_value(block, values, index, ty, location.clone())
         };
-        let (output1, output2) = self.emit_sinc_interpolate(block, ty, taps, input, location);
-        self.store_local_array_value(block, values, index, output1, location);
+        let (output1, output2) =
+            self.emit_sinc_interpolate(block, ty, taps, input, location.clone());
+        self.store_local_array_value(block, values, index, output1, location.clone());
         self.store_local_array_value(block, values, paired_index, output2, location);
     }
 
@@ -764,7 +859,7 @@ impl<'a> FunctionLowerer<'a> {
                     values,
                     Value::Constant(ScalarValue::I32(index)),
                     zero_value(ty),
-                    location,
+                    location.clone(),
                 );
             }
         }
@@ -790,7 +885,7 @@ impl<'a> FunctionLowerer<'a> {
                         stage_index,
                         Value::Constant(ScalarValue::I32(frame as i32)),
                         Value::Constant(ScalarValue::I32((frame + step) as i32)),
-                        location,
+                        location.clone(),
                     );
                     frame += stride;
                 }
@@ -811,7 +906,7 @@ impl<'a> FunctionLowerer<'a> {
                     MirBinaryOp::Add,
                     index,
                     Value::Constant(ScalarValue::I32(step_i32)),
-                    location,
+                    location.clone(),
                 );
                 self.emit_interpolation_frame(
                     &mut iteration_body,
@@ -822,7 +917,7 @@ impl<'a> FunctionLowerer<'a> {
                     stage_index,
                     index,
                     paired_index,
-                    location,
+                    location.clone(),
                 );
                 self.emit_strided_loop(
                     block,
@@ -830,7 +925,7 @@ impl<'a> FunctionLowerer<'a> {
                     factor_i32,
                     stride_i32,
                     iteration_body,
-                    location,
+                    location.clone(),
                 );
             }
             step /= 2;
@@ -869,17 +964,23 @@ impl<'a> FunctionLowerer<'a> {
                         output.values,
                         Value::Constant(ScalarValue::I32(frame as i32)),
                         output.ty,
-                        location,
+                        location.clone(),
                     );
                     let source2 = self.load_local_array_value(
                         block,
                         output.values,
                         Value::Constant(ScalarValue::I32((frame + step) as i32)),
                         output.ty,
-                        location,
+                        location.clone(),
                     );
-                    let value =
-                        self.emit_sinc_decimate(block, output.ty, taps, source1, source2, location);
+                    let value = self.emit_sinc_decimate(
+                        block,
+                        output.ty,
+                        taps,
+                        source1,
+                        source2,
+                        location.clone(),
+                    );
                     if stage_index + 1 == output.down_stages.len() {
                         reduced = value;
                     } else {
@@ -888,7 +989,7 @@ impl<'a> FunctionLowerer<'a> {
                             output.values,
                             Value::Constant(ScalarValue::I32(frame as i32)),
                             value,
-                            location,
+                            location.clone(),
                         );
                     }
                     frame += stride;
@@ -910,7 +1011,7 @@ impl<'a> FunctionLowerer<'a> {
                     output.values,
                     index,
                     output.ty,
-                    location,
+                    location.clone(),
                 );
                 let paired_index = self.emit_binary_value(
                     &mut iteration_body,
@@ -918,14 +1019,14 @@ impl<'a> FunctionLowerer<'a> {
                     MirBinaryOp::Add,
                     index,
                     Value::Constant(ScalarValue::I32(step_i32)),
-                    location,
+                    location.clone(),
                 );
                 let source2 = self.load_local_array_value(
                     &mut iteration_body,
                     output.values,
                     paired_index,
                     output.ty,
-                    location,
+                    location.clone(),
                 );
                 let value = self.emit_sinc_decimate(
                     &mut iteration_body,
@@ -933,14 +1034,14 @@ impl<'a> FunctionLowerer<'a> {
                     taps,
                     source1,
                     source2,
-                    location,
+                    location.clone(),
                 );
                 self.store_local_array_value(
                     &mut iteration_body,
                     output.values,
                     index,
                     value,
-                    location,
+                    location.clone(),
                 );
                 self.emit_strided_loop(
                     block,
@@ -948,7 +1049,7 @@ impl<'a> FunctionLowerer<'a> {
                     factor_i32,
                     stride_i32,
                     iteration_body,
-                    location,
+                    location.clone(),
                 );
             }
             step *= 2;

@@ -2,13 +2,17 @@
 use std::collections::HashMap;
 
 use onda_frontend::PrimitiveType;
-use onda_mir::{ParamControl, ScalarValue, ValueRange};
+#[cfg(feature = "llvm-orc")]
+use onda_mir::ParamControl;
+use onda_mir::{ScalarValue, ValueRange};
 
 use crate::primitives::{primitive_type_bytes, primitive_type_name, scalar_value_to_f64};
 use crate::{
-    DeclaredBuffer, DeclaredBufferArray, DeclaredBufferChannels, DeclaredDelegate, DeclaredEvent,
-    DeclaredEventParam, DeclaredIo, DeclaredState, ParamDomain,
+    DeclaredBuffer, DeclaredBufferArray, DeclaredBufferChannels, DeclaredEventParam, DeclaredIo,
+    DeclaredState, ParamDomain,
 };
+#[cfg(any(feature = "llvm-orc", test))]
+use crate::{DeclaredDelegate, DeclaredEvent};
 
 #[cfg(any(feature = "llvm-orc", test))]
 pub(crate) struct ProgramMetadata {
@@ -99,6 +103,7 @@ impl DeclaredIo {
         self.range.map(|r| scalar_value_to_f64(r.max))
     }
 
+    #[cfg(feature = "llvm-orc")]
     pub(crate) fn param_control(&self) -> Option<&ParamControl> {
         self.control.as_ref()
     }

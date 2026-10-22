@@ -18,7 +18,9 @@ use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
+mod packed_output;
 mod param_smoothing;
+pub use packed_output::{RunOutputCounts, RunOutputDecoder, RunPackedOutput};
 use param_smoothing::ParamSmoothing;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +56,7 @@ impl RunOptions {
 
     pub fn mir_compile_options(&self) -> MirCompileOptions {
         MirCompileOptions {
+            math: Default::default(),
             fast_math: self.fast_math,
             opt_level: self.opt_level,
         }
@@ -835,11 +838,20 @@ impl RunSession {
         rendered: &mut [f32],
         events: &[RunScheduledEvent<'_>],
     ) -> Result<(), Diagnostic> {
-        if events.is_empty() {
+        self.render_block_event_iter_interleaved(rendered, events.iter().copied())
+    }
+
+    /// Iterator form for hosts with reusable event storage. No event list is copied.
+    pub fn render_block_event_iter_interleaved<'a>(
+        &mut self,
+        rendered: &mut [f32],
+        events: impl ExactSizeIterator<Item = RunScheduledEvent<'a>> + Clone,
+    ) -> Result<(), Diagnostic> {
+        if events.len() == 0 {
             return self.render_block_interleaved(rendered);
         }
         let mut previous_frame = 0;
-        for (index, event) in events.iter().enumerate() {
+        for (index, event) in events.clone().enumerate() {
             if event.frame >= self.options.block_size {
                 return Err(Diagnostic::runtime(
                     format!(

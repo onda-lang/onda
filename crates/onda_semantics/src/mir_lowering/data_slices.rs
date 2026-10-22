@@ -162,12 +162,12 @@ impl FunctionLowerer<'_> {
                 _ => return Ok(false),
             },
         };
-        self.prepare_data_array_view(base, block, loc)?;
+        self.prepare_data_array_view(base, block, loc.clone())?;
         let (length, source_fields) = match self.bindings.get(base).cloned() {
             Some(Binding::StructArrayParameter { length, fields, .. }) => (length, fields),
             Some(Binding::StructArrayStorage { len, .. }) => (
                 StructArrayLength::Fixed(len),
-                self.lower_struct_array_storage_fields(base, &struct_name, block, loc)?,
+                self.lower_struct_array_storage_fields(base, &struct_name, block, loc.clone())?,
             ),
             Some(_) => return Ok(false),
             None => {
@@ -175,16 +175,17 @@ impl FunctionLowerer<'_> {
                     .runtime_globals_for_unbound(base)
                     .and_then(|globals| globals.array_struct_roots.get(base))
                     .map(|(_, len)| *len)
-                    .ok_or_else(|| self.error("struct slice has no storage origin", loc))?;
+                    .ok_or_else(|| self.error("struct slice has no storage origin", loc.clone()))?;
                 (
                     StructArrayLength::Fixed(len),
-                    self.lower_struct_array_storage_fields(base, &struct_name, block, loc)?,
+                    self.lower_struct_array_storage_fields(base, &struct_name, block, loc.clone())?,
                 )
             }
         };
-        let length = self.struct_array_length_value(length, block, loc);
-        let (start, len) = self.normalize_slice_selection(length, start, end, block, loc)?;
-        let shapes = self.struct_field_shapes(&struct_name, loc)?;
+        let length = self.struct_array_length_value(length, block, loc.clone());
+        let (start, len) =
+            self.normalize_slice_selection(length, start, end, block, loc.clone())?;
+        let shapes = self.struct_field_shapes(&struct_name, loc.clone())?;
         let mut fields = Vec::new();
         for (shape, (path, source, element)) in shapes.into_iter().zip(source_fields) {
             let width = match shape {
@@ -207,7 +208,7 @@ impl FunctionLowerer<'_> {
                             lhs: value,
                             rhs: Value::Constant(ScalarValue::I32(width as i32)),
                         },
-                        loc,
+                        loc.clone(),
                     )
                     .value
                 }
@@ -226,7 +227,7 @@ impl FunctionLowerer<'_> {
                     bounds: BoundsMode::Unchecked,
                     access,
                 },
-                loc,
+                loc.clone(),
             );
             let Value::Local(local) = slice.value else {
                 unreachable!()

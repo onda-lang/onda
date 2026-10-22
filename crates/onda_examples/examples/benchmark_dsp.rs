@@ -13,9 +13,12 @@ use onda_runtime::{
     bind_input, bind_output, create_instance, init_checked, prepare_unchecked_process,
     process_unchecked, ExecutionOutput, InitMode, InstanceConfig,
 };
-use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
+use onda_semantics::{analyze_with_options, lower_program_to_validated_mir, AnalysisOptions};
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+#[path = "benchmark_support/allocations.rs"]
+mod allocations;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -36,6 +39,12 @@ struct Config {
     input_pattern: String,
     opt_level: u8,
     fast_math: bool,
+    #[serde(default)]
+    math: onda_codegen_llvm::FloatMathPolicy,
+    #[serde(default)]
+    allocations: bool,
+    #[serde(default)]
+    remarks: bool,
     ir: bool,
     assembly: bool,
     trust_mir: bool,
@@ -74,13 +83,22 @@ impl Config {
     }
 }
 
-fn load_mir(config: &Config) -> Result<(onda_mir::OptimizedProgram, Option<SourceManifest>)> {
+fn load_mir(
+    config: &Config,
+    phases: &mut serde_json::Map<String, Value>,
+) -> Result<(onda_mir::OptimizedProgram, Option<SourceManifest>)> {
     let path = &config.source;
     if matches!(
         path.extension().and_then(|x| x.to_str()),
         Some("onda" | "on")
     ) {
+        let started = Instant::now();
         let loaded = load_program_file(path).map_err(|e| format!("parse: {:?}", e.diagnostics))?;
+        phases.insert(
+            "parse_load_ms".into(),
+            json!(started.elapsed().as_secs_f64() * 1000.0),
+        );
+        let started = Instant::now();
         let typed = analyze_with_options(
             loaded.program,
             AnalysisOptions {
@@ -89,7 +107,18 @@ fn load_mir(config: &Config) -> Result<(onda_mir::OptimizedProgram, Option<Sourc
             },
         )
         .map_err(|e| format!("analysis: {e:?}"))?;
-        let mir = lower_program_to_optimized_mir(&typed).map_err(|e| format!("MIR: {e:?}"))?;
+        phases.insert(
+            "semantics_ms".into(),
+            json!(started.elapsed().as_secs_f64() * 1000.0),
+        );
+        let started = Instant::now();
+        let validated =
+            lower_program_to_validated_mir(&typed).map_err(|e| format!("MIR: {e:?}"))?;
+        phases.insert(
+            "mir_lowering_ms".into(),
+            json!(started.elapsed().as_secs_f64() * 1000.0),
+        );
+        let mir = optimize_mir(validated, phases)?;
         return Ok((mir, Some(loaded.sources)));
     }
     let bytes = fs::read(path)?;
@@ -110,13 +139,27 @@ fn load_mir(config: &Config) -> Result<(onda_mir::OptimizedProgram, Option<Sourc
     } else {
         return Err("source must be .onda, .on, .mir.json or .mir.msgpack".into());
     };
-    let (mir, _) = onda_mir::optimize(validated).map_err(|e| format!("MIR: {e:?}"))?;
+    let mir = optimize_mir(validated, phases)?;
     if mir.config.sample_rate != config.sample_rate
         || mir.config.block_size as usize != config.block_size
     {
         return Err("MIR sample rate/block size differ from benchmark settings".into());
     }
     Ok((mir, None))
+}
+
+fn optimize_mir(
+    validated: onda_mir::ValidatedProgram,
+    phases: &mut serde_json::Map<String, Value>,
+) -> Result<onda_mir::OptimizedProgram> {
+    let started = Instant::now();
+    let (mir, stats) = onda_mir::optimize(validated).map_err(|e| format!("MIR: {e:?}"))?;
+    phases.insert(
+        "mir_optimization_ms".into(),
+        json!(started.elapsed().as_secs_f64() * 1000.0),
+    );
+    phases.insert("mir_passes".into(), json!({"iterations": stats.iterations, "removed_functions": stats.removed_functions, "removed_parameters": stats.removed_function_parameters, "eliminated_bounds_checks": stats.eliminated_bounds_checks, "eliminated_common_subexpressions": stats.eliminated_common_subexpressions}));
+    Ok(mir)
 }
 
 struct Port {
@@ -212,9 +255,12 @@ fn main() -> Result<()> {
     }
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     config.validate()?;
+    allocations::begin(config.allocations);
     let started = Instant::now();
-    let (mir, sources) = load_mir(&config)?;
+    let mut phases = serde_json::Map::new();
+    let (mir, sources) = load_mir(&config, &mut phases)?;
     let frontend_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let frontend_allocations = allocations::finish();
     if let Some(sources) = sources {
         // Snapshot construction and writing are outside compilation timing.
         // Embedded stdlib text comes from this binary, not the disk checkout.
@@ -244,6 +290,7 @@ fn main() -> Result<()> {
         fs::write(config.artifact("mir.txt"), onda_mir::format_program(&mir))?;
     }
     let options = MirCompileOptions {
+        math: config.math,
         fast_math: config.fast_math,
         opt_level: match config.opt_level {
             0 => TargetOptLevel::O0,
@@ -260,10 +307,24 @@ fn main() -> Result<()> {
                 .map_err(|e| format!("IR: {e:?}"))?,
         )?;
     }
+    if config.remarks {
+        fs::write(
+            config.artifact("preopt.ll"),
+            lower_optimized_mir_to_llvm_ir_with_options(
+                &mir,
+                MirCompileOptions {
+                    opt_level: TargetOptLevel::O0,
+                    ..options
+                },
+            )
+            .map_err(|e| format!("remarks IR: {e:?}"))?,
+        )?;
+    }
     if config.assembly {
         let artifact = lower_optimized_mir_to_object_artifact(
             &mir,
             &MirTargetOptions {
+                math: config.math,
                 fast_math: config.fast_math,
                 target: TargetConfig {
                     opt_level: options.opt_level,
@@ -278,16 +339,21 @@ fn main() -> Result<()> {
             serde_json::to_vec_pretty(&artifact.metadata)?,
         )?;
     }
-    let shape = json!({"functions": mir.functions.len(), "state_entries": mir.state.len(),
+    let shape = json!({"effect_function_visits": mir.effects().function_visits, "range_function_visits": mir.ranges().function_visits, "functions": mir.functions.len(), "state_entries": mir.state.len(),
         "mir_bytes": fs::metadata(config.artifact("mir.msgpack"))?.len()});
     if config.mode != "bench" {
-        println!("{}", json!({"frontend_ms": frontend_ms, "shape": shape}));
+        println!(
+            "{}",
+            json!({"frontend_ms": frontend_ms, "phases": phases, "frontend_allocations": frontend_allocations, "shape": shape})
+        );
         return Ok(());
     }
+    allocations::begin(config.allocations);
     let started = Instant::now();
     let program = jit_program_from_optimized_mir_with_options(mir, options)
         .map_err(|e| format!("JIT: {e:?}"))?;
     let jit_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let jit_allocations = allocations::finish();
     if program.outputs().is_empty()
         || program.buffer_count() != 0
         || program
@@ -428,7 +494,7 @@ fn main() -> Result<()> {
     capture(&outputs, &mut Vec::new(), config.max_output_abs)?;
     let median = percentile(&rounds, 0.5);
     let deviations: Vec<_> = rounds.iter().map(|x| (x - median).abs()).collect();
-    let output: Value = json!({"frontend_ms": frontend_ms, "jit_ms": jit_ms, "init_ms": init_ms,
+    let output: Value = json!({"frontend_ms": frontend_ms, "phases": phases, "frontend_allocations": frontend_allocations, "jit_allocations": jit_allocations, "jit_ms": jit_ms, "init_ms": init_ms,
         "shape": shape, "state_bytes": state_bytes, "iterations": iterations,
         "ns_per_frame": median, "rounds_ns_per_frame": rounds, "mad_ns": percentile(&deviations, 0.5),
         "min_ns": percentile(&rounds, 0.0), "max_ns": percentile(&rounds, 1.0),

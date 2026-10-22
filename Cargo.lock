@@ -3674,12 +3674,14 @@ dependencies = [
 name = "onda_codegen_llvm"
 version = "0.8.38"
 dependencies = [
+ "cc",
  "llvm-sys",
  "onda_frontend",
  "onda_mir",
  "onda_processor_abi",
  "onda_semantics",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

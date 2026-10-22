@@ -155,7 +155,7 @@ fn collect_proc_operator_helper_diags_from_expr(
                 if let Some(timing) =
                     proc_operator_helper_timing(name, owner_proc, nested_instances, proc_api)
                 {
-                    out.push((DiagCtx::new(*loc), timing));
+                    out.push((DiagCtx::new(loc.clone()), timing));
                 }
             }
             for arg in args {
@@ -1779,7 +1779,7 @@ fn reject_hook_target_write(
 ) {
     let mut check_symbol = |name: &str| {
         if let Some(place) = hook_place_for_name(name, ctx, frame) {
-            reject_hook_place_write(&place, ctx, diag, errors);
+            reject_hook_place_write(&place, ctx, diag.clone(), errors);
         }
     };
 
@@ -1895,7 +1895,7 @@ fn validate_hook_safe_expr(
         Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
         Expr::Var { name, loc } => {
             if let Some(place) = hook_dynamic_param_surface_place(name, ctx, frame) {
-                reject_hook_dynamic_param_surface_use(&place, (*loc).into(), ctx, errors);
+                reject_hook_dynamic_param_surface_use(&place, loc.clone().into(), ctx, errors);
             }
         }
         Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
@@ -1905,7 +1905,7 @@ fn validate_hook_safe_expr(
         }
         Expr::Index { base, index, loc } => {
             if let Some(place) = hook_dynamic_param_surface_place(base, ctx, frame) {
-                reject_hook_dynamic_param_surface_use(&place, (*loc).into(), ctx, errors);
+                reject_hook_dynamic_param_surface_use(&place, loc.clone().into(), ctx, errors);
             }
             validate_hook_safe_expr(index, ctx, frame, visiting, validated, errors)
         }
@@ -1918,7 +1918,7 @@ fn validate_hook_safe_expr(
             loc,
         } => {
             if let Some(place) = hook_dynamic_param_surface_place(base, ctx, frame) {
-                reject_hook_dynamic_param_surface_use(&place, (*loc).into(), ctx, errors);
+                reject_hook_dynamic_param_surface_use(&place, loc.clone().into(), ctx, errors);
             }
             for coordinate in [selector, channel, start, end].into_iter().flatten() {
                 validate_hook_safe_expr(coordinate, ctx, frame, visiting, validated, errors);
@@ -1953,7 +1953,7 @@ fn validate_hook_safe_expr(
                 && nested_proc_receiver_root(name, ctx.state, ctx.nested_proc_array_slots).is_some()
             {
                 push_semantic(
-                    DiagCtx::new(*loc),
+                    DiagCtx::new(loc.clone()),
                     errors,
                     format!(
                         "bind hook in processor '{}' cannot call child proc receiver '{}(...)'",
@@ -1965,7 +1965,7 @@ fn validate_hook_safe_expr(
                 if nested_proc_receiver_root(base, ctx.state, ctx.nested_proc_array_slots).is_some()
                 {
                     push_semantic(
-                        DiagCtx::new(*loc),
+                        DiagCtx::new(loc.clone()),
                         errors,
                         format!(
                             "bind hook in processor '{}' cannot call child proc receiver '{}.{}(...)'",
@@ -1976,7 +1976,7 @@ fn validate_hook_safe_expr(
             }
             if name.ends_with(PROC_INIT_FN_SUFFIX) || name.contains(PROC_EVENT_FN_PREFIX) {
                 push_semantic(
-                    DiagCtx::new(*loc),
+                    DiagCtx::new(loc.clone()),
                     errors,
                     format!(
                         "bind hook in processor '{}' cannot call processor events",
@@ -2183,7 +2183,7 @@ fn validate_proc_param_binds(
     for hook in hooks {
         let Some(def) = local_defs_by_name.get(&hook).copied() else {
             push_semantic(
-                DiagCtx::new(proc.loc),
+                DiagCtx::new(proc.loc.clone()),
                 errors,
                 format!(
                     "processor '{}' param bind target '{}' is missing; bind targets must be proc-local defs in the same processor",
@@ -2195,7 +2195,7 @@ fn validate_proc_param_binds(
         if checked_targets.insert(hook.clone()) {
             if !def.params.is_empty() {
                 push_semantic(
-                    DiagCtx::new(def.loc),
+                    DiagCtx::new(def.loc.clone()),
                     errors,
                     format!(
                         "processor '{}' bind target '{}' must take zero parameters",
@@ -2205,7 +2205,7 @@ fn validate_proc_param_binds(
             }
             if def.return_ty.is_some() {
                 push_semantic(
-                    DiagCtx::new(def.return_ty_loc.or(def.loc)),
+                    DiagCtx::new(def.return_ty_loc.or(def.loc.clone())),
                     errors,
                     format!(
                         "processor '{}' bind target '{}' must not declare a return type",
@@ -2215,7 +2215,7 @@ fn validate_proc_param_binds(
             }
             if stmt_list_contains_return(&def.body) {
                 push_semantic(
-                    DiagCtx::new(def.loc),
+                    DiagCtx::new(def.loc.clone()),
                     errors,
                     format!(
                         "processor '{}' bind target '{}' must not return a value",
@@ -2696,7 +2696,7 @@ pub(super) fn compute_proc_shape(
     for buffer in &buffer_specs {
         if param_names.contains(&buffer.name) {
             push_semantic(
-                DiagCtx::new(proc.loc),
+                DiagCtx::new(proc.loc.clone()),
                 errors,
                 format!(
                     "processor '{}' buffer '{}' conflicts with param name",
@@ -2736,7 +2736,7 @@ pub(super) fn compute_proc_shape(
             || is_proc_output_alias_name(&event.name, proc.outs_timing, outs.len())
         {
             push_semantic(
-                DiagCtx::new(event.loc),
+                DiagCtx::new(event.loc.clone()),
                 errors,
                 format!(
                     "processor '{}.{}' event name conflicts with an existing callable/endpoint name",
@@ -3036,7 +3036,7 @@ pub(super) fn compute_proc_shape(
                         else {
                             errors.push(Diagnostic::semantic_span(
                                 format!("processor state tuple '{flat}' has an unresolved type"),
-                                field.ty_loc.or(field.loc),
+                                field.ty_loc.or(field.loc.clone()),
                             ));
                             continue;
                         };

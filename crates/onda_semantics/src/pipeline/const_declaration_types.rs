@@ -64,7 +64,7 @@ pub(super) fn const_def_param_signature<L>(
                         "const def '{}' parameter '{}' must use a primitive scalar, fixed primitive array, or primitive array slice type",
                         def.name, param.name
                     ),
-                    param.ty_loc.or(param.loc),
+                    param.ty_loc.or(param.loc.clone()),
                 ));
                 return None;
             }
@@ -74,7 +74,7 @@ pub(super) fn const_def_param_signature<L>(
                         "const def '{}' parameter '{}' must have an explicit primitive scalar, fixed primitive array, or primitive array slice type",
                         def.name, param.name
                     ),
-                    param.loc,
+                    param.loc.clone(),
                 ));
                 return None;
             }
@@ -98,7 +98,7 @@ pub(super) fn const_def_return_type<L>(
                     "const def '{}' return type '{}' is not a concrete primitive scalar",
                     def.name, name
                 ),
-                def.return_ty_loc,
+                def.return_ty_loc.clone(),
             ));
             None
         }
@@ -106,7 +106,7 @@ pub(super) fn const_def_return_type<L>(
             let FnReturnScalarType::Primitive(elem) = elem else {
                 errors.push(Diagnostic::semantic_span(
                     "const def array return requires primitive elements",
-                    def.return_ty_loc,
+                    def.return_ty_loc.clone(),
                 ));
                 return None;
             };
@@ -123,7 +123,7 @@ pub(super) fn const_def_return_type<L>(
         Some(FnReturnType::Tuple(_)) => {
             errors.push(Diagnostic::semantic_span(
                 format!("const def '{}' cannot return a tuple", def.name),
-                def.return_ty_loc,
+                def.return_ty_loc.clone(),
             ));
             None
         }
@@ -133,7 +133,7 @@ pub(super) fn const_def_return_type<L>(
                     "const def '{}' must declare an explicit return type",
                     def.name
                 ),
-                def.loc,
+                def.loc.clone(),
             ));
             None
         }

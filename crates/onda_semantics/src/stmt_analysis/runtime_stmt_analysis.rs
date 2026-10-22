@@ -955,7 +955,7 @@ fn analyze_flow_stmt(
                     then_flow,
                     else_state,
                     else_flow,
-                    (*loc).into(),
+                    loc.clone().into(),
                     errors,
                 );
                 record_resolved_local_bindings(ctx, state);
@@ -1186,11 +1186,16 @@ fn analyze_flow_assignment(
     }
     macro_rules! target_error {
         ($message:expr $(,)?) => {
-            errors.push(Diagnostic::semantic_span($message, target_loc))
+            errors.push(Diagnostic::semantic_span($message, &target_loc))
         };
     }
-    if validate_struct_array_member_assignment(target, expr, scope_expr_env!(), target_loc, errors)
-    {
+    if validate_struct_array_member_assignment(
+        target,
+        expr,
+        scope_expr_env!(),
+        target_loc.clone(),
+        errors,
+    ) {
         return;
     }
     let target = flatten_indexed_member_target(target);
@@ -1243,7 +1248,7 @@ fn analyze_flow_assignment(
                 index,
                 expr,
                 scope_expr_env!(),
-                target_loc,
+                target_loc.clone(),
                 errors,
             ) {
                 return;
@@ -1263,7 +1268,7 @@ fn analyze_flow_assignment(
                 }
             }
             if let Some(alias) = local_array_aliases.get(base) {
-                if !validate_array_write(base, alias, target_loc, errors) {
+                if !validate_array_write(base, alias, target_loc.clone(), errors) {
                     return;
                 }
                 if alias.elem_struct.is_some() {
@@ -1448,7 +1453,7 @@ fn analyze_flow_assignment(
             }
             if !validate_block_bound_surface_assign_target(
                 target,
-                target_loc,
+                target_loc.clone(),
                 scope_expr_env!(),
                 errors,
             ) {
@@ -1508,7 +1513,7 @@ fn analyze_flow_assignment(
             ) else {
                 return;
             };
-            if !validate_array_write(base, &target_info, target_loc, errors) {
+            if !validate_array_write(base, &target_info, target_loc.clone(), errors) {
                 return;
             }
             if let Some(start) = start {
@@ -1616,7 +1621,12 @@ fn analyze_flow_assignment(
             if is_builtin_constant_name(name) {
                 target_error!(format!("cannot assign to builtin constant '{name}'"),);
             }
-            if !validate_block_bound_surface_var_name(name, target_loc, scope_expr_env!(), errors) {
+            if !validate_block_bound_surface_var_name(
+                name,
+                target_loc.clone(),
+                scope_expr_env!(),
+                errors,
+            ) {
                 validate_expr(expr, scope_expr_env!(), errors);
                 return;
             }
@@ -1692,7 +1702,7 @@ fn analyze_flow_assignment(
                     name,
                     expr,
                     scope_expr_env!(),
-                    target_loc,
+                    target_loc.clone(),
                     errors,
                 )
             {
@@ -1706,7 +1716,7 @@ fn analyze_flow_assignment(
                 expr,
                 is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
                 scope_expr_env!(),
-                target_loc,
+                target_loc.clone(),
                 errors,
             ) {
                 return;
@@ -1760,7 +1770,7 @@ fn analyze_flow_assignment(
                         Some(AssignmentBindingKind::Data),
                         AssignmentBindingKind::Data,
                         is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
-                        target_loc,
+                        target_loc.clone(),
                         errors,
                     ) && existing != data
                     {
@@ -2422,7 +2432,7 @@ fn analyze_flow_assignment(
                         Some(AssignmentBindingKind::Scalar),
                         AssignmentBindingKind::Scalar,
                         true,
-                        target_loc,
+                        target_loc.clone(),
                         errors,
                     );
                 } else if let Some(existing_ty) = state_scalars.get(name).copied() {
@@ -2597,7 +2607,7 @@ fn analyze_flow_assignment(
             for target_name in targets.iter().filter_map(|target| target.binding()) {
                 targets_ok &= validate_block_bound_surface_var_name(
                     target_name,
-                    target_loc,
+                    target_loc.clone(),
                     scope_expr_env!(),
                     errors,
                 );

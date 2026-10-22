@@ -1,0 +1,58 @@
+# Repeated reads must observe writes through overlapping views and callees.
+outs 4
+
+def update(src: f32[], dst: f32[]):
+  before = src[0] + src[0]
+  dst[0] += 1.0
+  after = src[0] + src[0]
+  return after - before
+
+def increment(values: f32[]):
+  values[0] += 1.0
+
+def through_call(values: f32[]):
+  before = values[0]
+  increment(values)
+  return values[0] - before
+
+def through_nested_view(values: f32[]):
+  before = values[0]
+  nested = values[:]
+  increment(nested)
+  return values[0] - before
+
+def loop_read(src: f32[], dst: f32[]):
+  delta = 0.0
+  for i in 0..min(src.len(), dst.len()):
+    before = src[i]
+    dst[i] = src[i] * 2.0 + src[i]
+    delta += src[i] - before
+  return delta
+
+init:
+  values: f32[6]
+  separate: f32[6]
+  frame = 0
+sample:
+  for i in 0..6:
+    values[i] = f32(i + 1)
+    separate[i] = 0.0
+  out1 = update(values[:4], values[:2]) - 2.0
+  out2 = update(values[:4], values[1:3])
+  out3 = through_call(values[:]) + through_nested_view(values[:]) - 2.0
+  # Distinct arrays keep their values; exact in-place views observe stores.
+  expected = 0.0
+  for i in 0..6:
+    expected += values[i] * 2.0
+  error = loop_read(values[:], separate[:])
+  error += loop_read(values[:], values[:]) - expected
+  # Both branches mutate the index before a subsequent read.
+  index = 0
+  before = values[index]
+  if frame % 2 == 0:
+    index = 99
+  else:
+    index = 5
+  error += values[index] - values[5]
+  out4 = error + before - values[0]
+  frame += 1

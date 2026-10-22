@@ -200,6 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mir = lower_program_to_optimized_mir(&typed)
         .map_err(|errors| format!("optimized MIR lowering failed: {errors:?}"))?;
     let compile_options = MirCompileOptions {
+        math: Default::default(),
         fast_math: false,
         opt_level: TargetOptLevel::O3,
     };

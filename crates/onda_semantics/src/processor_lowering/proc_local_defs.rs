@@ -63,7 +63,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
             params
         },
         return_ty: local_def.return_ty.clone(),
-        return_ty_loc: local_def.return_ty_loc,
+        return_ty_loc: local_def.return_ty_loc.clone(),
         body: local_def.body.clone(),
     }
 }
@@ -81,7 +81,7 @@ pub(super) fn owner_proc_local_hidden_def(
         name: proc_local_hidden_def_name(owner_proc, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def, captured_buffers),
         return_ty: local_def.return_ty.clone(),
-        return_ty_loc: local_def.return_ty_loc,
+        return_ty_loc: local_def.return_ty_loc.clone(),
         body,
     }
 }
@@ -100,7 +100,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
         name: nested_wrapper_local_def_name(owner_proc, nested_path, &local_def.name),
         params: proc_local_hidden_def_params(owner_proc, local_def, captured_buffers),
         return_ty: local_def.return_ty.clone(),
-        return_ty_loc: local_def.return_ty_loc,
+        return_ty_loc: local_def.return_ty_loc.clone(),
         body,
     }
 }
@@ -169,7 +169,7 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
     for def in &proc.local_defs {
         if def_map.contains_key(&def.name) {
             push_semantic(
-                DiagCtx::new(def.loc),
+                DiagCtx::new(def.loc.clone()),
                 errors,
                 format!(
                     "processor '{}': duplicate proc-local def '{}'",
@@ -183,7 +183,7 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
 
     if let Some(cycle) = detect_cycles(&def_map) {
         push_semantic(
-            DiagCtx::new(proc.loc),
+            DiagCtx::new(proc.loc.clone()),
             errors,
             format!(
                 "processor '{}': recursive proc-local def cycle: {}",

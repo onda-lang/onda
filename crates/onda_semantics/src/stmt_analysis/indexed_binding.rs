@@ -112,7 +112,7 @@ pub(crate) fn validate_struct_array_member_assignment(
     target_loc: SourceLoc,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
-    if validate_indexed_struct_field_assignment(target, value, env, target_loc, errors) {
+    if validate_indexed_struct_field_assignment(target, value, env, target_loc.clone(), errors) {
         return true;
     }
     let AssignTarget::IndexedMember {
@@ -146,7 +146,7 @@ pub(crate) fn validate_struct_array_member_assignment(
     {
         errors.push(Diagnostic::semantic_span(
             format!("cannot assign through immutable array alias '{base}'"),
-            target_loc,
+            &target_loc,
         ));
     }
 

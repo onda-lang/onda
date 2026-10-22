@@ -70,7 +70,7 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
             .filter(|event| is_builtin_proc_init_event_name(&event.name))
         {
             push_semantic(
-                DiagCtx::new(event.loc),
+                DiagCtx::new(event.loc.clone()),
                 errors,
                 format!(
                     "processor '{}' event name '{}' is reserved for the builtin initializer event",
@@ -81,7 +81,7 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
         for param in &proc.params {
             if param.name == INIT_FULL_PARAM_NAME {
                 push_semantic(
-                    DiagCtx::new(param.loc),
+                    DiagCtx::new(param.loc.clone()),
                     errors,
                     format!(
                         "processor '{}' parameter name '{}' is reserved for the builtin initializer event",
@@ -93,7 +93,7 @@ fn inject_builtin_proc_init_events(program: &mut Program, errors: &mut Vec<Diagn
         proc.events
             .retain(|event| !is_builtin_proc_init_event_name(&event.name));
         proc.events.push(EventDef {
-            loc: proc.loc,
+            loc: proc.loc.clone(),
             name: BUILTIN_PROC_INIT_EVENT_NAME.to_owned(),
             params: Vec::new(),
             body: Vec::new(),
@@ -491,7 +491,7 @@ pub(crate) fn coerce_typed_events(
     let mut out = Vec::<TypedEvent>::new();
     let mut seen_events = HashSet::<String>::new();
     for event in events {
-        let event_diag = DiagCtx::new(event.loc);
+        let event_diag = DiagCtx::new(event.loc.clone());
         if is_builtin_constant_name(&event.name) {
             push_semantic(
                 event_diag,
@@ -514,7 +514,7 @@ pub(crate) fn coerce_typed_events(
         let mut seen_params = HashSet::<String>::new();
         let mut typed_params = Vec::<TypedEventParam>::new();
         for param in &event.params {
-            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
+            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc.clone()));
             if !seen_params.insert(param.name.clone()) {
                 push_semantic(
                     param_diag,
@@ -653,7 +653,7 @@ pub(crate) fn coerce_typed_delegates(
     let adapters = delegates
         .iter()
         .map(|delegate| EventDef {
-            loc: delegate.loc,
+            loc: delegate.loc.clone(),
             name: delegate.name.clone(),
             params: delegate.params.clone(),
             body: Vec::new(),
@@ -729,7 +729,7 @@ fn expand_proc_event_specs(
 ) -> HashMap<String, ProcEventSpec> {
     let mut out = HashMap::<String, ProcEventSpec>::new();
     for event in &proc.events {
-        let event_diag = DiagCtx::new(event.loc);
+        let event_diag = DiagCtx::new(event.loc.clone());
         if is_builtin_constant_name(&event.name) {
             push_semantic(
                 event_diag,
@@ -758,7 +758,7 @@ fn expand_proc_event_specs(
         }
         let mut params = Vec::<ProcEventParamSpec>::new();
         for param in &event.params {
-            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc));
+            let param_diag = DiagCtx::new(param.ty_loc.or(param.loc.clone()));
             match &param.ty {
                 EventParamType::Tuple(types) => params.push(ProcEventParamSpec {
                     name: param.name.clone(),
@@ -879,7 +879,7 @@ fn expand_proc_delegate_specs(
         .delegates
         .iter()
         .map(|delegate| EventDef {
-            loc: delegate.loc,
+            loc: delegate.loc.clone(),
             name: delegate.name.clone(),
             params: delegate.params.clone(),
             body: Vec::new(),
@@ -1045,13 +1045,13 @@ fn build_proc_lowering_env(
                 self_param.ty = Some(FnParamType::Struct(struct_name.clone()));
             }
             pre_desugar_defs.push(FunctionDef {
-                loc: method.loc,
+                loc: method.loc.clone(),
                 is_const: false,
                 type_params: Vec::new(),
                 name: format!("{struct_name}.{}", method.name),
                 params,
                 return_ty: method.return_ty.clone(),
-                return_ty_loc: method.return_ty_loc,
+                return_ty_loc: method.return_ty_loc.clone(),
                 body: method.body.clone(),
             });
         }
@@ -1230,10 +1230,10 @@ fn build_proc_lowering_env(
             if proc.outs_timing == OutputTiming::Sample && proc.outs.is_empty() {
                 if sample_inferred.max_out == 0 {
                     proc.outs_timing = OutputTiming::Block;
-                    proc.outs_timing_loc = proc.loc;
+                    proc.outs_timing_loc = proc.loc.clone();
                 } else {
                     push_semantic(
-                        DiagCtx::new(proc.loc),
+                        DiagCtx::new(proc.loc.clone()),
                         errors,
                         format!(
                             "processor '{}' cannot mix inferred audio outN and control koutN outputs",
@@ -1243,7 +1243,7 @@ fn build_proc_lowering_env(
                 }
             } else if proc.outs_timing == OutputTiming::Sample {
                 push_semantic(
-                    DiagCtx::new(proc.loc),
+                    DiagCtx::new(proc.loc.clone()),
                     errors,
                     format!(
                         "processor '{}' cannot mix outs and inferred control koutN outputs",
@@ -1254,7 +1254,7 @@ fn build_proc_lowering_env(
         }
         if proc.outs_timing == OutputTiming::Block && sample_inferred.max_out > 0 {
             push_semantic(
-                DiagCtx::new(proc.loc),
+                DiagCtx::new(proc.loc.clone()),
                 errors,
                 format!(
                     "processor '{}' with kouts cannot also infer audio outN outputs",
@@ -1272,7 +1272,7 @@ fn build_proc_lowering_env(
     let mut proc_api = HashMap::<String, ProcApi>::new();
     let mut proc_order = Vec::<String>::new();
     for proc in &mut proc_defs {
-        let proc_diag = DiagCtx::new(proc.loc);
+        let proc_diag = DiagCtx::new(proc.loc.clone());
         match proc.outs_timing {
             OutputTiming::Sample => {
                 if proc.has_block_block && !proc.has_sample_block {
@@ -1291,7 +1291,7 @@ fn build_proc_lowering_env(
                 );
                 if !proc.has_block_block || proc.has_sample_block {
                     push_semantic(
-                        proc_diag,
+                        proc_diag.clone(),
                         errors,
                         format!(
                             "processor '{}' with kouts must declare a block section without nested sample",
@@ -1301,14 +1301,14 @@ fn build_proc_lowering_env(
                 }
                 if !proc.ins.is_empty() || proc.ins_deferred_count.is_some() {
                     push_semantic(
-                        proc_diag,
+                        proc_diag.clone(),
                         errors,
                         format!("processor '{}' with kouts cannot declare ins", proc.name),
                     );
                 }
                 if proc.has_graph_block {
                     push_semantic(
-                        proc_diag,
+                        proc_diag.clone(),
                         errors,
                         format!("processor '{}' with kouts cannot declare graph", proc.name),
                     );
@@ -1471,7 +1471,7 @@ pub(crate) fn materialize_generic_processors(program: &mut Program, errors: &mut
                                 "type parameter '{}' on def '{}' in proc '{}' shadows '{}' from proc '{}'; use a different name",
                                 tp, local_def.name, proc.name, tp, proc.name
                             ),
-                            local_def.loc,
+                            local_def.loc.clone(),
                         ));
                     }
                 }
@@ -1484,7 +1484,7 @@ pub(crate) fn materialize_generic_processors(program: &mut Program, errors: &mut
                                     "duplicate type parameter '{}' in def '{}' of proc '{}'",
                                     tp, local_def.name, proc.name
                                 ),
-                                local_def.loc,
+                                local_def.loc.clone(),
                             ));
                         }
                     }

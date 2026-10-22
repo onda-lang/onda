@@ -122,7 +122,7 @@ fn validate_task_control_stmts(
                 if context != TaskControlContext::Task {
                     errors.push(Diagnostic::semantic_span(
                         "yield is only allowed inside a task body",
-                        *loc,
+                        loc.clone(),
                     ));
                 }
             }
@@ -133,13 +133,13 @@ fn validate_task_control_stmts(
                             "await is only allowed in the owner's block-pre body, not {} code",
                             context.label()
                         ),
-                        *loc,
+                        loc.clone(),
                     ));
                 } else if let Some(name) = await_task_name(expr) {
                     if !task_names.contains(name) {
                         errors.push(Diagnostic::semantic_span(
                             format!("unknown task '{name}' in await"),
-                            *loc,
+                            loc.clone(),
                         ));
                     }
                 } else {
@@ -154,7 +154,7 @@ fn validate_task_control_stmts(
                     if !context.allows_reset() {
                         errors.push(Diagnostic::semantic_span(
                             format!("task '{name}' can only be reset from owner executable code"),
-                            *loc,
+                            loc.clone(),
                         ));
                     }
                 }
@@ -164,7 +164,7 @@ fn validate_task_control_stmts(
             {
                 errors.push(Diagnostic::semantic_span(
                     "tasks cannot return a value",
-                    *loc,
+                    loc.clone(),
                 ));
             }
             Stmt::If {
@@ -188,7 +188,7 @@ fn validate_task_control_stmts(
                 };
                 errors.push(Diagnostic::semantic_span(
                     format!("{keyword} is only allowed inside for/while/loop bodies"),
-                    *loc,
+                    loc.clone(),
                 ));
             }
             Stmt::Assign { .. }
@@ -276,7 +276,7 @@ fn validate_task_member_names(proc: &ProcessorDef, errors: &mut Vec<Diagnostic>)
                     "task '{}' conflicts with {} '{}' in processor '{}'",
                     task.name, kind, task.name, proc.name
                 ),
-                task.loc,
+                task.loc.clone(),
             ));
         }
     }
@@ -439,7 +439,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                         "top-level task '{}' conflicts with {kind} '{}'",
                         task.name, task.name
                     ),
-                    task.loc,
+                    task.loc.clone(),
                 ));
             }
         }
@@ -449,7 +449,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
         }) {
             errors.push(Diagnostic::semantic_span(
                 "top-level tasks cannot be declared together with a graph block",
-                graph.loc,
+                graph.loc.clone(),
             ));
         }
     }
@@ -564,7 +564,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
                     "processor '{}' cannot declare tasks together with a graph block",
                     proc.name
                 ),
-                proc.loc,
+                proc.loc.clone(),
             ));
         }
 
@@ -1521,7 +1521,7 @@ fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) ->
                         "cannot determine buffer type for task access to '{}' in processor '{}'",
                         decl.name, owner.name
                     ),
-                    decl.loc,
+                    decl.loc.clone(),
                 ));
                 return None;
             };
@@ -1535,7 +1535,7 @@ fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) ->
                                 "buffer collection '{}' used by tasks must have a positive fixed size",
                                 decl.name
                             ),
-                            decl.loc,
+                            decl.loc.clone(),
                         ));
                         return None;
                     }
@@ -1546,17 +1546,17 @@ fn task_buffer_params(owner: &TaskOwnerSurface, errors: &mut Vec<Diagnostic>) ->
                             "buffer collection '{}' used by tasks must have a resolved fixed size",
                             decl.name
                         ),
-                        decl.loc,
+                        decl.loc.clone(),
                     ));
                     return None;
                 }
             };
             Some(FnParamDecl {
                 readonly: false,
-                loc: decl.loc,
+                loc: decl.loc.clone(),
                 name: decl.name.clone(),
                 ty: Some(ty),
-                ty_loc: decl.ty_loc,
+                ty_loc: decl.ty_loc.clone(),
                 default: None,
             })
         })
@@ -2816,7 +2816,7 @@ fn materialize_task_abort_in_stmts(stmts: &mut Vec<Stmt>) {
                     },
             } if name == TASK_ABORT_FN && type_args.is_empty() && args.is_empty() => {
                 *stmt = Stmt::Return {
-                    loc: *loc,
+                    loc: loc.clone(),
                     expr: bare_return_expr(),
                 };
             }

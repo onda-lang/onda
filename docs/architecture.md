@@ -54,6 +54,7 @@ Non-crate directories of note:
 - `packages/onda_webaudio/` — optional metadata-driven Web Audio adapter for complete wasm32
   processor artifacts; it is not part of the processor ABI or code generator.
 - `deps/llvm-bootstrap` — git submodule used to bootstrap LLVM from source.
+- `deps/sleef` — pinned upstream vector math sources; see `deps/SLEEF.md` for provenance and ABI.
 - `scripts/` — LLVM bootstrap and env-selection helpers; `scripts/bench/` provides bounded DSP
   benchmarks, MIR replay, and IR/SIMD inspection.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
@@ -63,6 +64,9 @@ Non-crate directories of note:
 ### `onda_frontend` (`crates/onda_frontend/src`)
 - `lib.rs` — public AST types and diagnostic context.
 - `ast.rs` — AST node definitions.
+- `source_locations.rs` — transferable source locations sharing immutable file/trace contexts.
+  Locations own their context through `Arc`; they remain valid after their program is dropped or
+  moved to another thread. No thread-local source registry or bounded context IDs are used.
 - `expr_traversal.rs` — shared iterative expression walking, pruned rewrites, postorder
   rewrites, and result folding. Semantic passes use heap-backed traversal for long
   operator chains instead of growing the thread stack; MIR folds eager operators
@@ -252,13 +256,14 @@ Non-crate directories of note:
 - `ids.rs` — deterministic typed IDs for program entities and resources.
 - `types.rs` — target-independent scalar, aggregate, slice, and buffer types.
 - `ir.rs` — program/interface/state/function model and executable operations.
+- `call_graph.rs` — iterative call-graph traversal and dependency worklists.
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
 - `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
-  canonicalization, integer-range-based bounds proofs, pure-expression value numbering, bounded
+  canonicalization, integer-range-based bounds proofs, conservative scalar CSE, bounded
   alias-safe scalar-state promotion, and cleanup.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production MIR contract is documented in `docs/mir.md`.
@@ -367,6 +372,10 @@ Non-crate directories of note:
   null hashes, while paths rejected before reading remain watchable without a content hash.
   Failed graphs retain previous dependencies until a complete graph replaces them.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
+  Events use bounded reusable storage, inline MIDI payloads, and borrowed iterator dispatch.
+  `playback/output_worker.rs` transfers a fixed pool of packed output buffers to a consumer that
+  decodes delegates and formats prints. Saturation drops output with explicit occurrence counters;
+  the producer neither blocks waiting for a packet nor decodes discarded output.
 - `playback/buffer_worker.rs` — bounded background file loading, decoding, validation,
   waveform preparation, and retired-storage reclamation. Per-buffer revisions reject
   loads superseded by a later bind or clear. Control clients remain responsive during
@@ -378,7 +387,8 @@ Non-crate directories of note:
 ### `onda_lsp` (`crates/onda_lsp/src`)
 - `lib.rs` — public LSP entry point used by `onda lsp`.
 - `server.rs` — JSON-RPC transport, document and watched-file notification state, dependency-aware
-  cache invalidation, snapshot-replayed diagnostic workers, request dispatch, and integration tests;
+  cache invalidation, snapshot-based diagnostic workers, request dispatch, and integration tests;
+  parsed worker results transfer directly into the main-thread cache;
   the server does not own an OS filesystem watcher.
 - `server/diagnostics.rs`, `server/completion.rs`, `server/navigation.rs` — diagnostics, contextual
   completion, hover, signature help, and definition handling.
@@ -551,12 +561,38 @@ changes redraw existing waveform canvases independently.
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
   whole-program analysis carries them through statically resolved read-only call boundaries and
   scalar returns. The shared bounds-proof pass removes clamping or checks when the complete
-  coordinate interval is known to fit. Explicit `read_unsafe` / `write_unsafe` calls instead
+  coordinate interval is known to fit. Path-sensitive integer comparisons also prove dynamic
+  slice accesses, including loops bounded by the minimum of several slice lengths. These proofs
+  track value identities through copies, writes, branches, and loops; escaped local storage
+  remains conservative. The resulting unchecked MIR operations benefit every backend.
+  Explicit `read_unsafe` / `write_unsafe` calls instead
   establish a programmer-owned unchecked boundary and are memory-unsafe when any coordinate is
   invalid.
-- MIR optimization removes unused internal parameters and forwarding arguments to a fixed point.
+- MIR common-subexpression elimination reuses pure scalar expressions whose operands and saved
+  results remain stable. Memory and descriptor operations stay outside this pass; backend
+  optimizers handle load/store forwarding using their own alias analysis.
+- MIR optimization propagates proven integer argument constants and removes unreachable functions,
+  unused internal parameters, and forwarding arguments to a fixed point after semantic validation.
+  Call-graph worklists propagate effects and integer ranges to affected functions. `OptimizedProgram`
+  retains final analysis facts for backend consumption; mutations require a new optimization boundary.
   It retains a parameter when any call site uses fallible argument preparation, preserving checked
   fixed-range and dynamic-slice addressing even when the callee does not read the reference.
+- Native floating-point permissions independently control reassociation, contraction and ignoring
+  signed zero. They default off. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
+  x64 MSVC, use SLEEF VFABI mappings selected from resolved LLVM CPU features. After application
+  optimization, the backend links only the used ISA/precision bitcode, internalizes helpers with
+  a private register calling convention, and discards unused functions. SLEEF keeps its own strict
+  arithmetic policy even under application fast math. Both JIT code and AOT objects contain the
+  implementations, including cross-target objects; there is no separate SLEEF library or flag.
+  Scalar tails use platform libm, whose addresses are registered explicitly for ORC.
+  IR inspection includes source line tables for LLVM remarks; JIT and object emission omit them.
+- Native state arrays of at least 256 bytes start at 64-byte boundaries, avoiding split SIMD
+  accesses after irregular array lengths. Owned state allocations and clones preserve that
+  alignment, including with host allocators; LLVM entry-point attributes expose the guarantee
+  through derived pointers and slices. Portable snapshots contain only logical elements.
+- Binaryen vectorizes proven independent straight-line f32/f64 sample loops with scalar tails.
+  Runtime guards admit disjoint or exactly in-place audio buffers; partial overlap uses scalar code.
+  Carried state, calls, mixed precision and unsupported control flow retain scalar lowering.
 
 ## Browser build and verification
 
@@ -624,6 +660,11 @@ changes redraw existing waveform canvases independently.
   (normally HTTPS; localhost is exempt).
 
 ## LLVM dependency strategy
+
+- `deps/sleef` is a git submodule pinned to SLEEF 3.9.0. Generated LLVM 21 bitcode in
+  `crates/onda_codegen_llvm/math-kernel` ships with the compiler; regular Cargo builds need neither
+  initialized SLEEF sources nor a SLEEF build. `scripts/build-native-math-kernel.py` regenerates
+  the kernels from unmodified upstream sources and records tool versions and SHA-256 hashes.
 
 - `deps/llvm-bootstrap` is a git submodule; local developer builds bootstrap LLVM from source on all platforms.
 - Source-bootstrap wrappers download `llvm-project` source and install into:

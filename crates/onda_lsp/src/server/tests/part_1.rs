@@ -2559,7 +2559,7 @@ init:
                 generation: 1,
                 diagnostics: Vec::new(),
                 sources: SourceManifest::default(),
-                parse_succeeded: false,
+                parsed: None,
                 parse_fingerprint: None,
                 completion_index_snapshot: None,
             },
@@ -2594,7 +2594,7 @@ init:
                 generation: 1,
                 diagnostics: Vec::new(),
                 sources: SourceManifest::default(),
-                parse_succeeded: false,
+                parsed: None,
                 parse_fingerprint: None,
                 completion_index_snapshot: None,
             },
@@ -2620,9 +2620,8 @@ init:
         write_file(&main, main_source);
         write_file(&lib, lib_source);
 
-        // Source locations use compact thread-local IDs. Occupy the IDs that
-        // the diagnostic worker will independently assign to this source graph
-        // so a worker-owned Program cannot accidentally appear valid here.
+        // Unrelated source contexts on this thread must not affect locations
+        // transferred from a diagnostic worker's parsed program.
         let _ = onda_frontend::SourceLoc::new(
             Some(dir.join("unrelated_one.onda").display().to_string()),
             1,
@@ -2655,7 +2654,7 @@ init:
         })
         .join()
         .expect("diagnostic worker should finish");
-        assert!(result.parse_succeeded, "worker source should parse");
+        assert!(result.parsed.is_some(), "worker source should parse");
 
         let mut server = LspServer::default();
         server

@@ -318,6 +318,17 @@ fn lower_user_functions_with_const_data(
 pub fn lower_program_to_optimized_mir(
     program: &TypedProgram,
 ) -> Result<onda_mir::OptimizedProgram, Vec<MirLoweringError>> {
+    let validated = lower_program_to_validated_mir(program)?;
+    onda_mir::optimize(validated)
+        .map(|(optimized, _)| optimized)
+        .map_err(mir_validation_errors)
+}
+
+/// Produces validated MIR before the shared optimization pipeline. Hosts that
+/// measure compiler phases can time lowering and optimization independently.
+pub fn lower_program_to_validated_mir(
+    program: &TypedProgram,
+) -> Result<onda_mir::ValidatedProgram, Vec<MirLoweringError>> {
     let mut raw = lower_program_to_mir(program, true)?;
     storage::plan_fixed_scratch(&mut raw)?;
     // SAFETY: MIR lowering owns the proof for every unchecked access and
@@ -330,8 +341,7 @@ pub fn lower_program_to_optimized_mir(
     // flattened slot before the init entry can return successfully.
     let validated = unsafe { onda_mir::validate_owned_with_producer_proofs(raw) }
         .map_err(mir_validation_errors)?;
-    let (optimized, _) = onda_mir::optimize(validated).map_err(mir_validation_errors)?;
-    Ok(optimized)
+    Ok(validated)
 }
 
 #[cfg(test)]
@@ -388,7 +398,7 @@ fn lower_program_to_mir(
         .map(|name| {
             (
                 name.clone(),
-                init_locations.get(name).copied().unwrap_or(SourceLoc::ZERO),
+                init_locations.get(name).cloned().unwrap_or(SourceLoc::ZERO),
             )
         })
         .collect();
@@ -2352,7 +2362,7 @@ enum MaterializedBufferReference {
     Parameter(onda_mir::BufferParamRef),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum ContinueMode {
     None,
     Plain,

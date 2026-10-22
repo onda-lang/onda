@@ -267,7 +267,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                     "binding '{}' has incompatible branch types: {}",
                     $name, $detail
                 ),
-                location,
+                &location,
             ))
         };
     }
@@ -310,7 +310,7 @@ pub(crate) fn merge_branch_scope_flow_state(
                             format_integer_range_contract(then_range),
                             format_integer_range_contract(else_range),
                         ),
-                        location,
+                        &location,
                     ));
                     continue;
                 }

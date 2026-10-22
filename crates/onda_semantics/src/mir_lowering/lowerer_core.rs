@@ -185,7 +185,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     format!("struct parameter references unknown type '{struct_name}'"),
-                    location,
+                    location.clone(),
                 )
             })?;
         layout
@@ -204,7 +204,7 @@ impl<'a> FunctionLowerer<'a> {
                                 "struct parameter type '{struct_name}' field '{}' flattened length does not fit u32",
                                 leaf.storage_path
                             ),
-                            location,
+                            location.clone(),
                         )
                     })?;
                     Ok(StructFieldShape::Array {
@@ -228,7 +228,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     format!("embedded aggregate array references unknown type '{struct_name}'"),
-                    location,
+                    location.clone(),
                 )
             })?;
         let mut seen = HashSet::new();
@@ -255,7 +255,7 @@ impl<'a> FunctionLowerer<'a> {
                             format!(
                                 "embedded aggregate array '{struct_name}.{storage_path}' has an invalid canonical layout ID"
                             ),
-                            location,
+                            location.clone(),
                         )
                     })?;
                     let len = u32::try_from(*extent).map_err(|_| {
@@ -263,7 +263,7 @@ impl<'a> FunctionLowerer<'a> {
                             format!(
                                 "embedded aggregate array '{struct_name}.{storage_path}' length does not fit u32"
                             ),
-                            location,
+                            location.clone(),
                         )
                     })?;
                     let fields = nested
@@ -277,7 +277,7 @@ impl<'a> FunctionLowerer<'a> {
                                             "embedded aggregate array '{struct_name}.{storage_path}.{}' flattened element width does not fit u32",
                                             nested_leaf.storage_path
                                         ),
-                                        location,
+                                        location.clone(),
                                     )
                                 },
                             )?;

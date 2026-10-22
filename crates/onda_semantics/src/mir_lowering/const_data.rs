@@ -122,7 +122,7 @@ impl<'a> ConstDataCatalog<'a> {
         let len = u32::try_from(array.len).map_err(|_| {
             MirLoweringError::new(
                 format!("constant array '{name}' length does not fit u32"),
-                location,
+                location.clone(),
             )
         })?;
         let mut registry = self.registry.borrow_mut();

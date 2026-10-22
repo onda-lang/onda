@@ -433,7 +433,7 @@ pub(crate) fn infer_def_param_kinds(
             let param_diag = def
                 .params
                 .get(idx)
-                .map(|p| DiagCtx::new(p.ty_loc.or(p.loc)))
+                .map(|p| DiagCtx::new(p.ty_loc.or(p.loc.clone())))
                 .unwrap_or_default();
             let usage_for_param = usage.get(idx).cloned().unwrap_or_default();
             let has_struct_usage =
@@ -656,7 +656,7 @@ pub(crate) fn infer_def_param_kinds(
             if let Some((elem_ty, channels)) = explicit_buffer {
                 if !inferred_kind.saw_arrays.is_empty() {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
@@ -668,7 +668,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if inferred_kind.saw_scalar {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
@@ -729,7 +729,7 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(struct_name) = explicit_struct {
                 if inferred_kind.saw_scalar {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as scalar",
@@ -739,7 +739,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if !inferred_kind.saw_arrays.is_empty() {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is explicitly '{}' but is also used as array",
@@ -750,7 +750,7 @@ pub(crate) fn infer_def_param_kinds(
                 for observed in &inferred_kind.saw_structs {
                     if observed != struct_name {
                         push_semantic(
-                            param_diag,
+                            param_diag.clone(),
                             errors,
                             format!(
                                 "function '{}' parameter '{}' is explicitly '{}' but is called with '{}'",
@@ -768,7 +768,7 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(inferred_struct_array) = inferred_struct_array {
                 if inferred_kind.saw_scalar {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and struct array",
@@ -778,7 +778,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if !inferred_kind.saw_arrays.is_empty() {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as primitive array and struct array",
@@ -788,7 +788,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if has_effective_buffer_usage {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as buffer and struct array",
@@ -816,7 +816,7 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(inferred_proc_array) = inferred_proc_array {
                 if inferred_kind.saw_scalar {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as scalar and processor array",
@@ -826,7 +826,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if !inferred_kind.saw_arrays.is_empty() {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as primitive array and processor array",
@@ -836,7 +836,7 @@ pub(crate) fn infer_def_param_kinds(
                 }
                 if has_effective_buffer_usage {
                     push_semantic(
-                        param_diag,
+                        param_diag.clone(),
                         errors,
                         format!(
                             "function '{}' parameter '{}' is used both as buffer and processor array",
@@ -1241,7 +1241,7 @@ fn collect_declared_struct_param_types(
                             "function '{}' parameter '{}' references unknown struct '{}'",
                             display_name, param.name, struct_name
                         ),
-                        param.ty_loc.or(param.loc),
+                        param.ty_loc.or(param.loc.clone()),
                     ));
                 } else {
                     param_structs[idx] = Some(struct_name.clone());
@@ -1258,7 +1258,7 @@ fn collect_declared_struct_param_types(
                                 "method '{}' self parameter is '{}' but annotation declares '{}'",
                                 display_name, method_struct, existing
                             ),
-                            def.params[0].ty_loc.or(def.params[0].loc),
+                            def.params[0].ty_loc.or(def.params[0].loc.clone()),
                         ));
                     }
                 }
@@ -1312,7 +1312,7 @@ fn collect_declared_buffer_param_types(
                             channels,
                             elem_ty,
                             &context,
-                            param.ty_loc.or(param.loc).into(),
+                            param.ty_loc.or(param.loc.clone()).into(),
                             errors,
                         ) {
                             continue;
@@ -1332,7 +1332,7 @@ fn collect_declared_buffer_param_types(
                                 "function '{}' parameter '{}' uses unresolved generic buffer element type '{}'",
                                 display_name, param.name, param_ty
                             ),
-                            param.ty_loc.or(param.loc),
+                            param.ty_loc.or(param.loc.clone()),
                         ));
                         PrimitiveType::F32
                     }

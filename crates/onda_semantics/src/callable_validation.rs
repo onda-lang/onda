@@ -15,14 +15,14 @@ pub(crate) fn validate_function_param_names(
 ) {
     let mut names = HashSet::with_capacity(def.params.len());
     for param in &def.params {
-        let loc = param.ty_loc.or(param.loc);
+        let loc = param.ty_loc.or(param.loc.clone());
         if is_builtin_constant_name(&param.name) {
             errors.push(Diagnostic::semantic_span(
                 format!(
                     "function parameter '{}' in '{}' is reserved as a builtin constant",
                     param.name, def.name
                 ),
-                loc,
+                loc.clone(),
             ));
         }
         if !names.insert(param.name.as_str()) {
@@ -47,7 +47,7 @@ pub(crate) fn reject_borrowed_param_default(
             "function parameter '{}.{}' borrows storage and cannot have a default value",
             display_name, param.name
         ),
-        param.ty_loc.or(param.loc),
+        param.ty_loc.or(param.loc.clone()),
     ));
 }
 
@@ -73,7 +73,7 @@ fn insert_callable<'a>(
     let candidates = callables.entry(name).or_default();
     if candidates
         .iter()
-        .all(|callable| !callable.loc.shares_source_file(loc))
+        .all(|callable| !callable.loc.shares_source_file(&loc))
     {
         candidates.push(Callable { kind, loc });
     }
@@ -90,7 +90,7 @@ fn reject_binding(
     let Some(callable) = callables.get(name).and_then(|candidates| {
         candidates
             .iter()
-            .find(|callable| callable.loc.shares_source_file(loc))
+            .find(|callable| callable.loc.shares_source_file(&loc))
     }) else {
         return;
     };
@@ -115,14 +115,21 @@ fn validate_stmts(
                 target, target_loc, ..
             } => match target {
                 AssignTarget::Var(name) => {
-                    reject_binding("binding", name, *target_loc, owner, callables, errors);
+                    reject_binding(
+                        "binding",
+                        name,
+                        target_loc.clone(),
+                        owner,
+                        callables,
+                        errors,
+                    );
                 }
                 AssignTarget::Tuple(names) => {
                     for name in names.iter().filter_map(|target| target.binding()) {
                         reject_binding(
                             "tuple binding",
                             name,
-                            *target_loc,
+                            target_loc.clone(),
                             owner,
                             callables,
                             errors,
@@ -142,7 +149,7 @@ fn validate_stmts(
                 validate_stmts(else_branch, owner, callables, errors);
             }
             Stmt::For { loc, var, body, .. } => {
-                reject_binding("loop variable", var, *loc, owner, callables, errors);
+                reject_binding("loop variable", var, loc.clone(), owner, callables, errors);
                 validate_stmts(body, owner, callables, errors);
             }
             Stmt::While { body, .. } => validate_stmts(body, owner, callables, errors),
@@ -165,7 +172,7 @@ fn validate_function(
         reject_binding(
             "function parameter",
             &param.name,
-            param.loc,
+            param.loc.clone(),
             owner,
             callables,
             errors,
@@ -185,7 +192,7 @@ fn validate_event_params(
         reject_binding(
             binding_kind,
             &param.name,
-            param.loc,
+            param.loc.clone(),
             owner,
             callables,
             errors,
@@ -214,7 +221,7 @@ fn validate_when(
             reject_binding(
                 "when binding",
                 &binding.name,
-                binding.loc,
+                binding.loc.clone(),
                 owner,
                 callables,
                 errors,
@@ -255,17 +262,17 @@ pub(crate) fn validate_owner_callable_bindings(program: &Program, errors: &mut V
             match block {
                 Block::Events(events) => {
                     for event in &events.events {
-                        insert_callable(root, "event", &event.name, event.loc);
+                        insert_callable(root, "event", &event.name, event.loc.clone());
                     }
                 }
                 Block::Delegates(delegates) => {
                     for delegate in &delegates.delegates {
-                        insert_callable(root, "delegate", &delegate.name, delegate.loc);
+                        insert_callable(root, "delegate", &delegate.name, delegate.loc.clone());
                     }
                 }
                 Block::Tasks(tasks) => {
                     for task in &tasks.tasks {
-                        insert_callable(root, "task", &task.name, task.loc);
+                        insert_callable(root, "task", &task.name, task.loc.clone());
                     }
                 }
                 _ => {}
@@ -322,16 +329,21 @@ pub(crate) fn validate_owner_callable_bindings(program: &Program, errors: &mut V
                 let owner = format!("processor '{}'", proc.name);
                 let mut callables = Callables::new();
                 for def in &proc.local_defs {
-                    insert_callable(&mut callables, "function", &def.name, def.loc);
+                    insert_callable(&mut callables, "function", &def.name, def.loc.clone());
                 }
                 for event in &proc.events {
-                    insert_callable(&mut callables, "event", &event.name, event.loc);
+                    insert_callable(&mut callables, "event", &event.name, event.loc.clone());
                 }
                 for delegate in &proc.delegates {
-                    insert_callable(&mut callables, "delegate", &delegate.name, delegate.loc);
+                    insert_callable(
+                        &mut callables,
+                        "delegate",
+                        &delegate.name,
+                        delegate.loc.clone(),
+                    );
                 }
                 for task in &proc.tasks {
-                    insert_callable(&mut callables, "task", &task.name, task.loc);
+                    insert_callable(&mut callables, "task", &task.name, task.loc.clone());
                 }
                 for def in &proc.local_defs {
                     validate_function(def, &owner, &callables, errors);

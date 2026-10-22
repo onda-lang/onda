@@ -27,7 +27,8 @@ use llvm_sys::target::{
     LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
 };
 use llvm_sys::target_machine::{
-    LLVMCodeGenFileType, LLVMDisposeTargetMachine, LLVMTargetMachineEmitToMemoryBuffer,
+    LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMDisposeTargetMachine,
+    LLVMTargetMachineEmitToMemoryBuffer, LLVMTargetMachineRef,
 };
 use llvm_sys::{
     LLVMFastMathAll, LLVMFastMathNone, LLVMIntPredicate, LLVMLinkage, LLVMRealPredicate,
@@ -149,6 +150,7 @@ impl MirCodegenError {
 /// Sample rate and block size come exclusively from [`Program::config`].
 pub struct MirCompileOptions {
     pub fast_math: bool,
+    pub math: crate::FloatMathPolicy,
     pub opt_level: TargetOptLevel,
 }
 
@@ -156,6 +158,7 @@ pub struct MirCompileOptions {
 /// Target-machine policy for MIR-native IR and object emission.
 pub struct MirTargetOptions {
     pub fast_math: bool,
+    pub math: crate::FloatMathPolicy,
     pub target: crate::TargetConfig,
 }
 
@@ -163,6 +166,7 @@ impl Default for MirTargetOptions {
     fn default() -> Self {
         Self {
             fast_math: false,
+            math: crate::FloatMathPolicy::default(),
             target: crate::TargetConfig::host(),
         }
     }
@@ -179,10 +183,14 @@ impl Default for MirCompileOptions {
     fn default() -> Self {
         Self {
             fast_math: false,
+            math: crate::FloatMathPolicy::default(),
             opt_level: TargetOptLevel::O3,
         }
     }
 }
+
+mod source_debug;
+mod vector_math;
 
 type NativeProcessFn = unsafe extern "C" fn(
     *mut u8,
@@ -522,13 +530,18 @@ unsafe fn aligned_region_layout(
     let mut region_alignment = 1usize;
     for id in ids {
         let ty = types.get(*id);
-        let align = usize::try_from(LLVMABIAlignmentOfType(target_data, ty))
+        let mut align = usize::try_from(LLVMABIAlignmentOfType(target_data, ty))
             .map_err(|_| MirCodegenError::llvm("LLVM ABI alignment does not fit usize"))?;
+        let item_size = usize::try_from(LLVMABISizeOfType(target_data, ty))
+            .map_err(|_| MirCodegenError::llvm("LLVM ABI type size does not fit usize"))?;
+        // Keep SIMD accesses within cache lines even after irregular-length arrays.
+        // Limit padding to large arrays; small state retains its natural layout.
+        if LLVMGetTypeKind(ty) == llvm_sys::LLVMTypeKind::LLVMArrayTypeKind && item_size >= 256 {
+            align = align.max(64);
+        }
         region_alignment = region_alignment.max(align);
         size = align_up_checked(size, align)?;
         offsets.push(size);
-        let item_size = usize::try_from(LLVMABISizeOfType(target_data, ty))
-            .map_err(|_| MirCodegenError::llvm("LLVM ABI type size does not fit usize"))?;
         size = size
             .checked_add(item_size)
             .ok_or_else(|| MirCodegenError::unsupported("ABI region size overflow"))?;
@@ -659,15 +672,24 @@ struct FunctionDecl {
     ty: LLVMTypeRef,
 }
 
+struct EmissionOptions {
+    fast_math: bool,
+    math: crate::FloatMathPolicy,
+    vector_math: vector_math::Library,
+    source_locations: bool,
+}
+
 struct ModuleEmitter<'a> {
     program: &'a Program,
-    effects: onda_mir::EffectAnalysis,
-    ranges: onda_mir::ProgramRangeAnalysis,
+    effects: &'a onda_mir::EffectAnalysis,
+    ranges: &'a onda_mir::ProgramRangeAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &'a LoweredTypes,
     layouts: &'a NativeLayouts,
     fast_math: bool,
+    math: crate::FloatMathPolicy,
+    vector_math: vector_math::Library,
     ptr_ty: LLVMTypeRef,
     runtime_context_ty: LLVMTypeRef,
     delegate_batch_ty: LLVMTypeRef,
@@ -677,6 +699,7 @@ struct ModuleEmitter<'a> {
     const_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
     range_metadata_kind: u32,
+    source_debug: Option<source_debug::SourceDebug>,
 }
 
 #[derive(Clone, Copy)]
@@ -691,12 +714,12 @@ struct HostAliasScopes {
 
 impl<'a> ModuleEmitter<'a> {
     unsafe fn new(
-        program: &'a Program,
+        program: &'a onda_mir::OptimizedProgram,
         context: LLVMContextRef,
         module: LLVMModuleRef,
         types: &'a LoweredTypes,
         layouts: &'a NativeLayouts,
-        fast_math: bool,
+        options: EmissionOptions,
     ) -> Result<Self, MirCodegenError> {
         let i8_ty = LLVMInt8TypeInContext(context);
         let ptr_ty = LLVMPointerType(i8_ty, 0);
@@ -727,11 +750,14 @@ impl<'a> ModuleEmitter<'a> {
             runtime_fields.len() as u32,
             0,
         );
-        let effects = onda_mir::analyze_effects(program);
-        let ranges = onda_mir::analyze_program_integer_ranges_with_effects(program, &effects);
+        let effects = program.effects();
+        let ranges = program.ranges();
         let const_globals = build_const_globals(program, context, module)?;
         let functions =
-            declare_functions(program, &effects, &ranges, context, module, types, layouts)?;
+            declare_functions(program, effects, ranges, context, module, types, layouts)?;
+        let source_debug = options
+            .source_locations
+            .then(|| source_debug::SourceDebug::new(module, program, &functions));
         let host_alias_scopes = build_host_alias_scopes(context);
         let range_metadata_kind = LLVMGetMDKindIDInContext(context, c"range".as_ptr(), 5);
         Ok(Self {
@@ -742,7 +768,9 @@ impl<'a> ModuleEmitter<'a> {
             module,
             types,
             layouts,
-            fast_math,
+            fast_math: options.fast_math,
+            math: options.math,
+            vector_math: options.vector_math,
             ptr_ty,
             runtime_context_ty,
             delegate_batch_ty,
@@ -752,6 +780,7 @@ impl<'a> ModuleEmitter<'a> {
             const_globals,
             host_alias_scopes,
             range_metadata_kind,
+            source_debug,
         })
     }
 
@@ -926,6 +955,23 @@ unsafe fn declare_functions(
                     0,
                 )?;
             }
+        }
+        // The processor ABI and RuntimeState guarantee the target layout's
+        // base alignment. Expose it before GEPs and slice descriptors obscure
+        // the base pointer; packed parameter storage has no such guarantee.
+        let state_parameter = match function.kind {
+            FunctionKind::Init => Some(2),
+            FunctionKind::Process | FunctionKind::Event(_) => Some(1),
+            FunctionKind::User => None,
+        };
+        if let Some(parameter) = state_parameter {
+            add_enum_attribute_at_index(
+                context,
+                value,
+                parameter,
+                "align",
+                layouts.state.alignment as u64,
+            )?;
         }
         match function.kind {
             FunctionKind::Init => {
@@ -1378,6 +1424,11 @@ unsafe fn emit_function_body(
         ));
     }
     let result = (|| {
+        if let Some(debug) = &module.source_debug {
+            let location = debug.location(module.context, function_index, function.source);
+            LLVMSetCurrentDebugLocation2(builder, location);
+            LLVMSetCurrentDebugLocation2(prologue_builder, location);
+        }
         let entry = append_block(module.context, declaration.value, "entry")?;
         LLVMPositionBuilderAtEnd(builder, entry);
         let event_output = if matches!(function.kind, FunctionKind::Event(_)) {
@@ -1432,6 +1483,7 @@ unsafe fn emit_function_body(
         let mut emitter = FunctionEmitter {
             module,
             function,
+            function_index,
             ranges: module
                 .ranges
                 .function(onda_mir::FunctionId::new(function_index as u32))
@@ -1507,6 +1559,7 @@ struct FusedClampedIndex {
 struct FunctionEmitter<'a, 'm> {
     module: &'m ModuleEmitter<'a>,
     function: &'a onda_mir::Function,
+    function_index: usize,
     ranges: &'m onda_mir::FunctionRangeAnalysis,
     declaration: FunctionDecl,
     builder: LLVMBuilderRef,
@@ -2501,10 +2554,9 @@ pub fn lower_optimized_mir_and_jit_with_options(
     options: MirCompileOptions,
 ) -> Result<MirJitProgram, Vec<MirCodegenError>> {
     validate_backend_capabilities(program.as_program())?;
-    let program = program.into_program();
     let (compiled, layouts) = compile_native_jit(&program, options).map_err(|error| vec![error])?;
     Ok(MirJitProgram {
-        mir: program,
+        mir: program.into_program(),
         layouts,
         compiled,
     })
@@ -2537,7 +2589,7 @@ pub fn lower_optimized_mir_to_llvm_ir_with_options(
     options: MirCompileOptions,
 ) -> Result<String, Vec<MirCodegenError>> {
     validate_backend_capabilities(program.as_program())?;
-    emit_native_ir(program.as_program(), options).map_err(|error| vec![error])
+    emit_native_ir(program, options).map_err(|error| vec![error])
 }
 
 /// Emits optimized LLVM IR for an explicit target directly from validated MIR.
@@ -2556,7 +2608,7 @@ pub fn lower_optimized_mir_to_target_llvm_ir(
 ) -> Result<String, Vec<MirCodegenError>> {
     validate_backend_capabilities(program.as_program())?;
     validate_target_options(options).map_err(|error| vec![error])?;
-    emit_targeted_native_ir(program.as_program(), options).map_err(|error| vec![error])
+    emit_targeted_native_ir(program, options).map_err(|error| vec![error])
 }
 
 /// Emits a target object file directly from validated MIR.
@@ -2575,7 +2627,7 @@ pub fn lower_optimized_mir_to_object(
 ) -> Result<Vec<u8>, Vec<MirCodegenError>> {
     validate_backend_capabilities(program.as_program())?;
     validate_target_options(options).map_err(|error| vec![error])?;
-    emit_targeted_native_object(program.as_program(), options).map_err(|error| vec![error])
+    emit_targeted_native_object(program, options).map_err(|error| vec![error])
 }
 
 /// Emits a target object and its runtime sidecar metadata directly from MIR.
@@ -2594,7 +2646,7 @@ pub fn lower_optimized_mir_to_object_artifact(
 ) -> Result<crate::AotObjectArtifact, Vec<MirCodegenError>> {
     validate_backend_capabilities(program.as_program())?;
     validate_target_options(options).map_err(|error| vec![error])?;
-    emit_targeted_native_object_artifact(program.as_program(), options).map_err(|error| vec![error])
+    emit_targeted_native_object_artifact(program, options).map_err(|error| vec![error])
 }
 
 impl MirJitProgram {
@@ -2765,7 +2817,11 @@ impl MirJitProgram {
         allocator: Option<RuntimeAllocator>,
     ) -> Result<UninitializedRuntimeState, Diagnostic> {
         let words = self.layouts.state.size.saturating_add(7) / 8;
-        let mut state_words = UninitRuntimeBuffer::<u64>::try_new_in(words, allocator)?;
+        let mut state_words = UninitRuntimeBuffer::<u64>::try_new_aligned_in(
+            words,
+            self.layouts.state.alignment,
+            allocator,
+        )?;
         if !self.layouts.state.size.is_multiple_of(8) {
             // The generated initializer clears exactly the declared state bytes.
             // Initialize the final word first so its trailing allocation padding
@@ -2841,6 +2897,7 @@ impl MirJitProgram {
             .state_words
             .as_mut()
             .ok_or_else(|| Diagnostic::internal("state storage was already initialized"))?;
+        self.validate_state_alignment(state_words.as_mut_ptr().cast())?;
         let status = unsafe {
             (self.compiled.init)(
                 abi_const_ptr(params),
@@ -2929,6 +2986,7 @@ impl MirJitProgram {
             ));
         }
         validate_buffer_abi(&self.mir, buffers)?;
+        self.validate_state_alignment(state.state_words.as_ptr().cast())?;
         Ok(unsafe {
             self.initialize_state_in_place_unchecked(params, state, mode, buffers, output)
         })
@@ -3441,6 +3499,18 @@ impl MirJitProgram {
                 0,
             ));
         }
+        self.validate_state_alignment(state.state_words.as_ptr().cast())?;
+        Ok(())
+    }
+
+    fn validate_state_alignment(&self, pointer: *const u8) -> Result<(), Diagnostic> {
+        if !(pointer as usize).is_multiple_of(self.layouts.state.alignment) {
+            return Err(Diagnostic::runtime(
+                "runtime state alignment does not match native MIR layout",
+                0,
+                0,
+            ));
+        }
         Ok(())
     }
 }
@@ -3495,7 +3565,7 @@ fn append_constant_bytes(
 }
 
 fn compile_native_jit(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: MirCompileOptions,
 ) -> Result<(NativeOrcProcess, NativeLayouts), MirCodegenError> {
     initialize_native_llvm()?;
@@ -3532,20 +3602,26 @@ fn compile_native_jit(
             }
             let triple = CStr::from_ptr(triple).to_string_lossy().into_owned();
             let data_layout = CStr::from_ptr(data_layout).to_string_lossy().into_owned();
-            let (module, context, layouts) =
-                build_native_module(program, options.fast_math, &triple, &data_layout)?;
-            let context = OwnedLlvm::new(context, LLVMContextDispose);
-            let module = OwnedLlvm::new(module, LLVMDisposeModule);
             let target_machine = super::jit_utils::create_host_target_machine(options.opt_level)
                 .map_err(codegen_diagnostic)?;
             let target_machine = OwnedLlvm::new(target_machine, LLVMDisposeTargetMachine);
-            super::jit_utils::run_default_pass_pipeline(
+            let (module, context, layouts) = build_native_module(
+                program,
+                options.fast_math,
+                options.math,
+                &triple,
+                &data_layout,
+                target_machine.get(),
+                false,
+            )?;
+            let context = OwnedLlvm::new(context, LLVMContextDispose);
+            let module = OwnedLlvm::new(module, LLVMDisposeModule);
+            optimize_native_module(
                 module.get(),
                 target_machine.get(),
                 super::jit_utils::map_opt_level(options.opt_level),
-            )
-            .map_err(codegen_diagnostic)?;
-            verify_module(module.get())?;
+            )?;
+            vector_math::register_scalar_math(lljit)?;
 
             let thread_context =
                 super::llvm_helpers::llvm_orc_create_new_thread_safe_context_from_llvm_context(
@@ -3623,7 +3699,7 @@ fn compile_native_jit(
 }
 
 fn emit_native_ir(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: MirCompileOptions,
 ) -> Result<String, MirCodegenError> {
     initialize_native_llvm()?;
@@ -3635,23 +3711,28 @@ fn emit_native_ir(
             .map_err(codegen_diagnostic)?;
         let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
             .map_err(codegen_diagnostic)?;
-        let (module, context, _) =
-            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let (module, context, _) = build_native_module(
+            program,
+            options.fast_math,
+            options.math,
+            &triple,
+            &data_layout,
+            target_machine.get(),
+            true,
+        )?;
         let _context = OwnedLlvm::new(context, LLVMContextDispose);
         let module = OwnedLlvm::new(module, LLVMDisposeModule);
-        super::jit_utils::run_default_pass_pipeline(
+        optimize_native_module(
             module.get(),
             target_machine.get(),
             super::jit_utils::map_opt_level(options.opt_level),
-        )
-        .map_err(codegen_diagnostic)?;
-        verify_module(module.get())?;
+        )?;
         super::jit_utils::llvm_module_to_string(module.get()).map_err(codegen_diagnostic)
     }
 }
 
 fn emit_targeted_native_ir(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: &MirTargetOptions,
 ) -> Result<String, MirCodegenError> {
     initialize_codegen_targets();
@@ -3665,23 +3746,24 @@ fn emit_targeted_native_ir(
             .map_err(codegen_diagnostic)?;
         let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
             .map_err(codegen_diagnostic)?;
-        let (module, context, _) =
-            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let (module, context, _) = build_native_module(
+            program,
+            options.fast_math,
+            options.math,
+            &triple,
+            &data_layout,
+            target_machine.get(),
+            true,
+        )?;
         let _context = OwnedLlvm::new(context, LLVMContextDispose);
         let module = OwnedLlvm::new(module, LLVMDisposeModule);
-        super::jit_utils::run_default_pass_pipeline(
-            module.get(),
-            target_machine.get(),
-            resolved.opt_level,
-        )
-        .map_err(codegen_diagnostic)?;
-        verify_module(module.get())?;
+        optimize_native_module(module.get(), target_machine.get(), resolved.opt_level)?;
         super::jit_utils::llvm_module_to_string(module.get()).map_err(codegen_diagnostic)
     }
 }
 
 fn emit_targeted_native_object(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: &MirTargetOptions,
 ) -> Result<Vec<u8>, MirCodegenError> {
     emit_targeted_native_object_parts(program, options).map(|parts| parts.object_bytes)
@@ -3699,7 +3781,7 @@ struct TargetedNativeObjectParts {
 }
 
 fn emit_targeted_native_object_parts(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: &MirTargetOptions,
 ) -> Result<TargetedNativeObjectParts, MirCodegenError> {
     initialize_codegen_targets();
@@ -3714,17 +3796,18 @@ fn emit_targeted_native_object_parts(
         let data_layout = super::jit_utils::target_machine_data_layout_string(target_machine.get())
             .map_err(codegen_diagnostic)?;
         let (pointer_width_bits, byte_order) = target_data_facts(&data_layout)?;
-        let (module, context, layouts) =
-            build_native_module(program, options.fast_math, &triple, &data_layout)?;
+        let (module, context, layouts) = build_native_module(
+            program,
+            options.fast_math,
+            options.math,
+            &triple,
+            &data_layout,
+            target_machine.get(),
+            false,
+        )?;
         let _context = OwnedLlvm::new(context, LLVMContextDispose);
         let module = OwnedLlvm::new(module, LLVMDisposeModule);
-        super::jit_utils::run_default_pass_pipeline(
-            module.get(),
-            target_machine.get(),
-            resolved.opt_level,
-        )
-        .map_err(codegen_diagnostic)?;
-        verify_module(module.get())?;
+        optimize_native_module(module.get(), target_machine.get(), resolved.opt_level)?;
         let object_bytes = emit_object_to_bytes(target_machine.get(), module.get())?;
         Ok(TargetedNativeObjectParts {
             object_bytes,
@@ -3740,7 +3823,7 @@ fn emit_targeted_native_object_parts(
 }
 
 fn emit_targeted_native_object_artifact(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     options: &MirTargetOptions,
 ) -> Result<crate::AotObjectArtifact, MirCodegenError> {
     let parts = emit_targeted_native_object_parts(program, options)?;
@@ -3751,7 +3834,7 @@ fn emit_targeted_native_object_artifact(
         .iter()
         .map(|layout| layout.fixed_size)
         .collect::<Vec<_>>();
-    let metadata = crate::aot_artifact::build_mir_aot_metadata(
+    let mut metadata = crate::aot_artifact::build_mir_aot_metadata(
         program,
         crate::mir_metadata::MirMetadataLayoutView {
             state_offsets: &parts.layouts.state.offsets,
@@ -3775,6 +3858,9 @@ fn emit_targeted_native_object_artifact(
         parts.layouts.params.alignment,
     )
     .map_err(|error| MirCodegenError::invalid(format!("MIR AOT metadata failed: {error}")))?;
+    if options.math != crate::FloatMathPolicy::default() {
+        metadata.compile.floating_point = Some(options.math);
+    }
     Ok(crate::AotObjectArtifact {
         object_bytes: parts.object_bytes,
         metadata,
@@ -3937,11 +4023,25 @@ unsafe fn emit_object_to_bytes(
     Ok(bytes)
 }
 
+unsafe fn optimize_native_module(
+    module: LLVMModuleRef,
+    target_machine: LLVMTargetMachineRef,
+    opt_level: LLVMCodeGenOptLevel,
+) -> Result<(), MirCodegenError> {
+    super::jit_utils::run_default_pass_pipeline(module, target_machine, opt_level)
+        .map_err(codegen_diagnostic)?;
+    vector_math::link_helpers(module, target_machine)?;
+    verify_module(module)
+}
+
 unsafe fn build_native_module(
-    program: &Program,
+    program: &onda_mir::OptimizedProgram,
     fast_math: bool,
+    math: crate::FloatMathPolicy,
     target_triple: &str,
     data_layout: &str,
+    target_machine: LLVMTargetMachineRef,
+    source_locations: bool,
 ) -> Result<(LLVMModuleRef, LLVMContextRef, NativeLayouts), MirCodegenError> {
     let context = LLVMContextCreate();
     if context.is_null() {
@@ -3966,9 +4066,16 @@ unsafe fn build_native_module(
         module.get(),
         &types,
         &layouts,
-        fast_math,
+        EmissionOptions {
+            fast_math,
+            math,
+            vector_math: vector_math::Library::for_target(target_machine, target_triple),
+            source_locations,
+        },
     )?;
     emitter.emit()?;
+    drop(emitter); // Finalize line tables before verification/optimization.
+    vector_math::preserve_variants(context.get(), module.get());
     verify_module(module.get())?;
     Ok((module.release(), context.release(), layouts))
 }

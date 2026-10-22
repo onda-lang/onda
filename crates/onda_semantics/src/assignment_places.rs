@@ -124,7 +124,7 @@ fn normalize_statements(
             transient_views.insert(alias.clone());
         }
         let selection = Expr::Index {
-            loc: *target_loc,
+            loc: target_loc.clone(),
             base: std::mem::take(base),
             index: Box::new(std::mem::replace(index, Expr::int(0))),
         };

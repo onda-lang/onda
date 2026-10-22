@@ -9,8 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use onda_frontend::{
-    load_program_file_from_snapshot, load_program_file_with_overlays, parse_stdlib_module,
-    Diagnostic, Program, SourceManifest,
+    load_program_file_with_overlays, parse_stdlib_module, Diagnostic, Program, SourceManifest,
 };
 use onda_semantics::{AnalysisOptions, AnalysisSession, DocumentVersion};
 use serde::Deserialize;
@@ -139,7 +138,7 @@ struct DiagnosticJobResult {
     generation: u64,
     diagnostics: Vec<Diagnostic>,
     sources: SourceManifest,
-    parse_succeeded: bool,
+    parsed: Option<Program>,
     parse_fingerprint: Option<DocumentFingerprint>,
     completion_index_snapshot: Option<CompletionIndexSnapshot>,
 }
@@ -1234,14 +1233,10 @@ impl LspServer {
         writer: &mut impl Write,
     ) -> Result<(), String> {
         let entry_path = result.entry_path;
-        let should_refresh_semantic_tokens = self.semantic_tokens_refresh && result.parse_succeeded;
+        let should_refresh_semantic_tokens =
+            self.semantic_tokens_refresh && result.parsed.is_some();
         if let Some(fingerprint) = result.parse_fingerprint {
-            // Span file and trace IDs belong to the thread that parsed them.
-            // Replay the worker's exact source graph here before caching its AST.
-            let parsed = result
-                .parse_succeeded
-                .then(|| replay_parsed_program(&entry_path, &result.sources))
-                .flatten();
+            let parsed = result.parsed;
             self.cache_parsed_program_with_sources(
                 &entry_path,
                 fingerprint,
@@ -1666,21 +1661,10 @@ fn run_diagnostic_job(job: DiagnosticJob) -> DiagnosticJobResult {
         generation: job.generation,
         diagnostics: snapshot.diagnostics,
         sources: snapshot.sources,
-        parse_succeeded: snapshot.parsed.is_some(),
+        parsed: snapshot.parsed,
         parse_fingerprint,
         completion_index_snapshot,
     }
-}
-
-fn replay_parsed_program(entry_path: &Path, sources: &SourceManifest) -> Option<Program> {
-    let documents = sources
-        .documents
-        .iter()
-        .map(|document| (document.path.clone(), document.contents.clone()))
-        .collect::<HashMap<_, _>>();
-    load_program_file_from_snapshot(entry_path, &documents, &sources.resolutions)
-        .ok()
-        .map(|loaded| loaded.program)
 }
 
 fn hash_source(source: &str) -> u64 {

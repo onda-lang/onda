@@ -14,6 +14,8 @@ use onda_mir::{IntegerRangeInvariant, ParamControl, ScalarValue, ValueRange};
 pub use onda_mir::{ParamDomain, ParamScale, ScalarType as ParamScalarType};
 
 mod aot_artifact;
+mod float_math;
+pub use float_math::FloatMathPolicy;
 #[cfg(any(feature = "llvm-orc", test))]
 mod mir_metadata;
 #[cfg(feature = "llvm-orc")]
@@ -262,25 +264,26 @@ pub(crate) struct UninitRuntimeBuffer<T: Copy> {
 
 enum RuntimeBufferStorage<T: Copy> {
     Global(Vec<T>),
-    Custom(CustomRuntimeBuffer<T>),
+    Allocated(AllocatedRuntimeBuffer<T>),
 }
 
 enum UninitRuntimeBufferStorage<T: Copy> {
     Global(Vec<MaybeUninit<T>>),
-    Custom(CustomRuntimeBuffer<MaybeUninit<T>>),
+    Allocated(AllocatedRuntimeBuffer<MaybeUninit<T>>),
 }
 
-struct CustomRuntimeBuffer<T: Copy> {
+struct AllocatedRuntimeBuffer<T: Copy> {
     ptr: NonNull<T>,
     len: usize,
-    allocator: RuntimeAllocator,
+    allocator: Option<RuntimeAllocator>,
+    layout: Layout,
 }
 
 impl<T: Copy> RuntimeBuffer<T> {
     fn allocator(&self) -> Option<RuntimeAllocator> {
         match &self.storage {
             RuntimeBufferStorage::Global(_) => None,
-            RuntimeBufferStorage::Custom(buffer) => Some(buffer.allocator),
+            RuntimeBufferStorage::Allocated(buffer) => buffer.allocator,
         }
     }
 
@@ -298,9 +301,9 @@ impl<T: Copy> RuntimeBuffer<T> {
         let Some(allocator) = allocator else {
             return Ok(Self::from_vec(vec![value; len]));
         };
-        let buffer = CustomRuntimeBuffer::try_from_elem(len, value, allocator)?;
+        let buffer = AllocatedRuntimeBuffer::try_from_elem(len, value, allocator)?;
         Ok(Self {
-            storage: RuntimeBufferStorage::Custom(buffer),
+            storage: RuntimeBufferStorage::Allocated(buffer),
         })
     }
 
@@ -311,10 +314,24 @@ impl<T: Copy> RuntimeBuffer<T> {
         let Some(allocator) = allocator else {
             return Ok(Self::from_vec(values.to_vec()));
         };
-        let buffer = CustomRuntimeBuffer::try_from_slice(values, allocator)?;
+        let buffer = AllocatedRuntimeBuffer::try_from_slice(values, allocator)?;
         Ok(Self {
-            storage: RuntimeBufferStorage::Custom(buffer),
+            storage: RuntimeBufferStorage::Allocated(buffer),
         })
+    }
+
+    fn try_clone_in(&self, allocator: Option<RuntimeAllocator>) -> Result<Self, Diagnostic> {
+        let alignment = match &self.storage {
+            RuntimeBufferStorage::Global(_) => std::mem::align_of::<T>(),
+            RuntimeBufferStorage::Allocated(buffer) => buffer.layout.align(),
+        };
+        let mut copy = UninitRuntimeBuffer::try_new_aligned_in(self.len(), alignment, allocator)?;
+        if !self.is_empty() {
+            // SAFETY: both buffers hold len elements and their allocations are disjoint.
+            unsafe { ptr::copy_nonoverlapping(self.as_ptr(), copy.as_mut_ptr(), self.len()) };
+        }
+        // SAFETY: every element was copied from initialized storage.
+        Ok(unsafe { copy.assume_init() })
     }
 
     pub fn len(&self) -> usize {
@@ -328,14 +345,14 @@ impl<T: Copy> RuntimeBuffer<T> {
     pub fn as_slice(&self) -> &[T] {
         match &self.storage {
             RuntimeBufferStorage::Global(values) => values.as_slice(),
-            RuntimeBufferStorage::Custom(values) => values.as_slice(),
+            RuntimeBufferStorage::Allocated(values) => values.as_slice(),
         }
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         match &mut self.storage {
             RuntimeBufferStorage::Global(values) => values.as_mut_slice(),
-            RuntimeBufferStorage::Custom(values) => values.as_mut_slice(),
+            RuntimeBufferStorage::Allocated(values) => values.as_mut_slice(),
         }
     }
 
@@ -349,12 +366,16 @@ impl<T: Copy> RuntimeBuffer<T> {
 }
 
 impl<T: Copy> UninitRuntimeBuffer<T> {
-    pub(crate) fn try_new_in(
+    pub(crate) fn try_new_aligned_in(
         len: usize,
+        alignment: usize,
         allocator: Option<RuntimeAllocator>,
     ) -> Result<Self, Diagnostic> {
-        let storage = if let Some(allocator) = allocator {
-            UninitRuntimeBufferStorage::Custom(CustomRuntimeBuffer::try_uninit(len, allocator)?)
+        let alignment = alignment.max(std::mem::align_of::<T>());
+        let storage = if allocator.is_some() || alignment > std::mem::align_of::<T>() {
+            UninitRuntimeBufferStorage::Allocated(AllocatedRuntimeBuffer::try_uninit(
+                len, alignment, allocator,
+            )?)
         } else {
             let mut values = Vec::with_capacity(len);
             // SAFETY: MaybeUninit<T> is valid without initializing its contained T.
@@ -370,14 +391,14 @@ impl<T: Copy> UninitRuntimeBuffer<T> {
         }
         match &mut self.storage {
             UninitRuntimeBufferStorage::Global(values) => values.as_mut_ptr().cast::<T>(),
-            UninitRuntimeBufferStorage::Custom(values) => values.ptr.as_ptr().cast::<T>(),
+            UninitRuntimeBufferStorage::Allocated(values) => values.ptr.as_ptr().cast::<T>(),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         match &self.storage {
             UninitRuntimeBufferStorage::Global(values) => values.len(),
-            UninitRuntimeBufferStorage::Custom(values) => values.len,
+            UninitRuntimeBufferStorage::Allocated(values) => values.len,
         }
     }
 
@@ -401,12 +422,13 @@ impl<T: Copy> UninitRuntimeBuffer<T> {
                 };
                 RuntimeBufferStorage::Global(values)
             }
-            UninitRuntimeBufferStorage::Custom(values) => {
+            UninitRuntimeBufferStorage::Allocated(values) => {
                 let values = ManuallyDrop::new(values);
-                RuntimeBufferStorage::Custom(CustomRuntimeBuffer {
+                RuntimeBufferStorage::Allocated(AllocatedRuntimeBuffer {
                     ptr: values.ptr.cast::<T>(),
                     len: values.len,
                     allocator: values.allocator,
+                    layout: values.layout,
                 })
             }
         };
@@ -452,17 +474,21 @@ impl<T: Copy + fmt::Debug> fmt::Debug for RuntimeBuffer<T> {
     }
 }
 
-impl<T: Copy> CustomRuntimeBuffer<T> {
+impl<T: Copy> AllocatedRuntimeBuffer<T> {
     fn try_uninit(
         len: usize,
-        allocator: RuntimeAllocator,
-    ) -> Result<CustomRuntimeBuffer<MaybeUninit<T>>, Diagnostic> {
-        let layout = runtime_array_layout::<MaybeUninit<T>>(len)?;
-        let ptr = allocate_custom_runtime_buffer::<MaybeUninit<T>>(allocator, layout)?;
-        Ok(CustomRuntimeBuffer {
+        alignment: usize,
+        allocator: Option<RuntimeAllocator>,
+    ) -> Result<AllocatedRuntimeBuffer<MaybeUninit<T>>, Diagnostic> {
+        let layout = runtime_array_layout::<MaybeUninit<T>>(len)?
+            .align_to(alignment)
+            .map_err(|_| Diagnostic::runtime("invalid runtime allocation alignment", 0, 0))?;
+        let ptr = allocate_runtime_buffer::<MaybeUninit<T>>(allocator, layout)?;
+        Ok(AllocatedRuntimeBuffer {
             ptr,
             len,
             allocator,
+            layout,
         })
     }
 
@@ -472,7 +498,7 @@ impl<T: Copy> CustomRuntimeBuffer<T> {
         allocator: RuntimeAllocator,
     ) -> Result<Self, Diagnostic> {
         let layout = runtime_array_layout::<T>(len)?;
-        let ptr = allocate_custom_runtime_buffer::<T>(allocator, layout)?;
+        let ptr = allocate_runtime_buffer::<T>(Some(allocator), layout)?;
         if len > 0 {
             for idx in 0..len {
                 unsafe {
@@ -483,13 +509,14 @@ impl<T: Copy> CustomRuntimeBuffer<T> {
         Ok(Self {
             ptr,
             len,
-            allocator,
+            allocator: Some(allocator),
+            layout,
         })
     }
 
     fn try_from_slice(values: &[T], allocator: RuntimeAllocator) -> Result<Self, Diagnostic> {
         let layout = runtime_array_layout::<T>(values.len())?;
-        let ptr = allocate_custom_runtime_buffer::<T>(allocator, layout)?;
+        let ptr = allocate_runtime_buffer::<T>(Some(allocator), layout)?;
         if !values.is_empty() {
             unsafe {
                 ptr::copy_nonoverlapping(values.as_ptr(), ptr.as_ptr(), values.len());
@@ -498,7 +525,8 @@ impl<T: Copy> CustomRuntimeBuffer<T> {
         Ok(Self {
             ptr,
             len: values.len(),
-            allocator,
+            allocator: Some(allocator),
+            layout,
         })
     }
 
@@ -517,20 +545,21 @@ impl<T: Copy> CustomRuntimeBuffer<T> {
     }
 }
 
-impl<T: Copy> Drop for CustomRuntimeBuffer<T> {
+impl<T: Copy> Drop for AllocatedRuntimeBuffer<T> {
     fn drop(&mut self) {
-        if self.len == 0 {
+        if self.layout.size() == 0 {
             return;
         }
-        let Ok(layout) = Layout::array::<T>(self.len) else {
-            return;
-        };
         unsafe {
-            self.allocator.deallocate(
-                self.ptr.as_ptr().cast::<c_void>(),
-                layout.size(),
-                layout.align(),
-            );
+            if let Some(allocator) = self.allocator {
+                allocator.deallocate(
+                    self.ptr.as_ptr().cast(),
+                    self.layout.size(),
+                    self.layout.align(),
+                );
+            } else {
+                std::alloc::dealloc(self.ptr.as_ptr().cast(), self.layout);
+            }
         }
     }
 }
@@ -541,20 +570,29 @@ fn runtime_array_layout<T>(len: usize) -> Result<Layout, Diagnostic> {
     })
 }
 
-fn allocate_custom_runtime_buffer<T>(
-    allocator: RuntimeAllocator,
+fn allocate_runtime_buffer<T>(
+    allocator: Option<RuntimeAllocator>,
     layout: Layout,
 ) -> Result<NonNull<T>, Diagnostic> {
     if layout.size() == 0 {
         return Ok(NonNull::dangling());
     }
-    let raw = unsafe { allocator.allocate(layout.size(), layout.align()) };
+    let raw = unsafe {
+        match allocator {
+            Some(allocator) => allocator.allocate(layout.size(), layout.align()),
+            None => std::alloc::alloc(layout).cast(),
+        }
+    };
     let Some(ptr) = NonNull::new(raw.cast::<T>()) else {
         return Err(Diagnostic::runtime("runtime allocator returned null", 0, 0));
     };
     if !(ptr.as_ptr() as usize).is_multiple_of(layout.align()) {
         unsafe {
-            allocator.deallocate(raw, layout.size(), layout.align());
+            if let Some(allocator) = allocator {
+                allocator.deallocate(raw, layout.size(), layout.align());
+            } else {
+                std::alloc::dealloc(raw.cast(), layout);
+            }
         }
         return Err(Diagnostic::runtime(
             "runtime allocator returned misaligned memory",
@@ -762,6 +800,61 @@ fn build_snapshot_segments(entries: &[DeclaredState]) -> Vec<StateSnapshotSegmen
 mod tests {
     use super::*;
 
+    #[test]
+    fn aligned_buffers_preserve_allocator_layout_through_initialization_and_cloning() {
+        type Log = std::sync::Mutex<Vec<(bool, usize, usize)>>;
+        unsafe extern "C" fn allocate(
+            context: *mut c_void,
+            size: usize,
+            align: usize,
+        ) -> *mut c_void {
+            let log = unsafe { &*context.cast::<Log>() };
+            log.lock().unwrap().push((true, size, align));
+            unsafe { std::alloc::alloc(Layout::from_size_align(size, align).unwrap()).cast() }
+        }
+        unsafe extern "C" fn free(
+            context: *mut c_void,
+            pointer: *mut c_void,
+            size: usize,
+            align: usize,
+        ) {
+            let log = unsafe { &*context.cast::<Log>() };
+            log.lock().unwrap().push((false, size, align));
+            unsafe {
+                std::alloc::dealloc(
+                    pointer.cast(),
+                    Layout::from_size_align(size, align).unwrap(),
+                )
+            };
+        }
+        let mut log = Log::default();
+        let allocator =
+            unsafe { RuntimeAllocator::new((&mut log as *mut Log).cast(), allocate, free) };
+        {
+            let mut storage =
+                UninitRuntimeBuffer::<u64>::try_new_aligned_in(3, 64, Some(allocator)).unwrap();
+            assert_eq!(storage.as_mut_ptr() as usize % 64, 0);
+            for index in 0..3 {
+                unsafe { storage.as_mut_ptr().add(index).write(index as u64 + 1) };
+            }
+            let storage = unsafe { storage.assume_init() };
+            for allocator in [None, Some(allocator)] {
+                let cloned = storage.try_clone_in(allocator).unwrap();
+                assert_eq!(cloned.as_ptr() as usize % 64, 0);
+                assert_eq!(cloned.as_slice(), &[1, 2, 3]);
+            }
+            // Initialization failure must release the same over-aligned allocation too.
+            let _pending =
+                UninitRuntimeBuffer::<u64>::try_new_aligned_in(3, 64, Some(allocator)).unwrap();
+        }
+        let calls = log.into_inner().unwrap();
+        assert_eq!(calls.iter().filter(|call| call.0).count(), 3);
+        assert_eq!(calls.iter().filter(|call| !call.0).count(), 3);
+        assert!(calls
+            .iter()
+            .all(|&(_, size, align)| (size, align) == (24, 64)));
+    }
+
     use onda_frontend::parse_program;
     use onda_semantics::{analyze_with_options, AnalysisOptions, TypedProgram};
 
@@ -875,6 +968,7 @@ mod tests {
         jit_program_from_optimized_mir_with_options(
             mir,
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: options.fast_math,
                 opt_level: options.opt_level,
             },
@@ -890,6 +984,7 @@ mod tests {
         lower_optimized_mir_to_llvm_ir_with_options(
             &mir,
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: options.fast_math,
                 opt_level: options.opt_level,
             },
@@ -906,6 +1001,7 @@ mod tests {
         lower_optimized_mir_to_object_artifact(
             &mir,
             &MirTargetOptions {
+                math: Default::default(),
                 fast_math: options.fast_math,
                 target: options.target,
             },

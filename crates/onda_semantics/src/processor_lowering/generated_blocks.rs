@@ -144,7 +144,7 @@ fn capture_persistent_buffer_alias_selectors(
             if let Some(selector_state) = selector_states.get(name.as_str()) {
                 let selector = std::mem::replace(index.as_mut(), Expr::int(0));
                 rewritten.push(Stmt::Assign {
-                    loc: *loc,
+                    loc: loc.clone(),
                     target_loc: selector.loc().into(),
                     target: AssignTarget::Var((*selector_state).to_owned()),
                     decl_ty: None,
@@ -1937,7 +1937,7 @@ fn generate_nested_wrapper_defs(
             for event in &callee_proc.events {
                 let Some(event_spec) = callee_api.events.get(&event.name) else {
                     push_semantic(
-                        DiagCtx::new(event.loc),
+                        DiagCtx::new(event.loc.clone()),
                         errors,
                         format!(
                             "processor '{}' nested event '{}' is missing lowered metadata",
@@ -3130,7 +3130,7 @@ pub(super) fn generate_lowered_proc_blocks(
             for event in &proc.events {
                 let Some(event_spec) = owner_api.events.get(&event.name) else {
                     push_semantic(
-                        DiagCtx::new(event.loc),
+                        DiagCtx::new(event.loc.clone()),
                         errors,
                         format!(
                             "processor '{}' event '{}' is missing lowered event metadata",

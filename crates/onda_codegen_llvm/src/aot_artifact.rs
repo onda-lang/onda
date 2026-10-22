@@ -185,11 +185,13 @@ fn build_aot_metadata_from_descriptors(
             calling_convention: "c".to_owned(),
         },
         integration: AotIntegrationInfo {
+            link_libraries: Vec::new(),
             required_symbols,
             one_processor_per_artifact: true,
             profile: integration_profile,
         },
         compile: AotCompileInfo {
+            floating_point: None,
             sample_rate,
             block_size,
             fast_math,

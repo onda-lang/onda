@@ -178,7 +178,7 @@ fn lower_top_level_graph_block(
             init.body.extend(lowered.init_stmts);
         } else {
             program.blocks.push(Block::Init(InitBlock {
-                loc: graph.loc,
+                loc: graph.loc.clone(),
                 default_ty: None,
                 default_ty_loc: Default::default(),
                 pinned_roots: Vec::new(),
@@ -189,7 +189,7 @@ fn lower_top_level_graph_block(
     }
 
     let sample_block = SampleBlock {
-        loc: graph.loc,
+        loc: graph.loc.clone(),
         oversample_factor: None,
         body: lowered.sample,
     };

@@ -223,7 +223,7 @@ fn bind_name(
     let mut imports = Vec::new();
     let exists = |name: &str| metadata_contains(name, check, state, scope);
     scope.uses.collect_candidates(&target, exists, &mut imports);
-    collect_visible_use_candidates(&target, namespace, loc, state, exists, &mut imports);
+    collect_visible_use_candidates(&target, namespace, loc.clone(), state, exists, &mut imports);
     if !imports.is_empty() {
         let local = candidates
             .iter()

@@ -601,7 +601,7 @@ pub(super) fn collect_proc_call_diags_from_expr(
             if let Some(timing) =
                 lowered_proc_call_timing(name, proc_api, generated_proc_call_timing)
             {
-                out.push((DiagCtx::new(*loc), timing));
+                out.push((DiagCtx::new(loc.clone()), timing));
             }
         }
     }

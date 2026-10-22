@@ -77,7 +77,10 @@ Shared Options:
   --block-size, -b       Block size in frames (default: 512)
   --param-smoothing-ms   Run parameter smoothing in milliseconds (default: 30; 0 disables)
   --opt-level            LLVM optimization level (default: 3)
-  --fast-math            Enable LLVM fast-math flags for floating-point operations
+  --fast-math            Enable all LLVM floating-point arithmetic relaxations
+  --fp-reassociate       Compile: permit floating-point reassociation
+  --fp-contract          Compile: permit fused multiply-add
+  --fp-no-signed-zeros   Compile: permit ignoring the sign of zero
   --meta                 Print available metadata for the selected command
   --help, -h             Show this help
   --version, -v          Print the version
@@ -154,6 +157,7 @@ enum Command {
         list_consts: bool,
         show_meta: bool,
         fast_math: bool,
+        math: onda_codegen_llvm::FloatMathPolicy,
         target: TargetConfig,
     },
     Lsp,
@@ -269,6 +273,7 @@ fn main() {
             list_consts,
             show_meta,
             fast_math,
+            math,
             target,
         } => run_compile(compile_cmd::CompileRequest {
             input: &input,
@@ -282,6 +287,7 @@ fn main() {
             list_consts,
             show_meta,
             fast_math,
+            math,
             target,
         }),
         Command::Lsp => onda_lsp::run_stdio_loop(),

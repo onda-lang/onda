@@ -345,9 +345,8 @@ impl SourceResolutionError {
 
 #[derive(Debug, Clone)]
 struct ParseLocContext {
-    file: String,
+    source: SourceLoc,
     line_offset: usize,
-    trace: Vec<String>,
     source_line_map: Vec<usize>,
     line_index: LineIndex,
 }
@@ -361,9 +360,8 @@ impl ParseLocContext {
         source_line_map: &[usize],
     ) -> Self {
         Self {
-            file: display_path(file_path),
+            source: SourceLoc::new(Some(display_path(file_path)), 0, 0, 0, 0, trace.to_vec()),
             line_offset,
-            trace: trace.to_vec(),
             source_line_map: source_line_map.to_vec(),
             line_index: LineIndex::new(source),
         }
@@ -473,7 +471,7 @@ fn append_or_merge_event_block(
 ) -> Result<(), Vec<Diagnostic>> {
     for block in blocks.iter_mut() {
         if let Block::Events(existing) = block {
-            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            existing.loc = Span::spanning(existing.loc.clone(), incoming.loc);
             merge_event_defs(&mut existing.events, incoming.events)?;
             return Ok(());
         }
@@ -488,7 +486,7 @@ fn append_or_merge_delegate_block(
 ) -> Result<(), Vec<Diagnostic>> {
     for block in blocks.iter_mut() {
         if let Block::Delegates(existing) = block {
-            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            existing.loc = Span::spanning(existing.loc.clone(), incoming.loc);
             merge_delegate_defs(&mut existing.delegates, incoming.delegates)?;
             return Ok(());
         }
@@ -503,7 +501,7 @@ fn append_or_merge_task_block(
 ) -> Result<(), Vec<Diagnostic>> {
     for block in blocks.iter_mut() {
         if let Block::Tasks(existing) = block {
-            existing.loc = Span::spanning(existing.loc, incoming.loc);
+            existing.loc = Span::spanning(existing.loc.clone(), incoming.loc);
             merge_task_defs(&mut existing.tasks, incoming.tasks)?;
             return Ok(());
         }
@@ -735,16 +733,8 @@ fn parse_program_preprocessed(
         validate_numeric_literals(&program_pair)?;
 
         let mut blocks = Vec::new();
-        let mut top_level_const_names = state.top_level_const_names.clone();
         for pair in program_pair.into_inner() {
-            parse_program_item(
-                pair,
-                false,
-                allow_main_entry,
-                &mut blocks,
-                &mut top_level_const_names,
-                state,
-            )?;
+            parse_program_item(pair, false, allow_main_entry, &mut blocks, state)?;
         }
 
         Ok(Program { blocks })
@@ -756,7 +746,6 @@ fn parse_program_item(
     inside_main: bool,
     allow_main_entry: bool,
     blocks: &mut Vec<Block>,
-    top_level_const_names: &mut HashSet<String>,
     state: &mut LoadState,
 ) -> Result<(), Vec<Diagnostic>> {
     let rule = pair.as_rule();
@@ -788,14 +777,7 @@ fn parse_program_item(
                     stmt_loc_from_pair(&item).as_ref(),
                 )]);
             }
-            parse_program_item(
-                item,
-                true,
-                allow_main_entry,
-                blocks,
-                top_level_const_names,
-                state,
-            )?;
+            parse_program_item(item, true, allow_main_entry, blocks, state)?;
         }
         return Ok(());
     }
@@ -839,13 +821,12 @@ fn parse_program_item(
         }
         Rule::const_block | Rule::config_const_block => {
             let decl = parse_const_decl(pair)?;
-            if !top_level_const_names.insert(decl.name.clone()) {
+            if !state.top_level_const_names.insert(decl.name.clone()) {
                 return Err(vec![Diagnostic::semantic_span(
                     format!("duplicate top-level constant '{}'", decl.name),
                     decl.loc.as_ref(),
                 )]);
             }
-            state.top_level_const_names = top_level_const_names.clone();
             blocks.push(Block::Const(decl));
         }
         Rule::events_block => append_or_merge_event_block(blocks, parse_events_block(pair)?)?,
@@ -1904,15 +1885,10 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
             .get(end_line.saturating_sub(1))
             .copied()
             .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
-        SourceLoc::new(
-            Some(current.file.clone()),
-            mapped_line,
-            column,
-            mapped_end_line,
-            end_column,
-            current.trace.clone(),
-        )
-        .span()
+        current
+            .source
+            .at(mapped_line, column, mapped_end_line, end_column)
+            .span()
     })
 }
 
@@ -1937,14 +1913,9 @@ pub(super) fn parse_loc_from_raw(
             .get(end_line.saturating_sub(1))
             .copied()
             .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
-        SourceLoc::new(
-            Some(current.file.clone()),
-            mapped_line,
-            column,
-            mapped_end_line,
-            end_column,
-            current.trace.clone(),
-        )
+        current
+            .source
+            .at(mapped_line, column, mapped_end_line, end_column)
     })
 }
 

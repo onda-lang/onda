@@ -28,7 +28,7 @@ pub(crate) fn rewrite_and_materialize_generic_processors(
         }
         if generic_proc_templates.contains_key(&p.name) {
             push_semantic(
-                DiagCtx::new(p.loc),
+                DiagCtx::new(p.loc.clone()),
                 errors,
                 format!("duplicate generic processor '{}'", p.name),
             );
@@ -38,7 +38,7 @@ pub(crate) fn rewrite_and_materialize_generic_processors(
         for tp in &p.type_params {
             if !seen_tp.insert(tp.clone()) {
                 push_semantic(
-                    DiagCtx::new(p.loc),
+                    DiagCtx::new(p.loc.clone()),
                     errors,
                     format!(
                         "duplicate generic type parameter '{}' in processor '{}'",
@@ -661,7 +661,15 @@ fn validate_array_elem_type_args(
         return;
     };
     for raw in args_raw.split(',') {
-        validate_raw_type_arg(raw.trim(), allowed, proc, context, name, span, errors);
+        validate_raw_type_arg(
+            raw.trim(),
+            allowed,
+            proc,
+            context,
+            name,
+            span.clone(),
+            errors,
+        );
     }
 }
 
@@ -682,12 +690,12 @@ fn validate_call_type_args(
                         "processor '{}' {context}: 'bool' is not allowed as a generic type argument in call to '{}'; only numeric types (f32, f64, i32, i64) are supported",
                         proc.name, callee
                     ),
-                    span,
+                    span.clone(),
                 ));
             }
             CallTypeArg::Primitive(_) => {}
             CallTypeArg::Generic(name) => {
-                validate_raw_type_arg(name, allowed, proc, context, callee, span, errors);
+                validate_raw_type_arg(name, allowed, proc, context, callee, span.clone(), errors);
             }
         }
     }

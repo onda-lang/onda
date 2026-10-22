@@ -1369,7 +1369,7 @@ pub(super) fn require_graph_assignable_type(
         if !crate::expr_typing::can_assign_expr_to_type(source_expr, src_ty, dst_ty, constants) {
             push_graph_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!(
                     "{context} type mismatch: cannot assign {:?} to {:?}",
                     src_ty, dst_ty

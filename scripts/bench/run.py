@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 from compare import compare_runs
-from inspection import llvm_summary
+from inspection import llvm_summary, assembly_summary
 from limits import Limits
 from workloads import catalog
 
@@ -89,6 +89,10 @@ def parse_args():
     parser.add_argument("--bitwise", action="store_true", help="require identical float bits in parity/comparisons")
     parser.add_argument("--max-output-abs", type=float, help="validate custom error-output workloads against this bound")
     parser.add_argument("--fast-math", action="store_true", help="explicitly permit relaxed floating-point optimization")
+    for permission in ("reassociate", "contract", "no-signed-zeros"):
+        parser.add_argument(f"--fp-{permission}", action="store_true")
+    parser.add_argument("--allocations", action="store_true", help="count Rust compiler allocations and process peak RSS; adds measurement overhead")
+    parser.add_argument("--remarks", action="store_true", help="record source-located LLVM vectorization remarks using opt")
     parser.add_argument("--opt-level", type=int, choices=range(4), default=3)
     parser.add_argument("--wasm-opt-level", type=int, choices=range(5), default=4)
     parser.add_argument("--cpu", type=int, default=min(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 0)
@@ -125,7 +129,7 @@ def parse_args():
         parser.error("Node heap must leave room within the process memory limit")
     if not args.runner.is_file():
         parser.error(f"build the worker first: cargo build --release -j1 -p onda_examples --features llvm-orc --example benchmark_dsp ({args.runner})")
-    if args.references and (args.inspect_only or args.backend == "wasm" or args.fast_math or args.input_seed != 12345 or args.input_pattern != "noise"):
+    if args.references and (args.inspect_only or args.backend == "wasm" or args.fast_math or args.fp_reassociate or args.fp_contract or args.fp_no_signed_zeros or args.input_seed != 12345 or args.input_pattern != "noise"):
         parser.error("C/FFTW references require a strict native run with default noise input/seed")
     if args.backend != "native" and not shutil.which("systemd-run"):
         parser.error("bounded V8 execution requires Linux systemd user services")
@@ -224,7 +228,11 @@ def main():
                       "atol": args.atol, "rtol": args.rtol,
                       "bitwise": args.bitwise,
                       "opt_level": args.opt_level, "wasm_opt_level": args.wasm_opt_level,
-                      "fast_math": args.fast_math, "ir": args.ir or args.inspect_only or args.assembly,
+                      "fast_math": args.fast_math,
+                      "math": {"reassociate": args.fp_reassociate, "contract": args.fp_contract,
+                               "no_signed_zeros": args.fp_no_signed_zeros},
+                      "allocations": args.allocations, "remarks": args.remarks,
+                      "ir": args.ir or args.inspect_only or args.assembly,
                       "assembly": args.assembly, "trust_mir": args.trust_mir,
                       "max_output_abs": args.max_output_abs if args.max_output_abs is not None else case.get("max_output_abs"),
                       "compare_native": args.backend == "both" and not args.inspect_only}
@@ -249,8 +257,20 @@ def main():
                     write_json(directory / f"{name}.inspection.json", llvm_summary(ir))
             if args.assembly:
                 disassembler = shutil.which("llvm-objdump") or shutil.which("objdump")
-                text = limits.run([disassembler, "-d", prefix.with_suffix(".o")], directory / f"{name}-disassemble", env=env)
+                text = limits.run([disassembler, "-dr", prefix.with_suffix(".o")], directory / f"{name}-disassemble", env=env)
                 prefix.with_suffix(".asm").write_text(text)
+                write_json(directory / f"{name}.assembly-inspection.json", assembly_summary(text))
+            if args.remarks:
+                opt = shutil.which("opt")
+                if not opt:
+                    raise RuntimeError("--remarks requires LLVM opt on PATH")
+                limits.run([opt, f"-passes=default<O{args.opt_level}>", "-disable-output",
+                            f"-pass-remarks-output={prefix.with_suffix('.remarks.yaml')}",
+                            "-pass-remarks=loop-vectorize|slp-vectorizer",
+                            "-pass-remarks-missed=loop-vectorize|slp-vectorizer",
+                            "-pass-remarks-analysis=loop-vectorize|slp-vectorizer",
+                            "-mcpu=native", prefix.with_suffix(".preopt.ll")],
+                           directory / f"{name}-remarks", env=env)
             if args.backend in {"wasm", "both"}:
                 wasm_row = {"name": name, **json.loads(limits.run([
                     "node", f"--max-old-space-size={args.node_heap_mib}", HERE / "wasm.mjs", config_path,

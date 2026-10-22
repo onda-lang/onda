@@ -1226,7 +1226,7 @@ pub(crate) fn expand_proc_event_call_args(
             }
             None => {
                 push_semantic(
-                    diag,
+                    diag.clone(),
                     errors,
                     format!(
                         "processor event call '{call_display_name}(...)' is missing required argument '{}'",
@@ -1287,7 +1287,7 @@ pub(crate) fn expand_proc_port_specs(
     let params = ports
         .iter()
         .map(|port| ParamDecl {
-            loc: port.loc,
+            loc: port.loc.clone(),
             name: port.name.clone(),
             private: false,
             ty: Some(
@@ -1295,7 +1295,7 @@ pub(crate) fn expand_proc_port_specs(
                     .clone()
                     .unwrap_or(DeclType::Scalar(PrimitiveType::F32)),
             ),
-            ty_loc: port.ty_loc,
+            ty_loc: port.ty_loc.clone(),
             default: port.default.clone(),
             range: port.range.clone(),
             bind: None,
@@ -1458,7 +1458,7 @@ fn expand_proc_value_specs(
                         "processor '{proc_name}' {kind} '{}' uses unresolved generic type '{}'",
                         param.name, param_ty
                     ),
-                    param.ty_loc.or(param.loc),
+                    param.ty_loc.or(param.loc.clone()),
                 ));
             }
             Some(DeclType::ArrayGeneric { elem, size }) => {
@@ -1551,7 +1551,7 @@ fn expand_proc_value_specs(
                         "processor '{proc_name}' {kind} '{}' tuple type is not supported",
                         param.name
                     ),
-                    param.ty_loc.or(param.loc),
+                    param.ty_loc.or(param.loc.clone()),
                 ));
                 continue;
             }
@@ -1654,7 +1654,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let expr_loc = expr.loc();
-    let expr_diag = DiagCtx::new(expr_loc);
+    let expr_diag = DiagCtx::new(&expr_loc);
     match expr {
         Expr::Index { base, index, .. } => {
             rewrite_proc_calls_in_expr(index, proc_vars, proc_array_slots, proc_api, errors);
@@ -1891,7 +1891,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         &proc_name,
                         &field_name,
                         &array_base,
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) {
                         ProcParamFieldRead::Readable(param) => {
@@ -1910,7 +1910,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         &api,
                         &field_name,
                         &array_base,
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) else {
                         return;
@@ -1952,7 +1952,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     &proc_name,
                     &field_name,
                     &proc_var,
-                    expr_diag,
+                    expr_diag.clone(),
                     errors,
                 ) {
                     ProcParamFieldRead::Readable(param) => {
@@ -1966,7 +1966,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     api,
                     &field_name,
                     proc_var.as_str(),
-                    expr_diag,
+                    expr_diag.clone(),
                     errors,
                 ) else {
                     return;

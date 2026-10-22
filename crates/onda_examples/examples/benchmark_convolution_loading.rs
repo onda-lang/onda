@@ -192,6 +192,7 @@ fn compile(source: &str, block_size: usize) -> Result<JitProgram, Box<dyn Error>
     jit_program_from_optimized_mir_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },

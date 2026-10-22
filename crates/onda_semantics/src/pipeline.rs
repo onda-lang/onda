@@ -55,7 +55,7 @@ fn annotate_print_origins(program: &mut Program) {
         for statement in body {
             if let Stmt::Print { loc, origin, .. } = statement {
                 *origin = Some(onda_frontend::PrintSourceOrigin {
-                    source: *loc,
+                    source: loc.clone(),
                     lexical_owner: lexical_owner.to_owned(),
                     declaration: declaration.to_owned(),
                 });
@@ -698,9 +698,9 @@ fn aggregate_layout_error_diagnostic(
                         .iter()
                         .rev()
                         .find(|field| field.name == field_name)
-                        .map(|field| field.ty_loc)
+                        .map(|field| field.ty_loc.clone())
                 })
-                .unwrap_or(definition.loc)
+                .unwrap_or(definition.loc.clone())
         })
         .unwrap_or(Span::ZERO);
 
@@ -741,7 +741,7 @@ fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<
                     "cannot redefine builtin method '{}.{}'",
                     strukt.name, method.name
                 ),
-                method.loc,
+                method.loc.clone(),
             ));
             continue;
         }
@@ -752,7 +752,7 @@ fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<
                         "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
                         type_param, strukt.name, method.name, type_param, strukt.name
                     ),
-                    method.loc,
+                    method.loc.clone(),
                 ));
             }
         }
@@ -764,7 +764,7 @@ fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<
                         "duplicate type parameter '{}' in method '{}.{}'",
                         type_param, strukt.name, method.name
                     ),
-                    method.loc,
+                    method.loc.clone(),
                 ));
             }
         }
@@ -774,7 +774,7 @@ fn lift_struct_methods(strukt: &StructDef, errors: &mut Vec<Diagnostic>) -> Vec<
                     "method '{}.{}' must declare 'self' as first parameter",
                     strukt.name, method.name
                 ),
-                method.loc,
+                method.loc.clone(),
             ));
         }
         let mut method = method.clone();
@@ -1139,7 +1139,7 @@ pub fn analyze_with_options_and_inputs(
                 if !seen.insert(tp.clone()) {
                     errors.push(Diagnostic::semantic_span(
                         format!("duplicate type parameter '{}' in def '{}'", tp, def.name),
-                        def.loc,
+                        def.loc.clone(),
                     ));
                 }
             }
@@ -1254,7 +1254,7 @@ pub fn analyze_with_options_and_inputs(
                             &struct_symbols,
                             &struct_namespaces,
                             &format!("struct '{}.{}' array element type", s.name, field.name),
-                            DiagCtx::new(field.ty_loc),
+                            DiagCtx::new(field.ty_loc.clone()),
                             &mut errors,
                         );
                     }
@@ -1285,7 +1285,7 @@ pub fn analyze_with_options_and_inputs(
                                 "method '{}.{}' parameter '{}'",
                                 s.name, method.name, param.name
                             ),
-                            DiagCtx::new(param.ty_loc),
+                            DiagCtx::new(param.ty_loc.clone()),
                             &mut errors,
                         );
                     }
@@ -1331,7 +1331,7 @@ pub fn analyze_with_options_and_inputs(
                         &struct_symbols,
                         &struct_namespaces,
                         &format!("function '{}' parameter '{}'", def.name, param.name),
-                        DiagCtx::new(param.ty_loc),
+                        DiagCtx::new(param.ty_loc.clone()),
                         &mut errors,
                     );
                 }
@@ -1474,7 +1474,7 @@ pub fn analyze_with_options_and_inputs(
                             "duplicate generic type parameter '{}' in struct '{}'",
                             tp, s.name
                         ),
-                        s.loc,
+                        s.loc.clone(),
                     ));
                 }
             }
@@ -1486,7 +1486,7 @@ pub fn analyze_with_options_and_inputs(
                                 "type parameter '{}' on method '{}.{}' shadows '{}' from struct '{}'; use a different name",
                                 tp, s.name, method.name, tp, s.name
                             ),
-                            method.loc,
+                            method.loc.clone(),
                         ));
                     }
                 }
@@ -2060,13 +2060,13 @@ pub fn analyze_with_options_and_inputs(
         if s.fields.is_empty() {
             errors.push(Diagnostic::semantic_span(
                 format!("struct '{}' must declare at least one data field", s.name),
-                s.loc,
+                s.loc.clone(),
             ));
         }
         if is_builtin_constant_name(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' is reserved as a builtin constant", s.name),
-                s.loc,
+                s.loc.clone(),
             ));
             continue;
         }
@@ -2076,21 +2076,21 @@ pub fn analyze_with_options_and_inputs(
             }
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate struct '{}'", s.name),
-                s.loc,
+                s.loc.clone(),
             ));
             continue;
         }
         if all_declared.contains(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("struct name '{}' conflicts with existing symbol", s.name),
-                s.loc,
+                s.loc.clone(),
             ));
             continue;
         }
         if struct_defs.contains_key(&s.name) {
             errors.push(Diagnostic::semantic_span(
                 format!("duplicate struct '{}'", s.name),
-                s.loc,
+                s.loc.clone(),
             ));
             continue;
         }
@@ -2371,7 +2371,7 @@ pub fn analyze_with_options_and_inputs(
             .get(&def.name)
             .cloned()
             .unwrap_or_else(|| def.name.clone());
-        let def_diag = DiagCtx::new(def.loc);
+        let def_diag = DiagCtx::new(def.loc.clone());
         if is_builtin_constant_name(&public_name) {
             push_semantic(
                 def_diag,

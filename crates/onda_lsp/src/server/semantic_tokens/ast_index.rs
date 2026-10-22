@@ -197,7 +197,7 @@ fn collect_namespace_name(name: &str, scope: &mut SemanticScope) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RuntimeStmtRegion<'a> {
     span: Span,
     body: &'a [Stmt],
@@ -281,45 +281,45 @@ fn collect_top_level_runtime_sections<'a>(blocks: &[&'a Block]) -> TopLevelRunti
                     .extend(buffers.decls.iter().map(|decl| decl.name.clone()));
             }
             Block::Init(init) => {
-                extend_runtime_owner_span(&mut sections.span, init.loc);
+                extend_runtime_owner_span(&mut sections.span, init.loc.clone());
                 sections.stmt_regions.push(RuntimeStmtRegion {
-                    span: init.loc,
+                    span: init.loc.clone(),
                     body: &init.body,
                     collect_state_symbols: true,
                 });
             }
             Block::Block(exec) => {
-                extend_runtime_owner_span(&mut sections.span, exec.loc);
+                extend_runtime_owner_span(&mut sections.span, exec.loc.clone());
                 sections
                     .stmt_regions
                     .extend(runtime_regions_for_block_exec(exec));
             }
             Block::Sample(sample) => {
-                extend_runtime_owner_span(&mut sections.span, sample.loc);
+                extend_runtime_owner_span(&mut sections.span, sample.loc.clone());
                 sections.stmt_regions.push(RuntimeStmtRegion {
-                    span: sample.loc,
+                    span: sample.loc.clone(),
                     body: &sample.body,
                     collect_state_symbols: false,
                 });
             }
             Block::Events(events) => {
-                extend_runtime_owner_span(&mut sections.span, events.loc);
+                extend_runtime_owner_span(&mut sections.span, events.loc.clone());
                 sections.events.extend(events.events.iter());
             }
             Block::Delegates(delegates) => {
-                extend_runtime_owner_span(&mut sections.span, delegates.loc);
+                extend_runtime_owner_span(&mut sections.span, delegates.loc.clone());
                 sections.delegates.extend(delegates.delegates.iter());
             }
             Block::When(when) => {
-                extend_runtime_owner_span(&mut sections.span, when.loc);
+                extend_runtime_owner_span(&mut sections.span, when.loc.clone());
                 sections.whens.push(when);
             }
             Block::Tasks(tasks) => {
-                extend_runtime_owner_span(&mut sections.span, tasks.loc);
+                extend_runtime_owner_span(&mut sections.span, tasks.loc.clone());
                 sections.tasks.extend(tasks.tasks.iter());
             }
             Block::Graph(graph) => {
-                extend_runtime_owner_span(&mut sections.span, graph.loc);
+                extend_runtime_owner_span(&mut sections.span, graph.loc.clone());
             }
             _ => {}
         }
@@ -340,7 +340,7 @@ fn create_runtime_owner_scope(
 }
 
 fn extend_runtime_owner_span(span: &mut Option<Span>, next: Span) {
-    *span = Some(match *span {
+    *span = Some(match span.take() {
         Some(current) => Span::spanning(current, next),
         None => next,
     });
@@ -357,7 +357,7 @@ fn runtime_regions_for_block_exec<'a>(exec: &'a BlockExec) -> Vec<RuntimeStmtReg
     }
     if let Some(sample) = &exec.sample {
         regions.push(RuntimeStmtRegion {
-            span: sample.loc,
+            span: sample.loc.clone(),
             body: &sample.body,
             collect_state_symbols: false,
         });
@@ -435,7 +435,7 @@ fn build_proc_scope(
 fn proc_runtime_stmt_regions<'a>(proc_def: &'a ProcessorDef) -> Vec<RuntimeStmtRegion<'a>> {
     let mut regions = Vec::new();
     regions.push(RuntimeStmtRegion {
-        span: proc_def.init.loc,
+        span: proc_def.init.loc.clone(),
         body: &proc_def.init.body,
         collect_state_symbols: true,
     });
@@ -503,7 +503,7 @@ fn build_event_scope(index: &mut SemanticScopeIndex, parent: usize, event: &Even
 }
 
 fn build_delegate_scope(index: &mut SemanticScopeIndex, parent: usize, delegate: &DelegateDef) {
-    let Some(scope_idx) = index.push_scope(Some(parent), delegate.loc) else {
+    let Some(scope_idx) = index.push_scope(Some(parent), delegate.loc.clone()) else {
         return;
     };
     let scope = &mut index.scopes[scope_idx].scope;
@@ -563,7 +563,7 @@ fn build_runtime_stmt_regions(
             collect_runtime_state_symbols(region.body, &mut index.scopes[owner_idx].scope);
         }
         if !region.body.is_empty() {
-            build_stmt_scope(index, owner_idx, region.span, region.body);
+            build_stmt_scope(index, owner_idx, region.span.clone(), region.body);
         }
     }
 }
@@ -576,7 +576,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             else_branch,
             ..
         } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(branch_span) = span_for_stmt_body(then_branch) {
                 span = Span::spanning(span, branch_span);
             }
@@ -586,7 +586,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             span
         }
         Stmt::For { loc, body, .. } | Stmt::While { loc, body, .. } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(body_span) = span_for_stmt_body(body) {
                 span = Span::spanning(span, body_span);
             }
@@ -606,45 +606,45 @@ fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
 
 fn span_for_function_scope(def: &FunctionDef) -> Span {
     span_for_stmt_body(&def.body)
-        .map(|body_span| Span::spanning(def.loc, body_span))
-        .unwrap_or(def.loc)
+        .map(|body_span| Span::spanning(def.loc.clone(), body_span))
+        .unwrap_or(def.loc.clone())
 }
 
 fn span_for_event_scope(event: &EventDef) -> Span {
     span_for_stmt_body(&event.body)
-        .map(|body_span| Span::spanning(event.loc, body_span))
-        .unwrap_or(event.loc)
+        .map(|body_span| Span::spanning(event.loc.clone(), body_span))
+        .unwrap_or(event.loc.clone())
 }
 
 fn span_for_when_scope(when: &WhenDef) -> Span {
     span_for_stmt_body(&when.body)
-        .map(|body_span| Span::spanning(when.loc, body_span))
-        .unwrap_or(when.loc)
+        .map(|body_span| Span::spanning(when.loc.clone(), body_span))
+        .unwrap_or(when.loc.clone())
 }
 
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
-        .map(|body_span| Span::spanning(task.loc, body_span))
-        .unwrap_or(task.loc)
+        .map(|body_span| Span::spanning(task.loc.clone(), body_span))
+        .unwrap_or(task.loc.clone())
 }
 
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
-    let mut span = proc_def.loc;
+    let mut span = proc_def.loc.clone();
 
     for decl in &proc_def.ins {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.outs {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.params {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.buffers {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
 
-    span = Span::spanning(span, proc_def.init.loc);
+    span = Span::spanning(span, proc_def.init.loc.clone());
     if let Some(body_span) = span_for_stmt_body(&proc_def.block_pre) {
         span = Span::spanning(span, body_span);
     }
@@ -655,13 +655,13 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
         span = Span::spanning(span, body_span);
     }
     if let Some(graph) = &proc_def.graph {
-        span = Span::spanning(span, graph.loc);
+        span = Span::spanning(span, graph.loc.clone());
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
     }
     for delegate in &proc_def.delegates {
-        span = Span::spanning(span, delegate.loc);
+        span = Span::spanning(span, delegate.loc.clone());
     }
     for when in &proc_def.whens {
         span = Span::spanning(span, span_for_when_scope(when));
@@ -677,9 +677,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
 }
 
 fn span_for_struct_scope(struct_def: &StructDef) -> Span {
-    let mut span = struct_def.loc;
+    let mut span = struct_def.loc.clone();
     for field in &struct_def.fields {
-        span = Span::spanning(span, field.loc);
+        span = Span::spanning(span, field.loc.clone());
     }
     for method in &struct_def.methods {
         span = Span::spanning(span, span_for_function_scope(method));
@@ -688,17 +688,17 @@ fn span_for_struct_scope(struct_def: &StructDef) -> Span {
 }
 
 fn span_for_namespace_scope(namespace: &NamespaceDecl) -> Span {
-    let mut span = namespace.loc;
+    let mut span = namespace.loc.clone();
     for item in &namespace.items {
         let item_span = match item {
-            NamespaceItem::Assert(decl) => decl.loc,
-            NamespaceItem::Const(decl) => decl.loc,
+            NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),
             NamespaceItem::Proc(decl) => span_for_proc_scope(decl),
             NamespaceItem::Namespace(decl) => span_for_namespace_scope(decl),
-            NamespaceItem::Alias(decl) => decl.loc,
-            NamespaceItem::Use(decl) => decl.loc,
+            NamespaceItem::Alias(decl) => decl.loc.clone(),
+            NamespaceItem::Use(decl) => decl.loc.clone(),
         };
         span = Span::spanning(span, item_span);
     }

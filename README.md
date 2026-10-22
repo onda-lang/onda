@@ -205,10 +205,10 @@ Current LSP support includes:
 
 ## Building `onda` from source
 
-1. Initialize submodules.
+1. Initialize the LLVM bootstrap submodule.
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init --recursive deps/llvm-bootstrap
 ```
 
 2. Bootstrap LLVM.
@@ -227,6 +227,9 @@ macOS/Linux:
 
 Local builds use `deps/llvm-bootstrap` to build LLVM from source on all platforms.
 When `CI` is set, the bootstrap scripts may download a matching prebuilt LLVM package instead.
+Native builds also require a C++ compiler (MSVC on Windows) for the LLVM target-feature shim.
+SLEEF vector math ships as precompiled LLVM bitcode embedded in Onda. Normal Cargo builds
+do not build or download SLEEF; `deps/sleef` is its pinned source submodule for regeneration.
 
 3. Build the CLI:
 

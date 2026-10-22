@@ -109,7 +109,10 @@ fn parse_deep_place(pair: Pair<'_, Rule>) -> Result<(String, Vec<PlaceSegment>),
     for part in inner {
         match part.as_rule() {
             Rule::index_group => {
-                segments.push(PlaceSegment::Indices(parse_index_groups(vec![part], loc)?));
+                segments.push(PlaceSegment::Indices(parse_index_groups(
+                    vec![part],
+                    loc.clone(),
+                )?));
             }
             Rule::place_field => {
                 let Some(field) = part.into_inner().next() else {
@@ -166,7 +169,7 @@ fn internal_place_name(loc: Span, ordinal: usize, kind: &str) -> String {
 fn internal_assign(name: String, expr: Expr) -> Stmt {
     let loc = Span::from(expr.loc());
     Stmt::Assign {
-        loc,
+        loc: loc.clone(),
         target_loc: loc,
         target: AssignTarget::Var(name),
         decl_ty: None,
@@ -192,14 +195,14 @@ fn finish_assignment(
                 return;
             }
             let selector_loc = selector.loc();
-            let name = internal_place_name(loc, *ordinal, "selector");
+            let name = internal_place_name(loc.clone(), *ordinal, "selector");
             *ordinal += 1;
             statements.push(internal_assign(name.clone(), selector.clone()));
             *selector = Expr::var(name).with_loc(selector_loc);
         });
-        let lhs = target_read(&target, target_loc)?;
+        let lhs = target_read(&target, target_loc.clone())?;
         Expr::Binary {
-            loc,
+            loc: loc.clone(),
             op,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
@@ -382,12 +385,12 @@ fn lower_deep_place(
                         "an intermediate assignment-place index must have one coordinate",
                     )]);
                 }
-                let alias = internal_place_name(loc, ordinal, "element");
+                let alias = internal_place_name(loc.clone(), ordinal, "element");
                 ordinal += 1;
                 statements.push(internal_assign(
                     alias.clone(),
                     Expr::Index {
-                        loc: target_loc,
+                        loc: target_loc.clone(),
                         base,
                         index: Box::new(indices[0].clone()),
                     },
@@ -451,7 +454,7 @@ fn finish_indexed_assignment(
 
     if op.is_some() {
         for coordinate in &mut coordinates {
-            let name = internal_place_name(loc, ordinal, "selector");
+            let name = internal_place_name(loc.clone(), ordinal, "selector");
             ordinal += 1;
             statements.push(internal_assign(name.clone(), coordinate.clone()));
             *coordinate = Expr::var(name);
@@ -460,10 +463,10 @@ fn finish_indexed_assignment(
     let (read_name, write_name) = buffer_access_names(groups.len(), coordinates.len());
     let value = if let Some(op) = op {
         Expr::Binary {
-            loc,
+            loc: loc.clone(),
             op,
             lhs: Box::new(Expr::UserCall {
-                loc: target_loc,
+                loc: target_loc.clone(),
                 name: read_name.to_owned(),
                 type_args: Vec::new(),
                 args: std::iter::once(CallArg {

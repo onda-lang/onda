@@ -445,7 +445,7 @@ pub(super) fn update_readonly_data_param_signatures(
                 && !readonly[&def.name].contains(&param.name)
             {
                 push_semantic(
-                    DiagCtx::new(param.loc),
+                    DiagCtx::new(param.loc.clone()),
                     errors,
                     format!(
                         "cannot write through read-only payload parameter '{}'",
@@ -471,7 +471,7 @@ pub(super) fn update_readonly_data_param_signatures(
         for param in &event.params {
             if analysis.writes.contains(&param.name) {
                 push_semantic(
-                    DiagCtx::new(param.loc),
+                    DiagCtx::new(param.loc.clone()),
                     errors,
                     format!(
                         "cannot write through read-only payload parameter '{}'",

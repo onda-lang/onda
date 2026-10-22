@@ -50,7 +50,7 @@ pub(crate) fn coerce_struct_fields(
                 integer_range = binding_range.and_then(|mut range| {
                     if !crate::pipeline::canonicalize_integer_binding_range(
                         &mut range,
-                        field.loc.into(),
+                        field.loc.clone().into(),
                         options,
                         errors,
                     ) {
@@ -864,7 +864,7 @@ fn coerce_top_level_param_control(
                     onda_mir::MAX_EXACT_HOST_CONTROL_INTEGER,
                     onda_mir::MAX_EXACT_HOST_CONTROL_INTEGER,
                 ),
-                param.loc,
+                param.loc.clone(),
             ));
             return control;
         }
@@ -872,7 +872,7 @@ fn coerce_top_level_param_control(
     if range.min.to_f64() >= range.max.to_f64() {
         errors.push(Diagnostic::semantic_span(
             format!("{context} control range requires min < max"),
-            param.loc,
+            param.loc.clone(),
         ));
         return control;
     }
@@ -921,7 +921,7 @@ fn coerce_top_level_param_control(
     }
 
     let Some(step_count) =
-        validate_param_step_grid(&context, range, default, step, param.loc, errors)
+        validate_param_step_grid(&context, range, default, step, param.loc.clone(), errors)
     else {
         return control;
     };
@@ -939,7 +939,7 @@ fn validate_param_step_grid(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
     let invalid = |message: String, errors: &mut Vec<Diagnostic>| {
-        errors.push(Diagnostic::semantic_span(message, loc));
+        errors.push(Diagnostic::semantic_span(message, loc.clone()));
         None
     };
     match (range.min, range.max, default, step) {

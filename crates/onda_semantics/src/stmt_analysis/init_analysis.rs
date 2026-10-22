@@ -521,7 +521,7 @@ pub(crate) fn analyze_init_stmt(
                     then_execution,
                     else_flow,
                     else_execution,
-                    (*loc).into(),
+                    loc.clone().into(),
                     errors,
                 );
                 st.sync_known_scalars_with_registered_state();
@@ -680,7 +680,7 @@ fn analyze_assign_init(
     }
     macro_rules! target_error {
         ($message:expr $(,)?) => {
-            errors.push(Diagnostic::semantic_span($message, target_loc))
+            errors.push(Diagnostic::semantic_span($message, &target_loc))
         };
     }
     macro_rules! scope_expr_env {
@@ -718,7 +718,7 @@ fn analyze_assign_init(
         target,
         expr,
         scope_expr_env!(scope),
-        target_loc,
+        target_loc.clone(),
         errors,
     ) {
         return;
@@ -768,7 +768,7 @@ fn analyze_assign_init(
                 index,
                 expr,
                 scope_expr_env!(scope),
-                target_loc,
+                target_loc.clone(),
                 errors,
             ) {
                 return;
@@ -782,7 +782,7 @@ fn analyze_assign_init(
                 return;
             }
             if let Some(alias) = st.local_array_aliases.get(base) {
-                if !validate_array_write(base, alias, target_loc, errors) {
+                if !validate_array_write(base, alias, target_loc.clone(), errors) {
                     return;
                 }
                 if alias.elem_struct.is_some() {
@@ -989,7 +989,7 @@ fn analyze_assign_init(
             ) else {
                 return;
             };
-            if !validate_array_write(base, &target_info, target_loc, errors) {
+            if !validate_array_write(base, &target_info, target_loc.clone(), errors) {
                 return;
             }
             let slice_env = scope_expr_env!(ScopeKind::Init);
@@ -1132,7 +1132,7 @@ fn analyze_assign_init(
             }
             if !validate_block_bound_surface_var_name(
                 name,
-                target_loc,
+                target_loc.clone(),
                 scope_expr_env!(ScopeKind::Init),
                 errors,
             ) {
@@ -1251,7 +1251,7 @@ fn analyze_assign_init(
                     expr,
                     is_typed_decl || decl_ty.is_some() || generic_decl_ty.is_some(),
                     scope_expr_env!(scope),
-                    target_loc,
+                    target_loc.clone(),
                     errors,
                 ) {
                     return;
@@ -1434,7 +1434,7 @@ fn analyze_assign_init(
                     name,
                     expr,
                     scope_expr_env!(scope),
-                    target_loc,
+                    target_loc.clone(),
                     errors,
                 )
             {
@@ -2469,7 +2469,7 @@ fn analyze_assign_init(
                 }
                 targets_ok &= validate_block_bound_surface_var_name(
                     name,
-                    target_loc,
+                    target_loc.clone(),
                     scope_expr_env!(ScopeKind::Init),
                     errors,
                 );
