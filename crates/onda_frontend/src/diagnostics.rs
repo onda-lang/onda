@@ -21,7 +21,7 @@ pub struct Diagnostic {
     pub editor_visible: bool,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct DiagCtx {
     loc: SourceLoc,
 }
@@ -32,7 +32,7 @@ impl DiagCtx {
     }
 
     pub fn loc(&self) -> SourceLoc {
-        self.loc
+        self.loc.clone()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -40,11 +40,11 @@ impl DiagCtx {
     }
 
     pub fn semantic(&self, message: impl Into<String>, line: usize, column: usize) -> Diagnostic {
-        Diagnostic::semantic_ctx(message, line, column, *self)
+        Diagnostic::semantic_ctx(message, line, column, self.clone())
     }
 
     pub fn semantic_span(&self, message: impl Into<String>, span: impl Into<Span>) -> Diagnostic {
-        Diagnostic::semantic_span_ctx(message, span, *self)
+        Diagnostic::semantic_span_ctx(message, span, self.clone())
     }
 }
 
@@ -56,7 +56,7 @@ impl From<SourceLoc> for DiagCtx {
 
 impl From<&SourceLoc> for DiagCtx {
     fn from(loc: &SourceLoc) -> Self {
-        Self::new(*loc)
+        Self::new(loc.clone())
     }
 }
 
@@ -68,7 +68,7 @@ impl From<Span> for DiagCtx {
 
 impl From<&Span> for DiagCtx {
     fn from(span: &Span) -> Self {
-        Self::new(*span)
+        Self::new(span.clone())
     }
 }
 
@@ -259,6 +259,12 @@ impl Diagnostic {
     pub fn compiler_only(mut self) -> Self {
         self.editor_visible = false;
         self
+    }
+}
+
+impl From<&DiagCtx> for DiagCtx {
+    fn from(ctx: &DiagCtx) -> Self {
+        ctx.clone()
     }
 }
 

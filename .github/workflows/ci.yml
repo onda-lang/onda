@@ -3,17 +3,15 @@ name: CI
 on:
   pull_request:
     paths-ignore:
-      - "**/*.md"
+      - "*.md"
       - "assets/**"
       - "docs/**"
-      - "website/**"
   push:
     branches: [main]
     paths-ignore:
-      - "**/*.md"
+      - "*.md"
       - "assets/**"
       - "docs/**"
-      - "website/**"
 
 permissions:
   contents: read
@@ -41,6 +39,12 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Verify embedded SLEEF kernels
+        run: python3 scripts/build-native-math-kernel.py --check
+
+      - name: Test benchmark inspection and bounds
+        run: python3 -m unittest discover -s scripts/bench -p 'test_*.py'
 
       - name: Test C processor ABI header
         run: |
@@ -74,10 +78,7 @@ jobs:
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace \
-            --exclude onda_cli \
-            --exclude onda_egui \
-            --exclude onda_webview
+          cargo test --workspace
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
@@ -113,6 +114,33 @@ jobs:
           npm run test:onda --workspace @onda-lang/binaryen-web
           npm run test:corpus --workspace @onda-lang/binaryen-web
 
+  portable-vector-math:
+    name: Native vector math (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Test macOS JIT, AOT linking, and target ABIs
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          cargo test -p onda_codegen_llvm --test math_policy --test slice_optimization
+      - name: Test Windows JIT, AOT linking, and target ABIs
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/bootstrap-llvm.ps1 -Version "$env:LLVM_VERSION"
+          . ./scripts/use-msvc-env.ps1
+          . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
+          cargo test -p onda_codegen_llvm --test math_policy --test slice_optimization
+          if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
+
   browser:
     name: Browser and npm packages
     runs-on: ubuntu-latest
@@ -140,6 +168,7 @@ jobs:
           npm run check:versions
           npm run check:stdlib-docs
           npm run check:api-docs
+          npm run test:run-view
           npm run test:playground
           npm test --workspace @onda-lang/processor-abi
           npm test --workspace @onda-lang/binaryen-web

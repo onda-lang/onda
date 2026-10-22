@@ -152,7 +152,7 @@ pub(super) fn lower_graph(
         for output in owner.output_value_types.keys() {
             if !driven_outputs.contains(output) {
                 push_semantic(
-                    graph_diag,
+                    graph_diag.clone(),
                     errors,
                     format!("graph must drive declared output '{output}'"),
                 );

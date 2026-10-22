@@ -427,7 +427,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                 if evaluation.resolving.replace(true) {
                     return self.error(
                         format!("cyclic constant dependency involving '{}'", entry.decl.name),
-                        entry.decl.loc,
+                        entry.decl.loc.clone(),
                     );
                 }
                 let error_start = self.errors.len();
@@ -768,7 +768,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                 let loc = node.loc();
                 let expr = match node {
                     Expr::Call { loc, func, .. } => Expr::Call {
-                        loc: *loc,
+                        loc: loc.clone(),
                         func: *func,
                         args: children.collect(),
                     },
@@ -778,7 +778,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         args,
                         type_args,
                     } => Expr::UserCall {
-                        loc: *loc,
+                        loc: loc.clone(),
                         name: name.clone(),
                         type_args: type_args.clone(),
                         args: args
@@ -790,11 +790,11 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                             .collect(),
                     },
                     Expr::ArrayLiteral { loc, .. } => Expr::ArrayLiteral {
-                        loc: *loc,
+                        loc: loc.clone(),
                         values: children.collect(),
                     },
                     Expr::Tuple { loc, .. } => Expr::Tuple {
-                        loc: *loc,
+                        loc: loc.clone(),
                         values: children.collect(),
                     },
                     Expr::ArrayCtor {
@@ -807,7 +807,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         let mut spec = spec.clone();
                         spec.size = Box::new(child());
                         Expr::ArrayCtor {
-                            loc: *loc,
+                            loc: loc.clone(),
                             spec,
                             init: init.as_ref().map(|_| children.collect()),
                             init_is_value: *init_is_value,
@@ -822,7 +822,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         start,
                         end,
                     } => Expr::Slice {
-                        loc: *loc,
+                        loc: loc.clone(),
                         base: self.scope().runtime_array_name(base),
                         selector: selector.as_ref().map(|_| Box::new(child())),
                         channel: channel.as_ref().map(|_| Box::new(child())),
@@ -861,13 +861,13 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         concrete_const_expr(value, loc)
                     }
                     Expr::Binary { loc, op, .. } => Expr::Binary {
-                        loc: *loc,
+                        loc: loc.clone(),
                         op: *op,
                         lhs: Box::new(child()),
                         rhs: Box::new(child()),
                     },
                     Expr::Compare { loc, op, .. } => Expr::Compare {
-                        loc: *loc,
+                        loc: loc.clone(),
                         op: *op,
                         lhs: Box::new(child()),
                         rhs: Box::new(child()),
@@ -879,7 +879,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                             (&lhs, &rhs)
                         {
                             Expr::Bool {
-                                loc: *loc,
+                                loc: loc.clone(),
                                 value: match op {
                                     onda_frontend::LogicalOp::And => *left && *right,
                                     onda_frontend::LogicalOp::Or => *left || *right,
@@ -887,7 +887,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                             }
                         } else {
                             Expr::Logical {
-                                loc: *loc,
+                                loc: loc.clone(),
                                 op: *op,
                                 lhs: Box::new(lhs),
                                 rhs: Box::new(rhs),
@@ -895,22 +895,22 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                         }
                     }
                     Expr::Cast { loc, to, .. } => Expr::Cast {
-                        loc: *loc,
+                        loc: loc.clone(),
                         to: *to,
                         expr: Box::new(child()),
                     },
                     Expr::UnaryNot { loc, .. } => match child() {
                         Expr::Bool { value, .. } => Expr::Bool {
-                            loc: *loc,
+                            loc: loc.clone(),
                             value: !value,
                         },
                         expr => Expr::UnaryNot {
-                            loc: *loc,
+                            loc: loc.clone(),
                             expr: Box::new(expr),
                         },
                     },
                     Expr::UnaryBitNot { loc, .. } => Expr::UnaryBitNot {
-                        loc: *loc,
+                        loc: loc.clone(),
                         expr: Box::new(child()),
                     },
                     _ => node.clone(),
@@ -1322,7 +1322,7 @@ impl<'a, 'e> Interpreter<'a, 'e> {
             Frame::EndCall(def) => {
                 return self.error(
                     format!("const def '{}' must return a value", def.name),
-                    def.loc,
+                    def.loc.clone(),
                 );
             }
             Frame::Statements(stmts, index) => {

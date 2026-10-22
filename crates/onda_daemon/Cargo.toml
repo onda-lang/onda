@@ -10,6 +10,7 @@ onda_processor_abi = { path = "../onda_processor_abi" }
 hound = "3.5.1"
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
 onda_frontend = { path = "../onda_frontend" }
+onda_mir = { path = "../onda_mir" }
 onda_project = { path = "../onda_project" }
 onda_runtime = { path = "../onda_runtime" }
 onda_semantics = { path = "../onda_semantics" }

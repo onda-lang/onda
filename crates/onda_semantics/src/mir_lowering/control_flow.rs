@@ -37,7 +37,7 @@ impl<'a> FunctionLowerer<'a> {
                         argument_types.push(scalar_type(lowered.ty));
                         arguments.push(lowered.value);
                     }
-                    let statement_loc: SourceLoc = (*loc).into();
+                    let statement_loc: SourceLoc = loc.clone().into();
                     let site = onda_mir::LogSiteId::new(self.log_sites.len() as u32);
                     let origin = origin.as_ref().ok_or_else(|| {
                         self.error(
@@ -45,7 +45,7 @@ impl<'a> FunctionLowerer<'a> {
                             statement_loc,
                         )
                     })?;
-                    let source = self.source_span(origin.source.into());
+                    let source = self.source_span(origin.source.clone().into());
                     self.log_sites.push(onda_mir::LogSite {
                         label: label.clone(),
                         source,
@@ -83,13 +83,19 @@ impl<'a> FunctionLowerer<'a> {
                         if let Some(data @ DataType::Struct(_)) = self.data_type_of(expr) {
                             // Resolve the destination once, before evaluating the RHS.
                             let selection = Expr::Index {
-                                loc: *loc,
+                                loc: loc.clone(),
                                 base: base.clone(),
                                 index: Box::new(index.clone()),
                             };
                             let destination = self.lower_data_expr(&selection, &data, block)?;
                             let source = self.lower_data_expr(expr, &data, block)?;
-                            self.copy_data(&destination, &source, &data, block, (*loc).into())?;
+                            self.copy_data(
+                                &destination,
+                                &source,
+                                &data,
+                                block,
+                                loc.clone().into(),
+                            )?;
                             continue;
                         }
                     }
@@ -104,7 +110,7 @@ impl<'a> FunctionLowerer<'a> {
                                 name,
                                 expr,
                                 block,
-                                (*loc).into(),
+                                loc.clone().into(),
                             )?
                         {
                             continue;
@@ -147,13 +153,13 @@ impl<'a> FunctionLowerer<'a> {
                                         &source,
                                         &data,
                                         block,
-                                        (*loc).into(),
+                                        loc.clone().into(),
                                     )?;
                                     continue;
                                 }
 
                                 if existing.is_none() {
-                                    self.allocate_data(name, &data, (*loc).into())?;
+                                    self.allocate_data(name, &data, loc.clone().into())?;
                                 }
                                 if matches!(
                                     (&data, expr),
@@ -177,14 +183,20 @@ impl<'a> FunctionLowerer<'a> {
                             }
                             let source = self.lower_data_expr(expr, &data, block)?;
                             if existing.is_some() {
-                                self.copy_data(name, &source, &data, block, (*loc).into())?;
+                                self.copy_data(name, &source, &data, block, loc.clone().into())?;
                             } else if (*is_typed_decl || generic_decl_ty.is_some())
                                 && selects_storage
                             {
-                                self.allocate_data(name, &data, (*loc).into())?;
-                                self.copy_data(name, &source, &data, block, (*loc).into())?;
+                                self.allocate_data(name, &data, loc.clone().into())?;
+                                self.copy_data(name, &source, &data, block, loc.clone().into())?;
                             } else {
-                                self.bind_data_alias(name, &source, &data, block, (*loc).into())?;
+                                self.bind_data_alias(
+                                    name,
+                                    &source,
+                                    &data,
+                                    block,
+                                    loc.clone().into(),
+                                )?;
                             }
                             continue;
                         }
@@ -195,10 +207,15 @@ impl<'a> FunctionLowerer<'a> {
                         }
                         if self.is_slice_expression(expr) {
                             let slice = self.lower_slice_expression(expr, None, block)?;
-                            self.assign_slice_alias(name, slice, block, (*loc).into())?;
+                            self.assign_slice_alias(name, slice, block, loc.clone().into())?;
                             continue;
                         }
-                        if self.lower_buffer_alias_assignment(name, expr, block, (*loc).into())? {
+                        if self.lower_buffer_alias_assignment(
+                            name,
+                            expr,
+                            block,
+                            loc.clone().into(),
+                        )? {
                             continue;
                         }
                     }
@@ -207,14 +224,24 @@ impl<'a> FunctionLowerer<'a> {
                             name,
                             expr,
                             block,
-                            (*loc).into(),
+                            loc.clone().into(),
                         )? {
                             continue;
                         }
-                        if self.lower_state_array_initializer(name, expr, block, (*loc).into())? {
+                        if self.lower_state_array_initializer(
+                            name,
+                            expr,
+                            block,
+                            loc.clone().into(),
+                        )? {
                             continue;
                         }
-                        if self.lower_local_array_declaration(name, expr, block, (*loc).into())? {
+                        if self.lower_local_array_declaration(
+                            name,
+                            expr,
+                            block,
+                            loc.clone().into(),
+                        )? {
                             continue;
                         }
                     }
@@ -227,7 +254,7 @@ impl<'a> FunctionLowerer<'a> {
                     } = target
                     {
                         let selection = Expr::Slice {
-                            loc: *loc,
+                            loc: loc.clone(),
                             base: base.clone(),
                             selector: selector.clone(),
                             channel: channel.clone(),
@@ -247,7 +274,7 @@ impl<'a> FunctionLowerer<'a> {
                             },
                             expr,
                             block,
-                            (*loc).into(),
+                            loc.clone().into(),
                         )?;
                         continue;
                     }
@@ -274,7 +301,7 @@ impl<'a> FunctionLowerer<'a> {
                                 &values,
                                 block,
                                 expr.loc(),
-                                (*loc).into(),
+                                loc.clone().into(),
                             )? {
                                 self.assign_variable_values(
                                     name,
@@ -282,7 +309,7 @@ impl<'a> FunctionLowerer<'a> {
                                     decl_ty.as_ref(),
                                     expr,
                                     block,
-                                    (*loc).into(),
+                                    loc.clone().into(),
                                 )?;
                                 if let Some(range) = declared_integer_range {
                                     if let Some(Binding::Local(local, _)) =
@@ -298,7 +325,7 @@ impl<'a> FunctionLowerer<'a> {
                             values,
                             block,
                             expr.loc(),
-                            (*loc).into(),
+                            loc.clone().into(),
                         )?,
                         AssignTarget::Index { base, .. } => self.assign_index_target(
                             base,
@@ -306,7 +333,7 @@ impl<'a> FunctionLowerer<'a> {
                             &values,
                             block,
                             expr.loc(),
-                            (*loc).into(),
+                            loc.clone().into(),
                         )?,
                         AssignTarget::IndexedMember { .. } => {
                             unreachable!("indexed member target was flattened")
@@ -329,17 +356,30 @@ impl<'a> FunctionLowerer<'a> {
                         args,
                     } = expr
                     {
-                        if !self.lower_data_write_unsafe_call(name, args, (*loc).into(), block)?
-                            && !self.lower_buffer_write_call(name, args, (*loc).into(), block)?
+                        if !self.lower_data_write_unsafe_call(
+                            name,
+                            args,
+                            loc.clone().into(),
+                            block,
+                        )? && !self.lower_buffer_write_call(
+                            name,
+                            args,
+                            loc.clone().into(),
+                            block,
+                        )? && self
+                            .lower_buffer_read_call(name, args, loc.clone().into(), block)?
+                            .is_none()
                             && self
-                                .lower_buffer_read_call(name, args, (*loc).into(), block)?
-                                .is_none()
-                            && self
-                                .lower_buffer_metadata_call(name, args, (*loc).into(), block)?
+                                .lower_buffer_metadata_call(name, args, loc.clone().into(), block)?
                                 .is_none()
                         {
-                            let _ =
-                                self.lower_user_call(name, type_args, args, (*loc).into(), block)?;
+                            let _ = self.lower_user_call(
+                                name,
+                                type_args,
+                                args,
+                                loc.clone().into(),
+                                block,
+                            )?;
                         }
                     } else {
                         let _ = self.lower_expr(expr, block)?;
@@ -351,20 +391,20 @@ impl<'a> FunctionLowerer<'a> {
                         if self.function.returns_value {
                             return Err(self.error(
                                 "bare return found in a value-returning function",
-                                (*loc).into(),
+                                loc.clone().into(),
                             ));
                         }
                         self.push_statement(
                             block,
                             StatementKind::Return { values: Vec::new() },
-                            (*loc).into(),
+                            loc.clone().into(),
                         );
                         return Ok(StatementFlow::Terminates);
                     }
                     if !self.function.returns_value {
                         return Err(self.error(
                             "value return found in a function marked as no-result",
-                            (*loc).into(),
+                            loc.clone().into(),
                         ));
                     }
                     let result_types = match &self.function.return_ty {
@@ -373,11 +413,17 @@ impl<'a> FunctionLowerer<'a> {
                         ReturnType::Data(data) => {
                             let data = data.clone();
                             let source = self.lower_data_expr(expr, &data, block)?;
-                            self.copy_data("__onda_result", &source, &data, block, (*loc).into())?;
+                            self.copy_data(
+                                "__onda_result",
+                                &source,
+                                &data,
+                                block,
+                                loc.clone().into(),
+                            )?;
                             self.push_statement(
                                 block,
                                 StatementKind::Return { values: Vec::new() },
-                                (*loc).into(),
+                                loc.clone().into(),
                             );
                             return Ok(StatementFlow::Terminates);
                         }
@@ -390,7 +436,7 @@ impl<'a> FunctionLowerer<'a> {
                                 result_types.len(),
                                 values.len()
                             ),
-                            (*loc).into(),
+                            loc.clone().into(),
                         ));
                     }
                     let mut returned = Vec::with_capacity(values.len());
@@ -400,7 +446,7 @@ impl<'a> FunctionLowerer<'a> {
                     self.push_statement(
                         block,
                         StatementKind::Return { values: returned },
-                        (*loc).into(),
+                        loc.clone().into(),
                     );
                     StatementFlow::Terminates
                 }
@@ -417,14 +463,14 @@ impl<'a> FunctionLowerer<'a> {
                     let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut then_block = MirBlock::default();
                     let then_flow =
-                        self.lower_statements(then_branch, &mut then_block, continue_mode)?;
+                        self.lower_statements(then_branch, &mut then_block, continue_mode.clone())?;
                     let then_bindings = self.bindings.clone();
                     let then_nested_proc_aliases = self.nested_proc_aliases.clone();
                     self.bindings = outer_bindings.clone();
                     self.nested_proc_aliases = outer_nested_proc_aliases.clone();
                     let mut else_block = MirBlock::default();
                     let else_flow =
-                        self.lower_statements(else_branch, &mut else_block, continue_mode)?;
+                        self.lower_statements(else_branch, &mut else_block, continue_mode.clone())?;
                     let else_bindings = self.bindings.clone();
                     let else_nested_proc_aliases = self.nested_proc_aliases.clone();
                     match (then_flow, else_flow) {
@@ -446,7 +492,7 @@ impl<'a> FunctionLowerer<'a> {
                                 else_nested_proc_aliases,
                                 &mut then_block,
                                 &mut else_block,
-                                (*loc).into(),
+                                loc.clone().into(),
                             )?;
                         }
                         (StatementFlow::Terminates, StatementFlow::Terminates) => {
@@ -461,7 +507,7 @@ impl<'a> FunctionLowerer<'a> {
                             then_block,
                             else_block,
                         },
-                        (*loc).into(),
+                        loc.clone().into(),
                     );
                     if then_flow == StatementFlow::Terminates
                         && else_flow == StatementFlow::Terminates
@@ -483,7 +529,7 @@ impl<'a> FunctionLowerer<'a> {
                     self.bindings = outer_bindings;
                     self.nested_proc_aliases = outer_nested_proc_aliases;
                     let mut else_block = MirBlock::default();
-                    self.push_statement(&mut else_block, StatementKind::Break, (*loc).into());
+                    self.push_statement(&mut else_block, StatementKind::Break, loc.clone().into());
                     if condition.value == Value::Constant(ScalarValue::Bool(true)) {
                         loop_body.statements.extend(then_block.statements);
                     } else {
@@ -494,13 +540,13 @@ impl<'a> FunctionLowerer<'a> {
                                 then_block,
                                 else_block,
                             },
-                            (*loc).into(),
+                            loc.clone().into(),
                         );
                     }
                     self.push_statement(
                         block,
                         StatementKind::Loop { body: loop_body },
-                        (*loc).into(),
+                        loc.clone().into(),
                     );
                     StatementFlow::Continues
                 }
@@ -522,24 +568,25 @@ impl<'a> FunctionLowerer<'a> {
                         end,
                         *end_inclusive,
                         body,
-                        (*loc).into(),
+                        loc.clone().into(),
                         block,
                     )?;
                     StatementFlow::Continues
                 }
                 Stmt::Break { loc } => {
                     if matches!(continue_mode, ContinueMode::None) {
-                        return Err(self.error("break reached MIR outside a loop", (*loc).into()));
+                        return Err(
+                            self.error("break reached MIR outside a loop", loc.clone().into())
+                        );
                     }
-                    self.push_statement(block, StatementKind::Break, (*loc).into());
+                    self.push_statement(block, StatementKind::Break, loc.clone().into());
                     StatementFlow::Terminates
                 }
                 Stmt::Continue { loc } => {
-                    match continue_mode {
+                    match continue_mode.clone() {
                         ContinueMode::None => {
-                            return Err(
-                                self.error("continue reached MIR outside a loop", (*loc).into())
-                            );
+                            return Err(self
+                                .error("continue reached MIR outside a loop", loc.clone().into()));
                         }
                         ContinueMode::Plain => {}
                         ContinueMode::For {
@@ -549,7 +596,7 @@ impl<'a> FunctionLowerer<'a> {
                             source,
                         } => self.emit_for_latch(block, index, step, last, source),
                     }
-                    self.push_statement(block, StatementKind::Continue, (*loc).into());
+                    self.push_statement(block, StatementKind::Continue, loc.clone().into());
                     StatementFlow::Terminates
                 }
             };
@@ -619,7 +666,7 @@ impl<'a> FunctionLowerer<'a> {
             None => {
                 let start_value = self.snapshot(start_value, destination, start.loc());
                 let end_value = self.snapshot(end_value, destination, end.loc());
-                let step_location = step.map_or(location, Expr::loc);
+                let step_location = step.map_or(location.clone(), Expr::loc);
                 let step_value = self.snapshot(step_value, destination, step_location);
                 (start_value, end_value, step_value, None, None)
             }
@@ -639,7 +686,7 @@ impl<'a> FunctionLowerer<'a> {
                 destination: Place::local(index),
                 value: Rvalue::Use(start_value.value),
             },
-            location,
+            location.clone(),
         );
 
         let mut loop_body = MirBlock::default();
@@ -650,7 +697,7 @@ impl<'a> FunctionLowerer<'a> {
                 end_value.value,
                 step_value.value,
                 end_inclusive,
-                location,
+                location.clone(),
             );
         }
         let body_index = self.new_local(
@@ -668,7 +715,7 @@ impl<'a> FunctionLowerer<'a> {
                 destination: Place::local(body_index),
                 value: Rvalue::Use(Value::Local(index)),
             },
-            location,
+            location.clone(),
         );
         self.bindings.insert(
             variable.to_owned(),
@@ -681,11 +728,17 @@ impl<'a> FunctionLowerer<'a> {
                 index,
                 step: step_value.value,
                 last,
-                source: location,
+                source: location.clone(),
             },
         )?;
         if body_flow == StatementFlow::Continues {
-            self.emit_for_latch(&mut loop_body, index, step_value.value, last, location);
+            self.emit_for_latch(
+                &mut loop_body,
+                index,
+                step_value.value,
+                last,
+                location.clone(),
+            );
         }
 
         self.bindings = outer_bindings;
@@ -736,7 +789,7 @@ impl<'a> FunctionLowerer<'a> {
                 else_binding,
                 then_block,
                 else_block,
-                location,
+                location.clone(),
             )? {
                 covered_binding_names.extend(self.bind_joined_struct_array_leaves(&name, &binding));
                 self.bindings.insert(name, binding);
@@ -765,7 +818,12 @@ impl<'a> FunctionLowerer<'a> {
                 && then_alias.alternatives == else_alias.alternatives
                 && self.local_types_match(then_alias.index, else_alias.index)
             {
-                self.copy_branch_local(else_block, then_alias.index, else_alias.index, location);
+                self.copy_branch_local(
+                    else_block,
+                    then_alias.index,
+                    else_alias.index,
+                    location.clone(),
+                );
                 self.nested_proc_aliases.insert(name, then_alias);
             }
         }
@@ -786,7 +844,7 @@ impl<'a> FunctionLowerer<'a> {
             &else_binding,
             then_block,
             else_block,
-            location,
+            location.clone(),
         )? {
             return Ok(Some(binding));
         }
@@ -795,7 +853,7 @@ impl<'a> FunctionLowerer<'a> {
             &else_binding,
             then_block,
             else_block,
-            location,
+            location.clone(),
         )? {
             return Ok(Some(binding));
         }
@@ -804,7 +862,7 @@ impl<'a> FunctionLowerer<'a> {
             &else_binding,
             then_block,
             else_block,
-            location,
+            location.clone(),
         )? {
             return Ok(Some(binding));
         }
@@ -836,7 +894,7 @@ impl<'a> FunctionLowerer<'a> {
                         else_ty,
                         then_block,
                         else_block,
-                        location,
+                        location.clone(),
                     )?
                     else {
                         return Ok(None);
@@ -875,7 +933,7 @@ impl<'a> FunctionLowerer<'a> {
                         },
                         then_block,
                         else_block,
-                        location,
+                        location.clone(),
                     )?
                     else {
                         return Ok(None);
@@ -944,9 +1002,9 @@ impl<'a> FunctionLowerer<'a> {
             },
             joined_ty,
             then_block,
-            location,
+            location.clone(),
         )?;
-        self.assign_value(then_block, joined_local, then_value.value, location);
+        self.assign_value(then_block, joined_local, then_value.value, location.clone());
         let else_value = self.coerce(
             LoweredValue {
                 value: Value::Local(else_local),
@@ -954,7 +1012,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             joined_ty,
             else_block,
-            location,
+            location.clone(),
         )?;
         self.assign_value(else_block, joined_local, else_value.value, location);
         Ok(Some((joined_local, joined_ty)))
@@ -991,7 +1049,8 @@ impl<'a> FunctionLowerer<'a> {
             MirType::Scalar(ScalarType::I64) => ScalarValue::I64(0),
             _ => unreachable!("for induction locals are restricted to integers"),
         });
-        let step_positive = self.compare_value(block, CompareOp::Greater, step, zero, location);
+        let step_positive =
+            self.compare_value(block, CompareOp::Greater, step, zero, location.clone());
 
         let mut positive = MirBlock::default();
         let positive_bound = self.compare_value(
@@ -1003,13 +1062,18 @@ impl<'a> FunctionLowerer<'a> {
             },
             Value::Local(index),
             end,
-            location,
+            location.clone(),
         );
-        self.push_guard_or_break(&mut positive, positive_bound, location);
+        self.push_guard_or_break(&mut positive, positive_bound, location.clone());
 
         let mut non_positive = MirBlock::default();
-        let step_negative =
-            self.compare_value(&mut non_positive, CompareOp::Less, step, zero, location);
+        let step_negative = self.compare_value(
+            &mut non_positive,
+            CompareOp::Less,
+            step,
+            zero,
+            location.clone(),
+        );
         let mut negative = MirBlock::default();
         let negative_bound = self.compare_value(
             &mut negative,
@@ -1020,11 +1084,11 @@ impl<'a> FunctionLowerer<'a> {
             },
             Value::Local(index),
             end,
-            location,
+            location.clone(),
         );
-        self.push_guard_or_break(&mut negative, negative_bound, location);
+        self.push_guard_or_break(&mut negative, negative_bound, location.clone());
         let mut zero_step = MirBlock::default();
-        self.push_statement(&mut zero_step, StatementKind::Break, location);
+        self.push_statement(&mut zero_step, StatementKind::Break, location.clone());
         self.push_statement(
             &mut non_positive,
             StatementKind::If {
@@ -1032,7 +1096,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: negative,
                 else_block: zero_step,
             },
-            location,
+            location.clone(),
         );
 
         self.push_statement(
@@ -1053,7 +1117,7 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
     ) {
         let mut failed = MirBlock::default();
-        self.push_statement(&mut failed, StatementKind::Break, location);
+        self.push_statement(&mut failed, StatementKind::Break, location.clone());
         self.push_statement(
             block,
             StatementKind::If {
@@ -1084,16 +1148,21 @@ impl<'a> FunctionLowerer<'a> {
                     rhs: step,
                 },
             },
-            location,
+            location.clone(),
         );
         let Some(last) = last else {
             block.statements.extend(increment.statements);
             return;
         };
-        let at_last =
-            self.compare_value(block, CompareOp::Equal, Value::Local(index), last, location);
+        let at_last = self.compare_value(
+            block,
+            CompareOp::Equal,
+            Value::Local(index),
+            last,
+            location.clone(),
+        );
         let mut finished = MirBlock::default();
-        self.push_statement(&mut finished, StatementKind::Break, location);
+        self.push_statement(&mut finished, StatementKind::Break, location.clone());
         self.push_statement(
             block,
             StatementKind::If {

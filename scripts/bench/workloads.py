@@ -140,10 +140,65 @@ def array_probe(width, expression, reduction=False):
                "    out1 = results[index]\n    index += 1\n    if index >= N:\n      index = 0\n"))
 
 
+def slice_probe(dynamic):
+    end = "count" if dynamic else ""
+    return f"""params:
+  count: i32 = 509
+  factor = 0.875
+def transform(src: f32[], dst: f32[], factor):
+  for i in 0..min(src.len(), dst.len()):
+    dst[i] = src[i] * factor + src[i] * src[i]
+init:
+  values: f32[512]
+  results: f32[512]
+  for i in 0..512:
+    values[i] = sin(f32(i) * 0.017)
+  index = 0
+block:
+  transform(values[:{end}], results[:{end}], factor)
+  sample:
+    out1 = results[index]
+    index += 1
+    if index >= 509:
+      index = 0
+"""
+
+
+def voice_bank(voices):
+    # Independent voice updates expose SIMD across voices while a separate
+    # ordered mix preserves strict floating-point reduction semantics.
+    return f"""const Voices = {voices}
+const def increments() -> f32[Voices]:
+  result: f32[Voices]
+  for i in 0..Voices:
+    result[i] = (110.0 + f32(i) * 0.37) / SR
+  return result
+const Increments: f32[Voices] = increments()
+init:
+  phases: f32[Voices]
+  rendered: f32[Voices]
+sample:
+  for voice in 0..Voices:
+    phase = phases[voice] + Increments[voice]
+    if phase >= 1.0:
+      phase -= 1.0
+    phases[voice] = phase
+    rendered[voice] = sin(phase * TWO_PI)
+  mixed = 0.0
+  for voice in 0..Voices:
+    mixed += rendered[voice]
+  out1 = mixed / f32(Voices)
+"""
+
+
 def catalog():
     # Factories defer expensive DFT generation until a case is actually selected.
     cases = {name: {"source": source, "warmup_blocks": 8192 if name.startswith("convolution") else 512}
              for name, source in scenarios().items()}
+    for name, dynamic in [("slice-fixed", False), ("slice-dynamic", True)]:
+        cases[name] = {"source": slice_probe(dynamic), "warmup_blocks": 512}
+    for voices in [16, 256, 4096]:
+        cases[f"voice-bank-{voices}"] = {"source": voice_bank(voices), "warmup_blocks": 64}
     for name, case in cases.items():
         if name.startswith("fft-real-") or name in {"passthrough", "filter-onepole", "filter-dcblock", "filter-biquad", "filter-svf"}:
             case["reference"] = name

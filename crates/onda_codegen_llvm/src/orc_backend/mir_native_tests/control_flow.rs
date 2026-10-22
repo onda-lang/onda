@@ -21,6 +21,7 @@ fn returning_loops_without_breaks_terminate_the_function() {
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },

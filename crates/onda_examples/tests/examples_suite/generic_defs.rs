@@ -692,6 +692,10 @@ fn generic_def_integer_specialization_compile_and_run() {
     let src = r#"
 
 outs { out1 }
+params {
+  x: i32 = 5
+  y: i64 = 3
+}
 
 def triple<T>(x: T) {
 
@@ -701,9 +705,9 @@ def triple<T>(x: T) {
 
 sample {
 
-  a = triple(i32(5))
+  a = triple(x)
 
-  b = triple(i64(3))
+  b = triple(y)
 
   out1 = f32(a) + f32(b)
 

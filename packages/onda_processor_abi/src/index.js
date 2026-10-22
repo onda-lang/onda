@@ -100,6 +100,19 @@ export function validateProcessorMetadata(metadata, expectedKind = null) {
   requirePositiveFinite(metadata.compile?.sample_rate, "compile.sample_rate");
   requireInteger(metadata.compile?.block_size, "compile.block_size", 1);
   requireBoolean(metadata.compile?.fast_math, "compile.fast_math");
+  if (metadata.compile.floating_point !== undefined) {
+    for (const permission of ["reassociate", "contract", "no_signed_zeros"]) {
+      requireBoolean(metadata.compile.floating_point?.[permission], `compile.floating_point.${permission}`);
+    }
+  }
+  if (metadata.integration?.link_libraries !== undefined) {
+    if (!Array.isArray(metadata.integration.link_libraries)) {
+      throw new OndaArtifactError("integration.link_libraries must be an array");
+    }
+    for (const library of metadata.integration.link_libraries) {
+      requireString(library, "integration.link_libraries[]");
+    }
+  }
   requireInteger(metadata.runtime?.state_size_bytes, "runtime.state_size_bytes", 0);
   requireInteger(metadata.runtime?.state_align_bytes, "runtime.state_align_bytes", 1);
   requireInteger(metadata.runtime?.param_size_bytes, "runtime.param_size_bytes", 0);

@@ -1,0 +1,56 @@
+# Runtime lengths, empty intersections, and mutations after a guard exercise
+# MIR's path-sensitive bounds proofs independently of backend optimization.
+outs 4
+
+def transform(src: f32[], dst: f32[]):
+  for i in 0..min(src.len(), dst.len()):
+    dst[i] = src[i] * 2.0 + 1.0
+
+def guarded(values: f32[], index: i32):
+  if index < 0:
+    return -1.0
+  if index >= values.len():
+    return -2.0
+  return values[index]
+
+def rebound(values: f32[], index: i32):
+  if index >= 0 && index < values.len():
+    index = 99
+    return values[index]
+  return -3.0
+
+init:
+  source: f32[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+  destination: f32[5]
+  frame = 0
+sample:
+  # The two lengths vary independently, including an empty source/destination.
+  left = frame % 6
+  right = (frame + 2) % 6
+  destination[:] = -9.0
+  transform(source[:left], destination[:right])
+  expected = -9.0
+  if min(left, right) > 0:
+    expected = 3.0
+  out1 = destination[0] - expected
+  total = 0.0
+  reference = 0.0
+  for i in 0..5:
+    total += destination[i]
+    if i < min(left, right):
+      reference += f32(i + 1) * 2.0 + 1.0
+    else:
+      reference += -9.0
+  out2 = total - reference
+  index = frame % 8 - 1
+  expected_guard = -2.0
+  if index < 0:
+    expected_guard = -1.0
+  elif index < left:
+    expected_guard = f32(index + 1)
+  out3 = guarded(source[:left], index) - expected_guard
+  expected_rebound = -3.0
+  if index >= 0 && index < left:
+    expected_rebound = f32(left)
+  out4 = rebound(source[:left], index) - expected_rebound
+  frame += 1

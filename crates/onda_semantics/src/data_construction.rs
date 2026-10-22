@@ -201,7 +201,7 @@ pub(crate) fn expand_constructor_defaults(
     {
         if init.is_none() {
             if let ArrayElemType::Struct(name) = &spec.elem {
-                *init = Some(vec![constructor(name, *loc)]);
+                *init = Some(vec![constructor(name, loc.clone())]);
                 *init_is_value = true;
             }
         }
@@ -229,13 +229,13 @@ pub(crate) fn expand_constructor_defaults(
             TypedFieldType::Struct => field
                 .struct_name
                 .as_deref()
-                .map(|name| constructor(name, *loc)),
+                .map(|name| constructor(name, loc.clone())),
             TypedFieldType::Array(len) => {
                 field
                     .array_elem_struct
                     .as_ref()
                     .map(|name| Expr::ArrayCtor {
-                        loc: *loc,
+                        loc: loc.clone(),
                         spec: onda_frontend::ArrayTypeSpec {
                             elem: ArrayElemType::Struct(name.clone()),
                             size: Box::new(Expr::int(*len as i64)),

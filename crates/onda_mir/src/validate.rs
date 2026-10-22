@@ -3660,46 +3660,7 @@ impl Validator<'_> {
     }
 
     fn place_type(&self, function: &Function, place: &Place) -> Option<crate::TypeId> {
-        let mut ty = match place.base {
-            PlaceBase::Local(local) => function.locals.get(local.index())?.ty,
-            PlaceBase::Parameter(parameter) => function.params.get(parameter.index())?.ty,
-            PlaceBase::State(state) => self.program.state.get(state.index())?.ty,
-            PlaceBase::Param(param) => self.program.interface.params.get(param.index())?.ty,
-            PlaceBase::EventParam(event_param) => {
-                let FunctionKind::Event(event) = function.kind else {
-                    return None;
-                };
-                self.program
-                    .interface
-                    .events
-                    .get(event.index())?
-                    .params
-                    .get(event_param.index())?
-                    .ty
-            }
-        };
-        for projection in &place.projections {
-            ty = match projection {
-                crate::Projection::Field(field) => {
-                    let Type::Struct(structure) = self.program.types.get(ty.index())? else {
-                        return None;
-                    };
-                    self.program
-                        .structs
-                        .get(structure.index())?
-                        .fields
-                        .get(field.index())?
-                        .ty
-                }
-                crate::Projection::Index { .. } => {
-                    let Type::Array { element, .. } = self.program.types.get(ty.index())? else {
-                        return None;
-                    };
-                    *element
-                }
-            };
-        }
-        Some(ty)
+        self.program.place_type(function, place)
     }
 
     fn place_is_writable(&self, function: &Function, place: &Place) -> bool {

@@ -61,7 +61,7 @@ fn lower_typed_and_jit(
         .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
     jit_program_from_optimized_mir_with_options(
         mir,
-        MirCompileOptions {
+        MirCompileOptions { math: Default::default(),
             fast_math: options.fast_math,
             opt_level: options.opt_level,
         },

@@ -39,6 +39,18 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "Memory access semantics across overlapping slices, calls, and loops",
+    source: join(packageDir, "test/fixtures/memory-access-semantics.onda"),
+    blocks: 12,
+    expectedChannels: Array.from({ length: 4 }, () => Array(48).fill(0)),
+  },
+  {
+    name: "slice bounds proofs across dynamic lengths, guards, and rebinding",
+    source: join(packageDir, "test/fixtures/slice-bounds-proofs.onda"),
+    blocks: 12,
+    expectedChannels: Array.from({ length: 4 }, () => Array(48).fill(0)),
+  },
+  {
     name: "borrowed branch aliases and explicit aggregate arguments",
     source: join(packageDir, "test/fixtures/structured-data-regressions.onda"),
     blocks: 3,

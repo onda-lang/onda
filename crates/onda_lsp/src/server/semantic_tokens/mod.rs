@@ -719,7 +719,7 @@ fn collect_graph_delay_expr_range(
         return;
     };
     let span = Span::from(delay.loc());
-    if !span_belongs_to_current_file(span, current_file_key) {
+    if !span_belongs_to_current_file(span.clone(), current_file_key) {
         return;
     }
     if let Some(range) = SourceRange::from_span(span) {

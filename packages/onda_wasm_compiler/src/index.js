@@ -154,6 +154,7 @@ class OndaCompiler {
         compile.sampleRate,
         compile.blockSize,
         compile.constantsJson,
+        JSON.stringify(workspace.constants ?? {}),
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
@@ -180,6 +181,7 @@ class OndaCompiler {
         compile.sampleRate,
         compile.blockSize,
         compile.constantsJson,
+        JSON.stringify(workspace.constants ?? {}),
       );
     } catch (error) {
       throw diagnosticsFromFrontend(error);
@@ -230,10 +232,10 @@ class OndaCompiler {
     return decodeCompileConstDescriptors(encoded);
   }
 
-  async createProjectImage(sourceGraph, buffers = new Map()) {
+  async createProjectImage(sourceGraph, buffers = new Map(), constants = {}) {
     this.assertActive();
     const graph = normalizeSourceGraph(sourceGraph);
-    const builder = new this.frontend.WebProjectImageBuilder(JSON.stringify(graph));
+    const builder = new this.frontend.WebProjectImageBuilder(JSON.stringify(graph), JSON.stringify(constants));
     try {
       for (const [name, bytes] of normalizeBufferAssetEntries(buffers)) {
         builder.add_buffer(name, bytes);
@@ -447,8 +449,8 @@ class WorkerOndaCompiler {
     return this.request("inspectProjectImageConstants", { imageBytes, options });
   }
 
-  createProjectImage(sourceGraph, buffers = new Map()) {
-    return this.request("createProjectImage", { sourceGraph, buffers });
+  createProjectImage(sourceGraph, buffers = new Map(), constants = {}) {
+    return this.request("createProjectImage", { sourceGraph, buffers, constants });
   }
 
   inspectProjectImage(imageBytes) {

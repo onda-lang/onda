@@ -158,7 +158,7 @@ fn substitute_call_type_args_with_bindings_expr_in_scope(
                                 continue;
                             }
                             push_semantic(
-                                diag,
+                                diag.clone(),
                                 errors,
                                 format!(
                                     "{}: unknown generic type argument '{}'; not declared in current generic owner",
@@ -258,7 +258,7 @@ fn substitute_call_type_args_with_bindings_stmt_in_scope(
             ..
         } => {
             if let Some(ty) = decl_ty {
-                *ty = specialize_decl_type_in_scope(ty, scope, _diag, errors);
+                *ty = specialize_decl_type_in_scope(ty, scope, _diag.clone(), errors);
             }
             if let Some(type_name) = generic_decl_ty.clone() {
                 match specialize_generic_type_name(&type_name, scope, _diag, errors) {
@@ -330,7 +330,7 @@ pub(crate) fn specialize_generic_struct_template(
     type_args: &[PrimitiveType],
     errors: &mut Vec<Diagnostic>,
 ) -> Option<StructDef> {
-    let diag = DiagCtx::new(template.loc);
+    let diag = DiagCtx::new(template.loc.clone());
     if type_args.len() != template.type_params.len() {
         push_semantic(
             diag,
@@ -367,7 +367,7 @@ pub(crate) fn specialize_generic_struct_template(
                 param,
                 &type_bindings,
                 &format!("struct '{}.{}'", template.name, field.name),
-                DiagCtx::new(field.ty_loc.or(field.loc)),
+                DiagCtx::new(field.ty_loc.or(field.loc.clone())),
                 errors,
             )?,
             FieldType::Array(spec) => {
@@ -383,7 +383,7 @@ pub(crate) fn specialize_generic_struct_template(
                                 elem,
                                 &type_bindings,
                                 &format!("struct '{}.{}' array element", template.name, field.name),
-                                DiagCtx::new(field.ty_loc.or(field.loc)),
+                                DiagCtx::new(field.ty_loc.or(field.loc.clone())),
                                 errors,
                             )? {
                                 FieldType::Scalar(bound) => ArrayElemType::Primitive(bound),
@@ -406,7 +406,7 @@ pub(crate) fn specialize_generic_struct_template(
                         ScalarTypeRef::Named(param) => {
                             let Some(bound) = type_bindings.get(param).copied() else {
                                 push_semantic(
-                                    DiagCtx::new(field.ty_loc.or(field.loc)),
+                                    DiagCtx::new(field.ty_loc.or(field.loc.clone())),
                                     errors,
                                     format!(
                                         "struct '{}.{}' references unknown generic type parameter '{}'",
@@ -423,10 +423,10 @@ pub(crate) fn specialize_generic_struct_template(
             }
         };
         fields.push(StructField {
-            loc: field.loc,
+            loc: field.loc.clone(),
             name: field.name.clone(),
             ty: specialized_ty,
-            ty_loc: field.ty_loc,
+            ty_loc: field.ty_loc.clone(),
             default,
         });
     }
@@ -437,7 +437,7 @@ pub(crate) fn specialize_generic_struct_template(
     }
 
     Some(StructDef {
-        loc: template.loc,
+        loc: template.loc.clone(),
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         fields,
@@ -1139,7 +1139,8 @@ fn specialize_fn_return_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> FnReturnType {
-    let mut specialize_scalar = |ty| specialize_fn_return_scalar_type(ty, scope, diag, errors);
+    let mut specialize_scalar =
+        |ty| specialize_fn_return_scalar_type(ty, scope, diag.clone(), errors);
     match ty {
         FnReturnType::Scalar(ty) => FnReturnType::Scalar(specialize_scalar(ty)),
         FnReturnType::Array { elem, size } => FnReturnType::Array {
@@ -1167,7 +1168,7 @@ pub(crate) fn specialize_function_type_annotations(
                     context: &format!("{context} parameter '{}'", param.name),
                     ..scope
                 },
-                DiagCtx::new(param.ty_loc.or(param.loc)),
+                DiagCtx::new(param.ty_loc.or(param.loc.clone())),
                 errors,
             );
         }
@@ -1179,7 +1180,7 @@ pub(crate) fn specialize_function_type_annotations(
                 context: &format!("{context} return type"),
                 ..scope
             },
-            DiagCtx::new(def.return_ty_loc),
+            DiagCtx::new(def.return_ty_loc.clone()),
             errors,
         );
     }
@@ -1307,7 +1308,7 @@ pub(crate) fn rewrite_generic_struct_ctor_expr(
                                 let Some(resolved) = resolve_explicit_call_type_args(
                                     &type_args,
                                     &format!("array element type '{}'", elem_text),
-                                    diag,
+                                    diag.clone(),
                                     errors,
                                 ) else {
                                     return;
@@ -1568,7 +1569,7 @@ impl GenericCtorRewriter for GenericStructCtorRewriter<'_> {
                     name,
                     self.templates,
                     self.generated,
-                    diag,
+                    diag.clone(),
                     errors,
                 );
             }
@@ -1803,7 +1804,7 @@ fn bind_nested_generic_type_args(
         return;
     };
     for (type_param, actual) in inferred {
-        bind_inferred_generic_type(bindings, &type_param, actual, context, diag, errors);
+        bind_inferred_generic_type(bindings, &type_param, actual, context, diag.clone(), errors);
     }
 }
 
@@ -1861,7 +1862,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
                         type_param,
                         inferred,
                         &format!("struct constructor '{}'", template.name),
-                        diag,
+                        diag.clone(),
                         errors,
                     );
                 }
@@ -1872,7 +1873,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
                     &template.type_params,
                     &mut bindings,
                     &format!("struct constructor '{}'", template.name),
-                    diag,
+                    diag.clone(),
                     errors,
                 );
             }
@@ -1886,7 +1887,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
                             type_param,
                             inferred,
                             &format!("struct constructor '{}'", template.name),
-                            diag,
+                            diag.clone(),
                             errors,
                         );
                     }
@@ -1903,7 +1904,7 @@ pub(crate) fn infer_generic_struct_ctor_type_args(
                             &template.type_params,
                             &mut bindings,
                             &format!("struct constructor '{}'", template.name),
-                            diag,
+                            diag.clone(),
                             errors,
                         );
                     }
@@ -1970,7 +1971,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                             type_param,
                             inferred,
                             &format!("processor constructor '{}'", template.name),
-                            diag,
+                            diag.clone(),
                             errors,
                         );
                     }
@@ -1983,7 +1984,7 @@ pub(crate) fn infer_generic_proc_ctor_type_args(
                             elem,
                             inferred,
                             &format!("processor constructor '{}'", template.name),
-                            diag,
+                            diag.clone(),
                             errors,
                         );
                     }
@@ -2090,7 +2091,7 @@ pub(crate) fn rewrite_generic_struct_field_types(
             &mut field.ty,
             templates,
             generated,
-            DiagCtx::new(field.ty_loc.or(field.loc)),
+            DiagCtx::new(field.ty_loc.or(field.loc.clone())),
             errors,
         );
     }
@@ -2109,9 +2110,13 @@ fn rewrite_generic_struct_field_type(
             rewrite_resolved_struct_type_name(name, templates, generated, diag, errors);
         }
         FieldType::Array(spec) => {
-            if let Some(specialized) =
-                reinterpret_explicit_scalar_field_type(spec, templates, generated, diag, errors)
-            {
+            if let Some(specialized) = reinterpret_explicit_scalar_field_type(
+                spec,
+                templates,
+                generated,
+                diag.clone(),
+                errors,
+            ) {
                 *ty = FieldType::Generic(specialized);
                 return;
             }
@@ -2171,7 +2176,7 @@ pub(crate) fn validate_deferred_generic_structs(
         for type_arg in type_args {
             match type_arg {
                 CallTypeArg::Primitive(PrimitiveType::Bool) => push_semantic(
-                    DiagCtx::new(loc),
+                    DiagCtx::new(&loc),
                     errors,
                     format!(
                         "struct constructor '{}': 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported",
@@ -2179,7 +2184,7 @@ pub(crate) fn validate_deferred_generic_structs(
                     ),
                 ),
                 CallTypeArg::Generic(param) if !owner_params.contains(param) => push_semantic(
-                    DiagCtx::new(loc),
+                    DiagCtx::new(&loc),
                     errors,
                     format!(
                         "struct constructor '{}': generic type argument '{}' is not declared by generic def '{}'",
@@ -2200,7 +2205,7 @@ pub(crate) fn validate_deferred_generic_structs(
                         type_args,
                         loc,
                         ..
-                    } => validate(name, type_args, (*loc).into()),
+                    } => validate(name, type_args, loc.clone().into()),
                     Expr::ArrayCtor { spec, loc, .. } => {
                         let ArrayElemType::Struct(name) = &spec.elem else {
                             continue;
@@ -2208,7 +2213,7 @@ pub(crate) fn validate_deferred_generic_structs(
                         if let Some((base, type_args)) =
                             parse_array_struct_elem_with_type_args(name)
                         {
-                            validate(&base, &type_args, (*loc).into());
+                            validate(&base, &type_args, loc.clone().into());
                         }
                     }
                     _ => {}
@@ -2382,7 +2387,7 @@ pub(crate) fn rewrite_explicit_generic_struct_function_types(
                     name,
                     templates,
                     generated,
-                    DiagCtx::new(param.ty_loc.or(param.loc)),
+                    DiagCtx::new(param.ty_loc.or(param.loc.clone())),
                     errors,
                 );
             }
@@ -2406,7 +2411,7 @@ pub(crate) fn rewrite_explicit_generic_struct_function_types(
                 name,
                 templates,
                 generated,
-                DiagCtx::new(def.return_ty_loc),
+                DiagCtx::new(&def.return_ty_loc),
                 errors,
             );
         }
@@ -2436,7 +2441,7 @@ pub(crate) fn rewrite_explicit_generic_struct_event_types(
                 name,
                 templates,
                 generated,
-                DiagCtx::new(param.ty_loc.or(param.loc)),
+                DiagCtx::new(param.ty_loc.or(param.loc.clone())),
                 errors,
             );
         }

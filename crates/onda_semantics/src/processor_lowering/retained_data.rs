@@ -71,7 +71,7 @@ pub(super) fn retain_proc_data(
     retained_names.sort_by_key(|name| {
         let location = init_locations
             .get(*name)
-            .copied()
+            .cloned()
             .unwrap_or(SourceLoc::ZERO);
         (location.line, location.column, name.as_str())
     });
@@ -83,7 +83,7 @@ pub(super) fn retain_proc_data(
                 format!(
                     "persistent data view '{name}' borrows init-local storage; declare independent fixed data to retain its contents"
                 ),
-                init_locations.get(name).copied().unwrap_or(SourceLoc::ZERO),
+                init_locations.get(name).cloned().unwrap_or(SourceLoc::ZERO),
             ));
         }
     }

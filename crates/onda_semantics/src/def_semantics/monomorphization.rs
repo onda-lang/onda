@@ -391,13 +391,13 @@ pub(crate) fn refresh_monomorphized_return_types(
 /// monomorphization (for example `readL(i32)` -> `_split_position(i32)`).
 fn rebase_generated_expr(expr: &mut Expr, origin: Span) {
     expr.visit_mut(|expr| {
-        expr.set_loc(origin);
+        expr.set_loc(origin.clone());
         true
     });
 }
 
 fn rebase_generated_target(target: &mut AssignTarget, origin: Span) {
-    target.visit_selectors_mut(|selector| rebase_generated_expr(selector, origin));
+    target.visit_selectors_mut(|selector| rebase_generated_expr(selector, origin.clone()));
 }
 
 fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
@@ -410,20 +410,20 @@ fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
             expr,
             ..
         } => {
-            *loc = origin;
-            *target_loc = origin;
-            *typed_decl_ty_loc = origin;
-            rebase_generated_target(target, origin);
+            *loc = origin.clone();
+            *target_loc = origin.clone();
+            *typed_decl_ty_loc = origin.clone();
+            rebase_generated_target(target, origin.clone());
             rebase_generated_expr(expr, origin);
         }
         Stmt::Expr { loc, expr } | Stmt::Return { loc, expr } => {
-            *loc = origin;
+            *loc = origin.clone();
             rebase_generated_expr(expr, origin);
         }
         Stmt::Print { loc, values, .. } => {
-            *loc = origin;
+            *loc = origin.clone();
             for value in values {
-                rebase_generated_expr(value, origin);
+                rebase_generated_expr(value, origin.clone());
             }
         }
         Stmt::If {
@@ -432,10 +432,10 @@ fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
             then_branch,
             else_branch,
         } => {
-            *loc = origin;
-            rebase_generated_expr(cond, origin);
+            *loc = origin.clone();
+            rebase_generated_expr(cond, origin.clone());
             for nested in then_branch.iter_mut().chain(else_branch) {
-                rebase_generated_stmt(nested, origin);
+                rebase_generated_stmt(nested, origin.clone());
             }
         }
         Stmt::For {
@@ -446,21 +446,21 @@ fn rebase_generated_stmt(stmt: &mut Stmt, origin: Span) {
             body,
             ..
         } => {
-            *loc = origin;
+            *loc = origin.clone();
             if let Some(step) = step {
-                rebase_generated_expr(step, origin);
+                rebase_generated_expr(step, origin.clone());
             }
-            rebase_generated_expr(start, origin);
-            rebase_generated_expr(end, origin);
+            rebase_generated_expr(start, origin.clone());
+            rebase_generated_expr(end, origin.clone());
             for nested in body {
-                rebase_generated_stmt(nested, origin);
+                rebase_generated_stmt(nested, origin.clone());
             }
         }
         Stmt::While { loc, cond, body } => {
-            *loc = origin;
-            rebase_generated_expr(cond, origin);
+            *loc = origin.clone();
+            rebase_generated_expr(cond, origin.clone());
             for nested in body {
-                rebase_generated_stmt(nested, origin);
+                rebase_generated_stmt(nested, origin.clone());
             }
         }
         Stmt::Break { loc } | Stmt::Continue { loc } => *loc = origin,
@@ -710,19 +710,19 @@ fn generate_mono_def(
         new_sig.sync_defaults_from_def(&new_def);
         return (new_def, new_sig);
     }
-    new_def.loc = origin;
+    new_def.loc = origin.clone();
     for param in &mut new_def.params {
-        param.loc = origin;
-        param.ty_loc = origin;
+        param.loc = origin.clone();
+        param.ty_loc = origin.clone();
         if let Some(default) = &mut param.default {
-            rebase_generated_expr(default, origin);
+            rebase_generated_expr(default, origin.clone());
         }
     }
     if let Some(FnReturnType::Array { size, .. }) = &mut new_def.return_ty {
-        rebase_generated_expr(size, origin);
+        rebase_generated_expr(size, origin.clone());
     }
     for stmt in &mut new_def.body {
-        rebase_generated_stmt(stmt, origin);
+        rebase_generated_stmt(stmt, origin.clone());
     }
     new_sig.sync_defaults_from_def(&new_def);
 
@@ -1236,7 +1236,7 @@ fn monomorphize_calls_in_expr(
                                      parameter declared by the enclosing generic def",
                                     param, name
                                 ),
-                                *loc,
+                                loc.clone(),
                             ));
                         }
                     }
@@ -1465,7 +1465,7 @@ fn monomorphize_calls_in_expr(
             *name = request_mono_instance(
                 (declaration, keys),
                 sig,
-                *loc,
+                loc.clone(),
                 struct_defs,
                 generated_defs,
                 generated_sigs,

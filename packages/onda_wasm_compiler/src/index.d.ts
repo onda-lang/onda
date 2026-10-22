@@ -104,7 +104,11 @@ export interface OndaCompileConstDescriptor {
   value: OndaResolvedCompileConstValue;
 }
 
+/** Project-manifest values; i64 values use decimal strings. */
+export type OndaProjectConstant = boolean | number | string | (boolean | number | string)[];
+
 export interface OndaSourceWorkspace {
+  constants?: Record<string, OndaProjectConstant>;
   entry: string;
   sources: Record<string, string>;
 }
@@ -219,6 +223,7 @@ export interface OndaCompilerInstance {
     sourceGraph: OndaSourceGraph,
     buffers?: Map<string, ArrayBuffer | ArrayBufferView>
       | Record<string, ArrayBuffer | ArrayBufferView>,
+    constants?: Record<string, OndaProjectConstant>,
   ): Promise<OndaSerializedProjectImage>;
   inspectProjectImage(
     imageBytes: ArrayBuffer | ArrayBufferView,

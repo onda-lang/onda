@@ -1,0 +1,848 @@
+{
+  "date": "2026-10-22",
+  "scope": "Performance cleanup: restore conservative scalar CSE and the previous constant/FFT table layout; preserve earlier validated improvements. No new optimization policy is introduced.",
+  "status": "Local cleanup and validation complete. Native macOS and Windows execution remains pending CI.",
+  "identity": {
+    "git_head": "fad4e25b53c2d82b6368aaa1b2cdf9a42565da5a",
+    "working_tree_dirty": true,
+    "compiler_source_hash": "4a092ad840f1c63cc9282485558b88d00756ede39f925609ad3ad34c22680376",
+    "compiler_source_hash_definition": "SHA-256 over lexically sorted git tracked/untracked nonignored crates/ and stdlib/ files ending .rs, .onda, .cpp, .toml, .bc; append UTF-8 relative path, NUL, bytes, NUL.",
+    "workers": {
+      "before_experiments": {
+        "path": "target/mir-memory-2026-10-22/benchmark-before",
+        "sha256": "cdb209db969b49852f09dcc40d24ac6ea7101e6617ee0ceaf9bc0441f8636264"
+      },
+      "with_experiments": {
+        "path": "target/mir-memory-2026-10-22/benchmark-alignment",
+        "sha256": "c2b30dca6303ea6307764c5cffb1de082e5e796c1d3e8b3b3e03be668a260691"
+      },
+      "cleaned": {
+        "path": "target/release/examples/benchmark_dsp",
+        "sha256": "ed7216016684dfe649806881297b87db1fcac42925f9627f104e74675fa0f328"
+      }
+    }
+  },
+  "retained": [
+    "Compiler scaling and correctness fixes from the repository review.",
+    "MIR path-sensitive slice bounds proofs and final analysis facts shared with backends.",
+    "Binaryen SIMD for proven independent straight-line sample loops.",
+    "Validated native state alignment and reduced real-FFT workspace.",
+    "Preallocated realtime MIDI/output producer storage.",
+    "Automatic embedded SLEEF bitcode with a pinned source submodule and no separate vector-math link library.",
+    "Behavioral aliasing, mutation, bounds and floating-point regression tests; shared place-type resolution."
+  ],
+  "removed": [
+    "MIR local value numbering with per-storage mutation epochs and alias-aware load/store forwarding, including its counter and rewrite-specific tests.",
+    "Forced 64-byte alignment of large constant tables in LLVM and Binaryen.",
+    "FFT coefficient-plane offsets introduced by the alignment experiment."
+  ],
+  "cleanup_production_lines_removed": 421,
+  "native_runtime": {
+    "comparison": "Saved compiler before the removed experiments versus freshly built cleaned compiler. This measures the cleanup, not the total improvement over the original review baseline.",
+    "host": "Linux x86-64; Intel Core i9-14900HX; affinity CPU 2; LLVM 21.1.2.",
+    "method": "Seven alternating baseline/candidate process pairs per case. Each process measures five rounds of at least 20 ms after warmup. Report the median of process medians. Compilation and initialization are outside the DSP interval. No concurrent agent builds/tests during timing.",
+    "settings": {
+      "sample_rate": 48000,
+      "block_size": 128,
+      "opt_level": 3,
+      "fast_math": false,
+      "reassociate": false,
+      "contract": false,
+      "no_signed_zeros": false,
+      "input_pattern": "noise",
+      "input_seed": 12345,
+      "validation_blocks": 8,
+      "latency_blocks": 1024
+    },
+    "finding": "All 12 AOT objects are byte-identical; all 172032 compared startup/warmed samples match bit-for-bit. Runtime median differences are within 0.56%; no runtime gain is attributed to the cleanup.",
+    "results": [
+      {
+        "case": "operator-arithmetic-f32",
+        "baseline_ns_per_frame": 0.6734147369861603,
+        "cleaned_ns_per_frame": 0.671577513217926,
+        "change_percent": -0.27282203185167164,
+        "baseline_process_medians_ns_per_frame": [
+          0.6680039167404175,
+          0.6741166412830353,
+          0.6834465861320496,
+          0.6728006899356842,
+          0.6733449697494507,
+          0.674073189496994,
+          0.6734147369861603
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          0.6715277433395386,
+          0.6702374517917633,
+          0.6743879020214081,
+          0.6714840531349182,
+          0.6742706000804901,
+          0.671577513217926,
+          0.6719458997249603
+        ],
+        "object_sha256": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067",
+        "objects_identical": true,
+        "state_bytes": [
+          4160,
+          4160
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "operator-arithmetic-f64",
+        "baseline_ns_per_frame": 0.7957960069179535,
+        "cleaned_ns_per_frame": 0.7945578992366791,
+        "change_percent": -0.15558103716422078,
+        "baseline_process_medians_ns_per_frame": [
+          0.7964610755443573,
+          0.7939101755619049,
+          0.7957960069179535,
+          0.7960393130779266,
+          0.8016238510608673,
+          0.7943152785301208,
+          0.7938081622123718
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          0.794767290353775,
+          0.7910777628421783,
+          0.7945578992366791,
+          0.7883742451667786,
+          0.7948666214942932,
+          0.7871411144733429,
+          0.7949518859386444
+        ],
+        "object_sha256": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6",
+        "objects_identical": true,
+        "state_bytes": [
+          8256,
+          8256
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "slice-fixed",
+        "baseline_ns_per_frame": 0.679407000541687,
+        "cleaned_ns_per_frame": 0.6763275563716888,
+        "change_percent": -0.45325470116482913,
+        "baseline_process_medians_ns_per_frame": [
+          0.6740573942661285,
+          0.6750758290290833,
+          0.679407000541687,
+          0.6834966242313385,
+          0.6847948729991913,
+          0.6911825835704803,
+          0.6779653131961823
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          0.674889087677002,
+          0.6745807230472565,
+          0.6763275563716888,
+          0.6762669086456299,
+          0.6863406896591187,
+          0.6875590085983276,
+          0.6805320680141449
+        ],
+        "object_sha256": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b",
+        "objects_identical": true,
+        "state_bytes": [
+          4160,
+          4160
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "slice-dynamic",
+        "baseline_ns_per_frame": 0.7015921175479889,
+        "cleaned_ns_per_frame": 0.6996525228023529,
+        "change_percent": -0.27645617690442714,
+        "baseline_process_medians_ns_per_frame": [
+          0.7001947164535522,
+          0.7019487023353577,
+          0.7054751217365265,
+          0.6990143060684204,
+          0.7015921175479889,
+          0.7023813426494598,
+          0.7014206647872925
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          0.6978029310703278,
+          0.6996702551841736,
+          0.6996525228023529,
+          0.694754034280777,
+          0.6989793479442596,
+          0.7001922130584717,
+          0.6998671293258667
+        ],
+        "object_sha256": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3",
+        "objects_identical": true,
+        "state_bytes": [
+          4160,
+          4160
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "filter-biquad",
+        "baseline_ns_per_frame": 2.0657423734664917,
+        "cleaned_ns_per_frame": 2.069483518600464,
+        "change_percent": 0.18110414841780997,
+        "baseline_process_medians_ns_per_frame": [
+          2.071488380432129,
+          2.065890908241272,
+          2.0630112290382385,
+          2.0656190514564514,
+          2.0648489594459534,
+          2.0657423734664917,
+          2.070837080478668
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          2.069483518600464,
+          2.068679451942444,
+          2.079348385334015,
+          2.0743658542633057,
+          2.0716947317123413,
+          2.065946936607361,
+          2.0692307353019714
+        ],
+        "object_sha256": "4861da492d4fbb6851bd7409b9ffed349f12138d2936a1e706335c6bf68ab634",
+        "objects_identical": true,
+        "state_bytes": [
+          48,
+          48
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "filter-svf",
+        "baseline_ns_per_frame": 4.210961818695068,
+        "cleaned_ns_per_frame": 4.212027072906494,
+        "change_percent": 0.025297170985894013,
+        "baseline_process_medians_ns_per_frame": [
+          4.210961818695068,
+          4.206071972846985,
+          4.201611876487732,
+          4.208812355995178,
+          4.212425947189331,
+          4.215890407562256,
+          4.219518065452576
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          4.21977424621582,
+          4.213379740715027,
+          4.196370244026184,
+          4.208122372627258,
+          4.2103142738342285,
+          4.21848726272583,
+          4.212027072906494
+        ],
+        "object_sha256": "28224f60a6389c220a483750b7ccf0881e562c0160ab6752b60b3d1e745844fc",
+        "objects_identical": true,
+        "state_bytes": [
+          40,
+          40
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "delay-linear-8192",
+        "baseline_ns_per_frame": 1.562839150428772,
+        "cleaned_ns_per_frame": 1.5689539909362793,
+        "change_percent": 0.3912648659863516,
+        "baseline_process_medians_ns_per_frame": [
+          1.5752901434898376,
+          1.5581207275390625,
+          1.564548671245575,
+          1.559230387210846,
+          1.555073320865631,
+          1.569322943687439,
+          1.562839150428772
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          1.572918176651001,
+          1.5644554495811462,
+          1.5689539909362793,
+          1.5708191394805908,
+          1.577135145664215,
+          1.5662251710891724,
+          1.557242512702942
+        ],
+        "object_sha256": "365a68302de1e3cdc3dcf5e5d79c4e604f24c591fc90e36f8bf7f712a5683904",
+        "objects_identical": true,
+        "state_bytes": [
+          32832,
+          32832
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "mix-crossfade",
+        "baseline_ns_per_frame": 0.12286118790507315,
+        "cleaned_ns_per_frame": 0.12354810163378717,
+        "change_percent": 0.5590974175219143,
+        "baseline_process_medians_ns_per_frame": [
+          0.12264538183808327,
+          0.12051480636000632,
+          0.12286118790507315,
+          0.12109438329935074,
+          0.12300720438361169,
+          0.15551475435495377,
+          0.1253133900463581
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          0.11974341422319412,
+          0.14426272734999657,
+          0.12063832953572275,
+          0.14553868398070335,
+          0.12354810163378717,
+          0.11880112811923027,
+          0.12361171841621399
+        ],
+        "object_sha256": "c0225d1a14d607934fbf6bd8aa61365282c72553318d35b1ce4d243fcff0762a",
+        "objects_identical": true,
+        "state_bytes": [
+          8,
+          8
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "convolution-timedomainconvolver-256-128",
+        "baseline_ns_per_frame": 34.61898708343506,
+        "cleaned_ns_per_frame": 34.62038516998291,
+        "change_percent": 0.004038496402225533,
+        "baseline_process_medians_ns_per_frame": [
+          34.63488483428955,
+          34.59079551696777,
+          34.62375450134277,
+          34.61898708343506,
+          34.66004657745361,
+          34.57270431518555,
+          34.55837345123291
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          34.61388301849365,
+          34.63545036315918,
+          34.6826114654541,
+          34.68112373352051,
+          34.56537342071533,
+          34.62038516998291,
+          34.61537837982178
+        ],
+        "object_sha256": "a9b19a146d3a894de12de5329af281c19df9a30aedaa5c961dbeab292dddac7d",
+        "objects_identical": true,
+        "state_bytes": [
+          2112,
+          2112
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "convolution-blockconvolver-256-4096",
+        "baseline_ns_per_frame": 46.64377212524414,
+        "cleaned_ns_per_frame": 46.555280685424805,
+        "change_percent": -0.18971758883850054,
+        "baseline_process_medians_ns_per_frame": [
+          46.5040225982666,
+          46.64377212524414,
+          46.83935546875,
+          46.70528984069824,
+          46.59040069580078,
+          46.56017875671387,
+          46.719600677490234
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          46.43429183959961,
+          47.0141487121582,
+          46.410051345825195,
+          46.555280685424805,
+          46.39377975463867,
+          46.70854377746582,
+          46.98288917541504
+        ],
+        "object_sha256": "88499459f0926458b86f255777f41c3089e192186b62c1983abe8bbd77723559",
+        "objects_identical": true,
+        "state_bytes": [
+          88384,
+          88384
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "fft-real-f32-1024",
+        "baseline_ns_per_frame": 8.267467498779297,
+        "cleaned_ns_per_frame": 8.273733854293823,
+        "change_percent": 0.07579534501287455,
+        "baseline_process_medians_ns_per_frame": [
+          8.267467498779297,
+          8.257284164428711,
+          8.340566158294678,
+          8.325351238250732,
+          8.30203628540039,
+          8.24407696723938,
+          8.244706630706787
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          8.223567247390747,
+          8.25267481803894,
+          8.31499719619751,
+          8.302854299545288,
+          8.294811248779297,
+          8.271633863449097,
+          8.273733854293823
+        ],
+        "object_sha256": "ddef871ab119b221f5c4273ec6dcb872ffdddedd458678eaa62bf874b64a38bc",
+        "objects_identical": true,
+        "state_bytes": [
+          8320,
+          8320
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      },
+      {
+        "case": "fft-real-f64-4096",
+        "baseline_ns_per_frame": 50.03500556945801,
+        "cleaned_ns_per_frame": 50.073429107666016,
+        "change_percent": 0.07679331254328847,
+        "baseline_process_medians_ns_per_frame": [
+          50.427507400512695,
+          50.03500556945801,
+          48.98959732055664,
+          49.023263931274414,
+          48.788970947265625,
+          55.56838798522949,
+          51.40058517456055
+        ],
+        "cleaned_process_medians_ns_per_frame": [
+          50.073429107666016,
+          51.27212333679199,
+          50.085710525512695,
+          49.65252113342285,
+          49.266788482666016,
+          49.5097770690918,
+          51.58946418762207
+        ],
+        "object_sha256": "ba053cdf2f4abdde31a1ed1e18cadb0d7569acd3edd806debf30d14eb5a64fc4",
+        "objects_identical": true,
+        "state_bytes": [
+          65664,
+          65664
+        ],
+        "bit_exact_output_samples": 14336,
+        "output_mismatches": 0
+      }
+    ]
+  },
+  "mir_compile_cost": {
+    "comparison": "Saved compiler with the removed experiments versus freshly built cleaned compiler.",
+    "method": "Ten alternating prepare-only invocations per case on CPU 2; discard first two pairs and take medians of eight. Rust allocation instrumentation enabled in both variants; no LLVM JIT compilation.",
+    "finding": "MIR optimization time decreases 8.4–14.2% (0.013–0.528 ms on these cases). Total frontend medians remain within 0.9%; this is removal of pass overhead, not a broad compilation-latency claim.",
+    "results": [
+      {
+        "case": "slice-fixed",
+        "experimental_mir_ms": 0.14176,
+        "cleaned_mir_ms": 0.1256155,
+        "mir_change_percent": -11.388614559819422,
+        "mir_samples_ms": [
+          [
+            0.135005,
+            0.140012,
+            0.142979,
+            0.14424399999999998,
+            0.144693,
+            0.140541,
+            0.14408300000000002,
+            0.13850099999999999
+          ],
+          [
+            0.12353399999999999,
+            0.121816,
+            0.132955,
+            0.12701199999999999,
+            0.121482,
+            0.125995,
+            0.12642099999999998,
+            0.12523600000000001
+          ]
+        ],
+        "frontend_median_ms": [
+          13.687734500000001,
+          13.585525500000001
+        ]
+      },
+      {
+        "case": "slice-dynamic",
+        "experimental_mir_ms": 0.2003705,
+        "cleaned_mir_ms": 0.183443,
+        "mir_change_percent": -8.448099894944615,
+        "mir_samples_ms": [
+          [
+            0.200742,
+            0.206586,
+            0.196326,
+            0.19789199999999998,
+            0.225305,
+            0.20198500000000003,
+            0.19879000000000002,
+            0.19999899999999998
+          ],
+          [
+            0.179553,
+            0.188808,
+            0.211634,
+            0.184756,
+            0.179365,
+            0.18213,
+            0.18209,
+            0.185149
+          ]
+        ],
+        "frontend_median_ms": [
+          13.8915025,
+          14.010508
+        ]
+      },
+      {
+        "case": "fft-real-f32-4096",
+        "experimental_mir_ms": 3.5244565000000003,
+        "cleaned_mir_ms": 3.0676145,
+        "mir_change_percent": -12.962055284268658,
+        "mir_samples_ms": [
+          [
+            3.605433,
+            3.454155,
+            3.505799,
+            3.525254,
+            3.568285,
+            3.5236590000000003,
+            3.529516,
+            3.5047260000000002
+          ],
+          [
+            3.049052,
+            3.0666759999999997,
+            3.060428,
+            3.089931,
+            3.068553,
+            3.090865,
+            3.061412,
+            3.073535
+          ]
+        ],
+        "frontend_median_ms": [
+          365.210897,
+          367.13511
+        ]
+      },
+      {
+        "case": "convolution-blockconvolver-256-4096",
+        "experimental_mir_ms": 4.983667499999999,
+        "cleaned_mir_ms": 4.455794,
+        "mir_change_percent": -10.592068993366821,
+        "mir_samples_ms": [
+          [
+            4.993659999999999,
+            5.032175,
+            5.012097,
+            4.966609,
+            4.968606,
+            4.985402,
+            4.981933,
+            4.980875
+          ],
+          [
+            4.466384000000001,
+            4.4387289999999995,
+            4.4699290000000005,
+            4.47935,
+            4.4570039999999995,
+            4.426673,
+            4.428165000000001,
+            4.4545840000000005
+          ]
+        ],
+        "frontend_median_ms": [
+          206.35066899999998,
+          204.98939000000001
+        ]
+      },
+      {
+        "case": "voice-bank-256",
+        "experimental_mir_ms": 0.0938425,
+        "cleaned_mir_ms": 0.08051250000000001,
+        "mir_change_percent": -14.204651410608182,
+        "mir_samples_ms": [
+          [
+            0.092989,
+            0.094898,
+            0.09023099999999999,
+            0.09380100000000001,
+            0.089979,
+            0.093884,
+            0.096518,
+            0.10166700000000001
+          ],
+          [
+            0.07978,
+            0.085044,
+            0.081991,
+            0.078691,
+            0.08099500000000001,
+            0.07720099999999999,
+            0.08003,
+            0.083874
+          ]
+        ],
+        "frontend_median_ms": [
+          13.919632,
+          13.8342545
+        ]
+      }
+    ]
+  },
+  "wasm_codegen": [
+    {
+      "case": "slice-fixed",
+      "before_sha256": "058a3d6ccf234251456d294505876d78d2405f3b22c2ebd8706eeb6fa3c49075",
+      "after_sha256": "058a3d6ccf234251456d294505876d78d2405f3b22c2ebd8706eeb6fa3c49075",
+      "identical": true
+    },
+    {
+      "case": "slice-dynamic",
+      "before_sha256": "0f776ee0dcc9a465cd2d2212c9dd7212aebeb39de17d5a016a9725cde0faffe1",
+      "after_sha256": "0f776ee0dcc9a465cd2d2212c9dd7212aebeb39de17d5a016a9725cde0faffe1",
+      "identical": true
+    }
+  ],
+  "earlier_results_retained": {
+    "provenance": "Historical stage-specific measurements recorded during this work, not a new end-to-end sweep of the final tree.",
+    "native_fft_runtime": [
+      {
+        "case": "fft-real-f32-1024",
+        "instances": 1,
+        "baseline_ns_per_frame": 8.163934,
+        "candidate_ns_per_frame": 7.924844,
+        "ratio": 0.9707138739730136,
+        "baseline_state_bytes": 12288,
+        "candidate_state_bytes": 8320
+      },
+      {
+        "case": "fft-real-f32-1024",
+        "instances": 96,
+        "baseline_ns_per_frame": 8.510923,
+        "candidate_ns_per_frame": 8.370206,
+        "ratio": 0.9834663055934121,
+        "baseline_state_bytes": 12288,
+        "candidate_state_bytes": 8320
+      },
+      {
+        "case": "fft-real-f64-1024",
+        "instances": 1,
+        "baseline_ns_per_frame": 10.741075,
+        "candidate_ns_per_frame": 10.621495,
+        "ratio": 0.9888670361206862,
+        "baseline_state_bytes": 24576,
+        "candidate_state_bytes": 16512
+      },
+      {
+        "case": "fft-real-f64-1024",
+        "instances": 96,
+        "baseline_ns_per_frame": 11.668776,
+        "candidate_ns_per_frame": 11.463644,
+        "ratio": 0.9824204355281138,
+        "baseline_state_bytes": 24576,
+        "candidate_state_bytes": 16512
+      },
+      {
+        "case": "fft-real-f32-4096",
+        "instances": 1,
+        "baseline_ns_per_frame": 34.601341,
+        "candidate_ns_per_frame": 34.022222,
+        "ratio": 0.983263105322999,
+        "baseline_state_bytes": 49152,
+        "candidate_state_bytes": 32896
+      },
+      {
+        "case": "fft-real-f32-4096",
+        "instances": 48,
+        "baseline_ns_per_frame": 35.892295,
+        "candidate_ns_per_frame": 35.205431,
+        "ratio": 0.9808631908324614,
+        "baseline_state_bytes": 49152,
+        "candidate_state_bytes": 32896
+      }
+    ],
+    "fft_memory": {
+      "logical_bin_workspace_f32_1024_bytes": {
+        "before": 8192,
+        "after": 4104
+      },
+      "native_total_state_f32_1024_bytes": {
+        "before": 12288,
+        "after": 8320
+      }
+    },
+    "wasm_pointwise_simd": [
+      {
+        "simd": false,
+        "ns_per_frame": 0.5527446718750006,
+        "rounds_ns_per_frame": [
+          0.5490066249999996,
+          0.5506728671875001,
+          0.5516157187499999,
+          0.5527446718750006,
+          0.56132415625,
+          0.5653574062499995,
+          0.5663429453125
+        ],
+        "simd_instructions": 0
+      },
+      {
+        "simd": true,
+        "ns_per_frame": 0.21069682031249926,
+        "rounds_ns_per_frame": [
+          0.2095631796874997,
+          0.21029699218749975,
+          0.21063991406249905,
+          0.21069682031249926,
+          0.2110958359375008,
+          0.211558101562499,
+          0.5134086171874994
+        ],
+        "simd_instructions": 6
+      }
+    ],
+    "wasm_slice_bounds": [
+      {
+        "fixture": "slice-dynamic",
+        "baseline_ns_per_frame": 4.425079494714738,
+        "candidate_ns_per_frame": 2.780274450778954,
+        "candidate_to_baseline": 0.6282993230064411
+      },
+      {
+        "fixture": "slice-fixed",
+        "baseline_ns_per_frame": 3.292540729045885,
+        "candidate_ns_per_frame": 2.623477637767816,
+        "candidate_to_baseline": 0.7967942855267427
+      }
+    ],
+    "compiler_scaling_synthetic": [
+      {
+        "probe": "8000 constants, parser",
+        "before_ms": 641,
+        "after_ms": 35.26
+      },
+      {
+        "probe": "800 forward definitions, semantic analysis",
+        "before_ms": 992.9,
+        "after_ms": 26.127
+      },
+      {
+        "probe": "1600-function MIR chain, optimize",
+        "before_ms": 250.08,
+        "after_ms": 2.433
+      }
+    ],
+    "realtime_producer_allocations": {
+      "measured": 0,
+      "scope": "Steady-state ordinary MIDI plus delegate/print output; control JSON and error paths may still allocate."
+    },
+    "numerical_policy": "Strict arithmetic. Relaxed-reduction setting comparisons and SLEEF throughput are excluded from these runtime improvement claims."
+  },
+  "accepted_tradeoffs_and_limits": [
+    "Bundled SLEEF previously measured about 2–6 ms additional JIT time on small math probes; its packaging remains an explicit accepted tradeoff.",
+    "The removed alignment batch had mixed cache-pressure results, including +10.6% processing time on one FFT probe. The cleanup restores byte-identical pre-experiment objects; a new cache-pressure timing claim is not made.",
+    "No evidence of a broad non-SLEEF native DSP speedup across all audio workloads. Earlier native FFT throughput gains are small; Wasm has the strongest general runtime gains.",
+    "Native timings are Linux x86-64 microbenchmarks on a shared workstation, with no fixed-frequency or isolated-machine guarantee; no audio-device underrun measurement.",
+    "The saved baseline workers came from uncommitted intermediate trees at the same Git HEAD. Their SHA-256 identities distinguish them, but exact historical recompilation from a Git commit alone is unavailable.",
+    "Native macOS, Windows and ARM execution was not performed locally. CI jobs cover macOS and Windows JIT/AOT and slice tests."
+  ],
+  "validation": {
+    "rust": {
+      "passed": 3305,
+      "failed": 0,
+      "ignored": 2
+    },
+    "clippy": "workspace, all targets, warnings denied: passed",
+    "formatting": "passed",
+    "diff_check": "passed",
+    "binaryen_js_passed": 102,
+    "abi_js_passed": 42,
+    "webaudio_js_passed": 63,
+    "benchmark_harness": {
+      "passed": 11,
+      "failed": 0,
+      "integration_enabled": true
+    },
+    "backend_parity": {
+      "scenarios": 37,
+      "configurations": 2,
+      "bit_exact_samples": 1976,
+      "approximate_samples": 2528,
+      "max_absolute_error": 1.192e-07
+    },
+    "fma_oracle_vectors": 20020,
+    "source_corpus": {
+      "passed": 37,
+      "total": 37
+    },
+    "embedded_sleef_manifest": "passed",
+    "hand_authored_source_limit": "all files below 5000 lines",
+    "browser_package": {
+      "passed": 29,
+      "failed": 0,
+      "fresh_build": true
+    },
+    "run_view_js_passed": 2,
+    "playground_js_passed": 97,
+    "browser_build": "passed; fresh wasm32 frontend compiled and optimized with pinned Binaryen",
+    "benchmark_harness_note": "Fixed a test-only /proc disappearance race observed during timeout cleanup verification.",
+    "browser_examples": {
+      "catalog_projects": 54,
+      "materialized_projects": 3
+    },
+    "javascript_total_passed": 335,
+    "stdlib_docs": "current",
+    "api_docs": "passed",
+    "platform_ci": "macOS and Windows test jobs retained; not executed locally"
+  },
+  "reproduction": {
+    "build": "cargo build --release -j1 -p onda_examples --features llvm-orc --example benchmark_dsp",
+    "preserve_baseline": "Copy the worker from the baseline checkout before rebuilding the candidate. Historical saved worker paths and hashes are listed in identity.workers.",
+    "generate_and_compare": "python3 scripts/bench/run.py --runner /path/to/baseline-worker --filter \"operator-arithmetic-f32|operator-arithmetic-f64|slice-fixed|slice-dynamic|filter-biquad|delay-linear-8192|mix-crossfade|convolution-timedomainconvolver-256-128|convolution-blockconvolver-256-4096|fft-real-f32-1024|fft-real-f64-4096\" --backend native --cpu 2 --repetitions 5 --round-ms 20 --assembly --ir --output target/bench/baseline",
+    "candidate": "Repeat with the freshly built worker, a new output directory and --compare-to target/bench/baseline --bitwise. Select filter-svf separately with --source using its catalog source because --filter is substring matching.",
+    "alternating_pairs": "For each generated case.config.json, invoke the baseline and candidate workers with the same source and numeric settings, distinct prefix paths, and alternating order for seven pairs. Use scripts/bench/limits.py Limits(cpu=2, memory_mib=2048, timeout_seconds=60) for bounded execution. Keep ir/assembly enabled only on the first pair. Compare output.bin and warm-output.bin using scripts/bench/compare.py output_difference(..., atol=0, rtol=0, bitwise=True). Aggregate each worker JSON ns_per_frame using the median.",
+    "compile_only": "Use the same case configurations with mode=prepare, allocations=true, ir=false, assembly=false, remarks=false; alternate the experimental and cleaned workers ten times, discard first two pairs and take medians of phases.mir_optimization_ms and frontend_ms.",
+    "wasm_artifacts": "python3 scripts/bench/run.py --filter \"slice-fixed|slice-dynamic\" --backend both --inspect-only --assembly --cpu 2 --output target/bench/final-slices",
+    "correctness_commands": [
+      "cargo test --workspace",
+      "cargo clippy --workspace --all-targets --no-deps -- -D warnings",
+      "cargo fmt --all -- --check",
+      "python3 scripts/build-native-math-kernel.py --check",
+      "ONDA_BENCH_INTEGRATION=1 python3 -m unittest discover -s scripts/bench -p \"test_*.py\"",
+      "npm test --workspace @onda-lang/binaryen-web",
+      "npm test --workspace @onda-lang/processor-abi",
+      "npm test --workspace @onda-lang/webaudio",
+      "npm run test:onda --workspace @onda-lang/binaryen-web",
+      "npm run test:corpus --workspace @onda-lang/binaryen-web",
+      "npm run build --workspace @onda-lang/wasm-compiler",
+      "npm run test:built --workspace @onda-lang/wasm-compiler",
+      "npm run check:examples",
+      "npm run check:stdlib-docs",
+      "npm run check:api-docs",
+      "npm run test:run-view",
+      "npm run test:playground"
+    ],
+    "raw_artifacts": "Local target/performance-closeout-2026-10-22 contains per-invocation configs, commands, logs, outputs, objects, complete timing rows and compiler-phase samples. The compact measurements and identities in this report survive target cleanup.",
+    "prerequisites": "Use the repository LLVM setup and installed npm dependencies. Browser rebuild requires wasm-pack and cargo-about on PATH; this host appends /home/francesco/.cargo/bin to its normal PATH."
+  }
+}

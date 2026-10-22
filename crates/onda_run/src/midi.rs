@@ -40,58 +40,40 @@ pub(crate) struct TimedMidiMessage {
     pub message: MidiMessage,
 }
 
+/// MIDI messages have at most four scalar arguments. Keep their payload inline.
+pub(crate) struct MidiEventValues {
+    values: [RunEventValue; 4],
+    len: usize,
+}
+
+impl std::ops::Deref for MidiEventValues {
+    type Target = [RunEventValue];
+    fn deref(&self) -> &Self::Target {
+        &self.values[..self.len]
+    }
+}
+
 impl MidiMessage {
-    pub(crate) fn event(self) -> (&'static str, Vec<RunEventValue>) {
-        let number = RunEventValue::from_f32;
-        let integer = |value| RunEventValue::Number(f64::from(value));
-        match self.kind {
-            MidiMessageKind::NoteOn => (
-                "note_on",
-                vec![
-                    integer(-1),
-                    integer(self.channel),
-                    integer(self.key_or_controller),
-                    number(self.value),
-                ],
-            ),
-            MidiMessageKind::NoteOff => (
-                "note_off",
-                vec![
-                    integer(-1),
-                    integer(self.channel),
-                    integer(self.key_or_controller),
-                    number(self.value),
-                ],
-            ),
-            MidiMessageKind::PolyPressure => (
-                "poly_pressure",
-                vec![
-                    integer(self.channel),
-                    integer(self.key_or_controller),
-                    number(self.value),
-                ],
-            ),
-            MidiMessageKind::PitchBend => (
-                "pitch_bend",
-                vec![integer(self.channel), number(self.value)],
-            ),
-            MidiMessageKind::ChannelPressure => (
-                "channel_pressure",
-                vec![integer(self.channel), number(self.value)],
-            ),
-            MidiMessageKind::ControlChange => (
-                "cc",
-                vec![
-                    integer(self.channel),
-                    integer(self.key_or_controller),
-                    number(self.value),
-                ],
-            ),
-            MidiMessageKind::ProgramChange => (
-                "program_change",
-                vec![integer(self.channel), integer(self.key_or_controller)],
-            ),
-        }
+    pub(crate) fn event(self) -> (&'static str, MidiEventValues) {
+        let channel = f64::from(self.channel);
+        let key = f64::from(self.key_or_controller);
+        let value = f64::from(self.value);
+        let (name, values, len) = match self.kind {
+            MidiMessageKind::NoteOn => ("note_on", [-1.0, channel, key, value], 4),
+            MidiMessageKind::NoteOff => ("note_off", [-1.0, channel, key, value], 4),
+            MidiMessageKind::PolyPressure => ("poly_pressure", [channel, key, value, 0.0], 3),
+            MidiMessageKind::PitchBend => ("pitch_bend", [channel, value, 0.0, 0.0], 2),
+            MidiMessageKind::ChannelPressure => ("channel_pressure", [channel, value, 0.0, 0.0], 2),
+            MidiMessageKind::ControlChange => ("cc", [channel, key, value, 0.0], 3),
+            MidiMessageKind::ProgramChange => ("program_change", [channel, key, 0.0, 0.0], 2),
+        };
+        (
+            name,
+            MidiEventValues {
+                values: values.map(RunEventValue::Number),
+                len,
+            },
+        )
     }
 }
 

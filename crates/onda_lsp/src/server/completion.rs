@@ -1154,7 +1154,7 @@ impl CompletionIndex {
             }
             match block {
                 Block::Ins(ports) => {
-                    extend_span(&mut span, ports.loc);
+                    extend_span(&mut span, ports.loc.clone());
                     for name in port_block_names(ports) {
                         items.push(port_item(&name, "port"));
                     }
@@ -1169,7 +1169,7 @@ impl CompletionIndex {
                     }
                 }
                 Block::Outs(ports) => {
-                    extend_span(&mut span, ports.loc);
+                    extend_span(&mut span, ports.loc.clone());
                     for name in port_block_names(ports) {
                         items.push(port_item(&name, "port"));
                     }
@@ -1184,7 +1184,7 @@ impl CompletionIndex {
                     }
                 }
                 Block::KOuts(ports) => {
-                    extend_span(&mut span, ports.loc);
+                    extend_span(&mut span, ports.loc.clone());
                     for name in port_block_names(ports) {
                         items.push(port_item(&name, "port"));
                     }
@@ -1201,7 +1201,7 @@ impl CompletionIndex {
                     }
                 }
                 Block::Params(params) => {
-                    extend_span(&mut span, params.loc);
+                    extend_span(&mut span, params.loc.clone());
                     for name in param_block_names(params) {
                         items.push(param_item(&name, "param"));
                     }
@@ -1217,20 +1217,20 @@ impl CompletionIndex {
                     }
                 }
                 Block::Buffers(buffers) => {
-                    extend_span(&mut span, buffers.loc);
+                    extend_span(&mut span, buffers.loc.clone());
                     for (name, is_collection) in buffer_block_instances(buffers) {
                         items.push(port_item(&name, "buffer"));
                         instances.insert(name, InstanceInfo::Buffer { is_collection });
                     }
                 }
                 Block::Events(events) => {
-                    extend_span(&mut span, events.loc);
+                    extend_span(&mut span, events.loc.clone());
                     for event in &events.events {
                         items.push(event_item(event));
                     }
                 }
                 Block::Delegates(delegates) => {
-                    extend_span(&mut span, delegates.loc);
+                    extend_span(&mut span, delegates.loc.clone());
                     for delegate in &delegates.delegates {
                         items.push(delegate_item(delegate));
                     }
@@ -1239,7 +1239,7 @@ impl CompletionIndex {
                     extend_span(&mut span, span_for_when_scope(when));
                 }
                 Block::Tasks(task_block) => {
-                    extend_span(&mut span, task_block.loc);
+                    extend_span(&mut span, task_block.loc.clone());
                     for task in &task_block.tasks {
                         items.push(task_item(task));
                         instances.insert(task.name.clone(), InstanceInfo::Task);
@@ -1247,31 +1247,31 @@ impl CompletionIndex {
                     }
                 }
                 Block::Init(init) => {
-                    extend_span(&mut span, init.loc);
+                    extend_span(&mut span, init.loc.clone());
                     self.collect_stmt_items(&init.body, "state", true, &mut state_items);
                     self.collect_stmt_scope_instances(&init.body, "", true, &mut instances);
-                    stmt_regions.push((init.loc, init.body.as_slice(), true));
+                    stmt_regions.push((init.loc.clone(), init.body.as_slice(), true));
                 }
                 Block::Block(exec) => {
-                    extend_span(&mut span, exec.loc);
+                    extend_span(&mut span, exec.loc.clone());
                     self.collect_stmt_items(&exec.pre, "state", true, &mut state_items);
                     self.collect_stmt_scope_instances(&exec.pre, "", true, &mut instances);
                     if let Some(pre_span) = span_for_stmt_body(&exec.pre) {
                         stmt_regions.push((pre_span, exec.pre.as_slice(), true));
                     }
                     if let Some(sample) = &exec.sample {
-                        stmt_regions.push((sample.loc, sample.body.as_slice(), false));
+                        stmt_regions.push((sample.loc.clone(), sample.body.as_slice(), false));
                     }
                     if let Some(post_span) = span_for_stmt_body(&exec.post) {
                         stmt_regions.push((post_span, exec.post.as_slice(), false));
                     }
                 }
                 Block::Sample(sample) => {
-                    extend_span(&mut span, sample.loc);
-                    stmt_regions.push((sample.loc, sample.body.as_slice(), false));
+                    extend_span(&mut span, sample.loc.clone());
+                    stmt_regions.push((sample.loc.clone(), sample.body.as_slice(), false));
                 }
                 Block::Graph(graph) => {
-                    extend_span(&mut span, graph.loc);
+                    extend_span(&mut span, graph.loc.clone());
                 }
                 _ => {}
             }
@@ -1869,7 +1869,7 @@ impl CompletionIndex {
                     else_branch,
                     ..
                 } => {
-                    if self.span_end_is_visible(*loc) {
+                    if self.span_end_is_visible(loc.clone()) {
                         let mut then_items = Vec::new();
                         self.collect_visible_stmt_items(
                             then_branch,
@@ -1981,7 +1981,7 @@ impl CompletionIndex {
                     expr,
                     ..
                 } => {
-                    if self.span_start_is_visible(*target_loc) {
+                    if self.span_start_is_visible(target_loc.clone()) {
                         if let Some(name) = assign_target_name(target) {
                             let contextual_instance = match expr {
                                 Expr::Var { name, .. } => out.get(name).cloned(),
@@ -2028,7 +2028,7 @@ impl CompletionIndex {
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
+                    if !top_level_assigns_only && self.span_end_is_visible(loc.clone()) {
                         let mut then_instances = out.clone();
                         self.collect_visible_stmt_instances(
                             then_branch,
@@ -2069,7 +2069,7 @@ impl CompletionIndex {
         items: Vec<CompletionItem>,
         instances: HashMap<String, InstanceInfo>,
     ) -> Option<usize> {
-        if span.is_zero() || !self.span_belongs_to_current_file(span) {
+        if span.is_zero() || !self.span_belongs_to_current_file(span.clone()) {
             return None;
         }
         let depth = parent.map(|idx| self.scopes[idx].depth + 1).unwrap_or(0);
@@ -2911,7 +2911,7 @@ impl CompletionIndex {
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
-                    if self.span_start_is_visible(*target_loc) {
+                    if self.span_start_is_visible(target_loc.clone()) {
                         for name in assign_target_names(target) {
                             push_completion_item_once(out, variable_item(name, detail));
                         }
@@ -2923,7 +2923,7 @@ impl CompletionIndex {
                     else_branch,
                     ..
                 } => {
-                    if !top_level_assigns_only && self.span_end_is_visible(*loc) {
+                    if !top_level_assigns_only && self.span_end_is_visible(loc.clone()) {
                         let mut then_items = out.clone();
                         self.collect_visible_stmt_items(
                             then_branch,
@@ -3589,7 +3589,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             else_branch,
             ..
         } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(branch_span) = span_for_stmt_body(then_branch) {
                 span = Span::spanning(span, branch_span);
             }
@@ -3599,7 +3599,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             span
         }
         Stmt::For { loc, body, .. } | Stmt::While { loc, body, .. } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(body_span) = span_for_stmt_body(body) {
                 span = Span::spanning(span, body_span);
             }
@@ -3619,47 +3619,47 @@ fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
 
 fn span_for_function_scope(def: &FunctionDef) -> Span {
     span_for_stmt_body(&def.body)
-        .map(|body_span| Span::spanning(def.loc, body_span))
-        .unwrap_or(def.loc)
+        .map(|body_span| Span::spanning(def.loc.clone(), body_span))
+        .unwrap_or(def.loc.clone())
 }
 
 fn span_for_event_scope(event: &EventDef) -> Span {
     span_for_stmt_body(&event.body)
-        .map(|body_span| Span::spanning(event.loc, body_span))
-        .unwrap_or(event.loc)
+        .map(|body_span| Span::spanning(event.loc.clone(), body_span))
+        .unwrap_or(event.loc.clone())
 }
 
 fn span_for_when_scope(when: &WhenDef) -> Span {
     span_for_stmt_body(&when.body)
-        .map(|body_span| Span::spanning(when.loc, body_span))
-        .unwrap_or(when.loc)
+        .map(|body_span| Span::spanning(when.loc.clone(), body_span))
+        .unwrap_or(when.loc.clone())
 }
 
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
-        .map(|body_span| Span::spanning(task.loc, body_span))
-        .unwrap_or(task.loc)
+        .map(|body_span| Span::spanning(task.loc.clone(), body_span))
+        .unwrap_or(task.loc.clone())
 }
 
 fn span_for_init_scope(init: &InitBlock) -> Span {
     span_for_stmt_body(&init.body)
-        .map(|body_span| Span::spanning(init.loc, body_span))
-        .unwrap_or(init.loc)
+        .map(|body_span| Span::spanning(init.loc.clone(), body_span))
+        .unwrap_or(init.loc.clone())
 }
 
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
-    let mut span = proc_def.loc;
+    let mut span = proc_def.loc.clone();
     for decl in &proc_def.ins {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.outs {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.params {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.buffers {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     span = Span::spanning(span, span_for_init_scope(&proc_def.init));
     if let Some(body_span) = span_for_stmt_body(&proc_def.block_pre) {
@@ -3672,13 +3672,13 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
         span = Span::spanning(span, body_span);
     }
     if let Some(graph) = &proc_def.graph {
-        span = Span::spanning(span, graph.loc);
+        span = Span::spanning(span, graph.loc.clone());
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
     }
     for delegate in &proc_def.delegates {
-        span = Span::spanning(span, delegate.loc);
+        span = Span::spanning(span, delegate.loc.clone());
     }
     for when in &proc_def.whens {
         span = Span::spanning(span, span_for_when_scope(when));
@@ -3693,9 +3693,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
 }
 
 fn span_for_struct_scope(struct_def: &StructDef) -> Span {
-    let mut span = struct_def.loc;
+    let mut span = struct_def.loc.clone();
     for field in &struct_def.fields {
-        span = Span::spanning(span, field.loc);
+        span = Span::spanning(span, field.loc.clone());
     }
     for method in &struct_def.methods {
         span = Span::spanning(span, span_for_function_scope(method));
@@ -3704,17 +3704,17 @@ fn span_for_struct_scope(struct_def: &StructDef) -> Span {
 }
 
 fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
-    let mut span = ns.loc;
+    let mut span = ns.loc.clone();
     for item in &ns.items {
         let item_span = match item {
-            NamespaceItem::Assert(decl) => decl.loc,
-            NamespaceItem::Const(decl) => decl.loc,
+            NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),
             NamespaceItem::Proc(decl) => span_for_proc_scope(decl),
             NamespaceItem::Namespace(decl) => span_for_namespace_scope(decl),
-            NamespaceItem::Alias(decl) => decl.loc,
-            NamespaceItem::Use(decl) => decl.loc,
+            NamespaceItem::Alias(decl) => decl.loc.clone(),
+            NamespaceItem::Use(decl) => decl.loc.clone(),
         };
         span = Span::spanning(span, item_span);
     }
@@ -3722,7 +3722,7 @@ fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
 }
 
 fn extend_span(span: &mut Option<Span>, next: Span) {
-    *span = Some(match *span {
+    *span = Some(match span.take() {
         Some(current) => Span::spanning(current, next),
         None => next,
     });
@@ -4619,7 +4619,7 @@ fn use_info_from_decl(namespace: &str, use_decl: &UseDecl) -> UseInfo {
         target: namespace_segments_key(&use_decl.target),
         alias: use_decl.alias.clone(),
         public: use_decl.public,
-        file_key: file_key_for_span(use_decl.loc),
+        file_key: file_key_for_span(use_decl.loc.clone()),
     }
 }
 

@@ -7,6 +7,7 @@ export async function encodeSharedSession(session) {
     entry: session.entry,
     active: session.active,
     sources: session.sources,
+    constants: session.constants,
     v: SHARE_SCHEMA_VERSION,
   }));
   if (source.byteLength > MAX_DECODED_BYTES) {

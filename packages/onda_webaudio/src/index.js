@@ -394,6 +394,14 @@ export class OndaAudioProcessor {
       if (error) pending.reject(error);
       else pending.resolve(message);
     };
+    this.handleProcessorError = (event) => {
+      const error = event.error instanceof Error
+        ? event.error
+        : new Error(event.message || "Onda AudioWorklet processor failed");
+      this.notifyListeners(this.executionErrorListeners, error);
+      this.close(error);
+    };
+    node.addEventListener("processorerror", this.handleProcessorError);
     node.port.addEventListener("message", this.handleMessage);
     node.port.start?.();
     if (this.printListeners.size !== 0) this.startExecutionOutputDrain();
@@ -909,6 +917,7 @@ export class OndaAudioProcessor {
       }
     }
     this.node.port.removeEventListener("message", this.handleMessage);
+    this.node.removeEventListener("processorerror", this.handleProcessorError);
     this.stopExecutionOutputDrain();
     for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();

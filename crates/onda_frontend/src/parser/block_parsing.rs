@@ -175,7 +175,7 @@ pub(super) fn parse_port_block(block_pair: Pair<'_, Rule>) -> Result<PortBlock, 
     let (block_name, prefix, output_timing, output_timing_loc) = match block_rule {
         Rule::ins_block => ("ins", "in", OutputTiming::Sample, Span::ZERO),
         Rule::outs_block => ("outs", "out", OutputTiming::Sample, Span::ZERO),
-        Rule::kouts_block => ("kouts", "kout", OutputTiming::Block, block_loc),
+        Rule::kouts_block => ("kouts", "kout", OutputTiming::Block, block_loc.clone()),
         _ => ("ports", "port", OutputTiming::Sample, Span::ZERO),
     };
     let allow_default_and_range = block_rule == Rule::ins_block;
@@ -639,7 +639,7 @@ pub(super) fn parse_when_block(block_pair: Pair<'_, Rule>) -> Result<WhenDef, Ve
         }
     }
     Ok(WhenDef {
-        loc,
+        loc: loc.clone(),
         target: target.ok_or_else(|| {
             vec![syntax_at_loc(
                 loc.as_ref(),
@@ -684,7 +684,7 @@ fn parse_when_target(pair: Pair<'_, Rule>) -> Result<WhenTarget, Vec<Diagnostic>
                 }
             }
             Ok(WhenTarget {
-                loc,
+                loc: loc.clone(),
                 receiver: vec![receiver.ok_or_else(|| {
                     vec![syntax_at_loc(loc.as_ref(), "missing indexed when receiver")]
                 })?],
@@ -1317,7 +1317,7 @@ pub(super) fn parse_struct_block(block_pair: Pair<'_, Rule>) -> Result<StructDef
                     if let Some((func, lower, upper)) = range {
                         let value = default.take().unwrap_or_else(|| Expr::int(0));
                         default = Some(Expr::Call {
-                            loc: field_loc,
+                            loc: field_loc.clone(),
                             func,
                             args: vec![value, lower, upper],
                         });

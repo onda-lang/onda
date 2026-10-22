@@ -39,9 +39,9 @@ impl<'a> FunctionLowerer<'a> {
             Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
             access,
             block,
-            statement_location,
+            statement_location.clone(),
         );
-        let shapes = self.struct_field_shapes(&array.proc_name, statement_location)?;
+        let shapes = self.struct_field_shapes(&array.proc_name, statement_location.clone())?;
         let alternatives = array
             .slots
             .iter()
@@ -51,7 +51,7 @@ impl<'a> FunctionLowerer<'a> {
                     slot,
                     &shapes,
                     block,
-                    statement_location,
+                    statement_location.clone(),
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -525,7 +525,7 @@ impl<'a> FunctionLowerer<'a> {
                         },
                         value: Rvalue::Use(value.value),
                     },
-                    statement_location,
+                    statement_location.clone(),
                 );
             }
         } else {
@@ -618,7 +618,7 @@ impl<'a> FunctionLowerer<'a> {
         let len_u32 = u32::try_from(len).map_err(|_| {
             self.error(
                 format!("local array '{name}' length does not fit u32"),
-                statement_location,
+                statement_location.clone(),
             )
         })?;
         if self.bindings.contains_key(name) {
@@ -666,7 +666,7 @@ impl<'a> FunctionLowerer<'a> {
                     },
                     value: Rvalue::Use(value),
                 },
-                statement_location,
+                statement_location.clone(),
             );
         }
         Ok(true)
@@ -733,7 +733,7 @@ impl<'a> FunctionLowerer<'a> {
                 bounds: BoundsMode::Unchecked,
                 access: onda_mir::AccessMode::ReadWrite,
             },
-            location,
+            location.clone(),
         );
         self.push_statement(
             block,
@@ -759,13 +759,17 @@ impl<'a> FunctionLowerer<'a> {
                 return Err(self.error("tuple field assignment changed arity", statement_location));
             }
             for (name, value) in components.iter().zip(values) {
-                self.store_data_scalar(name, value, block, statement_location)?;
+                self.store_data_scalar(name, value, block, statement_location.clone())?;
             }
             return Ok(());
         }
         if values.len() == 1 {
-            values[0] =
-                self.normalize_data_scalar_store(name, values[0], block, statement_location)?;
+            values[0] = self.normalize_data_scalar_store(
+                name,
+                values[0],
+                block,
+                statement_location.clone(),
+            )?;
             if let Some(Binding::PlaceAlias(place, ty)) = self.bindings.get(name).cloned() {
                 let value = self.coerce(values[0], ty, block, expression.loc())?;
                 self.assign_place_value(block, place, value.value, statement_location);
@@ -826,7 +830,8 @@ impl<'a> FunctionLowerer<'a> {
                     )
                 })
                 .unwrap_or(PrimitiveType::F32);
-            let (local, target_ty) = self.scalar_local(name, inferred_ty, statement_location)?;
+            let (local, target_ty) =
+                self.scalar_local(name, inferred_ty, statement_location.clone())?;
             let value = self.coerce(values[0], target_ty, block, expression.loc())?;
             self.assign_value(block, local, value.value, statement_location);
             return Ok(());
@@ -855,7 +860,7 @@ impl<'a> FunctionLowerer<'a> {
                         },
                         value: Rvalue::Use(value.value),
                     },
-                    statement_location,
+                    statement_location.clone(),
                 );
             }
             return Ok(());
@@ -875,10 +880,10 @@ impl<'a> FunctionLowerer<'a> {
                 statement_location,
             ));
         }
-        let components = self.tuple_local(name, target_types, statement_location)?;
+        let components = self.tuple_local(name, target_types, statement_location.clone())?;
         for (value, (local, target_ty)) in values.into_iter().zip(components) {
             let value = self.coerce(value, target_ty, block, expression.loc())?;
-            self.assign_value(block, local, value.value, statement_location);
+            self.assign_value(block, local, value.value, statement_location.clone());
         }
         Ok(())
     }
@@ -906,7 +911,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
             for (value, (state, ty)) in values.iter().copied().zip(components) {
-                let value = self.coerce(value, ty, block, value_location)?;
+                let value = self.coerce(value, ty, block, value_location.clone())?;
                 self.push_statement(
                     block,
                     StatementKind::Assign {
@@ -916,7 +921,7 @@ impl<'a> FunctionLowerer<'a> {
                         },
                         value: Rvalue::Use(value.value),
                     },
-                    statement_location,
+                    statement_location.clone(),
                 );
             }
             return Ok(true);
@@ -936,13 +941,13 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
         if let Some((local, ty)) = self.audio_output_caches.get(name).copied() {
-            let value = self.single_global_value(name, values, statement_location)?;
+            let value = self.single_global_value(name, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.assign_value(block, local, value.value, statement_location);
             return Ok(true);
         }
         if let Some((output, ty)) = globals.control_outputs.get(name).copied() {
-            let value = self.single_global_value(name, values, statement_location)?;
+            let value = self.single_global_value(name, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -960,10 +965,10 @@ impl<'a> FunctionLowerer<'a> {
             let frame = self.current_frame.ok_or_else(|| {
                 self.error(
                     format!("audio output '{name}' was written outside the sample section"),
-                    statement_location,
+                    statement_location.clone(),
                 )
             })?;
-            let value = self.single_global_value(name, values, statement_location)?;
+            let value = self.single_global_value(name, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -979,7 +984,7 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(true);
         }
         if let Some((state, ty)) = globals.states.get(name).copied() {
-            let value = self.single_global_value(name, values, statement_location)?;
+            let value = self.single_global_value(name, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,

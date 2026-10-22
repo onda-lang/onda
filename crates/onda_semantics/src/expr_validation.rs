@@ -213,7 +213,7 @@ pub(crate) fn validate_block_bound_surface_var_name(
 ) -> bool {
     if let Some((base, field)) = split_field_path(name, errors) {
         let flat = format!("{base}.{field}");
-        return validate_block_bound_surface_plain_name(&flat, loc, env, errors)
+        return validate_block_bound_surface_plain_name(&flat, loc.clone(), env, errors)
             && validate_block_bound_surface_plain_name(base, loc, env, errors);
     }
     validate_block_bound_surface_plain_name(name, loc, env, errors)
@@ -357,7 +357,7 @@ pub(crate) fn validate_block_bound_surface_assign_target(
         }
         AssignTarget::Tuple(names) => {
             for name in names.iter().filter_map(|target| target.binding()) {
-                ok &= validate_block_bound_surface_var_name(name, loc, env, errors);
+                ok &= validate_block_bound_surface_var_name(name, loc.clone(), env, errors);
             }
         }
     }
@@ -3186,7 +3186,7 @@ fn validate_data_len_builtin_call(
     if !args.is_empty() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!(
                 "builtin method '{}' expects 0 arguments, got {}",
                 name,
@@ -3198,7 +3198,7 @@ fn validate_data_len_builtin_call(
         if arg.name.is_some() {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!("builtin method '{}' does not support named arguments", name),
             );
         }
@@ -3217,7 +3217,7 @@ fn validate_buffer_metadata_builtin_call(
     if !args.is_empty() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!(
                 "builtin method '{}' expects 0 arguments, got {}",
                 name,
@@ -3229,7 +3229,7 @@ fn validate_buffer_metadata_builtin_call(
         if arg.name.is_some() {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!("builtin method '{}' does not support named arguments", name),
             );
         }
@@ -3271,7 +3271,7 @@ fn validate_buffer_array_param_call_arg(
                     expected_len,
                     &choice.expr,
                     env,
-                    loc,
+                    loc.clone(),
                     errors,
                 );
             }
@@ -3311,7 +3311,7 @@ fn validate_buffer_array_param_call_arg(
         );
         return;
     };
-    validate_buffer_symbol_for_param(&context, expected, base, env, arg.loc().or(loc), errors);
+    validate_buffer_symbol_for_param(&context, expected, base, env, arg.loc().or(&loc), errors);
 
     let bound = |expr: Option<&Expr>, default: i64, label: &str, errors: &mut Vec<Diagnostic>| {
         expr.map_or(Some(default), |expr| {
@@ -3319,7 +3319,7 @@ fn validate_buffer_array_param_call_arg(
             if value.is_none() {
                 push_loc_error(
                     errors,
-                    expr.loc().or(loc),
+                    expr.loc().or(&loc),
                     format!("{context} requires a compile-time {label} bound"),
                 );
             }
@@ -3438,7 +3438,7 @@ fn validate_buffer_symbol_for_param(
         BufferElemType::Generic(ref param_ty) => {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!(
                     "{context} uses unresolved generic buffer element type '{}'",
                     param_ty
@@ -3450,7 +3450,7 @@ fn validate_buffer_symbol_for_param(
     if !has_declared_buffer_elem_type_info(env.declared_symbols, symbol, expected_elem) {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!(
                 "{context} expects element type {:?}, but buffer '{}' has a different element type",
                 expected_elem, symbol
@@ -3553,7 +3553,7 @@ fn validate_internal_buffer_index_call(
     if args.len() != expected_arity {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!(
                 "{} '{}' expects {} positional arguments, got {}",
                 label,
@@ -3567,7 +3567,7 @@ fn validate_internal_buffer_index_call(
         if arg.name.is_some() {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!("{} '{}' does not support named arguments", label, name),
             );
         }
@@ -3652,7 +3652,7 @@ fn validate_unsafe_index_call(
         if argument.name.is_some() {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!("'{name}' does not support named arguments"),
             );
         }
@@ -3676,7 +3676,7 @@ fn validate_unsafe_index_call(
         if args.len() != expected {
             push_loc_error(
                 errors,
-                loc,
+                loc.clone(),
                 format!(
                     "'{name}' expects {} index argument{}{}, got {} arguments",
                     shape.index_count,
@@ -3690,13 +3690,13 @@ fn validate_unsafe_index_call(
             if matches!(shape.element, UnsafeStorageElement::Resource) {
                 push_loc_error(
                     errors,
-                    first.expr.loc().or(loc),
+                    first.expr.loc().or(&loc),
                     format!("write_unsafe does not support resource array '{base}'"),
                 );
             } else if !shape.writable {
                 push_loc_error(
                     errors,
-                    first.expr.loc().or(loc),
+                    first.expr.loc().or(&loc),
                     format!("write_unsafe storage '{base}' is read-only"),
                 );
             }
@@ -3704,7 +3704,7 @@ fn validate_unsafe_index_call(
         if !is_write && !shape.readable {
             push_loc_error(
                 errors,
-                first.expr.loc().or(loc),
+                first.expr.loc().or(&loc),
                 format!("read_unsafe storage '{base}' is write-only"),
             );
         }
@@ -3996,14 +3996,14 @@ fn validate_internal_proc_index_call(
     if base_expr.is_none() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!("internal builtin '{name}' is missing processor array base argument"),
         );
     }
     if index_expr.is_none() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!("internal builtin '{name}' is missing processor array index argument"),
         );
     }
@@ -4013,7 +4013,7 @@ fn validate_internal_proc_index_call(
             validate_expr(base_expr, env, errors);
             push_loc_error(
                 errors,
-                base_expr.loc().or(loc),
+                base_expr.loc().or(&loc),
                 format!("internal builtin '{name}' expects processor array base as an identifier"),
             );
         }
@@ -4084,7 +4084,7 @@ fn validate_internal_proc_index_buffer_select_call(
             Some(other) => {
                 push_loc_error(
                     errors,
-                    arg.expr.loc().or(loc),
+                    arg.expr.loc().or(&loc),
                     format!(
                         "internal builtin '{}' does not support named argument '{}'",
                         name, other
@@ -4098,21 +4098,21 @@ fn validate_internal_proc_index_buffer_select_call(
     if base_expr.is_none() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!("internal builtin '{name}' is missing processor array base argument"),
         );
     }
     if index_expr.is_none() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!("internal builtin '{name}' is missing processor array index argument"),
         );
     }
     if slot_exprs.is_empty() {
         push_loc_error(
             errors,
-            loc,
+            loc.clone(),
             format!("internal builtin '{name}' requires at least one slot buffer argument"),
         );
     }
@@ -4124,7 +4124,7 @@ fn validate_internal_proc_index_buffer_select_call(
                 validate_expr(other, env, errors);
                 push_loc_error(
                     errors,
-                    other.loc().or(loc),
+                    other.loc().or(&loc),
                     format!(
                         "internal builtin '{name}' expects processor array base as an identifier"
                     ),
@@ -4142,7 +4142,7 @@ fn validate_internal_proc_index_buffer_select_call(
                 if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
                     push_loc_error(
                         errors,
-                        slot_expr.loc().or(loc),
+                        slot_expr.loc().or(&loc),
                         format!(
                             "internal builtin '{}' slot arguments must be declared buffer symbols, got '{}'",
                             name, symbol
@@ -4154,7 +4154,7 @@ fn validate_internal_proc_index_buffer_select_call(
                 validate_expr(other, env, errors);
                 push_loc_error(
                     errors,
-                    other.loc().or(loc),
+                    other.loc().or(&loc),
                     format!(
                         "internal builtin '{}' slot arguments must be buffer symbol variables",
                         name

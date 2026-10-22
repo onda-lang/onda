@@ -244,6 +244,21 @@ needs but does not replace a target SDK, sysroot, linker, or platform ABI docume
 The native compiler deliberately stops at a relocatable object for every LLVM AOT target. Onda does
 not bundle or invoke a linker. The descriptor's `integration.required_symbols` lists processor
 symbols the final application must retain at its chosen integration boundary.
+Optional `integration.link_libraries` lists native library dependencies. Vectorized math is
+automatic on Linux/macOS x64 and ARM64, and Windows x64 MSVC. The compiler embeds precompiled
+SLEEF helpers directly into both JIT code and emitted objects, retaining only used helpers.
+No separate vector-math flag, SLEEF library, DLL, or CMake target is needed.
+Cross-compilation uses the destination CPU features, data layout and calling convention;
+it does not need a SLEEF archive or executable for that target. The usual destination toolchain
+and platform math library are still needed for final linking (scalar tails may require `-lm`
+on Unix). Unsupported targets retain scalar math.
+
+SLEEF uses the `u35` family for sin/cos/tan/tanh/atan/atan2/log and `u10` for exp/pow; results
+can differ from scalar libm within the upstream functions' accuracy contracts. This does not
+permit assuming finite inputs, reassociating arithmetic or discarding signed zeros.
+Optional `compile.floating_point` records the independent `reassociate`, `contract` and
+`no_signed_zeros` permissions; `compile.fast_math` enables all floating-point relaxations.
+Without those permissions, arithmetic preserves operation order and separate rounding.
 
 The `native_relocatable_object` profile requires no Onda-specific entry point. The user's normal
 platform linker combines the object with the host and any required runtime libraries.
@@ -294,6 +309,9 @@ buffer_sample_rates, output)` before processing. The four buffer tables describe
 current for this initialization call and follow the same rules as process and event calls. Pass
 null for `output` when initialization output is not consumed. Physical state uses the backend's
 selected target layout and is otherwise opaque.
+
+LLVM aligns state arrays of at least 256 bytes to 64-byte boundaries. Physical padding is included
+in the reported state size; hosts must honor the reported alignment, including when cloning state.
 
 Hosts may replace buffer descriptors between entry-point calls. The next init, event, or process
 call observes the replacement; rebinding alone does not execute initialization or recompute state

@@ -437,11 +437,11 @@ impl DefinitionInfo {
         if self.span.is_zero() {
             return None;
         }
-        let uri = uri_for_span(self.span, fallback_path)?;
-        let source = source_for_span(self.span, fallback_path, fallback_source, overlays);
+        let uri = uri_for_span(self.span.clone(), fallback_path)?;
+        let source = source_for_span(self.span.clone(), fallback_path, fallback_source, overlays);
         Some(json!({
             "uri": uri,
-            "range": span_range_json(self.span, source.as_deref()),
+            "range": span_range_json(self.span.clone(), source.as_deref()),
         }))
     }
 }
@@ -621,12 +621,12 @@ impl NavigationIndex {
             full_name: full_name.clone(),
             kind: DefinitionKind::Namespace,
             detail: format!("namespace {full_name}"),
-            span: ns.loc,
-            file_key: file_key_for_span(ns.loc),
+            span: ns.loc.clone(),
+            file_key: file_key_for_span(ns.loc.clone()),
             private: false,
         });
         for param in &ns.params {
-            self.add_namespace_param_definition(&full_name, param, ns.loc);
+            self.add_namespace_param_definition(&full_name, param, ns.loc.clone());
         }
 
         for item in &ns.items {
@@ -666,8 +666,8 @@ impl NavigationIndex {
             full_name,
             kind: DefinitionKind::NamespaceAlias,
             detail: format!("namespace {} = {target}", alias.name),
-            span: alias.loc,
-            file_key: file_key_for_span(alias.loc),
+            span: alias.loc.clone(),
+            file_key: file_key_for_span(alias.loc.clone()),
             private: false,
         });
     }
@@ -678,7 +678,7 @@ impl NavigationIndex {
             target: namespace_segments_key(&use_decl.target),
             alias: use_decl.alias.clone(),
             public: use_decl.public,
-            file_key: file_key_for_span(use_decl.loc),
+            file_key: file_key_for_span(use_decl.loc.clone()),
         });
     }
 
@@ -689,8 +689,8 @@ impl NavigationIndex {
             full_name,
             kind: DefinitionKind::Const,
             detail: format!("const {}", decl.name),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: false,
         })
     }
@@ -716,8 +716,8 @@ impl NavigationIndex {
             full_name: full_name.clone(),
             kind,
             detail: format!("{const_prefix}{label} {}{type_params}({params})", def.name),
-            span: def.loc,
-            file_key: file_key_for_span(def.loc),
+            span: def.loc.clone(),
+            file_key: file_key_for_span(def.loc.clone()),
             private: false,
         });
 
@@ -752,8 +752,8 @@ impl NavigationIndex {
             full_name: full_name.clone(),
             kind: DefinitionKind::Proc,
             detail: format!("proc {}{type_params}({args})", proc_def.name),
-            span: proc_def.loc,
-            file_key: file_key_for_span(proc_def.loc),
+            span: proc_def.loc.clone(),
+            file_key: file_key_for_span(proc_def.loc.clone()),
             private: false,
         });
 
@@ -767,8 +767,8 @@ impl NavigationIndex {
             full_name: namespace_join(&full_name, "init"),
             kind: DefinitionKind::Event,
             detail: format!("event init({})", proc_init_signature(proc_def)),
-            span: proc_def.loc,
-            file_key: file_key_for_span(proc_def.loc),
+            span: proc_def.loc.clone(),
+            file_key: file_key_for_span(proc_def.loc.clone()),
             private: false,
         });
         info.init = Some(init_idx);
@@ -782,7 +782,7 @@ impl NavigationIndex {
                 .ins_deferred_count
                 .as_ref()
                 .map(|expr| expr.loc().span())
-                .unwrap_or(proc_def.loc);
+                .unwrap_or(proc_def.loc.clone());
             for index in 1..=count {
                 let name = format!("in{index}");
                 let idx = self.add_synthetic_port_definition(
@@ -790,7 +790,7 @@ impl NavigationIndex {
                     &name,
                     DefinitionKind::Port,
                     "proc input",
-                    span,
+                    span.clone(),
                 );
                 info.ins.insert(name, idx);
             }
@@ -805,7 +805,7 @@ impl NavigationIndex {
                 .outs_deferred_count
                 .as_ref()
                 .map(|expr| expr.loc().span())
-                .unwrap_or(proc_def.loc);
+                .unwrap_or(proc_def.loc.clone());
             for index in 1..=count {
                 let name = format!("out{index}");
                 let idx = self.add_synthetic_port_definition(
@@ -813,7 +813,7 @@ impl NavigationIndex {
                     &name,
                     DefinitionKind::Port,
                     "proc output",
-                    span,
+                    span.clone(),
                 );
                 info.outs.insert(name, idx);
             }
@@ -860,8 +860,8 @@ impl NavigationIndex {
             full_name: full_name.clone(),
             kind: DefinitionKind::Struct,
             detail: format!("struct {} {{ {fields} }}", struct_def.name),
-            span: struct_def.loc,
-            file_key: file_key_for_span(struct_def.loc),
+            span: struct_def.loc.clone(),
+            file_key: file_key_for_span(struct_def.loc.clone()),
             private: false,
         });
 
@@ -891,8 +891,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &decl.name),
             kind,
             detail: format!("{detail} {}", decl.name),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: false,
         })
     }
@@ -910,7 +910,7 @@ impl NavigationIndex {
             full_name: namespace_join(owner, name),
             kind,
             detail: format!("{detail} {name}"),
-            span,
+            span: span.clone(),
             file_key: file_key_for_span(span),
             private: false,
         })
@@ -935,7 +935,7 @@ impl NavigationIndex {
                 &name,
                 DefinitionKind::Port,
                 detail,
-                span,
+                span.clone(),
             );
             out.entry(name).or_insert(idx);
         }
@@ -947,8 +947,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &decl.name),
             kind: DefinitionKind::RuntimeParam,
             detail: format!("{detail} {}", format_param_decl(decl)),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: decl.private,
         })
     }
@@ -959,8 +959,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &decl.name),
             kind: DefinitionKind::Parameter,
             detail: format!("argument {}", decl.name),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: false,
         })
     }
@@ -975,8 +975,8 @@ impl NavigationIndex {
                 decl.name,
                 format_event_param_type(&decl.ty)
             ),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: false,
         })
     }
@@ -987,8 +987,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &decl.name),
             kind: DefinitionKind::Buffer,
             detail: format!("{detail} {}", decl.name),
-            span: decl.loc,
-            file_key: file_key_for_span(decl.loc),
+            span: decl.loc.clone(),
+            file_key: file_key_for_span(decl.loc.clone()),
             private: false,
         })
     }
@@ -1006,8 +1006,8 @@ impl NavigationIndex {
             full_name: event_owner.clone(),
             kind: DefinitionKind::Event,
             detail: format!("event {}({params})", event.name),
-            span: event.loc,
-            file_key: file_key_for_span(event.loc),
+            span: event.loc.clone(),
+            file_key: file_key_for_span(event.loc.clone()),
             private: false,
         });
 
@@ -1038,8 +1038,8 @@ impl NavigationIndex {
             full_name: delegate_owner.clone(),
             kind: DefinitionKind::Delegate,
             detail: format!("delegate {}({params})", delegate.name),
-            span: delegate.loc,
-            file_key: file_key_for_span(delegate.loc),
+            span: delegate.loc.clone(),
+            file_key: file_key_for_span(delegate.loc.clone()),
             private: false,
         });
         let mut param_indices = HashMap::new();
@@ -1053,8 +1053,8 @@ impl NavigationIndex {
                     param.name,
                     format_event_param_type(&param.ty)
                 ),
-                span: param.loc,
-                file_key: file_key_for_span(param.loc),
+                span: param.loc.clone(),
+                file_key: file_key_for_span(param.loc.clone()),
                 private: false,
             });
             param_indices.entry(param.name.clone()).or_insert(idx);
@@ -1076,8 +1076,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &task.name),
             kind: DefinitionKind::Task,
             detail: format!("task {}()", task.name),
-            span: task.loc,
-            file_key: file_key_for_span(task.loc),
+            span: task.loc.clone(),
+            file_key: file_key_for_span(task.loc.clone()),
             private: true,
         })
     }
@@ -1088,8 +1088,8 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &field.name),
             kind: DefinitionKind::Field,
             detail: format!("field {}", field.name),
-            span: field.loc,
-            file_key: file_key_for_span(field.loc),
+            span: field.loc.clone(),
+            file_key: file_key_for_span(field.loc.clone()),
             private: false,
         })
     }
@@ -1110,7 +1110,7 @@ impl NavigationIndex {
                 DefinitionKind::Variable
             },
             detail: format!("local {name}"),
-            span,
+            span: span.clone(),
             file_key: file_key_for_span(span),
             private: false,
         })
@@ -1122,7 +1122,7 @@ impl NavigationIndex {
             full_name: namespace_join(owner, name),
             kind: DefinitionKind::TypeParam,
             detail: format!("type parameter {name}"),
-            span,
+            span: span.clone(),
             file_key: file_key_for_span(span),
             private: false,
         })
@@ -1139,7 +1139,7 @@ impl NavigationIndex {
             full_name: namespace_join(owner, &param.name),
             kind: DefinitionKind::NamespaceParam,
             detail: format!("namespace parameter {}", param.name),
-            span,
+            span: span.clone(),
             file_key: file_key_for_span(span),
             private: false,
         })
@@ -1278,7 +1278,7 @@ impl NavigationIndex {
             }
             match block {
                 Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
-                    extend_span(&mut span, ports.loc);
+                    extend_span(&mut span, ports.loc.clone());
                     for decl in &ports.decls {
                         let idx = self.add_port_definition("", decl, DefinitionKind::Port, "port");
                         definitions.insert(decl.name.clone(), idx);
@@ -1287,34 +1287,34 @@ impl NavigationIndex {
                         "",
                         &ports.deferred_prefix,
                         ports.deferred_count.as_ref(),
-                        ports.loc,
+                        ports.loc.clone(),
                         "port",
                         &mut definitions,
                     );
                 }
                 Block::Params(params) => {
-                    extend_span(&mut span, params.loc);
+                    extend_span(&mut span, params.loc.clone());
                     for decl in &params.decls {
                         let idx = self.add_param_definition("", decl, "param");
                         definitions.insert(decl.name.clone(), idx);
                     }
                 }
                 Block::Buffers(buffers) => {
-                    extend_span(&mut span, buffers.loc);
+                    extend_span(&mut span, buffers.loc.clone());
                     for decl in &buffers.decls {
                         let idx = self.add_buffer_definition("", decl, "buffer");
                         definitions.insert(decl.name.clone(), idx);
                     }
                 }
                 Block::Events(events) => {
-                    extend_span(&mut span, events.loc);
+                    extend_span(&mut span, events.loc.clone());
                     for event in &events.events {
                         let idx = self.add_event_definition("", event);
                         definitions.insert(event.name.clone(), idx);
                     }
                 }
                 Block::Delegates(delegates) => {
-                    extend_span(&mut span, delegates.loc);
+                    extend_span(&mut span, delegates.loc.clone());
                     for delegate in &delegates.delegates {
                         let idx = self.add_delegate_definition("", delegate);
                         definitions.insert(delegate.name.clone(), idx);
@@ -1324,7 +1324,7 @@ impl NavigationIndex {
                     extend_span(&mut span, span_for_when_scope(when));
                 }
                 Block::Tasks(task_block) => {
-                    extend_span(&mut span, task_block.loc);
+                    extend_span(&mut span, task_block.loc.clone());
                     for task in &task_block.tasks {
                         let idx = self.add_task_definition("", task);
                         definitions.insert(task.name.clone(), idx);
@@ -1332,21 +1332,21 @@ impl NavigationIndex {
                     }
                 }
                 Block::Init(init) => {
-                    extend_span(&mut span, init.loc);
-                    stmt_regions.push((init.loc, init.body.as_slice(), true));
+                    extend_span(&mut span, init.loc.clone());
+                    stmt_regions.push((init.loc.clone(), init.body.as_slice(), true));
                 }
                 Block::Block(exec) => {
-                    extend_span(&mut span, exec.loc);
+                    extend_span(&mut span, exec.loc.clone());
                     for region in runtime_regions_for_block_exec(exec) {
                         stmt_regions.push(region);
                     }
                 }
                 Block::Sample(sample) => {
-                    extend_span(&mut span, sample.loc);
-                    stmt_regions.push((sample.loc, sample.body.as_slice(), false));
+                    extend_span(&mut span, sample.loc.clone());
+                    stmt_regions.push((sample.loc.clone(), sample.body.as_slice(), false));
                 }
                 Block::Graph(graph) => {
-                    extend_span(&mut span, graph.loc);
+                    extend_span(&mut span, graph.loc.clone());
                 }
                 _ => {}
             }
@@ -1386,7 +1386,7 @@ impl NavigationIndex {
         let mut definitions = HashMap::<String, usize>::new();
         let mut instances = HashMap::<String, InstanceInfo>::new();
         for type_param in &proc_def.type_params {
-            let idx = self.add_type_param_definition(&owner, type_param, proc_def.loc);
+            let idx = self.add_type_param_definition(&owner, type_param, proc_def.loc.clone());
             definitions.insert(type_param.clone(), idx);
         }
         for decl in &proc_def.ins {
@@ -1401,7 +1401,7 @@ impl NavigationIndex {
                 .ins_deferred_count
                 .as_ref()
                 .map(|expr| expr.loc().span())
-                .unwrap_or(proc_def.loc),
+                .unwrap_or(proc_def.loc.clone()),
             "proc input",
             &mut definitions,
         );
@@ -1417,7 +1417,7 @@ impl NavigationIndex {
                 .outs_deferred_count
                 .as_ref()
                 .map(|expr| expr.loc().span())
-                .unwrap_or(proc_def.loc),
+                .unwrap_or(proc_def.loc.clone()),
             "proc output",
             &mut definitions,
         );
@@ -1481,7 +1481,7 @@ impl NavigationIndex {
         self.collect_stmt_scope(
             Some(owner_idx),
             &owner,
-            proc_def.init.loc,
+            proc_def.init.loc.clone(),
             &proc_def.init.body,
         );
         if let Some(span) = span_for_stmt_body(&proc_def.block_pre) {
@@ -1530,7 +1530,7 @@ impl NavigationIndex {
             },
         );
         for type_param in &struct_def.type_params {
-            let idx = self.add_type_param_definition(&owner, type_param, struct_def.loc);
+            let idx = self.add_type_param_definition(&owner, type_param, struct_def.loc.clone());
             definitions.insert(type_param.clone(), idx);
         }
         for field in &struct_def.fields {
@@ -1564,7 +1564,7 @@ impl NavigationIndex {
         let full_name = namespace_join(parent_namespace, &ns.name);
         let mut definitions = HashMap::<String, usize>::new();
         for param in &ns.params {
-            let idx = self.add_namespace_param_definition(&full_name, param, ns.loc);
+            let idx = self.add_namespace_param_definition(&full_name, param, ns.loc.clone());
             definitions.insert(param.name.clone(), idx);
         }
         for item in &ns.items {
@@ -1666,7 +1666,7 @@ impl NavigationIndex {
         let function_owner = namespace_join(owner, &def.name);
         let mut definitions = HashMap::<String, usize>::new();
         for type_param in &def.type_params {
-            let idx = self.add_type_param_definition(&function_owner, type_param, def.loc);
+            let idx = self.add_type_param_definition(&function_owner, type_param, def.loc.clone());
             definitions.insert(type_param.clone(), idx);
         }
         for param in &def.params {
@@ -1750,8 +1750,8 @@ impl NavigationIndex {
                     || format!("delegate payload binding {}", binding.name),
                     |ty| format!("delegate payload binding {}: {ty}", binding.name),
                 ),
-                span: binding.loc,
-                file_key: file_key_for_span(binding.loc),
+                span: binding.loc.clone(),
+                file_key: file_key_for_span(binding.loc.clone()),
                 private: false,
             });
             definitions.insert(binding.name.clone(), idx);
@@ -1882,7 +1882,8 @@ impl NavigationIndex {
                 Stmt::For { var, loc, body, .. } => {
                     if let Some(span) = span_for_stmt_body(body) {
                         let mut definitions = HashMap::new();
-                        let idx = self.add_local_variable_definition(owner, var, *loc, false);
+                        let idx =
+                            self.add_local_variable_definition(owner, var, loc.clone(), false);
                         definitions.insert(var.clone(), idx);
                         self.collect_stmt_scope_with_seed(
                             Some(parent),
@@ -1967,7 +1968,7 @@ impl NavigationIndex {
                     expr,
                     ..
                 } => {
-                    if !respect_position || self.span_start_is_visible(*target_loc) {
+                    if !respect_position || self.span_start_is_visible(target_loc.clone()) {
                         if let Some(name) = assign_target_name(target) {
                             if let Some(instance) = self.instance_from_expr(expr, namespace) {
                                 out.insert(name.to_owned(), instance);
@@ -1982,7 +1983,7 @@ impl NavigationIndex {
                     ..
                 } => {
                     if !top_level_assigns_only
-                        && (!respect_position || self.span_end_is_visible(*loc))
+                        && (!respect_position || self.span_end_is_visible(loc.clone()))
                     {
                         let mut then_instances = out.clone();
                         self.collect_visible_stmt_instances(
@@ -2084,7 +2085,7 @@ impl NavigationIndex {
                 Stmt::Assign {
                     target, target_loc, ..
                 } => {
-                    if !respect_position || self.span_start_is_visible(*target_loc) {
+                    if !respect_position || self.span_start_is_visible(target_loc.clone()) {
                         for name in assign_target_names(target) {
                             if inherited_names.is_some_and(|names| names.contains(name)) {
                                 continue;
@@ -2092,7 +2093,7 @@ impl NavigationIndex {
                             let idx = self.add_local_variable_definition(
                                 owner,
                                 name,
-                                *target_loc,
+                                target_loc.clone(),
                                 top_level_assigns_only,
                             );
                             out.entry(name.to_owned()).or_insert(idx);
@@ -2106,7 +2107,7 @@ impl NavigationIndex {
                     ..
                 } => {
                     if !top_level_assigns_only
-                        && (!respect_position || self.span_end_is_visible(*loc))
+                        && (!respect_position || self.span_end_is_visible(loc.clone()))
                     {
                         let mut then_defs = out.clone();
                         self.collect_visible_stmt_definitions(
@@ -2190,7 +2191,7 @@ impl NavigationIndex {
         instances: HashMap<String, InstanceInfo>,
         namespace_member_scope: bool,
     ) -> Option<usize> {
-        if span.is_zero() || !self.span_belongs_to_current_file(span) {
+        if span.is_zero() || !self.span_belongs_to_current_file(span.clone()) {
             return None;
         }
         let depth = parent.map(|idx| self.scopes[idx].depth + 1).unwrap_or(0);
@@ -2284,11 +2285,11 @@ impl NavigationIndex {
 
         let start = byte_offset_for_lsp_position(
             &self.source,
-            span_start_position(&self.source, definition.span),
+            span_start_position(&self.source, definition.span.clone()),
         );
         let end = byte_offset_for_lsp_position(
             &self.source,
-            span_end_position(&self.source, definition.span),
+            span_end_position(&self.source, definition.span.clone()),
         );
         let declaration_start = first_identifier_offset(&self.source, start, end, &definition.name);
         declaration_start == Some(token.byte_start)
@@ -2511,7 +2512,7 @@ impl NavigationIndex {
             target: namespace_segments_key(&use_decl.target),
             alias: use_decl.alias.clone(),
             public: use_decl.public,
-            file_key: file_key_for_span(use_decl.loc),
+            file_key: file_key_for_span(use_decl.loc.clone()),
         };
         let target = self.resolve_use_target(&use_info);
         if let Some(alias) = &use_decl.alias {
@@ -2910,7 +2911,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
         Block::Const(decl) => Some(document_symbol(
             &decl.name,
             SYMBOL_KIND_CONSTANT,
-            decl.loc,
+            decl.loc.clone(),
             source,
             vec![],
         )),
@@ -2925,7 +2926,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
         Block::NamespaceAlias(alias) => Some(document_symbol(
             &alias.name,
             SYMBOL_KIND_NAMESPACE,
-            alias.loc,
+            alias.loc.clone(),
             source,
             vec![],
         )),
@@ -2938,7 +2939,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
             Some(document_symbol(
                 "events",
                 SYMBOL_KIND_EVENT,
-                events.loc,
+                events.loc.clone(),
                 source,
                 children,
             ))
@@ -2952,7 +2953,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
             Some(document_symbol(
                 "delegates",
                 SYMBOL_KIND_EVENT,
-                delegates.loc,
+                delegates.loc.clone(),
                 source,
                 children,
             ))
@@ -2967,7 +2968,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
             Some(document_symbol(
                 "tasks",
                 SYMBOL_KIND_FUNCTION,
-                tasks.loc,
+                tasks.loc.clone(),
                 source,
                 children,
             ))
@@ -2975,28 +2976,28 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
         Block::Init(init) => Some(document_symbol(
             "init",
             SYMBOL_KIND_METHOD,
-            init.loc,
+            init.loc.clone(),
             source,
             vec![],
         )),
         Block::Sample(sample) => Some(document_symbol(
             "sample",
             SYMBOL_KIND_METHOD,
-            sample.loc,
+            sample.loc.clone(),
             source,
             vec![],
         )),
         Block::Block(exec) => Some(document_symbol(
             "block",
             SYMBOL_KIND_METHOD,
-            exec.loc,
+            exec.loc.clone(),
             source,
             vec![],
         )),
         Block::Graph(graph) => Some(document_symbol(
             "graph",
             SYMBOL_KIND_METHOD,
-            graph.loc,
+            graph.loc.clone(),
             source,
             vec![],
         )),
@@ -3011,7 +3012,7 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
             NamespaceItem::Const(decl) => Some(document_symbol(
                 &decl.name,
                 SYMBOL_KIND_CONSTANT,
-                decl.loc,
+                decl.loc.clone(),
                 source,
                 vec![],
             )),
@@ -3028,7 +3029,7 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
             NamespaceItem::Alias(alias) => Some(document_symbol(
                 &alias.name,
                 SYMBOL_KIND_NAMESPACE,
-                alias.loc,
+                alias.loc.clone(),
                 source,
                 vec![],
             )),
@@ -3038,34 +3039,53 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
             children.push(symbol);
         }
     }
-    document_symbol(&ns.name, SYMBOL_KIND_NAMESPACE, ns.loc, source, children)
+    document_symbol(
+        &ns.name,
+        SYMBOL_KIND_NAMESPACE,
+        ns.loc.clone(),
+        source,
+        children,
+    )
 }
 
 fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     let mut children = Vec::new();
-    children.extend(
-        proc_def
-            .ins
-            .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
-    );
-    children.extend(
-        proc_def
-            .outs
-            .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
-    );
-    children.extend(
-        proc_def.params.iter().map(|decl| {
-            document_symbol(&decl.name, SYMBOL_KIND_VARIABLE, decl.loc, source, vec![])
-        }),
-    );
-    children.extend(
-        proc_def
-            .buffers
-            .iter()
-            .map(|decl| document_symbol(&decl.name, SYMBOL_KIND_FIELD, decl.loc, source, vec![])),
-    );
+    children.extend(proc_def.ins.iter().map(|decl| {
+        document_symbol(
+            &decl.name,
+            SYMBOL_KIND_FIELD,
+            decl.loc.clone(),
+            source,
+            vec![],
+        )
+    }));
+    children.extend(proc_def.outs.iter().map(|decl| {
+        document_symbol(
+            &decl.name,
+            SYMBOL_KIND_FIELD,
+            decl.loc.clone(),
+            source,
+            vec![],
+        )
+    }));
+    children.extend(proc_def.params.iter().map(|decl| {
+        document_symbol(
+            &decl.name,
+            SYMBOL_KIND_VARIABLE,
+            decl.loc.clone(),
+            source,
+            vec![],
+        )
+    }));
+    children.extend(proc_def.buffers.iter().map(|decl| {
+        document_symbol(
+            &decl.name,
+            SYMBOL_KIND_FIELD,
+            decl.loc.clone(),
+            source,
+            vec![],
+        )
+    }));
     children.extend(
         proc_def
             .events
@@ -3099,7 +3119,7 @@ fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
     document_symbol(
         &proc_def.name,
         SYMBOL_KIND_CONSTRUCTOR,
-        proc_def.loc,
+        proc_def.loc.clone(),
         source,
         children,
     )
@@ -3107,11 +3127,15 @@ fn document_symbol_for_proc(proc_def: &ProcessorDef, source: &str) -> Value {
 
 fn document_symbol_for_struct(struct_def: &StructDef, source: &str) -> Value {
     let mut children = Vec::new();
-    children.extend(
-        struct_def.fields.iter().map(|field| {
-            document_symbol(&field.name, SYMBOL_KIND_FIELD, field.loc, source, vec![])
-        }),
-    );
+    children.extend(struct_def.fields.iter().map(|field| {
+        document_symbol(
+            &field.name,
+            SYMBOL_KIND_FIELD,
+            field.loc.clone(),
+            source,
+            vec![],
+        )
+    }));
     children.extend(
         struct_def
             .methods
@@ -3121,18 +3145,24 @@ fn document_symbol_for_struct(struct_def: &StructDef, source: &str) -> Value {
     document_symbol(
         &struct_def.name,
         SYMBOL_KIND_STRUCT,
-        struct_def.loc,
+        struct_def.loc.clone(),
         source,
         children,
     )
 }
 
 fn document_symbol_for_function(def: &FunctionDef, kind: u32, source: &str) -> Value {
-    document_symbol(&def.name, kind, def.loc, source, vec![])
+    document_symbol(&def.name, kind, def.loc.clone(), source, vec![])
 }
 
 fn document_symbol_for_event(event: &EventDef, source: &str) -> Value {
-    document_symbol(&event.name, SYMBOL_KIND_EVENT, event.loc, source, vec![])
+    document_symbol(
+        &event.name,
+        SYMBOL_KIND_EVENT,
+        event.loc.clone(),
+        source,
+        vec![],
+    )
 }
 
 fn document_symbol_for_when(when: &WhenDef, source: &str) -> Value {
@@ -3149,7 +3179,7 @@ fn document_symbol_for_when(when: &WhenDef, source: &str) -> Value {
     document_symbol(
         &format!("when {target}"),
         SYMBOL_KIND_EVENT,
-        when.loc,
+        when.loc.clone(),
         source,
         vec![],
     )
@@ -3159,21 +3189,27 @@ fn document_symbol_for_delegate(delegate: &DelegateDef, source: &str) -> Value {
     document_symbol(
         &delegate.name,
         SYMBOL_KIND_EVENT,
-        delegate.loc,
+        delegate.loc.clone(),
         source,
         vec![],
     )
 }
 
 fn document_symbol_for_task(task: &TaskDef, source: &str) -> Value {
-    document_symbol(&task.name, SYMBOL_KIND_FUNCTION, task.loc, source, vec![])
+    document_symbol(
+        &task.name,
+        SYMBOL_KIND_FUNCTION,
+        task.loc.clone(),
+        source,
+        vec![],
+    )
 }
 
 fn document_symbol(name: &str, kind: u32, span: Span, source: &str, children: Vec<Value>) -> Value {
     let mut symbol = json!({
         "name": name,
         "kind": kind,
-        "range": span_range_json(span, Some(source)),
+        "range": span_range_json(span.clone(), Some(source)),
         "selectionRange": span_range_json(span, Some(source)),
     });
     if !children.is_empty() {
@@ -3184,10 +3220,10 @@ fn document_symbol(name: &str, kind: u32, span: Span, source: &str, children: Ve
 
 fn span_range_json(span: Span, source: Option<&str>) -> Value {
     let start = source
-        .map(|source| span_start_position(source, span))
-        .unwrap_or_else(|| fallback_span_start_position(span));
+        .map(|source| span_start_position(source, span.clone()))
+        .unwrap_or_else(|| fallback_span_start_position(span.clone()));
     let end = source
-        .map(|source| span_end_position(source, span))
+        .map(|source| span_end_position(source, span.clone()))
         .unwrap_or_else(|| fallback_span_end_position(span));
     json!({
         "start": {
@@ -4382,7 +4418,7 @@ fn runtime_regions_for_block_exec(exec: &BlockExec) -> Vec<(Span, &[Stmt], bool)
         regions.push((span, exec.pre.as_slice(), true));
     }
     if let Some(sample) = &exec.sample {
-        regions.push((sample.loc, sample.body.as_slice(), false));
+        regions.push((sample.loc.clone(), sample.body.as_slice(), false));
     }
     if let Some(span) = span_for_stmt_body(&exec.post) {
         regions.push((span, exec.post.as_slice(), true));
@@ -4398,7 +4434,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             else_branch,
             ..
         } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(branch_span) = span_for_stmt_body(then_branch) {
                 span = Span::spanning(span, branch_span);
             }
@@ -4408,7 +4444,7 @@ fn span_for_stmt(stmt: &Stmt) -> Span {
             span
         }
         Stmt::For { loc, body, .. } | Stmt::While { loc, body, .. } => {
-            let mut span = *loc;
+            let mut span = loc.clone();
             if let Some(body_span) = span_for_stmt_body(body) {
                 span = Span::spanning(span, body_span);
             }
@@ -4428,43 +4464,43 @@ fn span_for_stmt_body(stmts: &[Stmt]) -> Option<Span> {
 
 fn span_for_function_scope(def: &FunctionDef) -> Span {
     span_for_stmt_body(&def.body)
-        .map(|body_span| Span::spanning(def.loc, body_span))
-        .unwrap_or(def.loc)
+        .map(|body_span| Span::spanning(def.loc.clone(), body_span))
+        .unwrap_or(def.loc.clone())
 }
 
 fn span_for_event_scope(event: &EventDef) -> Span {
     span_for_stmt_body(&event.body)
-        .map(|body_span| Span::spanning(event.loc, body_span))
-        .unwrap_or(event.loc)
+        .map(|body_span| Span::spanning(event.loc.clone(), body_span))
+        .unwrap_or(event.loc.clone())
 }
 
 fn span_for_when_scope(when: &WhenDef) -> Span {
     span_for_stmt_body(&when.body)
-        .map(|body_span| Span::spanning(when.loc, body_span))
-        .unwrap_or(when.loc)
+        .map(|body_span| Span::spanning(when.loc.clone(), body_span))
+        .unwrap_or(when.loc.clone())
 }
 
 fn span_for_task_scope(task: &TaskDef) -> Span {
     span_for_stmt_body(&task.body)
-        .map(|body_span| Span::spanning(task.loc, body_span))
-        .unwrap_or(task.loc)
+        .map(|body_span| Span::spanning(task.loc.clone(), body_span))
+        .unwrap_or(task.loc.clone())
 }
 
 fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
-    let mut span = proc_def.loc;
+    let mut span = proc_def.loc.clone();
     for decl in &proc_def.ins {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.outs {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.params {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
     for decl in &proc_def.buffers {
-        span = Span::spanning(span, decl.loc);
+        span = Span::spanning(span, decl.loc.clone());
     }
-    span = Span::spanning(span, proc_def.init.loc);
+    span = Span::spanning(span, proc_def.init.loc.clone());
     if let Some(body_span) = span_for_stmt_body(&proc_def.block_pre) {
         span = Span::spanning(span, body_span);
     }
@@ -4475,13 +4511,13 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
         span = Span::spanning(span, body_span);
     }
     if let Some(graph) = &proc_def.graph {
-        span = Span::spanning(span, graph.loc);
+        span = Span::spanning(span, graph.loc.clone());
     }
     for event in &proc_def.events {
         span = Span::spanning(span, span_for_event_scope(event));
     }
     for delegate in &proc_def.delegates {
-        span = Span::spanning(span, delegate.loc);
+        span = Span::spanning(span, delegate.loc.clone());
     }
     for when in &proc_def.whens {
         span = Span::spanning(span, span_for_when_scope(when));
@@ -4496,9 +4532,9 @@ fn span_for_proc_scope(proc_def: &ProcessorDef) -> Span {
 }
 
 fn span_for_struct_scope(struct_def: &StructDef) -> Span {
-    let mut span = struct_def.loc;
+    let mut span = struct_def.loc.clone();
     for field in &struct_def.fields {
-        span = Span::spanning(span, field.loc);
+        span = Span::spanning(span, field.loc.clone());
     }
     for method in &struct_def.methods {
         span = Span::spanning(span, span_for_function_scope(method));
@@ -4507,17 +4543,17 @@ fn span_for_struct_scope(struct_def: &StructDef) -> Span {
 }
 
 fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
-    let mut span = ns.loc;
+    let mut span = ns.loc.clone();
     for item in &ns.items {
         let item_span = match item {
-            NamespaceItem::Assert(decl) => decl.loc,
-            NamespaceItem::Const(decl) => decl.loc,
+            NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),
             NamespaceItem::Proc(decl) => span_for_proc_scope(decl),
             NamespaceItem::Namespace(decl) => span_for_namespace_scope(decl),
-            NamespaceItem::Alias(decl) => decl.loc,
-            NamespaceItem::Use(decl) => decl.loc,
+            NamespaceItem::Alias(decl) => decl.loc.clone(),
+            NamespaceItem::Use(decl) => decl.loc.clone(),
         };
         span = Span::spanning(span, item_span);
     }
@@ -4525,7 +4561,7 @@ fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
 }
 
 fn extend_span(span: &mut Option<Span>, next: Span) {
-    *span = Some(match *span {
+    *span = Some(match span.take() {
         Some(current) => Span::spanning(current, next),
         None => next,
     });

@@ -97,7 +97,15 @@ impl FunctionEmitter<'_, '_> {
             if current_block_terminated(self.builder) {
                 return Ok(true);
             }
+            let previous = LLVMGetCurrentDebugLocation2(self.builder);
+            if let Some(debug) = &self.module.source_debug {
+                LLVMSetCurrentDebugLocation2(
+                    self.builder,
+                    debug.location(self.module.context, self.function_index, statement.source),
+                );
+            }
             self.lower_statement(&statement.kind)?;
+            LLVMSetCurrentDebugLocation2(self.builder, previous);
         }
         Ok(current_block_terminated(self.builder))
     }
@@ -1742,6 +1750,20 @@ impl FunctionEmitter<'_, '_> {
             onda_mir::ScalarType::I32 | onda_mir::ScalarType::I64
         ) {
             return self.lower_integer_intrinsic(intrinsic, scalar, &mut lowered);
+        }
+        if self.module.vector_math.is_available() {
+            if let Some(call) = super::vector_math::emit_call(
+                self.module.context,
+                self.module.module,
+                self.builder,
+                self.module.vector_math,
+                intrinsic,
+                scalar,
+                &mut lowered,
+            )? {
+                self.set_fast_math(call);
+                return Ok(call);
+            }
         }
         let suffix = if scalar == onda_mir::ScalarType::F64 {
             "f64"
@@ -3908,8 +3930,10 @@ impl FunctionEmitter<'_, '_> {
                         "state_slot",
                     )?,
                     ty: self.module.program.state[state.index()].ty,
-                    alignment: self.module.layouts.type_alignments
-                        [self.module.program.state[state.index()].ty.index()],
+                    alignment: alignment_at_byte_offset(
+                        self.module.layouts.state.alignment,
+                        self.module.layouts.state.offsets[state.index()],
+                    ),
                 }
             }
             onda_mir::PlaceBase::Param(param) => {
@@ -4222,11 +4246,20 @@ impl FunctionEmitter<'_, '_> {
     }
 
     unsafe fn set_fast_math(&self, instruction: LLVMValueRef) {
-        let flags = if self.module.fast_math {
+        let mut flags = if self.module.fast_math {
             LLVMFastMathAll
         } else {
             LLVMFastMathNone
         };
+        if self.module.math.reassociate {
+            flags |= llvm_sys::LLVMFastMathAllowReassoc;
+        }
+        if self.module.math.contract {
+            flags |= llvm_sys::LLVMFastMathAllowContract;
+        }
+        if self.module.math.no_signed_zeros {
+            flags |= llvm_sys::LLVMFastMathNoSignedZeros;
+        }
         if flags != LLVMFastMathNone {
             LLVMSetFastMathFlags(instruction, flags);
         }

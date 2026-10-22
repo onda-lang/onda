@@ -1482,6 +1482,32 @@ sample:
 }
 
 #[test]
+fn stdlib_sample_player_advances_past_f32_integer_precision() {
+    let source = r#"
+import std/sample
+buffers:
+  clip: f32
+init:
+  player = std::sample<Channels = 1>::Player(clip = clip)
+event play():
+  player.play(16777216.0)
+sample:
+  out1 = player()
+"#;
+    let (mut instance, _, _) = compile_instance(source, 8);
+    let mut clip = vec![0.0_f32; 16_777_232];
+    for (index, sample) in clip[16_777_216..].iter_mut().enumerate() {
+        *sample = (index + 1) as f32;
+    }
+    bind_buffer(&mut instance, 0, clip.as_mut_ptr().cast(), clip.len(), 1, 48_000.0, PrimitiveType::F32).unwrap();
+    let play = instance.event_index("play").unwrap();
+    trigger_event_by_index_checked(&mut instance, play, &[], onda_runtime::ExecutionOutput::none()).unwrap();
+    let mut output = [0.0_f32; 8];
+    process_interleaved(&mut instance, &[], &mut output, 8).unwrap();
+    assert_eq!(output, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+}
+
+#[test]
 fn stdlib_sample_player_duplicates_mono_and_reports_completion() {
     let source = r#"
 import std/sample
@@ -1852,7 +1878,7 @@ fn stdlib_sine_sample_kernel_avoids_float_range_reduction() {
         .expect("sine source should lower to MIR");
     let ir = lower_optimized_mir_to_llvm_ir_with_options(
         &mir,
-        MirCompileOptions {
+        MirCompileOptions { math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },

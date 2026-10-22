@@ -239,6 +239,7 @@ fn run_native_outputs_with_opt_level(
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level,
         },
@@ -295,6 +296,7 @@ block:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -453,6 +455,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -566,6 +569,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -595,6 +599,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -633,6 +638,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -686,6 +692,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -782,6 +789,7 @@ fn array_window_accepts_equivalent_duplicate_element_type_ids() {
     lower_mir_to_llvm_ir_with_options(
         &program,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -843,6 +851,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -898,6 +907,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -976,6 +986,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -1065,6 +1076,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1160,6 +1172,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1210,6 +1223,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1268,6 +1282,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1379,6 +1394,7 @@ block:
     let native = lower_mir_and_jit_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1479,6 +1495,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math,
                 opt_level: TargetOptLevel::O3,
             },
@@ -1532,6 +1549,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1550,6 +1568,7 @@ sample:
     let targeted_ir = lower_mir_to_target_llvm_ir(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target,
         },
@@ -1719,6 +1738,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1730,7 +1750,7 @@ sample:
         .expect("noinline helper definition");
     let attribute_id = definition
         .rsplit_once(" #")
-        .and_then(|(_, suffix)| suffix.strip_suffix(" {"))
+        .and_then(|(_, suffix)| suffix.split_whitespace().next())
         .expect("helper definition should reference an attribute group");
     let attributes = ir
         .lines()
@@ -1841,6 +1861,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -1896,6 +1917,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math,
                 opt_level: TargetOptLevel::O3,
             },
@@ -1952,6 +1974,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -1983,6 +2006,7 @@ sample:
     let wide_ir = lower_mir_to_llvm_ir_with_options(
         &wide_mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2013,6 +2037,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2053,6 +2078,7 @@ sample:
     let i64_ir = lower_mir_to_llvm_ir_with_options(
         &i64_mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2084,6 +2110,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2120,6 +2147,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2299,6 +2327,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2324,6 +2353,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2411,6 +2441,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2471,6 +2502,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2542,6 +2574,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2579,6 +2612,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2629,6 +2663,7 @@ sample:
         let (_, mir) = source_program(source, 64);
         for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
             let options = MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level,
             };
@@ -2774,6 +2809,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir.clone(),
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2791,6 +2827,7 @@ sample:
     let artifact = lower_mir_to_object_artifact(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target,
         },
@@ -2804,6 +2841,60 @@ sample:
         artifact.metadata.runtime.state_align_bytes,
         native.state_alignment_bytes()
     );
+}
+
+#[test]
+fn large_state_arrays_remain_aligned_after_irregular_length_arrays() {
+    let (_, mir) = source_program(
+        r#"
+init:
+  a: f32[65]
+  b: f64[65]
+  counter: i32 = 0
+sample:
+  a[counter] = a[counter] + 1.0
+  b[counter] = b[counter] + 2.0
+  out1 = a[counter] + f32(b[counter])
+  counter = (counter + 1) % 65
+"#,
+        128,
+    );
+    let native = lower_mir_and_jit_with_options(mir.clone(), MirCompileOptions::default())
+        .expect("array state should JIT");
+    assert_eq!(native.state_byte_offsets(), &[0, 64, 384]);
+    assert_eq!(native.state_alignment_bytes(), 64);
+    assert_eq!(native.state_size_bytes(), 960);
+    let params = native.default_param_bytes();
+    let mut state = native.initialize_state(&params).unwrap();
+    assert_eq!(state.bytes().as_ptr() as usize % 64, 0);
+    let cloned = state.try_clone_with_allocator(None).unwrap();
+    assert_eq!(cloned.bytes().as_ptr() as usize % 64, 0);
+    assert_eq!(cloned.bytes(), state.bytes());
+    let mut output = [0.0_f32; 128];
+    unsafe {
+        native
+            .process_checked(
+                &mut state,
+                &params,
+                0,
+                128,
+                3,
+                &[],
+                &[output.as_mut_ptr().cast()],
+                &[],
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .unwrap();
+    }
+    assert_eq!(&output[..65], &[3.0; 65]);
+    assert_eq!(&output[65..], &[6.0; 63]);
+    let artifact = lower_mir_to_object_artifact(&mir, &MirTargetOptions::default()).unwrap();
+    assert_eq!(artifact.metadata.runtime.state_align_bytes, 64);
+    assert_eq!(artifact.metadata.runtime.state_size_bytes, 960);
+    assert_eq!(artifact.metadata.runtime.snapshot_size_bytes, 784);
 }
 
 #[test]
@@ -2825,6 +2916,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2870,6 +2962,7 @@ sample:
     let never_ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2884,6 +2977,7 @@ sample:
     let always_ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2912,6 +3006,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -2959,6 +3054,7 @@ sample:
         let ir = lower_mir_to_llvm_ir_with_options(
             &mir,
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: TargetOptLevel::O3,
             },
@@ -3050,6 +3146,7 @@ sample:
     let native = lower_mir_and_jit_with_options(
         mir.clone(),
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -3061,6 +3158,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -3112,6 +3210,7 @@ events {
     let native = lower_mir_and_jit_with_options(
         mir.clone(),
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -3122,6 +3221,7 @@ events {
     let artifact = lower_mir_to_object_artifact(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target,
         },
@@ -3261,6 +3361,7 @@ sample { out1 = phase }
     let artifact = lower_mir_to_object_artifact(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target: crate::TargetConfig::for_triple("wasm32-unknown-unknown"),
         },
@@ -3369,6 +3470,7 @@ fn aot_snapshot_manifest_maps_persistent_segments_only() {
     let artifact = lower_mir_to_object_artifact(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target,
         },

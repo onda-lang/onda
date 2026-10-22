@@ -125,6 +125,42 @@ pub struct Program {
 }
 
 impl Program {
+    /// Resolves a storage path without assuming canonical type IDs. Shared by
+    /// validation and analyses that need the final projected value's type.
+    pub(crate) fn place_type(&self, function: &Function, place: &Place) -> Option<TypeId> {
+        let mut ty = match place.base {
+            PlaceBase::Local(local) => function.locals.get(local.index())?.ty,
+            PlaceBase::Parameter(parameter) => function.params.get(parameter.index())?.ty,
+            PlaceBase::State(state) => self.state.get(state.index())?.ty,
+            PlaceBase::Param(param) => self.interface.params.get(param.index())?.ty,
+            PlaceBase::EventParam(param) => {
+                let FunctionKind::Event(event) = function.kind else {
+                    return None;
+                };
+                self.interface
+                    .events
+                    .get(event.index())?
+                    .params
+                    .get(param.index())?
+                    .ty
+            }
+        };
+        for projection in &place.projections {
+            ty = match (self.types.get(ty.index())?, projection) {
+                (Type::Struct(structure), Projection::Field(field)) => {
+                    self.structs
+                        .get(structure.index())?
+                        .fields
+                        .get(field.index())?
+                        .ty
+                }
+                (Type::Array { element, .. }, Projection::Index { .. }) => *element,
+                _ => return None,
+            };
+        }
+        Some(ty)
+    }
+
     pub fn new(config: CompileConfig, init: FunctionId, process: FunctionId) -> Self {
         Self {
             schema_version: MIR_SCHEMA_VERSION,

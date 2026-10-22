@@ -18,7 +18,9 @@ use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
+mod packed_output;
 mod param_smoothing;
+pub use packed_output::{RunOutputCounts, RunOutputDecoder, RunPackedOutput};
 use param_smoothing::ParamSmoothing;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +56,7 @@ impl RunOptions {
 
     pub fn mir_compile_options(&self) -> MirCompileOptions {
         MirCompileOptions {
+            math: Default::default(),
             fast_math: self.fast_math,
             opt_level: self.opt_level,
         }
@@ -65,8 +68,8 @@ pub struct RunParamInfo {
     pub index: usize,
     pub name: String,
     pub type_repr: String,
-    pub value: Option<f64>,
-    pub default: Option<f64>,
+    pub value: Option<crate::RunParamValue>,
+    pub default: Option<crate::RunParamValue>,
     pub range_min: Option<f64>,
     pub range_max: Option<f64>,
     pub scale: Option<String>,
@@ -271,7 +274,7 @@ pub struct RunSession {
     typed: TypedProgram,
     jit: JitProgram,
     instance: Instance,
-    param_values: HashMap<String, f64>,
+    param_values: HashMap<String, crate::RunParamValue>,
     param_smoothing: ParamSmoothing,
     buffer_bindings: Vec<Option<RunBufferBinding>>,
     input_buffers: Vec<Vec<f32>>,
@@ -704,6 +707,10 @@ impl RunSession {
     }
 
     pub fn set_param_f64(&mut self, name: &str, value: f64) -> Result<(), Diagnostic> {
+        self.set_param(name, crate::RunParamValue::F64(value))
+    }
+
+    pub fn set_param(&mut self, name: &str, value: crate::RunParamValue) -> Result<(), Diagnostic> {
         let Some((index, element)) = param_element_address(&self.jit, name) else {
             return Err(Diagnostic::runtime(
                 format!("unknown parameter '{name}'"),
@@ -718,19 +725,41 @@ impl RunSession {
                 0,
             ));
         };
-        let value = if desc.elem_ty() == PrimitiveType::Bool {
-            if value >= 0.5 {
-                1.0
-            } else {
-                0.0
+        let value = if desc.elem_ty() == PrimitiveType::I64 && desc.param_domain().is_none() {
+            match value {
+                crate::RunParamValue::I64(_) => value,
+                _ => {
+                    let numeric = value.as_f64();
+                    if !numeric.is_finite() || numeric.abs() > 9_007_199_254_740_991.0 {
+                        return Err(Diagnostic::runtime(
+                            format!("wide i64 parameter '{name}' values must be supplied as decimal integers"),
+                            0,
+                            0,
+                        ));
+                    }
+                    crate::RunParamValue::I64(numeric as i64)
+                }
             }
+        } else if desc.elem_ty() == PrimitiveType::Bool {
+            crate::RunParamValue::Bool(value.as_f64() >= 0.5)
         } else {
-            desc.param_domain()
-                .map(|domain| domain.constrain_plain(value))
-                .unwrap_or(value)
+            let numeric = desc
+                .param_domain()
+                .map(|domain| domain.constrain_plain(value.as_f64()))
+                .unwrap_or_else(|| value.as_f64());
+            match desc.elem_ty() {
+                PrimitiveType::F32 => crate::RunParamValue::F32(numeric as f32),
+                PrimitiveType::F64 => crate::RunParamValue::F64(numeric),
+                PrimitiveType::I32 => crate::RunParamValue::I32(numeric as i32),
+                PrimitiveType::I64 => crate::RunParamValue::I64(numeric as i64),
+                PrimitiveType::Bool => unreachable!(),
+            }
         };
         self.param_values.insert(name.to_owned(), value);
-        if self.param_smoothing.set_target(index, element, value) {
+        if self
+            .param_smoothing
+            .set_target(index, element, value.as_f64())
+        {
             return Ok(());
         }
         let bytes = scalar_param_bytes(desc.elem_ty(), value)?;
@@ -809,11 +838,20 @@ impl RunSession {
         rendered: &mut [f32],
         events: &[RunScheduledEvent<'_>],
     ) -> Result<(), Diagnostic> {
-        if events.is_empty() {
+        self.render_block_event_iter_interleaved(rendered, events.iter().copied())
+    }
+
+    /// Iterator form for hosts with reusable event storage. No event list is copied.
+    pub fn render_block_event_iter_interleaved<'a>(
+        &mut self,
+        rendered: &mut [f32],
+        events: impl ExactSizeIterator<Item = RunScheduledEvent<'a>> + Clone,
+    ) -> Result<(), Diagnostic> {
+        if events.len() == 0 {
             return self.render_block_interleaved(rendered);
         }
         let mut previous_frame = 0;
-        for (index, event) in events.iter().enumerate() {
+        for (index, event) in events.clone().enumerate() {
             if event.frame >= self.options.block_size {
                 return Err(Diagnostic::runtime(
                     format!(
@@ -1500,7 +1538,7 @@ fn create_bound_instance(
     output_buffers: &mut [Vec<f32>],
     buffer_bindings: &mut [Option<RunBufferBinding>],
     mut replacement: Option<BufferBindingReplacement<'_>>,
-    param_values: &HashMap<String, f64>,
+    param_values: &HashMap<String, crate::RunParamValue>,
     output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
     let config = InstanceConfig {
@@ -1926,11 +1964,14 @@ fn param_element_address(jit: &JitProgram, name: &str) -> Option<(usize, usize)>
     (desc.is_array() && element < desc.array_len()).then_some((index, element))
 }
 
-fn default_run_param_element(desc: &onda_codegen_llvm::DeclaredIo, element: usize) -> f64 {
+fn default_run_param_element(
+    desc: &onda_codegen_llvm::DeclaredIo,
+    element: usize,
+) -> crate::RunParamValue {
     desc.default_values()
         .and_then(|values| values.get(element))
-        .map(|value| value.as_f64())
-        .unwrap_or(0.0)
+        .copied()
+        .unwrap_or(crate::RunParamValue::F64(0.0))
 }
 
 fn primitive_type_for_buffer_element(element: BufferElement) -> PrimitiveType {
@@ -1956,8 +1997,13 @@ impl ScalarParamBytes {
 
 fn scalar_param_bytes(
     ty: onda_frontend::PrimitiveType,
-    value: f64,
+    value: crate::RunParamValue,
 ) -> Result<ScalarParamBytes, Diagnostic> {
+    let integer = match value {
+        crate::RunParamValue::I64(value) => value,
+        _ => value.as_f64() as i64,
+    };
+    let value = value.as_f64();
     let mut out = ScalarParamBytes {
         bytes: [0; 8],
         len: 0,
@@ -1976,7 +2022,7 @@ fn scalar_param_bytes(
             4
         }
         onda_frontend::PrimitiveType::I64 => {
-            out.bytes.copy_from_slice(&(value as i64).to_ne_bytes());
+            out.bytes.copy_from_slice(&integer.to_ne_bytes());
             8
         }
         onda_frontend::PrimitiveType::Bool => {

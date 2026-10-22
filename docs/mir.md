@@ -127,8 +127,10 @@ Fresh instances receive zeroed state storage before the MIR `init` entry first r
 initialization modes execute against the existing image. Full initialization runs declaration
 initializers for every slot; default initialization skips guarded pinned declarations so those slots
 survive unless init explicitly changes them. Dynamic and nonzero initialization remains explicit in
-`init`. The optimizer guards zero-before-write initialization so it runs only in default mode; the
-same writes would be redundant after the whole-image clear performed by full initialization. A
+`init`. Full initialization preclears non-pinned storage, while pinned storage is initialized
+entirely by MIR. The optimizer guards zero-before-write initialization of non-pinned state so it
+runs only in default mode; the same writes would be redundant after that preclear. Explicit writes
+to pinned state remain active in both modes. A
 control output identifies its mirror with a `StateId`;
 names are diagnostic and never participate in storage resolution. Control-mirror places are readable
 but not directly writable. Only `ControlOutputStore` in the process entry may mutate them, preventing

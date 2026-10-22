@@ -596,7 +596,7 @@ pub(super) fn reject_const_shadowing_stmt(
                     reject_const_shadowing_name(
                         "tuple assignment target",
                         name,
-                        *target_loc,
+                        target_loc.clone(),
                         scope_ns,
                         const_symbols,
                         errors,
@@ -620,7 +620,7 @@ pub(super) fn reject_const_shadowing_stmt(
             reject_const_shadowing_name(
                 "loop variable",
                 var,
-                *loc,
+                loc.clone(),
                 scope_ns,
                 const_symbols,
                 errors,
@@ -652,7 +652,7 @@ pub(super) fn reject_const_shadowing_function(
         reject_const_shadowing_name(
             "function parameter",
             &param.name,
-            param.loc,
+            param.loc.clone(),
             scope_ns,
             const_symbols,
             errors,
@@ -673,7 +673,7 @@ pub(super) fn reject_const_shadowing_event(
         reject_const_shadowing_name(
             "event parameter",
             &param.name,
-            param.loc,
+            param.loc.clone(),
             scope_ns,
             const_symbols,
             errors,
@@ -786,7 +786,7 @@ pub(super) fn reject_const_shadowing_in_program(
                         &proc.name,
                         "processor input",
                         &decl.name,
-                        decl.loc,
+                        decl.loc.clone(),
                         &scope_ns,
                         const_symbols,
                         errors,
@@ -797,7 +797,7 @@ pub(super) fn reject_const_shadowing_in_program(
                         &proc.name,
                         "processor output",
                         &decl.name,
-                        decl.loc,
+                        decl.loc.clone(),
                         &scope_ns,
                         const_symbols,
                         errors,
@@ -808,7 +808,7 @@ pub(super) fn reject_const_shadowing_in_program(
                         &proc.name,
                         "processor parameter",
                         &decl.name,
-                        decl.loc,
+                        decl.loc.clone(),
                         &scope_ns,
                         const_symbols,
                         errors,
@@ -819,7 +819,7 @@ pub(super) fn reject_const_shadowing_in_program(
                         &proc.name,
                         "processor buffer",
                         &decl.name,
-                        decl.loc,
+                        decl.loc.clone(),
                         &scope_ns,
                         const_symbols,
                         errors,
@@ -833,7 +833,7 @@ pub(super) fn reject_const_shadowing_in_program(
                         &proc.name,
                         "delegate",
                         &delegate.name,
-                        delegate.loc,
+                        delegate.loc.clone(),
                         &scope_ns,
                         const_symbols,
                         errors,
@@ -1050,7 +1050,7 @@ pub(super) fn substitute_scalar_const_expr(
     expr.visit_mut(|expr| {
         if let Expr::Var { loc, name } = expr {
             if let Some(value) = local_consts.get(name) {
-                *expr = contextual_const_expr(*value).with_loc(*loc);
+                *expr = contextual_const_expr(*value).with_loc(loc.clone());
             }
         }
         true
@@ -1237,7 +1237,7 @@ pub(super) fn expand_port_count_shorthand(
     if decls.is_empty() {
         for idx in 1..=count {
             decls.push(PortDecl {
-                loc,
+                loc: loc.clone(),
                 name: format!("{prefix}{idx}"),
                 output_timing: None,
                 output_timing_loc: Span::ZERO,
@@ -1286,7 +1286,7 @@ pub(super) fn expand_param_count_shorthand(
     if decls.is_empty() {
         for idx in 1..=count {
             decls.push(ParamDecl {
-                loc,
+                loc: loc.clone(),
                 name: format!("{prefix}{idx}"),
                 private: false,
                 ty: default_ty.clone(),
@@ -1335,7 +1335,7 @@ pub(super) fn expand_buffer_count_shorthand(
     if decls.is_empty() {
         for idx in 1..=count {
             decls.push(BufferDecl {
-                loc,
+                loc: loc.clone(),
                 name: format!("buf{idx}"),
                 ty: default_ty.clone(),
                 ty_loc: Span::ZERO,
@@ -1359,7 +1359,7 @@ pub(super) fn expand_proc_count_shorthand(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let loc = proc.loc;
+    let loc = proc.loc.clone();
     let proc_name = proc.name.clone();
     expand_port_count_shorthand(
         &mut proc.ins,
@@ -1367,7 +1367,7 @@ pub(super) fn expand_proc_count_shorthand(
         &mut proc.ins_deferred_default_ty,
         "in",
         &format!("processor '{proc_name}' ins"),
-        loc,
+        loc.clone(),
         artifacts,
         options,
         errors,
@@ -1387,7 +1387,7 @@ pub(super) fn expand_proc_count_shorthand(
                 OutputTiming::Block => "kouts",
             }
         ),
-        loc,
+        loc.clone(),
         artifacts,
         options,
         errors,
@@ -1398,7 +1398,7 @@ pub(super) fn expand_proc_count_shorthand(
         &mut proc.params_deferred_default_ty,
         "param",
         &format!("processor '{proc_name}' params"),
-        loc,
+        loc.clone(),
         artifacts,
         options,
         errors,
@@ -1475,7 +1475,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                             "const def name '{}' is reserved as a builtin constant",
                             def.name
                         ),
-                        def.loc,
+                        def.loc.clone(),
                     ));
                     continue;
                 }
@@ -1485,14 +1485,14 @@ pub(super) fn coerce_consts_and_expand_counts(
                             "const def name '{}' conflicts with existing symbol",
                             def.name
                         ),
-                        def.loc,
+                        def.loc.clone(),
                     ));
                     continue;
                 }
                 if !seen.insert(def.name.clone()) {
                     errors.push(Diagnostic::semantic_span(
                         format!("duplicate const symbol '{}'", def.name),
-                        def.loc,
+                        def.loc.clone(),
                     ));
                     continue;
                 }
@@ -1556,7 +1556,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                     &mut ports.deferred_default_ty,
                     &prefix,
                     "ins",
-                    ports.loc,
+                    ports.loc.clone(),
                     &artifacts,
                     options,
                     errors,
@@ -1570,7 +1570,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                     &mut ports.deferred_default_ty,
                     &prefix,
                     "outs",
-                    ports.loc,
+                    ports.loc.clone(),
                     &artifacts,
                     options,
                     errors,
@@ -1584,7 +1584,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                     &mut ports.deferred_default_ty,
                     &prefix,
                     "kouts",
-                    ports.loc,
+                    ports.loc.clone(),
                     &artifacts,
                     options,
                     errors,
@@ -1599,7 +1599,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                     &mut params.deferred_default_ty,
                     &prefix,
                     block_label,
-                    params.loc,
+                    params.loc.clone(),
                     &artifacts,
                     options,
                     errors,
@@ -1611,7 +1611,7 @@ pub(super) fn coerce_consts_and_expand_counts(
                     &mut buffers.deferred_count,
                     &mut buffers.deferred_default_ty,
                     "buffers",
-                    buffers.loc,
+                    buffers.loc.clone(),
                     &artifacts,
                     options,
                     errors,

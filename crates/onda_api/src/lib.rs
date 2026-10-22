@@ -586,6 +586,7 @@ fn compile_typed_mir(typed: TypedProgram, fast_math: bool) -> Result<JitProgram,
     jit_program_from_optimized_mir_with_options(
         mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math,
             opt_level: TargetOptLevel::O3,
         },

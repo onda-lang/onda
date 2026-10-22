@@ -254,7 +254,7 @@ fn register_const_def_artifact(
     if !state.const_symbols.insert(def.name.clone()) {
         errors.push(Diagnostic::semantic_span(
             format!("duplicate const symbol '{}'", def.name),
-            def.loc,
+            def.loc.clone(),
         ));
         return;
     }
@@ -568,7 +568,7 @@ fn validate_namespace_template_proc_refs(
                     state,
                     scope,
                     "namespace alias target",
-                    alias.loc.as_ref().copied().unwrap_or_default(),
+                    alias.loc.as_ref().cloned().unwrap_or_default(),
                     errors,
                 );
             }
@@ -579,7 +579,7 @@ fn validate_namespace_template_proc_refs(
                     state,
                     scope,
                     "use target",
-                    use_decl.loc.as_ref().copied().unwrap_or_default(),
+                    use_decl.loc.as_ref().cloned().unwrap_or_default(),
                     errors,
                 );
             }
@@ -1687,7 +1687,7 @@ fn register_use_decl(
         state,
         generated,
         errors,
-        use_decl.loc.as_ref().copied().unwrap_or_default(),
+        use_decl.loc.as_ref().cloned().unwrap_or_default(),
         0,
     ) else {
         return;
@@ -1696,7 +1696,7 @@ fn register_use_decl(
     if let Some(alias) = &use_decl.alias {
         if has_visible_namespace_prefix(&target, state) && !state.members.contains(&target) {
             let alias_decl = NamespaceAliasDecl {
-                loc: use_decl.loc,
+                loc: use_decl.loc.clone(),
                 name: alias.clone(),
                 target: use_decl.target.clone(),
             };
@@ -1708,7 +1708,7 @@ fn register_use_decl(
         } else {
             register_use_symbol(
                 current_ns,
-                use_decl.loc,
+                use_decl.loc.clone(),
                 use_decl.public,
                 alias,
                 target,
@@ -1722,7 +1722,7 @@ fn register_use_decl(
         if let Some(leaf) = target.rsplit("::").next().map(ToOwned::to_owned) {
             register_use_symbol(
                 current_ns,
-                use_decl.loc,
+                use_decl.loc.clone(),
                 use_decl.public,
                 &leaf,
                 target,
@@ -1730,7 +1730,13 @@ fn register_use_decl(
             );
         }
     } else {
-        register_use_namespace(current_ns, use_decl.loc, use_decl.public, target, state);
+        register_use_namespace(
+            current_ns,
+            use_decl.loc.clone(),
+            use_decl.public,
+            target,
+            state,
+        );
     }
 }
 
@@ -1850,7 +1856,7 @@ fn resolve_visible_unqualified_member_name(
     collect_visible_use_candidates(
         base,
         current_ns,
-        loc,
+        loc.clone(),
         state,
         |name| {
             state.members.contains(name)
@@ -1909,7 +1915,7 @@ fn resolve_visible_unqualified_const_name(
     collect_visible_use_candidates(
         base,
         current_ns,
-        loc,
+        loc.clone(),
         state,
         |name| is_const_member_name(name, state),
         &mut candidates,
@@ -1958,7 +1964,7 @@ fn resolve_visible_unqualified_namespace_root(
                 scope,
                 require_template,
                 state,
-                use_site_span,
+                use_site_span.clone(),
                 &mut candidates,
             );
         }
@@ -1968,7 +1974,7 @@ fn resolve_visible_unqualified_namespace_root(
                 scope,
                 require_template,
                 state,
-                use_site_span,
+                use_site_span.clone(),
                 &mut candidates,
             );
         }
@@ -1983,7 +1989,7 @@ fn resolve_visible_unqualified_namespace_root(
             state,
             generated,
             errors,
-            use_site_span,
+            use_site_span.clone(),
             depth + 1,
         ) {
             let alias_target = alias_target?;
@@ -2021,13 +2027,18 @@ fn collect_use_scope_namespace_root_candidates(
 ) {
     if let Some(bindings) = scope.symbols.get(base) {
         candidates.extend(bindings.iter().filter_map(|binding| {
-            namespace_root_candidate(&binding.target, require_template, state, use_site_span)
+            namespace_root_candidate(
+                &binding.target,
+                require_template,
+                state,
+                use_site_span.clone(),
+            )
         }));
     }
     for binding in &scope.namespaces {
         let target = namespace_join(&binding.target, base);
         if let Some(candidate) =
-            namespace_root_candidate(&target, require_template, state, use_site_span)
+            namespace_root_candidate(&target, require_template, state, use_site_span.clone())
         {
             candidates.push(candidate);
         }
@@ -2075,7 +2086,7 @@ fn resolve_namespace_alias_path(
     use_site_span: Span,
     depth: usize,
 ) -> Option<Option<String>> {
-    let alias = visible_namespace_alias_record(path, state, use_site_span)?;
+    let alias = visible_namespace_alias_record(path, state, use_site_span.clone())?;
     Some(resolve_namespace_segments_internal(
         &alias.target,
         &alias.declared_ns,
@@ -2155,7 +2166,7 @@ fn resolve_namespace_segments_internal(
 
     if segments[0].args.is_none() {
         if let Some(alias) =
-            resolve_visible_alias(&segments[0].name, current_ns, state, use_site_span)
+            resolve_visible_alias(&segments[0].name, current_ns, state, use_site_span.clone())
         {
             path = resolve_namespace_segments_internal(
                 &alias.target,
@@ -2165,7 +2176,7 @@ fn resolve_namespace_segments_internal(
                 state,
                 generated,
                 errors,
-                use_site_span,
+                use_site_span.clone(),
                 depth + 1,
             )?;
             idx = 1;
@@ -2188,7 +2199,7 @@ fn resolve_namespace_segments_internal(
                         state,
                         generated,
                         errors,
-                        use_site_span,
+                        use_site_span.clone(),
                     );
                     break;
                 }
@@ -2202,7 +2213,7 @@ fn resolve_namespace_segments_internal(
                     options,
                     state,
                     generated,
-                    use_site_span,
+                    use_site_span.clone(),
                     errors,
                     depth,
                 ) {
@@ -2215,7 +2226,7 @@ fn resolve_namespace_segments_internal(
                         state,
                         generated,
                         errors,
-                        use_site_span,
+                        use_site_span.clone(),
                     );
                     match (resolved.as_ref(), used_resolved) {
                         (Some(local), Some(used)) if local != &used => {
@@ -2259,7 +2270,7 @@ fn resolve_namespace_segments_internal(
                         state,
                         generated,
                         errors,
-                        use_site_span,
+                        use_site_span.clone(),
                     );
                     break;
                 }
@@ -2276,7 +2287,7 @@ fn resolve_namespace_segments_internal(
                 options,
                 state,
                 generated,
-                use_site_span,
+                use_site_span.clone(),
                 errors,
                 depth,
             ) {
@@ -2290,7 +2301,7 @@ fn resolve_namespace_segments_internal(
                         state,
                         generated,
                         errors,
-                        use_site_span,
+                        use_site_span.clone(),
                     )
                 } else {
                     Some(candidate)
@@ -2321,7 +2332,7 @@ fn resolve_namespace_segments_internal(
                 state,
                 generated,
                 errors,
-                use_site_span,
+                use_site_span.clone(),
                 depth + 1,
             ) {
                 path = alias_target?;
@@ -2343,7 +2354,7 @@ fn resolve_namespace_segments_internal(
                     state,
                     generated,
                     errors,
-                    use_site_span,
+                    use_site_span.clone(),
                 )?;
             } else {
                 let suffix = format_call_args_as_type_suffix(args);
@@ -2359,7 +2370,7 @@ fn resolve_namespace_segments_internal(
                 state,
                 generated,
                 errors,
-                use_site_span,
+                use_site_span.clone(),
             )?;
         } else {
             path = candidate;
@@ -2370,7 +2381,7 @@ fn resolve_namespace_segments_internal(
                 state,
                 generated,
                 errors,
-                use_site_span,
+                use_site_span.clone(),
                 depth + 1,
             ) {
                 path = alias_target?;
@@ -2422,7 +2433,10 @@ fn instantiate_namespace_template(
         );
         let arg_span = expr.loc().span();
         if let Some(name) = &arg.name {
-            if named.insert(name.clone(), (expr, arg_span)).is_some() {
+            if named
+                .insert(name.clone(), (expr, arg_span.clone()))
+                .is_some()
+            {
                 errors.push(Diagnostic::semantic_span(
                     format!(
                         "namespace template '{}' argument '{}' specified more than once",
@@ -2510,7 +2524,7 @@ fn instantiate_namespace_template(
         unknown.sort();
         let unknown_span = unknown
             .iter()
-            .filter_map(|name| named.get(name).map(|(_, span)| *span))
+            .filter_map(|name| named.get(name).map(|(_, span)| span.clone()))
             .find(|span| !span.is_zero())
             .unwrap_or(use_site_span);
         errors.push(Diagnostic::semantic_span(
@@ -2620,7 +2634,7 @@ fn rewrite_named_type_ref_name(
     let use_site_loc = use_site_loc.into();
     let use_site_span = use_site_loc.span();
     if let Some(qualified) =
-        resolve_visible_unqualified_member_name(name, current_ns, state, use_site_loc, errors)
+        resolve_visible_unqualified_member_name(name, current_ns, state, &use_site_loc, errors)
     {
         *name = qualified;
         return;
@@ -2680,7 +2694,7 @@ fn qualify_or_resolve_symbol_name(
 ) -> Option<String> {
     let loc = loc.into();
     if let Some(qualified) =
-        resolve_visible_unqualified_member_name(name, current_ns, state, loc, errors)
+        resolve_visible_unqualified_member_name(name, current_ns, state, &loc, errors)
     {
         return Some(qualified);
     }
@@ -3857,7 +3871,7 @@ fn rewrite_delegate_def_with_scope(
     parent_scope: &RewriteNameScope,
 ) {
     let mut adapter = EventDef {
-        loc: delegate.loc,
+        loc: delegate.loc.clone(),
         name: delegate.name.clone(),
         params: std::mem::take(&mut delegate.params),
         body: Vec::new(),
@@ -4138,7 +4152,7 @@ fn rewrite_fn_return_type(
                         state,
                         generated,
                         errors,
-                        loc,
+                        &loc,
                     );
                 }
             }
@@ -4554,7 +4568,7 @@ fn rewrite_expr_scoped(
                         name,
                         current_ns,
                         state,
-                        use_site_loc,
+                        &use_site_loc,
                         errors,
                     )
                 };
@@ -4583,7 +4597,7 @@ fn rewrite_expr_scoped(
                         base,
                         current_ns,
                         state,
-                        use_site_loc,
+                        &use_site_loc,
                         errors,
                     )
                 };
@@ -4612,7 +4626,7 @@ fn rewrite_expr_scoped(
                         base,
                         current_ns,
                         state,
-                        use_site_loc,
+                        &use_site_loc,
                         errors,
                     )
                 };
@@ -4656,7 +4670,7 @@ fn rewrite_expr_scoped(
                     state,
                     generated,
                     errors,
-                    use_site_loc,
+                    &use_site_loc,
                     local_scope,
                 );
                 let qualified = if local_scope.contains_value_name(name) {
@@ -4666,7 +4680,7 @@ fn rewrite_expr_scoped(
                         name,
                         current_ns,
                         state,
-                        use_site_loc,
+                        &use_site_loc,
                         errors,
                     )
                 };

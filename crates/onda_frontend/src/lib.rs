@@ -2,6 +2,7 @@ pub mod ast;
 pub mod diagnostics;
 pub mod expr_traversal;
 pub mod parser;
+mod source_locations;
 
 pub use ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec, BlockKind,

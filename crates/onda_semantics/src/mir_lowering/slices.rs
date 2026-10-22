@@ -31,7 +31,7 @@ impl<'a> FunctionLowerer<'a> {
                 block,
                 PrimitiveType::I32,
                 Rvalue::SliceLen(Value::Local(local)),
-                loc,
+                loc.clone(),
             )
             .value;
         Ok(self
@@ -303,7 +303,7 @@ impl<'a> FunctionLowerer<'a> {
             end,
         } = selection;
         let (source, length, element, source_access) =
-            self.slice_base(base, selector, channel, block, location)?;
+            self.slice_base(base, selector, channel, block, location.clone())?;
         let access = requested_access.unwrap_or(source_access);
         if source_access == onda_mir::AccessMode::ReadOnly
             && access == onda_mir::AccessMode::ReadWrite
@@ -315,7 +315,7 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let (start, slice_len) =
-            self.normalize_slice_selection(length.value, start, end, block, location)?;
+            self.normalize_slice_selection(length.value, start, end, block, location.clone())?;
         Ok(self.emit_slice_temp(
             block,
             None,
@@ -351,11 +351,11 @@ impl<'a> FunctionLowerer<'a> {
                     ty: PrimitiveType::I32,
                 },
                 block,
-                location,
+                location.clone(),
             )
             .value;
-        let start = self.normalize_slice_bound(start, length, false, block, location)?;
-        let end = self.normalize_slice_bound(end, length, true, block, location)?;
+        let start = self.normalize_slice_bound(start, length, false, block, location.clone())?;
+        let end = self.normalize_slice_bound(end, length, true, block, location.clone())?;
         let difference = self.emit_temp(
             block,
             PrimitiveType::I32,
@@ -364,17 +364,18 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: end,
                 rhs: start,
             },
-            location,
+            location.clone(),
         );
         let slice_len = self.new_local(None, PrimitiveType::I32);
-        self.assign_value(block, slice_len, difference.value, location);
-        let end_before_start = self.compare_value(block, CompareOp::Less, end, start, location);
+        self.assign_value(block, slice_len, difference.value, location.clone());
+        let end_before_start =
+            self.compare_value(block, CompareOp::Less, end, start, location.clone());
         let mut empty = MirBlock::default();
         self.assign_value(
             &mut empty,
             slice_len,
             Value::Constant(ScalarValue::I32(0)),
-            location,
+            location.clone(),
         );
         self.push_statement(
             block,
@@ -436,7 +437,9 @@ impl<'a> FunctionLowerer<'a> {
                     let channel = channel
                         .map(|channel| self.lower_expr(channel, block))
                         .transpose()?
-                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .map(|value| {
+                            self.coerce(value, PrimitiveType::I32, block, location.clone())
+                        })
                         .transpose()?
                         .map(|value| value.value);
                     let length = self.emit_temp(
@@ -465,10 +468,13 @@ impl<'a> FunctionLowerer<'a> {
                     let channel = channel
                         .map(|channel| self.lower_expr(channel, block))
                         .transpose()?
-                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .map(|value| {
+                            self.coerce(value, PrimitiveType::I32, block, location.clone())
+                        })
                         .transpose()?
                         .map(|value| value.value);
-                    let reference = self.materialize_buffer_reference(reference, block, location);
+                    let reference =
+                        self.materialize_buffer_reference(reference, block, location.clone());
                     return match reference {
                         MaterializedBufferReference::Interface(buffer) => {
                             let length = self.emit_temp(
@@ -506,17 +512,19 @@ impl<'a> FunctionLowerer<'a> {
                             format!(
                                 "buffer collection parameter '{base}' requires a slot selector"
                             ),
-                            location,
+                            location.clone(),
                         )
                     })?;
                     let selector = self.lower_expr(selector, block)?;
                     let selector = self
-                        .coerce(selector, PrimitiveType::I32, block, location)?
+                        .coerce(selector, PrimitiveType::I32, block, location.clone())?
                         .value;
                     let channel = channel
                         .map(|channel| self.lower_expr(channel, block))
                         .transpose()?
-                        .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                        .map(|value| {
+                            self.coerce(value, PrimitiveType::I32, block, location.clone())
+                        })
                         .transpose()?
                         .map(|value| value.value);
                     let parameter = onda_mir::BufferParamRef::ArrayElement {
@@ -636,7 +644,7 @@ impl<'a> FunctionLowerer<'a> {
                 access,
             ));
         }
-        if let Some((data, element, len)) = self.const_arrays.resolve(base, location)? {
+        if let Some((data, element, len)) = self.const_arrays.resolve(base, location.clone())? {
             if selector.is_some() || channel.is_some() {
                 return Err(self.error(
                     format!("constant array '{base}' does not support buffer coordinates"),
@@ -669,7 +677,7 @@ impl<'a> FunctionLowerer<'a> {
             let channel = channel
                 .map(|channel| self.lower_expr(channel, block))
                 .transpose()?
-                .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                .map(|value| self.coerce(value, PrimitiveType::I32, block, location.clone()))
                 .transpose()?
                 .map(|value| value.value);
             let length = self.emit_temp(
@@ -692,17 +700,17 @@ impl<'a> FunctionLowerer<'a> {
             let selector = selector.ok_or_else(|| {
                 self.error(
                     format!("buffer collection '{base}' requires a slot selector"),
-                    location,
+                    location.clone(),
                 )
             })?;
             let selector = self.lower_expr(selector, block)?;
             let selector = self
-                .coerce(selector, PrimitiveType::I32, block, location)?
+                .coerce(selector, PrimitiveType::I32, block, location.clone())?
                 .value;
             let channel = channel
                 .map(|channel| self.lower_expr(channel, block))
                 .transpose()?
-                .map(|value| self.coerce(value, PrimitiveType::I32, block, location))
+                .map(|value| self.coerce(value, PrimitiveType::I32, block, location.clone()))
                 .transpose()?
                 .map(|value| value.value);
             let buffer = onda_mir::BufferRef::ArrayElement {
@@ -748,14 +756,14 @@ impl<'a> FunctionLowerer<'a> {
             Value::Constant(ScalarValue::I32(0))
         };
         let normalized = self.new_local(None, PrimitiveType::I32);
-        self.assign_value(block, normalized, initial, location);
+        self.assign_value(block, normalized, initial, location.clone());
 
         let negative = self.compare_value(
             block,
             CompareOp::Less,
             Value::Local(normalized),
             Value::Constant(ScalarValue::I32(0)),
-            location,
+            location.clone(),
         );
         let mut adjust_negative = MirBlock::default();
         let adjusted = self.emit_temp(
@@ -766,9 +774,14 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: Value::Local(normalized),
                 rhs: length,
             },
-            location,
+            location.clone(),
         );
-        self.assign_value(&mut adjust_negative, normalized, adjusted.value, location);
+        self.assign_value(
+            &mut adjust_negative,
+            normalized,
+            adjusted.value,
+            location.clone(),
+        );
         self.push_statement(
             block,
             StatementKind::If {
@@ -776,7 +789,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: adjust_negative,
                 else_block: MirBlock::default(),
             },
-            location,
+            location.clone(),
         );
 
         let below_zero = self.compare_value(
@@ -784,14 +797,14 @@ impl<'a> FunctionLowerer<'a> {
             CompareOp::Less,
             Value::Local(normalized),
             Value::Constant(ScalarValue::I32(0)),
-            location,
+            location.clone(),
         );
         let mut clamp_low = MirBlock::default();
         self.assign_value(
             &mut clamp_low,
             normalized,
             Value::Constant(ScalarValue::I32(0)),
-            location,
+            location.clone(),
         );
         self.push_statement(
             block,
@@ -800,7 +813,7 @@ impl<'a> FunctionLowerer<'a> {
                 then_block: clamp_low,
                 else_block: MirBlock::default(),
             },
-            location,
+            location.clone(),
         );
 
         let above_length = self.compare_value(
@@ -808,10 +821,10 @@ impl<'a> FunctionLowerer<'a> {
             CompareOp::Greater,
             Value::Local(normalized),
             length,
-            location,
+            location.clone(),
         );
         let mut clamp_high = MirBlock::default();
-        self.assign_value(&mut clamp_high, normalized, length, location);
+        self.assign_value(&mut clamp_high, normalized, length, location.clone());
         self.push_statement(
             block,
             StatementKind::If {
@@ -855,7 +868,7 @@ impl<'a> FunctionLowerer<'a> {
                     SliceSelection::default(),
                     Some(onda_mir::AccessMode::ReadWrite),
                     block,
-                    location,
+                    location.clone(),
                 )?;
                 if destination.element != slice.element {
                     return Err(self.error(
@@ -907,7 +920,7 @@ impl<'a> FunctionLowerer<'a> {
             selection,
             Some(onda_mir::AccessMode::ReadWrite),
             block,
-            location,
+            location.clone(),
         )?;
         if self.is_slice_expression(expression) {
             let source = self.lower_slice_expression(
@@ -951,7 +964,7 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<(), MirLoweringError> {
         if let Some(components) = self.data_tuple_components(base) {
             let component = self.constant_tuple_index(base, index.expr, components.len())?;
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             return self.store_data_scalar(
                 &components[component],
                 value,
@@ -963,7 +976,7 @@ impl<'a> FunctionLowerer<'a> {
         {
             let component_index = self.constant_tuple_index(base, index.expr, components.len())?;
             let (parameter, ty) = components[component_index];
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -982,7 +995,7 @@ impl<'a> FunctionLowerer<'a> {
         {
             let component_index = self.constant_tuple_index(base, index.expr, components.len())?;
             let (slice, ty, element_index) = components[component_index];
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -999,7 +1012,7 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(Binding::ArrayParameter(parameter, element, _)) =
             self.bindings.get(base).cloned()
         {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, element, block, value_location)?;
             self.push_statement(
                 block,
@@ -1019,7 +1032,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         if let Some(Binding::BufferParameter(parameter, element)) = self.bindings.get(base).cloned()
         {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, element, block, value_location)?;
             self.push_statement(
                 block,
@@ -1035,8 +1048,9 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
         if let Some(Binding::BufferAlias(reference, element)) = self.bindings.get(base).cloned() {
-            let reference = self.materialize_buffer_reference(reference, block, statement_location);
-            let value = self.single_global_value(base, values, statement_location)?;
+            let reference =
+                self.materialize_buffer_reference(reference, block, statement_location.clone());
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, element, block, value_location)?;
             let statement = match reference {
                 MaterializedBufferReference::Interface(buffer) => StatementKind::BufferStore {
@@ -1060,7 +1074,7 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(());
         }
         if let Some(Binding::Array(local, element, _)) = self.bindings.get(base).cloned() {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, element, block, value_location)?;
             self.push_statement(
                 block,
@@ -1085,7 +1099,7 @@ impl<'a> FunctionLowerer<'a> {
                     statement_location,
                 ));
             }
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, element, block, value_location)?;
             self.push_statement(
                 block,
@@ -1113,8 +1127,8 @@ impl<'a> FunctionLowerer<'a> {
             index,
             values,
             block,
-            value_location,
-            statement_location,
+            value_location.clone(),
+            statement_location.clone(),
         )? {
             return Ok(());
         }
@@ -1124,7 +1138,7 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(components) = state_tuple {
             let component =
                 components[self.constant_tuple_index(base, index.expr, components.len())?];
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, component.1, block, value_location)?;
             self.push_statement(
                 block,
@@ -1143,7 +1157,7 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals
             .and_then(|globals| globals.control_output_arrays.get(base).copied());
         if let Some((output, ty, _)) = control_output_array {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -1161,7 +1175,7 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals
             .and_then(|globals| globals.output_arrays.get(base).copied());
         if let Some((output, ty, _)) = output_array {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             if let Some((cache, cache_ty, _)) = self.audio_output_array_caches.get(&output).copied()
             {
@@ -1185,7 +1199,7 @@ impl<'a> FunctionLowerer<'a> {
             let frame = self.current_frame.ok_or_else(|| {
                 self.error(
                     format!("audio output array '{base}' was written outside the sample section"),
-                    statement_location,
+                    statement_location.clone(),
                 )
             })?;
             self.push_statement(
@@ -1216,7 +1230,7 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals_for_unbound(base)
             .and_then(|globals| globals.state_arrays.get(base).copied());
         if let Some((state, ty, _)) = state_array {
-            let value = self.single_global_value(base, values, statement_location)?;
+            let value = self.single_global_value(base, values, statement_location.clone())?;
             let value = self.coerce(value, ty, block, value_location)?;
             self.push_statement(
                 block,
@@ -1249,7 +1263,7 @@ impl<'a> FunctionLowerer<'a> {
                 statement_location,
             ));
         };
-        let value = self.single_global_value(base, values, statement_location)?;
+        let value = self.single_global_value(base, values, statement_location.clone())?;
         let value = self.coerce(value, ty, block, value_location)?;
         self.push_statement(
             block,
@@ -1284,7 +1298,7 @@ impl<'a> FunctionLowerer<'a> {
         let globals = self.runtime_globals.ok_or_else(|| {
             self.error(
                 format!("dynamic interface view '{base}' is unavailable outside runtime lowering"),
-                location,
+                location.clone(),
             )
         })?;
         let view = globals.interface_views.get(&kind).cloned().ok_or_else(|| {
@@ -1305,10 +1319,11 @@ impl<'a> FunctionLowerer<'a> {
         value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let Some(view) = self.dynamic_interface_write_view(base, statement_location)? else {
+        let Some(view) = self.dynamic_interface_write_view(base, statement_location.clone())?
+        else {
             return Ok(false);
         };
-        let value = self.single_global_value(base, values, statement_location)?;
+        let value = self.single_global_value(base, values, statement_location.clone())?;
         let value = self.coerce(value, view.element_type, block, value_location)?;
         let selected = self.apply_dynamic_interface_index_bounds(
             index.value,
@@ -1338,7 +1353,7 @@ impl<'a> FunctionLowerer<'a> {
         block: &mut MirBlock,
         location: SourceLoc,
     ) -> Result<bool, MirLoweringError> {
-        let Some(view) = self.dynamic_interface_write_view(base, location)? else {
+        let Some(view) = self.dynamic_interface_write_view(base, location.clone())? else {
             return Ok(false);
         };
         let selected =
@@ -1379,7 +1394,7 @@ impl<'a> FunctionLowerer<'a> {
         let midpoint_i32 = i32::try_from(midpoint).map_err(|_| {
             self.error(
                 "dynamic interface slot index is outside the i32 boundary",
-                location,
+                location.clone(),
             )
         })?;
         let condition = self.emit_temp(
@@ -1390,12 +1405,24 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: selected,
                 rhs: Value::Constant(ScalarValue::I32(midpoint_i32)),
             },
-            location,
+            location.clone(),
         );
-        let then_block = self
-            .dynamic_interface_write_dispatch(slots, start, midpoint, selected, value, location)?;
-        let else_block =
-            self.dynamic_interface_write_dispatch(slots, midpoint, end, selected, value, location)?;
+        let then_block = self.dynamic_interface_write_dispatch(
+            slots,
+            start,
+            midpoint,
+            selected,
+            value,
+            location.clone(),
+        )?;
+        let else_block = self.dynamic_interface_write_dispatch(
+            slots,
+            midpoint,
+            end,
+            selected,
+            value,
+            location.clone(),
+        )?;
         self.push_statement(
             &mut block,
             StatementKind::If {
@@ -1459,7 +1486,7 @@ impl<'a> FunctionLowerer<'a> {
                 let frame = self.current_frame.ok_or_else(|| {
                     self.error(
                         "dynamic audio output view was written outside the sample section",
-                        location,
+                        location.clone(),
                     )
                 })?;
                 self.push_statement(

@@ -1,0 +1,9 @@
+ins 1
+init:
+  values: f32[4] = [0.1, 0.2, 0.3, 0.4]
+sample:
+  values[0] = tanh(values[0] + in1)
+  values[1] = tanh(values[1] + in1)
+  values[2] = tanh(values[2] + in1)
+  values[3] = tanh(values[3] + in1)
+  out1 = values[0] + values[1] + values[2] + values[3]

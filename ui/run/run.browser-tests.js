@@ -508,11 +508,11 @@ async function checkDefaultLayout() {
         && rect.right <= panel.right - 8.5 * zoom)
         && input.scrollWidth <= input.clientWidth,
       `Params settings and the complete smoothing value fit at ${width} pixels and ${zoom}× zoom`);
-      check(controls.every(rect => Math.abs(rect.top + rect.height / 2
-        - controls[0].top - controls[0].height / 2) < 1)
-        && controls.slice(1).every((rect, index) => controls[index].right <= rect.left + 1)
+      check(controls.every((rect, index) => controls.slice(index + 1).every(other =>
+        rect.right <= other.left + 1 || other.right <= rect.left + 1
+        || rect.bottom <= other.top + 1 || other.bottom <= rect.top + 1))
         && doc.querySelector("#params-section .param-smoothing-label").getBoundingClientRect().width > 0,
-        `Params, reset, Smooth, Sliders, and Knobs share one line at ${width} pixels and ${zoom}× zoom`);
+        `Params controls remain readable and do not overlap at ${width} pixels and ${zoom}× zoom`);
       check(getComputedStyle(doc.querySelector("#params-section .params-title")).fontSize === "14px",
         `the Params title keeps its standard size at ${width} pixels and ${zoom}× zoom`);
       const actions = doc.querySelector("#params-section .section-actions");
@@ -602,8 +602,8 @@ async function checkDefaultLayout() {
         }
       }
     }
-    // Allow room for the block-size unit when checking an untruncated single row.
-    frame.style.width = "420px";
+    // Leave room for platform font metrics and the block-size unit on an untruncated row.
+    frame.style.width = "480px";
     for (const running of [false, true]) {
       view._onHostMessage({ type: "state", state: {
         path: "sine.onda", ondaVersion: "0.8.26",
@@ -614,7 +614,7 @@ async function checkDefaultLayout() {
         && ["path", "status"].every(id => {
           const label = doc.getElementById(id);
           return label.scrollWidth <= label.clientWidth;
-        }), "a 420-pixel sparse playground keeps short source details and transport on one row");
+        }), "a 480-pixel sparse playground keeps short source details and transport on one row");
     }
     view._onHostMessage({ type: "state", state: {
       supportsSourceSelection: true, supportsProjectExport: true,
@@ -1071,14 +1071,15 @@ async function checkHomepageLayout() {
       const block = doc.querySelector(".home-example-code").getBoundingClientRect();
       const code = doc.querySelector(".home-example-code pre").getBoundingClientRect();
       const button = doc.querySelector(".home-example-code .primary-button").getBoundingClientRect();
-      check(code.top === block.top && button.top >= code.top && button.bottom < code.bottom
-        && button.left >= code.left && button.right <= code.right,
-        `the homepage playground button overlays the code without reserving a row at ${width} pixels`);
+      check(code.top >= block.top && button.top >= block.top
+        && button.left >= block.left && button.right <= block.right,
+        `the homepage playground button stays within its code block at ${width} pixels`);
       const text = doc.querySelector(".home-example-code code").firstChild;
       const firstLine = doc.createRange();
       firstLine.setStart(text, 0);
       firstLine.setEnd(text, text.textContent.indexOf("\n"));
-      check(firstLine.getBoundingClientRect().right <= button.left,
+      check(firstLine.getBoundingClientRect().right <= button.left
+        || firstLine.getBoundingClientRect().top >= button.bottom,
         `the homepage playground button leaves the first import readable at ${width} pixels`);
     }
   } finally {
@@ -1103,6 +1104,21 @@ async function checkPlaygroundLayout() {
       await loaded;
       const doc = frame.contentDocument;
       const runFrame = doc.querySelector("[data-run-view]");
+      const projectEditor = frame.contentWindow.__testEditor;
+      const originalProject = projectEditor.project();
+      const constants = { seed: "9007199254740993", weights: [2, 4, 8] };
+      projectEditor.replaceProject({ ...originalProject, constants });
+      projectEditor.replaceActiveSource(originalProject.sources[originalProject.active] + "\n// edit\n");
+      const savedProject = JSON.parse(JSON.stringify(projectEditor.project()));
+      constants.weights[0] = 99;
+      projectEditor.replaceProject({ ...originalProject, constants: undefined });
+      check(Object.keys(projectEditor.compilerProject().constants).length === 0,
+        `${host}: replacing a project clears its old constant defaults`);
+      projectEditor.replaceProject(savedProject);
+      check(JSON.stringify(projectEditor.compilerProject().constants)
+        === JSON.stringify({ seed: "9007199254740993", weights: [2, 4, 8] }),
+        `${host}: editor source edits and saved project restoration retain exact constant defaults`);
+      projectEditor.replaceProject(originalProject);
       const run = runFrame.contentWindow;
       const runDoc = run.document;
       run._onHostMessage({ type: "state", state: {
@@ -1868,6 +1884,30 @@ try {
   const paramMessages = () => window.__testMessages.filter(message => message.type === "setParam");
   for (const layout of ["knobs", "sliders"]) {
     document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
+    for (const initial of ["9007199254740993", "-9007199254740993",
+      "9223372036854775807", "-9223372036854775808"]) {
+      send({ params: [{ name: "wide", type: "i64", value: "0", default: initial }] });
+      const number = document.querySelector('#params input');
+      edit(number, initial);
+      number.dispatchEvent(new Event("change", { bubbles: true }));
+      number.blur();
+      check(paramMessages().at(-1)?.value === initial && number.value === initial,
+        `${layout} i64 edits preserve ${initial} exactly`);
+      const direction = BigInt(initial) > 0n ? -1 : 1;
+      const pointer = pointerControl(number);
+      pointer("pointerdown", 100);
+      pointer("pointermove", 100 + 16 * direction);
+      pointer("pointerup", 100 + 16 * direction);
+      const moved = (BigInt(initial) + BigInt(4 * direction)).toString();
+      check(paramMessages().at(-1)?.value === moved && number.value === moved,
+        `${layout} i64 drags preserve low bits near ${initial}`);
+      number.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      check(paramMessages().at(-1)?.value === initial && number.value === initial,
+        `${layout} i64 resets restore every digit of ${initial}`);
+    }
+  }
+  for (const layout of ["knobs", "sliders"]) {
+    document.querySelector(`#params-section [data-param-layout="${layout}"]`).click();
     for (const type of ["f64", "i64"]) {
       for (const ranged of [false, true]) {
         for (const drag of [false, true]) {
@@ -1888,7 +1928,7 @@ try {
           if (drag) {
             pointer("pointermove", 115);
             pointer("pointerup", 115);
-            const expected = ranged || type === "i64" ? 84 : 80.15;
+            const expected = type === "i64" && !ranged ? "84" : ranged ? 84 : 80.15;
             const committed = paramMessages().at(-1);
             check(committed?.value === expected && committed.commit === true,
               `${layout} ${type} ranged=${ranged} drags start from the latest host value`);

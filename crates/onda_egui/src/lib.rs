@@ -1978,7 +1978,7 @@ struct ParamControlSpec<'a> {
     label: &'a str,
     unit: Option<&'a str>,
     ty: &'a str,
-    default: Option<f64>,
+    default: Option<NumberValue>,
     domain: Option<ParamDomain<'a>>,
 }
 
@@ -2008,10 +2008,20 @@ impl ParamControlSpec<'_> {
     }
 
     fn initial_value(self) -> f64 {
-        self.constrain_plain(
-            self.default
-                .unwrap_or_else(|| self.bounds().map_or(0.0, |(min, _)| min)),
-        )
+        self.initial_number().as_f64()
+    }
+
+    fn initial_number(self) -> NumberValue {
+        let value = self
+            .default
+            .unwrap_or_else(|| NumberValue::Float(self.bounds().map_or(0.0, |(min, _)| min)));
+        if let Some(domain) = self.domain {
+            NumberValue::Float(domain.constrain_plain(value.as_f64()))
+        } else if is_integer_type(self.ty) {
+            NumberValue::Integer(value.as_i64())
+        } else {
+            value
+        }
     }
 }
 
@@ -2117,7 +2127,7 @@ fn render_param_value_editor(
         return render_boolean_param_editor(ui, spec, value);
     }
 
-    let committed_number = value.as_f64().unwrap_or(0.0);
+    let committed_number = NumberValue::from_json(spec.ty, Some(value));
     let is_integer = is_integer_type(ty);
     let step = spec.effective_step();
     let mut outcome = ParamEditOutcome::None;
@@ -2138,7 +2148,7 @@ fn render_param_value_editor(
 
         if let (Some(min), Some(max)) = (min, max) {
             ui.add_space(2.0);
-            let mut slider_value = committed_number;
+            let mut slider_value = committed_number.as_f64();
             let slider_response = ui
                 .scope(|ui| {
                     ui.spacing_mut().interact_size.y = 24.0;
@@ -2202,13 +2212,13 @@ fn render_compact_param_value_editor(
     render_param_heading(ui, spec, ui.available_width(), egui::Align::Center);
     ui.add_space(4.0);
 
-    let committed_number = value.as_f64().unwrap_or(0.0);
+    let committed_number = NumberValue::from_json(spec.ty, Some(value));
     let mut displayed_number = committed_number;
 
     if spec.bounds().is_some() {
-        let mut knob_value = committed_number;
+        let mut knob_value = committed_number.as_f64();
         if render_param_knob(ui, &mut knob_value, spec).changed() {
-            displayed_number = knob_value;
+            displayed_number = NumberValue::Float(knob_value);
             outcome = ParamEditOutcome::Commit(json_number(knob_value));
         }
         ui.add_space(4.0);
@@ -2298,21 +2308,19 @@ fn render_param_heading(
 fn render_param_number_input(
     ui: &mut egui::Ui,
     spec: ParamControlSpec<'_>,
-    displayed_number: f64,
+    displayed_number: impl Into<NumberValue>,
     max_decimals: usize,
 ) -> ParamEditOutcome {
-    let convert = |value: f64| {
-        // Ranged parameters retain fractional motion until the domain snaps it once.
-        if is_integer_type(spec.ty) && spec.domain.is_none() {
-            NumberValue::Integer(value.round() as i64)
-        } else {
-            NumberValue::Float(value)
-        }
+    let displayed_number = displayed_number.into();
+    // Ranged parameters retain fractional motion until the domain snaps it once.
+    let mut number = if is_integer_type(spec.ty) && spec.domain.is_none() {
+        NumberValue::Integer(displayed_number.as_i64())
+    } else {
+        NumberValue::Float(displayed_number.as_f64())
     };
-    let mut number = convert(displayed_number);
     let input = NumberInput::new(
         &mut number,
-        convert(spec.initial_value()),
+        spec.initial_number(),
         scalar_drag_speed(spec.ty),
     )
     .id_salt("param-number")
@@ -2325,12 +2333,16 @@ fn render_param_number_input(
         input
     };
     let response = ui.add_sized([ui.available_width().min(104.0), 26.0], input);
-    let next_value = number.as_f64();
+    let next_value = if spec.domain.is_some() {
+        json_number(number.as_f64())
+    } else {
+        number.to_json(spec.ty)
+    };
     if response.double_clicked_by(egui::PointerButton::Primary) {
-        return ParamEditOutcome::Commit(json_number(next_value));
+        return ParamEditOutcome::Commit(next_value);
     }
     if response.changed() && !response.has_focus() {
-        ParamEditOutcome::Commit(json_number(next_value))
+        ParamEditOutcome::Commit(next_value)
     } else {
         ParamEditOutcome::None
     }
@@ -3247,7 +3259,7 @@ mod tests {
                     label: "value",
                     unit: None,
                     ty,
-                    default: Some(4.0),
+                    default: Some((4.0).into()),
                     domain: ranged.then(|| {
                         ParamDomain::new(
                             ParamScalarType::F64,
@@ -3276,7 +3288,7 @@ mod tests {
                 let (_, outcome) =
                     widget_frame(&ctx, 0.3, pointer_button(pos, false), render_draft);
                 assert!(
-                    matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!(4.0)),
+                    matches!(outcome, ParamEditOutcome::Commit(value) if value == if ty == "i64" && !ranged { serde_json::json!("4") } else { serde_json::json!(4.0) }),
                     "{ty}, ranged: {ranged}"
                 );
                 assert!(ctx.memory(|memory| memory.focused().is_none()));
@@ -3298,7 +3310,7 @@ mod tests {
             label: "value",
             unit: None,
             ty: "f64",
-            default: Some(0.0),
+            default: Some((0.0).into()),
             domain: None,
         };
         widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -3346,7 +3358,7 @@ mod tests {
                     label: "value",
                     unit: None,
                     ty,
-                    default: Some(4.0),
+                    default: Some((4.0).into()),
                     domain: None,
                 };
                 for (time, events) in [
@@ -3380,7 +3392,7 @@ mod tests {
             label: "value",
             unit: None,
             ty: "f64",
-            default: Some(4.0),
+            default: Some((4.0).into()),
             domain: None,
         };
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -3411,7 +3423,7 @@ mod tests {
             label: "value",
             unit: None,
             ty: "f64",
-            default: Some(4.0),
+            default: Some((4.0).into()),
             domain: None,
         };
         for (time, events) in [
@@ -3439,7 +3451,7 @@ mod tests {
                 label: "gain",
                 unit: None,
                 ty: "f64",
-                default: Some(4.0),
+                default: Some((4.0).into()),
                 domain: ParamDomain::new(
                     ParamScalarType::F64,
                     1.0,
@@ -3635,7 +3647,7 @@ mod tests {
                 label: "value",
                 unit: None,
                 ty: old_type,
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: None,
             };
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -3706,7 +3718,7 @@ mod tests {
                 label: "value",
                 unit: None,
                 ty: old_type,
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: None,
             };
             widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -3741,7 +3753,7 @@ mod tests {
             label: "gain",
             unit: None,
             ty: "f64",
-            default: Some(0.5),
+            default: Some((0.5).into()),
             domain: ParamDomain::new(
                 ParamScalarType::F64,
                 0.0,
@@ -3788,7 +3800,7 @@ mod tests {
                 label: "tiny",
                 unit: None,
                 ty: "f64",
-                default: Some(initial),
+                default: Some((initial).into()),
                 domain: ParamDomain::new(
                     ParamScalarType::F64,
                     0.0,
@@ -4055,7 +4067,7 @@ mod tests {
                 label: "wide",
                 unit: None,
                 ty: "f64",
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: ParamDomain::new(
                     ParamScalarType::F64,
                     -maximum,
@@ -4112,7 +4124,7 @@ mod tests {
                 label: "value",
                 unit: None,
                 ty,
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: Some(domain),
             };
             let render = |ui: &mut egui::Ui| render_param_number_input(ui, spec, 0.0, 6);
@@ -4321,7 +4333,7 @@ mod tests {
             label: "fine",
             unit: None,
             ty: "f64",
-            default: Some(0.0),
+            default: Some((0.0).into()),
             domain: ParamDomain::new(
                 ParamScalarType::F64,
                 0.0,
@@ -4772,7 +4784,7 @@ mod tests {
                     label: "a_very_long_parameter_name",
                     unit: None,
                     ty: "f32",
-                    default: Some(880.0),
+                    default: Some((880.0).into()),
                     domain: ParamDomain::new(
                         ParamScalarType::F64,
                         20.0,

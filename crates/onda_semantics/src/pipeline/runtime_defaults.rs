@@ -53,7 +53,7 @@ impl<'a> RuntimeDefaults<'a> {
                 signature.params.first().is_some_and(|name| name == "self"),
                 false,
                 &format!("function '{name}' call"),
-                (*loc).into(),
+                loc.clone().into(),
                 errors,
             );
             let omitted = resolved
@@ -109,7 +109,7 @@ pub(super) fn share_runtime_defaults(defs: &mut Vec<TypedFunction>) {
                     callee.params.first().is_some_and(|name| name == "self"),
                     false,
                     "function call",
-                    (*loc).into(),
+                    loc.clone().into(),
                     &mut Vec::new(),
                 );
                 supplied

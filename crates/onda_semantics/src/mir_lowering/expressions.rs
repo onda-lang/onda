@@ -632,7 +632,7 @@ impl<'a> FunctionLowerer<'a> {
                 let frame = self.current_frame.ok_or_else(|| {
                     self.error(
                         format!("audio input '{name}' was read outside the sample section"),
-                        location,
+                        location.clone(),
                     )
                 })?;
                 return Ok(self.emit_temp(
@@ -816,7 +816,7 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
         if let Some(Binding::BufferAlias(reference, element)) = self.bindings.get(base).cloned() {
-            let reference = self.materialize_buffer_reference(reference, block, location);
+            let reference = self.materialize_buffer_reference(reference, block, location.clone());
             let index_value = self.lower_expr(index, block)?;
             let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
             let rvalue = match reference {
@@ -889,9 +889,13 @@ impl<'a> FunctionLowerer<'a> {
         ) {
             return self.lower_tuple_index(base, index, location, block);
         }
-        if let Some(value) =
-            self.lower_dynamic_interface_read(base, index, BoundsMode::Clamp, location, block)?
-        {
+        if let Some(value) = self.lower_dynamic_interface_read(
+            base,
+            index,
+            BoundsMode::Clamp,
+            location.clone(),
+            block,
+        )? {
             return Ok(value);
         }
         let state_tuple = self
@@ -933,7 +937,7 @@ impl<'a> FunctionLowerer<'a> {
             let frame = self.current_frame.ok_or_else(|| {
                 self.error(
                     format!("audio input array '{base}' was read outside the sample section"),
-                    location,
+                    location.clone(),
                 )
             })?;
             return Ok(self.emit_temp(
@@ -995,7 +999,7 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         }
-        let const_array = self.const_arrays.resolve(base, location)?;
+        let const_array = self.const_arrays.resolve(base, location.clone())?;
         if let Some((data, ty, _)) = const_array {
             let index_value = self.lower_expr(index, block)?;
             let index_value = self.coerce(index_value, PrimitiveType::I32, block, index.loc())?;
@@ -1053,13 +1057,13 @@ impl<'a> FunctionLowerer<'a> {
         let globals = self.runtime_globals.ok_or_else(|| {
             self.error(
                 format!("dynamic interface view '{base}' is unavailable outside runtime lowering"),
-                location,
+                location.clone(),
             )
         })?;
         let view = globals.interface_views.get(&kind).cloned().ok_or_else(|| {
             self.error(
                 format!("semantic analysis did not resolve dynamic interface view '{base}'"),
-                location,
+                location.clone(),
             )
         })?;
         let selected =
@@ -1115,7 +1119,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     "dynamic interface slot count is outside the i32 indexing boundary",
-                    location,
+                    location.clone(),
                 )
             })?;
         Ok(Value::Local(self.clamp_index_to_inclusive_upper(
@@ -1141,7 +1145,7 @@ impl<'a> FunctionLowerer<'a> {
         let mut block = MirBlock::default();
         if end - start == 1 {
             let endpoint = slots[start].clone();
-            let value = self.dynamic_interface_read_rvalue(endpoint, location)?;
+            let value = self.dynamic_interface_read_rvalue(endpoint, location.clone())?;
             self.push_statement(
                 &mut block,
                 StatementKind::Assign {
@@ -1157,7 +1161,7 @@ impl<'a> FunctionLowerer<'a> {
         let midpoint_i32 = i32::try_from(midpoint).map_err(|_| {
             self.error(
                 "dynamic interface slot index is outside the i32 boundary",
-                location,
+                location.clone(),
             )
         })?;
         let condition = self.emit_temp(
@@ -1168,12 +1172,24 @@ impl<'a> FunctionLowerer<'a> {
                 lhs: selected,
                 rhs: Value::Constant(ScalarValue::I32(midpoint_i32)),
             },
-            location,
+            location.clone(),
         );
-        let then_block = self
-            .dynamic_interface_read_dispatch(slots, start, midpoint, selected, result, location)?;
-        let else_block =
-            self.dynamic_interface_read_dispatch(slots, midpoint, end, selected, result, location)?;
+        let then_block = self.dynamic_interface_read_dispatch(
+            slots,
+            start,
+            midpoint,
+            selected,
+            result,
+            location.clone(),
+        )?;
+        let else_block = self.dynamic_interface_read_dispatch(
+            slots,
+            midpoint,
+            end,
+            selected,
+            result,
+            location.clone(),
+        )?;
         self.push_statement(
             &mut block,
             StatementKind::If {
@@ -1296,11 +1312,11 @@ impl<'a> FunctionLowerer<'a> {
             merge_integer_types(left_ty, right_ty).ok_or_else(|| {
                 self.error(
                     "bitwise operands are not integers after semantic analysis",
-                    location,
+                    location.clone(),
                 )
             })?
         } else {
-            self.merge_numeric(left_ty, right_ty, "binary expression", location)?
+            self.merge_numeric(left_ty, right_ty, "binary expression", location.clone())?
         };
         let left = self.resolve_operand(left, Some(result_ty), block, lhs.loc())?;
         let right = self.resolve_operand(right, Some(result_ty), block, rhs.loc())?;
@@ -1331,7 +1347,7 @@ impl<'a> FunctionLowerer<'a> {
         let operand_ty = if left_ty == PrimitiveType::Bool && right_ty == PrimitiveType::Bool {
             PrimitiveType::Bool
         } else {
-            self.merge_numeric(left_ty, right_ty, "comparison", location)?
+            self.merge_numeric(left_ty, right_ty, "comparison", location.clone())?
         };
         let left = self.resolve_operand(left, Some(operand_ty), block, lhs.loc())?;
         let right = self.resolve_operand(right, Some(operand_ty), block, rhs.loc())?;
@@ -1365,12 +1381,12 @@ impl<'a> FunctionLowerer<'a> {
             LogicalOp::And => {
                 let right = self.lower_expr(rhs, &mut then_block)?;
                 let right = self.coerce(right, PrimitiveType::Bool, &mut then_block, rhs.loc())?;
-                self.assign_value(&mut then_block, result, right.value, location);
+                self.assign_value(&mut then_block, result, right.value, location.clone());
                 self.assign_value(
                     &mut else_block,
                     result,
                     Value::Constant(ScalarValue::Bool(false)),
-                    location,
+                    location.clone(),
                 );
             }
             LogicalOp::Or => {
@@ -1378,11 +1394,11 @@ impl<'a> FunctionLowerer<'a> {
                     &mut then_block,
                     result,
                     Value::Constant(ScalarValue::Bool(true)),
-                    location,
+                    location.clone(),
                 );
                 let right = self.lower_expr(rhs, &mut else_block)?;
                 let right = self.coerce(right, PrimitiveType::Bool, &mut else_block, rhs.loc())?;
-                self.assign_value(&mut else_block, result, right.value, location);
+                self.assign_value(&mut else_block, result, right.value, location.clone());
             }
         }
 
@@ -1425,7 +1441,7 @@ impl<'a> FunctionLowerer<'a> {
         let result_ty = intrinsic_result_type(function, &adapted_types).ok_or_else(|| {
             self.error(
                 "intrinsic has invalid operand types after semantic analysis",
-                location,
+                location.clone(),
             )
         })?;
 

@@ -29,10 +29,15 @@ impl FunctionLowerer<'_> {
             base,
             index.expr.clone(),
             IndexAccess::Unchecked,
-            location.into(),
+            location.clone().into(),
         );
         let destination = self.fresh_data_name();
-        if !self.lower_struct_array_element_alias(&destination, &selection, block, location)? {
+        if !self.lower_struct_array_element_alias(
+            &destination,
+            &selection,
+            block,
+            location.clone(),
+        )? {
             return Err(self.error(
                 format!("write_unsafe could not resolve data array '{base}'"),
                 location,
@@ -64,7 +69,7 @@ impl FunctionLowerer<'_> {
                 return Err(self.error("malformed indexed data array field", expression.loc()));
             };
             let selection =
-                crate::indexed_read_expr(base.as_str(), index, IndexAccess::Clamp, *loc);
+                crate::indexed_read_expr(base.as_str(), index, IndexAccess::Clamp, loc.clone());
             let alias = self.fresh_data_name();
             let is_primitive_array_field = self
                 .struct_array_element_type(&base)
@@ -90,7 +95,7 @@ impl FunctionLowerer<'_> {
                 return Ok(None);
             }
             return Ok(Some(Expr::Index {
-                loc: *loc,
+                loc: loc.clone(),
                 base: format!("{alias}.{field}"),
                 index: Box::new(field_index),
             }));
@@ -105,14 +110,14 @@ impl FunctionLowerer<'_> {
         else {
             return Err(self.error("malformed indexed data field", expression.loc()));
         };
-        let selection = crate::indexed_read_expr(base, index, access, *loc);
+        let selection = crate::indexed_read_expr(base, index, access, loc.clone());
         let alias = self.fresh_data_name();
         if !self.lower_struct_array_element_alias(&alias, &selection, block, expression.loc())? {
             return Ok(None);
         }
         Ok(Some(Expr::Var {
             name: format!("{alias}.{field}"),
-            loc: *loc,
+            loc: loc.clone(),
         }))
     }
 
@@ -135,8 +140,8 @@ impl FunctionLowerer<'_> {
                 element: ArrayElemType::Struct(name),
                 len,
             } => {
-                let outer = self.data_extent(*len, loc)?;
-                self.struct_field_shapes(name, loc)?
+                let outer = self.data_extent(*len, loc.clone())?;
+                self.struct_field_shapes(name, loc.clone())?
                     .into_iter()
                     .map(|shape| {
                         let (name, element, width) = match shape {
@@ -147,7 +152,10 @@ impl FunctionLowerer<'_> {
                             .checked_mul(width)
                             .filter(|len| *len <= i32::MAX as u32)
                             .ok_or_else(|| {
-                                self.error("data tensor exceeds the supported index range", loc)
+                                self.error(
+                                    "data tensor exceeds the supported index range",
+                                    loc.clone(),
+                                )
                             })?;
                         Ok(StructFieldShape::Array { name, element, len })
                     })
@@ -220,7 +228,7 @@ impl FunctionLowerer<'_> {
         data: &DataType,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
-        for shape in self.data_shapes(data, loc)? {
+        for shape in self.data_shapes(data, loc.clone())? {
             let (name, binding) = match shape {
                 StructFieldShape::Scalar { name: path, ty } => {
                     let name = Self::data_leaf_name(name, &path);
@@ -291,7 +299,7 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
-        for shape in self.data_shapes(data, loc)? {
+        for shape in self.data_shapes(data, loc.clone())? {
             let (path, extent) = match shape {
                 StructFieldShape::Scalar { name, .. } => (name, None),
                 StructFieldShape::Array { name, len, .. } => (name, Some(len)),
@@ -308,7 +316,7 @@ impl FunctionLowerer<'_> {
                     continue;
                 }
                 let slice =
-                    self.lower_slice_expression(&Expr::var(&source).with_loc(loc), None, block)?;
+                    self.lower_slice_expression(&Expr::var(&source).with_loc(&loc), None, block)?;
                 let Value::Local(local) = slice.value else {
                     unreachable!("prepared slice is local")
                 };
@@ -338,7 +346,7 @@ impl FunctionLowerer<'_> {
                 .ok_or_else(|| {
                     self.error(
                         format!("data alias source '{source}' has no reference binding"),
-                        loc,
+                        loc.clone(),
                     )
                 })?;
             self.bindings
@@ -355,7 +363,7 @@ impl FunctionLowerer<'_> {
         loc: SourceLoc,
     ) -> Result<Option<Vec<CallArgument>>, MirLoweringError> {
         let mut args = Vec::new();
-        for shape in self.data_shapes(data, loc)? {
+        for shape in self.data_shapes(data, loc.clone())? {
             let path = match shape {
                 StructFieldShape::Scalar { name, .. } | StructFieldShape::Array { name, .. } => {
                     name
@@ -379,7 +387,7 @@ impl FunctionLowerer<'_> {
                     let globals = self.runtime_globals_for_unbound(&field).ok_or_else(|| {
                         self.error(
                             format!("data result field '{field}' has no storage binding"),
-                            loc,
+                            loc.clone(),
                         )
                     })?;
                     if let Some((state, _)) = globals.states.get(&field) {
@@ -599,7 +607,7 @@ impl FunctionLowerer<'_> {
         let Some((ty, range)) = range else {
             return Ok(value);
         };
-        let value = self.coerce(value, ty, block, loc)?;
+        let value = self.coerce(value, ty, block, loc.clone())?;
         if super::values::value_is_within_integer_range(value.value, range, &self.locals) {
             return Ok(value);
         }
@@ -647,7 +655,7 @@ impl FunctionLowerer<'_> {
             return Ok(());
         };
         let mut fields = Vec::new();
-        for shape in self.struct_field_shapes(&struct_name, loc)? {
+        for shape in self.struct_field_shapes(&struct_name, loc.clone())? {
             let (path, element) = match shape {
                 StructFieldShape::Scalar { name, ty } => (name, ty),
                 StructFieldShape::Array { name, element, .. } => (name, element),
@@ -810,23 +818,23 @@ impl FunctionLowerer<'_> {
         }
         let mut scalars = Vec::new();
         let mut copies = Vec::new();
-        for shape in self.data_shapes(data, loc)? {
+        for shape in self.data_shapes(data, loc.clone())? {
             match shape {
                 StructFieldShape::Scalar { name, .. } => {
                     let value = self.lower_expr(
-                        &Expr::var(Self::data_leaf_name(source, &name)).with_loc(loc),
+                        &Expr::var(Self::data_leaf_name(source, &name)).with_loc(&loc),
                         block,
                     )?;
                     scalars.push((Self::data_leaf_name(destination, &name), value));
                 }
                 StructFieldShape::Array { name, .. } => {
                     let source = self.lower_slice_expression(
-                        &Expr::var(Self::data_leaf_name(source, &name)).with_loc(loc),
+                        &Expr::var(Self::data_leaf_name(source, &name)).with_loc(&loc),
                         Some(onda_mir::AccessMode::ReadOnly),
                         block,
                     )?;
                     let destination = self.lower_slice_expression(
-                        &Expr::var(Self::data_leaf_name(destination, &name)).with_loc(loc),
+                        &Expr::var(Self::data_leaf_name(destination, &name)).with_loc(&loc),
                         Some(onda_mir::AccessMode::ReadWrite),
                         block,
                     )?;
@@ -844,11 +852,11 @@ impl FunctionLowerer<'_> {
                     copies,
                     preflight: onda_mir::SliceCopyPreflight::ProvenUnnecessary,
                 },
-                loc,
+                loc.clone(),
             );
         }
         for (name, value) in scalars {
-            self.store_data_scalar(&name, value, block, loc)?;
+            self.store_data_scalar(&name, value, block, loc.clone())?;
         }
         Ok(())
     }
@@ -860,12 +868,12 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
-        if !self.assign_runtime_global(name, &[value], block, loc, loc)? {
+        if !self.assign_runtime_global(name, &[value], block, loc.clone(), loc.clone())? {
             self.assign_variable_values(
                 name,
                 vec![value],
                 None,
-                &Expr::var(name).with_loc(loc),
+                &Expr::var(name).with_loc(&loc),
                 block,
                 loc,
             )?;
@@ -884,18 +892,30 @@ impl FunctionLowerer<'_> {
         let fields = self
             .structs
             .get(constructor)
-            .ok_or_else(|| self.error("unknown data constructor", loc))?;
+            .ok_or_else(|| self.error("unknown data constructor", loc.clone()))?;
         let indices = crate::data_construction::constructor_fields(fields, args)
             .map_err(|(message, loc)| self.error(message, loc))?;
         let mut supplied = HashSet::new();
         // Capture authored operands in source order, including named operands.
         for (index, arg) in indices.into_iter().zip(args) {
             supplied.insert(index);
-            self.initialize_data_field(target, &fields[index], Some(&arg.expr), block, loc)?;
+            self.initialize_data_field(
+                target,
+                &fields[index],
+                Some(&arg.expr),
+                block,
+                loc.clone(),
+            )?;
         }
         for (index, field) in fields.iter().enumerate() {
             if !supplied.contains(&index) {
-                self.initialize_data_field(target, field, field.default.as_ref(), block, loc)?;
+                self.initialize_data_field(
+                    target,
+                    field,
+                    field.default.as_ref(),
+                    block,
+                    loc.clone(),
+                )?;
             }
         }
         Ok(())
@@ -935,7 +955,7 @@ impl FunctionLowerer<'_> {
             {
                 self.initialize_default_struct_array(&target, &name, len, block, loc)?;
             } else {
-                for shape in self.data_shapes(&data, loc)? {
+                for shape in self.data_shapes(&data, loc.clone())? {
                     let StructFieldShape::Array { name, element, .. } = shape else {
                         unreachable!()
                     };
@@ -950,7 +970,7 @@ impl FunctionLowerer<'_> {
                             destination: destination.value,
                             value: Value::Constant(zero_scalar(element)),
                         },
-                        loc,
+                        loc.clone(),
                     );
                 }
             }
@@ -965,7 +985,7 @@ impl FunctionLowerer<'_> {
                             ty: *ty,
                         }
                     };
-                    let value = self.coerce(value, *ty, block, loc)?;
+                    let value = self.coerce(value, *ty, block, loc.clone())?;
                     self.store_data_scalar(&target, value, block, loc)?;
                 }
                 TypedFieldType::Tuple(types) => {
@@ -981,8 +1001,13 @@ impl FunctionLowerer<'_> {
                             .collect()
                     };
                     for (index, (value, ty)) in values.into_iter().zip(types).enumerate() {
-                        let value = self.coerce(value, *ty, block, loc)?;
-                        self.store_data_scalar(&format!("{target}.__{index}"), value, block, loc)?;
+                        let value = self.coerce(value, *ty, block, loc.clone())?;
+                        self.store_data_scalar(
+                            &format!("{target}.__{index}"),
+                            value,
+                            block,
+                            loc.clone(),
+                        )?;
                     }
                 }
                 _ => unreachable!(),
@@ -1079,13 +1104,13 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), MirLoweringError> {
         let data = DataType::Struct(struct_name.to_owned());
         let source = self.fresh_data_name();
-        self.allocate_data(&source, &data, loc)?;
-        self.initialize_data_struct(&source, struct_name, &[], block, loc)?;
+        self.allocate_data(&source, &data, loc.clone())?;
+        self.initialize_data_struct(&source, struct_name, &[], block, loc.clone())?;
         self.fill_data_array(
             target,
             &source,
             struct_name,
-            Value::Constant(ScalarValue::I32(self.data_extent(len, loc)? as i32)),
+            Value::Constant(ScalarValue::I32(self.data_extent(len, loc.clone())? as i32)),
             block,
             loc,
         )
@@ -1101,8 +1126,8 @@ impl FunctionLowerer<'_> {
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         let data = DataType::Struct(struct_name.to_owned());
-        self.prepare_data_array_view(target, block, loc)?;
-        let shapes = self.data_shapes(&data, loc)?;
+        self.prepare_data_array_view(target, block, loc.clone())?;
+        let shapes = self.data_shapes(&data, loc.clone())?;
         if shapes
             .iter()
             .all(|shape| matches!(shape, StructFieldShape::Scalar { .. }))
@@ -1115,14 +1140,14 @@ impl FunctionLowerer<'_> {
                     unreachable!()
                 };
                 let value = self.lower_expr(
-                    &Expr::var(Self::data_leaf_name(source, &name)).with_loc(loc),
+                    &Expr::var(Self::data_leaf_name(source, &name)).with_loc(&loc),
                     block,
                 )?;
                 values.push((name, value));
             }
             for (name, value) in values {
                 let destination = self.lower_slice_expression(
-                    &Expr::var(Self::data_leaf_name(target, &name)).with_loc(loc),
+                    &Expr::var(Self::data_leaf_name(target, &name)).with_loc(&loc),
                     Some(onda_mir::AccessMode::ReadWrite),
                     block,
                 )?;
@@ -1132,7 +1157,7 @@ impl FunctionLowerer<'_> {
                         destination: destination.value,
                         value: value.value,
                     },
-                    loc,
+                    loc.clone(),
                 );
             }
             return Ok(());
@@ -1150,17 +1175,22 @@ impl FunctionLowerer<'_> {
             index_name.clone(),
             Binding::Local(index, PrimitiveType::I32),
         );
-        self.assign_value(block, index, Value::Constant(ScalarValue::I32(0)), loc);
+        self.assign_value(
+            block,
+            index,
+            Value::Constant(ScalarValue::I32(0)),
+            loc.clone(),
+        );
         let mut body = MirBlock::default();
         let done = self.compare_value(
             &mut body,
             CompareOp::GreaterEqual,
             Value::Local(index),
             length,
-            loc,
+            loc.clone(),
         );
         let mut exit = MirBlock::default();
-        self.push_statement(&mut exit, StatementKind::Break, loc);
+        self.push_statement(&mut exit, StatementKind::Break, loc.clone());
         self.push_statement(
             &mut body,
             StatementKind::If {
@@ -1168,18 +1198,18 @@ impl FunctionLowerer<'_> {
                 then_block: exit,
                 else_block: MirBlock::default(),
             },
-            loc,
+            loc.clone(),
         );
         let element = self.fresh_data_name();
         let selection = Expr::Index {
-            loc: loc.into(),
+            loc: loc.clone().into(),
             base: target.to_owned(),
             index: Box::new(Expr::var(index_name)),
         };
-        if !self.lower_struct_array_element_alias(&element, &selection, &mut body, loc)? {
+        if !self.lower_struct_array_element_alias(&element, &selection, &mut body, loc.clone())? {
             return Err(self.error("data array has no element view", loc));
         }
-        self.copy_data(&element, source, &data, &mut body, loc)?;
+        self.copy_data(&element, source, &data, &mut body, loc.clone())?;
         let last = match length {
             Value::Constant(ScalarValue::I32(len)) if len > 0 => {
                 Some(Value::Constant(ScalarValue::I32(len - 1)))
@@ -1191,7 +1221,7 @@ impl FunctionLowerer<'_> {
             index,
             Value::Constant(ScalarValue::I32(1)),
             last,
-            loc,
+            loc.clone(),
         );
         self.push_statement(block, StatementKind::Loop { body }, loc);
         Ok(())

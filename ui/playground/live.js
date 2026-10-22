@@ -1125,6 +1125,7 @@ async function downloadProject() {
     const image = await compiler.createProjectImage(
       sourceGraphWithWorkspaceDocuments(exportCompilation.sourceGraph, project.sources),
       encodedBuffers,
+      project.constants,
     );
     const assetFileNames = new Map(
       [...bufferFiles].map(([name, file]) => [name, file.name]),

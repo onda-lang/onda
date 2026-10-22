@@ -115,6 +115,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -225,6 +226,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -328,6 +330,7 @@ block:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -402,6 +405,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -502,6 +506,7 @@ block:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -582,6 +587,7 @@ block:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -682,6 +688,7 @@ block:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -792,6 +799,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -863,6 +871,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -1289,6 +1298,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1453,6 +1463,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -1558,6 +1569,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -1614,6 +1626,7 @@ sample:
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O0,
         },
@@ -1649,6 +1662,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -1731,6 +1745,7 @@ sample:
     let ir = lower_mir_to_target_llvm_ir(
         &mir,
         &MirTargetOptions {
+            math: Default::default(),
             fast_math: false,
             target,
         },
@@ -1741,7 +1756,9 @@ sample:
         .find(|line| line.contains("load double") && line.contains("event_tensor_view_value"))
         .expect("event-view f64 load");
     assert!(
-        event_view_load.ends_with("align 4"),
+        event_view_load
+            .split(',')
+            .any(|part| part.trim() == "align 4"),
         "i686 f64 views use four-byte ABI alignment: {event_view_load}"
     );
 }
@@ -1780,6 +1797,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },
@@ -1958,6 +1976,7 @@ sample:
         let native = lower_mir_and_jit_with_options(
             mir.clone(),
             MirCompileOptions {
+                math: Default::default(),
                 fast_math: false,
                 opt_level: level,
             },

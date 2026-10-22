@@ -22,11 +22,11 @@ namespace std::math:
     t = inverse_lerp(in_lo, in_hi, x)
     return lerp(out_lo, out_hi, t)
 
-  def sign(x):
+  def sign<T>(x: T) -> T:
     if (x > 0):
-      return x / abs(x)
+      return T(1)
     if (x < 0):
-      return x / abs(x)
+      return T(-1)
     return x - x
 
   def fract(x):

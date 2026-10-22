@@ -161,7 +161,7 @@ impl<'a> FunctionLowerer<'a> {
                             },
                             value: Rvalue::Use(selector.value),
                         },
-                        location,
+                        location.clone(),
                     );
                     Err(state)
                 } else {
@@ -313,14 +313,14 @@ impl<'a> FunctionLowerer<'a> {
             Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
             access,
             block,
-            location,
+            location.clone(),
         );
-        let shapes = self.struct_field_shapes(expected_struct, location)?;
+        let shapes = self.struct_field_shapes(expected_struct, location.clone())?;
         let alternatives = array
             .slots
             .iter()
             .map(|slot| {
-                self.nested_proc_slot_call_arguments(&owner, slot, &shapes, block, location)
+                self.nested_proc_slot_call_arguments(&owner, slot, &shapes, block, location.clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(LoweredIndexedStructArgument::Dispatch {
@@ -612,7 +612,7 @@ impl<'a> FunctionLowerer<'a> {
                                 lhs: Value::Local(argument.index),
                                 rhs: Value::Constant(ScalarValue::I32(field.width as i32)),
                             },
-                            location,
+                            location.clone(),
                         )
                         .value
                     };
@@ -1148,7 +1148,7 @@ impl<'a> FunctionLowerer<'a> {
             callee.params.first().map(String::as_str) == Some("self"),
             false,
             &format!("function '{name}' call"),
-            location,
+            location.clone(),
             &mut diagnostics,
         );
         if let Some(diagnostic) = diagnostics.into_iter().next() {
@@ -1174,7 +1174,7 @@ impl<'a> FunctionLowerer<'a> {
                             "call to '{name}' has no value for parameter '{}'",
                             callee.params[index]
                         ),
-                        location,
+                        location.clone(),
                     )
                 })?;
             ordered_args.push(expression);
@@ -1972,8 +1972,12 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 ));
             }
-            let call_args =
-                self.message_publication_arguments(param_kinds, call_args, block, location)?;
+            let call_args = self.message_publication_arguments(
+                param_kinds,
+                call_args,
+                block,
+                location.clone(),
+            )?;
             self.push_statement(
                 block,
                 StatementKind::PublishDelegate {
@@ -1997,7 +2001,7 @@ impl<'a> FunctionLowerer<'a> {
         let discarded_result_storage = if result_storage.is_none() {
             if let Some(data) = data_result.as_ref() {
                 let storage = self.fresh_data_name();
-                self.allocate_data(&storage, data, location)?;
+                self.allocate_data(&storage, data, location.clone())?;
                 Some(storage)
             } else {
                 None
@@ -2010,22 +2014,23 @@ impl<'a> FunctionLowerer<'a> {
         let mut pending_data_copy = None;
         if let Some(data) = data_result.as_ref() {
             let destination = result_storage.expect("aggregate result storage prepared above");
-            let result_args = match self.data_result_arguments(destination, data, location)? {
-                Some(args) => args,
-                None => {
-                    // Result references require fixed caller-owned storage. A
-                    // selected aggregate can be slice-backed, so evaluate into
-                    // one owned temporary and commit the complete value after
-                    // the call instead of weakening the MIR ABI contract.
-                    let temporary = self.fresh_data_name();
-                    self.allocate_data(&temporary, data, location)?;
-                    let args = self
-                        .data_result_arguments(&temporary, data, location)?
-                        .expect("fresh data storage accepts result references");
-                    pending_data_copy = Some((destination.to_owned(), temporary, data.clone()));
-                    args
-                }
-            };
+            let result_args =
+                match self.data_result_arguments(destination, data, location.clone())? {
+                    Some(args) => args,
+                    None => {
+                        // Result references require fixed caller-owned storage. A
+                        // selected aggregate can be slice-backed, so evaluate into
+                        // one owned temporary and commit the complete value after
+                        // the call instead of weakening the MIR ABI contract.
+                        let temporary = self.fresh_data_name();
+                        self.allocate_data(&temporary, data, location.clone())?;
+                        let args = self
+                            .data_result_arguments(&temporary, data, location.clone())?
+                            .expect("fresh data storage accepts result references");
+                        pending_data_copy = Some((destination.to_owned(), temporary, data.clone()));
+                        args
+                    }
+                };
             call_args.extend(result_args);
         }
         let result = if returns_value {
@@ -2040,7 +2045,7 @@ impl<'a> FunctionLowerer<'a> {
                 locals.iter().map(|(local, _)| *local).collect(),
                 call_args,
                 pending_dispatch,
-                location,
+                location.clone(),
             )?;
             Some(
                 locals
@@ -2058,7 +2063,7 @@ impl<'a> FunctionLowerer<'a> {
                 Vec::new(),
                 call_args,
                 pending_dispatch,
-                location,
+                location.clone(),
             )?;
             // Source functions without an explicit result retain the language's
             // legacy zero value when called from a value context.  The call
@@ -2120,7 +2125,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 self.error(
                     "nested processor dispatch argument range is invalid",
-                    location,
+                    location.clone(),
                 )
             })?;
         let mut calls = Vec::with_capacity(dispatch.alternatives.len());
@@ -2183,7 +2188,7 @@ impl<'a> FunctionLowerer<'a> {
             CompareOp::Equal,
             Value::Local(index),
             Value::Constant(ScalarValue::I32(slot as i32)),
-            location,
+            location.clone(),
         );
         let mut then_block = MirBlock::default();
         self.push_statement(
@@ -2193,10 +2198,16 @@ impl<'a> FunctionLowerer<'a> {
                 function,
                 args: calls[slot].clone(),
             },
-            location,
+            location.clone(),
         );
-        let else_block =
-            self.build_dispatched_call_chain(index, function, results, calls, slot + 1, location);
+        let else_block = self.build_dispatched_call_chain(
+            index,
+            function,
+            results,
+            calls,
+            slot + 1,
+            location.clone(),
+        );
         self.push_statement(
             &mut block,
             StatementKind::If {
@@ -2287,7 +2298,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
         if let Some(base) = parse_array_len_instance_base(name) {
-            self.prepare_data_array_view(base, block, location)?;
+            self.prepare_data_array_view(base, block, location.clone())?;
             if let Some(Binding::StructArrayParameter { length, .. }) =
                 self.bindings.get(base).cloned()
             {
@@ -2444,7 +2455,7 @@ impl<'a> FunctionLowerer<'a> {
         let Some((reference, _)) = self.direct_buffer_reference(base) else {
             return Ok(None);
         };
-        let reference = self.materialize_buffer_reference(reference, block, location);
+        let reference = self.materialize_buffer_reference(reference, block, location.clone());
         if !args.is_empty() {
             return Err(self.error(
                 format!("buffer metadata call '{name}' unexpectedly has arguments"),
@@ -2488,7 +2499,7 @@ impl<'a> FunctionLowerer<'a> {
             let first = args.first().ok_or_else(|| {
                 self.error(
                     format!("resource builtin '{name}' is missing its base argument"),
-                    location,
+                    location.clone(),
                 )
             })?;
             let (base, selected_buffer) = match &first.expr {
@@ -2672,7 +2683,7 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 )));
             }
-            if let Some((data, ty, _)) = self.const_arrays.resolve(&base, location)? {
+            if let Some((data, ty, _)) = self.const_arrays.resolve(&base, location.clone())? {
                 return Ok(Some(self.emit_temp(
                     block,
                     ty,
@@ -2705,7 +2716,7 @@ impl<'a> FunctionLowerer<'a> {
                 let frame = self.current_frame.ok_or_else(|| {
                     self.error(
                         format!("audio input array '{base}' was read outside the sample section"),
-                        location,
+                        location.clone(),
                     )
                 })?;
                 return Ok(Some(self.emit_temp(
@@ -2755,7 +2766,7 @@ impl<'a> FunctionLowerer<'a> {
                 let frame = self.current_frame.ok_or_else(|| {
                     self.error(
                         format!("audio output array '{base}' was read outside the sample section"),
-                        location,
+                        location.clone(),
                     )
                 })?;
                 return Ok(Some(self.emit_temp(
@@ -2816,7 +2827,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             };
             (
-                self.materialize_buffer_reference(reference, block, location),
+                self.materialize_buffer_reference(reference, block, location.clone()),
                 ty,
             )
         };
@@ -2855,7 +2866,7 @@ impl<'a> FunctionLowerer<'a> {
             let first = args.first().ok_or_else(|| {
                 self.error(
                     format!("resource builtin '{name}' is missing its base argument"),
-                    location,
+                    location.clone(),
                 )
             })?;
             let (base, selected_buffer) = match &first.expr {
@@ -3085,7 +3096,7 @@ impl<'a> FunctionLowerer<'a> {
                 let frame = self.current_frame.ok_or_else(|| {
                     self.error(
                         format!("audio output array '{base}' was written outside sample"),
-                        location,
+                        location.clone(),
                     )
                 })?;
                 self.push_statement(
@@ -3152,7 +3163,7 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             };
             (
-                self.materialize_buffer_reference(reference, block, location),
+                self.materialize_buffer_reference(reference, block, location.clone()),
                 ty,
             )
         };

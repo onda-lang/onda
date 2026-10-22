@@ -114,46 +114,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) {
-            throw "vswhere.exe not found at $vswhere"
-          }
-
-          $vsInstallPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vsInstallPath) {
-            throw "Visual Studio with MSVC tools not found"
-          }
-
-          $devCmd = Join-Path $vsInstallPath "Common7\Tools\VsDevCmd.bat"
-          if (-not (Test-Path $devCmd)) {
-            throw "VsDevCmd.bat not found at $devCmd"
-          }
-
-          $captureEnvScript = Join-Path $env:RUNNER_TEMP "capture-msvc-env.cmd"
-          @"
-          @echo off
-          call "$devCmd" -arch=x64 -host_arch=x64 >nul
-          if errorlevel 1 exit /b %errorlevel%
-          set
-          "@ | Set-Content -Path $captureEnvScript -Encoding ascii
-
-          $msvcEnv = cmd.exe /d /c $captureEnvScript
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to initialize MSVC build environment via VsDevCmd.bat"
-          }
-
-          foreach ($line in $msvcEnv) {
-            if ($line -match '^(.*?)=(.*)$') {
-              [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2])
-            }
-          }
-
+          . .\scripts\use-msvc-env.ps1
           . .\scripts\use-llvm-env.ps1 -Flavor prebuilt -Version "${{ env.LLVM_VERSION }}"
           $llvmBinDir = Split-Path -Parent (Get-Command llvm-readobj).Source
           $llvmBinDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
+          if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
           cargo build --release -p onda_cli
           cargo test --release -p onda_webview --lib windows_webview_startup_shows_run_controls
           if ($LASTEXITCODE -ne 0) {
@@ -190,6 +159,7 @@ jobs:
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cmake \
             -S tests/cmake_sdk \
@@ -256,6 +226,7 @@ jobs:
           Copy-Item LICENSE $packageRoot
           Copy-Item THIRD_PARTY_NOTICES.md $packageRoot
           Copy-Item licenses\LLVM-LICENSE.txt $licensesDir
+          Copy-Item licenses\SLEEF-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-BLAKE3-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-XXHASH-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-MD5-LICENSE.txt $licensesDir
@@ -276,6 +247,7 @@ jobs:
               -not (Test-Path (Join-Path $docsDir "api.md")) -or
               -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md")) -or
+              -not (Test-Path (Join-Path $licensesDir "SLEEF-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-BLAKE3-LICENSE.txt")) -or
               -not (Test-Path (Join-Path $licensesDir "LLVM-XXHASH-LICENSE.txt")) -or
@@ -399,6 +371,7 @@ jobs:
           cp LICENSE "$package_root/"
           cp THIRD_PARTY_NOTICES.md "$package_root/"
           cp licenses/LLVM-LICENSE.txt "$licenses_dir/"
+          cp licenses/SLEEF-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-BLAKE3-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-XXHASH-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-MD5-LICENSE.txt "$licenses_dir/"
@@ -419,6 +392,7 @@ jobs:
           test -f "$docs_dir/api.md"
           test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
+          test -s "$licenses_dir/SLEEF-LICENSE.txt"
           test -s "$licenses_dir/LLVM-LICENSE.txt"
           test -s "$licenses_dir/LLVM-BLAKE3-LICENSE.txt"
           test -s "$licenses_dir/LLVM-XXHASH-LICENSE.txt"

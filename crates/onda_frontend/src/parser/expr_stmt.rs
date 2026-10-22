@@ -598,7 +598,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                     let mut expr = parse_expr(expr_pair)?;
                     if let Some((func, lower, upper)) = attributes.range {
                         expr = Expr::Call {
-                            loc,
+                            loc: loc.clone(),
                             func,
                             args: vec![expr, lower, upper],
                         };
@@ -649,7 +649,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         None
                     };
                     Ok(Stmt::Assign {
-                        loc,
+                        loc: loc.clone(),
                         target_loc: stmt_loc_from_pair(&name_pair),
                         target: AssignTarget::Var(name_pair.as_str().to_owned()),
                         decl_ty: None,
@@ -676,7 +676,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         parse_expr(expr_pair)?
                     } else {
                         Expr::UserCall {
-                            loc,
+                            loc: loc.clone(),
                             name: decl_name.clone(),
                             type_args: Vec::new(),
                             args: Vec::new(),
@@ -767,7 +767,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
             let initializer = parse_expr(expr_pair)?;
             let expr = if let Some((func, lower, upper)) = attributes.range {
                 Expr::Call {
-                    loc,
+                    loc: loc.clone(),
                     func,
                     args: vec![initializer, lower, upper],
                 }
@@ -809,7 +809,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 };
                 let groups = target_inner.collect::<Vec<_>>();
                 let direct_channel_access = groups.len() == 1;
-                let indices = parse_index_groups(groups, loc)?;
+                let indices = parse_index_groups(groups, loc.clone())?;
                 if indices.len() > 1 {
                     let has_third_index = indices.len() == 3;
                     let value_expr = parse_expr(expr_pair)?;
@@ -1508,7 +1508,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 .to_owned();
             let groups = inner.collect::<Vec<_>>();
             let direct_channel_access = groups.len() == 1;
-            let indices = parse_index_groups(groups, loc)
+            let indices = parse_index_groups(groups, loc.clone())
                 .expect("index_expr grammar must produce valid index groups");
             if indices.len() > 1 {
                 Expr::UserCall {
@@ -1548,7 +1548,7 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                 channel,
                 start,
                 end,
-            } = parse_slice_parts(inner.collect(), loc)
+            } = parse_slice_parts(inner.collect(), loc.clone())
                 .expect("slice_expr grammar must produce a valid slice shape");
             Expr::Slice {
                 loc,

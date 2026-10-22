@@ -123,3 +123,6 @@ vgcore.*
 ._*
 Thumbs.db
 Desktop.ini
+
+# Reproducible SLEEF bitcode embedded in native JIT and AOT output.
+!crates/onda_codegen_llvm/math-kernel/*.bc

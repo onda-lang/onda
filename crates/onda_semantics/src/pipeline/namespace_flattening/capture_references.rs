@@ -338,7 +338,7 @@ pub(super) fn visit_item(item: &NamespaceItem, visit: &mut Visitor<'_>) {
         NamespaceItem::Use(use_decl) => {
             name(
                 &namespace_segments_key(&use_decl.target),
-                use_decl.loc.into(),
+                use_decl.loc.clone().into(),
                 visit,
             );
             segments_args(&use_decl.target, visit);

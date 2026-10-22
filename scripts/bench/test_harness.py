@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from compare import compare_runs, output_difference, read_samples
-from inspection import llvm_summary
+from inspection import llvm_summary, assembly_summary
 from limits import Limits
 from run import write_json
 from workloads import catalog
@@ -97,6 +97,14 @@ class HarnessContracts(unittest.TestCase):
         self.assertEqual(result["align_1_accesses"], 1)
         self.assertEqual(result["shufflevector"], 1)
 
+    def test_inspection_recognizes_tail_calls_and_assembly_relocations(self):
+        ir = llvm_summary("define void @process() {\n  %v = tail call <8 x float> @_ZGVdN8v_sinf(<8 x float> zeroinitializer)\n  ret void\n}\n")
+        self.assertEqual(ir["functions"]["process"]["call:_ZGVdN8v_sinf"], 1)
+        assembly = assembly_summary("  10: c5 fc 10 44 24 20    vmovups 0x20(%rsp),%ymm0\n  16: e8 00 00 00 00       callq 0x1b\n    17: R_X86_64_PLT32 _ZGVdN8v_sinf-0x4\n")
+        self.assertEqual(assembly["counts"]["calls"], 1)
+        self.assertEqual(assembly["counts"]["stack_address_operands"], 1)
+        self.assertEqual(assembly["external_relocations"]["_ZGVdN8v_sinf"], 1)
+
     def test_catalog_defers_accuracy_generation_and_has_no_source_rewrite(self):
         cases = catalog()
         self.assertTrue(callable(cases["fft-accuracy-f64-512"]["source"]))
@@ -124,7 +132,11 @@ class HarnessContracts(unittest.TestCase):
                 Limits(CPU, memory_mib=128, timeout_seconds=1).run([sys.executable, script, pidfile], directory / "job")
             pid = int(pidfile.read_text())
             stat = Path(f"/proc/{pid}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+            try:
+                state = stat.read_text().split()[2]
+            except FileNotFoundError:
+                state = None
+            self.assertIn(state, (None, "Z"))
 
 
 @unittest.skipUnless(os.environ.get("ONDA_BENCH_INTEGRATION") == "1", "enable bounded integration checks explicitly")

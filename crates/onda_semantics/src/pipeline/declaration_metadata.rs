@@ -170,7 +170,7 @@ impl Metadata<'_> {
             ConstContext::Caller(self.options),
             self.errors,
         );
-        let source = Expr::var(name).with_loc(loc);
+        let source = Expr::var(name).with_loc(&loc);
         *expr = if reference {
             source
         } else {

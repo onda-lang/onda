@@ -660,7 +660,7 @@ fn reject_explicit_oversampled_child_calls_in_context(
         let child_oversample_factor = api.sample_oversample_factor.max(1);
         if child_oversample_factor > 1 {
             push_semantic(
-                DiagCtx::new(proc.loc),
+                DiagCtx::new(proc.loc.clone()),
                 errors,
                 format!(
                     "processor '{}' runs at sample {} and cannot call explicitly oversampled child '{}' of type '{}' (sample {}); remove the child's explicit oversampling or call it from base-rate code",
@@ -1434,7 +1434,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 program.blocks.insert(
                     sample_idx,
                     Block::Block(BlockExec {
-                        loc: sample_body.loc,
+                        loc: sample_body.loc.clone(),
                         compiler_scratch_roots: Vec::new(),
                         pre: Vec::new(),
                         sample: Some(sample_body),

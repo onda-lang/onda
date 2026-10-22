@@ -17,6 +17,7 @@ test("shares only a versioned multi-file project through a URL fragment", async 
     },
     sampleRate: 48_000,
     blockSize: 256,
+    constants: { Channels: 2, Seed: "9007199254740993", Weights: [0.25, 0.75] },
     codegen: { fastMath: true },
   };
   const encoded = await encodeSharedSession(session);
@@ -26,6 +27,7 @@ test("shares only a versioned multi-file project through a URL fragment", async 
     entry: session.entry,
     active: session.active,
     sources: session.sources,
+    constants: session.constants,
     v: 1,
   });
   assert.equal(decoded.sampleRate, undefined);

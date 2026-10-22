@@ -201,27 +201,34 @@ impl FunctionLowerer<'_> {
                 len: Some(len),
             } = kind
             {
-                let len = self.data_extent(*len, loc)?;
+                let len = self.data_extent(*len, loc.clone())?;
                 let argument = args
                     .next()
-                    .ok_or_else(|| self.error("message is missing an array", loc))?;
-                result.push(self.message_array_value(argument, *elem_ty, len, block, loc)?);
+                    .ok_or_else(|| self.error("message is missing an array", loc.clone()))?;
+                result.push(self.message_array_value(
+                    argument,
+                    *elem_ty,
+                    len,
+                    block,
+                    loc.clone(),
+                )?);
                 continue;
             }
             let (shapes, fixed_tensors) = match kind {
-                TypedFnParam::Struct { struct_name } => {
-                    (Some(self.struct_field_shapes(struct_name, loc)?), true)
-                }
+                TypedFnParam::Struct { struct_name } => (
+                    Some(self.struct_field_shapes(struct_name, loc.clone())?),
+                    true,
+                ),
                 TypedFnParam::StructArray { struct_name, len } => {
-                    let length = args
-                        .next()
-                        .ok_or_else(|| self.error("message array is missing its length", loc))?;
+                    let length = args.next().ok_or_else(|| {
+                        self.error("message array is missing its length", loc.clone())
+                    })?;
                     if len.is_none() {
                         result.push(length);
                     }
                     (
                         Some(
-                            self.struct_field_shapes(struct_name, loc)?
+                            self.struct_field_shapes(struct_name, loc.clone())?
                                 .into_iter()
                                 .map(|shape| match shape {
                                     StructFieldShape::Scalar { name, ty } => {
@@ -244,7 +251,7 @@ impl FunctionLowerer<'_> {
                 for shape in shapes {
                     let arg = args
                         .next()
-                        .ok_or_else(|| self.error("message is missing a tensor", loc))?;
+                        .ok_or_else(|| self.error("message is missing a tensor", loc.clone()))?;
                     let arg = if let StructFieldShape::Scalar { ty, .. } = shape {
                         let read = match arg {
                             CallArgument::Place(place) => Rvalue::Load(place),
@@ -263,12 +270,12 @@ impl FunctionLowerer<'_> {
                                 )
                             }
                         };
-                        CallArgument::Value(self.emit_temp(block, ty, read, loc).value)
+                        CallArgument::Value(self.emit_temp(block, ty, read, loc.clone()).value)
                     } else if fixed_tensors {
                         let StructFieldShape::Array { element, len, .. } = shape else {
                             unreachable!()
                         };
-                        self.message_array_value(arg, element, len, block, loc)?
+                        self.message_array_value(arg, element, len, block, loc.clone())?
                     } else {
                         arg
                     };
@@ -280,10 +287,9 @@ impl FunctionLowerer<'_> {
                     _ => 1,
                 };
                 for _ in 0..count {
-                    result.push(
-                        args.next()
-                            .ok_or_else(|| self.error("message is missing an argument", loc))?,
-                    );
+                    result.push(args.next().ok_or_else(|| {
+                        self.error("message is missing an argument", loc.clone())
+                    })?);
                 }
             }
         }

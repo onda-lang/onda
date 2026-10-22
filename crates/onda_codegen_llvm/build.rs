@@ -5,6 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "build/vector_math.rs"]
+mod vector_math;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LinkMode {
     Shared,
@@ -20,11 +23,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ONDA_LLVM_LINK_MODE");
 
     let Some(prefix) = env::var_os("LLVM_SYS_211_PREFIX") else {
-        println!("cargo:warning=LLVM_SYS_211_PREFIX is not set; ORC linking may fail");
-        return;
+        panic!(
+            "LLVM_SYS_211_PREFIX must point to an LLVM 21 installation with headers and libraries"
+        );
     };
 
     let prefix_path = PathBuf::from(prefix);
+    vector_math::build(&prefix_path);
     let lib_dir = prefix_path.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 

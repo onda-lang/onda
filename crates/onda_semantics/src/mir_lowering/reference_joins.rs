@@ -56,7 +56,7 @@ impl FunctionLowerer<'_> {
                     block,
                     PrimitiveType::I32,
                     Rvalue::SliceLen(Value::Local(local)),
-                    loc,
+                    loc.clone(),
                 )
                 .value
             };
@@ -72,7 +72,7 @@ impl FunctionLowerer<'_> {
                         bounds: BoundsMode::Unchecked,
                     },
                 },
-                loc,
+                loc.clone(),
             );
         }
         Ok(Some(Binding::Slice(joined, element, access, len)))
@@ -114,8 +114,8 @@ impl FunctionLowerer<'_> {
                     (&mut *then_block, *then_length),
                     (&mut *else_block, *else_length),
                 ] {
-                    let value = self.struct_array_length_value(length, block, loc);
-                    self.assign_value(block, local, value, loc);
+                    let value = self.struct_array_length_value(length, block, loc.clone());
+                    self.assign_value(block, local, value, loc.clone());
                 }
                 StructArrayLength::Local(local)
             }
@@ -138,7 +138,7 @@ impl FunctionLowerer<'_> {
             let a = binding(self, *then_local);
             let b = binding(self, *else_local);
             let Some(Binding::Slice(local, _, _, _)) =
-                self.join_array_references(&a, &b, then_block, else_block, loc)?
+                self.join_array_references(&a, &b, then_block, else_block, loc.clone())?
             else {
                 return Ok(None);
             };
@@ -218,7 +218,7 @@ impl FunctionLowerer<'_> {
                         bounds: BoundsMode::Unchecked,
                     },
                 },
-                loc,
+                loc.clone(),
             );
         }
         Ok(Some(Binding::SliceElementAlias {

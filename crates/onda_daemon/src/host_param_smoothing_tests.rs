@@ -41,7 +41,10 @@ fn host_ramps_are_finite_and_do_not_add_processor_state() {
             assert_block(&mut run, 0.0);
             let name = if suffix.is_empty() { "gain" } else { "gain[0]" };
             run.set_param_f64(name, 1.0).unwrap();
-            assert_eq!(run.param_info()[0].value, Some(1.0));
+            assert_eq!(
+                run.param_info()[0].value.map(crate::RunParamValue::as_f64),
+                Some(1.0)
+            );
             assert_block(&mut run, 1.0 / 3.0);
             // Repeated target writes must not restart the deadline.
             run.set_param_f64(name, 1.0).unwrap();
@@ -49,7 +52,10 @@ fn host_ramps_are_finite_and_do_not_add_processor_state() {
             assert_block(&mut run, 1.0);
             assert_block(&mut run, 1.0);
             if suffix == "[2]" {
-                assert_eq!(run.param_info()[1].value, Some(0.0));
+                assert_eq!(
+                    run.param_info()[1].value.map(crate::RunParamValue::as_f64),
+                    Some(0.0)
+                );
             }
         }
     }

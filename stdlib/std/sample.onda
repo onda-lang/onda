@@ -4,12 +4,12 @@ import std/lookup
 namespace std::sample<Channels = 2>:
   assert(Channels > 0)
 
-  def _normalize_frame<T>(frame: T, frames: i32, looping: bool):
+  def _normalize_frame(frame: f64, frames: i32, looping: bool):
     if frames <= 1:
-      return T(0.0)
+      return f64(0.0)
     if looping:
-      return wrap(frame, T(0.0), T(frames))
-    return clamp(frame, T(0.0), T(frames - 1))
+      return wrap(frame, f64(0.0), f64(frames))
+    return clamp(frame, f64(0.0), f64(frames - 1))
 
   proc Player<T>:
     outs<T> Channels
@@ -25,19 +25,19 @@ namespace std::sample<Channels = 2>:
     delegate looped()
 
     init<T>:
-      playhead = 0.0
+      playhead: f64 = 0.0
       playing: bool = false
 
     events:
-      play(start_frame: T = 0.0):
-        playhead = _normalize_frame<T>(start_frame, clip.len(), looping)
+      play(start_frame: f64 = 0.0):
+        playhead = _normalize_frame(start_frame, clip.len(), looping)
         playing = true
 
       stop():
         playing = false
 
-      seek(frame: T):
-        playhead = _normalize_frame<T>(frame, clip.len(), looping)
+      seek(frame: f64):
+        playhead = _normalize_frame(frame, clip.len(), looping)
 
       reset():
         playhead = 0.0
@@ -47,7 +47,7 @@ namespace std::sample<Channels = 2>:
       clip_bound = clip.bound()
       clip_frames = clip.len()
       clip_channels = clip.chans()
-      step = speed * T(clip.samplerate() / SR)
+      step = f64(speed) * (clip.samplerate() / SR)
 
       sample:
         for channel in 0..Channels:
@@ -61,14 +61,14 @@ namespace std::sample<Channels = 2>:
             for channel in 0..Channels:
               source_channel = min(channel, clip_channels - 1)
               if looping:
-                outs[channel] = std::lookup::readCW(clip, source_channel, playhead)
+                outs[channel] = T(std::lookup::readCW(clip, source_channel, playhead))
               else:
-                outs[channel] = std::lookup::readC(clip, source_channel, playhead)
+                outs[channel] = T(std::lookup::readC(clip, source_channel, playhead))
 
             next_playhead = playhead + step
-            if next_playhead >= T(clip_frames) || next_playhead < 0.0:
+            if next_playhead >= f64(clip_frames) || next_playhead < 0.0:
               if looping:
-                playhead = wrap(next_playhead, T(0.0), T(clip_frames))
+                playhead = wrap(next_playhead, f64(0.0), f64(clip_frames))
                 looped()
               else:
                 playing = false

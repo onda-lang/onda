@@ -1,5 +1,6 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,7 +16,7 @@ use onda_cpal::{
 use onda_daemon::{
     DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
+    RunParamValue, RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use serde::Deserialize;
@@ -29,6 +30,9 @@ use crate::{
 };
 
 mod buffer_worker;
+mod output_worker;
+use output_worker::OutputWorker;
+mod control_reader;
 use buffer_worker::{
     buffer_load_response, submit_buffer_load, write_buffer_replies, BufferLoadStatus, BufferWorker,
     PendingBufferReply,
@@ -39,6 +43,8 @@ const SCOPE_CAPACITY_FRAMES: usize = 4096;
 const DELEGATE_NOTIFICATION_CAPACITY: usize = 32;
 const PRINT_NOTIFICATION_CAPACITY: usize = 32;
 const MIDI_INPUT_CAPACITY: usize = 256;
+// Leave room for note-off recovery for every MIDI channel and key.
+const MAX_PENDING_EVENTS: usize = 4096;
 const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
 const RENDER_AHEAD_BLOCKS: usize = 4;
 
@@ -62,7 +68,7 @@ pub struct PlaybackLaunch {
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
-    pub param_sets: Vec<(String, f64)>,
+    pub param_sets: Vec<(String, RunParamValue)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
     pub project_buffer_bindings: Vec<ProjectBufferBinding>,
 }
@@ -167,7 +173,7 @@ enum PlaybackControlCommand {
     },
     SetParam {
         name: String,
-        value: f64,
+        value: RunParamValue,
         reply: Option<PlaybackReply<()>>,
     },
     TriggerEvent {
@@ -200,15 +206,30 @@ struct ScopeRing {
 }
 
 struct PendingParamUpdate {
-    value: f64,
+    value: RunParamValue,
     replies: Vec<PlaybackReply<()>>,
+}
+
+enum PendingEventValues {
+    Owned(Vec<RunEventValue>),
+    Midi(midi::MidiEventValues),
+}
+
+impl std::ops::Deref for PendingEventValues {
+    type Target = [RunEventValue];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(values) => values,
+            Self::Midi(values) => values,
+        }
+    }
 }
 
 struct PendingRunEvent {
     frame: u64,
     sequence: u64,
-    name: String,
-    values: Vec<RunEventValue>,
+    name: Cow<'static, str>,
+    values: PendingEventValues,
     physical_midi: Option<MidiMessage>,
     reply: Option<PlaybackReply<()>>,
 }
@@ -699,7 +720,7 @@ pub fn format_run_param_info(params: &[RunParamInfo]) -> String {
         };
         let default = param
             .default
-            .map(|value| format!(" = {value}"))
+            .map(|value| format!(" = {}", crate::param_value_repr(value)))
             .unwrap_or_default();
         let scalar = if param.scalar { "" } else { " (non-scalar)" };
         lines.push(format!(
@@ -869,7 +890,7 @@ fn spawn_run_render_thread(
         };
         let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
         let mut midi_event_names = HashSet::new();
-        let mut active_midi_notes = HashSet::<(i32, i32)>::new();
+        let mut active_midi_notes = HashSet::<(i32, i32)>::with_capacity(16 * 128);
 
         let mut startup_sources = None;
         let startup = (|| -> Result<PlaybackStartup, String> {
@@ -921,7 +942,7 @@ fn spawn_run_render_thread(
                 session
                     .run_mut(&launch.input)
                     .expect("run should be active while applying params")
-                    .set_param_f64(name, *value)
+                    .set_param(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
 
@@ -1010,8 +1031,13 @@ fn spawn_run_render_thread(
             }
         };
 
+        let output_worker = OutputWorker::new(
+            session.run(&launch.input).expect("active run"),
+            output_transport.clone(),
+            print_transport.clone(),
+        );
         let mut pending_param_updates = HashMap::<String, PendingParamUpdate>::with_capacity(8);
-        let mut pending_run_events = Vec::<PendingRunEvent>::with_capacity(MIDI_INPUT_CAPACITY);
+        let mut pending_run_events = Vec::<PendingRunEvent>::with_capacity(MAX_PENDING_EVENTS);
         let mut midi_timeline = MidiTimeline::default();
         let mut rendered_frame = 0_u64;
         let mut delegate_subscription_id = 0_u64;
@@ -1064,12 +1090,7 @@ fn spawn_run_render_thread(
                                             &diag,
                                         )
                                     });
-                                    publish_run_output_batch(
-                                        run,
-                                        output_transport.as_ref(),
-                                        &print_transport,
-                                        delegate_subscription_id,
-                                    )?;
+                                    output_worker.publish(run, delegate_subscription_id)?;
                                     execution
                                 });
                             playing = play_requested && result.is_ok();
@@ -1217,11 +1238,19 @@ fn spawn_run_render_thread(
                                     rendered_frame,
                                     launch.sample_rate_hz,
                                 );
+                                if pending_run_events.len() >= MAX_PENDING_EVENTS - 16 * 128 {
+                                    if let Some(reply) = reply {
+                                        let _ = reply.send(Err(
+                                            "pending event capacity exceeded".to_owned()
+                                        ));
+                                    }
+                                    continue;
+                                }
                                 pending_run_events.push(PendingRunEvent {
                                     frame,
                                     sequence,
-                                    name,
-                                    values,
+                                    name: Cow::Owned(name),
+                                    values: PendingEventValues::Owned(values),
                                     physical_midi: None,
                                     reply,
                                 });
@@ -1238,12 +1267,7 @@ fn spawn_run_render_thread(
                                                 &diag,
                                             )
                                         });
-                                    publish_run_output_batch(
-                                        run,
-                                        output_transport.as_ref(),
-                                        &print_transport,
-                                        delegate_subscription_id,
-                                    )?;
+                                    output_worker.publish(run, delegate_subscription_id)?;
                                     execution
                                 });
                             if let Some(reply) = reply {
@@ -1276,12 +1300,7 @@ fn spawn_run_render_thread(
                                                 &diag,
                                             )
                                         });
-                                    publish_run_output_batch(
-                                        run,
-                                        output_transport.as_ref(),
-                                        &print_transport,
-                                        delegate_subscription_id,
-                                    )?;
+                                    output_worker.publish(run, delegate_subscription_id)?;
                                     result
                                 });
                             if result.is_ok() {
@@ -1319,12 +1338,7 @@ fn spawn_run_render_thread(
                                             &diag,
                                         )
                                     });
-                                publish_run_output_batch(
-                                    run,
-                                    output_transport.as_ref(),
-                                    &print_transport,
-                                    delegate_subscription_id,
-                                )?;
+                                output_worker.publish(run, delegate_subscription_id)?;
                                 result
                             }),
                     }
@@ -1387,8 +1401,8 @@ fn spawn_run_render_thread(
                         pending_run_events.push(PendingRunEvent {
                             frame,
                             sequence,
-                            name: name.to_owned(),
-                            values,
+                            name: Cow::Borrowed(name),
+                            values: PendingEventValues::Midi(values),
                             physical_midi: Some(message),
                             reply: None,
                         });
@@ -1407,23 +1421,25 @@ fn spawn_run_render_thread(
                 if !midi_event_names.contains(name) {
                     continue;
                 }
+                if pending_run_events.len() >= MAX_PENDING_EVENTS - 16 * 128 {
+                    midi_overflowed.store(true, Ordering::Release);
+                    break;
+                }
                 let (frame, sequence) =
                     midi_timeline.frame_at(timed.timestamp, rendered_frame, launch.sample_rate_hz);
                 pending_run_events.push(PendingRunEvent {
                     frame,
                     sequence,
-                    name: name.to_owned(),
-                    values,
+                    name: Cow::Borrowed(name),
+                    values: PendingEventValues::Midi(values),
                     physical_midi: Some(message),
                     reply: None,
                 });
             }
 
-            pending_run_events.sort_by_key(|event| (event.frame, event.sequence));
+            pending_run_events.sort_unstable_by_key(|event| (event.frame, event.sequence));
             let block_end = rendered_frame.saturating_add(launch.block_samples as u64);
             let due_count = pending_run_events.partition_point(|event| event.frame < block_end);
-            let future_events = pending_run_events.split_off(due_count);
-            let due_events = std::mem::replace(&mut pending_run_events, future_events);
 
             if render_input_channels > 0 {
                 let input_channels = render_input_channels;
@@ -1433,44 +1449,48 @@ fn spawn_run_render_thread(
                 }
             }
 
-            let scheduled_events = due_events
-                .iter()
-                .map(|event| RunScheduledEvent {
-                    frame: event.frame.saturating_sub(rendered_frame) as usize,
-                    name: &event.name,
-                    values: &event.values,
-                })
-                .collect::<Vec<_>>();
-            let execution = session.render_run_block_events_interleaved(
-                &launch.input,
-                &mut interleaved,
-                &scheduled_events,
-            );
+            let scheduled_events =
+                pending_run_events[..due_count]
+                    .iter()
+                    .map(|event| RunScheduledEvent {
+                        frame: event.frame.saturating_sub(rendered_frame) as usize,
+                        name: &event.name,
+                        values: &event.values,
+                    });
+            let execution = session
+                .run_mut(&launch.input)
+                .expect("active run")
+                .render_block_event_iter_interleaved(&mut interleaved, scheduled_events);
             let output_result = session
                 .run_mut(&launch.input)
                 .ok_or_else(|| "run is not active".to_owned())
-                .and_then(|run| {
-                    publish_run_output_batch(
-                        run,
-                        output_transport.as_ref(),
-                        &print_transport,
-                        delegate_subscription_id,
-                    )
-                });
+                .and_then(|run| output_worker.publish(run, delegate_subscription_id));
             if let Err(error) = output_result {
-                reply_to_run_events(due_events, Err(error.clone()), &mut active_midi_notes);
+                reply_to_run_events(
+                    pending_run_events.drain(..due_count),
+                    Err(error.clone()),
+                    &mut active_midi_notes,
+                );
                 store_thread_error(&render_error, error);
                 stop_flag.store(true, Ordering::Release);
                 break;
             }
             if let Err(diag) = execution {
                 let error = format_single_diagnostic("daemon play render failed", &diag);
-                reply_to_run_events(due_events, Err(error.clone()), &mut active_midi_notes);
+                reply_to_run_events(
+                    pending_run_events.drain(..due_count),
+                    Err(error.clone()),
+                    &mut active_midi_notes,
+                );
                 store_thread_error(&render_error, error);
                 stop_flag.store(true, Ordering::Release);
                 break;
             }
-            reply_to_run_events(due_events, Ok(()), &mut active_midi_notes);
+            reply_to_run_events(
+                pending_run_events.drain(..due_count),
+                Ok(()),
+                &mut active_midi_notes,
+            );
             rendered_frame = block_end;
 
             if let Ok(mut ring) = scope_ring.try_lock() {
@@ -1502,46 +1522,13 @@ fn publish_run_output_batch(
     let prints = run.take_print_batch().map_err(|diagnostic| {
         format_single_diagnostic("daemon play print decoding failed", &diagnostic)
     })?;
-    if delegates.occurrences.is_empty()
-        && delegates.overflow_count == 0
-        && prints.entries.is_empty()
-        && prints.overflow_count == 0
-    {
-        return Ok(());
-    }
-    if let Some(transport) = output_transport {
-        let output = RunOutputBatch {
-            delegate_subscription_id,
-            delegates,
-            prints,
-        };
-        if let Err(mpsc::TrySendError::Full(output)) = transport.sender.try_send(output) {
-            record_transport_loss(
-                &transport.dropped_delegates,
-                &transport.pending_delegate_overflow,
-                output.delegates.occurrences.len(),
-                output.delegates.overflow_count,
-            );
-            record_transport_loss(
-                &transport.dropped_prints,
-                &transport.pending_print_overflow,
-                output.prints.entries.len(),
-                output.prints.overflow_count,
-            );
-        }
-        return Ok(());
-    }
-    if prints.entries.is_empty() && prints.overflow_count == 0 {
-        return Ok(());
-    }
-    if let Err(mpsc::TrySendError::Full(batch)) = print_transport.sender.try_send(prints) {
-        record_transport_loss(
-            &print_transport.dropped_occurrences,
-            &print_transport.pending_overflow,
-            batch.entries.len(),
-            batch.overflow_count,
-        );
-    }
+    output_worker::publish_decoded(
+        delegates,
+        prints,
+        output_transport,
+        print_transport,
+        delegate_subscription_id,
+    );
     Ok(())
 }
 
@@ -1554,7 +1541,7 @@ fn cancel_pending_run_events(events: &mut Vec<PendingRunEvent>, reason: &str) {
 }
 
 fn reply_to_run_events(
-    events: Vec<PendingRunEvent>,
+    events: impl Iterator<Item = PendingRunEvent>,
     result: Result<(), String>,
     active_midi_notes: &mut HashSet<(i32, i32)>,
 ) {
@@ -1659,7 +1646,7 @@ fn flush_pending_param_updates(
             .run_mut(input)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                run.set_param_f64(&name, update.value)
+                run.set_param(&name, update.value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
             });
         for reply in update.replies {
@@ -1825,7 +1812,7 @@ fn handle_run_control_client(
     let reader_stream = stream
         .try_clone()
         .map_err(|err| format!("failed to clone control socket: {err}"))?;
-    let mut reader = BufReader::new(reader_stream);
+    let mut reader = control_reader::ControlReader::new(BufReader::new(reader_stream));
     let mut writer = BufWriter::new(stream);
     let mut pending_buffer_replies = Vec::new();
 
@@ -1840,10 +1827,9 @@ fn handle_run_control_client(
             &context.pending_print_overflow,
             delegate_subscription.enabled.then_some(subscription_id),
         )?;
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return Ok(()),
-            Ok(_) => {}
+        let request = match reader.read_request() {
+            Ok(None) => return Ok(()),
+            Ok(Some(request)) => request,
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock
                     || err.kind() == std::io::ErrorKind::TimedOut =>
@@ -1851,15 +1837,7 @@ fn handle_run_control_client(
                 continue;
             }
             Err(err) => return Err(format!("failed to read control request: {err}")),
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request: PlaybackControlRequest = serde_json::from_str(trimmed)
-            .map_err(|err| format!("invalid control request json: {err}"))?;
+        };
         if request.command == "bindBufferWav" {
             match submit_buffer_load(request.name, request.path, &context.control_tx) {
                 Ok(result) => pending_buffer_replies.push(PendingBufferReply {
@@ -2370,19 +2348,7 @@ fn run_control_response(
             let raw_value = request
                 .value
                 .ok_or_else(|| "setParam requires 'value'".to_owned())?;
-            let value = match raw_value {
-                Value::Bool(value) => {
-                    if value {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
-                Value::Number(value) => value
-                    .as_f64()
-                    .ok_or_else(|| "setParam value must be numeric".to_owned())?,
-                _ => return Err("setParam value must be number or boolean".to_owned()),
-            };
+            let value = crate::param_value_from_json(&raw_value)?;
             if request_id.is_none() {
                 control_tx
                     .send(PlaybackControlCommand::SetParam {
@@ -2626,7 +2592,7 @@ mod tests {
                         fast_math: false,
                         show_meta: false,
                         control_json: true,
-                        param_sets: param_sets.clone(),
+                        param_sets: param_sets.iter().map(|(name, value)| (name.clone(), onda_daemon::RunParamValue::F64(*value))).collect(),
                         buffer_bindings: Vec::new(),
                         project_buffer_bindings: Vec::new(),
                     },
@@ -3086,7 +3052,7 @@ mod tests {
         match control_rx.try_recv().expect("setParam should be queued") {
             PlaybackControlCommand::SetParam { name, value, reply } => {
                 assert_eq!(name, "gain");
-                assert_eq!(value, 0.5);
+                assert_eq!(value, onda_daemon::RunParamValue::F64(0.5));
                 assert!(reply.is_none());
             }
             _ => panic!("expected setParam command"),

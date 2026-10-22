@@ -280,10 +280,21 @@ export interface OndaProcessorMetadata {
   target: OndaTargetInfo;
   integration: {
     required_symbols: string[];
+    /** Native link dependencies, for example ["m", "mvec"]. */
+    link_libraries?: string[];
     one_processor_per_artifact: true;
     profile: OndaIntegrationProfile;
   };
-  compile: { sample_rate: number; block_size: number; fast_math: boolean };
+  compile: {
+    sample_rate: number;
+    block_size: number;
+    fast_math: boolean;
+    floating_point?: {
+      reassociate: boolean;
+      contract: boolean;
+      no_signed_zeros: boolean;
+    };
+  };
   exports: {
     memory?: string;
     heap_base?: string;

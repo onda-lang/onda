@@ -1034,7 +1034,7 @@ pub(super) fn parse_slice_parts(
             if selector_group.as_rule() == Rule::index_group
                 && slice_group.as_rule() == Rule::slice_group =>
         {
-            let selectors = parse_index_groups(vec![selector_group.clone()], loc)?;
+            let selectors = parse_index_groups(vec![selector_group.clone()], loc.clone())?;
             if selectors.len() != 1 {
                 return Err(vec![syntax_at_loc(
                     loc.as_ref(),
@@ -1258,7 +1258,7 @@ pub(super) fn parse_assign_target(pair: Pair<'_, Rule>) -> Result<AssignTarget, 
                     "missing indexed assignment base",
                 )]);
             };
-            let indices = parse_index_groups(inner.collect(), loc)?;
+            let indices = parse_index_groups(inner.collect(), loc.clone())?;
             if indices.len() != 1 {
                 return Err(vec![syntax_at_loc(
                     loc.as_ref(),

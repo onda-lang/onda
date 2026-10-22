@@ -7,7 +7,7 @@ function fixture() {
   const messages = [];
   const port = new EventTarget();
   port.postMessage = message => messages.push(message);
-  let processor = new OndaAudioProcessor({ port }, {
+  let processor = new OndaAudioProcessor(Object.assign(new EventTarget(), { port }), {
     compile: { sample_rate: 48_000, block_size: 512 },
   });
   const storage = new Map();

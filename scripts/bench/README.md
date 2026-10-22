@@ -55,6 +55,16 @@ and ordered reductions. They process 512 array elements per block. Their `ns_per
 whole block cost divided by the host block size, rather than the cost of one operator. Inspect
 and measure both variants before concluding an operator or source rewrite is faster.
 
+`slice-fixed` and `slice-dynamic` pass contiguous views to the same elementwise helper,
+with full-array or runtime lengths. They exercise MIR bounds proofs, descriptor lowering,
+and backend vectorization; both report whole-block cost per host frame.
+
+`voice-bank-16`, `voice-bank-256`, and `voice-bank-4096` update independent sine voices
+in contiguous arrays, then mix them in a separate ordered loop. They exercise SIMD across
+voices under strict floating-point rules and increase the active data set from 192 bytes to
+48 KiB (two state arrays and one constant table). Each output frame updates every voice.
+The compiler counters include eliminated common expressions and bounds checks.
+
 ## Inspect and replay IR
 
 ```sh
@@ -68,7 +78,21 @@ python3 scripts/bench/run.py --source target/bench/probe/probe.mir.msgpack \
 `--inspect-only` emits IR/artifacts without initializing or processing the workload. It enables
 `--ir`, which saves readable MIR, MIR JSON, optimized host LLVM IR, Wasm WAT, and descriptive
 LLVM instruction counts by function. `--assembly` also saves a host object, target/ABI metadata,
-and disassembly using `llvm-objdump` or `objdump`.
+and disassembly with relocations using `llvm-objdump` or `objdump`. Assembly inspection reports
+external relocations, vector register instructions and stack address operands. Stack references
+include local storage and ABI saves as well as spills; they are descriptive counts.
+
+Add `--remarks` with LLVM 21 `opt` on PATH to save `.preopt.ll` and `.remarks.yaml` plus the
+success/missed/analysis diagnostic stream for loop and SLP vectorization. Line tables map remarks
+to Onda source files and lines. This runs the selected optimization pipeline separately from an O0
+module, outside JIT timing; it is diagnostic replay, not a trace of the live JIT invocation.
+
+Rows include parse/load, semantic analysis, MIR lowering and MIR optimization timings, cleanup
+counts, and final effect/range function-visit counts. `--allocations` adds Rust allocation calls,
+requested allocation bytes, and Linux process peak RSS for frontend and JIT compilation. Allocation
+counts include realloc requests and exclude LLVM's C++ allocations; peak RSS covers the whole
+process lifetime. Counter overhead affects instrumented compilation timings. Processing timings
+run with the counters disabled.
 
 Vector types, shuffles and alignment counts describe emitted IR. Check the saved assembly for
 actual instructions, register use and spills. These counts do not establish a throughput benefit.
@@ -93,6 +117,17 @@ python3 scripts/bench/compare.py target/bench/arithmetic-o0 target/bench/arithme
 `--opt-level 0..3` controls LLVM, `--wasm-opt-level 0..4` controls Binaryen, and `--fast-math`
 explicitly enables relaxed floating-point optimization. Fast math can change results, reduction
 order and exceptional-value behavior. Keep the intended numerical contract explicit when comparing.
+`--fp-reassociate`, `--fp-contract`, and `--fp-no-signed-zeros` independently control native
+arithmetic permissions. General reductions commonly need both reassociation and ignoring signed
+zero to vectorize. Contraction permits one fused rounding instead of two. Vector math automatically
+uses embedded SLEEF 3.9.0 on Linux/macOS x64 and ARM64 and Windows x64 MSVC; other targets keep
+scalar math. JIT and AOT code include the helpers without an extra library dependency, including
+cross-compilation. SLEEF documents a 3.5 ULP bound for `u35` (sin, cos, tan, tanh, atan, atan2, log),
+and a 1 ULP bound for `u10` (exp, pow), within their supported input domains. Results need not be
+correctly rounded or bit-identical to scalar libm. See `deps/sleef/docs/` for function-specific
+qualifications. Vector math does not permit assuming finite inputs or discarding signed zeros.
+`--fast-math` enables all arithmetic relaxations. These fine-grained settings apply to native
+compilation; Wasm retains its own strict operation semantics.
 `--label` records the assumption being investigated.
 
 To compare two differently named variants, select their pair explicitly. Both directories can
@@ -135,6 +170,12 @@ warmed samples. The FFTW performance reference checks the real part of bin 7; us
 cases for full-spectrum correctness. References currently require strict math and default inputs.
 
 ## Saved artifacts and tests
+
+The [2026-10-22 performance cleanup results](results/2026-10-22.json) record the retained
+improvements, removed experiments, worker identities, paired samples, validation and reproduction
+steps. The final 12-case native check produces byte-identical objects to the compiler before the
+removed experiments; it establishes preservation of code generation, not an additional speedup.
+Historical compile-scaling, Wasm and FFT results are labeled separately from that cleanup check.
 
 `metadata.json` records settings, compiler binary hash, harness hashes, CPU information, platform,
 Git revision and whether the working tree is dirty. Wasm runs also record backend source and

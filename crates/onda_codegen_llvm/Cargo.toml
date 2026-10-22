@@ -19,6 +19,10 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 onda_semantics = { path = "../onda_semantics" }
+tempfile = "3"
+
+[build-dependencies]
+cc = "1"
 
 [lib]
 path = "src/lib.rs"

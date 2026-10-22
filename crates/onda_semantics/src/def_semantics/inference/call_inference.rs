@@ -609,28 +609,28 @@ fn resolve_call_args_by<'a, 'p>(
             if forbid_self_named && name == "self" {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: 'self' cannot be passed as a named argument"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
             if !seen_named.insert(name) {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: duplicate named argument '{name}'"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
             let Some(idx) = (0..param_count).find(|&index| param_name(index) == name) else {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: unknown named argument '{name}'"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             };
             if resolved[idx].is_some() {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: argument '{name}' provided multiple times"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
@@ -640,14 +640,14 @@ fn resolve_call_args_by<'a, 'p>(
             if named_only {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: positional arguments are not allowed; use named arguments"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
             if saw_named {
                 errors.push(Diagnostic::semantic_span(
                     format!("{context}: positional arguments must come before named arguments"),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
@@ -660,7 +660,7 @@ fn resolve_call_args_by<'a, 'p>(
                         "{context}: too many positional arguments (expected at most {})",
                         param_count
                     ),
-                    loc,
+                    &loc,
                 ));
                 continue;
             }
@@ -675,7 +675,7 @@ fn resolve_call_args_by<'a, 'p>(
         if supplied.is_none() && !has_default {
             errors.push(Diagnostic::semantic_span(
                 format!("{context}: missing required argument '{}'", param_name(idx)),
-                loc,
+                &loc,
             ));
         } else if supplied.is_none() {
             visit_bound(idx);

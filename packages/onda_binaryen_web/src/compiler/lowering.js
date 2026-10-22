@@ -1,4 +1,5 @@
 import binaryen from "binaryen";
+import { vectorizeSampleLoop } from "./simd.js";
 import { MirCompilerCore } from "./core.js";
 import {
   DELEGATE_RECORD_HEADER_SIZE,
@@ -94,12 +95,13 @@ export class MirCompilerLowering extends MirCompilerCore {
         const body = this.compileBlock(data.body, context);
         context.breakLabels.pop();
         context.continueLabels.pop();
-        return this.module.block(breakLabel, [
+        const scalarLoop = this.module.block(breakLabel, [
           this.module.loop(
             continueLabel,
             this.module.block(null, [body, this.module.br(continueLabel)]),
           ),
         ]);
+        return vectorizeSampleLoop(this, statement, context, scalarLoop) ?? scalarLoop;
       }
       case "break":
         return this.module.br(this.currentLabel(context.breakLabels, "break"));

@@ -48,7 +48,7 @@ fn call_stmt(name: String, params: &[EventParamDecl]) -> Stmt {
 
 fn delegate_function(name: String, delegate: &DelegateDef, body: Vec<Stmt>) -> FunctionDef {
     FunctionDef {
-        loc: delegate.loc,
+        loc: delegate.loc.clone(),
         name,
         is_const: false,
         type_params: Vec::new(),
@@ -97,7 +97,7 @@ fn when_handler_function(
         .collect::<Vec<_>>();
     params.extend(payload_params.iter().cloned());
     FunctionDef {
-        loc: when.loc,
+        loc: when.loc.clone(),
         name,
         is_const: false,
         type_params: Vec::new(),
@@ -169,7 +169,7 @@ fn validate_and_bind_when(
     let expected = delegate.params.len() + usize::from(leading_index.is_some());
     if when.bindings.len() != expected {
         push_semantic(
-            DiagCtx::new(when.loc),
+            DiagCtx::new(when.loc.clone()),
             errors,
             format!(
                 "when handler for '{owner}.{}' expects {expected} bindings, got {}",
@@ -184,7 +184,7 @@ fn validate_and_bind_when(
     for binding in &when.bindings {
         if binding.name != "_" && !seen.insert(binding.name.clone()) {
             push_semantic(
-                DiagCtx::new(binding.loc),
+                DiagCtx::new(binding.loc.clone()),
                 errors,
                 format!("duplicate when payload binding '{}'", binding.name),
             );
@@ -229,7 +229,7 @@ fn replace_when_bindings_stmt(
                 AssignTarget::Var(name) => {
                     if replacements.contains_key(name) {
                         push_semantic(
-                            DiagCtx::new(*target_loc),
+                            DiagCtx::new(target_loc.clone()),
                             errors,
                             format!("cannot assign to read-only when payload binding '{name}'"),
                         );
@@ -239,7 +239,7 @@ fn replace_when_bindings_stmt(
                 AssignTarget::Index { base, .. } | AssignTarget::IndexedMember { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
-                            DiagCtx::new(*target_loc),
+                            DiagCtx::new(target_loc.clone()),
                             errors,
                             format!("cannot write through read-only when payload binding '{base}'"),
                         );
@@ -249,7 +249,7 @@ fn replace_when_bindings_stmt(
                 AssignTarget::Slice { base, .. } => {
                     if replacements.contains_key(base) {
                         push_semantic(
-                            DiagCtx::new(*target_loc),
+                            DiagCtx::new(target_loc.clone()),
                             errors,
                             format!("cannot write through read-only when payload binding '{base}'"),
                         );
@@ -260,7 +260,7 @@ fn replace_when_bindings_stmt(
                     for name in names.iter_mut().filter_map(|target| target.binding_mut()) {
                         if replacements.contains_key(name) {
                             push_semantic(
-                                DiagCtx::new(*target_loc),
+                                DiagCtx::new(target_loc.clone()),
                                 errors,
                                 format!("cannot assign to read-only when payload binding '{name}'"),
                             );
@@ -303,7 +303,7 @@ fn replace_when_bindings_stmt(
         } => {
             if replacements.contains_key(var) {
                 push_semantic(
-                    DiagCtx::new(*loc),
+                    DiagCtx::new(loc.clone()),
                     errors,
                     format!("loop variable '{var}' conflicts with a when payload binding"),
                 );
@@ -415,7 +415,7 @@ fn collect_source_calls_expr(expr: &Expr, calls: &mut Vec<SourceCall>) {
             });
             calls.push(SourceCall {
                 name: name.clone(),
-                loc: *loc,
+                loc: loc.clone(),
                 indexed_receiver,
                 args: args.clone(),
             });
@@ -679,7 +679,7 @@ fn collect_delegate_value_uses_expr(
         Expr::Var { loc, name } if delegate_names.contains(name) => {
             errors.push(Diagnostic::semantic_span(
                 format!("delegate '{name}' is callable only and cannot be used as a value"),
-                *loc,
+                loc.clone(),
             ));
         }
         Expr::Index { index, .. } => {
@@ -715,7 +715,7 @@ fn collect_delegate_value_uses_expr(
             if delegate_names.contains(name) && !statement_root {
                 errors.push(Diagnostic::semantic_span(
                     format!("delegate call '{name}' has no result and must be used as a statement"),
-                    *loc,
+                    loc.clone(),
                 ));
             }
             for arg in args {
@@ -817,21 +817,21 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
         label: format!("def {}", def.name),
         name: Some(def.name.as_str()),
         kind: SourceCallableKind::Def,
-        loc: def.loc,
+        loc: def.loc.clone(),
         body: &def.body,
     }));
     callables.extend(owner.events.iter().map(|event| SourceCallable {
         label: format!("event {}", event.name),
         name: Some(event.name.as_str()),
         kind: SourceCallableKind::Event,
-        loc: event.loc,
+        loc: event.loc.clone(),
         body: &event.body,
     }));
     callables.extend(owner.delegates.iter().map(|delegate| SourceCallable {
         label: format!("delegate {}", delegate.name),
         name: Some(delegate.name.as_str()),
         kind: SourceCallableKind::Delegate,
-        loc: delegate.loc,
+        loc: delegate.loc.clone(),
         body: &[],
     }));
     callables.extend(
@@ -843,7 +843,7 @@ fn source_callables<'a>(owner: &'a DelegateOwner<'a>) -> Vec<SourceCallable<'a>>
                 label: format!("{} #{}", when_target_label(when), ordinal + 1),
                 name: None,
                 kind: SourceCallableKind::When,
-                loc: when.loc,
+                loc: when.loc.clone(),
                 body: &when.body,
             }),
     );
@@ -1117,7 +1117,7 @@ fn child_delegate_targets<'a>(
             ),
             name: None,
             kind: SourceCallableKind::Delegate,
-            loc: call.loc,
+            loc: call.loc.clone(),
             body: &[],
         });
         edges.push(
@@ -1570,13 +1570,13 @@ fn validate_owner_dispatch(
                 "recursive event/delegate dispatch in {} is not realtime-safe: {path}",
                 owner.label
             ),
-            callables[cycle[0]].loc,
+            callables[cycle[0]].loc.clone(),
         ));
     }
 
     if let Some(path) = path_to_delegate(graph.init_roots.iter().copied(), callables, edges, false)
     {
-        let loc = callables[path[0]].loc;
+        let loc = callables[path[0]].loc.clone();
         let path = path
             .iter()
             .map(|&node| callables[node].label.as_str())
@@ -1612,7 +1612,7 @@ fn validate_owner_dispatch(
                     "task '{}' in {} cannot dispatch a delegate whose synchronous handler may reset that active task",
                     task.name, owner.label
                 ),
-                task.loc,
+                task.loc.clone(),
             ));
         }
     }
@@ -1750,7 +1750,7 @@ fn validate_delegate_member_names(program: &Program, errors: &mut Vec<Diagnostic
                     &delegate.name,
                     "delegate",
                     "the top-level owner",
-                    delegate.loc,
+                    delegate.loc.clone(),
                     errors,
                 );
             }
@@ -1796,7 +1796,7 @@ fn validate_delegate_member_names(program: &Program, errors: &mut Vec<Diagnostic
                 &delegate.name,
                 "delegate",
                 &format!("processor '{}'", proc.name),
-                delegate.loc,
+                delegate.loc.clone(),
                 errors,
             );
         }
@@ -2960,7 +2960,7 @@ pub(super) fn prepare_delegate_source(
             .any(|delegate| delegate.name == when.target.delegate)
         {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!(
                     "when target '{}' is not a top-level delegate",
@@ -3000,7 +3000,7 @@ pub(super) fn prepare_delegate_source(
         for delegate in &delegates {
             if proc.local_defs.iter().any(|def| def.name == delegate.name) {
                 push_semantic(
-                    DiagCtx::new(delegate.loc),
+                    DiagCtx::new(delegate.loc.clone()),
                     errors,
                     format!(
                         "delegate '{}' conflicts with proc-local def '{}' in processor '{}'",
@@ -3036,7 +3036,7 @@ pub(super) fn prepare_delegate_source(
                 .any(|delegate| delegate.name == when.target.delegate)
             {
                 push_semantic(
-                    DiagCtx::new(when.target.loc),
+                    DiagCtx::new(when.target.loc.clone()),
                     errors,
                     format!(
                         "when target '{}' is not a delegate of processor '{}'",
@@ -3125,7 +3125,7 @@ fn resolve_top_when(
 ) -> Option<PendingTopWhen> {
     if when.target.receiver.len() != 1 {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             "when subscriptions may cross only one direct child ownership boundary",
         );
@@ -3135,7 +3135,7 @@ fn resolve_top_when(
     let (slots, takes_index) = if let Some(index) = &when.target.index {
         let Some(array_slots) = meta.global_proc_array_slots.get(receiver) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!("when target '{receiver}[...]' is not a direct processor array"),
             );
@@ -3156,7 +3156,7 @@ fn resolve_top_when(
         };
         let Ok(index_usize) = usize::try_from(index) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!("when target index {index} is outside processor array '{receiver}'"),
             );
@@ -3164,7 +3164,7 @@ fn resolve_top_when(
         };
         let Some(slot) = array_slots.get(index_usize) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!(
                     "when target index {index} is outside processor array '{receiver}' of length {}",
@@ -3187,7 +3187,7 @@ fn resolve_top_when(
         (vec![(receiver.clone(), -1)], false)
     } else {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             format!("when target '{receiver}' is not a direct child processor"),
         );
@@ -3197,7 +3197,7 @@ fn resolve_top_when(
     let (first_slot, _) = slots.first()?;
     let Some(instance) = meta.global_proc_instances.get(first_slot) else {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             format!("when target '{receiver}' has no resolved processor instance"),
         );
@@ -3207,7 +3207,7 @@ fn resolve_top_when(
     let api = proc_api.get(&instance.proc_name)?;
     if !api.delegates.contains_key(&when.target.delegate) {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             format!(
                 "processor '{}' has no delegate named '{}'",
@@ -3223,7 +3223,7 @@ fn resolve_top_when(
         .cloned()
     else {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             format!(
                 "processor '{}' has no delegate named '{}'",
@@ -3415,7 +3415,7 @@ fn direct_proc_when_target(
 ) -> Option<(String, Option<i32>)> {
     if when.target.receiver.len() != 1 {
         push_semantic(
-            DiagCtx::new(when.target.loc),
+            DiagCtx::new(when.target.loc.clone()),
             errors,
             "when subscriptions may cross only one direct child ownership boundary",
         );
@@ -3425,7 +3425,7 @@ fn direct_proc_when_target(
     if let Some(index) = &when.target.index {
         let Some(slots) = shape.nested_proc_array_slots.get(receiver) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!("when target '{receiver}[...]' is not a direct processor array"),
             );
@@ -3446,7 +3446,7 @@ fn direct_proc_when_target(
         };
         let Ok(index_usize) = usize::try_from(index) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!("when target index {index} is outside processor array '{receiver}'"),
             );
@@ -3454,7 +3454,7 @@ fn direct_proc_when_target(
         };
         let Some(slot) = slots.get(index_usize) else {
             push_semantic(
-                DiagCtx::new(when.target.loc),
+                DiagCtx::new(when.target.loc.clone()),
                 errors,
                 format!(
                     "when target index {index} is outside processor array '{receiver}' of length {}",
@@ -3472,7 +3472,7 @@ fn direct_proc_when_target(
         return Some((receiver.clone(), None));
     }
     push_semantic(
-        DiagCtx::new(when.target.loc),
+        DiagCtx::new(when.target.loc.clone()),
         errors,
         format!("when target '{receiver}' is not a direct child processor"),
     );
@@ -3518,7 +3518,7 @@ pub(super) fn validate_proc_child_whens(
                 .find(|delegate| delegate.name == when.target.delegate)
             else {
                 push_semantic(
-                    DiagCtx::new(when.target.loc),
+                    DiagCtx::new(when.target.loc.clone()),
                     errors,
                     format!(
                         "processor '{}' has no delegate named '{}'",

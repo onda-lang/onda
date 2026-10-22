@@ -5,6 +5,8 @@ use crate::{
 
 use super::PassStats;
 
+mod relations;
+
 pub(super) fn eliminate_proven_bounds_checks(
     program: &mut crate::Program,
     stats: &mut PassStats,
@@ -16,15 +18,16 @@ pub(super) fn eliminate_proven_bounds_checks(
         let ranges = program_ranges
             .function(function_id)
             .expect("program range analysis covers every MIR function");
-        let function = program.functions[function_index].clone();
+        let slice_lengths = fixed_slice_lengths(&program.functions[function_index]);
         let mut body = std::mem::take(&mut program.functions[function_index].body);
         let context = Context {
             program,
-            function: &function,
+            function: &program.functions[function_index],
             ranges,
-            slice_lengths: fixed_slice_lengths(&function),
+            slice_lengths,
         };
-        let eliminated = prove_block(&context, &mut body);
+        let eliminated =
+            prove_block(&context, &mut body) + relations::eliminate(&context, &mut body);
         program.functions[function_index].body = body;
         stats.eliminated_bounds_checks = stats.eliminated_bounds_checks.saturating_add(eliminated);
         changed |= eliminated != 0;
@@ -492,30 +495,7 @@ fn base_type(context: &Context<'_>, base: PlaceBase) -> Option<TypeId> {
 }
 
 fn place_type(context: &Context<'_>, place: &Place) -> Option<TypeId> {
-    let mut ty = base_type(context, place.base)?;
-    for projection in &place.projections {
-        ty = match projection {
-            Projection::Field(field) => {
-                let Type::Struct(structure) = context.program.types.get(ty.index())? else {
-                    return None;
-                };
-                context
-                    .program
-                    .structs
-                    .get(structure.index())?
-                    .fields
-                    .get(field.index())?
-                    .ty
-            }
-            Projection::Index { .. } => {
-                let Type::Array { element, .. } = context.program.types.get(ty.index())? else {
-                    return None;
-                };
-                *element
-            }
-        };
-    }
-    Some(ty)
+    context.program.place_type(context.function, place)
 }
 
 fn array_len(program: &crate::Program, ty: TypeId) -> Option<u32> {
@@ -537,7 +517,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_slice_proofs_exclude_clamped_empty_and_reassigned_descriptors() {
+    fn fixed_slice_proofs_exclude_clamped_and_empty_descriptors() {
         for creation in [
             BoundsMode::Clamp,
             BoundsMode::Checked,
@@ -629,7 +609,9 @@ mod tests {
                         source: SourceSpan::UNKNOWN,
                     });
                     let mut stats = PassStats::default();
-                    let proven = creation != BoundsMode::Clamp && len == 2 && !reassigned;
+                    // A later reassignment cannot invalidate a proof for an
+                    // earlier access; the relational pass tracks value versions.
+                    let proven = creation != BoundsMode::Clamp && len == 2;
                     assert_eq!(
                         eliminate_proven_bounds_checks(&mut program, &mut stats),
                         proven

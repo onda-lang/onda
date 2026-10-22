@@ -8,7 +8,7 @@ pub(super) fn apply_compile_inputs(
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Const(decl) if decl.configurable => Some((decl.name.as_str(), decl.loc)),
+            Block::Const(decl) if decl.configurable => Some((decl.name.as_str(), decl.loc.clone())),
             _ => None,
         })
         .collect::<HashMap<_, _>>();
@@ -16,7 +16,9 @@ pub(super) fn apply_compile_inputs(
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Const(decl) if !decl.configurable => Some((decl.name.as_str(), decl.loc)),
+            Block::Const(decl) if !decl.configurable => {
+                Some((decl.name.as_str(), decl.loc.clone()))
+            }
             _ => None,
         })
         .collect::<HashMap<_, _>>();
@@ -81,7 +83,7 @@ pub(super) fn compile_input_expr(
     ty: &ConstType,
     decl: &ConstDecl,
 ) -> Option<Expr> {
-    let location: SourceLoc = decl.loc.into();
+    let location: SourceLoc = decl.loc.clone().into();
     match (value, ty) {
         (ConstValue::Scalar(value), ConstType::Scalar(expected))
             if value.primitive_type() == *expected =>
@@ -210,10 +212,10 @@ pub(super) fn concrete_const_expr(value: TypedConstValue, loc: SourceLoc) -> Exp
 
 pub(super) fn const_array_literal_expr(values: &[TypedConstValue], loc: SourceLoc) -> Expr {
     Expr::ArrayLiteral {
-        loc: loc.into(),
+        loc: loc.clone().into(),
         values: values
             .iter()
-            .map(|value| concrete_const_expr(*value, loc))
+            .map(|value| concrete_const_expr(*value, loc.clone()))
             .collect(),
     }
 }
@@ -789,7 +791,7 @@ pub(super) fn validate_const_def_declaration(def: &FunctionDef, errors: &mut Vec
     if !def.type_params.is_empty() {
         errors.push(Diagnostic::semantic_span(
             format!("const def '{}' cannot declare type parameters", def.name),
-            def.loc,
+            def.loc.clone(),
         ));
         return;
     }

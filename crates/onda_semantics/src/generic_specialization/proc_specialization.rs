@@ -164,7 +164,7 @@ pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
             if let Some(values) = init.take() {
                 for (idx, value) in values.into_iter().enumerate() {
                     index_writes.push(Stmt::Assign {
-                        loc: *loc,
+                        loc: loc.clone(),
                         target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: base.clone(),
@@ -191,7 +191,7 @@ pub(crate) fn specialize_generic_proc_template(
     type_args: &[PrimitiveType],
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcessorDef> {
-    let diag = DiagCtx::new(template.loc);
+    let diag = DiagCtx::new(template.loc.clone());
     if type_args.len() != template.type_params.len() {
         push_semantic(
             diag,
@@ -215,10 +215,10 @@ pub(crate) fn specialize_generic_proc_template(
         .ins
         .iter()
         .map(|decl| PortDecl {
-            loc: decl.loc,
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             output_timing: decl.output_timing,
-            output_timing_loc: decl.output_timing_loc,
+            output_timing_loc: decl.output_timing_loc.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,
@@ -226,11 +226,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "input",
                     &decl.name,
-                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
+                    DiagCtx::new(decl.ty_loc.or(decl.loc.clone())),
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc,
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -239,10 +239,10 @@ pub(crate) fn specialize_generic_proc_template(
         .outs
         .iter()
         .map(|decl| PortDecl {
-            loc: decl.loc,
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             output_timing: decl.output_timing,
-            output_timing_loc: decl.output_timing_loc,
+            output_timing_loc: decl.output_timing_loc.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_decl_type(
                     ty,
@@ -250,11 +250,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "output",
                     &decl.name,
-                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
+                    DiagCtx::new(decl.ty_loc.or(decl.loc.clone())),
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc,
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
         })
@@ -263,7 +263,7 @@ pub(crate) fn specialize_generic_proc_template(
         .params
         .iter()
         .map(|decl| ParamDecl {
-            loc: decl.loc,
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             private: decl.private,
             ty: decl.ty.as_ref().map(|ty| {
@@ -273,11 +273,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &template.name,
                     "param",
                     &decl.name,
-                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
+                    DiagCtx::new(decl.ty_loc.or(decl.loc.clone())),
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc,
+            ty_loc: decl.ty_loc.clone(),
             default: decl.default.clone(),
             range: decl.range.clone(),
             control: decl.control.clone(),
@@ -372,7 +372,7 @@ pub(crate) fn specialize_generic_proc_template(
         .buffers
         .iter()
         .map(|decl| BufferDecl {
-            loc: decl.loc,
+            loc: decl.loc.clone(),
             name: decl.name.clone(),
             ty: decl.ty.as_ref().map(|ty| {
                 specialize_generic_proc_buffer_type(
@@ -380,11 +380,11 @@ pub(crate) fn specialize_generic_proc_template(
                     &type_bindings,
                     &template.name,
                     &decl.name,
-                    DiagCtx::new(decl.ty_loc.or(decl.loc)),
+                    DiagCtx::new(decl.ty_loc.or(decl.loc.clone())),
                     errors,
                 )
             }),
-            ty_loc: decl.ty_loc,
+            ty_loc: decl.ty_loc.clone(),
             array_size: decl.array_size.clone(),
         })
         .collect::<Vec<_>>();
@@ -407,7 +407,7 @@ pub(crate) fn specialize_generic_proc_template(
                 &param.ty,
                 &type_bindings,
                 &param_context,
-                DiagCtx::new(param.ty_loc.or(param.loc)),
+                DiagCtx::new(param.ty_loc.or(param.loc.clone())),
                 errors,
             );
             if let Some(default) = &mut param.default {
@@ -433,7 +433,7 @@ pub(crate) fn specialize_generic_proc_template(
                 &param.ty,
                 &type_bindings,
                 &param_context,
-                DiagCtx::new(param.ty_loc.or(param.loc)),
+                DiagCtx::new(param.ty_loc.or(param.loc.clone())),
                 errors,
             );
             if let Some(default) = &mut param.default {
@@ -456,7 +456,7 @@ pub(crate) fn specialize_generic_proc_template(
             &template.name,
             "init section default type",
             "init",
-            DiagCtx::new(init.default_ty_loc.or(init.loc)),
+            DiagCtx::new(init.default_ty_loc.or(init.loc.clone())),
             errors,
         );
         match specialized {
@@ -468,7 +468,7 @@ pub(crate) fn specialize_generic_proc_template(
             | DeclType::ArrayGeneric { .. }
             | DeclType::Tuple(_) => {
                 push_semantic(
-                    DiagCtx::new(init.default_ty_loc.or(init.loc)),
+                    DiagCtx::new(init.default_ty_loc.or(init.loc.clone())),
                     errors,
                     format!(
                         "processor '{}' init section default type must be a scalar primitive or generic type",
@@ -565,7 +565,7 @@ pub(crate) fn specialize_generic_proc_template(
     }
 
     Some(ProcessorDef {
-        loc: template.loc,
+        loc: template.loc.clone(),
         name: specialized_struct_name(&template.name, type_args),
         type_params: Vec::new(),
         ins,
@@ -575,7 +575,7 @@ pub(crate) fn specialize_generic_proc_template(
         outs_deferred_count: None,
         outs_deferred_default_ty: None,
         outs_timing: template.outs_timing,
-        outs_timing_loc: template.outs_timing_loc,
+        outs_timing_loc: template.outs_timing_loc.clone(),
         params,
         params_deferred_count: None,
         params_deferred_default_ty: None,
@@ -663,7 +663,7 @@ pub(crate) fn rewrite_generic_proc_ctor_expr(
                     parse_explicit_proc_array_elem_type_args(
                         elem_name,
                         "processor array element type",
-                        diag,
+                        diag.clone(),
                         errors,
                     )
                 {

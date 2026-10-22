@@ -171,6 +171,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut list_consts = false;
     let mut show_meta = false;
     let mut fast_math = false;
+    let mut math = onda_codegen_llvm::FloatMathPolicy::default();
     let mut target_spec_path = None::<PathBuf>;
     let mut target_triple_override = None::<String>;
     let mut target_cpu_override = None::<TargetCpu>;
@@ -231,6 +232,9 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
+            "--fp-reassociate" => math.reassociate = true,
+            "--fp-contract" => math.contract = true,
+            "--fp-no-signed-zeros" => math.no_signed_zeros = true,
             "--target-triple" => {
                 let Some(value) = args.next() else {
                     return Err("--target-triple requires a target triple".to_owned());
@@ -418,6 +422,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         list_consts,
         show_meta,
         fast_math,
+        math,
         target,
     })
 }
@@ -1236,7 +1241,7 @@ fn is_coff_target_triple(target_triple: &str) -> bool {
     triple.contains("windows") || triple.contains("msvc")
 }
 
-fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
+fn parse_param_setting(value: &str) -> Result<(String, onda_daemon::RunParamValue), String> {
     let Some((name, raw_value)) = value.split_once('=') else {
         return Err(format!(
             "invalid parameter setting '{value}', expected name=value"
@@ -1245,7 +1250,7 @@ fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
     if name.is_empty() {
         return Err("parameter setting requires a non-empty name".to_owned());
     }
-    let parsed = raw_value.parse::<f64>().map_err(|_| {
+    let parsed = onda_run::parse_run_param_value(raw_value).map_err(|_| {
         format!("invalid parameter value '{raw_value}' for '{name}', expected number")
     })?;
     Ok((name.to_owned(), parsed))

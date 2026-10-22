@@ -1317,7 +1317,7 @@ fn expand_proc_output_tuple_assignments_with_aliases(
         };
         if targets.len() != call.outputs.len() {
             push_semantic(
-                DiagCtx::new(*target_loc),
+                DiagCtx::new(target_loc.clone()),
                 errors,
                 format!(
                     "processor output destructuring has {} targets, but the processor has {} outputs",
@@ -1327,15 +1327,15 @@ fn expand_proc_output_tuple_assignments_with_aliases(
             );
         }
 
-        let loc = *loc;
-        let target_loc = *target_loc;
+        let loc = loc.clone();
+        let target_loc = target_loc.clone();
         let targets = targets.clone();
         let outputs = call.outputs;
         let call_expr = expr.clone();
         match call.source {
             ProcOutputTupleSource::Direct(receiver) => {
                 expanded.push(Stmt::Expr {
-                    loc,
+                    loc: loc.clone(),
                     expr: call_expr,
                 });
                 expanded.extend(
@@ -1348,7 +1348,12 @@ fn expand_proc_output_tuple_assignments_with_aliases(
                                 || Expr::number(0.0),
                                 |output| Expr::var(format!("{receiver}.{output}")),
                             );
-                            Some(proc_output_assignment(loc, target_loc, target, expr))
+                            Some(proc_output_assignment(
+                                loc.clone(),
+                                target_loc.clone(),
+                                target,
+                                expr,
+                            ))
                         }),
                 );
             }
@@ -1373,7 +1378,7 @@ fn expand_proc_output_tuple_assignments_with_aliases(
                     continue;
                 }
                 expanded.push(Stmt::Expr {
-                    loc,
+                    loc: loc.clone(),
                     expr: call_expr,
                 });
                 expanded.extend(
@@ -1389,11 +1394,16 @@ fn expand_proc_output_tuple_assignments_with_aliases(
                                         format!("{array_base}.{output}"),
                                         Expr::var(temp.clone()),
                                         access,
-                                        loc,
+                                        loc.clone(),
                                     )
                                 },
                             );
-                            Some(proc_output_assignment(loc, target_loc, target, expr))
+                            Some(proc_output_assignment(
+                                loc.clone(),
+                                target_loc.clone(),
+                                target,
+                                expr,
+                            ))
                         }),
                 );
             }
@@ -2469,7 +2479,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
             if !skip_hook {
                 reject_private_proc_param_assignment(
                     target,
-                    *target_loc,
+                    target_loc.clone(),
                     proc_vars,
                     proc_array_slots,
                     proc_api,
@@ -2478,7 +2488,7 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                 );
                 reject_bound_proc_dynamic_params_assignment(
                     target,
-                    *target_loc,
+                    target_loc.clone(),
                     proc_vars,
                     proc_array_slots,
                     proc_api,
@@ -2805,7 +2815,8 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         name: None,
                         expr: proc_instance_self_expr(name, proc_array_slots),
                     });
-                    let expanded_args = expand_proc_call_args(args, api, name, diag, errors);
+                    let expanded_args =
+                        expand_proc_call_args(args, api, name, diag.clone(), errors);
                     rewritten.extend(expanded_args);
                     let expanded_buffers =
                         expand_proc_buffer_call_args(instance, api, name, errors);
@@ -3177,7 +3188,7 @@ pub(super) fn rewrite_proc_array_param_field_reads(
             return;
         };
         *expr = Expr::Index {
-            loc: *loc,
+            loc: loc.clone(),
             base: format!("{base}.{}", param.name),
             index: Box::new(index),
         };

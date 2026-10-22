@@ -171,7 +171,7 @@ impl Clone for Expr {
             let mut child = || children.next().expect("cloned expression child");
             Ok::<_, std::convert::Infallible>(match node {
                 Self::Number { loc, value } => Self::Number {
-                    loc: *loc,
+                    loc: loc.clone(),
                     value: *value,
                 },
                 Self::Int {
@@ -179,20 +179,20 @@ impl Clone for Expr {
                     value,
                     const_ty,
                 } => Self::Int {
-                    loc: *loc,
+                    loc: loc.clone(),
                     value: *value,
                     const_ty: *const_ty,
                 },
                 Self::Bool { loc, value } => Self::Bool {
-                    loc: *loc,
+                    loc: loc.clone(),
                     value: *value,
                 },
                 Self::Var { loc, name } => Self::Var {
-                    loc: *loc,
+                    loc: loc.clone(),
                     name: name.clone(),
                 },
                 Self::Index { loc, base, .. } => Self::Index {
-                    loc: *loc,
+                    loc: loc.clone(),
                     base: base.clone(),
                     index: Box::new(child()),
                 },
@@ -204,7 +204,7 @@ impl Clone for Expr {
                     start,
                     end,
                 } => Self::Slice {
-                    loc: *loc,
+                    loc: loc.clone(),
                     base: base.clone(),
                     selector: selector.as_ref().map(|_| Box::new(child())),
                     channel: channel.as_ref().map(|_| Box::new(child())),
@@ -212,46 +212,46 @@ impl Clone for Expr {
                     end: end.as_ref().map(|_| Box::new(child())),
                 },
                 Self::Cast { loc, to, .. } => Self::Cast {
-                    loc: *loc,
+                    loc: loc.clone(),
                     to: *to,
                     expr: Box::new(child()),
                 },
                 Self::UnaryNot { loc, .. } => Self::UnaryNot {
-                    loc: *loc,
+                    loc: loc.clone(),
                     expr: Box::new(child()),
                 },
                 Self::UnaryBitNot { loc, .. } => Self::UnaryBitNot {
-                    loc: *loc,
+                    loc: loc.clone(),
                     expr: Box::new(child()),
                 },
                 Self::Binary { loc, op, .. } => Self::Binary {
-                    loc: *loc,
+                    loc: loc.clone(),
                     op: *op,
                     lhs: Box::new(child()),
                     rhs: Box::new(child()),
                 },
                 Self::Compare { loc, op, .. } => Self::Compare {
-                    loc: *loc,
+                    loc: loc.clone(),
                     op: *op,
                     lhs: Box::new(child()),
                     rhs: Box::new(child()),
                 },
                 Self::Logical { loc, op, .. } => Self::Logical {
-                    loc: *loc,
+                    loc: loc.clone(),
                     op: *op,
                     lhs: Box::new(child()),
                     rhs: Box::new(child()),
                 },
                 Self::Tuple { loc, .. } => Self::Tuple {
-                    loc: *loc,
+                    loc: loc.clone(),
                     values: children.collect(),
                 },
                 Self::ArrayLiteral { loc, .. } => Self::ArrayLiteral {
-                    loc: *loc,
+                    loc: loc.clone(),
                     values: children.collect(),
                 },
                 Self::Call { loc, func, .. } => Self::Call {
-                    loc: *loc,
+                    loc: loc.clone(),
                     func: *func,
                     args: children.collect(),
                 },
@@ -261,7 +261,7 @@ impl Clone for Expr {
                     type_args,
                     args,
                 } => Self::UserCall {
-                    loc: *loc,
+                    loc: loc.clone(),
                     name: name.clone(),
                     type_args: type_args.clone(),
                     args: args
@@ -279,7 +279,7 @@ impl Clone for Expr {
                     init_is_value,
                     initialize,
                 } => Self::ArrayCtor {
-                    loc: *loc,
+                    loc: loc.clone(),
                     spec: crate::ArrayTypeSpec {
                         elem: spec.elem.clone(),
                         size: Box::new(child()),

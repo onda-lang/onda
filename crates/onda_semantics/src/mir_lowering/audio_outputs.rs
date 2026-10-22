@@ -15,7 +15,7 @@ impl FunctionLowerer<'_> {
         let globals = self.runtime_globals.ok_or_else(|| {
             self.error(
                 "audio output initialization requires runtime interface metadata",
-                location,
+                location.clone(),
             )
         })?;
         debug_assert!(self.audio_output_caches.is_empty());
@@ -30,7 +30,7 @@ impl FunctionLowerer<'_> {
         scalar_outputs.sort_by_key(|(_, output, _)| output.raw());
         for (name, output, ty) in scalar_outputs {
             let cache = self.new_local(Some(format!("$output.{name}.current")), ty);
-            self.assign_value(block, cache, zero_value(ty), location);
+            self.assign_value(block, cache, zero_value(ty), location.clone());
             self.audio_output_caches.insert(name, (cache, ty));
             self.audio_output_endpoint_caches
                 .insert(output, (cache, ty));
@@ -55,7 +55,7 @@ impl FunctionLowerer<'_> {
                         }],
                     },
                     zero_value(ty),
-                    location,
+                    location.clone(),
                 );
             }
             self.audio_output_array_caches
@@ -73,7 +73,7 @@ impl FunctionLowerer<'_> {
         let globals = self.runtime_globals.ok_or_else(|| {
             self.error(
                 "audio output commit requires runtime interface metadata",
-                location,
+                location.clone(),
             )
         })?;
         let mut scalar_outputs = globals
@@ -94,7 +94,7 @@ impl FunctionLowerer<'_> {
                     frame,
                     value: Value::Local(cache),
                 },
-                location,
+                location.clone(),
             );
         }
 
@@ -115,7 +115,7 @@ impl FunctionLowerer<'_> {
                             bounds: BoundsMode::Unchecked,
                         }],
                     },
-                    location,
+                    location.clone(),
                 );
                 self.push_statement(
                     block,
@@ -126,7 +126,7 @@ impl FunctionLowerer<'_> {
                         frame,
                         value,
                     },
-                    location,
+                    location.clone(),
                 );
             }
         }

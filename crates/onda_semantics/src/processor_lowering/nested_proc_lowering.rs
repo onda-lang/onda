@@ -13,7 +13,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
     errors: &mut Vec<Diagnostic>,
 ) {
     let expr_loc = expr.loc();
-    let expr_diag = DiagCtx::new(expr_loc);
+    let expr_diag = DiagCtx::new(&expr_loc);
     match expr {
         Expr::Index { index, .. } => rewrite_nested_proc_calls_in_expr(
             index,
@@ -325,7 +325,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         &proc_name,
                         &field_name,
                         &array_base,
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) {
                         ProcParamFieldRead::Readable(param) => {
@@ -344,7 +344,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         &api,
                         &field_name,
                         &array_base,
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) else {
                         return;
@@ -379,7 +379,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         &proc_name,
                         &field_name,
                         &var,
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) {
                         ProcParamFieldRead::Readable(param) => {
@@ -393,7 +393,7 @@ pub(super) fn rewrite_nested_proc_calls_in_expr(
                         api,
                         &field_name,
                         var.as_str(),
-                        expr_diag,
+                        expr_diag.clone(),
                         errors,
                     ) else {
                         return;

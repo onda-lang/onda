@@ -959,9 +959,9 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            return Err(Diagnostic::internal(
+            Err(Diagnostic::internal(
                 "ORC backend is required but not enabled at build time",
-            ));
+            ))
         }
     }
 
@@ -1342,7 +1342,7 @@ impl RuntimeState {
         allocator: Option<RuntimeAllocator>,
     ) -> Result<Self, Diagnostic> {
         Ok(Self {
-            state_words: RuntimeBuffer::try_from_slice_in(self.state_words.as_slice(), allocator)?,
+            state_words: self.state_words.try_clone_in(allocator)?,
             state_size_bytes: self.state_size_bytes,
             event_workspace: RuntimeBuffer::try_from_elem_in(
                 self.event_workspace.len(),

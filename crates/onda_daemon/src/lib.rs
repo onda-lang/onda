@@ -1,4 +1,5 @@
 mod run_session;
+pub use onda_mir::ScalarValue as RunParamValue;
 
 /// Default host-owned, block-level linear ramp duration for continuous float controls.
 pub const INTERACTIVE_PARAM_SMOOTHING_SECONDS: f64 = 0.03;
@@ -8,8 +9,8 @@ pub use run_session::{
     InitialBufferBinding, PreparedRunBuffer, RetiredRunBuffer, RunBufferChannels, RunBufferInfo,
     RunBufferWaveform, RunBuildError, RunDelegateBatch, RunDelegateInfo, RunDelegateOccurrence,
     RunDelegateParamInfo, RunDelegateValue, RunEventInfo, RunEventParamInfo, RunEventValue,
-    RunOptions, RunParamArrayElement, RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue,
-    RunScheduledEvent, RunSession,
+    RunOptions, RunOutputCounts, RunOutputDecoder, RunPackedOutput, RunParamArrayElement,
+    RunParamInfo, RunPrintBatch, RunPrintEntry, RunPrintValue, RunScheduledEvent, RunSession,
 };
 
 use std::collections::HashMap;
@@ -183,7 +184,11 @@ impl DaemonSession {
     }
 
     pub fn run_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut RunSession> {
-        let normalized = normalize_session_path(path.as_ref());
+        let path = path.as_ref();
+        if self.runs.contains_key(path) {
+            return self.runs.get_mut(path);
+        }
+        let normalized = normalize_session_path(path);
         self.runs.get_mut(&normalized)
     }
 
@@ -374,7 +379,10 @@ mod tests {
         let param_info = session.run(&main).expect("active run").param_info();
         assert_eq!(param_info.len(), 1);
         assert_eq!(param_info[0].name, "gain");
-        assert_eq!(param_info[0].default, Some(0.25));
+        assert_eq!(
+            param_info[0].default.map(crate::RunParamValue::as_f64),
+            Some(0.25)
+        );
 
         let first = session
             .render_run_block(&main)
@@ -1114,7 +1122,9 @@ mod tests {
 
         assert!(params_reset[0][0] > first[0][0]);
         assert_eq!(
-            session.run(&main).expect("active run").param_info()[0].value,
+            session.run(&main).expect("active run").param_info()[0]
+                .value
+                .map(crate::RunParamValue::as_f64),
             Some(2.0)
         );
         fs::remove_dir_all(&dir).ok();

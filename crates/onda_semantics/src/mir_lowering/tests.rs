@@ -1652,7 +1652,7 @@ def combine(values: (f32, i32), bias: f32) -> f32:
   return values[0] + f32(values[1]) + bias
 
 sample:
-  out1 = combine((0.5, 1), 2.0)
+  out1 = combine((0.5, i32(in1)), 2.0)
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
@@ -1688,7 +1688,7 @@ def bump(value: i32) -> i32:
   return value
 
 sample:
-  out1 = f32(bump(1))
+  out1 = f32(bump(i32(in1)))
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let mut typed = analyze(parsed).expect("source should analyze");
@@ -1785,7 +1785,7 @@ def bump(values: (f32, i32)) -> f32:
   return values[0] + f32(values[1])
 
 sample:
-  out1 = bump((0.5, 1))
+  out1 = bump((0.5, i32(in1)))
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let mut typed = analyze(parsed).expect("source should analyze");
@@ -3136,7 +3136,7 @@ def forward(buf: buffer<f32>, index: i32):
   return touch(buf, index)
 
 sample:
-  out1 = forward(table, 0)
+  out1 = forward(table, i32(in1))
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
@@ -4000,7 +4000,7 @@ init:
   voices: Voice[2] = Voice()
 
 sample:
-  out1 = relay(voices, 1)
+  out1 = relay(voices, i32(in1))
 "#;
     let parsed = parse_program(source).expect("source should parse");
     let typed = analyze(parsed).expect("source should analyze");
@@ -4042,17 +4042,13 @@ sample:
         .find(|function| function.name.starts_with("relay"))
         .expect("missing relay function");
     for function in [leaf, relay] {
-        assert!(matches!(
-            mir.types[function.params[0].ty.index()],
-            MirType::Scalar(ScalarType::I32)
-        ));
         assert_eq!(
-            function.params[1].name,
+            function.params[0].name,
             runtime_proc_array_active_symbol("voices")
         );
-        assert_eq!(function.params[1].mode, onda_mir::PassingMode::Value);
+        assert_eq!(function.params[0].mode, onda_mir::PassingMode::Value);
         assert!(matches!(
-            mir.types[function.params[1].ty.index()],
+            mir.types[function.params[0].ty.index()],
             MirType::Slice {
                 element: ScalarType::Bool,
                 access: onda_mir::AccessMode::ReadWrite,

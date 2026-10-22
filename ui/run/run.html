@@ -581,7 +581,7 @@
       .param-layout-toggle {
         height: calc(2.2em + 2px);
         min-height: 0;
-        font-size: min(11px, calc((100cqi - var(--params-control-spacing)) / var(--params-control-em)));
+        font-size: 11px;
       }
 
       .params {
@@ -597,18 +597,14 @@
       }
 
       .params .section-actions {
-        /* Three scalable controls, their borders, and two gaps determine the fit. */
-        --params-control-em: 20.7;
-        --params-control-spacing: 14px;
-        container-type: inline-size;
         flex-wrap: nowrap;
         justify-content: end;
         gap: 4px;
       }
 
-      .params .section-actions:has(> .param-smoothing[hidden]) {
-        --params-control-em: 11.2;
-        --params-control-spacing: 8px;
+      @container (max-width: 24rem) {
+        .params > .params-toolbar { grid-template-columns: minmax(0, 1fr); }
+        .params .section-actions { flex-wrap: wrap; justify-content: start; }
       }
 
       :is(#reset-params, #reset-input-controls) {
@@ -651,7 +647,7 @@
         min-width: 0;
         align-items: center;
         gap: 0.25em;
-        padding: 0 .5em;
+        padding: 0 .25em;
         border: 1px solid var(--border);
         border-radius: var(--radius-control);
         background: var(--field-bg);
@@ -3719,6 +3715,8 @@
         }
 
         function bindParamNumber(param, input, setValue) {
+          const exactInteger = param.type === "i64"
+            && !(Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax));
           let edited = false;
           input.addEventListener("focus", () => {
             edited = false;
@@ -3731,8 +3729,9 @@
           const commitDraft = () => {
             if (input.readOnly || !edited) return;
             edited = false;
-            if (input.value !== "" && Number.isFinite(numberInputValue(input))) {
-              setValue(numberInputValue(input), true);
+            const value = exactInteger ? parseI64(input.value) : numberInputValue(input);
+            if (input.value !== "" && (exactInteger ? value !== null : Number.isFinite(value))) {
+              setValue(value, true);
               commitParamMessage(param.name, param.value);
             }
           };
@@ -3748,7 +3747,7 @@
             speed: scalarDragSpeedForParam(param),
             dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
               && param.rangeMin < param.rangeMax ? paramNumberDragRange(param) : null,
-            readValue: () => Number(param.value),
+            readValue: () => exactInteger ? BigInt(param.value) : Number(param.value),
             updateValue(value, commit) {
               setValue(value, true);
               if (commit) {
@@ -3883,7 +3882,9 @@
               const currentValue = param.value;
               const number = document.createElement("input");
               number.className = "param-number";
-              number.type = "number";
+              const exactInteger = param.type === "i64" && !hasRange;
+              number.type = exactInteger ? "text" : "number";
+              if (exactInteger) number.inputMode = "numeric";
               number.step = step;
               number.value = formatNumberForInput(currentValue, stepValue);
               number.disabled = !editable;
@@ -3920,6 +3921,13 @@
                 controls.prepend(rangeControl.control);
               }
               const sync = (nextValue, edit = false) => {
+                if (exactInteger) {
+                  const value = parseI64(nextValue);
+                  if (value === null) return;
+                  param.value = value;
+                  number.value = value;
+                  return;
+                }
                 const parsed = Number(nextValue);
                 if (!Number.isFinite(parsed)) return;
                 // Host values retain exact defaults, including i64 text and
@@ -3944,7 +3952,7 @@
       const parameterSection = createParameterSection(paramsNode, "params", "setParam");
       const inputControlSection = createParameterSection(inputControlsNode, "inputControls", "setInputControl");
 
-      function parseEventI64(value) {
+      function parseI64(value) {
         if (typeof value === "number" && !Number.isSafeInteger(value)) return null;
         const text = String(value ?? "0");
         if (!/^-?[0-9]+$/.test(text)) return null;
@@ -3954,7 +3962,7 @@
 
       function eventScalarValue(type, value) {
         if (type === "bool") return booleanScalarValue(value);
-        if (type === "i64") return parseEventI64(value) ?? "0";
+        if (type === "i64") return parseI64(value) ?? "0";
         const number = Number(value);
         return Number.isFinite(number) ? number : 0;
       }
@@ -4073,7 +4081,7 @@
         input.value = displayValue();
         input.disabled = !state.connected;
         const parsedValue = () => {
-          if (type === "i64") return parseEventI64(input.value);
+          if (type === "i64") return parseI64(input.value);
           const nextValue = numberInputValue(input);
           if (!Number.isFinite(nextValue)) return null;
           return integer ? clamp(Math.round(nextValue), Number(input.min), Number(input.max)) : nextValue;
