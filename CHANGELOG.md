@@ -5,6 +5,31 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.8.39]
+
+### Added
+
+- Faster native DSP math through automatic SLEEF vectorization on supported x64 and
+  ARM64 targets.
+- Independent native floating-point permissions through `--fp-reassociate`, `--fp-contract`,
+  and `--fp-no-signed-zeros`.
+
+### Changed
+
+- Speed up compilation of large programs and supported WebAssembly DSP loops.
+- Reduce memory use for real FFTs and offline WAV rendering.
+- Improve sample-player position precision for long buffers; `play` and `seek` now accept
+  f64 frame positions independently of the sample type.
+
+### Fixed
+
+- Preserve exact i64 parameter values in run controls, CLI settings, and daemon requests.
+- Preserve project compile-constant defaults when editing, sharing, and exporting in the
+  browser playground.
+- Prevent lost control requests during socket timeouts and missing print/delegate output
+  during long Web Audio sessions. Report AudioWorklet failures to pending API requests.
+- Correct `std::math::sign` for signed integer minima and infinities.
+
 ## [0.8.38]
 
 ### Fixed
@@ -1334,6 +1359,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.8.39]: https://github.com/onda-lang/onda/compare/0.8.38...0.8.39
 [0.8.38]: https://github.com/onda-lang/onda/compare/0.8.37...0.8.38
 [0.8.37]: https://github.com/onda-lang/onda/compare/0.8.36...0.8.37
 [0.8.36]: https://github.com/onda-lang/onda/compare/0.8.35...0.8.36
