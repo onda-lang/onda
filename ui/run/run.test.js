@@ -162,18 +162,27 @@ async function testBrowserLayouts(t, coarsePointer) {
   };
   browser.on("error", browserFailed);
   browser.on("exit", code => browserFailed(new Error(`Firefox exited: ${code}\n${browserOutput}`)));
-  const [result, endpoint] = await Promise.race([
-    Promise.all([report.promise, debugEndpoint.promise]),
-    new Promise((_, reject) => t.signal.addEventListener("abort", () =>
-      reject(new Error("Browser test timed out")), { once: true })),
-  ]);
-  assert.equal(result.error, undefined, result.error);
-  assert.ok(result.results.length >= 20);
-  for (const message of result.results) t.diagnostic(message);
-  await testNumberKeyboardEditing(t, endpoint, `http://127.0.0.1:${server.address().port}/keyboard`);
+  // Layout and trusted keyboard coverage each exercise a full scenario matrix.
+  // Give each phase its own deadline and failure report on slower CI runners.
+  let endpoint;
+  await t.test("browser layout and pointer interactions", { timeout: 60_000 }, async t => {
+    const [result, debugUrl] = await Promise.race([
+      Promise.all([report.promise, debugEndpoint.promise]),
+      new Promise((_, reject) => t.signal.addEventListener("abort", () =>
+        reject(new Error("Browser layout tests timed out")), { once: true })),
+    ]);
+    assert.equal(result.error, undefined, result.error);
+    assert.ok(result.results.length >= 20);
+    for (const message of result.results) t.diagnostic(message);
+    endpoint = debugUrl;
+  });
+  if (endpoint) {
+    await t.test("trusted keyboard editing", { timeout: 60_000 }, t =>
+      testNumberKeyboardEditing(t, endpoint, `http://127.0.0.1:${server.address().port}/keyboard`));
+  }
 }
 
 for (const coarsePointer of [false, true]) {
   test(`run view and playground preserve editing and responsive layouts (${coarsePointer ? "touch" : "mouse"})`,
-    { timeout: 30_000 }, t => testBrowserLayouts(t, coarsePointer));
+    { timeout: 120_000 }, t => testBrowserLayouts(t, coarsePointer));
 }
