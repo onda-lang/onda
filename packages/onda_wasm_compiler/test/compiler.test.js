@@ -1084,3 +1084,42 @@ test("terminates a worker whose frontend initialization fails", async () => {
   assert.equal(worker.terminated, true);
   assert.equal(worker.listeners.size, 0);
 });
+
+test("workspace project constants survive archive import, edits, sharing, and export", async () => {
+  const { createProjectArchive, decodeProjectArchive } = await import("../../../ui/playground/project-archive.js");
+  const { encodeSharedSession, decodeSharedSession, sharedSessionHash } = await import("../../../ui/playground/share.js");
+  const compiler = await createCompiler();
+  try {
+    const constants = { Channels: 2, Seed: "9007199254740993", Weights: [0.25, 0.75] };
+    const source = `config const Channels: i32 = 1
+config const Seed: i64 = 1
+config const Weights: f32[2] = [1.0, 0.0]
+outs Channels
+sample:
+  out1 = Weights[0] + f32(Seed - 9007199254740992)
+`;
+    const files = new Map([
+      ["project.ondaproject", new TextEncoder().encode(JSON.stringify({ entry: "main.onda", constants }))],
+      ["main.onda", new TextEncoder().encode(source)],
+    ]);
+    const image = await compiler.loadProjectFiles(files);
+    const imported = await decodeProjectArchive(await createProjectArchive(image.bytes, compiler), compiler);
+    assert.deepEqual(imported.project.constants, constants);
+    imported.project.sources[imported.project.entry] += "# edited\n";
+    const shared = await decodeSharedSession(sharedSessionHash(await encodeSharedSession(imported.project)));
+    const compiled = await compiler.compileWorkspace(shared);
+    assert.equal(compiled.artifact.metadata.metadata.outputs.length, 2);
+    const descriptors = await compiler.inspectWorkspaceConstants(shared);
+    assert.equal(descriptors.find(item => item.name === "Seed").value, 9007199254740993n);
+    assert.deepEqual([...descriptors.find(item => item.name === "Weights").value], [0.25, 0.75]);
+    const overridden = await compiler.compileWorkspace(shared, { constants: { Channels: 3 } });
+    assert.equal(overridden.artifact.metadata.metadata.outputs.length, 3);
+    const exported = await compiler.createProjectImage(compiled.sourceGraph, new Map(), shared.constants);
+    const reimported = await decodeProjectArchive(await createProjectArchive(exported.bytes, compiler), compiler);
+    assert.deepEqual(reimported.project.constants, constants);
+    assert.match(reimported.project.sources[reimported.project.entry], /# edited/);
+    assert.equal((await compiler.compileProjectImage(exported.bytes)).artifact.metadata.metadata.outputs.length, 2);
+  } finally {
+    await compiler.dispose();
+  }
+});

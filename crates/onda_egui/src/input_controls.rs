@@ -131,7 +131,9 @@ fn render_control_value(
         label: control.get("label").and_then(Value::as_str).unwrap_or(name),
         unit: control.get("unit").and_then(Value::as_str),
         ty,
-        default: control.get("default").and_then(Value::as_f64),
+        default: control
+            .get("default")
+            .map(|value| crate::NumberValue::from_json(ty, Some(value))),
         domain: prepared_param_domain(control),
     };
     let value = control

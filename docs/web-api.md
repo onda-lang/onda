@@ -76,7 +76,7 @@ The returned instance provides:
 - `compileSource(source, options?)` and `inspectSourceConstants(source, options?)`.
 - `compileWorkspace(workspace, options?)` and `inspectWorkspaceConstants(workspace, options?)`.
 - `compileProjectImage(bytes, options?)` and `inspectProjectImageConstants(bytes, options?)`.
-- `createProjectImage(sourceGraph, buffers?)`, `inspectProjectImage(bytes)`,
+- `createProjectImage(sourceGraph, buffers?, constants?)`, `inspectProjectImage(bytes)`,
   `loadProjectFiles(files, projectFilePath?)`, and `materializeProjectImage(bytes, names?)`.
 - `encodeBufferAsset(binding)`, `decodeBufferAsset(bytes)`, and `decodeBufferFile(bytes, path?)`.
 - `projectCapabilities()` for supported image, buffer, and standard-library versions.
@@ -84,6 +84,9 @@ The returned instance provides:
 - `dispose()`, an idempotent terminal release of compiler and worker resources.
 
 Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
+Workspaces may carry `constants` in project-manifest form (numbers, booleans, decimal strings for
+`i64`, and primitive arrays). These are project defaults; explicit `options.constants` take
+precedence. Pass the same defaults to `createProjectImage` when exporting an edited workspace.
 The sample rate defaults to 48000 Hz and the block size to 512 frames.
 Code generation can select optimization level `0..4`, shrink level `0..2`, strict or fast math,
 SIMD, loop-containing inlining, and optional WAT emission. A successful compilation returns an
@@ -431,6 +434,7 @@ OndaProcessorInitMode
 OndaProcessorMetadata
 OndaProjectBufferInfo
 OndaProjectCapabilities
+OndaProjectConstant
 OndaProjectImageInfo
 OndaProjectMaterialization
 OndaResolvedCompileConstValue

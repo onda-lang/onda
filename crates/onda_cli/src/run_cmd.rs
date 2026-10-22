@@ -10,8 +10,7 @@ use onda_daemon::{
 };
 use onda_project::ProjectLimits;
 use onda_run::{
-    append_interleaved_block, format_run_param_info, play_run_realtime, PlaybackLaunch,
-    ProjectBufferBinding, RunHostOptions,
+    format_run_param_info, play_run_realtime, PlaybackLaunch, ProjectBufferBinding, RunHostOptions,
 };
 use onda_semantics::AnalysisOptions;
 
@@ -258,7 +257,7 @@ struct DaemonRenderRequest<'a> {
     opt_level: TargetOptLevel,
     fast_math: bool,
     show_meta: bool,
-    param_sets: &'a [(String, f64)],
+    param_sets: &'a [(String, onda_daemon::RunParamValue)],
     buffer_bindings: &'a [(String, PathBuf)],
     project_buffer_bindings: &'a [(String, onda_project::BufferAsset, Option<PathBuf>)],
     compile_inputs: &'a onda_semantics::CompileInputs,
@@ -331,41 +330,38 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         session
             .run_mut(input)
             .expect("run should be active while applying params")
-            .set_param_f64(name, *value)
+            .set_param(name, *value)
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
-    }
-
-    let full_blocks = total_frames / block_samples;
-    let tail_frames = total_frames % block_samples;
-    let mut rendered = Vec::<f32>::new();
-
-    for _ in 0..full_blocks {
-        let execution = session.render_run_block(input);
-        write_run_prints(&mut session, input)?;
-        let block = execution
-            .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
-        append_interleaved_block(&mut rendered, &block);
-    }
-    if tail_frames > 0 {
-        let execution = session.render_run_block(input);
-        write_run_prints(&mut session, input)?;
-        let block = execution
-            .map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
-        let mut interleaved = Vec::<f32>::new();
-        append_interleaved_block(&mut interleaved, &block);
-        let channels = block.len().max(1);
-        rendered.extend_from_slice(&interleaved[..tail_frames * channels]);
     }
 
     let out_channels = session
         .run(input)
         .expect("run should remain active through render")
         .output_channel_count();
-    if out_channels == 0 {
-        return Err("daemon run requires at least one output channel".to_owned());
+    let block_len = block_samples
+        .checked_mul(out_channels)
+        .ok_or_else(|| "render block exceeds the supported sample count".to_owned())?;
+    let mut rendered = vec![0.0; block_len];
+    let mut writer = create_wav_writer(output, out_channels, sample_rate_hz)?;
+    let mut remaining = total_frames;
+    while remaining > 0 {
+        let execution = session
+            .run_mut(input)
+            .expect("active render session")
+            .render_block_interleaved(&mut rendered);
+        write_run_prints(&mut session, input)?;
+        execution.map_err(|diag| format_single_diagnostic("daemon run render failed", &diag))?;
+        let frames = remaining.min(block_samples);
+        for sample in &rendered[..frames * out_channels] {
+            writer
+                .write_sample(f32_to_i16(*sample))
+                .map_err(|err| format!("failed to write wav sample: {err}"))?;
+        }
+        remaining -= frames;
     }
-
-    write_wav_interleaved_i16(output, out_channels, sample_rate_hz, &rendered)?;
+    writer
+        .finalize()
+        .map_err(|err| format!("failed to finalize wav '{}': {err}", output.display()))?;
     println!(
         "Wrote {} seconds of daemon-run audio to {}",
         duration.as_secs_f64(),
@@ -420,23 +416,14 @@ fn write_print_batch(batch: &RunPrintBatch) -> Result<(), String> {
     Ok(())
 }
 
-fn write_wav_interleaved_i16(
+fn create_wav_writer(
     path: &Path,
     channels: usize,
     sample_rate_hz: u32,
-    samples: &[f32],
-) -> Result<(), String> {
+) -> Result<hound::WavWriter<std::io::BufWriter<fs::File>>, String> {
     if channels == 0 {
         return Err("cannot write wav with zero channels".to_owned());
     }
-    if !samples.len().is_multiple_of(channels) {
-        return Err(format!(
-            "sample buffer length {} is not divisible by channel count {}",
-            samples.len(),
-            channels
-        ));
-    }
-
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|err| {
@@ -458,17 +445,8 @@ fn write_wav_interleaved_i16(
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|err| format!("failed to create wav '{}': {err}", path.display()))?;
-    for sample in samples {
-        writer
-            .write_sample(f32_to_i16(*sample))
-            .map_err(|err| format!("failed to write wav sample: {err}"))?;
-    }
-    writer
-        .finalize()
-        .map_err(|err| format!("failed to finalize wav '{}': {err}", path.display()))?;
-    Ok(())
+    hound::WavWriter::create(path, spec)
+        .map_err(|err| format!("failed to create wav '{}': {err}", path.display()))
 }
 
 fn f32_to_i16(sample: f32) -> i16 {

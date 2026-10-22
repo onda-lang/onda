@@ -144,7 +144,7 @@ struct DiagnosticJobResult {
     completion_index_snapshot: Option<CompletionIndexSnapshot>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiagnosticDelay {
     Immediate,
     Debounced,
@@ -178,6 +178,7 @@ struct LspCore {
     background_diagnostic_tx: mpsc::Sender<DiagnosticJob>,
     pending_diagnostics: HashMap<PathBuf, ScheduledDiagnostic>,
     diagnostic_generations: HashMap<PathBuf, u64>,
+    active_diagnostics: HashMap<PathBuf, DiagnosticDelay>,
 }
 
 impl LspCore {
@@ -195,6 +196,7 @@ impl LspCore {
             background_diagnostic_tx,
             pending_diagnostics: HashMap::new(),
             diagnostic_generations: HashMap::new(),
+            active_diagnostics: HashMap::new(),
         }
     }
 
@@ -241,10 +243,19 @@ impl LspCore {
     fn next_diagnostic_timeout(&self) -> Option<Duration> {
         let due_at = self
             .pending_diagnostics
-            .values()
-            .map(|scheduled| scheduled.due_at)
+            .iter()
+            .filter(|(entry, scheduled)| self.diagnostic_lane_available(entry, scheduled.delay))
+            .map(|(_, scheduled)| scheduled.due_at)
             .min()?;
         Some(due_at.saturating_duration_since(Instant::now()))
+    }
+
+    fn diagnostic_lane_available(&self, entry: &Path, delay: DiagnosticDelay) -> bool {
+        !self.active_diagnostics.contains_key(entry)
+            && !self
+                .active_diagnostics
+                .values()
+                .any(|active| *active == delay)
     }
 
     fn drain_diagnostic_requests(&mut self) {
@@ -282,6 +293,14 @@ impl LspCore {
             .map(|(entry, scheduled)| (entry.clone(), scheduled.generation))
             .collect::<Vec<_>>();
         for (entry, generation) in due_entries {
+            let Some(scheduled) = self.pending_diagnostics.get(&entry) else {
+                continue;
+            };
+            // Keep one active job per worker. Later edits replace the pending
+            // generation, and source text is copied only when a worker is free.
+            if !self.diagnostic_lane_available(&entry, scheduled.delay) {
+                continue;
+            }
             let Some(scheduled) = self.pending_diagnostics.remove(&entry) else {
                 continue;
             };
@@ -293,6 +312,7 @@ impl LspCore {
             if tx.send(job).is_err() {
                 break;
             }
+            self.active_diagnostics.insert(entry, scheduled.delay);
         }
     }
 
@@ -301,6 +321,7 @@ impl LspCore {
         result: DiagnosticJobResult,
         writer: &mut impl Write,
     ) -> Result<(), String> {
+        self.active_diagnostics.remove(&result.entry_path);
         let current_generation = self
             .diagnostic_generations
             .get(&result.entry_path)

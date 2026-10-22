@@ -80,7 +80,7 @@ def clamp<T>(x: T, lo: T, hi: T) -> T:
 def lerp<T>(a: T, b: T, t: T) -> T:
 def inverse_lerp(a, b, x):
 def map(in_lo, in_hi, out_lo, out_hi, x):
-def sign(x):
+def sign<T>(x: T) -> T:
 def fract(x):
 def wrap(x, lo, hi):
 def cubic_interp(y0, y1, y2, y3, t):

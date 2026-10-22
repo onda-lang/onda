@@ -352,7 +352,12 @@ fn run_project_hashes_follow_loaded_constants_and_assets_after_reverted_edits() 
             .map(|(name, asset, path)| InitialBufferBinding::from_asset(name, asset, path)),
     )
     .unwrap();
-    assert_eq!(run.param_info()[0].default, Some(2.0));
+    assert_eq!(
+        run.param_info()[0]
+            .default
+            .map(onda_daemon::RunParamValue::as_f64),
+        Some(2.0)
+    );
     assert_eq!(run.render_block().unwrap(), vec![vec![4.0]]);
     let graph = RunSourceGraph::from_compiled_sources(
         run.source_manifest(),
@@ -1299,7 +1304,10 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             assert!(control_json);
             assert!(!report_sources);
             assert!(fast_math);
-            assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            assert_eq!(
+                param_sets,
+                vec![("gain".to_owned(), onda_daemon::RunParamValue::F64(0.5))]
+            );
             assert_eq!(
                 buffer_bindings,
                 vec![("table".to_owned(), PathBuf::from("samples.wav"))]
@@ -1578,6 +1586,57 @@ fn run_render_rounds_fractional_durations_to_audio_frames() {
 }
 
 #[test]
+fn run_render_accepts_exact_i64_and_large_float_parameter_overrides() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "onda-param-precision-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("main.onda");
+    let output = root.join("output.wav");
+    std::fs::write(&source, "params:\n  integer: i64 = 0\n  floating: f64 = 0\nsample:\n  out1 = f32(integer - 9007199254740992) * 0.25\n  out2 = f32(floating / 10000000000000000000.0) * 0.5\n").unwrap();
+    let command = parse_args(
+        [
+            "onda",
+            "run",
+            "render",
+            source.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--dur",
+            "0.001",
+            "--set",
+            "integer=9007199254740993",
+            "--set",
+            "floating=10000000000000000000",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    )
+    .unwrap();
+    let Command::Run(command) = command else {
+        panic!("expected run command")
+    };
+    run_run(command).unwrap();
+    let samples = hound::WavReader::open(output)
+        .unwrap()
+        .samples::<i16>()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!samples.is_empty());
+    assert!(samples
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|frame| *frame == [8192, 16384]));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn parse_run_play_accepts_forever() {
     let cmd = parse_args(
         ["onda", "run", "play", "x.onda", "--forever"]
@@ -1626,7 +1685,10 @@ fn parse_run_render_accepts_meta_and_param_sets() {
         }) => {
             assert!(show_meta);
             assert!(fast_math);
-            assert_eq!(param_sets, vec![("gain".to_owned(), 0.5)]);
+            assert_eq!(
+                param_sets,
+                vec![("gain".to_owned(), onda_daemon::RunParamValue::F64(0.5))]
+            );
             assert_eq!(
                 buffer_bindings,
                 vec![("table".to_owned(), PathBuf::from("samples.wav"))]

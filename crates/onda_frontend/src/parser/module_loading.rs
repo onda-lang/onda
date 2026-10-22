@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::path::Component;
 
 mod namespaces;
+#[cfg(test)]
+mod traversal_tests;
 pub use namespaces::parse_namespace_ref_text_ast;
 use namespaces::*;
 
@@ -28,7 +30,6 @@ struct LoadState {
     failed_reads: BTreeMap<PathBuf, Option<Vec<u8>>>,
     resolutions: Vec<SourceResolution>,
     resolution_set: HashSet<SourceResolution>,
-    stack: Vec<PathBuf>,
     builtin_stack: Vec<String>,
     top_level_const_names: HashSet<String>,
     has_main_entry: bool,
@@ -886,6 +887,12 @@ fn parse_program_item(
     Ok(())
 }
 
+struct SourceFrame {
+    canonical: PathBuf,
+    import_module_mode: bool,
+    items: std::vec::IntoIter<TopLevelItem>,
+}
+
 fn load_program_blocks_from_file(
     file_path: &Path,
     import_module_mode: bool,
@@ -893,60 +900,30 @@ fn load_program_blocks_from_file(
     trace: &[String],
     loader: &SourceLoader,
 ) -> Result<Vec<Block>, Vec<Diagnostic>> {
-    let canonical = loader.resolve(file_path).map_err(|err| {
-        annotate_diagnostics_with_file(
-            vec![Diagnostic::syntax(
-                format!("failed to resolve '{}': {err}", display_path(file_path)),
-                0,
-                0,
-            )],
-            file_path,
-            0,
-        )
-    })?;
-    state.record_source_file(&canonical);
-    if let Some(pos) = state.stack.iter().position(|p| p == &canonical) {
-        let mut chain = state.stack[pos..]
-            .iter()
-            .map(|p| display_path(p))
-            .collect::<Vec<_>>();
-        chain.push(display_path(&canonical));
-        return Err(annotate_diagnostics_with_file(
-            vec![Diagnostic::syntax(
-                format!("circular include/import detected: {}", chain.join(" -> ")),
-                0,
-                0,
-            )],
-            &canonical,
-            0,
-        ));
-    }
-    state.stack.push(canonical.clone());
-
+    let base_trace_len = trace.len();
+    let mut trace = trace.to_vec();
+    let mut active = HashSet::new();
+    let mut frames = vec![open_source_frame(
+        file_path,
+        import_module_mode,
+        state,
+        loader,
+        &mut active,
+        &[],
+    )?];
     let result = (|| {
-        let source = loader.read(&canonical).map_err(|err| {
-            state.failed_reads.insert(canonical.clone(), err.contents);
-            annotate_diagnostics_with_file(
-                vec![Diagnostic::syntax(
-                    format!(
-                        "failed to read '{}': {}",
-                        display_path(&canonical),
-                        err.message
-                    ),
-                    0,
-                    0,
-                )],
-                &canonical,
-                0,
-            )
-        })?;
-        state.record_source_document(&canonical, source.clone());
-        let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
-            .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
-        let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
-
-        let mut blocks = Vec::<Block>::new();
-        for item in items {
+        let mut blocks = Vec::new();
+        while let Some(frame) = frames.last_mut() {
+            let Some(item) = frame.items.next() else {
+                active.remove(&frame.canonical);
+                frames.pop();
+                if !frames.is_empty() {
+                    trace.pop();
+                }
+                continue;
+            };
+            let canonical = frame.canonical.clone();
+            let import_module_mode = frame.import_module_mode;
             match item {
                 TopLevelItem::Code {
                     text,
@@ -960,7 +937,7 @@ fn load_program_blocks_from_file(
                         &text,
                         &canonical,
                         start_line.saturating_sub(1),
-                        trace,
+                        &trace,
                         &source_line_map,
                         !import_module_mode,
                         state,
@@ -972,6 +949,9 @@ fn load_program_blocks_from_file(
                             start_line.saturating_sub(1),
                         )
                     })?;
+                    if import_module_mode {
+                        validate_imported_blocks(&parsed.blocks, &canonical)?;
+                    }
                     blocks.append(&mut parsed.blocks);
                 }
                 TopLevelItem::Include { path, line } => {
@@ -1006,17 +986,15 @@ fn load_program_blocks_from_file(
                     )?;
                     let trace_entry =
                         format!("include '{path}' at {}:{line}", display_path(&canonical));
-                    let mut nested_trace = trace.to_vec();
-                    nested_trace.push(trace_entry.clone());
-                    let mut included = load_program_blocks_from_file(
+                    trace.push(trace_entry);
+                    frames.push(open_source_frame(
                         &include_path,
                         import_module_mode,
                         state,
-                        &nested_trace,
                         loader,
-                    )
-                    .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
-                    blocks.append(&mut included);
+                        &mut active,
+                        &frames,
+                    )?);
                 }
                 TopLevelItem::Import { module, line } => {
                     if is_builtin_std_module_path(&module) {
@@ -1026,11 +1004,10 @@ fn load_program_blocks_from_file(
                         state.import_once_builtin.insert(module.clone());
                         let trace_entry =
                             format!("import '{module}' at {}:{line}", display_path(&canonical));
-                        let mut nested_trace = trace.to_vec();
-                        nested_trace.push(trace_entry.clone());
+                        trace.push(trace_entry);
                         let mut imported =
-                            load_builtin_module_blocks(&module, true, state, &nested_trace)
-                                .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
+                            load_builtin_module_blocks(&module, true, state, &trace)?;
+                        trace.pop();
                         blocks.append(&mut imported);
                         continue;
                     }
@@ -1069,66 +1046,135 @@ fn load_program_blocks_from_file(
                     state.import_once.insert(import_path.clone());
                     let trace_entry =
                         format!("import '{module}' at {}:{line}", display_path(&canonical));
-                    let mut nested_trace = trace.to_vec();
-                    nested_trace.push(trace_entry.clone());
-                    let mut imported = load_program_blocks_from_file(
+                    trace.push(trace_entry);
+                    frames.push(open_source_frame(
                         &import_path,
                         true,
                         state,
-                        &nested_trace,
                         loader,
-                    )
-                    .map_err(|diags| append_diagnostics_trace(diags, trace_entry))?;
-                    blocks.append(&mut imported);
+                        &mut active,
+                        &frames,
+                    )?);
                 }
             }
         }
+        Ok(blocks)
+    })();
+    result.map_err(|mut diagnostics| {
+        for entry in trace.into_iter().skip(base_trace_len).rev() {
+            diagnostics = append_diagnostics_trace(diagnostics, entry);
+        }
+        diagnostics
+    })
+}
 
-        if import_module_mode {
-            if let Some(decl) = blocks.iter().find_map(|block| match block {
-                Block::Const(decl) if decl.configurable => Some(decl),
-                _ => None,
-            }) {
-                return Err(annotate_diagnostics_with_file(
-                    vec![Diagnostic::semantic_span(
-                        "configuration constants are not allowed in imported declaration modules",
-                        decl.loc.as_ref(),
-                    )],
-                    &canonical,
-                    0,
-                ));
-            }
-            for block in &blocks {
-                if !matches!(
-                    block,
-                    Block::Const(_)
-                        | Block::Struct(_)
-                        | Block::Def(_)
-                        | Block::Proc(_)
-                        | Block::Namespace(_)
-                        | Block::NamespaceAlias(_)
-                        | Block::Use(_)
-                ) {
-                    return Err(annotate_diagnostics_with_file(
+fn open_source_frame(
+    file_path: &Path,
+    import_module_mode: bool,
+    state: &mut LoadState,
+    loader: &SourceLoader,
+    active: &mut HashSet<PathBuf>,
+    frames: &[SourceFrame],
+) -> Result<SourceFrame, Vec<Diagnostic>> {
+    let canonical = loader.resolve(file_path).map_err(|err| {
+        annotate_diagnostics_with_file(
+            vec![Diagnostic::syntax(
+                format!("failed to resolve '{}': {err}", display_path(file_path)),
+                0,
+                0,
+            )],
+            file_path,
+            0,
+        )
+    })?;
+    state.record_source_file(&canonical);
+    if !active.insert(canonical.clone()) {
+        let start = frames
+            .iter()
+            .position(|frame| frame.canonical == canonical)
+            .unwrap_or(0);
+        let mut chain = frames[start..]
+            .iter()
+            .map(|frame| display_path(&frame.canonical))
+            .collect::<Vec<_>>();
+        chain.push(display_path(&canonical));
+        return Err(annotate_diagnostics_with_file(
+            vec![Diagnostic::syntax(
+                format!("circular include/import detected: {}", chain.join(" -> ")),
+                0,
+                0,
+            )],
+            &canonical,
+            0,
+        ));
+    }
+    let source = loader.read(&canonical).map_err(|err| {
+        state.failed_reads.insert(canonical.clone(), err.contents);
+        annotate_diagnostics_with_file(
+            vec![Diagnostic::syntax(
+                format!(
+                    "failed to read '{}': {}",
+                    display_path(&canonical),
+                    err.message
+                ),
+                0,
+                0,
+            )],
+            &canonical,
+            0,
+        )
+    })?;
+    state.record_source_document(&canonical, source.clone());
+    let (preprocessed, preprocessed_line_map) = preprocess_indentation_blocks(&source)
+        .map_err(|diags| annotate_diagnostics_with_file(diags, &canonical, 0))?;
+    let items = split_top_level_items(&preprocessed, &preprocessed_line_map, &canonical)?;
+
+    Ok(SourceFrame {
+        canonical,
+        import_module_mode,
+        items: items.into_iter(),
+    })
+}
+
+fn validate_imported_blocks(blocks: &[Block], canonical: &Path) -> Result<(), Vec<Diagnostic>> {
+    if let Some(decl) = blocks.iter().find_map(|block| match block {
+        Block::Const(decl) if decl.configurable => Some(decl),
+        _ => None,
+    }) {
+        return Err(annotate_diagnostics_with_file(
+            vec![Diagnostic::semantic_span(
+                "configuration constants are not allowed in imported declaration modules",
+                decl.loc.as_ref(),
+            )],
+            canonical,
+            0,
+        ));
+    }
+    for block in blocks {
+        if !matches!(
+            block,
+            Block::Const(_)
+                | Block::Struct(_)
+                | Block::Def(_)
+                | Block::Proc(_)
+                | Block::Namespace(_)
+                | Block::NamespaceAlias(_)
+                | Block::Use(_)
+        ) {
+            return Err(annotate_diagnostics_with_file(
                         vec![Diagnostic::semantic_span(
                             format!(
                                 "imported file '{}' can only contain const/struct/def/proc/namespace/use declarations",
-                                display_path(&canonical)
+                                display_path(canonical)
                             ),
                             block.loc(),
                         )],
-                        &canonical,
+                        canonical,
                         0,
                     ));
-                }
-            }
         }
-
-        Ok(blocks)
-    })();
-
-    state.stack.pop();
-    result
+    }
+    Ok(())
 }
 
 fn normalize_overlay_paths(overlays: &HashMap<PathBuf, String>) -> HashMap<PathBuf, String> {

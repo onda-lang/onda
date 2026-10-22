@@ -12,6 +12,7 @@ use crate::{
 
 mod bounds_proofs;
 mod cse;
+mod dead_values;
 pub(crate) mod parameter_pruning;
 mod state_promotion;
 
@@ -200,9 +201,8 @@ pub fn optimize(
     // monotonic cleanup fixed point.
     state_promotion::promote_process_scalar_state(&mut raw, &mut total);
     let effects = crate::analysis::analyze_effects(&raw);
-    let state_count = raw.state.len();
     if let Some(init) = raw.functions.get_mut(raw.entry_points.init.index()) {
-        guard_preinitialized_zero_stores(init, &mut raw.types, &effects, state_count);
+        guard_preinitialized_zero_stores(init, &mut raw.types, &effects, &raw.state);
     }
     // Every round is monotonic: it only replaces values, rvalues, or bounds
     // modes with stronger canonical forms, or removes branches, statements,
@@ -251,16 +251,17 @@ enum StateProjection {
     Index(u32),
 }
 
-/// Full initialization clears the complete physical state image before the
-/// MIR init body runs. Preserve-pinned initialization does not, so proven
+/// Full initialization clears non-pinned state before the MIR init body runs.
+/// Preserve-pinned initialization does not, so proven
 /// zero-before-write stores must remain available on that path. Guard those
 /// stores with `!init_all` instead of deleting them.
 fn guard_preinitialized_zero_stores(
     function: &mut Function,
     types: &mut Vec<crate::Type>,
     effects: &crate::analysis::EffectAnalysis,
-    state_count: usize,
+    state: &[crate::StateSlot],
 ) {
+    let state_count = state.len();
     let init_all = LocalId::new(function.locals.len() as u32);
     let mut dirty = Vec::<StateRegion>::new();
     let mut aliases = HashMap::<LocalId, StateRegion>::new();
@@ -282,9 +283,10 @@ fn guard_preinitialized_zero_stores(
                             },
                         );
                     } else if rvalue_is_all_bits_zero(value) {
-                        if !dirty
-                            .iter()
-                            .any(|dirty| state_regions_overlap(dirty, &region))
+                        if !state[region.state.index()].pinned
+                            && !dirty
+                                .iter()
+                                .any(|dirty| state_regions_overlap(dirty, &region))
                         {
                             guard = true;
                         } else {
@@ -306,7 +308,8 @@ fn guard_preinitialized_zero_stores(
                         state: region.state,
                         path: Vec::new(),
                     };
-                    if scalar_is_all_bits_zero(*value)
+                    if !state[region.state.index()].pinned
+                        && scalar_is_all_bits_zero(*value)
                         && !dirty
                             .iter()
                             .any(|dirty| state_regions_overlap(dirty, &whole_state))
@@ -1634,9 +1637,7 @@ fn fold_intrinsic(intrinsic: Intrinsic, args: &[ScalarValue]) -> Option<ScalarVa
 }
 
 fn remove_dead_pure_locals(types: &[crate::Type], function: &mut Function, stats: &mut PassStats) {
-    let mut reads = vec![0_u32; function.locals.len()];
-    collect_block_reads(&function.body, &mut reads);
-    remove_dead_assignments(types, &function.locals, &mut function.body, &reads, stats);
+    dead_values::remove(types, function, stats);
 
     let mut referenced = HashSet::new();
     collect_block_local_references(&function.body, &mut referenced);
@@ -1652,313 +1653,6 @@ fn remove_dead_pure_locals(types: &[crate::Type], function: &mut Function, stats
     }
     function.locals = locals;
     rewrite_block_locals(&mut function.body, &mapping);
-}
-
-fn remove_dead_assignments(
-    types: &[crate::Type],
-    locals: &[crate::Local],
-    block: &mut Block,
-    reads: &[u32],
-    stats: &mut PassStats,
-) {
-    for statement in &mut block.statements {
-        match &mut statement.kind {
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                remove_dead_assignments(types, locals, then_block, reads, stats);
-                remove_dead_assignments(types, locals, else_block, reads, stats);
-            }
-            StatementKind::Loop { body } => {
-                remove_dead_assignments(types, locals, body, reads, stats)
-            }
-            _ => {}
-        }
-    }
-    block.statements.retain(|statement| {
-        let StatementKind::Assign { destination, value } = &statement.kind else {
-            return true;
-        };
-        let Place {
-            base: PlaceBase::Local(local),
-            projections,
-        } = destination
-        else {
-            return true;
-        };
-        let remove = projections.is_empty()
-            && reads.get(local.index()) == Some(&0)
-            && rvalue_is_discardable(types, locals, value);
-        if remove {
-            stats.removed_dead_assignments = stats.removed_dead_assignments.saturating_add(1);
-        }
-        !remove
-    });
-}
-
-fn rvalue_is_discardable(types: &[crate::Type], locals: &[crate::Local], value: &Rvalue) -> bool {
-    !crate::analysis::rvalue_may_fail(types, locals, value)
-}
-
-fn collect_block_reads(block: &Block, reads: &mut [u32]) {
-    for statement in &block.statements {
-        collect_statement_reads(statement, reads);
-    }
-}
-
-fn mark_value_read(value: Value, reads: &mut [u32]) {
-    if let Value::Local(local) = value {
-        if let Some(reads) = reads.get_mut(local.index()) {
-            *reads = reads.saturating_add(1);
-        }
-    }
-}
-
-fn collect_place_index_reads(place: &Place, reads: &mut [u32]) {
-    for projection in &place.projections {
-        if let Projection::Index { index, .. } = projection {
-            mark_value_read(*index, reads);
-        }
-    }
-}
-
-fn collect_place_read(place: &Place, reads: &mut [u32]) {
-    collect_place_index_reads(place, reads);
-    if let PlaceBase::Local(local) = place.base {
-        if let Some(reads) = reads.get_mut(local.index()) {
-            *reads = reads.saturating_add(1);
-        }
-    }
-}
-
-fn collect_buffer_ref_read(buffer: crate::BufferRef, reads: &mut [u32]) {
-    if let crate::BufferRef::ArrayElement { selector, .. } = buffer {
-        mark_value_read(selector, reads);
-    }
-}
-
-fn collect_buffer_param_ref_read(buffer: crate::BufferParamRef, reads: &mut [u32]) {
-    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
-        mark_value_read(selector, reads);
-    }
-}
-
-fn collect_rvalue_reads(value: &Rvalue, reads: &mut [u32]) {
-    match value {
-        Rvalue::InitAll => {}
-        Rvalue::Use(value) | Rvalue::SliceLen(value) => mark_value_read(*value, reads),
-        Rvalue::Load(place) => collect_place_read(place, reads),
-        Rvalue::Unary { operand, .. } => mark_value_read(*operand, reads),
-        Rvalue::Binary { lhs, rhs, .. } | Rvalue::Compare { lhs, rhs, .. } => {
-            mark_value_read(*lhs, reads);
-            mark_value_read(*rhs, reads);
-        }
-        Rvalue::Cast { value, .. } => mark_value_read(*value, reads),
-        Rvalue::Intrinsic { args, .. } => {
-            for value in args {
-                mark_value_read(*value, reads);
-            }
-        }
-        Rvalue::ProcessFrame { offset } => mark_value_read(*offset, reads),
-        Rvalue::NormalizeIndex { index, length, .. } => {
-            mark_value_read(*index, reads);
-            mark_value_read(*length, reads);
-        }
-        Rvalue::InputLoad { element, frame, .. } | Rvalue::OutputLoad { element, frame, .. } => {
-            if let Some(element) = element {
-                mark_value_read(*element, reads);
-            }
-            mark_value_read(*frame, reads);
-        }
-        Rvalue::BufferLoad {
-            buffer,
-            channel,
-            index,
-            ..
-        } => {
-            collect_buffer_ref_read(*buffer, reads);
-            if let Some(channel) = channel {
-                mark_value_read(*channel, reads);
-            }
-            mark_value_read(*index, reads);
-        }
-        Rvalue::BufferParamLoad {
-            parameter,
-            channel,
-            index,
-            ..
-        } => {
-            collect_buffer_param_ref_read(*parameter, reads);
-            if let Some(channel) = channel {
-                mark_value_read(*channel, reads);
-            }
-            mark_value_read(*index, reads);
-        }
-        Rvalue::ConstDataLoad { index, .. } => mark_value_read(*index, reads),
-        Rvalue::MakeSlice {
-            source, start, len, ..
-        } => {
-            match source {
-                crate::SliceSource::Place(place) => collect_place_read(place, reads),
-                crate::SliceSource::Buffer { buffer, channel } => {
-                    collect_buffer_ref_read(*buffer, reads);
-                    if let Some(channel) = channel {
-                        mark_value_read(*channel, reads);
-                    }
-                }
-                crate::SliceSource::BufferParam { parameter, channel } => {
-                    collect_buffer_param_ref_read(*parameter, reads);
-                    if let Some(channel) = channel {
-                        mark_value_read(*channel, reads);
-                    }
-                }
-                crate::SliceSource::ConstData(_) => {}
-            }
-            mark_value_read(*start, reads);
-            mark_value_read(*len, reads);
-        }
-        Rvalue::SliceLoad { slice, index, .. } => {
-            mark_value_read(*slice, reads);
-            mark_value_read(*index, reads);
-        }
-        Rvalue::BufferLen(buffer)
-        | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer)
-        | Rvalue::BufferIsBound(buffer) => collect_buffer_ref_read(*buffer, reads),
-        Rvalue::BufferParamLen(parameter)
-        | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter)
-        | Rvalue::BufferParamIsBound(parameter) => {
-            collect_buffer_param_ref_read(*parameter, reads);
-        }
-    }
-}
-
-fn collect_statement_reads(statement: &Statement, reads: &mut [u32]) {
-    match &statement.kind {
-        StatementKind::Assign { destination, value } => {
-            collect_place_index_reads(destination, reads);
-            collect_rvalue_reads(value, reads);
-        }
-        StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
-            for argument in args {
-                match argument {
-                    CallArgument::Value(value) => mark_value_read(*value, reads),
-                    CallArgument::Place(place) => collect_place_read(place, reads),
-                    CallArgument::ArrayWindow { array, start, .. } => {
-                        collect_place_read(array, reads);
-                        mark_value_read(*start, reads);
-                    }
-                    CallArgument::SliceElement { slice, index, .. } => {
-                        mark_value_read(*slice, reads);
-                        mark_value_read(*index, reads);
-                    }
-                    CallArgument::SliceWindow { slice, start, .. } => {
-                        mark_value_read(*slice, reads);
-                        mark_value_read(*start, reads);
-                    }
-                    CallArgument::Buffer(buffer) => collect_buffer_ref_read(*buffer, reads),
-                    CallArgument::BufferParam(parameter) => {
-                        collect_buffer_param_ref_read(*parameter, reads);
-                    }
-                    CallArgument::BufferSpan(_) => {}
-                }
-            }
-        }
-        StatementKind::PublishLog { arguments, .. } => {
-            for value in arguments {
-                mark_value_read(*value, reads);
-            }
-        }
-        StatementKind::OutputStore {
-            element,
-            frame,
-            value,
-            ..
-        } => {
-            if let Some(element) = element {
-                mark_value_read(*element, reads);
-            }
-            mark_value_read(*frame, reads);
-            mark_value_read(*value, reads);
-        }
-        StatementKind::ControlOutputStore { element, value, .. } => {
-            if let Some(element) = element {
-                mark_value_read(*element, reads);
-            }
-            mark_value_read(*value, reads);
-        }
-        StatementKind::BufferStore {
-            buffer,
-            channel,
-            index,
-            value,
-            ..
-        } => {
-            collect_buffer_ref_read(*buffer, reads);
-            if let Some(channel) = channel {
-                mark_value_read(*channel, reads);
-            }
-            mark_value_read(*index, reads);
-            mark_value_read(*value, reads);
-        }
-        StatementKind::BufferParamStore {
-            parameter,
-            channel,
-            index,
-            value,
-            ..
-        } => {
-            collect_buffer_param_ref_read(*parameter, reads);
-            if let Some(channel) = channel {
-                mark_value_read(*channel, reads);
-            }
-            mark_value_read(*index, reads);
-            mark_value_read(*value, reads);
-        }
-        StatementKind::SliceStore {
-            slice,
-            index,
-            value,
-            ..
-        } => {
-            mark_value_read(*slice, reads);
-            mark_value_read(*index, reads);
-            mark_value_read(*value, reads);
-        }
-        StatementKind::SliceFill { destination, value } => {
-            mark_value_read(*destination, reads);
-            mark_value_read(*value, reads);
-        }
-        StatementKind::SliceCopy { copies, .. } => {
-            for crate::SliceCopy {
-                destination,
-                source,
-            } in copies
-            {
-                mark_value_read(*destination, reads);
-                mark_value_read(*source, reads);
-            }
-        }
-        StatementKind::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            mark_value_read(*condition, reads);
-            collect_block_reads(then_block, reads);
-            collect_block_reads(else_block, reads);
-        }
-        StatementKind::Loop { body } => collect_block_reads(body, reads),
-        StatementKind::Return { values } => {
-            for value in values {
-                mark_value_read(*value, reads);
-            }
-        }
-        StatementKind::Break | StatementKind::Continue => {}
-    }
 }
 
 fn collect_block_local_references(block: &Block, referenced: &mut HashSet<LocalId>) {
@@ -2610,9 +2304,18 @@ mod tests {
             Rvalue::BufferParamSampleRate(parameter),
             Rvalue::BufferParamIsBound(parameter),
         ] {
-            let mut reads = vec![0; 3];
-            collect_rvalue_reads(&value, &mut reads);
-            assert_eq!(reads, [0, 0, 1]);
+            let mut reads = HashSet::new();
+            collect_statement_read_references(
+                &Statement {
+                    kind: StatementKind::Assign {
+                        destination: Place::local(LocalId::new(0)),
+                        value,
+                    },
+                    source: SourceSpan::UNKNOWN,
+                },
+                &mut reads,
+            );
+            assert_eq!(reads, HashSet::from([selector]));
         }
     }
 
@@ -3784,6 +3487,40 @@ mod tests {
     }
 
     #[test]
+    fn dead_arithmetic_chains_are_removed_in_one_cleanup_pass() {
+        let mut program = empty_program();
+        let function = &mut program.functions[1];
+        for index in 0..4096 {
+            function.locals.push(Local {
+                integer_range: None,
+                name: None,
+                ty: TypeId::new(0),
+            });
+            let operand = if index == 0 {
+                Value::Constant(ScalarValue::I32(1))
+            } else {
+                Value::Local(LocalId::new(index - 1))
+            };
+            function.body.statements.push(Statement {
+                kind: StatementKind::Assign {
+                    destination: Place::local(LocalId::new(index)),
+                    value: Rvalue::Binary {
+                        op: BinaryOp::Add,
+                        lhs: operand,
+                        rhs: operand,
+                    },
+                },
+                source: SourceSpan::UNKNOWN,
+            });
+        }
+        let mut stats = PassStats::default();
+        remove_dead_pure_locals(&program.types, function, &mut stats);
+        assert!(function.body.statements.is_empty());
+        assert!(function.locals.is_empty());
+        assert_eq!(stats.removed_dead_assignments, 4096);
+    }
+
+    #[test]
     fn copy_propagation_eliminates_long_dead_chains_before_the_fixed_point() {
         const PURE_CHAIN_LEN: u32 = 32;
 
@@ -3842,6 +3579,15 @@ mod tests {
 
     #[test]
     fn optimize_guards_zero_init_stores_for_live_reinitialization() {
+        check_zero_init_stores(false);
+    }
+
+    #[test]
+    fn optimize_retains_explicit_pinned_zero_stores() {
+        check_zero_init_stores(true);
+    }
+
+    fn check_zero_init_stores(pinned: bool) {
         let mut program = empty_program();
         program.types.extend([
             Type::Scalar(ScalarType::F32),
@@ -3861,7 +3607,7 @@ mod tests {
                 ty: TypeId::new(1),
                 persistence: StatePersistence::Snapshot,
                 authored: true,
-                pinned: false,
+                pinned,
             },
             StateSlot {
                 integer_range: None,
@@ -3869,7 +3615,7 @@ mod tests {
                 ty: TypeId::new(2),
                 persistence: StatePersistence::Snapshot,
                 authored: true,
-                pinned: false,
+                pinned,
             },
         ]);
         program.functions[0].locals.push(Local {
@@ -3955,7 +3701,7 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(direct_scalar_writes, 3);
+        assert_eq!(direct_scalar_writes, if pinned { 5 } else { 3 });
         let guarded_zero_stores = init
             .body
             .statements
@@ -3971,17 +3717,20 @@ mod tests {
                 )
             })
             .count();
-        assert_eq!(guarded_zero_stores, 5);
-        assert!(matches!(
-            init.body
-                .statements
-                .first()
-                .map(|statement| &statement.kind),
-            Some(StatementKind::Assign {
-                value: Rvalue::InitAll,
-                ..
-            })
-        ));
+        assert_eq!(guarded_zero_stores, if pinned { 0 } else { 5 });
+        assert_eq!(
+            matches!(
+                init.body
+                    .statements
+                    .first()
+                    .map(|statement| &statement.kind),
+                Some(StatementKind::Assign {
+                    value: Rvalue::InitAll,
+                    ..
+                })
+            ),
+            !pinned
+        );
     }
 
     #[test]

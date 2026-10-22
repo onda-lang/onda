@@ -92,6 +92,9 @@ const { artifact, sourceFiles } = await compiler.compileWorkspace({
 console.log(sourceFiles);
 ```
 
+An optional `workspace.constants` object carries project-manifest defaults: numbers, booleans,
+decimal strings for `i64`, and primitive arrays. Explicit `options.constants` override them.
+
 Compilation failures throw `OndaCompileError`. Its `diagnostics` property contains structured
 parse, semantic, MIR, configuration, or code-generation diagnostics. Its `sourceFiles` property
 contains every project source resolved before compilation stopped, allowing hosts to retain useful
@@ -117,6 +120,7 @@ const sample = await compiler.encodeBufferAsset({
 const image = await compiler.createProjectImage(
   compiled.sourceGraph,
   new Map([["sample", sample]]),
+  workspace.constants,
 );
 
 const replayed = await compiler.compileProjectImage(image.bytes, options);

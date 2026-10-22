@@ -2682,6 +2682,31 @@ init:
     }
 
     #[test]
+    fn busy_diagnostic_workers_coalesce_edits_before_snapshotting() {
+        let dir = mk_temp_dir("diagnostic_coalescing");
+        let main = super::normalize_path(&dir.join("main.onda"));
+        write_file(&main, "sample:\n  out1 = 0.0\n");
+        let (immediate_tx, immediate_rx) = mpsc::channel();
+        let (background_tx, _background_rx) = mpsc::channel();
+        let mut core = LspCore::new(immediate_tx, background_tx);
+        core.schedule_diagnostic_entries(vec![main.clone()], DiagnosticDelay::Immediate);
+        core.dispatch_due_diagnostics();
+        let first = immediate_rx.try_recv().expect("first analysis");
+        for _ in 0..6 {
+            core.schedule_diagnostic_entries(vec![main.clone()], DiagnosticDelay::Immediate);
+            core.dispatch_due_diagnostics();
+        }
+        assert!(immediate_rx.try_recv().is_err(), "obsolete snapshots must not queue");
+        assert!(core.next_diagnostic_timeout().is_none(), "busy lanes must not spin");
+        core.publish_diagnostic_result(super::run_diagnostic_job(first), &mut Vec::new()).expect("complete");
+        core.dispatch_due_diagnostics();
+        let latest = immediate_rx.try_recv().expect("latest analysis");
+        assert_eq!(latest.generation, 7);
+        assert!(immediate_rx.try_recv().is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn immediate_diagnostics_use_immediate_worker_lane() {
         let dir = mk_temp_dir("diagnostic_immediate_lane");
         let main = super::normalize_path(&dir.join("main.onda"));

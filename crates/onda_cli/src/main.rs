@@ -186,7 +186,7 @@ enum RunCommand {
         show_meta: bool,
         control_json: bool,
         report_sources: bool,
-        param_sets: Vec<(String, f64)>,
+        param_sets: Vec<(String, onda_daemon::RunParamValue)>,
         buffer_bindings: Vec<(String, PathBuf)>,
     },
     Render {
@@ -199,7 +199,7 @@ enum RunCommand {
         opt_level: TargetOptLevel,
         fast_math: bool,
         show_meta: bool,
-        param_sets: Vec<(String, f64)>,
+        param_sets: Vec<(String, onda_daemon::RunParamValue)>,
         buffer_bindings: Vec<(String, PathBuf)>,
     },
     Window {

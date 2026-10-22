@@ -6,6 +6,7 @@ export function compilationKey(project, options) {
   return JSON.stringify({
     entry: project.entry,
     sources,
+    constants: Object.entries(project.constants ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
     sampleRate: Number(options.sampleRate),
     blockSize: Number(options.blockSize),
     fastMath: options.codegen?.fastMath === true,

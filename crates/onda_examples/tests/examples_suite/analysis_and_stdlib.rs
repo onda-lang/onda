@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn stdlib_sign_preserves_numeric_types_and_handles_extremes() {
+    let source = r#"
+import std/math
+outs 10
+sample:
+  a: i32 = sign(i32(-2147483648))
+  b: i64 = sign(i64(-9223372036854775808))
+  c: f32 = sign(f32(-0.0))
+  d: f64 = sign(f64(0.0))
+  out1 = f32(a)
+  out2 = f32(b)
+  out3 = c
+  out4 = f32(d)
+  out5 = f32(sign(i64(9223372036854775807)))
+  out6 = f32(sign(i32(2147483647)))
+  out7 = sign(f32(1.0) / f32(0.0))
+  out8 = f32(sign(f64(-1.0) / f64(0.0)))
+  out9 = sign(f32(0.0) / f32(0.0))
+  out10 = f32(sign(f64(0.0) / f64(0.0)))
+"#;
+    let (mut instance, _, _) = compile_instance(source, 1);
+    let mut output = [0.0; 10];
+    process_interleaved(&mut instance, &[], &mut output, 1).expect("process");
+    assert_eq!(&output[..8], &[-1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, -1.0]);
+    assert!(output[8].is_nan());
+    assert!(output[9].is_nan());
+}
+
+#[test]
 fn representative_checked_in_onda_examples_analyze_and_lower() {
     const EXAMPLES: &[&str] = &[
         "basic/polyphonic_saw.onda",

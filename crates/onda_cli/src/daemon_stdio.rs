@@ -98,7 +98,7 @@ enum Request {
     RunSetParam {
         path: String,
         name: String,
-        value: f64,
+        value: Value,
     },
     RunBindBuffer {
         path: String,
@@ -337,7 +337,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             .run_mut(path)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                run.set_param_f64(&name, value)
+                run.set_param(&name, onda_run::param_value_from_json(&value)?)
                     .map_err(|diag| diagnostic_string("run_set_param failed", &diag))
             })
             .map(|_| json!({ "status": "ok" })),
@@ -591,9 +591,9 @@ fn run_param_json(param: &RunParamInfo) -> Value {
     json!({
         "index": param.index,
         "name": param.name.clone(),
-        "value": param.value,
+        "value": param.value.map(onda_run::param_value_to_json),
         "type_repr": param.type_repr.clone(),
-        "default": param.default,
+        "default": param.default.map(onda_run::param_value_to_json),
         "range_min": param.range_min,
         "range_max": param.range_max,
         "scalar": param.scalar,
@@ -912,6 +912,49 @@ mod tests {
             .contains(&json!(display_path(&child))));
         assert_ne!(sources["contentHashes"], discovered["contentHashes"]);
         assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn run_parameter_json_preserves_wide_integers_and_large_floats() {
+        let dir = mk_temp_dir("run_parameter_precision");
+        let main = dir.join("main.onda");
+        write_file(&main, "params:\n  integer: i64 = 9007199254740993\n  floating: f64 = 0\nsample:\n  out1 = f32(integer - 9007199254740992)\n  out2 = f32(floating / 10000000000000000000.0)\n");
+        let path = display_path(&main);
+        let mut session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
+            block_size: 1,
+            param_smoothing_seconds: 0.0,
+            ..RunOptions::default()
+        }));
+        let request = |session: &mut DaemonSession, command: Value| {
+            let response = handle_request(session, serde_json::from_value(command).unwrap());
+            assert!(response.ok, "{:?}", response.error);
+            response.result.unwrap()
+        };
+        request(
+            &mut session,
+            json!({ "command": "run_start", "path": path }),
+        );
+        for (name, value) in [
+            ("integer", json!("9007199254740995")),
+            ("floating", json!(10_000_000_000_000_000_000_u64)),
+        ] {
+            request(
+                &mut session,
+                json!({ "command": "run_set_param", "path": path, "name": name, "value": value }),
+            );
+        }
+        let rendered = request(
+            &mut session,
+            json!({ "command": "run_render", "path": path }),
+        );
+        assert_eq!(rendered["channels"], json!([[3.0], [1.0]]));
+        let params = request(
+            &mut session,
+            json!({ "command": "run_params", "path": path }),
+        );
+        assert_eq!(params["params"][0]["value"], "9007199254740995");
+        assert_eq!(params["params"][0]["default"], "9007199254740993");
         fs::remove_dir_all(dir).unwrap();
     }
 

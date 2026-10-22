@@ -14,6 +14,7 @@ const editor = new OndaProjectEditor({
     sources: { "main.onda": source },
   },
 });
+window.__testEditor = editor;
 const status = document.querySelector("[data-status]");
 status.textContent = "Playing";
 status.classList.add("playing");

@@ -63,6 +63,7 @@ globalThis.addEventListener("message", async (event) => {
       const result = await (await compiler()).createProjectImage(
         message.sourceGraph,
         message.buffers,
+        message.constants,
       );
       respond(requestId, result, [result.bytes.buffer]);
       return;

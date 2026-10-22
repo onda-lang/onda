@@ -5,13 +5,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::net::TcpStream;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +24,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+mod child_session;
+mod control_client;
+use child_session::ChildSession;
+use control_client::IpcBridge;
+
 mod midi;
 mod playback;
 mod project_io;
@@ -33,6 +36,9 @@ mod source_graph;
 pub use source_graph::{run_source_graph, RunSourceGraph};
 
 mod event_value_json;
+mod param_value_json;
+use param_value_json::param_value_repr;
+pub use param_value_json::{param_value_from_json, param_value_to_json, parse_run_param_value};
 mod file_validation;
 pub use event_value_json::{event_value_from_json, event_value_to_json};
 use file_validation::FileValidationCache;
@@ -54,11 +60,6 @@ const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub const DEFAULT_REALTIME_BLOCK_SAMPLES: usize = 512;
 pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum RunThemeMode {
@@ -1469,12 +1470,6 @@ impl Drop for RunController {
     }
 }
 
-struct ChildSession {
-    child: Option<Child>,
-    stderr_buffer: Arc<Mutex<String>>,
-    stderr_reader: Option<thread::JoinHandle<()>>,
-}
-
 fn format_run_build_error(prefix: &str, err: &RunBuildError) -> String {
     err.diagnostics.first().map_or_else(
         || format!("{prefix}: run diagnostics"),
@@ -1503,8 +1498,8 @@ impl From<&RunParamInfo> for RunParamWire {
             index: param.index,
             name: param.name.clone(),
             type_repr: param.type_repr.clone(),
-            value_repr: param.value.map(scalar_repr),
-            default_repr: param.default.map(scalar_repr),
+            value_repr: param.value.map(param_value_repr),
+            default_repr: param.default.map(param_value_repr),
             range_min_repr: param.range_min.map(scalar_repr),
             range_max_repr: param.range_max.map(scalar_repr),
             scale: param.scale.clone(),
@@ -1525,12 +1520,19 @@ impl RunParamWire {
         let value = decode_run_param_scalar_repr(&self.type_repr, self.value_repr, "valueRepr")?;
         let default =
             decode_run_param_scalar_repr(&self.type_repr, self.default_repr, "defaultRepr")?;
+        // Host domains use exactly representable floating-point bounds, even
+        // when the parameter's value itself needs an exact i64 string.
+        let domain_type = if self.type_repr == "i64" {
+            "f64"
+        } else {
+            &self.type_repr
+        };
         let range_min =
-            decode_run_param_scalar_repr(&self.type_repr, self.range_min_repr, "rangeMinRepr")?;
+            decode_run_param_scalar_repr(domain_type, self.range_min_repr, "rangeMinRepr")?;
         let range_max =
-            decode_run_param_scalar_repr(&self.type_repr, self.range_max_repr, "rangeMaxRepr")?;
+            decode_run_param_scalar_repr(domain_type, self.range_max_repr, "rangeMaxRepr")?;
         let curve = decode_run_param_scalar_repr("f64", self.curve_repr, "curveRepr")?;
-        let step = decode_run_param_scalar_repr(&self.type_repr, self.step_repr, "stepRepr")?;
+        let step = decode_run_param_scalar_repr(domain_type, self.step_repr, "stepRepr")?;
         Ok(json!({
             "index": self.index,
             "name": self.name,
@@ -1582,7 +1584,10 @@ fn decode_run_param_scalar_repr(
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number),
         "i32" => repr.parse::<i32>().ok().map(Value::from),
-        "i64" => repr.parse::<i64>().ok().map(Value::from),
+        "i64" => repr
+            .parse::<i64>()
+            .ok()
+            .map(|value| Value::String(value.to_string())),
         "bool" => repr.parse::<bool>().ok().map(Value::Bool),
         _ => None,
     };
@@ -1631,316 +1636,6 @@ fn run_event_param_json(param: &RunEventParamInfo) -> Value {
         "default": event_value_to_json(&param.value),
         "value": event_value_to_json(&param.value),
     })
-}
-
-impl ChildSession {
-    fn is_active(&self) -> bool {
-        self.child.is_some()
-    }
-
-    fn spawn(
-        onda_path: &Path,
-        options: &RunHostOptions,
-        generation: u64,
-        event_tx: Sender<ControllerEvent>,
-    ) -> Result<Self, String> {
-        let mut cmd = Command::new(&options.onda_bin);
-        cmd.arg("run")
-            .arg("play")
-            .arg(onda_path)
-            .arg("--forever")
-            .arg("--control-json")
-            .arg("--sample-rate")
-            .arg(options.sample_rate_hz.to_string())
-            .arg("--block-size")
-            .arg(options.block_samples.to_string())
-            .arg("--param-smoothing-ms")
-            .arg((options.param_smoothing_seconds * 1000.0).to_string())
-            .arg("--opt-level")
-            .arg(options.opt_level.as_str());
-
-        if let Some(input_device) = &options.input_device {
-            cmd.arg("--input-device").arg(input_device);
-        }
-        if let Some(output_device) = &options.output_device {
-            cmd.arg("--output-device").arg(output_device);
-        }
-        if let Some(midi_input_device) = options
-            .midi_input_device
-            .as_deref()
-            .filter(|name| *name != COMPUTER_KEYBOARD_MIDI_INPUT)
-        {
-            cmd.arg("--midi-input-device").arg(midi_input_device);
-        }
-        if options.fast_math {
-            cmd.arg("--fast-math");
-        }
-        if options.show_meta {
-            cmd.arg("--meta");
-        }
-
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn onda run: {e}"))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "failed to capture subprocess stdout".to_owned())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "failed to capture subprocess stderr".to_owned())?;
-        let stderr_buffer = Arc::new(Mutex::new(String::new()));
-
-        let stderr_sink = Arc::clone(&stderr_buffer);
-        let stderr_reader = thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        eprintln!("[onda run] {line}");
-                        if let Ok(mut slot) = stderr_sink.lock() {
-                            if !slot.is_empty() {
-                                slot.push('\n');
-                            }
-                            slot.push_str(&line);
-                            if slot.len() > 4000 {
-                                let keep_from = slot.len().saturating_sub(4000);
-                                *slot = slot[keep_from..].to_owned();
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(_) => break,
-                };
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(raw) = serde_json::from_str::<RawReadyEvent>(trimmed) {
-                    if raw.event == "ready" {
-                        let params = match raw
-                            .params
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(RunParamWire::into_host_value)
-                            .collect::<Result<Vec<_>, _>>()
-                        {
-                            Ok(params) => params,
-                            Err(error) => {
-                                eprintln!("[onda run stdout] invalid ready event: {error}");
-                                continue;
-                            }
-                        };
-                        let ready = ReadyEvent {
-                            path: raw.path.unwrap_or_default(),
-                            port: raw.port.unwrap_or(0),
-                            params,
-                            buffers: raw.buffers.unwrap_or_default(),
-                            events: raw.events.unwrap_or_default(),
-                            midi: raw.midi,
-                            delegates: raw.delegates.unwrap_or_default(),
-                            output_channels: raw.output_channels.unwrap_or(0),
-                            input_devices: raw.input_devices.unwrap_or_default(),
-                            output_devices: raw.output_devices.unwrap_or_default(),
-                            midi_input_devices: raw.midi_input_devices.unwrap_or_default(),
-                            current_input_device: raw.current_input_device,
-                            current_output_device: raw.current_output_device,
-                            current_midi_input_device: raw.current_midi_input_device,
-                        };
-                        let _ = event_tx.send(ControllerEvent::ChildReady {
-                            generation,
-                            ready: Box::new(ready),
-                        });
-                        continue;
-                    }
-                }
-                eprintln!("[onda run stdout] {trimmed}");
-            }
-        });
-
-        Ok(Self {
-            child: Some(child),
-            stderr_buffer,
-            stderr_reader: Some(stderr_reader),
-        })
-    }
-
-    fn try_take_exit(&mut self) -> Option<(Option<i32>, Option<String>)> {
-        let child = self.child.as_mut()?;
-        let status = child.try_wait().ok()??;
-        let status_error = (!status.success()).then(|| format_exit_status(&status));
-        self.child = None;
-        if let Some(reader) = self.stderr_reader.take() {
-            let _ = reader.join();
-        }
-        let stderr_error = self.stderr_buffer.lock().ok().and_then(|slot| {
-            let trimmed = slot.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_owned())
-        });
-        let error = match (stderr_error, status_error) {
-            (Some(stderr), Some(status)) => Some(format!("{stderr}\n{status}")),
-            (Some(stderr), None) => Some(stderr),
-            (None, status) => status,
-        };
-        Some((status.code(), error))
-    }
-
-    fn kill(&mut self) {
-        if let Some(ref mut child) = self.child {
-            terminate_run_child(child);
-            let _ = child.wait();
-        }
-        self.child = None;
-        if let Some(reader) = self.stderr_reader.take() {
-            let _ = reader.join();
-        }
-    }
-}
-
-impl Drop for ChildSession {
-    fn drop(&mut self) {
-        self.kill();
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn terminate_run_child(child: &mut Child) {
-    let pid = child.id().to_string();
-    let mut cmd = Command::new("taskkill");
-    cmd.arg("/PID").arg(pid).arg("/T").arg("/F");
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    if cmd.status().map(|status| status.success()).unwrap_or(false) {
-        return;
-    }
-    let _ = child.kill();
-}
-
-#[cfg(not(target_os = "windows"))]
-fn terminate_run_child(child: &mut Child) {
-    let _ = child.kill();
-}
-
-#[derive(Clone)]
-struct IpcBridge {
-    writer: Arc<Mutex<Option<BufWriter<TcpStream>>>>,
-    request_id: Arc<AtomicU64>,
-}
-
-impl IpcBridge {
-    fn new() -> Self {
-        Self {
-            writer: Arc::new(Mutex::new(None)),
-            request_id: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn connect(
-        &self,
-        port: u16,
-        generation: u64,
-        event_tx: Sender<ControllerEvent>,
-    ) -> Result<(), String> {
-        self.disconnect();
-
-        let stream = TcpStream::connect(("127.0.0.1", port))
-            .map_err(|e| format!("TCP connect failed: {e}"))?;
-        let reader_stream = stream
-            .try_clone()
-            .map_err(|e| format!("TCP clone failed: {e}"))?;
-
-        if let Ok(mut writer) = self.writer.lock() {
-            *writer = Some(BufWriter::new(stream));
-        }
-
-        thread::spawn(move || {
-            let reader = BufReader::new(reader_stream);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        let trimmed = line.trim().to_owned();
-                        if !trimmed.is_empty() {
-                            let _ = event_tx.send(ControllerEvent::TcpResponse {
-                                generation,
-                                line: trimmed,
-                            });
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    fn disconnect(&self) {
-        if let Ok(mut writer) = self.writer.lock() {
-            if let Some(writer) = writer.as_mut() {
-                let _ = writer.get_ref().shutdown(std::net::Shutdown::Both);
-            }
-            *writer = None;
-        }
-    }
-
-    fn send_command(&self, command: &str, payload: &Value) -> Option<u64> {
-        let id = self.request_id.fetch_add(1, Ordering::Relaxed);
-        self.send_command_inner(Some(id), command, payload)
-            .then_some(id)
-    }
-
-    fn send_command_notification(&self, command: &str, payload: &Value) {
-        let _ = self.send_command_inner(None, command, payload);
-    }
-
-    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) -> bool {
-        let mut request = json!({ "command": command });
-        if let Some(id) = id {
-            if let Value::Object(ref mut req_map) = request {
-                req_map.insert("id".to_owned(), Value::from(id));
-            }
-        }
-
-        if let Value::Object(map) = payload {
-            if let Value::Object(ref mut req_map) = request {
-                for (key, value) in map {
-                    req_map.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        if let Ok(mut writer) = self.writer.lock() {
-            let Some(writer) = writer.as_mut() else {
-                return false;
-            };
-            let line = serde_json::to_string(&request).unwrap_or_default();
-            return writer.write_all(line.as_bytes()).is_ok()
-                && writer.write_all(b"\n").is_ok()
-                && writer.flush().is_ok();
-        }
-        false
-    }
-
-    fn is_connected(&self) -> bool {
-        self.writer
-            .lock()
-            .map(|writer| writer.is_some())
-            .unwrap_or(false)
-    }
 }
 
 struct FileWatcher {
@@ -2688,21 +2383,6 @@ fn child_exit_error(code: Option<i32>) -> String {
     )
 }
 
-#[cfg(unix)]
-fn format_exit_status(status: &std::process::ExitStatus) -> String {
-    use std::os::unix::process::ExitStatusExt;
-
-    status.signal().map_or_else(
-        || child_exit_error(status.code()),
-        |signal| format!("Runtime error: audio processing terminated by signal {signal}"),
-    )
-}
-
-#[cfg(not(unix))]
-fn format_exit_status(status: &std::process::ExitStatus) -> String {
-    child_exit_error(status.code())
-}
-
 fn apply_preserved_param_state(params: &mut [Value], preserved_params: &[(String, Value)]) {
     for param in params {
         let Some(name) = param_name(param).map(str::to_owned) else {
@@ -2953,11 +2633,7 @@ mod tests {
             events_rx,
             events_tx,
             bridge: super::IpcBridge::new(),
-            child: super::ChildSession {
-                child: None,
-                stderr_buffer: Default::default(),
-                stderr_reader: None,
-            },
+            child: super::ChildSession::default(),
             child_generation: 1,
             watcher: None,
             watched_sources: Vec::new(),
@@ -3007,14 +2683,20 @@ mod tests {
     #[test]
     fn midi_notes_only_reach_an_active_connected_processor() {
         use std::io::BufRead;
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut controller = controller_without_child();
+        controller
+            .bridge
+            .connect(
+                listener.local_addr().unwrap().port(),
+                1,
+                controller.events_tx.clone(),
+            )
+            .unwrap();
         let (receiver, _) = listener.accept().unwrap();
         receiver.set_nonblocking(true).unwrap();
-        let mut controller = controller_without_child();
-        *controller.bridge.writer.lock().unwrap() = Some(std::io::BufWriter::new(sender));
         controller.state.midi.note_on = true;
         controller.state.midi.note_off = true;
         for (running, connected) in [(false, false), (false, true), (true, false)] {
@@ -3168,8 +2850,8 @@ mod tests {
             index: 0,
             name: "coupling".to_owned(),
             type_repr: "f32".to_owned(),
-            value: Some(f64::from(0.72_f32)),
-            default: Some(f64::from(0.72_f32)),
+            value: Some(onda_daemon::RunParamValue::F32(0.72)),
+            default: Some(onda_daemon::RunParamValue::F32(0.72)),
             range_min: Some(0.0),
             range_max: Some(f64::from(0.98_f32)),
             scale: Some("linear".to_owned()),
@@ -3184,8 +2866,8 @@ mod tests {
             index: 1,
             name: "stepped".to_owned(),
             type_repr: "f32".to_owned(),
-            value: Some(f64::from(0.2_f32)),
-            default: Some(f64::from(0.1_f32)),
+            value: Some(onda_daemon::RunParamValue::F32(0.2)),
+            default: Some(onda_daemon::RunParamValue::F32(0.1)),
             range_min: Some(0.0),
             range_max: Some(f64::from(0.3_f32)),
             scale: Some("linear".to_owned()),
@@ -3200,8 +2882,8 @@ mod tests {
             index: 2,
             name: "gate".to_owned(),
             type_repr: "bool".to_owned(),
-            value: Some(1.0),
-            default: Some(1.0),
+            value: Some(onda_daemon::RunParamValue::Bool(true)),
+            default: Some(onda_daemon::RunParamValue::Bool(true)),
             range_min: None,
             range_max: None,
             scale: None,
@@ -3212,10 +2894,32 @@ mod tests {
             scalar: true,
             array: None,
         };
+        let wide = RunParamInfo {
+            index: 3,
+            name: "wide".to_owned(),
+            type_repr: "i64".to_owned(),
+            value: Some(onda_daemon::RunParamValue::I64(i64::MAX)),
+            default: Some(onda_daemon::RunParamValue::I64(9_007_199_254_740_993)),
+            ..gate.clone()
+        };
+        let ranged = RunParamInfo {
+            index: 4,
+            name: "ranged".to_owned(),
+            value: Some(onda_daemon::RunParamValue::I64(4)),
+            default: Some(onda_daemon::RunParamValue::I64(2)),
+            range_min: Some(-10.0),
+            range_max: Some(10.0),
+            step: Some(2.0),
+            step_count: Some(10),
+            scale: Some("linear".to_owned()),
+            ..wide.clone()
+        };
         let wire_params = vec![
             run_param_json(&coupling),
             run_param_json(&stepped),
             run_param_json(&gate),
+            run_param_json(&wide),
+            run_param_json(&ranged),
         ];
         assert_eq!(wire_params[0].range_max_repr.as_deref(), Some("0.98"));
         assert_eq!(wire_params[1].step_repr.as_deref(), Some("0.1"));
@@ -3256,6 +2960,12 @@ mod tests {
         );
         assert_eq!(decoded[2]["value"], true);
         assert_eq!(decoded[2]["default"], true);
+        assert_eq!(decoded[3]["value"], "9223372036854775807");
+        assert_eq!(decoded[3]["default"], "9007199254740993");
+        assert_eq!(decoded[4]["value"], "4");
+        assert_eq!(decoded[4]["rangeMin"].as_f64(), Some(-10.0));
+        assert_eq!(decoded[4]["rangeMax"].as_f64(), Some(10.0));
+        assert_eq!(decoded[4]["step"].as_f64(), Some(2.0));
         ParamDomain::new(
             ParamScalarType::F32,
             decoded[0]["rangeMin"].as_f64().expect("range minimum"),

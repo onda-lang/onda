@@ -50,7 +50,7 @@ impl ParamSmoothing {
             let mut elements = Vec::new();
             if continuous {
                 for element in 0..desc.array_len() {
-                    let default = default_run_param_element(desc, element);
+                    let default = default_run_param_element(desc, element).as_f64();
                     elements.push(out.entries.len());
                     out.entries.push(Entry {
                         index,
@@ -88,7 +88,7 @@ impl ParamSmoothing {
         for &id in &self.active {
             let entry = &mut self.entries[id];
             if samples == 0 {
-                let bytes = scalar_param_bytes(entry.ty, entry.target)?;
+                let bytes = scalar_param_bytes(entry.ty, crate::RunParamValue::F64(entry.target))?;
                 onda_runtime::set_param_element_by_index(
                     instance,
                     entry.index,
@@ -175,7 +175,7 @@ impl ParamSmoothing {
                     entry.target + (entry.start - entry.target) * (1.0 - weight)
                 }
             };
-            let bytes = scalar_param_bytes(entry.ty, value)?;
+            let bytes = scalar_param_bytes(entry.ty, crate::RunParamValue::F64(value))?;
             onda_runtime::set_param_element_by_index(
                 instance,
                 entry.index,

@@ -406,7 +406,7 @@ export function normalizeStoredProject(value) {
   if (!paths.length) return null;
   const entry = paths.includes(value.entry) ? value.entry : paths[0];
   const active = paths.includes(value.active) ? value.active : entry;
-  return { entry, active, sources };
+  return { entry, active, sources, constants: structuredClone(value.constants ?? {}) };
 }
 
 export class OndaProjectEditor {
@@ -417,6 +417,7 @@ export class OndaProjectEditor {
     this.onActiveFile = onActiveFile;
     this.onRenameFile = onRenameFile;
     this.onError = onError;
+    this.constants = structuredClone(initialProject.constants ?? {});
     this.entry = initialProject.entry;
     this.active = initialProject.active;
     this.languageServer = null;
@@ -674,6 +675,7 @@ export class OndaProjectEditor {
   project() {
     return {
       entry: this.entry,
+      constants: structuredClone(this.constants),
       active: this.isProjectDocument() ? this.active : this.entry,
       sources: Object.fromEntries(
         [...this.states]
@@ -684,8 +686,8 @@ export class OndaProjectEditor {
   }
 
   compilerProject() {
-    const { entry, sources } = this.project();
-    return { entry, sources };
+    const { entry, sources, constants } = this.project();
+    return { entry, sources, constants };
   }
 
   paths() {
@@ -711,6 +713,7 @@ export class OndaProjectEditor {
     const normalized = normalizeStoredProject(project);
     if (!normalized) throw new Error("a project must contain at least one valid Onda file");
     clearTimeout(this.semanticRefreshTimer);
+    this.constants = normalized.constants;
     this.entry = normalized.entry;
     this.active = normalized.active;
     this.diagnostics.clear();

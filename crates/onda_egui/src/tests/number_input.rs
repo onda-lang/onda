@@ -3,6 +3,38 @@ use crate::number_input::{NumberInput, NumberValue};
 use crate::{param_name, render_event_array_editor, render_param_grid};
 
 #[test]
+fn wide_integer_parameter_drags_and_resets_remain_exact() {
+    let ctx = egui::Context::default();
+    let initial = 9_007_199_254_740_993_i64;
+    let spec = ParamControlSpec {
+        label: "seed",
+        unit: None,
+        ty: "i64",
+        default: Some(NumberValue::Integer(initial)),
+        domain: None,
+    };
+    let render =
+        |ui: &mut egui::Ui| render_param_number_input(ui, spec, NumberValue::Integer(initial), 0);
+    let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
+    let start = rect.center();
+    widget_frame(&ctx, 0.1, pointer_button(start, true), render);
+    let (_, outcome) = widget_frame(
+        &ctx,
+        0.2,
+        vec![egui::Event::PointerMoved(start + egui::vec2(16.0, 0.0))],
+        render,
+    );
+    assert!(
+        matches!(outcome, ParamEditOutcome::Commit(value) if value == serde_json::json!((initial + 4).to_string()))
+    );
+    assert_eq!(spec.initial_number(), NumberValue::Integer(initial));
+    assert_eq!(
+        NumberValue::from_json("i64", Some(&serde_json::json!(i64::MIN.to_string()))),
+        NumberValue::Integer(i64::MIN)
+    );
+}
+
+#[test]
 fn parameter_presses_preserve_host_updates_until_dragging() {
     for ty in ["f64", "i64"] {
         for ranged in [false, true] {
@@ -12,7 +44,7 @@ fn parameter_presses_preserve_host_updates_until_dragging() {
                     label: "value",
                     unit: None,
                     ty,
-                    default: Some(20.0),
+                    default: Some((20.0).into()),
                     domain: ranged.then(|| {
                         ParamDomain::new(
                             ParamScalarType::F64,
@@ -56,7 +88,7 @@ fn parameter_presses_preserve_host_updates_until_dragging() {
                     let expected = if ranged || ty == "i64" { 84.0 } else { 80.15 };
                     assert!(
                         matches!(outcome, ParamEditOutcome::Commit(next)
-                            if next.as_f64() == Some(expected)),
+                            if next == if ty == "i64" && !ranged { serde_json::json!(format!("{expected:.0}")) } else { serde_json::json!(expected) }),
                         "{ty}, ranged={ranged}: dragging must start from the latest host value"
                     );
                     let (_, outcome) = widget_frame(&ctx, 0.5, pointer_button(end, false), |ui| {
@@ -124,7 +156,7 @@ fn number_editors_shorten_float_drafts_without_committing_rounding() {
                     label: "value",
                     unit: None,
                     ty,
-                    default: Some(initial),
+                    default: Some((initial).into()),
                     domain: None,
                 };
                 widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -159,7 +191,7 @@ fn rounded_number_drafts_accept_full_precision_and_increment_the_exact_value() {
         label: "value",
         unit: None,
         ty: "f64",
-        default: Some(initial),
+        default: Some((initial).into()),
         domain: None,
     };
     for typed in [false, true] {
@@ -216,7 +248,7 @@ fn knobs_apply_shift_to_each_movement_and_reverse_at_bounds() {
             label: "cutoff",
             unit: None,
             ty: "f64",
-            default: Some(80.0),
+            default: Some((80.0).into()),
             domain: Some(domain),
         };
         let mut value = 80.0;
@@ -292,7 +324,7 @@ fn logarithmic_parameter_numbers_drag_by_equal_ratios() {
             } else {
                 "f64"
             },
-            default: Some(800.0),
+            default: Some((800.0).into()),
             domain: Some(domain),
         };
         for initial in [80.0, 800.0, 4_000.0] {
@@ -368,7 +400,7 @@ fn scaled_parameter_numbers_follow_knobs_and_reverse_at_bounds() {
             label: "cutoff",
             unit: None,
             ty: "f64",
-            default: Some(80.0),
+            default: Some((80.0).into()),
             domain: Some(domain),
         };
         let ctx = egui::Context::default();
@@ -412,7 +444,7 @@ fn logarithmic_parameter_numbers_commit_typed_plain_values() {
         label: "cutoff",
         unit: None,
         ty: "f64",
-        default: Some(800.0),
+        default: Some((800.0).into()),
         domain: ParamDomain::new(
             ParamScalarType::F64,
             80.0,
@@ -477,7 +509,7 @@ fn parameter_number_domain_changes_cancel_active_drags() {
             label: "value",
             unit: None,
             ty: "f64",
-            default: Some(0.5),
+            default: Some((0.5).into()),
             domain: Some(domain(0.0, 1.0)),
         };
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
@@ -559,7 +591,7 @@ fn parameter_number_drags_preserve_extreme_range_precision() {
             label: "extreme",
             unit: None,
             ty: "f64",
-            default: Some(minimum),
+            default: Some((minimum).into()),
             domain: Some(domain),
         };
         for shift in [false, true] {
@@ -659,7 +691,7 @@ fn grid_frame(
                 label: name,
                 unit: None,
                 ty: "f64",
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: None,
             };
             let rendered = ui.scope(|ui| {
@@ -1111,7 +1143,7 @@ fn integer_parameter_drags_snap_fractional_motion_once() {
                 label: "stepped",
                 unit: None,
                 ty,
-                default: Some(0.0),
+                default: Some((0.0).into()),
                 domain: Some(domain),
             };
             let mut value = 0.0;

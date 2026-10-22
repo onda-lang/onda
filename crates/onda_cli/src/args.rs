@@ -1236,7 +1236,7 @@ fn is_coff_target_triple(target_triple: &str) -> bool {
     triple.contains("windows") || triple.contains("msvc")
 }
 
-fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
+fn parse_param_setting(value: &str) -> Result<(String, onda_daemon::RunParamValue), String> {
     let Some((name, raw_value)) = value.split_once('=') else {
         return Err(format!(
             "invalid parameter setting '{value}', expected name=value"
@@ -1245,7 +1245,7 @@ fn parse_param_setting(value: &str) -> Result<(String, f64), String> {
     if name.is_empty() {
         return Err("parameter setting requires a non-empty name".to_owned());
     }
-    let parsed = raw_value.parse::<f64>().map_err(|_| {
+    let parsed = onda_run::parse_run_param_value(raw_value).map_err(|_| {
         format!("invalid parameter value '{raw_value}' for '{name}', expected number")
     })?;
     Ok((name.to_owned(), parsed))

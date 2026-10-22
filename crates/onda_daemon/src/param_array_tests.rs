@@ -20,6 +20,38 @@ fn run_with_options(source: &str, options: RunOptions) -> RunSession {
 }
 
 #[test]
+fn wide_i64_controls_preserve_defaults_updates_restart_and_reset() {
+    let mut run = run(r#"
+params:
+  seeds: i64[2] = [9007199254740993, -9223372036854775808]
+sample:
+  out1 = f32(seeds[0] - 9007199254740992)
+"#);
+    let initial = crate::RunParamValue::I64(9_007_199_254_740_993);
+    assert_eq!(run.param_info()[0].default, Some(initial));
+    assert_eq!(run.param_info()[0].value, Some(initial));
+    assert_eq!(run.render_block().unwrap()[0][0], 1.0);
+    let next = crate::RunParamValue::I64(9_007_199_254_740_995);
+    run.set_param("seeds[0]", next).unwrap();
+    assert_eq!(run.param_info()[0].value, Some(next));
+    assert_eq!(run.render_block().unwrap()[0][0], 3.0);
+    run.restart().unwrap();
+    assert_eq!(run.render_block().unwrap()[0][0], 3.0);
+    run.set_param("seeds[1]", crate::RunParamValue::I64(i64::MAX))
+        .unwrap();
+    assert_eq!(
+        run.param_info()[1].value,
+        Some(crate::RunParamValue::I64(i64::MAX))
+    );
+    run.reset_params().unwrap();
+    assert_eq!(run.render_block().unwrap()[0][0], 1.0);
+    assert_eq!(
+        run.param_info()[1].value,
+        Some(crate::RunParamValue::I64(i64::MIN))
+    );
+}
+
+#[test]
 fn primitive_arrays_have_independent_controls_defaults_and_reset() {
     for ty in ["f32", "f64", "i32", "i64", "bool"] {
         let (defaults, domain, output) = if ty == "bool" {
@@ -39,7 +71,10 @@ fn primitive_arrays_have_independent_controls_defaults_and_reset() {
         assert_eq!(info[1].type_repr, ty);
         assert_eq!(info[1].array.as_ref().unwrap().length, 2);
         assert_eq!(info[1].array.as_ref().unwrap().index, 1);
-        assert_eq!(info[1].default, Some(if ty == "bool" { 0.0 } else { 4.0 }));
+        assert_eq!(
+            info[1].default.map(crate::RunParamValue::as_f64),
+            Some(if ty == "bool" { 0.0 } else { 4.0 })
+        );
         let initial = run.render_block().unwrap()[0][0];
         assert_eq!(initial, if ty == "bool" { 1.0 } else { 6.0 });
         run.set_param_f64("values[1]", 100.0).unwrap();
@@ -57,6 +92,22 @@ fn primitive_arrays_have_independent_controls_defaults_and_reset() {
         run.reset_params().unwrap();
         assert_eq!(run.render_block().unwrap()[0][0], initial);
     }
+}
+
+#[test]
+fn wide_floating_inputs_are_validated_against_the_parameter_type() {
+    let mut run = run("params:\n  integer: i64 = 1\n  floating: f64 = 1\nsample:\n  out1 = f32(floating / 10000000000000000000.0)\n");
+    let wide = crate::RunParamValue::F64(1e19);
+    run.set_param("floating", wide).unwrap();
+    assert_eq!(run.param_info()[1].value, Some(wide));
+    assert_eq!(run.render_block().unwrap()[0][0], 1.0);
+    for value in [1e19, -1e19, i64::MIN as f64, i64::MAX as f64, f64::NAN] {
+        assert!(run.set_param_f64("integer", value).is_err());
+    }
+    assert_eq!(
+        run.param_info()[0].value,
+        Some(crate::RunParamValue::I64(1))
+    );
 }
 
 #[test]

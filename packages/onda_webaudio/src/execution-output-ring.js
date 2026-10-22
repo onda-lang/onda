@@ -63,10 +63,13 @@ export function createExecutionOutputRing(
     throw new Error("combined execution-output capacity exceeds the JavaScript size limit");
   }
   const slotBytes = align4(SLOT_HEADER_BYTES + payloadBytes);
-  const slotCount = Math.max(
+  const availableSlots = Math.max(
     1,
     Math.min(MAX_RING_SLOTS, Math.floor(budgetBytes / slotBytes)),
   );
+  // A power-of-two capacity divides the u32 counter period, so wrapping the
+  // counters cannot alias a slot that still holds an unread record.
+  const slotCount = 2 ** Math.floor(Math.log2(availableSlots));
   const totalBytes = CONTROL_BYTES + slotCount * slotBytes;
   let buffer;
   try {
@@ -105,6 +108,8 @@ export function openExecutionOutputRing(buffer) {
     (control[CONTROL_MAGIC] >>> 0) !== RING_MAGIC
     || (control[CONTROL_VERSION] >>> 0) !== RING_VERSION
     || slotCount === 0
+    || slotCount > MAX_RING_SLOTS
+    || (slotCount & (slotCount - 1)) !== 0
     || CONTROL_BYTES + slotCount * slotBytes !== buffer.byteLength
   ) {
     throw new Error("execution-output ring has an invalid layout");

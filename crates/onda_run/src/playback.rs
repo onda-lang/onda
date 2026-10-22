@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,7 +15,7 @@ use onda_cpal::{
 use onda_daemon::{
     DaemonConfig, DaemonSession, InitialBufferBinding, RunBufferInfo, RunDelegateBatch,
     RunDelegateInfo, RunDelegateOccurrence, RunEventInfo, RunEventValue, RunOptions, RunParamInfo,
-    RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
+    RunParamValue, RunPrintBatch, RunPrintEntry, RunScheduledEvent, RunSession,
 };
 use onda_project::{BufferAsset, ProjectLimits};
 use serde::Deserialize;
@@ -29,6 +29,7 @@ use crate::{
 };
 
 mod buffer_worker;
+mod control_reader;
 use buffer_worker::{
     buffer_load_response, submit_buffer_load, write_buffer_replies, BufferLoadStatus, BufferWorker,
     PendingBufferReply,
@@ -62,7 +63,7 @@ pub struct PlaybackLaunch {
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
-    pub param_sets: Vec<(String, f64)>,
+    pub param_sets: Vec<(String, RunParamValue)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
     pub project_buffer_bindings: Vec<ProjectBufferBinding>,
 }
@@ -167,7 +168,7 @@ enum PlaybackControlCommand {
     },
     SetParam {
         name: String,
-        value: f64,
+        value: RunParamValue,
         reply: Option<PlaybackReply<()>>,
     },
     TriggerEvent {
@@ -200,7 +201,7 @@ struct ScopeRing {
 }
 
 struct PendingParamUpdate {
-    value: f64,
+    value: RunParamValue,
     replies: Vec<PlaybackReply<()>>,
 }
 
@@ -699,7 +700,7 @@ pub fn format_run_param_info(params: &[RunParamInfo]) -> String {
         };
         let default = param
             .default
-            .map(|value| format!(" = {value}"))
+            .map(|value| format!(" = {}", crate::param_value_repr(value)))
             .unwrap_or_default();
         let scalar = if param.scalar { "" } else { " (non-scalar)" };
         lines.push(format!(
@@ -921,7 +922,7 @@ fn spawn_run_render_thread(
                 session
                     .run_mut(&launch.input)
                     .expect("run should be active while applying params")
-                    .set_param_f64(name, *value)
+                    .set_param(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
             }
 
@@ -1659,7 +1660,7 @@ fn flush_pending_param_updates(
             .run_mut(input)
             .ok_or_else(|| "run is not active".to_owned())
             .and_then(|run| {
-                run.set_param_f64(&name, update.value)
+                run.set_param(&name, update.value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))
             });
         for reply in update.replies {
@@ -1825,7 +1826,7 @@ fn handle_run_control_client(
     let reader_stream = stream
         .try_clone()
         .map_err(|err| format!("failed to clone control socket: {err}"))?;
-    let mut reader = BufReader::new(reader_stream);
+    let mut reader = control_reader::ControlReader::new(BufReader::new(reader_stream));
     let mut writer = BufWriter::new(stream);
     let mut pending_buffer_replies = Vec::new();
 
@@ -1840,10 +1841,9 @@ fn handle_run_control_client(
             &context.pending_print_overflow,
             delegate_subscription.enabled.then_some(subscription_id),
         )?;
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return Ok(()),
-            Ok(_) => {}
+        let request = match reader.read_request() {
+            Ok(None) => return Ok(()),
+            Ok(Some(request)) => request,
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock
                     || err.kind() == std::io::ErrorKind::TimedOut =>
@@ -1851,15 +1851,7 @@ fn handle_run_control_client(
                 continue;
             }
             Err(err) => return Err(format!("failed to read control request: {err}")),
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request: PlaybackControlRequest = serde_json::from_str(trimmed)
-            .map_err(|err| format!("invalid control request json: {err}"))?;
+        };
         if request.command == "bindBufferWav" {
             match submit_buffer_load(request.name, request.path, &context.control_tx) {
                 Ok(result) => pending_buffer_replies.push(PendingBufferReply {
@@ -2370,19 +2362,7 @@ fn run_control_response(
             let raw_value = request
                 .value
                 .ok_or_else(|| "setParam requires 'value'".to_owned())?;
-            let value = match raw_value {
-                Value::Bool(value) => {
-                    if value {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
-                Value::Number(value) => value
-                    .as_f64()
-                    .ok_or_else(|| "setParam value must be numeric".to_owned())?,
-                _ => return Err("setParam value must be number or boolean".to_owned()),
-            };
+            let value = crate::param_value_from_json(&raw_value)?;
             if request_id.is_none() {
                 control_tx
                     .send(PlaybackControlCommand::SetParam {
@@ -2626,7 +2606,7 @@ mod tests {
                         fast_math: false,
                         show_meta: false,
                         control_json: true,
-                        param_sets: param_sets.clone(),
+                        param_sets: param_sets.iter().map(|(name, value)| (name.clone(), onda_daemon::RunParamValue::F64(*value))).collect(),
                         buffer_bindings: Vec::new(),
                         project_buffer_bindings: Vec::new(),
                     },
@@ -3086,7 +3066,7 @@ mod tests {
         match control_rx.try_recv().expect("setParam should be queued") {
             PlaybackControlCommand::SetParam { name, value, reply } => {
                 assert_eq!(name, "gain");
-                assert_eq!(value, 0.5);
+                assert_eq!(value, onda_daemon::RunParamValue::F64(0.5));
                 assert!(reply.is_none());
             }
             _ => panic!("expected setParam command"),

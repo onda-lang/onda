@@ -3,17 +3,15 @@ name: CI
 on:
   pull_request:
     paths-ignore:
-      - "**/*.md"
+      - "*.md"
       - "assets/**"
       - "docs/**"
-      - "website/**"
   push:
     branches: [main]
     paths-ignore:
-      - "**/*.md"
+      - "*.md"
       - "assets/**"
       - "docs/**"
-      - "website/**"
 
 permissions:
   contents: read
@@ -74,10 +72,7 @@ jobs:
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace \
-            --exclude onda_cli \
-            --exclude onda_egui \
-            --exclude onda_webview
+          cargo test --workspace
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
@@ -140,6 +135,7 @@ jobs:
           npm run check:versions
           npm run check:stdlib-docs
           npm run check:api-docs
+          npm run test:run-view
           npm run test:playground
           npm test --workspace @onda-lang/processor-abi
           npm test --workspace @onda-lang/binaryen-web

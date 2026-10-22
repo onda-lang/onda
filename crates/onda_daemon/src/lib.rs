@@ -1,4 +1,5 @@
 mod run_session;
+pub use onda_mir::ScalarValue as RunParamValue;
 
 /// Default host-owned, block-level linear ramp duration for continuous float controls.
 pub const INTERACTIVE_PARAM_SMOOTHING_SECONDS: f64 = 0.03;
@@ -374,7 +375,10 @@ mod tests {
         let param_info = session.run(&main).expect("active run").param_info();
         assert_eq!(param_info.len(), 1);
         assert_eq!(param_info[0].name, "gain");
-        assert_eq!(param_info[0].default, Some(0.25));
+        assert_eq!(
+            param_info[0].default.map(crate::RunParamValue::as_f64),
+            Some(0.25)
+        );
 
         let first = session
             .render_run_block(&main)
@@ -1114,7 +1118,9 @@ mod tests {
 
         assert!(params_reset[0][0] > first[0][0]);
         assert_eq!(
-            session.run(&main).expect("active run").param_info()[0].value,
+            session.run(&main).expect("active run").param_info()[0]
+                .value
+                .map(crate::RunParamValue::as_f64),
             Some(2.0)
         );
         fs::remove_dir_all(&dir).ok();

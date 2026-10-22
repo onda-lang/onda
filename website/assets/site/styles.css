@@ -222,6 +222,9 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
   background: #102943;
   color: #c9dbf2;
 }
+@container (max-width: 30rem) {
+  .home-example-code .primary-button { position: relative; top: auto; right: auto; margin: .75rem .75rem 0; }
+}
 .doc-list { border-top: 1px solid var(--line); }
 .doc-list a { display: grid; grid-template-columns: 11.25rem 1fr; gap: 2rem; padding: 1rem 0; border-bottom: 1px solid var(--line); text-decoration: none; }
 .doc-list a:hover strong { text-decoration: underline; text-underline-offset: .2em; }

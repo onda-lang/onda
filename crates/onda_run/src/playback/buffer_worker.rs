@@ -182,6 +182,7 @@ impl BufferWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
 
     #[test]
     fn control_client_can_clear_and_shutdown_while_a_load_is_pending() {

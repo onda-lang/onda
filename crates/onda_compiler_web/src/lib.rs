@@ -1,7 +1,6 @@
 #![deny(clippy::all)]
 
 use std::borrow::Cow;
-#[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -43,6 +42,13 @@ enum CompileInputRequest<'a> {
     Typed(&'a CompileInputs),
     #[cfg(target_arch = "wasm32")]
     Json(&'a str),
+    #[cfg(target_arch = "wasm32")]
+    ProjectJson {
+        explicit: &'a str,
+        defaults: &'a str,
+        sample_rate: f32,
+        block_size: u32,
+    },
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -63,6 +69,30 @@ impl<'a> CompileInputRequest<'a> {
             Self::Typed(inputs) => Ok(Cow::Borrowed(inputs)),
             #[cfg(target_arch = "wasm32")]
             Self::Json(json) => resolve_web_compile_inputs(_program, json).map(Cow::Owned),
+            #[cfg(target_arch = "wasm32")]
+            Self::ProjectJson {
+                explicit,
+                defaults,
+                sample_rate,
+                block_size,
+            } => {
+                let constants = serde_json::from_str(defaults).map_err(|error| {
+                    vec![CompilerDiagnostic::configuration(format!(
+                        "invalid project constants: {error}"
+                    ))]
+                })?;
+                let explicit = resolve_web_compile_inputs(_program, explicit)?;
+                merge_project_constants(
+                    _program,
+                    &constants,
+                    onda_mir::CompileConfig {
+                        sample_rate,
+                        block_size,
+                    },
+                    &explicit,
+                )
+                .map(Cow::Owned)
+            }
         }
     }
 }
@@ -652,10 +682,18 @@ fn merged_project_compile_inputs(
     request: CompileInputRequest<'_>,
 ) -> Result<CompileInputs, Vec<CompilerDiagnostic>> {
     let explicit = request.resolve(program)?;
+    merge_project_constants(program, image.constants(), config, &explicit)
+}
+
+fn merge_project_constants(
+    program: &Program,
+    constants: &BTreeMap<String, onda_project::ProjectConstValue>,
+    config: onda_mir::CompileConfig,
+    explicit: &CompileInputs,
+) -> Result<CompileInputs, Vec<CompilerDiagnostic>> {
     let mut inputs = compile_inputs_from_literals(
         program,
-        image
-            .constants()
+        constants
             .iter()
             .filter(|(name, _)| !explicit.constants.contains_key(*name))
             .map(|(name, value)| (name.clone(), value.onda_literal())),
@@ -1369,6 +1407,7 @@ pub fn current_stdlib_digest() -> String {
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub struct WebProjectImageBuilder {
     sources: Option<SourceImage>,
+    constants: BTreeMap<String, onda_project::ProjectConstValue>,
     buffer_bindings: BTreeMap<String, AssetId>,
     assets: BTreeMap<AssetId, BufferAsset>,
     total_buffer_bytes: usize,
@@ -1378,7 +1417,10 @@ pub struct WebProjectImageBuilder {
 #[wasm_bindgen::prelude::wasm_bindgen]
 impl WebProjectImageBuilder {
     #[wasm_bindgen::prelude::wasm_bindgen(constructor)]
-    pub fn new(source_image_json: &str) -> Result<Self, wasm_bindgen::JsValue> {
+    pub fn new(
+        source_image_json: &str,
+        constants_json: &str,
+    ) -> Result<Self, wasm_bindgen::JsValue> {
         let sources: SourceImage =
             serde_json::from_str(source_image_json).map_err(project_js_error)?;
         sources
@@ -1386,6 +1428,7 @@ impl WebProjectImageBuilder {
             .map_err(project_js_error)?;
         Ok(Self {
             sources: Some(sources),
+            constants: serde_json::from_str(constants_json).map_err(project_js_error)?,
             buffer_bindings: BTreeMap::new(),
             assets: BTreeMap::new(),
             total_buffer_bytes: 0,
@@ -1445,8 +1488,9 @@ impl WebProjectImageBuilder {
             .sources
             .take()
             .ok_or_else(|| project_js_error("project image builder may only be serialized once"))?;
-        ProjectImage::new(
+        ProjectImage::new_with_constants(
             sources,
+            std::mem::take(&mut self.constants),
             std::mem::take(&mut self.buffer_bindings),
             std::mem::take(&mut self.assets),
         )
@@ -1778,6 +1822,7 @@ pub fn inspect_source_workspace_compile_constants(
     sample_rate: f32,
     block_size: u32,
     constants_json: &str,
+    project_constants_json: &str,
 ) -> Result<String, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
     inspect_project_sources_compile_constants_with_request(
@@ -1785,7 +1830,12 @@ pub fn inspect_source_workspace_compile_constants(
         &sources,
         sample_rate,
         block_size,
-        CompileInputRequest::Json(constants_json),
+        CompileInputRequest::ProjectJson {
+            explicit: constants_json,
+            defaults: project_constants_json,
+            sample_rate,
+            block_size,
+        },
     )
     .map_err(compiler_failure_js)
     .and_then(encode_web_compile_const_descriptors)
@@ -1884,6 +1934,7 @@ pub fn compile_source_workspace_to_mir_messagepack(
     sample_rate: f32,
     block_size: u32,
     constants_json: &str,
+    project_constants_json: &str,
 ) -> Result<FrontendMessagePackCompilation, wasm_bindgen::JsValue> {
     let sources = decode_project_sources_json(sources_json)?;
     lower_project_sources_to_mir_with_manifest_and_request(
@@ -1891,7 +1942,12 @@ pub fn compile_source_workspace_to_mir_messagepack(
         &sources,
         sample_rate,
         block_size,
-        CompileInputRequest::Json(constants_json),
+        CompileInputRequest::ProjectJson {
+            explicit: constants_json,
+            defaults: project_constants_json,
+            sample_rate,
+            block_size,
+        },
     )
     .and_then(|compiled| {
         encode_mir_compilation(

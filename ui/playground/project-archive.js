@@ -66,6 +66,7 @@ export async function decodeProjectArchive(input, projectApi, selectProject = nu
       entry: image.sourceGraph.entry,
       active: image.sourceGraph.entry,
       sources,
+      constants: manifest.constants ?? {},
     },
     buffers,
     image,

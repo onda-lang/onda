@@ -9,7 +9,38 @@ pub(crate) enum NumberValue {
     Integer(i64),
 }
 
+impl From<f64> for NumberValue {
+    fn from(value: f64) -> Self {
+        Self::Float(value)
+    }
+}
+
 impl NumberValue {
+    pub(crate) fn from_json(ty: &str, value: Option<&serde_json::Value>) -> Self {
+        if matches!(ty, "i32" | "i64") {
+            Self::Integer(
+                value
+                    .and_then(|value| {
+                        value
+                            .as_str()
+                            .and_then(|text| text.parse().ok())
+                            .or_else(|| value.as_i64())
+                            .or_else(|| value.as_f64().map(|value| value.round() as i64))
+                    })
+                    .unwrap_or(0),
+            )
+        } else {
+            Self::Float(value.and_then(serde_json::Value::as_f64).unwrap_or(0.0))
+        }
+    }
+
+    pub(crate) fn to_json(self, ty: &str) -> serde_json::Value {
+        if ty == "i64" {
+            serde_json::Value::String(self.as_i64().to_string())
+        } else {
+            serde_json::Value::from(self.as_f64())
+        }
+    }
     pub(crate) fn as_f64(self) -> f64 {
         match self {
             Self::Float(value) => value,

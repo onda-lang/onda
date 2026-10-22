@@ -324,7 +324,7 @@ Non-crate directories of note:
 
 ### `onda_daemon` (`crates/onda_daemon/src`)
 - `lib.rs` — session manager and transport entry points.
-- `analysis_session.rs` — in-memory document overlays and `analyze_document` snapshots.
+- Analysis sessions and document overlays are re-exported from `onda_semantics::AnalysisSession`.
 - `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
   param updates, and `render_block`.
   `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
@@ -338,6 +338,10 @@ Non-crate directories of note:
   The compiler and processor snapshots contain no parameter smoothing state.
 
 ### `onda_run` (`crates/onda_run/src`)
+- `child_session.rs` — playback child lifetime, readiness messages, and bounded UTF-8 diagnostics.
+- `control_client.rs` — controller-side JSON control connection and requests.
+- `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
+- `param_value_json.rs` — lossless scalar control transport, including decimal strings for `i64`.
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
   filesystem watcher for the entry, transitive non-stdlib sources, project manifest/entry/assets,
   unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
@@ -405,9 +409,7 @@ Non-crate directories of note:
   actions for the host to apply; an empty list renders no section. Stock Onda leaves it unused.
 
 ### `onda_webview` (`crates/onda_webview/src`)
-- `lib.rs` — webview run host.
-- `ipc.rs` — JSON IPC with the run control socket.
-- `process.rs` — `onda run play` child process management.
+- `lib.rs` — webview run host, using `onda_run::RunController` for child processes and control transport.
 
 ### Host-provided input controls
 
@@ -469,7 +471,7 @@ changes redraw existing waveform canvases independently.
   `examples/web/onda_wasm_aot_sample_player`.
 - Runtime API usage: `onda_runtime/src/lib.rs`.
 - C ABI surface: `onda_api/src/lib.rs`, `include/onda.h`.
-- Daemon analysis/run sessions: `onda_daemon/src/{analysis_session,run_session}.rs`.
+- Analysis sessions: `onda_semantics/src/analysis_session.rs`; run sessions: `onda_daemon/src/run_session.rs`.
 - Real-time playback: `onda_run/src/{lib,playback}.rs`.
 - LSP: `onda_cli/src/main.rs` dispatches to `onda_lsp/src/lib.rs` → `server.rs` / `server/*`.
 

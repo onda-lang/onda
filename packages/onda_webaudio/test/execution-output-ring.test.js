@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EXECUTION_OPERATION_EVENT,
+  EXECUTION_OUTPUT_RING_READ_INDEX,
+  EXECUTION_OUTPUT_RING_WRITE_INDEX,
   createExecutionOutputRing,
   drainExecutionOutputRing,
   openExecutionOutputRing,
@@ -25,6 +27,22 @@ function entry(overrides = {}) {
     ...overrides,
   };
 }
+
+test("shared execution-output ring preserves unread records across u32 rollover", () => {
+  for (const budget of [144, 240, 1488, 4096]) {
+    const ring = openExecutionOutputRing(createExecutionOutputRing(0, 0, budget));
+    Atomics.store(ring.control, EXECUTION_OUTPUT_RING_READ_INDEX, -1);
+    Atomics.store(ring.control, EXECUTION_OUTPUT_RING_WRITE_INDEX, -1);
+    for (let index = 0; index < ring.slotCount; index += 1) {
+      assert.equal(writeExecutionOutputRing(ring, entry({ operationIndex: index })), true);
+    }
+    assert.equal(writeExecutionOutputRing(ring, entry()), false);
+    const received = [];
+    drainExecutionOutputRing(ring, (output) => received.push(output.operationIndex));
+    assert.deepEqual(received, Array.from({ length: ring.slotCount }, (_, index) => index));
+    assert.equal(drainExecutionOutputRing(ring, () => assert.fail("ring is empty")), 0);
+  }
+});
 
 test("shared execution-output ring preserves metadata and payloads across wraparound", () => {
   // A 60-byte slot and a 128-byte budget produce exactly two slots.

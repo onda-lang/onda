@@ -1,37 +1,38 @@
+use super::ControllerEvent;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::Sender,
+    Arc, Mutex,
+};
 use std::thread;
 
-use serde_json::{json, Value};
-use tao::event_loop::EventLoopProxy;
-
-use crate::UserEvent;
-
-/// Manages the TCP connection to the `onda run play --control-json` subprocess.
 #[derive(Clone)]
-pub struct IpcBridge {
+pub(super) struct IpcBridge {
     writer: Arc<Mutex<Option<BufWriter<TcpStream>>>>,
     request_id: Arc<AtomicU64>,
 }
 
 impl IpcBridge {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             writer: Arc::new(Mutex::new(None)),
             request_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Connect to the TCP control socket at the given port.
-    /// Spawns a background reader thread that forwards responses as `UserEvent::TcpResponse`.
-    pub fn connect(&self, port: u16, proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
+    pub(super) fn connect(
+        &self,
+        port: u16,
+        generation: u64,
+        event_tx: Sender<ControllerEvent>,
+    ) -> Result<(), String> {
         self.disconnect();
 
         let stream = TcpStream::connect(("127.0.0.1", port))
             .map_err(|e| format!("TCP connect failed: {e}"))?;
-
         let reader_stream = stream
             .try_clone()
             .map_err(|e| format!("TCP clone failed: {e}"))?;
@@ -40,7 +41,6 @@ impl IpcBridge {
             *writer = Some(BufWriter::new(stream));
         }
 
-        // Background reader thread.
         thread::spawn(move || {
             let reader = BufReader::new(reader_stream);
             for line in reader.lines() {
@@ -48,7 +48,10 @@ impl IpcBridge {
                     Ok(line) => {
                         let trimmed = line.trim().to_owned();
                         if !trimmed.is_empty() {
-                            let _ = proxy.send_event(UserEvent::TcpResponse(trimmed));
+                            let _ = event_tx.send(ControllerEvent::TcpResponse {
+                                generation,
+                                line: trimmed,
+                            });
                         }
                     }
                     Err(_) => break,
@@ -59,8 +62,7 @@ impl IpcBridge {
         Ok(())
     }
 
-    /// Disconnect from the TCP control socket.
-    pub fn disconnect(&self) {
+    pub(super) fn disconnect(&self) {
         if let Ok(mut writer) = self.writer.lock() {
             if let Some(writer) = writer.as_mut() {
                 let _ = writer.get_ref().shutdown(std::net::Shutdown::Both);
@@ -69,45 +71,48 @@ impl IpcBridge {
         }
     }
 
-    /// Send a JSON command to the subprocess over TCP.
-    pub fn send_command(&self, command: &str, payload: &Value) {
+    pub(super) fn send_command(&self, command: &str, payload: &Value) -> Option<u64> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
-        self.send_command_inner(Some(id), command, payload);
+        self.send_command_inner(Some(id), command, payload)
+            .then_some(id)
     }
 
-    /// Send a JSON notification that does not expect a reply.
-    pub fn send_command_notification(&self, command: &str, payload: &Value) {
-        self.send_command_inner(None, command, payload);
+    pub(super) fn send_command_notification(&self, command: &str, payload: &Value) {
+        let _ = self.send_command_inner(None, command, payload);
     }
 
-    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) {
-        let mut request = json!({
-            "command": command,
-        });
+    fn send_command_inner(&self, id: Option<u64>, command: &str, payload: &Value) -> bool {
+        let mut request = json!({ "command": command });
         if let Some(id) = id {
             if let Value::Object(ref mut req_map) = request {
                 req_map.insert("id".to_owned(), Value::from(id));
             }
         }
 
-        // Merge payload fields into the request object.
         if let Value::Object(map) = payload {
             if let Value::Object(ref mut req_map) = request {
-                for (k, v) in map {
-                    req_map.insert(k.clone(), v.clone());
+                for (key, value) in map {
+                    req_map.insert(key.clone(), value.clone());
                 }
             }
         }
 
         if let Ok(mut writer) = self.writer.lock() {
             let Some(writer) = writer.as_mut() else {
-                return;
+                return false;
             };
             let line = serde_json::to_string(&request).unwrap_or_default();
-            let _ = writer.write_all(line.as_bytes());
-            let _ = writer.write_all(b"\n");
-            let _ = writer.flush();
+            return writer.write_all(line.as_bytes()).is_ok()
+                && writer.write_all(b"\n").is_ok()
+                && writer.flush().is_ok();
         }
+        false
     }
 
+    pub(super) fn is_connected(&self) -> bool {
+        self.writer
+            .lock()
+            .map(|writer| writer.is_some())
+            .unwrap_or(false)
+    }
 }
