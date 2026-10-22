@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{CompareOp, Intrinsic, LocalId, ScalarType, UnaryOp};
 
+use super::super::collect_block_writes;
 use super::*;
 
 type Symbol = usize;
@@ -399,36 +400,9 @@ impl Proof<'_, '_> {
 }
 
 fn written_locals(blocks: &[&Block]) -> Vec<LocalId> {
-    fn collect(block: &Block, written: &mut HashSet<LocalId>) {
-        for statement in &block.statements {
-            match &statement.kind {
-                StatementKind::Assign {
-                    destination:
-                        Place {
-                            base: PlaceBase::Local(local),
-                            ..
-                        },
-                    ..
-                } => {
-                    written.insert(*local);
-                }
-                StatementKind::Call { results, .. } => written.extend(results),
-                StatementKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    collect(then_block, written);
-                    collect(else_block, written);
-                }
-                StatementKind::Loop { body } => collect(body, written),
-                _ => {}
-            }
-        }
-    }
     let mut written = HashSet::new();
     for block in blocks {
-        collect(block, &mut written);
+        collect_block_writes(block, &mut written);
     }
     let mut written: Vec<_> = written.into_iter().collect();
     written.sort_unstable();
