@@ -2605,6 +2605,13 @@ fn analyze_flow_assignment(
                 rewrite_proc_alias_calls_for_validation(expr, local_proc_aliases);
             let mut targets_ok = true;
             for target_name in targets.iter().filter_map(|target| target.binding()) {
+                if input_names.contains(target_name) || param_names.contains(target_name) {
+                    target_error!(format!(
+                        "cannot assign to immutable symbol '{target_name}' in {}",
+                        diagnostic_scope
+                    ));
+                    targets_ok = false;
+                }
                 targets_ok &= validate_block_bound_surface_var_name(
                     target_name,
                     target_loc.clone(),

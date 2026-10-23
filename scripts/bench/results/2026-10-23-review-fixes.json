@@ -1,0 +1,2880 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+  "method": {
+    "compiler_rust_release_opt_level": 2,
+    "generated_dsp_llvm_opt_level": 3,
+    "floating_point_permissions": "strict defaults; no reassociation, contraction or no-signed-zeros",
+    "runtime": "one before/after sweep, five 30ms rounds per program; no concurrent agent builds/tests during timing; CPU6, 48kHz, 128-frame blocks; clocks uncontrolled",
+    "acceptance": "exact native-object and Wasm-file equality, and byte-exact startup and warmed captures within each backend; timing noise is not credited as an improvement",
+    "example_cross_backend_tolerance": "relaxed for existing feedback divergence; independent 50-scenario x 2-configuration parity suite uses its ordinary tolerances",
+    "final_validation": "additional tuple immutability validation was added after timing; the final worker reproduces every timed artifact byte-for-byte"
+  },
+  "final_worker_sha256": "0b1ea3756c3402bd9376957eb1d46b71a2527df1c59738b6691ee8849e6ced59",
+  "production_source_sha256": {
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/state_alias.rs": "1cbfccb59fc66b486a74792cf315bda759bc0c0c27ba20580b34ecb5f0ea2e3b",
+    "crates/onda_mir/src/passes/bounds_proofs/relations.rs": "dac18edb332150a56c411900a61ea7fc4913b7ef8d3ccd7abecf69e6035dd89b",
+    "crates/onda_mir/src/passes/bounds_proofs/relations/affine.rs": "4a5d27554558ffe0f7b2b907ef1b536b4457a14cb58a3278eb91ed2a60c88ca4",
+    "crates/onda_semantics/src/mir_lowering/data.rs": "d568965e8e816a431203c86fc488a9e45d535e240c1019879b41a50fadab97d9",
+    "crates/onda_semantics/src/pipeline.rs": "22e90c57a5b7e45cb9ce8b195149336ccc19b18ee0695f25e4154f7c0e120a75",
+    "crates/onda_semantics/src/pipeline/tuple_assignments.rs": "e3a0a6c3509d0d5e0130d4cd29167dac720cdec3150ce35e9d135b74319db3a4",
+    "crates/onda_semantics/src/stmt_analysis/runtime_stmt_analysis.rs": "5ef24c836f293fb0ce5f703da1f2f0472664ea809bfa8a195cff60ae41864ecf"
+  },
+  "scaling": {
+    "method": "Exact HEAD optimizer vs working tree; identical Rust release opt-level=2; trusted JSON decoded before timing; one unchanged optimization round; CPU 6; alternating process order; no concurrent agent builds/tests",
+    "binaries": {
+      "before": "ceeaaa127b6e4bd8bbfc9c1f35c8a4ade965292ca9d47eff1ad0c6e01f3073bf",
+      "after": "6f2dfa087e111ae2b25ca3d3e0aeafedf8135f0e67b86378cfadfca4b49c5b97"
+    },
+    "cases": [
+      {
+        "accesses": 800,
+        "input_sha256": "ce11f1753a9cdda3c6c7a7a9c7396a90561c79f07bf6f697b3d0ff90d8994698",
+        "rounds": [
+          {
+            "implementation": "before",
+            "round": 0,
+            "ns": 152418512.0,
+            "stdout": "target/standards_review/scaling800.json: 152.418512ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 0,
+            "ns": 5547465.0,
+            "stdout": "target/standards_review/scaling800.json: 5.547465ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 1,
+            "ns": 5589008.0,
+            "stdout": "target/standards_review/scaling800.json: 5.589008ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 1,
+            "ns": 156487082.0,
+            "stdout": "target/standards_review/scaling800.json: 156.487082ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 2,
+            "ns": 157502124.0,
+            "stdout": "target/standards_review/scaling800.json: 157.502124ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 2,
+            "ns": 5576441.0,
+            "stdout": "target/standards_review/scaling800.json: 5.576441ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 156487082.0,
+          "after": 5576441.0
+        },
+        "speedup": 28.06217836788733
+      },
+      {
+        "accesses": 1600,
+        "input_sha256": "8854b70caf9aa95c8c44aca93753e47b3720f3f63913006858bb3617d8dbd44b",
+        "rounds": [
+          {
+            "implementation": "before",
+            "round": 0,
+            "ns": 622857935.0,
+            "stdout": "target/standards_review/scaling1600.json: 622.857935ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 0,
+            "ns": 11345103.0,
+            "stdout": "target/standards_review/scaling1600.json: 11.345103ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 1,
+            "ns": 11285507.0,
+            "stdout": "target/standards_review/scaling1600.json: 11.285507ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 1,
+            "ns": 623385317.0,
+            "stdout": "target/standards_review/scaling1600.json: 623.385317ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 2,
+            "ns": 621884083.0,
+            "stdout": "target/standards_review/scaling1600.json: 621.884083ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 2,
+            "ns": 11429183.0,
+            "stdout": "target/standards_review/scaling1600.json: 11.429183ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 622857935.0,
+          "after": 11345103.0
+        },
+        "speedup": 54.90103835989854
+      },
+      {
+        "accesses": 3200,
+        "input_sha256": "cac6a859d05d04b24a7e31892b64b1ba875c677e9cf4e94595a7ecfe8053273d",
+        "rounds": [
+          {
+            "implementation": "before",
+            "round": 0,
+            "ns": 2500290323.0,
+            "stdout": "target/standards_review/scaling3200.json: 2.500290323s, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 0,
+            "ns": 23011291.0,
+            "stdout": "target/standards_review/scaling3200.json: 23.011291ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 1,
+            "ns": 22856523.0,
+            "stdout": "target/standards_review/scaling3200.json: 22.856523ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 1,
+            "ns": 2495025479.0,
+            "stdout": "target/standards_review/scaling3200.json: 2.495025479s, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 2,
+            "ns": 2498964790.0,
+            "stdout": "target/standards_review/scaling3200.json: 2.49896479s, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 2,
+            "ns": 22986949.0,
+            "stdout": "target/standards_review/scaling3200.json: 22.986949ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 2498964790.0,
+          "after": 22986949.0
+        },
+        "speedup": 108.71233020093271
+      },
+      {
+        "accesses": 6400,
+        "input_sha256": "14ce733a512a81a4c15e76ef388258da4123b215846146936b1367475d1549ea",
+        "rounds": [
+          {
+            "implementation": "before",
+            "round": 0,
+            "ns": 10179766244.0,
+            "stdout": "target/standards_review/scaling6400.json: 10.179766244s, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 0,
+            "ns": 48168642.0,
+            "stdout": "target/standards_review/scaling6400.json: 48.168642ms, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 1,
+            "ns": 47814344.0,
+            "stdout": "target/standards_review/scaling6400.json: 47.814344ms, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 1,
+            "ns": 10140044723.0,
+            "stdout": "target/standards_review/scaling6400.json: 10.140044723s, 1 rounds"
+          },
+          {
+            "implementation": "before",
+            "round": 2,
+            "ns": 10177350414.0,
+            "stdout": "target/standards_review/scaling6400.json: 10.177350414s, 1 rounds"
+          },
+          {
+            "implementation": "after",
+            "round": 2,
+            "ns": 48969193.0,
+            "stdout": "target/standards_review/scaling6400.json: 48.969193ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 10177350414.0,
+          "after": 48168642.0
+        },
+        "speedup": 211.28580735159608
+      }
+    ]
+  },
+  "validation": {
+    "mir_and_native_checks_including_doctest": 359,
+    "semantic_tests": 1086,
+    "example_tests": 827,
+    "example_tests_ignored": 1,
+    "javascript_tests": 104,
+    "wasm_corpus_fixtures": 52,
+    "parity_scenarios": 50,
+    "parity_configurations": 2
+  },
+  "suites": {
+    "kernels": {
+      "before_metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": null,
+          "filter": "state-window|array-guarded|operator-|slice-|voice-bank",
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/review-fixes/baseline-kernels",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": null,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "sha256": "031c66925744763a8a08c7f7375ba6691cb53b8ff7624c418eb6ebc6cd3fabc6"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "slice-fixed",
+          "slice-dynamic",
+          "voice-bank-16",
+          "voice-bank-256",
+          "voice-bank-4096",
+          "state-window-array-f32",
+          "state-window-shared-array-f32",
+          "state-window-slice-f32",
+          "state-window-shared-slice-f32",
+          "state-window-bounded-f32",
+          "array-guarded-helper-f32",
+          "array-guarded-state-f32",
+          "operator-arithmetic-f32",
+          "operator-division-f32",
+          "operator-reciprocal-f32",
+          "operator-reduction-f32",
+          "state-window-array-f64",
+          "state-window-shared-array-f64",
+          "state-window-slice-f64",
+          "state-window-shared-slice-f64",
+          "state-window-bounded-f64",
+          "array-guarded-helper-f64",
+          "array-guarded-state-f64",
+          "operator-arithmetic-f64",
+          "operator-division-f64",
+          "operator-reciprocal-f64",
+          "operator-reduction-f64"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.000",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "timed_after_worker": {
+        "path": "/home/francesco/Sources/onda/target/review-fixes/candidate-worker",
+        "sha256": "7601738652fae2088ab2f93a7e7e5bd1b3f8c4c17109cd2ce2c2a0f10aa7ddd1"
+      },
+      "programs": [
+        {
+          "name": "slice-fixed",
+          "artifacts": {
+            "o_sha256": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b",
+            "wasm_sha256": "058a3d6ccf234251456d294505876d78d2405f3b22c2ebd8706eeb6fa3c49075",
+            "native_captures": {
+              "output_sha256": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+              "warm-output_sha256": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+            },
+            "wasm_captures": {
+              "output_sha256": "d89629c15ad0e641a93d3bf4f82e99a86dda814b28c230dc24841f8c0cee2eb6",
+              "warm-output_sha256": "6059a0beaa509764b5f07b015a4a546a12892b12b226278e40ff0033dd5f483f"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7013702690601349,
+                "rounds_ns_per_frame": [
+                  0.6960330754518509,
+                  0.7018174380064011,
+                  0.7013702690601349,
+                  0.7037034779787064,
+                  0.7007710039615631
+                ],
+                "block_p99_us": 0.114
+              },
+              "after": {
+                "ns_per_frame": 0.7051618695259094,
+                "rounds_ns_per_frame": [
+                  0.7051618695259094,
+                  0.7048185020685196,
+                  0.7050916403532028,
+                  0.7053110748529434,
+                  0.707225501537323
+                ],
+                "block_p99_us": 0.106
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.833383202552797,
+                "rounds_ns_per_frame": [
+                  2.833383202552797,
+                  2.9625285863876356,
+                  2.9705024361610426,
+                  2.7738211750984285,
+                  2.7808639407157987
+                ],
+                "block_p99_us": 0.538999999889711
+              },
+              "after": {
+                "ns_per_frame": 2.870829045772548,
+                "rounds_ns_per_frame": [
+                  2.870829045772548,
+                  3.0099285840988124,
+                  2.991660594940185,
+                  2.7724319100379877,
+                  2.780104935169221
+                ],
+                "block_p99_us": 0.5619999999453285
+              }
+            }
+          }
+        },
+        {
+          "name": "slice-dynamic",
+          "artifacts": {
+            "o_sha256": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3",
+            "wasm_sha256": "0f776ee0dcc9a465cd2d2212c9dd7212aebeb39de17d5a016a9725cde0faffe1",
+            "native_captures": {
+              "output_sha256": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+              "warm-output_sha256": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+            },
+            "wasm_captures": {
+              "output_sha256": "d89629c15ad0e641a93d3bf4f82e99a86dda814b28c230dc24841f8c0cee2eb6",
+              "warm-output_sha256": "6059a0beaa509764b5f07b015a4a546a12892b12b226278e40ff0033dd5f483f"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7279718071222305,
+                "rounds_ns_per_frame": [
+                  0.7243998497724533,
+                  0.7280398905277252,
+                  0.7271690368652344,
+                  0.7279718071222305,
+                  0.7281728088855743
+                ],
+                "block_p99_us": 0.112
+              },
+              "after": {
+                "ns_per_frame": 0.7261025756597519,
+                "rounds_ns_per_frame": [
+                  0.7274407297372818,
+                  0.7271629422903061,
+                  0.7255066335201263,
+                  0.7253697067499161,
+                  0.7261025756597519
+                ],
+                "block_p99_us": 0.109
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.876923859119419,
+                "rounds_ns_per_frame": [
+                  2.876923859119419,
+                  3.013784527778631,
+                  3.0084934234619154,
+                  2.8046928644180293,
+                  2.809137105941773
+                ],
+                "block_p99_us": 0.5639999999402789
+              },
+              "after": {
+                "ns_per_frame": 2.852182269096374,
+                "rounds_ns_per_frame": [
+                  2.852182269096374,
+                  2.9925829172134417,
+                  2.980050206184386,
+                  2.779145479202261,
+                  2.780551195144659
+                ],
+                "block_p99_us": 0.5680000001575536
+              }
+            }
+          }
+        },
+        {
+          "name": "voice-bank-16",
+          "artifacts": {
+            "o_sha256": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c",
+            "wasm_sha256": "7b418e6fe307cd9c5257988ac9e3a8cae72a123b3dac27a08266b34cd4d4ab7e",
+            "native_captures": {
+              "output_sha256": "1171b9a8c6fca21b8688735804d0e6d13abd6acdabf41f5079770f63203d312b",
+              "warm-output_sha256": "d57e73a04bc0f886db8f910ff5e6407c1f5652756aef90cccffc3d997f2045e3"
+            },
+            "wasm_captures": {
+              "output_sha256": "6ce3ec88b40ea78f7765cd6d5035e1e99bbbc93f6ff101c595c064bd8ae0620e",
+              "warm-output_sha256": "eacd13847cff18448a6cd3e4a05971a4ac3b7f42da10e2b979435f7687a7ecfb"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 12.046884298324585,
+                "rounds_ns_per_frame": [
+                  12.139979362487793,
+                  12.044957160949707,
+                  12.029350757598877,
+                  12.046884298324585,
+                  12.078735113143921
+                ],
+                "block_p99_us": 1.5770000000000002
+              },
+              "after": {
+                "ns_per_frame": 12.09117865562439,
+                "rounds_ns_per_frame": [
+                  12.009670972824097,
+                  12.045129537582397,
+                  12.09117865562439,
+                  12.114938259124756,
+                  12.12389063835144
+                ],
+                "block_p99_us": 1.574
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 61.159887313842496,
+                "rounds_ns_per_frame": [
+                  61.12574195861822,
+                  61.159887313842496,
+                  61.562789916991875,
+                  61.29347991943364,
+                  60.96648979187023
+                ],
+                "block_p99_us": 9.535000000141736
+              },
+              "after": {
+                "ns_per_frame": 61.12438964843729,
+                "rounds_ns_per_frame": [
+                  61.12438964843729,
+                  61.061803817748746,
+                  61.63080978393524,
+                  61.147821426391424,
+                  61.03474235534664
+                ],
+                "block_p99_us": 9.681000000000495
+              }
+            }
+          }
+        },
+        {
+          "name": "voice-bank-256",
+          "artifacts": {
+            "o_sha256": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627",
+            "wasm_sha256": "0f59f7ad79717e051f430078909621015aaa42b2b0f7a7fc7be3c2651b782e87",
+            "native_captures": {
+              "output_sha256": "431d03cab0bb0d6b3f42e6af31a0c4d96afda48b972e079f5bebcbd07cf07861",
+              "warm-output_sha256": "d6365332976d21f03666cb85b65a947da2f669a0ef773e34cd1c1289d913d1da"
+            },
+            "wasm_captures": {
+              "output_sha256": "5aee3ca01df6deb050fc361b0b5c5c5b00ed0f2cfbab13df1f384ba51f329ad0",
+              "warm-output_sha256": "fcf7c109771568e3d0b6cf8a31a1c8a6c1e97319c842f48b7747ac3cdfa15f65"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 209.809326171875,
+                "rounds_ns_per_frame": [
+                  209.809326171875,
+                  209.60944366455078,
+                  209.9299201965332,
+                  209.94770050048828,
+                  209.73802947998047
+                ],
+                "block_p99_us": 28.736
+              },
+              "after": {
+                "ns_per_frame": 211.85441207885742,
+                "rounds_ns_per_frame": [
+                  212.16422271728516,
+                  211.19173431396484,
+                  211.85441207885742,
+                  211.261474609375,
+                  212.16157913208008
+                ],
+                "block_p99_us": 28.843
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 906.2341308593742,
+                "rounds_ns_per_frame": [
+                  911.8674316406263,
+                  899.2099304199231,
+                  906.037109374997,
+                  906.2341308593742,
+                  915.4474487304692
+                ],
+                "block_p99_us": 130.68200000020624
+              },
+              "after": {
+                "ns_per_frame": 908.437286376955,
+                "rounds_ns_per_frame": [
+                  909.0883941650397,
+                  893.6955566406259,
+                  904.2930145263667,
+                  908.437286376955,
+                  914.7079772949228
+                ],
+                "block_p99_us": 132.00000000006185
+              }
+            }
+          }
+        },
+        {
+          "name": "voice-bank-4096",
+          "artifacts": {
+            "o_sha256": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb",
+            "wasm_sha256": "be8161da829b1eeddfceadd3d65319c1f89e76befb79af46e97e73ba91f6d971",
+            "native_captures": {
+              "output_sha256": "79cb3ee64938f52143e95323fffa983e521137f52eb0b35d1b3932ac179d1928",
+              "warm-output_sha256": "492e4da5c8c30a7deb13276af95181020340b7e0cb76c5b69b4c35fa34eeb83f"
+            },
+            "wasm_captures": {
+              "output_sha256": "ffb7cfd4bdacf809577b350b39957d413c79939e44bf140abdcbc3d45706451b",
+              "warm-output_sha256": "36b982fe16ce7ea1634af8224213a5b439bc93f9858cff9175b0999b50e99df9"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 3523.7649841308594,
+                "rounds_ns_per_frame": [
+                  3537.1300048828125,
+                  3523.7649841308594,
+                  3517.6338806152344,
+                  3521.9629516601562,
+                  3527.5962524414062
+                ],
+                "block_p99_us": 460.433
+              },
+              "after": {
+                "ns_per_frame": 3533.2032470703125,
+                "rounds_ns_per_frame": [
+                  3529.0082092285156,
+                  3530.8633422851562,
+                  3533.2032470703125,
+                  3536.1658325195312,
+                  3538.4412841796875
+                ],
+                "block_p99_us": 461.576
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 14253.496215820318,
+                "rounds_ns_per_frame": [
+                  14253.496215820318,
+                  14084.303894042958,
+                  14443.817016601564,
+                  14097.452239990233,
+                  14314.778564453123
+                ],
+                "block_p99_us": 2130.428999999822
+              },
+              "after": {
+                "ns_per_frame": 14331.084136962887,
+                "rounds_ns_per_frame": [
+                  14331.084136962887,
+                  14132.977691650394,
+                  14508.15005493164,
+                  14138.534667968745,
+                  14428.59033203124
+                ],
+                "block_p99_us": 2132.2110000000976
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-array-f32",
+          "artifacts": {
+            "o_sha256": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+            "wasm_sha256": "eabf53d53eb03c7aa53de4045e70900bded3c17dbcf8744dc684465dc3b1330a",
+            "native_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            },
+            "wasm_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.6882804930210114,
+                "rounds_ns_per_frame": [
+                  0.6882804930210114,
+                  0.6891852021217346,
+                  0.6902513653039932,
+                  0.6881058514118195,
+                  0.6827396005392075
+                ],
+                "block_p99_us": 0.111
+              },
+              "after": {
+                "ns_per_frame": 0.6867714077234268,
+                "rounds_ns_per_frame": [
+                  0.6867714077234268,
+                  0.6857343465089798,
+                  0.6932221800088882,
+                  0.6861387193202972,
+                  0.6914110779762268
+                ],
+                "block_p99_us": 0.108
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.883901059627528,
+                "rounds_ns_per_frame": [
+                  1.883901059627528,
+                  2.0095651745796226,
+                  1.9924611449241643,
+                  1.7957924008369417,
+                  1.816019177436824
+                ],
+                "block_p99_us": 0.371999999970285
+              },
+              "after": {
+                "ns_per_frame": 1.8688727617263838,
+                "rounds_ns_per_frame": [
+                  1.8688727617263838,
+                  2.000786721706391,
+                  1.9950602054595994,
+                  1.8001385331153885,
+                  1.8084134459495484
+                ],
+                "block_p99_us": 0.3789999999526117
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-shared-array-f32",
+          "artifacts": {
+            "o_sha256": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+            "wasm_sha256": "1a61314a216fb168d78c5e46c8967371519b9b9925cbe235cb78f2fe152b56a7",
+            "native_captures": {
+              "output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+              "warm-output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+            },
+            "wasm_captures": {
+              "output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+              "warm-output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.8674843907356262,
+                "rounds_ns_per_frame": [
+                  0.8619133085012436,
+                  0.86415034532547,
+                  0.8674843907356262,
+                  0.8688145279884338,
+                  0.8689690381288528
+                ],
+                "block_p99_us": 0.126
+              },
+              "after": {
+                "ns_per_frame": 0.8540932983160019,
+                "rounds_ns_per_frame": [
+                  0.8494782894849777,
+                  0.855999618768692,
+                  0.8517013192176819,
+                  0.8540932983160019,
+                  0.8561108857393265
+                ],
+                "block_p99_us": 0.13199999999999998
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1097987294197083,
+                "rounds_ns_per_frame": [
+                  3.1097987294197083,
+                  3.2398353815078726,
+                  3.247163474559781,
+                  3.052296042442321,
+                  3.0449937582015965
+                ],
+                "block_p99_us": 0.6080000000565633
+              },
+              "after": {
+                "ns_per_frame": 3.0915663838386482,
+                "rounds_ns_per_frame": [
+                  3.0915663838386482,
+                  3.2432510256767224,
+                  3.2300559878349273,
+                  3.036959230899812,
+                  3.038038671016693
+                ],
+                "block_p99_us": 0.5869999999958964
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-slice-f32",
+          "artifacts": {
+            "o_sha256": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+            "wasm_sha256": "fe9a2507ce0ae9e0de8454a3b514fdb4cb1efca9e6a2b129ccdc6108d5b0a924",
+            "native_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            },
+            "wasm_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.6906337887048721,
+                "rounds_ns_per_frame": [
+                  0.6928605288267136,
+                  0.6923119574785233,
+                  0.6901528984308243,
+                  0.6891475319862366,
+                  0.6906337887048721
+                ],
+                "block_p99_us": 0.109
+              },
+              "after": {
+                "ns_per_frame": 0.6905086636543274,
+                "rounds_ns_per_frame": [
+                  0.688007727265358,
+                  0.6914098262786865,
+                  0.6927512288093567,
+                  0.6901580691337585,
+                  0.6905086636543274
+                ],
+                "block_p99_us": 0.108
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.9245681762695326,
+                "rounds_ns_per_frame": [
+                  1.9245681762695326,
+                  2.0968707799911517,
+                  2.096514880657195,
+                  1.8757700324058588,
+                  1.8911567330360406
+                ],
+                "block_p99_us": 0.42300000006889604
+              },
+              "after": {
+                "ns_per_frame": 1.8826135993003845,
+                "rounds_ns_per_frame": [
+                  1.8826135993003845,
+                  2.036843955516812,
+                  2.040022253990169,
+                  1.8397492170333847,
+                  1.842666923999784
+                ],
+                "block_p99_us": 0.3920000000334767
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-shared-slice-f32",
+          "artifacts": {
+            "o_sha256": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+            "wasm_sha256": "96d7bc9c9a83d3b4668033318a16cb9d3fb8fe2f6b8062c86fd76c9ae648babf",
+            "native_captures": {
+              "output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+              "warm-output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+            },
+            "wasm_captures": {
+              "output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+              "warm-output_sha256": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.8718433678150177,
+                "rounds_ns_per_frame": [
+                  0.871165320277214,
+                  0.8697298765182495,
+                  0.8718433678150177,
+                  0.8774107843637466,
+                  0.8843308538198471
+                ],
+                "block_p99_us": 0.131
+              },
+              "after": {
+                "ns_per_frame": 0.8537345230579376,
+                "rounds_ns_per_frame": [
+                  0.8537345230579376,
+                  0.852081686258316,
+                  0.8586111664772034,
+                  0.8542254567146301,
+                  0.8523634374141693
+                ],
+                "block_p99_us": 0.126
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.3696430921554565,
+                "rounds_ns_per_frame": [
+                  3.3696430921554565,
+                  3.3789589405059752,
+                  3.3684986829757717,
+                  3.5862897634506226,
+                  3.260751128196716
+                ],
+                "block_p99_us": 0.611000000048989
+              },
+              "after": {
+                "ns_per_frame": 3.3364565372467108,
+                "rounds_ns_per_frame": [
+                  3.371356606483457,
+                  3.3364565372467108,
+                  3.3027466535568295,
+                  3.533545017242432,
+                  3.2304053306579616
+                ],
+                "block_p99_us": 0.6599999999252759
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-bounded-f32",
+          "artifacts": {
+            "o_sha256": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78",
+            "wasm_sha256": "e6f6574a3c1ac380238b60fb5977051967608dcde4bdcf1b076b3c33cb7de314",
+            "native_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            },
+            "wasm_captures": {
+              "output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+              "warm-output_sha256": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.6818318665027618,
+                "rounds_ns_per_frame": [
+                  0.679737851023674,
+                  0.6860887706279755,
+                  0.6818318665027618,
+                  0.6833963245153427,
+                  0.6794522255659103
+                ],
+                "block_p99_us": 0.111
+              },
+              "after": {
+                "ns_per_frame": 0.6782331764698029,
+                "rounds_ns_per_frame": [
+                  0.6770846992731094,
+                  0.6782331764698029,
+                  0.6814975142478943,
+                  0.6793341636657715,
+                  0.6764335483312607
+                ],
+                "block_p99_us": 0.111
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.8697433471679639,
+                "rounds_ns_per_frame": [
+                  1.8697433471679639,
+                  2.0021723508834826,
+                  2.0185869336128226,
+                  1.799132287502283,
+                  1.7895817160606355
+                ],
+                "block_p99_us": 0.3889999999273641
+              },
+              "after": {
+                "ns_per_frame": 1.8611752390861556,
+                "rounds_ns_per_frame": [
+                  1.8611752390861556,
+                  1.999713063240052,
+                  1.9985496401786775,
+                  1.781626462936399,
+                  1.7822529077529923
+                ],
+                "block_p99_us": 0.38900000004105095
+              }
+            }
+          }
+        },
+        {
+          "name": "array-guarded-helper-f32",
+          "artifacts": {
+            "o_sha256": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482",
+            "wasm_sha256": "f3034d8c0d624d9e43011e074993d383ca7492863fd7131317b44f9a8540a138",
+            "native_captures": {
+              "output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+              "warm-output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+            },
+            "wasm_captures": {
+              "output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+              "warm-output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.602590024471283,
+                "rounds_ns_per_frame": [
+                  0.602590024471283,
+                  0.6025052964687347,
+                  0.6090970635414124,
+                  0.604883149266243,
+                  0.6017572432756424
+                ],
+                "block_p99_us": 0.098
+              },
+              "after": {
+                "ns_per_frame": 0.6095869988203049,
+                "rounds_ns_per_frame": [
+                  0.607013925909996,
+                  0.6096600294113159,
+                  0.6111719459295273,
+                  0.6095869988203049,
+                  0.6080858409404755
+                ],
+                "block_p99_us": 0.09999999999999999
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1406440138816865,
+                "rounds_ns_per_frame": [
+                  3.1406440138816865,
+                  3.28219586610794,
+                  3.2763276696205157,
+                  3.057615756988524,
+                  3.0600265264511077
+                ],
+                "block_p99_us": 0.5280000000311702
+              },
+              "after": {
+                "ns_per_frame": 3.1261641383171113,
+                "rounds_ns_per_frame": [
+                  3.1261641383171113,
+                  3.3240962028503436,
+                  3.281205475330352,
+                  3.0833045840263327,
+                  3.0715044736862116
+                ],
+                "block_p99_us": 0.5230000001574808
+              }
+            }
+          }
+        },
+        {
+          "name": "array-guarded-state-f32",
+          "artifacts": {
+            "o_sha256": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3",
+            "wasm_sha256": "9b305b5dd329439ffe42fd4578a7c46cb17717119b4e17d7d9ce87f07ef5e9dd",
+            "native_captures": {
+              "output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+              "warm-output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+            },
+            "wasm_captures": {
+              "output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+              "warm-output_sha256": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.6042933911085129,
+                "rounds_ns_per_frame": [
+                  0.6042933911085129,
+                  0.6042741239070892,
+                  0.605408325791359,
+                  0.6028880625963211,
+                  0.6049080342054367
+                ],
+                "block_p99_us": 0.094
+              },
+              "after": {
+                "ns_per_frame": 0.6021627932786942,
+                "rounds_ns_per_frame": [
+                  0.6007417291402817,
+                  0.599901482462883,
+                  0.6045266389846802,
+                  0.6021755784749985,
+                  0.6021627932786942
+                ],
+                "block_p99_us": 0.093
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1936754584312474,
+                "rounds_ns_per_frame": [
+                  3.1936754584312474,
+                  3.319609940052031,
+                  3.3249056339263894,
+                  3.116973340511321,
+                  3.123877823352816
+                ],
+                "block_p99_us": 0.555999999960477
+              },
+              "after": {
+                "ns_per_frame": 3.197422444820407,
+                "rounds_ns_per_frame": [
+                  3.197422444820407,
+                  3.3098124861717237,
+                  3.3116756677627563,
+                  3.1004346013069153,
+                  3.108150422573091
+                ],
+                "block_p99_us": 0.5419999999958236
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-arithmetic-f32",
+          "artifacts": {
+            "o_sha256": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067",
+            "wasm_sha256": "6e62428604f0bb8f77100fbc629b74e58ed18f44768cfb7a94af654db9738e70",
+            "native_captures": {
+              "output_sha256": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+              "warm-output_sha256": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+            },
+            "wasm_captures": {
+              "output_sha256": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+              "warm-output_sha256": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7080771774053574,
+                "rounds_ns_per_frame": [
+                  0.7080771774053574,
+                  0.7063321322202682,
+                  0.7156884968280792,
+                  0.708754301071167,
+                  0.7064964026212692
+                ],
+                "block_p99_us": 0.105
+              },
+              "after": {
+                "ns_per_frame": 0.7042362987995148,
+                "rounds_ns_per_frame": [
+                  0.7052814960479736,
+                  0.7019414901733398,
+                  0.7060700207948685,
+                  0.7016407996416092,
+                  0.7042362987995148
+                ],
+                "block_p99_us": 0.101
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.7174376249313235,
+                "rounds_ns_per_frame": [
+                  2.7174376249313235,
+                  2.874356985092176,
+                  2.8689205050468343,
+                  2.657366096973414,
+                  2.6437311172485245
+                ],
+                "block_p99_us": 0.5439999999907741
+              },
+              "after": {
+                "ns_per_frame": 2.767330288887016,
+                "rounds_ns_per_frame": [
+                  2.767330288887016,
+                  2.917416393756863,
+                  2.889319062232979,
+                  2.6357692480087342,
+                  2.624992609024049
+                ],
+                "block_p99_us": 0.5850000000009459
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-division-f32",
+          "artifacts": {
+            "o_sha256": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b",
+            "wasm_sha256": "1204d4fa340a4b5e4a955c8112d5385ee17406d09e4c257b48fe05cc0721acc2",
+            "native_captures": {
+              "output_sha256": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+              "warm-output_sha256": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+            },
+            "wasm_captures": {
+              "output_sha256": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+              "warm-output_sha256": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.0137620866298676,
+                "rounds_ns_per_frame": [
+                  1.0087267756462097,
+                  1.018352061510086,
+                  1.0128204822540283,
+                  1.0147737264633179,
+                  1.0137620866298676
+                ],
+                "block_p99_us": 0.142
+              },
+              "after": {
+                "ns_per_frame": 1.0130259096622467,
+                "rounds_ns_per_frame": [
+                  1.010159432888031,
+                  1.0131916105747223,
+                  1.0166453123092651,
+                  1.01299586892128,
+                  1.0130259096622467
+                ],
+                "block_p99_us": 0.14
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.418233633041394,
+                "rounds_ns_per_frame": [
+                  3.4394420385360838,
+                  3.418233633041394,
+                  3.4006860256195055,
+                  3.604442238807682,
+                  3.3266555070877124
+                ],
+                "block_p99_us": 0.5840000001171575
+              },
+              "after": {
+                "ns_per_frame": 3.4168690443038954,
+                "rounds_ns_per_frame": [
+                  3.4168690443038954,
+                  3.421804547309884,
+                  3.3926320075988814,
+                  3.580512166023259,
+                  3.2970443964004343
+                ],
+                "block_p99_us": 0.5889999999908468
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-reciprocal-f32",
+          "artifacts": {
+            "o_sha256": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c",
+            "wasm_sha256": "1b68912a4ce12fd5229ce473b7d0b72a776aa55db3ab618ea55671393d17d89d",
+            "native_captures": {
+              "output_sha256": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+              "warm-output_sha256": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+            },
+            "wasm_captures": {
+              "output_sha256": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+              "warm-output_sha256": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.6683869659900665,
+                "rounds_ns_per_frame": [
+                  0.6713785380125046,
+                  0.6683634668588638,
+                  0.6683869659900665,
+                  0.6692422330379486,
+                  0.667588010430336
+                ],
+                "block_p99_us": 0.094
+              },
+              "after": {
+                "ns_per_frame": 0.6608395278453827,
+                "rounds_ns_per_frame": [
+                  0.6587266176939011,
+                  0.6608395278453827,
+                  0.6797696501016617,
+                  0.6607085317373276,
+                  0.6641815006732941
+                ],
+                "block_p99_us": 0.095
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.606032252311708,
+                "rounds_ns_per_frame": [
+                  3.609983325004578,
+                  3.606032252311708,
+                  3.5783840417862045,
+                  3.779296398162828,
+                  3.4656800031662107
+                ],
+                "block_p99_us": 0.6560000001627486
+              },
+              "after": {
+                "ns_per_frame": 3.4562093019485642,
+                "rounds_ns_per_frame": [
+                  3.4526472091674782,
+                  3.477598071098336,
+                  3.4562093019485642,
+                  3.670933485031133,
+                  3.371285319328309
+                ],
+                "block_p99_us": 0.5850000000009459
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-reduction-f32",
+          "artifacts": {
+            "o_sha256": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc",
+            "wasm_sha256": "1c33a3a96c5bd277faa852c1aa2d8a85a16e34aa085dee57277411b790ccf224",
+            "native_captures": {
+              "output_sha256": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+              "warm-output_sha256": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+            },
+            "wasm_captures": {
+              "output_sha256": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+              "warm-output_sha256": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.4247454702854156,
+                "rounds_ns_per_frame": [
+                  1.4247454702854156,
+                  1.4291671812534332,
+                  1.42322438955307,
+                  1.4233375191688538,
+                  1.4299873113632202
+                ],
+                "block_p99_us": 0.22
+              },
+              "after": {
+                "ns_per_frame": 1.4361609518527985,
+                "rounds_ns_per_frame": [
+                  1.4323868155479431,
+                  1.436525672674179,
+                  1.4361609518527985,
+                  1.4403494000434875,
+                  1.4302183985710144
+                ],
+                "block_p99_us": 0.228
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.051482200622569,
+                "rounds_ns_per_frame": [
+                  2.051482200622569,
+                  2.210599482059487,
+                  2.1986284255981343,
+                  1.9906532168388413,
+                  1.9863052964210555
+                ],
+                "block_p99_us": 0.3879999999298889
+              },
+              "after": {
+                "ns_per_frame": 2.0377343893051134,
+                "rounds_ns_per_frame": [
+                  2.0377343893051134,
+                  2.1756696105003472,
+                  2.1643113493919484,
+                  1.9680116772651717,
+                  1.9602219462394648
+                ],
+                "block_p99_us": 0.36699999986922194
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-array-f64",
+          "artifacts": {
+            "o_sha256": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+            "wasm_sha256": "ee33f70140ca3419b26a5c2e12bcee59e7146db49e455628690315c7a02234f2",
+            "native_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            },
+            "wasm_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.815345972776413,
+                "rounds_ns_per_frame": [
+                  0.815345972776413,
+                  0.8183721750974655,
+                  0.8144112974405289,
+                  0.8099147528409958,
+                  0.8175680041313171
+                ],
+                "block_p99_us": 0.12200000000000001
+              },
+              "after": {
+                "ns_per_frame": 0.7972395718097687,
+                "rounds_ns_per_frame": [
+                  0.8030200749635696,
+                  0.7961152791976929,
+                  0.7984727770090103,
+                  0.7958832681179047,
+                  0.7972395718097687
+                ],
+                "block_p99_us": 0.126
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.8350100219249728,
+                "rounds_ns_per_frame": [
+                  1.8350100219249728,
+                  1.8946553468704215,
+                  1.8938818573951726,
+                  1.8008712828159315,
+                  1.7983606457710277
+                ],
+                "block_p99_us": 0.40300000000570435
+              },
+              "after": {
+                "ns_per_frame": 1.8637705445289592,
+                "rounds_ns_per_frame": [
+                  1.8637705445289592,
+                  1.9980413913726802,
+                  1.9860845208168025,
+                  1.7915669083595271,
+                  1.8034923076629616
+                ],
+                "block_p99_us": 0.4059999999981301
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-shared-array-f64",
+          "artifacts": {
+            "o_sha256": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+            "wasm_sha256": "51be9cd718de2566b31238187172dd9f74fc32ed9045717e2819f5f4448906ae",
+            "native_captures": {
+              "output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+              "warm-output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+            },
+            "wasm_captures": {
+              "output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+              "warm-output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.0205323994159698,
+                "rounds_ns_per_frame": [
+                  1.0193372070789337,
+                  1.0205323994159698,
+                  1.0223116278648376,
+                  1.0199640989303589,
+                  1.023468792438507
+                ],
+                "block_p99_us": 0.158
+              },
+              "after": {
+                "ns_per_frame": 1.0223965644836426,
+                "rounds_ns_per_frame": [
+                  1.0309599041938782,
+                  1.0224324762821198,
+                  1.0194779634475708,
+                  1.0195843875408173,
+                  1.0223965644836426
+                ],
+                "block_p99_us": 0.15
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1801028847694432,
+                "rounds_ns_per_frame": [
+                  3.1801028847694432,
+                  3.2972543239593524,
+                  3.306205213069911,
+                  3.097698748111727,
+                  3.1066254377365135
+                ],
+                "block_p99_us": 0.5800000000135697
+              },
+              "after": {
+                "ns_per_frame": 3.102350592613221,
+                "rounds_ns_per_frame": [
+                  3.102350592613221,
+                  3.2389388084411617,
+                  3.2168589830398533,
+                  3.032991170883176,
+                  3.0316532254219064
+                ],
+                "block_p99_us": 0.5719999999200809
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-slice-f64",
+          "artifacts": {
+            "o_sha256": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+            "wasm_sha256": "a6c528d33d97b6a2b7f9d39cc7d5f310cfa31a0d84b6d0dfa7219da69833a707",
+            "native_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            },
+            "wasm_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.8117024004459381,
+                "rounds_ns_per_frame": [
+                  0.8129268139600754,
+                  0.8117024004459381,
+                  0.8098161667585373,
+                  0.8038219064474106,
+                  0.8132858127355576
+                ],
+                "block_p99_us": 0.125
+              },
+              "after": {
+                "ns_per_frame": 0.7937908917665482,
+                "rounds_ns_per_frame": [
+                  0.7934212237596512,
+                  0.7937908917665482,
+                  0.7940875738859177,
+                  0.7937543988227844,
+                  0.7953933924436569
+                ],
+                "block_p99_us": 0.12100000000000001
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.8873097300529431,
+                "rounds_ns_per_frame": [
+                  1.8873097300529431,
+                  2.024638116359713,
+                  2.0176223516464185,
+                  1.8250815272331222,
+                  1.8270131349563603
+                ],
+                "block_p99_us": 0.41899999996530823
+              },
+              "after": {
+                "ns_per_frame": 1.8884876966476465,
+                "rounds_ns_per_frame": [
+                  1.8884876966476465,
+                  2.0362318754196207,
+                  2.0221723914146423,
+                  1.8206619024276698,
+                  1.8294994831085185
+                ],
+                "block_p99_us": 0.41800000008151983
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-shared-slice-f64",
+          "artifacts": {
+            "o_sha256": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+            "wasm_sha256": "e0efc57e92651cdcc54b8384d512e1866dd4f4cc89928ec6a1b7c2943b58739c",
+            "native_captures": {
+              "output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+              "warm-output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+            },
+            "wasm_captures": {
+              "output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+              "warm-output_sha256": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.0307267904281616,
+                "rounds_ns_per_frame": [
+                  1.0329773426055908,
+                  1.0304099321365356,
+                  1.0298672318458557,
+                  1.0307267904281616,
+                  1.0319306552410126
+                ],
+                "block_p99_us": 0.164
+              },
+              "after": {
+                "ns_per_frame": 1.019898772239685,
+                "rounds_ns_per_frame": [
+                  1.019898772239685,
+                  1.0184611678123474,
+                  1.0267766416072845,
+                  1.0216219127178192,
+                  1.0151121318340302
+                ],
+                "block_p99_us": 0.15200000000000002
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.3247511386871356,
+                "rounds_ns_per_frame": [
+                  3.314647793769827,
+                  3.3247511386871356,
+                  3.3254742622375546,
+                  3.5185868740081876,
+                  3.2316614389419582
+                ],
+                "block_p99_us": 0.6390000000919827
+              },
+              "after": {
+                "ns_per_frame": 3.3187596797943155,
+                "rounds_ns_per_frame": [
+                  3.3187596797943155,
+                  3.3365399837493888,
+                  3.318264961242682,
+                  3.5189961194992123,
+                  3.222848057746888
+                ],
+                "block_p99_us": 1.680999999962296
+              }
+            }
+          }
+        },
+        {
+          "name": "state-window-bounded-f64",
+          "artifacts": {
+            "o_sha256": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7",
+            "wasm_sha256": "b28f020ff0ef9b23bde9ac79b5b35d4c861614352cce9f310d54628b5d9fd6e5",
+            "native_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            },
+            "wasm_captures": {
+              "output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+              "warm-output_sha256": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7990148514509201,
+                "rounds_ns_per_frame": [
+                  0.7969673871994019,
+                  0.7990148514509201,
+                  0.795805811882019,
+                  0.8040415495634079,
+                  0.7998093664646149
+                ],
+                "block_p99_us": 0.127
+              },
+              "after": {
+                "ns_per_frame": 0.799338698387146,
+                "rounds_ns_per_frame": [
+                  0.7988598197698593,
+                  0.8009733110666275,
+                  0.799338698387146,
+                  0.8016726821660995,
+                  0.7987879514694214
+                ],
+                "block_p99_us": 0.13
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1.912546992301942,
+                "rounds_ns_per_frame": [
+                  1.912546992301942,
+                  2.0444837212562565,
+                  2.0474073290824872,
+                  1.8222333192825315,
+                  1.8185069561004596
+                ],
+                "block_p99_us": 0.44700000000830187
+              },
+              "after": {
+                "ns_per_frame": 1.9020437598228424,
+                "rounds_ns_per_frame": [
+                  1.9020437598228424,
+                  2.0152109265327436,
+                  2.0238658189773564,
+                  1.7975353598594677,
+                  1.7949272394180291
+                ],
+                "block_p99_us": 0.7009999999354477
+              }
+            }
+          }
+        },
+        {
+          "name": "array-guarded-helper-f64",
+          "artifacts": {
+            "o_sha256": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f",
+            "wasm_sha256": "f253d52f8c310de689bd533b616edcfdb096ebf47f235f3f59babbb6120a97d4",
+            "native_captures": {
+              "output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+              "warm-output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+            },
+            "wasm_captures": {
+              "output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+              "warm-output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7737924009561539,
+                "rounds_ns_per_frame": [
+                  0.7654613852500916,
+                  0.7737924009561539,
+                  0.7765450030565262,
+                  0.770994707942009,
+                  0.7748826444149017
+                ],
+                "block_p99_us": 0.12200000000000001
+              },
+              "after": {
+                "ns_per_frame": 0.7654308974742889,
+                "rounds_ns_per_frame": [
+                  0.7655696123838425,
+                  0.7663634121417999,
+                  0.7643775790929794,
+                  0.7654308974742889,
+                  0.7653469443321228
+                ],
+                "block_p99_us": 0.118
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1789595484733546,
+                "rounds_ns_per_frame": [
+                  3.1789595484733546,
+                  3.296494722366335,
+                  3.316302597522736,
+                  3.0980442166328404,
+                  3.0992563366889954
+                ],
+                "block_p99_us": 0.5799999998998828
+              },
+              "after": {
+                "ns_per_frame": 3.0999453067779563,
+                "rounds_ns_per_frame": [
+                  3.0999453067779563,
+                  3.2348440885543797,
+                  3.2350321412086456,
+                  3.0319944024086,
+                  3.022293686866763
+                ],
+                "block_p99_us": 0.5409999999983484
+              }
+            }
+          }
+        },
+        {
+          "name": "array-guarded-state-f64",
+          "artifacts": {
+            "o_sha256": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04",
+            "wasm_sha256": "72eec03ab24c12ea102b575e9b1b135c378d42d6b31781a38c9a514f02454802",
+            "native_captures": {
+              "output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+              "warm-output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+            },
+            "wasm_captures": {
+              "output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+              "warm-output_sha256": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.784656897187233,
+                "rounds_ns_per_frame": [
+                  0.7829139977693558,
+                  0.7905421406030655,
+                  0.78265580534935,
+                  0.784656897187233,
+                  0.7878133356571198
+                ],
+                "block_p99_us": 0.13199999999999998
+              },
+              "after": {
+                "ns_per_frame": 0.7806989401578903,
+                "rounds_ns_per_frame": [
+                  0.7795548737049103,
+                  0.7876259982585907,
+                  0.7881950736045837,
+                  0.7806989401578903,
+                  0.7767323106527328
+                ],
+                "block_p99_us": 0.12
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 3.1605173349380484,
+                "rounds_ns_per_frame": [
+                  3.1605173349380484,
+                  3.3246961236000043,
+                  3.3023357987403865,
+                  3.083098471164705,
+                  3.097264707088471
+                ],
+                "block_p99_us": 0.5970000000843356
+              },
+              "after": {
+                "ns_per_frame": 3.1579401493072514,
+                "rounds_ns_per_frame": [
+                  3.1579401493072514,
+                  3.272607088088993,
+                  3.265874028205873,
+                  3.0542834401130703,
+                  3.058191001415256
+                ],
+                "block_p99_us": 0.5220000000463187
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-arithmetic-f64",
+          "artifacts": {
+            "o_sha256": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6",
+            "wasm_sha256": "2ae3edc27aaefe5a809f9eb4a8121e57c837e9a54df1c9b6d964979c7e81ed6f",
+            "native_captures": {
+              "output_sha256": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7",
+              "warm-output_sha256": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7"
+            },
+            "wasm_captures": {
+              "output_sha256": "a974cd018032c4dbde8147d85c737764333f3b6604cd40cbcf40089a8e6a20a6",
+              "warm-output_sha256": "a974cd018032c4dbde8147d85c737764333f3b6604cd40cbcf40089a8e6a20a6"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.8330044746398926,
+                "rounds_ns_per_frame": [
+                  0.8330044746398926,
+                  0.8305491805076599,
+                  0.8358170837163925,
+                  0.8351122885942459,
+                  0.8281141966581345
+                ],
+                "block_p99_us": 0.12
+              },
+              "after": {
+                "ns_per_frame": 0.8221025466918945,
+                "rounds_ns_per_frame": [
+                  0.8221025466918945,
+                  0.8202506750822067,
+                  0.8239167630672455,
+                  0.8200219869613647,
+                  0.822641521692276
+                ],
+                "block_p99_us": 0.117
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.7020007967948834,
+                "rounds_ns_per_frame": [
+                  2.7020007967948834,
+                  2.836202740669262,
+                  2.8186485171318,
+                  2.6187867522239645,
+                  2.6052490472793606
+                ],
+                "block_p99_us": 0.5029999999806023
+              },
+              "after": {
+                "ns_per_frame": 2.7143965363502525,
+                "rounds_ns_per_frame": [
+                  2.7143965363502525,
+                  2.851603329181662,
+                  2.8558905720710706,
+                  2.638846814632411,
+                  2.614377081394198
+                ],
+                "block_p99_us": 1.033000000006723
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-division-f64",
+          "artifacts": {
+            "o_sha256": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200",
+            "wasm_sha256": "3dc1be0a25d1312640b4299796afc0645ba36434933ba4ac53c55fbefc383f9d",
+            "native_captures": {
+              "output_sha256": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb",
+              "warm-output_sha256": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb"
+            },
+            "wasm_captures": {
+              "output_sha256": "042b506e6e56ba00df021cd9a181ddeeac97597267691474da940d18105fe9a4",
+              "warm-output_sha256": "042b506e6e56ba00df021cd9a181ddeeac97597267691474da940d18105fe9a4"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.9793061017990115,
+                "rounds_ns_per_frame": [
+                  1.9793061017990115,
+                  1.9743599891662598,
+                  1.9747750759124756,
+                  2.005055844783783,
+                  1.996918499469757
+                ],
+                "block_p99_us": 0.28099999999999997
+              },
+              "after": {
+                "ns_per_frame": 1.986089050769806,
+                "rounds_ns_per_frame": [
+                  1.9868408441543581,
+                  1.986089050769806,
+                  1.980048954486847,
+                  1.985241651535034,
+                  1.999263644218445
+                ],
+                "block_p99_us": 0.267
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 4.124774098396294,
+                "rounds_ns_per_frame": [
+                  4.163570523262023,
+                  4.124774098396294,
+                  4.094274640083332,
+                  4.333692312240604,
+                  4.019425749778738
+                ],
+                "block_p99_us": 1.3480000000072323
+              },
+              "after": {
+                "ns_per_frame": 4.105839490890501,
+                "rounds_ns_per_frame": [
+                  4.134296059608454,
+                  4.105839490890501,
+                  4.102774858474742,
+                  4.3134411573410025,
+                  3.9934325218200772
+                ],
+                "block_p99_us": 0.7450000000517321
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-reciprocal-f64",
+          "artifacts": {
+            "o_sha256": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f",
+            "wasm_sha256": "4e3ab2cdec70850ed3a7ac2c620c1d3ae275d4a1c23776522062254d460e0a53",
+            "native_captures": {
+              "output_sha256": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e",
+              "warm-output_sha256": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e"
+            },
+            "wasm_captures": {
+              "output_sha256": "059a39b37e0cb7348b9c601da6a3162440a042f83f61b411a8eab423a50dc4fa",
+              "warm-output_sha256": "059a39b37e0cb7348b9c601da6a3162440a042f83f61b411a8eab423a50dc4fa"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 0.7462949752807617,
+                "rounds_ns_per_frame": [
+                  0.7462972402572632,
+                  0.7489477396011353,
+                  0.7436576336622238,
+                  0.744666799902916,
+                  0.7462949752807617
+                ],
+                "block_p99_us": 0.118
+              },
+              "after": {
+                "ns_per_frame": 0.7441410571336746,
+                "rounds_ns_per_frame": [
+                  0.7438145279884338,
+                  0.7441410571336746,
+                  0.7457471340894699,
+                  0.7445848435163498,
+                  0.7424106895923615
+                ],
+                "block_p99_us": 0.106
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 4.237296104431156,
+                "rounds_ns_per_frame": [
+                  4.287573337554931,
+                  4.231521129608156,
+                  4.237296104431156,
+                  4.448929309844974,
+                  4.122847080230706
+                ],
+                "block_p99_us": 0.7120000000213622
+              },
+              "after": {
+                "ns_per_frame": 4.2205410003662065,
+                "rounds_ns_per_frame": [
+                  4.237779736518849,
+                  4.2205410003662065,
+                  4.209031939506514,
+                  4.431975483894344,
+                  4.123727679252603
+                ],
+                "block_p99_us": 1.8079999999827123
+              }
+            }
+          }
+        },
+        {
+          "name": "operator-reduction-f64",
+          "artifacts": {
+            "o_sha256": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed",
+            "wasm_sha256": "ed67b683adce5c9c067fa055618e2ee5f43ce351f6836584d6b239acb26600f1",
+            "native_captures": {
+              "output_sha256": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608",
+              "warm-output_sha256": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608"
+            },
+            "wasm_captures": {
+              "output_sha256": "046c4ef2ee1ff22a0c69791b5d740d74fbdddf78afa558b48219a46ce0a2b833",
+              "warm-output_sha256": "046c4ef2ee1ff22a0c69791b5d740d74fbdddf78afa558b48219a46ce0a2b833"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 1.6168507635593414,
+                "rounds_ns_per_frame": [
+                  1.6154887080192566,
+                  1.6142321228981018,
+                  1.6486712992191315,
+                  1.6283855736255646,
+                  1.6168507635593414
+                ],
+                "block_p99_us": 0.22499999999999998
+              },
+              "after": {
+                "ns_per_frame": 1.6101622581481934,
+                "rounds_ns_per_frame": [
+                  1.6105188727378845,
+                  1.6072466969490051,
+                  1.6068610548973083,
+                  1.6117112338542938,
+                  1.6101622581481934
+                ],
+                "block_p99_us": 0.24200000000000002
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.0321691632270835,
+                "rounds_ns_per_frame": [
+                  2.0321691632270835,
+                  2.164771616458894,
+                  2.167490363121034,
+                  1.9540975093841546,
+                  1.955816209316244
+                ],
+                "block_p99_us": 0.6860000000870059
+              },
+              "after": {
+                "ns_per_frame": 2.0207844376564035,
+                "rounds_ns_per_frame": [
+                  2.0207844376564035,
+                  2.158136904239656,
+                  2.1507170796394397,
+                  1.9459061622619622,
+                  1.9462710618972776
+                ],
+                "block_p99_us": 0.3819999999450374
+              }
+            }
+          }
+        }
+      ]
+    },
+    "examples": {
+      "before_metadata": {
+        "schema_version": 1,
+        "label": "before-after within each backend; cross-backend feedback tolerance relaxed",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/examples/basic/sine.onda",
+            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
+            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
+            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
+            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
+            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
+            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
+            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
+            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/review-fixes/baseline-examples",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": 2048,
+          "validation_blocks": 64,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1.0,
+          "rtol": 1.0,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "references": false,
+          "compare_to": null,
+          "label": "before-after within each backend; cross-backend feedback tolerance relaxed"
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "sha256": "031c66925744763a8a08c7f7375ba6691cb53b8ff7624c418eb6ebc6cd3fabc6"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "sine",
+          "voice_bank",
+          "polyphonic_saw",
+          "saw_filter_saturator",
+          "additive_synth",
+          "fdn_reverb",
+          "tape_echo",
+          "neural_synth",
+          "spectral_freeze"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "997.938",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "timed_after_worker": {
+        "path": "/home/francesco/Sources/onda/target/review-fixes/candidate-worker",
+        "sha256": "7601738652fae2088ab2f93a7e7e5bd1b3f8c4c17109cd2ce2c2a0f10aa7ddd1"
+      },
+      "programs": [
+        {
+          "name": "sine",
+          "artifacts": {
+            "o_sha256": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7",
+            "wasm_sha256": "567eac859f13d8137cd07a141ae86e0faef779bc2dfe44649d010c550f7adc56",
+            "native_captures": {
+              "output_sha256": "4083abe4d2c3ebdafae2a04af00f50e52f6f06896130d41d66f246fb493e2856",
+              "warm-output_sha256": "9050fa9dc49d2d6e77fa3df9b50d2793aa087e62610abe58ed8586367b16b3a8"
+            },
+            "wasm_captures": {
+              "output_sha256": "cf3e692e286bf155a12b57747f821ea11232101954fe1cf03aa185c20cd0856e",
+              "warm-output_sha256": "5944aa287979a5bd40ed0eac0008f0f366a146170479b993a823a9ae32ff81bd"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 3.5951985716819763,
+                "rounds_ns_per_frame": [
+                  3.5712651014328003,
+                  3.588548719882965,
+                  3.5977590084075928,
+                  3.6028352975845337,
+                  3.5951985716819763
+                ],
+                "block_p99_us": 0.5
+              },
+              "after": {
+                "ns_per_frame": 3.520182430744171,
+                "rounds_ns_per_frame": [
+                  3.4945231676101685,
+                  3.5156015753746033,
+                  3.520182430744171,
+                  3.528718948364258,
+                  3.5329360961914062
+                ],
+                "block_p99_us": 0.49699999999999994
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 2.8018094301223773,
+                "rounds_ns_per_frame": [
+                  2.8018094301223773,
+                  2.936861097812643,
+                  2.9261035323143054,
+                  2.7450500726699705,
+                  2.718309640884395
+                ],
+                "block_p99_us": 0.5889999999908468
+              },
+              "after": {
+                "ns_per_frame": 2.700742423534391,
+                "rounds_ns_per_frame": [
+                  2.700742423534391,
+                  2.8293208479881344,
+                  2.836096346378329,
+                  2.6344743371009853,
+                  2.6296733617782606
+                ],
+                "block_p99_us": 0.5079999998542917
+              }
+            }
+          }
+        },
+        {
+          "name": "voice_bank",
+          "artifacts": {
+            "o_sha256": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc",
+            "wasm_sha256": "988845662038b24849d465435ed7ef4039ad89e40a1625553d0d9255f60eba54",
+            "native_captures": {
+              "output_sha256": "52e07f09a83e433fb2f05387fc5b50f8584dc2ae39cdc0eb16fc75eba50d05c0",
+              "warm-output_sha256": "8f25bc92a59bb799bf8b7310135f9f72f1e746f9c0d8098c3f519f30d3e5b046"
+            },
+            "wasm_captures": {
+              "output_sha256": "52e07f09a83e433fb2f05387fc5b50f8584dc2ae39cdc0eb16fc75eba50d05c0",
+              "warm-output_sha256": "8f25bc92a59bb799bf8b7310135f9f72f1e746f9c0d8098c3f519f30d3e5b046"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 2.410387337207794,
+                "rounds_ns_per_frame": [
+                  2.426088511943817,
+                  2.3997341990470886,
+                  2.424331843852997,
+                  2.410387337207794,
+                  2.4018505215644836
+                ],
+                "block_p99_us": 0.339
+              },
+              "after": {
+                "ns_per_frame": 2.1502880454063416,
+                "rounds_ns_per_frame": [
+                  2.148870825767517,
+                  2.1502880454063416,
+                  2.1495450139045715,
+                  2.153002440929413,
+                  2.1535764336586
+                ],
+                "block_p99_us": 0.301
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 15.621356010437065,
+                "rounds_ns_per_frame": [
+                  15.531502246856677,
+                  15.575218677520738,
+                  15.807645797729535,
+                  15.688380718231167,
+                  15.621356010437065
+                ],
+                "block_p99_us": 2.823000000034881
+              },
+              "after": {
+                "ns_per_frame": 15.206096172332714,
+                "rounds_ns_per_frame": [
+                  15.228317737579355,
+                  15.206096172332714,
+                  15.179818153381346,
+                  15.157480239868182,
+                  15.21161031723024
+                ],
+                "block_p99_us": 2.8250000000298314
+              }
+            }
+          }
+        },
+        {
+          "name": "polyphonic_saw",
+          "artifacts": {
+            "o_sha256": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+            "wasm_sha256": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba",
+            "native_captures": {
+              "output_sha256": "e409a67f81b29b1c71fa19bf554ae963c84f77f9652e72e282f7bce94001b19d",
+              "warm-output_sha256": "2565fafb7b435ff03485bd85b0a2efbabdb782aaccd1b6d934013a576f061b2c"
+            },
+            "wasm_captures": {
+              "output_sha256": "91499692fd8e47f68d3f4af3f622ea9eaede9244e32f6d0642dd6b44e6964615",
+              "warm-output_sha256": "b6f84cac02e1ce4b31367861a09742cffeddbd9c629cb48f615e4db7998df5c1"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 48.40870761871338,
+                "rounds_ns_per_frame": [
+                  48.40870761871338,
+                  48.51443099975586,
+                  48.38679885864258,
+                  48.45066547393799,
+                  48.12570762634277
+                ],
+                "block_p99_us": 7.415
+              },
+              "after": {
+                "ns_per_frame": 46.335636138916016,
+                "rounds_ns_per_frame": [
+                  46.119147300720215,
+                  46.435349464416504,
+                  46.453535079956055,
+                  46.335636138916016,
+                  46.29917526245117
+                ],
+                "block_p99_us": 6.152
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 120.74488830566416,
+                "rounds_ns_per_frame": [
+                  120.53534698486332,
+                  120.96685791015624,
+                  120.8672714233406,
+                  120.74488830566416,
+                  119.35824966430656
+                ],
+                "block_p99_us": 18.969999999853826
+              },
+              "after": {
+                "ns_per_frame": 117.20938491821282,
+                "rounds_ns_per_frame": [
+                  117.40536880493202,
+                  117.20938491821282,
+                  117.20087432861345,
+                  117.21535873413131,
+                  116.62573242187443
+                ],
+                "block_p99_us": 18.743999999969674
+              }
+            }
+          }
+        },
+        {
+          "name": "saw_filter_saturator",
+          "artifacts": {
+            "o_sha256": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a",
+            "wasm_sha256": "d3fa2a68d34de946769bffe9cac4408c182e897719ac1b58f7b64486539fab22",
+            "native_captures": {
+              "output_sha256": "c9617bbe7f87e3b0caa243eff315f5d9950df272a89df7cd29a1daf5c82478c0",
+              "warm-output_sha256": "8a1de41cfbdf01aabb1c4d59bca10dfffa983d44e09851205908cf580efecc4d"
+            },
+            "wasm_captures": {
+              "output_sha256": "ee240e279f5693eeabcdafbf0e9e561feaff82aa3f7e43fd6a8165758cf7dc9b",
+              "warm-output_sha256": "fc9457a2e13611abcfc09126f593b8ca77f4670cfcd1260c6e01bb63891fb1e3"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 70.1136417388916,
+                "rounds_ns_per_frame": [
+                  70.47502899169922,
+                  69.82463455200195,
+                  70.13068389892578,
+                  70.1136417388916,
+                  70.04205322265625
+                ],
+                "block_p99_us": 10.066
+              },
+              "after": {
+                "ns_per_frame": 68.93538284301758,
+                "rounds_ns_per_frame": [
+                  69.26166343688965,
+                  68.8675537109375,
+                  68.84114646911621,
+                  69.00843620300293,
+                  68.93538284301758
+                ],
+                "block_p99_us": 10.034
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 152.70412063598647,
+                "rounds_ns_per_frame": [
+                  153.39844512939504,
+                  152.38573074340817,
+                  152.6737289428712,
+                  152.96224975585878,
+                  152.70412063598647
+                ],
+                "block_p99_us": 21.666999999979453
+              },
+              "after": {
+                "ns_per_frame": 150.32225418090857,
+                "rounds_ns_per_frame": [
+                  150.27214050292952,
+                  150.36108398437577,
+                  150.32225418090857,
+                  149.89116287231468,
+                  151.09452438354447
+                ],
+                "block_p99_us": 23.066999999855398
+              }
+            }
+          }
+        },
+        {
+          "name": "additive_synth",
+          "artifacts": {
+            "o_sha256": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72",
+            "wasm_sha256": "728c442c870606a12886fd0ec944d391f96a7b990faa4a5e7471a1814acb3664",
+            "native_captures": {
+              "output_sha256": "931c1672e8314e3fe92c09d8cc579bfe6e030a5930d16fa806ecf6125d0e53bb",
+              "warm-output_sha256": "4f9da37527716fe9f2ade30349cd828df75b611ec851dd810737d6db55b71b91"
+            },
+            "wasm_captures": {
+              "output_sha256": "931c1672e8314e3fe92c09d8cc579bfe6e030a5930d16fa806ecf6125d0e53bb",
+              "warm-output_sha256": "f1b2c91d7242bce3961cade29ddd614ad83f2b85be9c0e31f485eb250bd1ae28"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 37.38020420074463,
+                "rounds_ns_per_frame": [
+                  37.48326587677002,
+                  37.4831600189209,
+                  37.38020420074463,
+                  37.351603507995605,
+                  37.34427833557129
+                ],
+                "block_p99_us": 5.162
+              },
+              "after": {
+                "ns_per_frame": 36.44488716125488,
+                "rounds_ns_per_frame": [
+                  36.41417121887207,
+                  36.420546531677246,
+                  36.50355911254883,
+                  36.452476501464844,
+                  36.44488716125488
+                ],
+                "block_p99_us": 5.049
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 72.74110984802248,
+                "rounds_ns_per_frame": [
+                  73.07347488403346,
+                  73.58754348754876,
+                  72.66047286987303,
+                  72.74110984802248,
+                  72.55336189270021
+                ],
+                "block_p99_us": 11.387000000013359
+              },
+              "after": {
+                "ns_per_frame": 71.15549850463887,
+                "rounds_ns_per_frame": [
+                  71.15549850463887,
+                  71.90945816040045,
+                  70.78953552246094,
+                  71.17088890075657,
+                  70.71820259094228
+                ],
+                "block_p99_us": 10.5829999999969
+              }
+            }
+          }
+        },
+        {
+          "name": "fdn_reverb",
+          "artifacts": {
+            "o_sha256": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392",
+            "wasm_sha256": "7b0ec2be1ad110dc0cd8032a31250e296732bfbd781d6c61238c35e39f879231",
+            "native_captures": {
+              "output_sha256": "a7b9342a5ce1439a8e72e3269a30ea78528f1872d3bb3462e2e81ddf9dd8a4c1",
+              "warm-output_sha256": "c6a461e5b17e49c384e6fcda7092f83af84cf3d34b158507994d57a60db24fa7"
+            },
+            "wasm_captures": {
+              "output_sha256": "a7b9342a5ce1439a8e72e3269a30ea78528f1872d3bb3462e2e81ddf9dd8a4c1",
+              "warm-output_sha256": "5d2d2845784473adc64e8cbfe16c65e4d1d181841de6ef2dbaf524670132ea36"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 23.5883526802063,
+                "rounds_ns_per_frame": [
+                  23.756661415100098,
+                  23.532668590545654,
+                  23.58693552017212,
+                  23.5883526802063,
+                  23.66942262649536
+                ],
+                "block_p99_us": 3.113
+              },
+              "after": {
+                "ns_per_frame": 22.90226173400879,
+                "rounds_ns_per_frame": [
+                  22.90226173400879,
+                  22.887290954589844,
+                  22.93492317199707,
+                  23.14588212966919,
+                  22.810530185699463
+                ],
+                "block_p99_us": 3.024
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 55.79921531677248,
+                "rounds_ns_per_frame": [
+                  55.79921531677248,
+                  55.812081336975055,
+                  55.5586309432983,
+                  55.68044376373302,
+                  55.83825206756593
+                ],
+                "block_p99_us": 9.37500000009095
+              },
+              "after": {
+                "ns_per_frame": 54.272388458251854,
+                "rounds_ns_per_frame": [
+                  54.341835975647065,
+                  54.23667621612545,
+                  54.36822128295914,
+                  54.223107337951625,
+                  54.272388458251854
+                ],
+                "block_p99_us": 8.342999999968015
+              }
+            }
+          }
+        },
+        {
+          "name": "tape_echo",
+          "artifacts": {
+            "o_sha256": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5",
+            "wasm_sha256": "a06ddc0e4f9eff2308187471e4ac85d86dd2ae3aa2f4850c9c437aaa045cd738",
+            "native_captures": {
+              "output_sha256": "e7481b3452f6978774e5c1f9af42850c6c31112376a8efcdb2530b5dc23ef9ae",
+              "warm-output_sha256": "042f1c32663a7f19aadfd5604f07df2563cf15be4d08c4ff07d4e362806f052c"
+            },
+            "wasm_captures": {
+              "output_sha256": "353f182772c6dac031b842df44591ed5544e0f543afdc505ae3f159306c4c319",
+              "warm-output_sha256": "ff5ba4f514e5539fcaa5b85d79a789f27e5dcee8031bbdd4fbdb436e2068b6b7"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 37.79499340057373,
+                "rounds_ns_per_frame": [
+                  37.796186447143555,
+                  37.76586627960205,
+                  37.88318061828613,
+                  37.79499340057373,
+                  37.7595100402832
+                ],
+                "block_p99_us": 5.288
+              },
+              "after": {
+                "ns_per_frame": 36.92873477935791,
+                "rounds_ns_per_frame": [
+                  36.87888717651367,
+                  36.92873477935791,
+                  36.95568084716797,
+                  36.88713359832764,
+                  36.93223762512207
+                ],
+                "block_p99_us": 5.207
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 97.79797554016096,
+                "rounds_ns_per_frame": [
+                  97.95789146423367,
+                  98.3838844299317,
+                  97.7629833221437,
+                  97.69798469543446,
+                  97.79797554016096
+                ],
+                "block_p99_us": 14.623000000028696
+              },
+              "after": {
+                "ns_per_frame": 95.71308326721201,
+                "rounds_ns_per_frame": [
+                  96.24952507019053,
+                  96.81796264648457,
+                  95.61962509155265,
+                  95.6947174072264,
+                  95.71308326721201
+                ],
+                "block_p99_us": 13.778999999885855
+              }
+            }
+          }
+        },
+        {
+          "name": "neural_synth",
+          "artifacts": {
+            "o_sha256": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c",
+            "wasm_sha256": "a463ac0e48b7bb4fe90f2c672f37bbed67ad3f0686879630fa63562e4100918e",
+            "native_captures": {
+              "output_sha256": "79675c8d8142b3aede96fac0ddad6f739e002dfac75c298729f15ef7917ef30a",
+              "warm-output_sha256": "c1d56742890a2491c91cf156845cf43c1363c13d961ab0bd60c4e904985164de"
+            },
+            "wasm_captures": {
+              "output_sha256": "e525befcf22dc50dc3f2db96ac99dfff43c098abd7b31f9b403cc7bbc663e76a",
+              "warm-output_sha256": "c156ff565f3e70a6e2e718d96f5b7ed41ae526655d6ddbaf48b059b655354068"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 574.6622924804688,
+                "rounds_ns_per_frame": [
+                  575.3714141845703,
+                  575.9938812255859,
+                  574.1339263916016,
+                  574.6622924804688,
+                  574.3126220703125
+                ],
+                "block_p99_us": 77.853
+              },
+              "after": {
+                "ns_per_frame": 561.6275939941406,
+                "rounds_ns_per_frame": [
+                  561.1578826904297,
+                  562.1043853759766,
+                  561.6275939941406,
+                  560.7669372558594,
+                  561.8185424804688
+                ],
+                "block_p99_us": 76.10600000000001
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 1636.5028686523426,
+                "rounds_ns_per_frame": [
+                  1633.1234436035222,
+                  1639.664062500004,
+                  1636.2203674316484,
+                  1638.6280212402348,
+                  1636.5028686523426
+                ],
+                "block_p99_us": 215.36599999990358
+              },
+              "after": {
+                "ns_per_frame": 1603.0222778320308,
+                "rounds_ns_per_frame": [
+                  1604.242675781249,
+                  1606.5821228027355,
+                  1600.4100341796834,
+                  1598.649566650387,
+                  1603.0222778320308
+                ],
+                "block_p99_us": 211.42399999962436
+              }
+            }
+          }
+        },
+        {
+          "name": "spectral_freeze",
+          "artifacts": {
+            "o_sha256": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe",
+            "wasm_sha256": "a04acc30c8825f599d60aadaf014d1b6664232eff74e8ed75bda49c4c1526e90",
+            "native_captures": {
+              "output_sha256": "e93eceaf27b16f2916c248743df3b5f11d49b1811cb2dd56a9c27aa8212d9234",
+              "warm-output_sha256": "9855944b13da71e8de3ce9d38502cc4ece84800852906985a24dac8c8feb90f7"
+            },
+            "wasm_captures": {
+              "output_sha256": "d4e5432d979586747f94831bb74e91fb6f3410ff0df7f2bc29e3b177a54f9229",
+              "warm-output_sha256": "ba04fc4f2bc6f608cfe95f2f90bebe4d651238390cf5bb3c145eb7e943e21450"
+            }
+          },
+          "timings": {
+            "native": {
+              "before": {
+                "ns_per_frame": 35.903398513793945,
+                "rounds_ns_per_frame": [
+                  36.046170234680176,
+                  35.87611198425293,
+                  36.02220630645752,
+                  35.903398513793945,
+                  35.83417224884033
+                ],
+                "block_p99_us": 10.114
+              },
+              "after": {
+                "ns_per_frame": 34.9427433013916,
+                "rounds_ns_per_frame": [
+                  34.87400436401367,
+                  34.9427433013916,
+                  34.90915584564209,
+                  36.38985347747803,
+                  35.10781955718994
+                ],
+                "block_p99_us": 9.836
+              }
+            },
+            "wasm": {
+              "before": {
+                "ns_per_frame": 78.29649162292493,
+                "rounds_ns_per_frame": [
+                  78.12725067138675,
+                  79.912670135498,
+                  78.41378784179685,
+                  78.29649162292493,
+                  78.03839111328098
+                ],
+                "block_p99_us": 24.378000000069733
+              },
+              "after": {
+                "ns_per_frame": 76.53206062316906,
+                "rounds_ns_per_frame": [
+                  76.53206062316906,
+                  77.21871376037588,
+                  76.91663742065424,
+                  76.2767486572266,
+                  76.28782844543461
+                ],
+                "block_p99_us": 23.781999999982872
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "tuple_scalar_equivalence": {
+    "o_sha256": "261febb5d9ea252df3810be587bfac221bc960bf59c305fc4b9ceebb445b547b",
+    "wasm_sha256": "6ed71d3ef3261b6feac3af1cce8ba6d0d4099c1cefc160cb2d4775d417495e48",
+    "tuple_source_sha256": "b0fba2e9a92d3370cb685895201f2177db7dd5f00b340d14dbacf1561d990c21",
+    "scalar_source": "proc Checked:\n  params:\n    private gain = 0.0 {0.0, 1.0} => update_gain\n  init:\n    index: i32 = 0 {0..4, wrap}\n    wide: i64 = 0 {0..4, clamp}\n    values: f32[4] = [0.0, 0.25, 0.5, 0.75]\n    evaluations = 0\n    cached = 0.0\n  def update_gain():\n    cached = gain\n  event set_gain():\n    gain = 2.0\n    ignored = 0.0\n  def indices():\n    evaluations += 1\n    return (1000, i64(1000))\n  sample:\n    before = evaluations\n    pair = indices()\n    index = pair[0]\n    wide = pair[1]\n    left: f64 = 0.123456789012345\n    right: f64 = 0.75\n    swapped = (right, left)\n    left = swapped[0]\n    right = swapped[1]\n    out1 = values[index] + abs(f32(wide) - 3.0)\n    out2 = abs(gain - 1.0) + abs(cached - 1.0)\n    out3 = f32(abs(left - 0.75) + abs(right - 0.123456789012345))\n    out4 = f32(abs(evaluations - before - 1))\n\nouts 4\ninit:\n  checked = Checked()\n  index: i32 = 0 {0..4, wrap}\n  values: f32[4] = [0.0, 0.25, 0.5, 0.75]\nsample:\n  checked.set_gain()\n  index = 1000\n  ignored = 0\n  first, second, third, fourth = checked()\n  out1 = first + values[index]\n  out2 = second\n  out3 = third\n  out4 = fourth\n"
+  }
+}

@@ -18,6 +18,113 @@ fn compile(source: &str) -> onda_mir::OptimizedProgram {
 }
 
 #[test]
+fn mixed_state_and_local_origins_preserve_in_place_dependencies() {
+    for scalar in ["f32", "f64"] {
+        let source = include_str!(
+            "../../../packages/onda_binaryen_web/test/fixtures/mixed-storage-origins.onda"
+        )
+        .replace("f32", scalar)
+        .replace("out1 = f64(result)", "out1 = f32(result)");
+        let program = compile(&source);
+        for opt_level in [
+            onda_codegen_llvm::TargetOptLevel::O0,
+            onda_codegen_llvm::TargetOptLevel::O3,
+        ] {
+            let jit = jit_program_from_optimized_mir_with_options(
+                program.clone(),
+                MirCompileOptions {
+                    opt_level,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let params = jit.default_param_bytes();
+            let mut state = jit.initialize_state(&params).unwrap();
+            let mut output = [f32::NAN; 48];
+            unsafe {
+                jit.process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    48,
+                    3,
+                    &[],
+                    &[output.as_mut_ptr().cast()],
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                    None,
+                )
+                .unwrap();
+            }
+            assert_eq!(output, [0.0; 48], "{scalar}, {opt_level:?}");
+        }
+    }
+}
+
+#[test]
+fn mixed_state_and_external_origins_preserve_in_place_dependencies() {
+    for scalar in ["f32", "f64"] {
+        let source = format!(
+            r#"
+buffers:
+  external: {scalar}
+def shift(src: {scalar}[], dst: {scalar}[]):
+  for i in 0..min(src.len(), dst.len()) - 1:
+    dst[i + 1] = src[i]
+init:
+  initial: {scalar}[64]
+  for i in 0..64:
+    initial[i] = {scalar}(i + 1)
+block:
+  shift(initial[:], external[:])
+  shift(external[:], external[:])
+  sample:
+    out1 = f32(external[32])
+"#
+        );
+        let program = compile(&source);
+        for opt_level in [
+            onda_codegen_llvm::TargetOptLevel::O0,
+            onda_codegen_llvm::TargetOptLevel::O3,
+        ] {
+            let jit = jit_program_from_optimized_mir_with_options(
+                program.clone(),
+                MirCompileOptions {
+                    opt_level,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let params = jit.default_param_bytes();
+            let mut state = jit.initialize_state(&params).unwrap();
+            // Enough naturally aligned zero storage for either precision.
+            let mut buffer = [0u64; 64];
+            let mut output = [f32::NAN; 48];
+            unsafe {
+                jit.process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    48,
+                    3,
+                    &[],
+                    &[output.as_mut_ptr().cast()],
+                    &[buffer.as_mut_ptr().cast()],
+                    &[64],
+                    &[1],
+                    &[48000.0],
+                    None,
+                )
+                .unwrap();
+            }
+            assert_eq!(output, [0.0; 48], "{scalar}, {opt_level:?}");
+        }
+    }
+}
+
+#[test]
 fn overlapping_views_observe_mutation_across_calls_and_loops() {
     let program = compile(include_str!(
         "../../../packages/onda_binaryen_web/test/fixtures/memory-access-semantics.onda"

@@ -322,8 +322,10 @@ impl Proof<'_, '_> {
     /// ranges and the current path's ordering facts participate; an arithmetic
     /// identity is never used to prove its own absence of overflow.
     fn available(&self, left: Symbol, right: Symbol, env: &Environment) -> HashSet<Symbol> {
-        let mut pending: Vec<_> = env.locals.iter().flatten().copied().collect();
-        pending.extend([left, right]);
+        // Unrelated live locals do not participate in this ordering query.
+        // Include its definitions and the current path's constraints, rather
+        // than rebuilding facts for the function's entire expression history.
+        let mut pending = vec![left, right];
         for &(left, right, _) in &env.assumptions {
             pending.extend([left, right]);
         }
@@ -365,11 +367,7 @@ impl Proof<'_, '_> {
             if !available.contains(&symbol) || !visited.insert((symbol, strict)) {
                 continue;
             }
-            let bound = match self.nodes[symbol] {
-                Node::Constant(value) => Some(value),
-                _ => self.ranges[symbol].map(|r| if upper { r.max() } else { r.min() }),
-            };
-            if let Some(bound) = bound {
+            if let Some(bound) = self.unconditional_bound(symbol, upper) {
                 let bound = i128::from(bound)
                     + if upper {
                         -i128::from(strict)
@@ -398,6 +396,13 @@ impl Proof<'_, '_> {
             }
         }
         result
+    }
+
+    fn unconditional_bound(&self, symbol: Symbol, upper: bool) -> Option<i64> {
+        match self.nodes[symbol] {
+            Node::Constant(value) => Some(value),
+            _ => self.ranges[symbol].map(|range| if upper { range.max() } else { range.min() }),
+        }
     }
 
     fn access(
@@ -518,19 +523,28 @@ impl Proof<'_, '_> {
                         } else {
                             self.fresh_local(local)
                         };
-                        // A copy can introduce a producer-proved range (for
-                        // example the body value of a counted loop). Keep the
-                        // shared value identity and scope this refinement to
-                        // the executed assignment, rather than changing the
-                        // source symbol's unconditional range.
+                        // A copy can tighten a shared value's range (for
+                        // example the body value of a counted loop). Scope
+                        // only new bounds to this assignment: loads and
+                        // constants already carry their unconditional bounds.
                         if matches!(value, Rvalue::Use(_) | Rvalue::Load(_)) {
                             if let Some((symbol, range)) = env.locals[local.index()]
                                 .zip(value_range(self.context, Value::Local(local)))
                             {
-                                let lower = self.constant(range.scalar(), range.min());
-                                let upper = self.constant(range.scalar(), range.max());
-                                env.assumptions
-                                    .extend([(lower, symbol, false), (symbol, upper, false)]);
+                                if self
+                                    .unconditional_bound(symbol, false)
+                                    .is_none_or(|lower| lower < range.min())
+                                {
+                                    let lower = self.constant(range.scalar(), range.min());
+                                    env.assumptions.push((lower, symbol, false));
+                                }
+                                if self
+                                    .unconditional_bound(symbol, true)
+                                    .is_none_or(|upper| upper > range.max())
+                                {
+                                    let upper = self.constant(range.scalar(), range.max());
+                                    env.assumptions.push((symbol, upper, false));
+                                }
                             }
                         }
                     }

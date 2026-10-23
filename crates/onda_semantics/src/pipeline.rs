@@ -31,6 +31,7 @@ mod integer_ranges;
 mod post_analysis;
 mod runtime_defaults;
 mod runtime_materialization;
+mod tuple_assignments;
 use runtime_materialization::materialize_reachable_typed_defs;
 
 use const_artifacts::*;
@@ -4238,6 +4239,16 @@ pub fn analyze_with_options_and_inputs(
             }
         }
         retain_assignment_types(&mut def.body, resolved_assignment_types.into_inner());
+        tuple_assignments::scalarize_tuple_assignments(&mut def.body, &mut |stores| {
+            inject_bound_proc_param_hooks_in_stmts(
+                def.name.split_once(".__onda_proc_").map(|(owner, _)| owner),
+                stores,
+                &def_proc_vars,
+                &def_proc_array_slots,
+                &proc_api,
+                &mut errors,
+            );
+        });
     }
 
     if errors.is_empty() {

@@ -569,14 +569,7 @@ impl FunctionEmitter<'_, '_> {
             return Ok(());
         }
         let previous = self.parallel_loop.take();
-        if onda_mir::independent_memory_loop(
-            self.module.program,
-            self.module.effects,
-            self.module.memory,
-            self.module.ranges,
-            onda_mir::FunctionId::new(self.function_index as u32),
-            body,
-        ) {
+        if self.loops.independent_memory_loop(body) {
             self.parallel_loop = Some(super::loop_metadata::ParallelLoop::new(
                 self.module.context,
             )?);

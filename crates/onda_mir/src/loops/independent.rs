@@ -2,6 +2,8 @@
 //! interpreted with symbolic arguments, without inlining or changing MIR.
 //! Unknown storage, wrapping addresses and unsupported control flow fail closed.
 use crate::*;
+use std::borrow::Cow;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Affine {
@@ -107,20 +109,84 @@ impl Symbol {
 
 struct Frame<'a> {
     function: &'a Function,
-    parameters: Vec<Symbol>,
-    locals: Vec<Symbol>,
+    parameters: Cow<'a, [Symbol]>,
+    initial_locals: Option<&'a HashMap<LocalId, Symbol>>,
+    locals: HashMap<LocalId, Symbol>,
 }
 
 impl Frame<'_> {
+    fn local(&self, local: LocalId) -> Symbol {
+        self.locals
+            .get(&local)
+            .or_else(|| self.initial_locals.and_then(|locals| locals.get(&local)))
+            .copied()
+            .unwrap_or(Symbol::Unknown)
+    }
+
     fn value(&self, value: Value) -> Symbol {
         match value {
-            Value::Local(local) => self.locals[local.index()],
+            Value::Local(local) => self.local(local),
             Value::Constant(ScalarValue::I32(value)) => {
                 Symbol::Index(Affine::constant(i64::from(value)))
             }
             Value::Constant(ScalarValue::I64(value)) => Symbol::Index(Affine::constant(value)),
             _ => Symbol::Unknown,
         }
+    }
+}
+
+pub(super) struct MemoryFacts {
+    parameters: Vec<Symbol>,
+    locals: HashMap<LocalId, Symbol>,
+    reference_regions: Vec<Vec<StateRegion>>,
+}
+
+impl MemoryFacts {
+    fn new(program: &Program, memory: &MemoryAnalysis, id: FunctionId) -> Self {
+        let function = &program.functions[id.index()];
+        let mut facts = Self {
+            parameters: vec![Symbol::Unknown; function.params.len()],
+            locals: HashMap::new(),
+            reference_regions: Vec::new(),
+        };
+        for (index, parameter) in function.params.iter().enumerate() {
+            if !matches!(
+                (&program.types[parameter.ty.index()], parameter.mode),
+                (
+                    Type::Array { .. },
+                    PassingMode::ReadOnlyReference
+                        | PassingMode::ReadWriteReference
+                        | PassingMode::ResultReference
+                ) | (Type::Slice { .. }, PassingMode::Value)
+            ) {
+                continue;
+            }
+            let origins = memory.parameter(id, ParameterId::new(index as u32));
+            if let Some(region) =
+                known_region(program, parameter.ty, origins, &mut facts.reference_regions)
+            {
+                facts.parameters[index] = Symbol::Region(region);
+            }
+        }
+        // Slice descriptors are commonly loaded before the loop. Whole-function
+        // origins include every definition and discard writable descriptor escapes,
+        // so the alternatives cover every view regardless of where it was assigned.
+        for (index, local) in function.locals.iter().enumerate() {
+            if !matches!(program.types[local.ty.index()], Type::Slice { .. }) {
+                continue;
+            }
+            let origins = memory
+                .slice(id, Value::Local(LocalId::new(index as u32)))
+                .expect("memory analysis covers every local");
+            if let Some(region) =
+                known_region(program, local.ty, origins, &mut facts.reference_regions)
+            {
+                facts
+                    .locals
+                    .insert(LocalId::new(index as u32), Symbol::Region(region));
+            }
+        }
+        facts
     }
 }
 
@@ -133,35 +199,21 @@ struct Access {
 struct Proof<'a> {
     program: &'a Program,
     effects: &'a EffectAnalysis,
-    reference_regions: Vec<Vec<StateRegion>>,
+    reference_regions: &'a [Vec<StateRegion>],
     domain: (i64, i64),
     accesses: Vec<Access>,
     calls: Vec<FunctionId>,
     remaining: usize,
 }
 
-/// Proves absence of cross-iteration *memory* dependences. Scalar recurrences
-/// still retain their ordinary semantics; this is not permission to reassociate
-/// arithmetic. Every helper's memory access is included in the same proof.
-pub fn independent_memory_loop(
-    program: &Program,
-    effects: &EffectAnalysis,
-    memory: &MemoryAnalysis,
-    ranges: &ProgramRangeAnalysis,
-    function: FunctionId,
-    body: &Block,
-) -> bool {
-    prove(program, effects, memory, ranges, function, body).is_some()
-}
-
-fn prove(
-    program: &Program,
-    effects: &EffectAnalysis,
-    memory: &MemoryAnalysis,
-    ranges: &ProgramRangeAnalysis,
-    id: FunctionId,
-    body: &Block,
-) -> Option<()> {
+pub(super) fn prove(analysis: &super::LoopAnalysis<'_>, body: &Block) -> Option<()> {
+    let super::LoopAnalysis {
+        program,
+        effects,
+        ranges,
+        function: id,
+        ..
+    } = analysis;
     let function = &program.functions[id.index()];
     let counted = super::counted_loop(body)?;
     // A whole-function upper bound covers every possible trip count, even
@@ -170,7 +222,7 @@ fn prove(
     let limit = match counted.limit {
         Value::Constant(ScalarValue::I32(limit)) => i64::from(limit),
         Value::Local(local) => {
-            let range = ranges.function(id)?.local(local)?;
+            let range = ranges.function(*id)?.local(local)?;
             if range.scalar() != ScalarType::I32 {
                 return None;
             }
@@ -178,56 +230,32 @@ fn prove(
         }
         _ => return None,
     };
-    let start = preceding_reset(&function.body, body, counted.index)?;
+    let start = analysis.facts.preceding_reset(body)?;
     if start < 0 || i64::from(start) >= limit {
         return None;
     }
+    let facts = analysis
+        .memory_facts
+        .get_or_init(|| MemoryFacts::new(program, analysis.memory, *id));
     let mut frame = Frame {
         function,
-        parameters: vec![Symbol::Unknown; function.params.len()],
-        locals: vec![Symbol::Unknown; function.locals.len()],
+        parameters: Cow::Borrowed(&facts.parameters),
+        initial_locals: Some(&facts.locals),
+        locals: HashMap::from([(
+            counted.index,
+            Symbol::Index(Affine {
+                slope: 1,
+                offset: 0,
+            }),
+        )]),
     };
-    let mut reference_regions = Vec::new();
-    for (index, parameter) in function.params.iter().enumerate() {
-        if !matches!(
-            (&program.types[parameter.ty.index()], parameter.mode),
-            (
-                Type::Array { .. },
-                PassingMode::ReadOnlyReference
-                    | PassingMode::ReadWriteReference
-                    | PassingMode::ResultReference
-            ) | (Type::Slice { .. }, PassingMode::Value)
-        ) {
-            continue;
-        }
-        let origins = memory.parameter(id, ParameterId::new(index as u32));
-        if let Some(region) = known_region(program, parameter.ty, origins, &mut reference_regions) {
-            frame.parameters[index] = Symbol::Region(region);
-        }
-    }
-    // Slice descriptors are commonly loaded before the loop. Whole-function
-    // origins include every definition and discard writable descriptor escapes,
-    // so the alternatives cover every view regardless of where it was assigned.
-    for (index, local) in function.locals.iter().enumerate() {
-        if !matches!(program.types[local.ty.index()], Type::Slice { .. }) {
-            continue;
-        }
-        let origins = memory.slice(id, Value::Local(LocalId::new(index as u32)))?;
-        if let Some(region) = known_region(program, local.ty, origins, &mut reference_regions) {
-            frame.locals[index] = Symbol::Region(region);
-        }
-    }
-    frame.locals[counted.index.index()] = Symbol::Index(Affine {
-        slope: 1,
-        offset: 0,
-    });
     let mut proof = Proof {
         program,
         effects,
-        reference_regions,
+        reference_regions: &facts.reference_regions,
         domain: (i64::from(start), limit - 1),
         accesses: Vec::new(),
-        calls: vec![id],
+        calls: vec![*id],
         remaining: 4096,
     };
     for statement in counted.body {
@@ -311,39 +339,6 @@ fn known_region(
     })
 }
 
-fn preceding_reset(block: &Block, target: &Block, index: LocalId) -> Option<i32> {
-    for (position, statement) in block.statements.iter().enumerate() {
-        match &statement.kind {
-            StatementKind::Loop { body } if std::ptr::eq(body, target) => {
-                let (local, Rvalue::Use(Value::Constant(ScalarValue::I32(start)))) =
-                    super::assigned_local(block.statements.get(position.checked_sub(1)?)?)?
-                else {
-                    return None;
-                };
-                return (local == index).then_some(*start);
-            }
-            StatementKind::Loop { body } => {
-                if let Some(start) = preceding_reset(body, target, index) {
-                    return Some(start);
-                }
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                if let Some(start) = preceding_reset(then_block, target, index)
-                    .or_else(|| preceding_reset(else_block, target, index))
-                {
-                    return Some(start);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 impl<'a> Proof<'a> {
     fn array(&self, state: StateId) -> Option<Region> {
         let Type::Array { element, len } =
@@ -369,7 +364,7 @@ impl<'a> Proof<'a> {
     }
     fn base(&self, frame: &Frame<'_>, base: &PlaceBase) -> Option<Symbol> {
         Some(match base {
-            PlaceBase::Local(local) => frame.locals[local.index()],
+            PlaceBase::Local(local) => frame.local(*local),
             PlaceBase::Parameter(parameter) => frame.parameters[parameter.index()],
             PlaceBase::State(state) => Symbol::Region(self.array(*state)?),
             _ => return None,
@@ -577,7 +572,8 @@ impl<'a> Proof<'a> {
                             ) {
                                 return None;
                             }
-                            frame.locals[local.index()] = self.rvalue(frame, value, ty)?;
+                            let value = self.rvalue(frame, value, ty)?;
+                            frame.locals.insert(*local, value);
                             continue;
                         }
                     }
@@ -611,8 +607,9 @@ impl<'a> Proof<'a> {
                         .collect::<Option<Vec<_>>>()?;
                     let mut called = Frame {
                         function: callee,
-                        parameters,
-                        locals: vec![Symbol::Unknown; callee.locals.len()],
+                        parameters: Cow::Owned(parameters),
+                        initial_locals: None,
+                        locals: HashMap::new(),
                     };
                     self.calls.push(*function);
                     let returned = self
@@ -623,7 +620,7 @@ impl<'a> Proof<'a> {
                         return None;
                     }
                     for (local, value) in results.iter().zip(returned) {
-                        frame.locals[local.index()] = value;
+                        frame.locals.insert(*local, value);
                     }
                 }
                 StatementKind::Return { values } => {

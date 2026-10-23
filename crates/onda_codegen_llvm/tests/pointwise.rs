@@ -19,16 +19,20 @@ fn compile(source: &str) -> onda_mir::OptimizedProgram {
 
 fn eligible_loops(program: &onda_mir::OptimizedProgram) -> usize {
     let function = &program.functions[program.entry_points.process.index()];
+    let analysis = onda_mir::LoopAnalysis::new(
+        program,
+        program.effects(),
+        program.memory(),
+        program.ranges(),
+        program.entry_points.process,
+    );
     let mut blocks = vec![&function.body];
     let mut eligible = 0;
     while let Some(block) = blocks.pop() {
         for statement in &block.statements {
             match &statement.kind {
                 onda_mir::StatementKind::Loop { body } => {
-                    eligible += usize::from(
-                        onda_mir::pointwise_audio_loop(program, program.effects(), function, body)
-                            .is_some(),
-                    );
+                    eligible += usize::from(analysis.pointwise_audio_loop(body).is_some());
                     blocks.push(body);
                 }
                 onda_mir::StatementKind::If {

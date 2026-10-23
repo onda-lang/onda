@@ -10,12 +10,7 @@ impl FunctionEmitter<'_, '_> {
         if self.parallel_loop.is_some() {
             return Ok(false);
         }
-        let Some(plan) = onda_mir::pointwise_audio_loop(
-            self.module.program,
-            self.module.effects,
-            self.function,
-            body,
-        ) else {
+        let Some(plan) = self.loops.pointwise_audio_loop(body) else {
             return Ok(false);
         };
         if plan.ports.len() < 2 {

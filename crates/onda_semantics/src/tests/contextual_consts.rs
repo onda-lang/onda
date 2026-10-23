@@ -14,6 +14,19 @@ fn proc_tuple_destinations_preserve_input_immutability() {
     }
 }
 
+#[test]
+fn tuple_destinations_preserve_parameter_immutability() {
+    for targets in ["gain, _", "_, gain"] {
+        for source in [
+            format!("params:\n  gain = 0.0\nsample:\n  {targets} = (1.0, 2.0)\n  out1 = gain\n"),
+            format!("proc P:\n  params:\n    gain = 0.0\n  sample:\n    {targets} = (1.0, 2.0)\n    out1 = gain\ninit:\n  p = P()\nsample:\n  out1 = p()\n"),
+        ] {
+            let errors = analyze(parse_program(&source).unwrap()).unwrap_err();
+            assert!(errors.iter().any(|error| error.message.contains("cannot assign to immutable symbol 'gain'")), "{errors:?}");
+        }
+    }
+}
+
 fn assert_state_type(typed: &TypedProgram, name: &str, expected: PrimitiveType) {
     let index = typed.state_vars.iter().position(|var| var == name).unwrap();
     assert_eq!(typed.state_types[index], expected, "{name}");

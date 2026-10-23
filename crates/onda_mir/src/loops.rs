@@ -1,10 +1,62 @@
 //! Target-independent legality checks for counted and pointwise loops.
+use std::cell::OnceCell;
 use std::collections::HashSet;
 
 use crate::*;
 
+mod facts;
 mod independent;
-pub use independent::independent_memory_loop;
+#[cfg(test)]
+mod tests;
+
+/// Reusable loop queries in one immutable function. Construct this once per
+/// function to share structural and descriptor facts across its loop proofs.
+pub struct LoopAnalysis<'a> {
+    program: &'a Program,
+    effects: &'a EffectAnalysis,
+    memory: &'a MemoryAnalysis,
+    ranges: &'a ProgramRangeAnalysis,
+    function: FunctionId,
+    facts: facts::FunctionFacts,
+    memory_facts: OnceCell<independent::MemoryFacts>,
+}
+
+impl<'a> LoopAnalysis<'a> {
+    pub fn new(
+        program: &'a Program,
+        effects: &'a EffectAnalysis,
+        memory: &'a MemoryAnalysis,
+        ranges: &'a ProgramRangeAnalysis,
+        function: FunctionId,
+    ) -> Self {
+        Self {
+            program,
+            effects,
+            memory,
+            ranges,
+            function,
+            facts: facts::FunctionFacts::new(&program.functions[function.index()]),
+            memory_facts: OnceCell::new(),
+        }
+    }
+
+    /// Proves absence of cross-iteration memory dependences without relaxing
+    /// scalar recurrences or floating-point order.
+    pub fn independent_memory_loop(&self, body: &Block) -> bool {
+        independent::prove(self, body).is_some()
+    }
+
+    pub fn pointwise_audio_loop(&self, body: &Block) -> Option<PointwiseAudioLoop> {
+        pointwise_audio_loop(self, body)
+    }
+
+    /// Whether this local has exactly one zero reset and one unit increment,
+    /// with no other writes or reference escapes relevant to a copy-loop hint.
+    pub fn nonnegative_induction(&self, index: LocalId) -> bool {
+        let local = &self.facts.locals[index.index()];
+        local.unit_induction() && !local.induction_escaped
+    }
+}
 
 pub struct CountedLoop<'a> {
     pub index: LocalId,
@@ -171,12 +223,10 @@ pub struct PointwiseAudioLoop {
 /// invariant. A backend may execute iterations independently when every pair
 /// involving a write is either disjoint or exactly equal, preserving operation
 /// order within each iteration. Partial overlap still needs a fallback.
-pub fn pointwise_audio_loop(
-    program: &Program,
-    effects: &EffectAnalysis,
-    function: &Function,
-    block: &Block,
-) -> Option<PointwiseAudioLoop> {
+fn pointwise_audio_loop(analysis: &LoopAnalysis<'_>, block: &Block) -> Option<PointwiseAudioLoop> {
+    let program = analysis.program;
+    let effects = analysis.effects;
+    let function = &program.functions[analysis.function.index()];
     if function.kind != FunctionKind::Process {
         return None;
     }
@@ -196,85 +246,21 @@ pub fn pointwise_audio_loop(
     if *index != counted.index {
         return None;
     }
-    let mut escaped = HashSet::new();
-    let mut resets = 0;
-    let mut steps = 0;
-    let mut limits = 0;
-    let mut pending = vec![&function.body];
-    while let Some(block) = pending.pop() {
-        for statement in &block.statements {
-            if let Some((local, value)) = assigned_local(statement) {
-                if let Rvalue::MakeSlice {
-                    source:
-                        SliceSource::Place(Place {
-                            base: PlaceBase::Local(local),
-                            ..
-                        }),
-                    ..
-                } = value
-                {
-                    escaped.insert(*local);
-                }
-                if local == counted.index {
-                    match value {
-                        Rvalue::Use(Value::Constant(ScalarValue::I32(0))) => resets += 1,
-                        Rvalue::Binary {
-                            op: BinaryOp::Add,
-                            lhs: Value::Local(lhs),
-                            rhs: Value::Constant(ScalarValue::I32(1)),
-                        } if *lhs == local => {
-                            steps += 1;
-                        }
-                        _ => return None,
-                    }
-                }
-                if local == limit {
-                    if !matches!(value, Rvalue::Load(Place { base: PlaceBase::Parameter(parameter), projections }) if parameter.index() == PROCESS_FRAMES_PARAM_INDEX && projections.is_empty())
-                    {
-                        return None;
-                    }
-                    limits += 1;
-                }
-            }
-            match &statement.kind {
-                StatementKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => pending.extend([then_block, else_block]),
-                StatementKind::Loop { body } => pending.push(body),
-                StatementKind::Call { results, .. }
-                    if results.contains(&limit) || results.contains(&counted.index) =>
-                {
-                    return None
-                }
-                StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
-                    for argument in args {
-                        if let CallArgument::Place(place)
-                        | CallArgument::ArrayWindow { array: place, .. } = argument
-                        {
-                            if let PlaceBase::Local(local) = place.base {
-                                escaped.insert(local);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    if resets != 1
-        || steps != 1
-        || limits != 1
-        || escaped.contains(&counted.index)
-        || escaped.contains(&limit)
+    let induction = &analysis.facts.locals[counted.index.index()];
+    if !induction.unit_induction()
+        || induction.escaped
+        || !analysis.facts.locals[limit.index()].process_limit()
     {
         return None;
     }
     let operations = &counted.body[1..];
     let mut written = HashSet::new();
     let mut record_write = |local: LocalId| {
-        if local == counted.index || local == frame || local == limit || escaped.contains(&local) {
+        if local == counted.index
+            || local == frame
+            || local == limit
+            || analysis.facts.locals[local.index()].escaped
+        {
             return None;
         }
         if !matches!(

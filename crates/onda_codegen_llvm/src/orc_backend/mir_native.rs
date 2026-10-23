@@ -1512,6 +1512,13 @@ unsafe fn emit_function_body(
             module,
             function,
             function_index,
+            loops: onda_mir::LoopAnalysis::new(
+                module.program,
+                module.effects,
+                module.memory,
+                module.ranges,
+                onda_mir::FunctionId::new(function_index as u32),
+            ),
             ranges: module
                 .ranges
                 .function(onda_mir::FunctionId::new(function_index as u32))
@@ -1589,6 +1596,7 @@ struct FunctionEmitter<'a, 'm> {
     module: &'m ModuleEmitter<'a>,
     function: &'a onda_mir::Function,
     function_index: usize,
+    loops: onda_mir::LoopAnalysis<'a>,
     ranges: &'m onda_mir::FunctionRangeAnalysis,
     declaration: FunctionDecl,
     builder: LLVMBuilderRef,

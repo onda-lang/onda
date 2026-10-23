@@ -153,6 +153,87 @@ fn check_program(mut program: Program, expected: u64) {
 mod fixed;
 
 #[test]
+fn unprovable_affine_accesses_visit_a_linear_number_of_symbols() {
+    for count in [128, 1024, 4096] {
+        let mut body = prologue();
+        for offset in 1..=count {
+            body.extend([
+                assign(9, binary(crate::BinaryOp::Add, value(2), int(offset))),
+                read(0, 9),
+            ]);
+        }
+        affine::VISITED_SYMBOLS.set(0);
+        check(body, 0);
+        let visited = affine::VISITED_SYMBOLS.get();
+        assert!(
+            visited <= count as usize * 64,
+            "{count} accesses visited {visited} symbols"
+        );
+    }
+}
+
+#[test]
+fn ranged_reference_loads_keep_affine_queries_linear() {
+    for count in [64, 512, 4096] {
+        let mut body = prologue();
+        for offset in 1..=count {
+            body.extend([
+                assign(
+                    2,
+                    Rvalue::Load(Place {
+                        base: PlaceBase::Parameter(ParameterId::new(2)),
+                        projections: vec![],
+                    }),
+                ),
+                assign(9, binary(BinaryOp::Add, value(2), int(offset))),
+                read(0, 9),
+            ]);
+        }
+        let mut program = fixture(body);
+        let parameter = &mut program.functions[0].params[2];
+        parameter.mode = PassingMode::ReadOnlyReference;
+        parameter.integer_range = Some(crate::IntegerRangeInvariant {
+            min: ScalarValue::I32(0),
+            max: ScalarValue::I32(i32::MAX),
+            mode: crate::IntegerRangeMode::Clamp,
+        });
+        affine::VISITED_SYMBOLS.set(0);
+        // The additions can wrap, so every clamped access must remain.
+        check_program(program, 0);
+        let visited = affine::VISITED_SYMBOLS.get();
+        assert!(
+            visited <= count as usize * 64,
+            "{count} ranged loads visited {visited} symbols"
+        );
+    }
+}
+
+#[test]
+fn copied_values_keep_their_definitions_ranges() {
+    let mut body = prologue();
+    body.extend([
+        assign(9, Rvalue::Use(value(2))),
+        assign(
+            8,
+            Rvalue::NormalizeIndex {
+                index: value(9),
+                length: int(16),
+                bounds: BoundsMode::Clamp,
+            },
+        ),
+        // The local's whole-function range is wider than this definition's.
+        assign(9, Rvalue::Use(int(1000))),
+    ]);
+    let mut program = fixture(body);
+    program.functions[0].params[2].integer_range = Some(crate::IntegerRangeInvariant {
+        min: ScalarValue::I32(0),
+        max: ScalarValue::I32(7),
+        mode: crate::IntegerRangeMode::Clamp,
+    });
+    check_program(program, 1);
+}
+
+#[test]
 fn branch_guards_prove_both_sides_of_a_minimum_length() {
     let mut body = prologue();
     body.extend([

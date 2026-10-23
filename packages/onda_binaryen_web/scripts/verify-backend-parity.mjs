@@ -39,6 +39,18 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "mixed state and local storage preserves in-place dependencies",
+    source: join(packageDir, "test/fixtures/mixed-storage-origins.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "tuple stores preserve normalization, hooks, precision and evaluation order",
+    source: join(packageDir, "test/fixtures/tuple-stores.onda"),
+    blocks: 3,
+    expectedChannels: Array.from({ length: 4 }, () => Array(12).fill(0)),
+  },
+  {
     name: "shared helpers preserve alternative state views",
     source: join(packageDir, "test/fixtures/shared-view-ranges.onda"),
     blocks: 3,

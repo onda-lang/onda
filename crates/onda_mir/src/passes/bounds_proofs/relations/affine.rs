@@ -5,6 +5,11 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static VISITED_SYMBOLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Default)]
 struct Expression {
     constant: i128,
@@ -58,7 +63,7 @@ impl Expression {
 
 struct Expressions<'a, 'b, 'p> {
     proof: &'a Proof<'b, 'p>,
-    bounds: Vec<(i128, i128)>,
+    bounds: HashMap<Symbol, (i128, i128)>,
     cache: HashMap<Symbol, Expression>,
 }
 
@@ -75,8 +80,8 @@ impl Expressions<'_, '_, '_> {
             ScalarType::I64 => (i128::from(i64::MIN), i128::from(i64::MAX)),
             _ => return None,
         };
-        let (a, b) = self.bounds[lhs];
-        let (c, d) = self.bounds[rhs];
+        let (a, b) = self.bounds[&lhs];
+        let (c, d) = self.bounds[&rhs];
         let (a, b, c, d) = (a.max(min), b.min(max), c.max(min), d.min(max));
         let (lower, upper) = match op {
             BinaryOp::Add => (a + c, b + d),
@@ -158,19 +163,26 @@ pub(super) fn ordered(
     strict: bool,
     env: &Environment,
 ) -> bool {
-    if !proof
-        .nodes
-        .iter()
-        .any(|node| matches!(node, Node::Binary(..)))
-    {
-        return false;
-    }
     let available = proof.available(left, right, env);
-    let bounds = (0..proof.nodes.len())
-        .map(|symbol| {
+    #[cfg(test)]
+    VISITED_SYMBOLS.with(|count| count.set(count.get() + available.len()));
+    if !available
+        .iter()
+        .any(|&symbol| matches!(proof.nodes[symbol], Node::Binary(..)))
+    {
+        let upper = proof.bound(left, true, env, &available);
+        let lower = proof.bound(right, false, env, &available);
+        return upper < lower || upper == lower && !strict;
+    }
+    let bounds = available
+        .iter()
+        .map(|&symbol| {
             (
-                proof.bound(symbol, false, env, &available),
-                proof.bound(symbol, true, env, &available),
+                symbol,
+                (
+                    proof.bound(symbol, false, env, &available),
+                    proof.bound(symbol, true, env, &available),
+                ),
             )
         })
         .collect();
@@ -182,14 +194,14 @@ pub(super) fn ordered(
     // Whole-function local summaries can combine several assignments. Recover
     // each immutable definition's tighter range, in dependency order, using
     // only operations whose intermediate arithmetic has already been proved.
-    for (symbol, node) in proof.nodes.iter().enumerate() {
-        if !available.contains(&symbol) {
-            continue;
-        }
-        if let Node::Binary(op, lhs, rhs, scalar) = *node {
+    let mut symbols: Vec<_> = available.iter().copied().collect();
+    symbols.sort_unstable();
+    for &symbol in &symbols {
+        if let Node::Binary(op, lhs, rhs, scalar) = proof.nodes[symbol] {
             if let Some((min, max)) = expressions.operation_range(op, lhs, rhs, scalar) {
-                expressions.bounds[symbol].0 = expressions.bounds[symbol].0.max(min);
-                expressions.bounds[symbol].1 = expressions.bounds[symbol].1.min(max);
+                let bounds = expressions.bounds.get_mut(&symbol).unwrap();
+                bounds.0 = bounds.0.max(min);
+                bounds.1 = bounds.1.min(max);
             }
         }
     }
@@ -204,7 +216,7 @@ pub(super) fn ordered(
             .terms
             .iter()
             .try_fold(expression.constant, |sum, (&symbol, &coefficient)| {
-                let (min, max) = expressions.bounds[symbol];
+                let (min, max) = expressions.bounds[&symbol];
                 sum.checked_add(coefficient.checked_mul(if coefficient > 0 { max } else { min })?)
             });
     if upper.is_some_and(|upper| upper <= 0) {
@@ -216,11 +228,8 @@ pub(super) fn ordered(
         return false;
     };
     let mut edges = Vec::new();
-    for (from, orders) in proof.edges.iter().enumerate() {
-        if !available.contains(&from) {
-            continue;
-        }
-        for &(to, strict) in orders {
+    for &from in &symbols {
+        for &(to, strict) in &proof.edges[from] {
             if !available.contains(&to) {
                 continue;
             }
@@ -242,26 +251,26 @@ pub(super) fn ordered(
             edges.push((right, left, limit));
         }
     }
-    for (symbol, &(min, max)) in expressions.bounds.iter().enumerate() {
-        if !available.contains(&symbol) {
-            continue;
-        }
+    for &symbol in &symbols {
+        let (min, max) = expressions.bounds[&symbol];
         edges.push((zero, symbol, max));
         edges.push((symbol, zero, -min));
     }
-    let mut distances = vec![None::<i128>; zero + 1];
-    distances[right] = Some(0);
+    let mut distances = HashMap::<Symbol, i128>::from([(right, 0)]);
     // Bellman-Ford supports negative offsets. A bounded number of rounds also
     // terminates for contradictory (unreachable) path conditions.
-    for _ in 0..=zero {
-        if distances[left].is_some_and(|distance| distance <= limit) {
+    for _ in 0..=symbols.len() {
+        if distances
+            .get(&left)
+            .is_some_and(|&distance| distance <= limit)
+        {
             return true;
         }
         let mut changed = false;
         for &(from, to, offset) in &edges {
-            if let Some(candidate) = distances[from].and_then(|d| d.checked_add(offset)) {
-                if distances[to].is_none_or(|old| candidate < old) {
-                    distances[to] = Some(candidate);
+            if let Some(candidate) = distances.get(&from).and_then(|d| d.checked_add(offset)) {
+                if distances.get(&to).is_none_or(|&old| candidate < old) {
+                    distances.insert(to, candidate);
                     changed = true;
                 }
             }
@@ -270,5 +279,7 @@ pub(super) fn ordered(
             break;
         }
     }
-    distances[left].is_some_and(|distance| distance <= limit)
+    distances
+        .get(&left)
+        .is_some_and(|&distance| distance <= limit)
 }

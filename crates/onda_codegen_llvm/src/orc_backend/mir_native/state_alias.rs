@@ -1,9 +1,12 @@
 //! Consume MIR storage identities without asserting disjointness between
 //! overlapping views of the same array or between unknown references.
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+
+use onda_mir::PlaceBase;
 
 use super::*;
+
+mod scopes;
 
 pub(super) fn reference_alignment(
     program: &Program,
@@ -46,30 +49,113 @@ pub(super) fn reference_alignment(
 }
 
 pub(super) struct StateAliasScopes {
-    scopes: Vec<LLVMMetadataRef>,
-    lists: RefCell<HashMap<Vec<onda_mir::StateId>, (LLVMValueRef, LLVMValueRef)>>,
+    lists: HashMap<Origins, (LLVMValueRef, LLVMValueRef)>,
     alias_kind: u32,
     noalias_kind: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct Origins {
+    states: Vec<onda_mir::StateId>,
+    only_states: bool,
+}
+
+impl Origins {
+    fn new(origins: &onda_mir::StorageOrigins) -> Option<Self> {
+        Some(Self {
+            states: origins.states()?.collect(),
+            only_states: origins.only_states().is_some(),
+        })
+    }
+}
+
+fn accessed_origins(program: &onda_mir::OptimizedProgram) -> Vec<Origins> {
+    let mut origins = BTreeSet::new();
+    for (index, function) in program.functions.iter().enumerate() {
+        let id = onda_mir::FunctionId::new(index as u32);
+        let place = |place: &Place| {
+            matches!(place.base, PlaceBase::State(_) | PlaceBase::Parameter(_))
+                .then(|| Origins::new(&program.memory().place(program, id, place)))
+                .flatten()
+        };
+        let slice = |value| Origins::new(program.memory().slice(id, value)?);
+        let mut pending = vec![&function.body];
+        while let Some(block) = pending.pop() {
+            for statement in &block.statements {
+                match &statement.kind {
+                    StatementKind::Assign { destination, value } => {
+                        origins.extend(place(destination));
+                        match value {
+                            Rvalue::Load(source) => origins.extend(place(source)),
+                            Rvalue::SliceLoad { slice: source, .. } => {
+                                origins.extend(slice(*source));
+                            }
+                            _ => {}
+                        }
+                    }
+                    StatementKind::SliceStore { slice: source, .. } => {
+                        origins.extend(slice(*source));
+                    }
+                    StatementKind::If {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        pending.extend([then_block, else_block]);
+                    }
+                    StatementKind::Loop { body } => pending.push(body),
+                    _ => {}
+                }
+            }
+        }
+    }
+    origins.into_iter().collect()
+}
+
 impl StateAliasScopes {
-    pub(super) unsafe fn new(context: LLVMContextRef, program: &Program) -> Self {
-        let name = "onda.state";
-        let label = LLVMMDStringInContext2(context, name.as_ptr().cast(), name.len());
-        let domain = self_referential_metadata_node(context, &[label]);
-        let scopes = program
-            .state
-            .iter()
-            .enumerate()
-            .map(|(index, state)| {
-                let name = format!("state.{index}.{}", state.name);
+    pub(super) unsafe fn new(
+        context: LLVMContextRef,
+        program: &onda_mir::OptimizedProgram,
+    ) -> Self {
+        let origins = accessed_origins(program);
+        let plan = scopes::Plan::new(&origins);
+        let mut scopes = Vec::new();
+        for index in 0..plan.domains {
+            let name = format!("onda.state.disjoint.{index}");
+            let label = LLVMMDStringInContext2(context, name.as_ptr().cast(), name.len());
+            let domain = self_referential_metadata_node(context, &[label]);
+            for name in ["left", "right"] {
                 let label = LLVMMDStringInContext2(context, name.as_ptr().cast(), name.len());
-                self_referential_metadata_node(context, &[domain, label])
+                scopes.push(self_referential_metadata_node(context, &[domain, label]));
+            }
+        }
+        let list = |indices: &[usize]| {
+            if indices.is_empty() {
+                null_mut()
+            } else {
+                let mut nodes: Vec<_> = indices.iter().map(|&index| scopes[index]).collect();
+                LLVMMetadataAsValue(
+                    context,
+                    LLVMMDNodeInContext2(context, nodes.as_mut_ptr(), nodes.len()),
+                )
+            }
+        };
+        let lists = origins
+            .into_iter()
+            .zip(plan.lists)
+            .map(|(origins, lists)| {
+                // Mixed origins can share non-state storage. Their scoped negative
+                // facts remain useful against exclusively owned-state accesses.
+                let alias = if origins.only_states {
+                    list(&lists.alias)
+                } else {
+                    null_mut()
+                };
+                (origins, (alias, list(&lists.noalias)))
             })
             .collect();
         Self {
-            scopes,
-            lists: RefCell::new(HashMap::new()),
+            lists,
             alias_kind: LLVMGetMDKindIDInContext(context, c"alias.scope".as_ptr(), 11),
             noalias_kind: LLVMGetMDKindIDInContext(context, c"noalias".as_ptr(), 7),
         }
@@ -77,40 +163,16 @@ impl StateAliasScopes {
 
     pub(super) unsafe fn mark(
         &self,
-        context: LLVMContextRef,
         instruction: LLVMValueRef,
         origins: &onda_mir::StorageOrigins,
     ) {
-        let Some(states) = origins.states() else {
+        let Some(origins) = Origins::new(origins) else {
             return;
         };
-        let states: Vec<_> = states.collect();
-        let mut lists = self.lists.borrow_mut();
-        let (alias, noalias) = *lists.entry(states.clone()).or_insert_with(|| {
-            let mut aliases = Vec::new();
-            let mut others = Vec::new();
-            for (index, &scope) in self.scopes.iter().enumerate() {
-                if states
-                    .binary_search(&onda_mir::StateId::new(index as u32))
-                    .is_ok()
-                {
-                    aliases.push(scope);
-                } else {
-                    others.push(scope);
-                }
-            }
-            let list = |nodes: &mut Vec<LLVMMetadataRef>| {
-                if nodes.is_empty() {
-                    null_mut()
-                } else {
-                    LLVMMetadataAsValue(
-                        context,
-                        LLVMMDNodeInContext2(context, nodes.as_mut_ptr(), nodes.len()),
-                    )
-                }
-            };
-            (list(&mut aliases), list(&mut others))
-        });
+        let &(alias, noalias) = self
+            .lists
+            .get(&origins)
+            .expect("collected state alias origins");
         if !alias.is_null() {
             LLVMSetMetadata(instruction, self.alias_kind, alias);
         }
@@ -132,9 +194,7 @@ impl FunctionEmitter<'_, '_> {
                 onda_mir::FunctionId::new(self.function_index as u32),
                 place,
             );
-            self.module
-                .state_alias_scopes
-                .mark(self.module.context, instruction, &origins);
+            self.module.state_alias_scopes.mark(instruction, &origins);
         }
     }
 
@@ -145,9 +205,7 @@ impl FunctionEmitter<'_, '_> {
             .memory
             .slice(onda_mir::FunctionId::new(self.function_index as u32), slice)
         {
-            self.module
-                .state_alias_scopes
-                .mark(self.module.context, instruction, origins);
+            self.module.state_alias_scopes.mark(instruction, origins);
         }
     }
 }

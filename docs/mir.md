@@ -380,6 +380,10 @@ Slice proofs retain relations to lengths, including affine expressions such as
 the current path; wrapping expressions remain opaque. Division, signed remainder, masked bits,
 and shifts also contribute conservative interval facts. Integer `min` and `max` preserve a bound
 from either operand even when the other has no narrower range than its integer type.
+Ordering proofs reuse each immutable value's unconditional bounds instead of duplicating them
+as path constraints for every ranged load or constant assignment. Only tighter copy-specific
+refinements enter the current path's constraints, preserving scope without accumulating unrelated
+load history.
 Source `for` variables default to `i32` and may explicitly select `i32` or `i64`. Constant loops use
 the selected induction width and a compile-time-computed final iteration, so every increment is
 proven not to overflow without adding a checked-arithmetic branch. Dynamic loops also retain the
@@ -411,7 +415,12 @@ an exact length. Each object retains at most 16 alternatives to bound analysis s
 fixed-point convergence; exceeding that analysis budget discards ranges while retaining identity.
 Nested aggregate projections and unresolved offsets remain conservative.
 LLVM uses identities for scoped alias metadata and converts all possible offsets to a common
-reference alignment using its own physical layout. An offset view never inherits stronger alignment than its actual
+reference alignment using its own physical layout. Affirmative state alias scopes require exclusively
+owned-state origins; a union that also includes non-state storage retains only safe
+`noalias` facts. Native metadata shares domains between proven disjoint groups of accessed
+origins, refining overlapping groups until every disjoint pair is covered. Distinct state
+objects use O(n log n) metadata operands, with no per-object full complement lists. Unknown
+origins remain unannotated. An offset view never inherits stronger alignment than its actual
 address supports. MIR uses known descriptor lengths to fold `SliceLen`, prove element bounds,
 and remove redundant slice construction checks. Fixed-array windows additionally require a proven
 contiguous payload of sufficient size before their shape/stride check is removed. Mutable payloads
@@ -441,6 +450,9 @@ its integer type. Scalar borrows, unknown origins, recursion, unsupported contro
 analysis-budget exhaustion reject the proof. Scalar recurrences retain their ordinary semantics;
 memory independence does not authorize floating-point reassociation. LLVM represents successful
 proofs with access groups that remain valid when inlining or debug information replaces loop IDs.
+`LoopAnalysis` shares structural facts and descriptor origins across the loops of one immutable
+function. Symbolic execution uses a fresh sparse overlay for each loop and helper call, preserving
+the same legality checks and proof budgets without rescanning unrelated function state.
 
 These passes do not replace LLVM or Binaryen optimization. They keep portable MIR deterministic,
 remove producer artifacts before backend legalization, and prevent basic code quality from depending

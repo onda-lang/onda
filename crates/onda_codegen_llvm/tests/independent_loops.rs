@@ -46,14 +46,14 @@ fn proven_in(mir: &onda_mir::OptimizedProgram, name: &str) -> bool {
             }
         })
         .unwrap();
-    onda_mir::independent_memory_loop(
+    onda_mir::LoopAnalysis::new(
         mir,
         mir.effects(),
         mir.memory(),
         mir.ranges(),
         onda_mir::FunctionId::new(id as u32),
-        body,
     )
+    .independent_memory_loop(body)
 }
 
 #[test]

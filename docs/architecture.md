@@ -249,6 +249,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `mir_lowering.rs` — transactional semantic-to-MIR lowering; owns executable storage/resources,
   events, functions, aggregate/reference shapes, recursive processor arrays, oversampling, and the
   canonical segmented process schedule.
+  Checked tuple destinations use scalar assignment semantics after capturing their RHS once;
+  numeric context, range normalization and processor parameter hooks are preserved.
   - `mir_lowering/{lowerer_core,scheduling,control_flow,expressions,calls,aggregates,slices,values}.rs`
     — focused construction domains kept behind one lowering transaction.
   - `mir_lowering/{data,data_slices,references,reference_joins,storage,retained_storage}.rs` — canonical data
@@ -276,7 +278,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
 - `memory.rs` — storage origins across slice definitions, reference arguments, and returns.
-- `loops.rs` — counted-loop recognition and pointwise audio dependence proofs.
+- `loops.rs`, `loops/facts.rs` — counted-loop recognition and reusable per-function facts for
+  pointwise audio, memory independence and native loop-cost queries.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
@@ -600,7 +603,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
   a proven lower bound without assuming wrapping arithmetic is monotonic. These proofs
   track value identities through copies, writes, branches, and loops; escaped local storage
   remains conservative. Affine derived indices are expanded only when every intermediate is
-  proved not to wrap. The resulting unchecked MIR operations benefit every backend.
+  proved not to wrap. Affine queries visit their definitions and current branch constraints,
+  without scanning unrelated expression history. The resulting unchecked MIR operations benefit every backend.
   Slice descriptor length caps propagate through definitions, subslices, value arguments and
   returns; payload writes do not invalidate a descriptor's length. Unknown external lengths and
   mutable descriptor references remain conservative.
@@ -619,9 +623,12 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - MIR storage origins preserve owned-object identities and possible contiguous element ranges through
   views and calls, including different views passed to the same helper. MIR folds common descriptor
   lengths and removes proven slice construction and window checks. Native lowering computes
-  reference alignment from the recorded element offsets;
-  overlapping views keep the same identity. Pointwise audio proofs allow a native guarded vector path when every
-  pair involving a write is disjoint or exactly equal, with partial overlap using the original loop.
+  reference alignment from the recorded element offsets; overlapping views keep the same identity.
+  LLVM alias scopes share proven disjoint groups of accessed origins, avoiding a full complement
+  list per state object. Overlapping unions refine those groups without discarding disjointness
+  facts; mixed origins receive only negative alias facts. Pointwise audio proofs allow a native
+  guarded vector path when every pair involving a write is disjoint or exactly equal, with
+  partial overlap using the original loop.
   Transitive MIR effects preserve that proof through memory-free scalar value-only helpers that
   cannot fail or loop indefinitely; LLVM retains responsibility for inlining and vectorization.
 - Bounded counted array and known-shape slice loops have a shared MIR dependence proof, including affine forward and
@@ -635,6 +642,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
   LLVM access groups carry it through inlining without relaxing floating-point order. A separate
   native cost policy keeps short floating-point copies scalar on AVX2 targets without AVX-512;
   larger loops and arithmetic kernels retain LLVM's ordinary vectorization decisions.
+  Loop queries share one immutable per-function summary and lazily collected descriptor origins;
+  each dependence proof tracks only the locals it uses, including inside helpers.
 - Large fixed loops with independent expensive math and an already-materialized result may split
   rendering from an ordered sum. The MIR transform preserves addition order and introduces no
   scratch arrays. Calls, failures, unresolved aliases, and coupled reductions prevent distribution.

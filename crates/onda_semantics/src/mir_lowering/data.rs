@@ -593,17 +593,32 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<LoweredValue, MirLoweringError> {
-        let range = name.split_once('.').and_then(|(root, path)| {
-            let DataType::Struct(struct_name) = self.data_type_of(&Expr::var(root))? else {
-                return None;
-            };
-            crate::resolve_struct_field_decl(&struct_name, path, self.structs)?
-                .integer_range
-                .as_ref()
-                .and_then(|range| {
-                    typed_integer_range_invariant(range).map(|invariant| (range.ty, invariant))
+        let range = self
+            .function
+            .integer_range_params
+            .get(name)
+            .and_then(|range| {
+                typed_integer_range_invariant(range).map(|invariant| (range.ty, invariant))
+            })
+            .or_else(|| {
+                let globals = self.runtime_globals_for_unbound(name)?;
+                let (_, ty) = globals.states.get(name)?;
+                Some((*ty, *globals.integer_ranges.get(name)?))
+            })
+            .or_else(|| {
+                name.split_once('.').and_then(|(root, path)| {
+                    let DataType::Struct(struct_name) = self.data_type_of(&Expr::var(root))? else {
+                        return None;
+                    };
+                    crate::resolve_struct_field_decl(&struct_name, path, self.structs)?
+                        .integer_range
+                        .as_ref()
+                        .and_then(|range| {
+                            typed_integer_range_invariant(range)
+                                .map(|invariant| (range.ty, invariant))
+                        })
                 })
-        });
+            });
         let Some((ty, range)) = range else {
             return Ok(value);
         };
@@ -611,7 +626,7 @@ impl FunctionLowerer<'_> {
         if super::values::value_is_within_integer_range(value.value, range, &self.locals) {
             return Ok(value);
         }
-        Ok(self.emit_temp(
+        let normalized = self.emit_temp(
             block,
             ty,
             Rvalue::Intrinsic {
@@ -626,7 +641,11 @@ impl FunctionLowerer<'_> {
                 ],
             },
             loc,
-        ))
+        );
+        if let Value::Local(local) = normalized.value {
+            self.locals[local.index()].integer_range = Some(range);
+        }
+        Ok(normalized)
     }
 
     pub(super) fn prepare_data_array_view(
@@ -868,6 +887,7 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        let value = self.normalize_data_scalar_store(name, value, block, loc.clone())?;
         if !self.assign_runtime_global(name, &[value], block, loc.clone(), loc.clone())? {
             self.assign_variable_values(
                 name,

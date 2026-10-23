@@ -21,7 +21,7 @@ impl FunctionEmitter<'_, '_> {
             _ => None,
         };
         if !maximum.is_some_and(|maximum| (1..=7).contains(&maximum))
-            || !nonnegative_induction(self.function, counted.index)
+            || !self.loops.nonnegative_induction(counted.index)
             || !cheap_memory_body(self.module.program, self.function, counted.body)
         {
             return;
@@ -36,67 +36,6 @@ impl FunctionEmitter<'_, '_> {
         let kind = LLVMGetMDKindIDInContext(context, c"llvm.loop".as_ptr(), 9);
         LLVMSetMetadata(branch, kind, LLVMMetadataAsValue(context, node));
     }
-}
-
-fn nonnegative_induction(function: &Function, induction: onda_mir::LocalId) -> bool {
-    let mut pending = vec![&function.body];
-    let mut resets = 0;
-    let mut steps = 0;
-    while let Some(block) = pending.pop() {
-        for statement in &block.statements {
-            match &statement.kind {
-                StatementKind::Assign {
-                    value:
-                        Rvalue::MakeSlice {
-                            source:
-                                onda_mir::SliceSource::Place(Place {
-                                    base: onda_mir::PlaceBase::Local(local),
-                                    ..
-                                }),
-                            ..
-                        },
-                    ..
-                } if *local == induction => return false,
-                StatementKind::Assign {
-                    destination:
-                        Place {
-                            base: onda_mir::PlaceBase::Local(local),
-                            projections,
-                        },
-                    value,
-                } if *local == induction && projections.is_empty() => match value {
-                    Rvalue::Use(Value::Constant(ScalarValue::I32(0))) => resets += 1,
-                    Rvalue::Binary {
-                        op: BinaryOp::Add,
-                        lhs: Value::Local(local),
-                        rhs: Value::Constant(ScalarValue::I32(1)),
-                    } if *local == induction => steps += 1,
-                    _ => return false,
-                },
-                StatementKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    pending.push(then_block);
-                    pending.push(else_block);
-                }
-                StatementKind::Loop { body } => pending.push(body),
-                StatementKind::Call { args, results, .. }
-                    if results.contains(&induction)
-                        || args.iter().any(|argument| {
-                            matches!(argument,
-                        CallArgument::Place(Place { base: onda_mir::PlaceBase::Local(local), .. })
-                        if *local == induction)
-                        }) =>
-                {
-                    return false
-                }
-                _ => {}
-            }
-        }
-    }
-    resets == 1 && steps == 1
 }
 
 fn cheap_memory_body(program: &Program, function: &Function, body: &[onda_mir::Statement]) -> bool {
