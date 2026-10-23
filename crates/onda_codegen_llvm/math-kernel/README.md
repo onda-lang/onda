@@ -3,7 +3,7 @@
 These generated LLVM 21 bitcode modules contain SLEEF 3.9.0 helpers for f32 and f64:
 
 - `sin`, `cos`, `tan`, `tanh`, `atan`, `atan2`, `log`: upstream `u35` implementations.
-- `exp`, `pow`: upstream `u10` implementations.
+- `exp`, `exp2`, `pow`: upstream `u10` implementations.
 - x86-64 SSE2, AVX, AVX2 at 128/256 bits, AVX-512, and AArch64 AdvSIMD.
 
 SLEEF documents nominal bounds of 3.5 ULP (`u35`) and 1 ULP (`u10`), with function-specific
@@ -14,7 +14,8 @@ ignoring signed zero in application arithmetic.
 Normal Cargo builds embed these files directly. There is no SLEEF build, download, separate
 library, DLL, or vector-math flag. The compiler selects legal variants from the destination
 CPU's resolved LLVM features and lets LLVM choose profitable vector widths. After application
-optimization it links only used ISA/precision modules, makes the helpers internal, and
+optimization it resolves fixed-width `llvm.exp2` calls introduced by LLVM (including
+power-of-two `pow` expressions), links only used ISA/precision modules, makes the helpers internal, and
 removes unused functions. Both JIT code and native objects contain their implementation.
 Scalar tails still use platform libm (`-lm` when linking Unix objects).
 

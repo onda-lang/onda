@@ -1,0 +1,50 @@
+outs 3
+
+def reverse(source: f32[32], destination: f32[32], count):
+  if count < 0 || count > 32:
+    return
+  for i in 0..count:
+    destination[i] = source[count - 1 - i] * 0.5
+
+def overwritten(values: f32[32], index):
+  i = index
+  if i >= 0 && i < 32:
+    i -= 32
+    return values[i]
+  return -1.0
+
+def wrapping(values: f32[32], index):
+  if index >= 0 && index < 32:
+    return values[index * 2147483647]
+  return -1.0
+
+init:
+  values: f32[32]
+  results: f32[32]
+  for i in 0..32:
+    values[i] = f32(i + 1)
+  frame = 0
+
+sample:
+  n = frame % 37 - 2
+  results[:] = -10.0
+  reverse(values, results, n)
+  error = 0.0
+  for i in 0..32:
+    expected = -10.0
+    if i < n && n <= 32:
+      expected = f32(n - i) * 0.5
+    error += abs(results[i] - expected)
+  out1 = error
+
+  # The same guards apply directly to state arrays.
+  selected = -1.0
+  expected = -1.0
+  if n >= 0 && n < 32:
+    selected = values[n]
+    expected = f32(n + 1)
+  out2 = selected - expected
+
+  # Mutation and wrapping must retain clamping, despite the preceding guards.
+  out3 = abs(overwritten(values, 2) - 1.0) + abs(wrapping(values, 2) - 1.0)
+  frame += 1

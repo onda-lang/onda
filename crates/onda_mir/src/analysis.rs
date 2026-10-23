@@ -1009,6 +1009,7 @@ pub fn analyze_program_integer_ranges_with_effects(
     program: &Program,
     effects: &EffectAnalysis,
 ) -> ProgramRangeAnalysis {
+    let slice_lengths = crate::slice_lengths::analyze(program);
     let reference_origins = program
         .functions
         .iter()
@@ -1077,12 +1078,15 @@ pub fn analyze_program_integer_ranges_with_effects(
         }
         let mut outgoing = HashMap::new();
         let analysis = analyze_function_integer_ranges(
-            program,
-            &program.functions[index],
-            &parameters[index],
-            &results,
-            effects,
-            &reference_origins[index],
+            &RangeAnalysisContext {
+                program,
+                function: &program.functions[index],
+                parameters: &parameters[index],
+                callee_results: &results,
+                effects,
+                reference_origins: &reference_origins[index],
+                slice_lengths: &slice_lengths[index],
+            },
             &mut outgoing,
         );
         if analysis.results != results[index] {
@@ -1114,14 +1118,10 @@ pub fn analyze_program_integer_ranges_with_effects(
 }
 
 fn analyze_function_integer_ranges(
-    program: &Program,
-    function: &crate::Function,
-    parameters: &[Option<IntegerRange>],
-    callee_results: &[Vec<Option<IntegerRange>>],
-    effects: &EffectAnalysis,
-    reference_origins: &[ReferenceOrigins],
+    context: &RangeAnalysisContext<'_>,
     observations: &mut HashMap<usize, Vec<RangeSummary>>,
 ) -> FunctionRangeAnalysis {
+    let function = context.function;
     let mut environment = function
         .locals
         .iter()
@@ -1135,24 +1135,16 @@ fn analyze_function_integer_ranges(
         })
         .collect::<Vec<_>>();
     let mut result_summary = vec![RangeSummary::default(); function.results.len()];
-    let context = RangeAnalysisContext {
-        program,
-        function,
-        parameters,
-        callee_results,
-        effects,
-        reference_origins,
-    };
     {
         let mut summaries = RangeAnalysisSummaries {
             locals: &mut summary,
             results: &mut result_summary,
             observations,
         };
-        analyze_range_block(&context, &function.body, &mut environment, &mut summaries);
+        analyze_range_block(context, &function.body, &mut environment, &mut summaries);
     }
     FunctionRangeAnalysis {
-        parameters: parameters.to_vec(),
+        parameters: context.parameters.to_vec(),
         locals: summary.into_iter().map(|summary| summary.range).collect(),
         results: result_summary
             .into_iter()
@@ -1168,6 +1160,7 @@ struct RangeAnalysisContext<'a> {
     callee_results: &'a [Vec<Option<IntegerRange>>],
     effects: &'a EffectAnalysis,
     reference_origins: &'a [ReferenceOrigins],
+    slice_lengths: &'a crate::slice_lengths::FunctionSliceLengths,
 }
 
 struct RangeAnalysisSummaries<'a> {
@@ -1599,7 +1592,15 @@ fn analyze_range_block(
                     unreachable!()
                 };
                 let range = declared_local_range(context.function, local).or_else(|| {
-                    range_of_rvalue(context.program, value, context.parameters, environment)
+                    if let Rvalue::SliceLen(slice) = value {
+                        IntegerRange::new(
+                            ScalarType::I32,
+                            0,
+                            i64::from(context.slice_lengths.upper_bound(*slice)),
+                        )
+                    } else {
+                        range_of_rvalue(context.program, value, context.parameters, environment)
+                    }
                 });
                 environment[local.index()] = range;
                 record_range(&mut summaries.locals[local.index()], range);
@@ -1767,8 +1768,13 @@ fn range_of_rvalue(
             if matches!(intrinsic, crate::Intrinsic::Min | crate::Intrinsic::Max)
                 && args.len() == 2 =>
         {
-            let lhs = range_of_value(args[0], environment)?;
-            let rhs = range_of_value(args[1], environment)?;
+            let lhs = range_of_value(args[0], environment);
+            let rhs = range_of_value(args[1], environment);
+            // Validated min/max operands have the same type. One known
+            // operand still bounds the result when the other is unconstrained.
+            let scalar = lhs.or(rhs)?.scalar;
+            let lhs = lhs.or_else(|| IntegerRange::full(scalar))?;
+            let rhs = rhs.or_else(|| IntegerRange::full(scalar))?;
             if lhs.scalar != rhs.scalar {
                 return None;
             }
@@ -1839,15 +1845,76 @@ fn range_of_binary(op: BinaryOp, lhs: IntegerRange, rhs: IntegerRange) -> Option
         BinaryOp::Remainder if !rhs.contains(0) => {
             let magnitude = rhs.min.unsigned_abs().max(rhs.max.unsigned_abs());
             let maximum = i64::try_from(magnitude.saturating_sub(1)).ok()?;
-            IntegerRange::new(lhs.scalar, -maximum, maximum)
+            IntegerRange::new(
+                lhs.scalar,
+                lhs.min.min(0).max(-maximum),
+                lhs.max.max(0).min(maximum),
+            )
+        }
+        BinaryOp::Divide if !rhs.contains(0) => {
+            let quotients = [
+                i128::from(lhs.min) / i128::from(rhs.min),
+                i128::from(lhs.min) / i128::from(rhs.max),
+                i128::from(lhs.max) / i128::from(rhs.min),
+                i128::from(lhs.max) / i128::from(rhs.max),
+            ];
+            checked_range(
+                lhs.scalar,
+                *quotients.iter().min()?,
+                *quotients.iter().max()?,
+            )
+        }
+        BinaryOp::BitAnd if lhs.min >= 0 || rhs.min >= 0 => {
+            let maximum = match (lhs.min >= 0, rhs.min >= 0) {
+                (true, true) => lhs.max.min(rhs.max),
+                (true, false) => lhs.max,
+                _ => rhs.max,
+            };
+            IntegerRange::new(lhs.scalar, 0, maximum)
+        }
+        BinaryOp::BitOr | BinaryOp::BitXor if lhs.min >= 0 && rhs.min >= 0 => {
+            let highest = (lhs.max | rhs.max) as u64;
+            let maximum = if highest == 0 {
+                0
+            } else {
+                (1_u64 << (64 - highest.leading_zeros())) - 1
+            };
+            IntegerRange::new(lhs.scalar, 0, maximum as i64)
+        }
+        BinaryOp::ShiftLeft | BinaryOp::ShiftRight => {
+            let bits = if lhs.scalar == ScalarType::I32 {
+                32
+            } else {
+                64
+            };
+            let (min_shift, max_shift) = if rhs.min == rhs.max {
+                let shift = rhs.min as u32 & (bits - 1);
+                (shift, shift)
+            } else if rhs.min >= 0 && rhs.max < i64::from(bits) {
+                (rhs.min as u32, rhs.max as u32)
+            } else {
+                return IntegerRange::full(lhs.scalar);
+            };
+            let shifted = [
+                (lhs.min, min_shift),
+                (lhs.min, max_shift),
+                (lhs.max, min_shift),
+                (lhs.max, max_shift),
+            ]
+            .map(|(value, shift)| {
+                if op == BinaryOp::ShiftLeft {
+                    i128::from(value) << shift
+                } else {
+                    i128::from(value) >> shift
+                }
+            });
+            checked_range(lhs.scalar, *shifted.iter().min()?, *shifted.iter().max()?)
         }
         BinaryOp::Divide
         | BinaryOp::Remainder
         | BinaryOp::BitAnd
         | BinaryOp::BitOr
-        | BinaryOp::BitXor
-        | BinaryOp::ShiftLeft
-        | BinaryOp::ShiftRight => IntegerRange::full(lhs.scalar),
+        | BinaryOp::BitXor => IntegerRange::full(lhs.scalar),
     }
 }
 
@@ -2208,6 +2275,10 @@ fn scan_rvalue(
                     value_scalar_type(types, locals, *lhs),
                     Some(ScalarType::I32 | ScalarType::I64)
                 )
+                && !matches!(rhs,
+                    Value::Constant(ScalarValue::I32(value)) if *value != 0)
+                && !matches!(rhs,
+                    Value::Constant(ScalarValue::I64(value)) if *value != 0)
             {
                 effects.may_fail = true;
             }
@@ -3245,7 +3316,7 @@ mod tests {
             Rvalue::Binary {
                 op: BinaryOp::Divide,
                 lhs: Value::Constant(ScalarValue::I32(1)),
-                rhs: Value::Constant(ScalarValue::I32(2)),
+                rhs: Value::Constant(ScalarValue::I32(0)),
             },
         );
         let indexed_array = |name: &str, bounds| {
@@ -3391,6 +3462,28 @@ mod tests {
     }
 
     #[test]
+    fn integer_division_by_a_known_nonzero_value_cannot_fail() {
+        for op in [BinaryOp::Divide, BinaryOp::Remainder] {
+            for divisor in [-1, 0, 1, 2] {
+                for (lhs, rhs) in [
+                    (ScalarValue::I32(i32::MIN), ScalarValue::I32(divisor)),
+                    (
+                        ScalarValue::I64(i64::MIN),
+                        ScalarValue::I64(i64::from(divisor)),
+                    ),
+                ] {
+                    let value = Rvalue::Binary {
+                        op,
+                        lhs: Value::Constant(lhs),
+                        rhs: Value::Constant(rhs),
+                    };
+                    assert_eq!(rvalue_may_fail(&[], &[], &value), divisor == 0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fixed_buffer_collection_failure_effects_match_bounds_mode() {
         let argument = |bounds| {
             CallArgument::Buffer(crate::BufferRef::ArrayElement {
@@ -3409,6 +3502,124 @@ mod tests {
     #[test]
     fn access_mode_type_remains_a_logical_fact() {
         assert_ne!(AccessMode::ReadOnly, AccessMode::ReadWrite);
+    }
+
+    #[test]
+    fn integer_ranges_cover_wrapping_arithmetic_edges() {
+        use BinaryOp::*;
+        for scalar in [ScalarType::I32, ScalarType::I64] {
+            let (min, max) = integer_type_bounds(scalar).unwrap();
+            let intervals = [
+                (min, min + 2),
+                (-64, -31),
+                (-8, 8),
+                (0, 0),
+                (0, 31),
+                (1, 4),
+                (31, 33),
+                (63, 65),
+                (max - 2, max),
+            ];
+            for (a, b) in intervals {
+                for (c, d) in intervals {
+                    for op in [
+                        Divide, Remainder, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight,
+                    ] {
+                        let range = range_of_binary(
+                            op,
+                            IntegerRange::new(scalar, a, b).unwrap(),
+                            IntegerRange::new(scalar, c, d).unwrap(),
+                        )
+                        .unwrap();
+                        for lhs in [a, a + (b - a) / 2, b] {
+                            for rhs in [c, c + (d - c) / 2, d] {
+                                let value = |n: i64| {
+                                    if scalar == ScalarType::I32 {
+                                        ScalarValue::I32(n as i32)
+                                    } else {
+                                        ScalarValue::I64(n)
+                                    }
+                                };
+                                if let Some(result) =
+                                    crate::constant_eval::binary(op, value(lhs), value(rhs))
+                                {
+                                    let result = match result {
+                                        ScalarValue::I32(n) => i64::from(n),
+                                        ScalarValue::I64(n) => n,
+                                        _ => unreachable!(),
+                                    };
+                                    assert!(
+                                        range.contains(result),
+                                        "{scalar:?} {op:?} {lhs} {rhs}: {result} outside {range:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let range = |min, max| IntegerRange::new(ScalarType::I32, min, max).unwrap();
+        assert_eq!(
+            range_of_binary(ShiftLeft, range(0, 511), range(1, 1)),
+            Some(range(0, 1022))
+        );
+        assert_eq!(
+            range_of_binary(Remainder, range(0, 10000), range(1024, 1024)),
+            Some(range(0, 1023))
+        );
+        assert_eq!(
+            range_of_binary(
+                BitAnd,
+                range(i64::from(i32::MIN), i64::from(i32::MAX)),
+                range(1023, 1023)
+            ),
+            Some(range(0, 1023))
+        );
+    }
+
+    #[test]
+    fn min_max_keep_one_sided_bounds_for_unknown_operands() {
+        let program = range_test_program(vec![], vec![]);
+        for scalar in [ScalarType::I32, ScalarType::I64] {
+            let (min, max) = integer_type_bounds(scalar).unwrap();
+            let constant = match scalar {
+                ScalarType::I32 => Value::Constant(ScalarValue::I32(64)),
+                _ => Value::Constant(ScalarValue::I64(64)),
+            };
+            let unknown = Value::Local(LocalId::new(0));
+            for args in [vec![unknown, constant], vec![constant, unknown]] {
+                for (intrinsic, expected) in [
+                    (crate::Intrinsic::Min, (min, 64)),
+                    (crate::Intrinsic::Max, (64, max)),
+                ] {
+                    let range = range_of_rvalue(
+                        &program,
+                        &Rvalue::Intrinsic {
+                            intrinsic,
+                            args: args.clone(),
+                        },
+                        &[],
+                        &[None],
+                    )
+                    .unwrap();
+                    assert_eq!((range.min(), range.max()), expected);
+                }
+            }
+        }
+        assert!(range_of_rvalue(
+            &program,
+            &Rvalue::Intrinsic {
+                intrinsic: crate::Intrinsic::Min,
+                args: vec![
+                    Value::Local(LocalId::new(0)),
+                    Value::Constant(ScalarValue::F32(64.0))
+                ],
+            },
+            &[],
+            &[None]
+        )
+        .is_none());
     }
 
     #[test]

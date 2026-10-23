@@ -7,6 +7,10 @@
 mod event_input;
 mod function_emitter;
 mod host_abi;
+mod loop_cost;
+mod loop_metadata;
+mod pointwise;
+mod state_alias;
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -677,12 +681,14 @@ struct EmissionOptions {
     math: crate::FloatMathPolicy,
     vector_math: vector_math::Library,
     source_locations: bool,
+    scalar_short_memory_loops: bool,
 }
 
 struct ModuleEmitter<'a> {
     program: &'a Program,
     effects: &'a onda_mir::EffectAnalysis,
     ranges: &'a onda_mir::ProgramRangeAnalysis,
+    memory: &'a onda_mir::MemoryAnalysis,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &'a LoweredTypes,
@@ -698,8 +704,10 @@ struct ModuleEmitter<'a> {
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
+    state_alias_scopes: state_alias::StateAliasScopes,
     range_metadata_kind: u32,
     source_debug: Option<source_debug::SourceDebug>,
+    scalar_short_memory_loops: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -753,17 +761,18 @@ impl<'a> ModuleEmitter<'a> {
         let effects = program.effects();
         let ranges = program.ranges();
         let const_globals = build_const_globals(program, context, module)?;
-        let functions =
-            declare_functions(program, effects, ranges, context, module, types, layouts)?;
+        let functions = declare_functions(program, context, module, types, layouts)?;
         let source_debug = options
             .source_locations
             .then(|| source_debug::SourceDebug::new(module, program, &functions));
         let host_alias_scopes = build_host_alias_scopes(context);
+        let state_alias_scopes = state_alias::StateAliasScopes::new(context, program);
         let range_metadata_kind = LLVMGetMDKindIDInContext(context, c"range".as_ptr(), 5);
         Ok(Self {
             program,
             effects,
             ranges,
+            memory: program.memory(),
             context,
             module,
             types,
@@ -779,8 +788,10 @@ impl<'a> ModuleEmitter<'a> {
             functions,
             const_globals,
             host_alias_scopes,
+            state_alias_scopes,
             range_metadata_kind,
             source_debug,
+            scalar_short_memory_loops: options.scalar_short_memory_loops,
         })
     }
 
@@ -798,14 +809,15 @@ impl<'a> ModuleEmitter<'a> {
 }
 
 unsafe fn declare_functions(
-    program: &Program,
-    effects: &onda_mir::EffectAnalysis,
-    program_ranges: &onda_mir::ProgramRangeAnalysis,
+    program: &onda_mir::OptimizedProgram,
     context: LLVMContextRef,
     module: LLVMModuleRef,
     types: &LoweredTypes,
     layouts: &NativeLayouts,
 ) -> Result<Vec<FunctionDecl>, MirCodegenError> {
+    let effects = program.effects();
+    let program_ranges = program.ranges();
+    let memory = program.memory();
     let void_ty = LLVMVoidTypeInContext(context);
     let i32_ty = LLVMInt32TypeInContext(context);
     let ptr_ty = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
@@ -1041,7 +1053,19 @@ unsafe fn declare_functions(
                     // the integer `captures(none)` parameter attribute. The
                     // encoded CaptureInfo for `none` is zero.
                     add_enum_attribute_at_index(context, value, llvm_index, "captures", 0)?;
-                    add_enum_attribute_at_index(context, value, llvm_index, "align", 1)?;
+                    add_enum_attribute_at_index(
+                        context,
+                        value,
+                        llvm_index,
+                        "align",
+                        state_alias::reference_alignment(
+                            program,
+                            memory,
+                            layouts,
+                            function_id,
+                            onda_mir::ParameterId::new(index as u32),
+                        ) as u64,
+                    )?;
                     add_enum_attribute_at_index(
                         context,
                         value,
@@ -1263,10 +1287,14 @@ unsafe fn self_referential_metadata_node(
     trailing: &[LLVMMetadataRef],
 ) -> LLVMMetadataRef {
     let mut operands = Vec::with_capacity(trailing.len() + 1);
-    operands.push(std::ptr::null_mut());
+    // A null operand can collide with another uniqued node before its update.
+    // Use LLVM's temporary-node API to construct the cycle without leaving a
+    // stale metadata pointer after uniquing.
+    let temporary = llvm_sys::debuginfo::LLVMTemporaryMDNode(context, null_mut(), 0);
+    operands.push(temporary);
     operands.extend_from_slice(trailing);
     let node = LLVMMDNodeInContext2(context, operands.as_mut_ptr(), operands.len());
-    LLVMReplaceMDNodeOperandWith(LLVMMetadataAsValue(context, node), 0, node);
+    llvm_sys::debuginfo::LLVMMetadataReplaceAllUsesWith(temporary, node);
     node
 }
 
@@ -1498,6 +1526,7 @@ unsafe fn emit_function_body(
             event_parameters: Vec::new(),
             loop_stack: Vec::new(),
             fused_clamped_indices: fused_clamped_index_sources(module.program, function),
+            parallel_loop: None,
             direct_buffer_fields: vec![[None; 6]; module.program.interface.buffers.len()],
             fallback_buffer_read,
             fallback_buffer_write,
@@ -1575,6 +1604,7 @@ struct FunctionEmitter<'a, 'm> {
     event_parameters: Vec<PlaceRef>,
     loop_stack: Vec<(LLVMBasicBlockRef, LLVMBasicBlockRef)>,
     fused_clamped_indices: Vec<Option<FusedClampedIndex>>,
+    parallel_loop: Option<loop_metadata::ParallelLoop>,
     direct_buffer_fields: Vec<[Option<LLVMValueRef>; 6]>,
     fallback_buffer_read: LLVMValueRef,
     fallback_buffer_write: LLVMValueRef,
@@ -4060,6 +4090,9 @@ unsafe fn build_native_module(
     LLVMSetDataLayout(module.get(), layout.as_ptr());
     let types = LoweredTypes::build(context.get(), program)?;
     let layouts = compute_native_layouts(program, &types, data_layout)?;
+    unsafe extern "C" {
+        fn onda_expensive_short_masked_memory(machine: LLVMTargetMachineRef) -> bool;
+    }
     let emitter = ModuleEmitter::new(
         program,
         context.get(),
@@ -4071,6 +4104,7 @@ unsafe fn build_native_module(
             math,
             vector_math: vector_math::Library::for_target(target_machine, target_triple),
             source_locations,
+            scalar_short_memory_loops: onda_expensive_short_masked_memory(target_machine),
         },
     )?;
     emitter.emit()?;

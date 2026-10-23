@@ -105,7 +105,7 @@ fn native_vector_math_calls_resolve_and_preserve_exceptional_values() {
 
 fn math_source(precision: &str) -> String {
     let mut source = format!("ins:\n  in1: {precision}\nouts:\n");
-    for i in 1..=9 {
+    for i in 1..=10 {
         source.push_str(&format!("  out{i}: {precision}\n"));
     }
     source.push_str("sample:\n");
@@ -119,6 +119,7 @@ fn math_source(precision: &str) -> String {
         "exp(in1)",
         "log(in1)",
         "pow(in1, in1)",
+        "pow(2.0, in1)",
     ]
     .iter()
     .enumerate()
@@ -126,6 +127,65 @@ fn math_source(precision: &str) -> String {
         source.push_str(&format!("  out{} = {expression}\n", index + 1));
     }
     source
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn power_of_two_uses_vector_exp2_with_scalar_tails_and_overlap_fallbacks() {
+    macro_rules! check {
+        ($scalar:ty, $name:literal) => {
+            for base in [2.0 as $scalar, 4.0, 0.5] {
+                let mir = compile(&format!(
+                    "ins:\n  in1: {0}\nouts:\n  out1: {0}\nsample:\n  out1 = pow({base:?}, in1)\n", $name
+                ));
+                let ir = lower_optimized_mir_to_llvm_ir_with_options(&mir, MirCompileOptions::default()).unwrap();
+                assert!(ir.lines().any(|line| is_vector_call(line) && line.contains("@Sleef_exp2")), "{base}: no vector exp2");
+                assert!(!ir.lines().any(|line| line.contains("call ") && line.contains("@llvm.exp2.v")), "unresolved vector exp2");
+                let jit = jit_program_from_optimized_mir_with_options(mir, MirCompileOptions::default()).unwrap();
+                let params = jit.default_param_bytes();
+                let mut state = jit.initialize_state(&params).unwrap();
+                for output_base in [7, 8, 9, 256] {
+                    for segments in [vec![(0, 127)], vec![(3, 125)], vec![(0, 1), (1, 65), (66, 62)]] {
+                        let mut values = [0.0 as $scalar; 512];
+                        for (index, value) in values[8..136].iter_mut().enumerate() {
+                            *value = (index as $scalar - 64.0) / 8.0;
+                        }
+                        let overflow = <$scalar>::MAX_EXP as $scalar;
+                        let underflow = (<$scalar>::MIN_EXP - <$scalar>::MANTISSA_DIGITS as i32) as $scalar;
+                        values[8..22].copy_from_slice(&[
+                            <$scalar>::NAN, <$scalar>::INFINITY, <$scalar>::NEG_INFINITY,
+                            0.0, -0.0, overflow, overflow - 0.5, overflow + 0.5,
+                            underflow, underflow - 1.0, underflow + 0.5, underflow - 0.5,
+                            <$scalar>::MAX, -<$scalar>::MAX,
+                        ]);
+                        let mut expected = values;
+                        for &(start, frames) in &segments {
+                            for frame in start..start + frames {
+                                expected[output_base + frame] = base.powf(expected[8 + frame]);
+                            }
+                            unsafe {
+                                jit.process_checked(&mut state, &params, start, frames, 3,
+                                    &[values.as_ptr().add(8).cast()], &[values.as_mut_ptr().add(output_base).cast()],
+                                    &[], &[], &[], &[], None).unwrap();
+                            }
+                        }
+                        for (&actual, &expected) in values.iter().zip(&expected) {
+                            if expected.is_nan() {
+                                assert!(actual.is_nan());
+                            } else if !expected.is_finite() || expected == 0.0 {
+                                assert_eq!(actual.to_bits(), expected.to_bits(), "{} pow({base}, x)", $name);
+                            } else {
+                                assert!(actual.to_bits().abs_diff(expected.to_bits()) <= 2,
+                                    "{} pow({base}, x): {actual} vs {expected}, output {output_base}, {segments:?}", $name);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+    check!(f32, "f32");
+    check!(f64, "f64");
 }
 
 #[test]
@@ -151,6 +211,10 @@ fn vector_helpers_are_embedded_for_native_and_cross_targets() {
             };
             let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
             assert!(ir.lines().any(is_vector_call), "{triple}/{precision}");
+            assert!(
+                ir.contains("@Sleef_exp2"),
+                "{triple}/{precision}: missing exp2"
+            );
             for line in ir.lines().filter(|line| line.contains("@Sleef_")) {
                 assert!(!line.starts_with("declare"), "{triple}: {line}");
                 if line.starts_with("define") {
@@ -173,7 +237,7 @@ fn vector_variants_follow_cpu_features_and_platform_abi() {
     use onda_codegen_llvm::{
         lower_optimized_mir_to_target_llvm_ir, MirTargetOptions, TargetConfig, TargetCpu,
     };
-    let mir = compile("ins 1\nsample:\n  out1 = atan2(in1, 0.5)\n");
+    let mir = compile("ins 1\nouts 2\nsample:\n  out1 = atan2(in1, 0.5)\n  out2 = pow(2.0, in1)\n");
     for (triple, cpu, features, expected, forbidden) in [
         (
             "x86_64-unknown-linux-gnu",
@@ -279,6 +343,10 @@ fn vector_variants_follow_cpu_features_and_platform_abi() {
             },
         };
         let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
+        assert!(
+            ir.contains("@Sleef_exp2"),
+            "{triple}/{cpu}/{features}: missing exp2"
+        );
         let calls = ir
             .lines()
             .filter(|line| is_vector_call(line))

@@ -11,9 +11,12 @@ mod format;
 mod ids;
 mod ir;
 mod json;
+mod loops;
+mod memory;
 mod messagepack;
 mod passes;
 pub mod payload;
+mod slice_lengths;
 mod types;
 mod validate;
 
@@ -24,6 +27,11 @@ pub use json::{
     from_json, from_json_program, from_json_validated, from_json_with_producer_proofs, to_json,
     to_json_optimized, to_json_pretty, to_json_pretty_optimized, to_json_validated, MirJsonError,
 };
+pub use loops::{
+    counted_loop, independent_memory_loop, pointwise_audio_loop, AudioPort, CountedLoop,
+    PointwiseAudioLoop,
+};
+pub use memory::{analyze_memory, MemoryAnalysis, StateRegion, StorageOrigins};
 pub use messagepack::{
     from_messagepack, from_messagepack_with_producer_proofs, to_messagepack,
     to_messagepack_optimized, MirMessagePackError,

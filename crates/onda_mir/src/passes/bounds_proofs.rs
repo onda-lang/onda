@@ -5,7 +5,9 @@ use crate::{
 
 use super::PassStats;
 
+mod accesses;
 mod relations;
+mod views;
 
 pub(super) fn eliminate_proven_bounds_checks(
     program: &mut crate::Program,
@@ -13,21 +15,32 @@ pub(super) fn eliminate_proven_bounds_checks(
 ) -> bool {
     let mut changed = false;
     let program_ranges = crate::analyze_program_integer_ranges(program);
+    let memory = crate::analyze_memory(program);
     for function_index in 0..program.functions.len() {
         let function_id = FunctionId::new(function_index as u32);
         let ranges = program_ranges
             .function(function_id)
             .expect("program range analysis covers every MIR function");
-        let slice_lengths = fixed_slice_lengths(&program.functions[function_index]);
+        let mut slice_lengths = fixed_slice_lengths(&program.functions[function_index]);
+        for (index, length) in slice_lengths.iter_mut().enumerate() {
+            if let Some(known) = memory
+                .slice(function_id, Value::Local(crate::LocalId::new(index as u32)))
+                .and_then(views::contiguous_length)
+            {
+                *length = Some(known);
+            }
+        }
         let mut body = std::mem::take(&mut program.functions[function_index].body);
         let context = Context {
             program,
             function: &program.functions[function_index],
             ranges,
             slice_lengths,
+            memory: &memory,
+            function_id,
         };
         let eliminated =
-            prove_block(&context, &mut body) + relations::eliminate(&context, &mut body);
+            prove_block(&context, &mut body, stats) + relations::eliminate(&context, &mut body);
         program.functions[function_index].body = body;
         stats.eliminated_bounds_checks = stats.eliminated_bounds_checks.saturating_add(eliminated);
         changed |= eliminated != 0;
@@ -40,6 +53,8 @@ struct Context<'a> {
     function: &'a Function,
     ranges: &'a FunctionRangeAnalysis,
     slice_lengths: Vec<Option<u32>>,
+    memory: &'a crate::MemoryAnalysis,
+    function_id: FunctionId,
 }
 
 /// A descriptor assigned once has a stable shape even when its elements are
@@ -111,58 +126,27 @@ fn slice_length(context: &Context<'_>, value: Value) -> Option<u32> {
     }
 }
 
-fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
+fn prove_block(context: &Context<'_>, block: &mut Block, stats: &mut PassStats) -> u64 {
     let mut eliminated = 0;
     for statement in &mut block.statements {
+        accesses::visit(context, &mut statement.kind, &mut |index, limit, bounds| {
+            let len = match limit {
+                accesses::Limit::Fixed(len) => Some(len),
+                accesses::Limit::Slice(slice) => slice_length(context, slice),
+                accesses::Limit::Value(length) => {
+                    value_range(context, length).and_then(|range| u32::try_from(range.min()).ok())
+                }
+            };
+            if let Some(len) = len {
+                eliminated += prove_index(context, index, len, bounds);
+            }
+        });
         match &mut statement.kind {
-            StatementKind::Assign { destination, value } => {
-                eliminated += prove_place(context, destination);
-                eliminated += prove_rvalue(context, value);
-            }
-            StatementKind::Call { function, args, .. } => {
-                for (index, argument) in args.iter_mut().enumerate() {
-                    eliminated += prove_call_argument(context, *function, index, argument);
-                }
-            }
-            StatementKind::PublishDelegate { args, .. } => {
-                for argument in args {
-                    eliminated += prove_publish_argument(context, argument);
-                }
-            }
-            StatementKind::OutputStore {
-                output,
-                element,
-                bounds,
-                ..
-            } => {
-                if let Some(index) = element {
-                    if let Some(len) = context
-                        .program
-                        .interface
-                        .outputs
-                        .get(output.index())
-                        .and_then(|output| array_len(context.program, output.ty))
-                    {
-                        eliminated += prove_index(context, *index, len, bounds);
-                    }
-                }
-            }
-            StatementKind::ControlOutputStore {
-                output,
-                element,
-                bounds,
-                ..
-            } => {
-                if let Some(index) = element {
-                    if let Some(len) = context
-                        .program
-                        .interface
-                        .control_outputs
-                        .get(output.index())
-                        .and_then(|output| array_len(context.program, output.ty))
-                    {
-                        eliminated += prove_index(context, *index, len, bounds);
-                    }
+            StatementKind::Assign { value, .. } => {
+                eliminated += views::simplify(context, value, stats);
+                if let Some(original) = redundant_normalization_operand(context, value) {
+                    *value = Rvalue::Use(original);
+                    eliminated += 1;
                 }
             }
             StatementKind::If {
@@ -170,155 +154,14 @@ fn prove_block(context: &Context<'_>, block: &mut Block) -> u64 {
                 else_block,
                 ..
             } => {
-                eliminated += prove_block(context, then_block);
-                eliminated += prove_block(context, else_block);
+                eliminated += prove_block(context, then_block, stats);
+                eliminated += prove_block(context, else_block, stats);
             }
-            StatementKind::Loop { body } => eliminated += prove_block(context, body),
-            StatementKind::BufferStore { buffer, .. } => {
-                eliminated += prove_buffer_ref(context, buffer);
-            }
-            StatementKind::BufferParamStore { parameter, .. } => {
-                eliminated += prove_buffer_param_ref(context, parameter);
-            }
-            StatementKind::SliceStore {
-                slice,
-                index,
-                bounds,
-                ..
-            } => {
-                if let Some(len) = slice_length(context, *slice) {
-                    eliminated += prove_index(context, *index, len, bounds);
-                }
-            }
-            StatementKind::SliceFill { .. }
-            | StatementKind::SliceCopy { .. }
-            | StatementKind::Break
-            | StatementKind::Continue
-            | StatementKind::Return { .. } => {}
-            StatementKind::PublishLog { .. } => {}
+            StatementKind::Loop { body } => eliminated += prove_block(context, body, stats),
+            _ => {}
         }
     }
     eliminated
-}
-
-fn prove_publish_argument(context: &Context<'_>, argument: &mut CallArgument) -> u64 {
-    match argument {
-        CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
-            prove_place(context, place)
-        }
-        CallArgument::Buffer(buffer) => prove_buffer_ref(context, buffer),
-        CallArgument::BufferParam(parameter) => prove_buffer_param_ref(context, parameter),
-        CallArgument::Value(_)
-        | CallArgument::SliceElement { .. }
-        | CallArgument::SliceWindow { .. }
-        | CallArgument::BufferSpan(_) => 0,
-    }
-}
-
-fn prove_rvalue(context: &Context<'_>, value: &mut Rvalue) -> u64 {
-    if let Some(original) = redundant_normalization_operand(context, value) {
-        *value = Rvalue::Use(original);
-        return 1;
-    }
-
-    match value {
-        Rvalue::Load(place) => prove_place(context, place),
-        Rvalue::InputLoad {
-            input,
-            element: Some(index),
-            bounds,
-            ..
-        } => context
-            .program
-            .interface
-            .inputs
-            .get(input.index())
-            .and_then(|input| array_len(context.program, input.ty))
-            .map_or(0, |len| prove_index(context, *index, len, bounds)),
-        Rvalue::OutputLoad {
-            output,
-            element: Some(index),
-            bounds,
-            ..
-        } => context
-            .program
-            .interface
-            .outputs
-            .get(output.index())
-            .and_then(|output| array_len(context.program, output.ty))
-            .map_or(0, |len| prove_index(context, *index, len, bounds)),
-        Rvalue::ConstDataLoad {
-            data,
-            index,
-            bounds,
-        } => context
-            .program
-            .const_data
-            .get(data.index())
-            .and_then(|data| u32::try_from(data.values.len()).ok())
-            .map_or(0, |len| prove_index(context, *index, len, bounds)),
-        Rvalue::BufferLoad { buffer, .. }
-        | Rvalue::BufferLen(buffer)
-        | Rvalue::BufferChannels(buffer)
-        | Rvalue::BufferSampleRate(buffer)
-        | Rvalue::BufferIsBound(buffer) => prove_buffer_ref(context, buffer),
-        Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
-        | Rvalue::BufferParamChannels(parameter)
-        | Rvalue::BufferParamSampleRate(parameter)
-        | Rvalue::BufferParamIsBound(parameter) => prove_buffer_param_ref(context, parameter),
-        Rvalue::MakeSlice { source, .. } => prove_slice_source(context, source),
-        Rvalue::SliceLoad {
-            slice,
-            index,
-            bounds,
-        } => {
-            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
-        }
-        _ => 0,
-    }
-}
-
-fn prove_call_argument(
-    context: &Context<'_>,
-    callee: FunctionId,
-    parameter_index: usize,
-    argument: &mut CallArgument,
-) -> u64 {
-    match argument {
-        CallArgument::Place(place) => prove_place(context, place),
-        CallArgument::SliceElement {
-            slice,
-            index,
-            bounds,
-        } => {
-            slice_length(context, *slice).map_or(0, |len| prove_index(context, *index, len, bounds))
-        }
-        CallArgument::ArrayWindow {
-            array,
-            start,
-            bounds,
-        } => {
-            let mut eliminated = prove_place(context, array);
-            let source_len =
-                place_type(context, array).and_then(|ty| array_len(context.program, ty));
-            let window_len = context
-                .program
-                .functions
-                .get(callee.index())
-                .and_then(|callee| callee.params.get(parameter_index))
-                .and_then(|parameter| array_len(context.program, parameter.ty));
-            if let Some((source_len, window_len)) = source_len.zip(window_len) {
-                if window_len <= source_len {
-                    eliminated += prove_index(context, *start, source_len - window_len + 1, bounds);
-                }
-            }
-            eliminated
-        }
-        CallArgument::Buffer(buffer) => prove_buffer_ref(context, buffer),
-        CallArgument::BufferParam(parameter) => prove_buffer_param_ref(context, parameter),
-        _ => 0,
-    }
 }
 
 fn redundant_normalization_operand(context: &Context<'_>, value: &Rvalue) -> Option<Value> {
@@ -343,88 +186,6 @@ fn redundant_normalization_operand(context: &Context<'_>, value: &Rvalue) -> Opt
         && operand.min() >= lower.min()
         && operand.max() <= upper.max())
     .then_some(args[0])
-}
-
-fn prove_slice_source(context: &Context<'_>, source: &mut crate::SliceSource) -> u64 {
-    match source {
-        crate::SliceSource::Place(place) => prove_place(context, place),
-        crate::SliceSource::Buffer { buffer, .. } => prove_buffer_ref(context, buffer),
-        crate::SliceSource::BufferParam { parameter, .. } => {
-            prove_buffer_param_ref(context, parameter)
-        }
-        crate::SliceSource::ConstData(_) => 0,
-    }
-}
-
-fn prove_buffer_ref(context: &Context<'_>, buffer: &mut crate::BufferRef) -> u64 {
-    let crate::BufferRef::ArrayElement {
-        len,
-        selector,
-        bounds,
-        ..
-    } = buffer
-    else {
-        return 0;
-    };
-    prove_index(context, *selector, *len, bounds)
-}
-
-fn prove_buffer_param_ref(context: &Context<'_>, parameter: &mut crate::BufferParamRef) -> u64 {
-    let crate::BufferParamRef::ArrayElement {
-        span,
-        selector,
-        bounds,
-    } = parameter
-    else {
-        return 0;
-    };
-    let Some(len) = context
-        .function
-        .params
-        .get(span.index())
-        .and_then(|parameter| context.program.types.get(parameter.ty.index()))
-        .and_then(|ty| match ty {
-            Type::BufferSpan { len, .. } => Some(*len),
-            _ => None,
-        })
-    else {
-        return 0;
-    };
-    prove_index(context, *selector, len, bounds)
-}
-
-fn prove_place(context: &Context<'_>, place: &mut Place) -> u64 {
-    let mut ty = base_type(context, place.base);
-    let mut eliminated = 0;
-    for projection in &mut place.projections {
-        match projection {
-            Projection::Field(field) => {
-                ty = ty.and_then(|ty| match context.program.types.get(ty.index())? {
-                    Type::Struct(structure) => context
-                        .program
-                        .structs
-                        .get(structure.index())?
-                        .fields
-                        .get(field.index())
-                        .map(|field| field.ty),
-                    _ => None,
-                });
-            }
-            Projection::Index { index, bounds } => {
-                let array = ty.and_then(|ty| match context.program.types.get(ty.index())? {
-                    Type::Array { element, len } => Some((*element, *len)),
-                    _ => None,
-                });
-                if let Some((element, len)) = array {
-                    eliminated += prove_index(context, *index, len, bounds);
-                    ty = Some(element);
-                } else {
-                    ty = None;
-                }
-            }
-        }
-    }
-    eliminated
 }
 
 fn prove_index(context: &Context<'_>, index: Value, len: u32, bounds: &mut BoundsMode) -> u64 {

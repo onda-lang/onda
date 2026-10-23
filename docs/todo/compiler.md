@@ -136,20 +136,21 @@ LLVM vectorize the bank. Use this workload to guide general processor and MIR op
 
 ## DSP loop proofs and diagnostics
 
-Deferred follow-ups from the stdlib DSP performance analysis. Keep
-Onda DSP source scalar; shared analyses should expose facts to backends without FFT-specific
-compiler rules or user-authored SIMD operations.
+The implemented baseline is documented in the [MIR pass contract](../mir.md#backend-neutral-passes).
+Keep Onda DSP source scalar; shared analyses should expose facts to backends without FFT-specific
+compiler rules or user-authored SIMD operations. Measurements and known regressions live in the
+[2026-10-23 benchmark report](../../scripts/bench/results/2026-10-23.md).
 
-- Preserve proven alignment, stride, storage identity, and disjoint memory ranges through array
-  views, slices, aliases, and function calls. Slice loads/stores currently lower with `align 1`.
-  Emit stronger alignment and alias facts only when storage layout and access rules guarantee them.
-- Extend relational loop and bounds proofs to derived butterfly indices and mirrored ranges.
+- Extend existing storage origins and complete-object alignment with offset/stride-aware facts
+  through views and calls. Emit stronger alignment and disjointness only when layout and access
+  rules guarantee them; include the recorded five-element memory-fact regression in comparisons.
+- Extend existing nonwrapping affine proofs to remaining butterfly and dynamic ring-wrap patterns.
   Prove the independence of real-spectrum bin pairs and eliminate index normalization when valid,
   using the same machinery for other DSP kernels. See the existing
   [range-analysis follow-ups](language.md#language-follow-ups).
-- Expose optimization diagnostics tied to source locations: successful/missed vectorization,
-  dependence or alignment limitations, selected vectorization factors, and relevant backend
-  remarks. Use emitted assembly and isolated kernel measurements to check shuffle and spill costs.
+- Surface the harness's source-linked LLVM remarks in user tooling: successful/missed vectorization,
+  dependence or alignment limitations, and selected vectorization factors. Use emitted assembly
+  and isolated kernel measurements to check shuffle and spill costs.
 - Track static coefficient storage and compile/JIT cost alongside processing speed. Generic
   compile-time tables should share immutable data per specialization and materialize only used
   declarations through the existing const machinery.
@@ -184,8 +185,8 @@ algorithm tuning in [stdlib.md](stdlib.md).
 - Keep regression workloads for a tiny program, a medium nested-processor program, the convolution
   project, and a large processor array. Optimize from these measurements rather than total CLI time
   alone.
-- Add reproducible DSP benchmarks for processors, processor banks and reductions.
-  Include distinct frequencies, modulation, feedback, and segmented events;
+- Extend the [benchmark harness](../../scripts/bench/README.md) with representative external assets
+  and live event/parameter automation. Include distinct frequencies, modulation, feedback, and segmented events;
   compare default and fast-math compilation across block sizes and native/Wasm backends. Measure
   generated DSP separately from host/UI/audio transport, inspect state accesses and SIMD, and
   verify output and state behavior under the selected floating-point policy.

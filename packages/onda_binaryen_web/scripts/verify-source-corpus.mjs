@@ -31,6 +31,12 @@ const corpusRoots = [join(packageDir, "test/fixtures")];
 // continuous corpus gate.
 const excludedSources = new Map([]);
 
+// Check the frontend's actual parameter representation reaches the SIMD path.
+const requiredInstructions = new Map([
+  ["pointwise-control-f32.onda", "f32x4.mul"],
+  ["pointwise-control-f64.onda", "f64x2.mul"],
+]);
+
 const sampleRate = "48000";
 const blockSize = "128";
 const maxCommandOutput = 16 * 1024 * 1024;
@@ -74,7 +80,11 @@ try {
 
     try {
       compileSourceToMir(ondaCli, source, mirPath);
-      const artifact = compileMir(readFileSync(mirPath));
+      const instruction = requiredInstructions.get(source.split(sep).at(-1));
+      const artifact = compileMir(readFileSync(mirPath), { emitText: instruction !== undefined });
+      if (instruction && !artifact.wat.includes(instruction)) {
+        throw new Error(`generated Wasm is missing ${instruction}`);
+      }
       if (
         artifact.metadata.mir_schema_version !== SUPPORTED_MIR_SCHEMA_VERSION
       ) {

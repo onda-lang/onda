@@ -7,6 +7,7 @@ pub const FUNCTIONS: &[(&str, &str, usize)] = &[
     ("atan", "u35", 1),
     ("atan2", "u35", 2),
     ("exp", "u10", 1),
+    ("exp2", "u10", 1),
     ("log", "u35", 1),
     ("pow", "u10", 2),
 ];

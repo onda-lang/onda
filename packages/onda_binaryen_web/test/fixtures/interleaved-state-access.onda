@@ -1,0 +1,33 @@
+def read(values: [], i):
+  return values.read_unsafe(i)
+
+def write(values: [], i, value):
+  values.write_unsafe(i, value)
+
+def pairs(values: f32[128]):
+  for i in 0..64:
+    left = 2 * i
+    right = left + 1
+    a = read(values, left)
+    b = read(values, right)
+    write(values, left, a + b)
+    write(values, right, a - b)
+
+init:
+  first: f32[128]
+  second: f32[128]
+
+block:
+  for i in 0..128:
+    first[i] = f32(i)
+    second[i] = f32(i + 1000)
+  pairs(first)
+  pairs(second)
+  error = 0.0
+  for i in 0..64:
+    error += abs(first[2 * i] - f32(4 * i + 1))
+    error += abs(second[2 * i] - f32(4 * i + 2001))
+    error += abs(first[2 * i + 1] + 1.0)
+    error += abs(second[2 * i + 1] + 1.0)
+  sample:
+    out1 = error

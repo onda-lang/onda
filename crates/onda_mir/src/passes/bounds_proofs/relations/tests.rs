@@ -80,7 +80,7 @@ fn prologue() -> Vec<Statement> {
     body
 }
 
-fn check(statements: Vec<Statement>, expected: u64) {
+fn fixture(statements: Vec<Statement>) -> Program {
     let mut program = Program::new(
         CompileConfig {
             sample_rate: 48000.0,
@@ -123,13 +123,24 @@ fn check(statements: Vec<Statement>, expected: u64) {
         body: Block { statements },
         source: SourceSpan::UNKNOWN,
     });
+    program
+}
+
+fn check(statements: Vec<Statement>, expected: u64) {
+    check_program(fixture(statements), expected);
+}
+
+fn check_program(mut program: Program, expected: u64) {
     let ranges = crate::analyze_program_integer_ranges(&program);
+    let memory = crate::analyze_memory(&program);
     let mut body = std::mem::take(&mut program.functions[0].body);
     let context = Context {
         program: &program,
         function: &program.functions[0],
         ranges: ranges.function(FunctionId::new(0)).unwrap(),
         slice_lengths: vec![None; 12],
+        memory: &memory,
+        function_id: FunctionId::new(0),
     };
     assert_eq!(eliminate(&context, &mut body), expected);
     assert_eq!(
@@ -138,6 +149,8 @@ fn check(statements: Vec<Statement>, expected: u64) {
         "proof pass must be idempotent"
     );
 }
+
+mod fixed;
 
 #[test]
 fn branch_guards_prove_both_sides_of_a_minimum_length() {
@@ -154,6 +167,109 @@ fn branch_guards_prove_both_sides_of_a_minimum_length() {
         ),
     ]);
     check(body, 2);
+}
+
+fn binary(op: crate::BinaryOp, lhs: Value, rhs: Value) -> Rvalue {
+    Rvalue::Binary { op, lhs, rhs }
+}
+
+#[test]
+fn derived_indices_preserve_dynamic_length_relationships() {
+    use crate::BinaryOp::{Add, Subtract};
+    let mut reverse = prologue();
+    reverse.extend([
+        assign(6, compare(CompareOp::Less, value(2), int(0))),
+        branch(6, vec![leave()], vec![]),
+        assign(7, compare(CompareOp::Less, value(2), value(5))),
+        branch(
+            7,
+            vec![
+                assign(9, binary(Subtract, value(3), int(1))),
+                assign(9, binary(Subtract, value(9), value(2))),
+                read(0, 9),
+            ],
+            vec![],
+        ),
+    ]);
+    check(reverse, 1);
+
+    let mut shifted = prologue();
+    shifted.extend([
+        assign(3, binary(Subtract, value(3), int(1))),
+        assign(
+            5,
+            Rvalue::Intrinsic {
+                intrinsic: Intrinsic::Min,
+                args: vec![value(3), value(4)],
+            },
+        ),
+        // Computing the index before testing the guard is safe to prove too:
+        // the guard describes the same value identities.
+        assign(9, binary(Add, value(2), int(1))),
+        assign(6, compare(CompareOp::Less, value(2), int(0))),
+        branch(6, vec![leave()], vec![]),
+        assign(7, compare(CompareOp::Less, value(2), value(5))),
+        branch(7, vec![read(0, 9), write(1, 2)], vec![]),
+    ]);
+    check(shifted, 2);
+}
+
+#[test]
+fn affine_proofs_do_not_assume_nonwrapping_arithmetic() {
+    use crate::BinaryOp::{Add, Subtract};
+    for (op, amount) in [(Add, 1), (Subtract, 1)] {
+        let mut body = prologue();
+        body.extend([
+            assign(6, compare(CompareOp::Less, value(2), int(0))),
+            branch(6, vec![leave()], vec![]),
+            assign(7, compare(CompareOp::LessEqual, value(2), value(3))),
+            branch(
+                7,
+                vec![assign(9, binary(op, value(2), int(amount))), read(0, 9)],
+                vec![],
+            ),
+        ]);
+        // +1 can overflow and exceed the length; -1 can be negative.
+        check(body, 0);
+    }
+    let mut body = prologue();
+    body.extend([
+        assign(9, binary(Subtract, value(3), int(1))),
+        assign(9, binary(Subtract, value(9), value(2))),
+        assign(6, compare(CompareOp::Less, value(2), int(0))),
+        branch(6, vec![leave()], vec![]),
+        assign(7, compare(CompareOp::Less, value(2), value(3))),
+        assign(2, Rvalue::Use(int(0))),
+        branch(7, vec![read(0, 9)], vec![]),
+    ]);
+    // The saved predicates still describe the old value; replacing the local
+    // does not invalidate a valid proof of an already-computed index.
+    check(body, 1);
+}
+
+#[test]
+fn conditional_expression_ranges_do_not_escape_their_definitions() {
+    let mut body = prologue();
+    body.extend([
+        assign(6, compare(CompareOp::GreaterEqual, value(2), int(0))),
+        branch(
+            6,
+            vec![
+                assign(
+                    9,
+                    Rvalue::Intrinsic {
+                        intrinsic: Intrinsic::Min,
+                        args: vec![value(2), int(0)],
+                    },
+                ),
+                assign(9, binary(crate::BinaryOp::Add, value(9), int(1))),
+            ],
+            vec![],
+        ),
+        assign(7, compare(CompareOp::Less, value(2), value(3))),
+        branch(7, vec![read(0, 2)], vec![]),
+    ]);
+    check(body, 0);
 }
 
 #[test]
@@ -241,7 +357,7 @@ fn guards_do_not_survive_index_or_descriptor_rebinding() {
 }
 
 #[test]
-fn branch_facts_are_intersected_and_loop_entry_forgets_mutated_values() {
+fn branch_facts_are_intersected_and_guarded_induction_preserves_its_lower_bound() {
     let mut body = prologue();
     body.extend([
         assign(6, compare(CompareOp::Less, value(2), int(0))),
@@ -272,9 +388,8 @@ fn branch_facts_are_intersected_and_loop_entry_forgets_mutated_values() {
             },
         }),
     ]);
-    // The entry value 0 is insufficient to prove a wrapping induction variable
-    // stays nonnegative on later iterations. A declared range or guard is needed.
-    check(body, 0);
+    // The exclusive i32 loop guard prevents the unit increment from wrapping.
+    check(body, 1);
 }
 
 #[test]

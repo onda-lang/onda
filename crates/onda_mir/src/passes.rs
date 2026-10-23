@@ -14,6 +14,7 @@ mod bounds_proofs;
 mod cse;
 mod dead_values;
 mod interprocedural;
+mod loop_distribution;
 pub(crate) mod parameter_pruning;
 mod state_promotion;
 
@@ -33,6 +34,7 @@ pub struct PassStats {
     pub eliminated_bounds_checks: u64,
     pub removed_function_parameters: u64,
     pub removed_functions: u64,
+    pub distributed_loops: u64,
 }
 
 /// A validated MIR program brought to the backend-neutral optimization fixed
@@ -42,9 +44,13 @@ pub struct OptimizedProgram {
     program: ValidatedProgram,
     effects: crate::EffectAnalysis,
     ranges: crate::ProgramRangeAnalysis,
+    memory: crate::MemoryAnalysis,
 }
 
 impl OptimizedProgram {
+    pub fn memory(&self) -> &crate::MemoryAnalysis {
+        &self.memory
+    }
     pub fn effects(&self) -> &crate::EffectAnalysis {
         &self.effects
     }
@@ -83,6 +89,7 @@ impl PassStats {
     fn merge(&mut self, other: Self) {
         self.iterations = self.iterations.saturating_add(other.iterations);
         self.removed_functions += other.removed_functions;
+        self.distributed_loops += other.distributed_loops;
         self.propagated_values = self
             .propagated_values
             .saturating_add(other.propagated_values);
@@ -131,6 +138,7 @@ impl PassStats {
             || self.eliminated_bounds_checks != 0
             || self.removed_function_parameters != 0
             || self.removed_functions != 0
+            || self.distributed_loops != 0
     }
 }
 
@@ -252,15 +260,21 @@ pub fn optimize(
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
+            // Scheduling adds executable structure, so keep it outside the
+            // monotonic cleanup fixed point. The materialized map/reduction
+            // form cannot match this transform a second time.
+            loop_distribution::distribute(&mut raw, &mut total);
             let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
             let effects = crate::analyze_effects(program.as_program());
             let ranges =
                 crate::analyze_program_integer_ranges_with_effects(program.as_program(), &effects);
+            let memory = crate::analyze_memory(program.as_program());
             return Ok((
                 OptimizedProgram {
                     program,
                     effects,
                     ranges,
+                    memory,
                 },
                 total,
             ));
@@ -1974,7 +1988,11 @@ fn collect_statement_writes(statement: &Statement, referenced: &mut HashSet<Loca
 }
 
 fn collect_block_writes(block: &Block, referenced: &mut HashSet<LocalId>) {
-    for statement in &block.statements {
+    collect_statements_writes(&block.statements, referenced);
+}
+
+fn collect_statements_writes(statements: &[Statement], referenced: &mut HashSet<LocalId>) {
+    for statement in statements {
         collect_statement_writes(statement, referenced);
         match &statement.kind {
             StatementKind::If {

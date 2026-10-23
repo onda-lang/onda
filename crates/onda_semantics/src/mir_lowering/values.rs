@@ -136,7 +136,6 @@ impl<'a> FunctionLowerer<'a> {
         targets: &[TupleAssignTarget],
         values: Vec<LoweredValue>,
         block: &mut MirBlock,
-        value_location: SourceLoc,
         statement_location: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         if targets.len() != values.len() {
@@ -153,19 +152,8 @@ impl<'a> FunctionLowerer<'a> {
             let Some(target) = target.binding() else {
                 continue;
             };
-            if self.assign_runtime_global(
-                target,
-                std::slice::from_ref(&value),
-                block,
-                value_location.clone(),
-                statement_location.clone(),
-            )? {
-                continue;
-            }
-            let (local, target_ty) =
-                self.scalar_local_for_destructure(target, value.ty, statement_location.clone())?;
-            let value = self.coerce(value, target_ty, block, value_location.clone())?;
-            self.assign_value(block, local, value.value, statement_location.clone());
+            // Use ordinary scalar stores for state, references, aliases, and locals.
+            self.store_data_scalar(target, value, block, statement_location.clone())?;
         }
         Ok(())
     }
@@ -243,65 +231,6 @@ impl<'a> FunctionLowerer<'a> {
         self.bindings
             .insert(name.to_owned(), Binding::Tuple(components.clone()));
         Ok(components)
-    }
-
-    pub(super) fn scalar_local_for_destructure(
-        &mut self,
-        name: &str,
-        inferred_ty: PrimitiveType,
-        location: SourceLoc,
-    ) -> Result<(LocalId, PrimitiveType), MirLoweringError> {
-        if let Some(binding) = self.bindings.get(name).cloned() {
-            return match binding {
-                Binding::Local(local, ty) => Ok((local, ty)),
-                Binding::InitAll
-                | Binding::PlaceAlias(_, _)
-                | Binding::ReferenceParameter(_, _)
-                | Binding::EventParameter(_, _)
-                | Binding::EventArrayParameter(_, _, _)
-                | Binding::BufferParameter(_, _)
-                | Binding::BufferParameterArray(_, _, _)
-                | Binding::BufferAlias(_, _)
-                | Binding::Array(_, _, _)
-                | Binding::ArrayParameter(_, _, _)
-                | Binding::Slice(_, _, _, _)
-                | Binding::SliceElementAlias { .. }
-                | Binding::StructView { .. } => Err(self.error(
-                    format!("assignment to read-only parameter '{name}' reached MIR lowering"),
-                    location,
-                )),
-                Binding::Tuple(_) => Err(self.error(
-                    format!("cannot destructure a scalar component into tuple local '{name}'"),
-                    location,
-                )),
-                Binding::TupleReferenceParameter(_) => Err(self.error(
-                    format!("cannot destructure into tuple reference field '{name}'"),
-                    location,
-                )),
-                Binding::TupleSliceElementAlias(_) => Err(self.error(
-                    format!("cannot destructure into tuple element alias '{name}'"),
-                    location,
-                )),
-                Binding::StructParameter { .. } => Err(self.error(
-                    format!("cannot destructure into struct parameter '{name}'"),
-                    location,
-                )),
-                Binding::StructArrayParameter { .. } | Binding::StructArrayStorage { .. } => {
-                    Err(self.error(
-                        format!("cannot destructure into struct-array parameter '{name}'"),
-                        location,
-                    ))
-                }
-                Binding::ProcArrayParameter { .. } => Err(self.error(
-                    format!("cannot destructure into proc-array parameter '{name}'"),
-                    location,
-                )),
-            };
-        }
-        let local = self.new_local(Some(name.to_owned()), inferred_ty);
-        self.bindings
-            .insert(name.to_owned(), Binding::Local(local, inferred_ty));
-        Ok((local, inferred_ty))
     }
 
     pub(super) fn scalar_local(

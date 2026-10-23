@@ -1,0 +1,31 @@
+def transform(source: f32[], destination: f32[]):
+  for i in 0..min(source.len(), destination.len()):
+    destination[i] = source[source.len() - 1 - i] * 0.5 + source[i]
+
+def forward(source: f32[], destination: f32[]):
+  transform(source[4:68], destination[8:72])
+
+def length(values: f32[]):
+  return values.len()
+
+init:
+  values: f32[256]
+
+block:
+  for i in 0..256:
+    values[i] = f32(i)
+  forward(values[16:112], values[144:240])
+  error = 0.0
+  for i in 0..64:
+    expected = f32(83 - i) * 0.5 + f32(20 + i)
+    error += abs(values[152 + i] - expected)
+  for i in 0..152:
+    error += abs(values[i] - f32(i))
+  for i in 216..256:
+    error += abs(values[i] - f32(i))
+  # Different lengths, clamped ranges and an empty view remain distinct.
+  error += f32(length(values[:8]) + length(values[8:24]) - 24)
+  error += f32(length(values[250:300]) - 6)
+  error += f32(length(values[300:310]))
+  sample:
+    out1 = error

@@ -11,6 +11,9 @@ eyebrow: Contributor guide
 This guide describes the architecture of `onda` and where each piece of the project lives.
 For language syntax and semantics, see the [language guide](https://onda-lang.org/docs/language/).
 For build, CLI usage, and editor integrations, see [Getting started](https://onda-lang.org/docs/getting-started/).
+The [MIR reference](https://onda-lang.org/docs/mir/) specifies the executable compiler boundary;
+the [benchmark guide](https://github.com/onda-lang/onda/blob/main/scripts/bench/README.md) owns
+measurement procedures and dated results.
 
 ## Workspace layout
 
@@ -58,6 +61,19 @@ Non-crate directories of note:
 - `scripts/` — LLVM bootstrap and env-selection helpers; `scripts/bench/` provides bounded DSP
   benchmarks, MIR replay, and IR/SIMD inspection.
 - `docs/`, `examples/`, `assets/`, `ui/`, `sc/` — supporting material.
+
+## Compilation pipeline
+
+Both backends consume the same validated, optimized MIR. This keeps language semantics, processor
+scheduling, and reusable proofs in one place while allowing target-specific code generation.
+
+| Layer | Responsibility |
+| --- | --- |
+| Frontend and semantics | Parse and type source, resolve generics and overloads, lower processors/graphs/tasks, and make execution order and storage explicit. |
+| MIR | Validate the executable contract, simplify portable operations, and derive effects, ranges, storage origins, and loop legality. |
+| Native LLVM | Select physical layout and target features, emit proven attributes, run target-aware O3, select SIMD, and link used vector-math helpers. JIT and AOT share this path. |
+| Binaryen | Legalize structured MIR into complete Wasm modules, lower eligible sample loops to SIMD, and optimize with its own target policy. |
+| Runtime and hosts | Prepare storage and bindings, schedule segments/events, and collect output outside generated DSP. |
 
 ## Module map
 
@@ -259,14 +275,16 @@ Non-crate directories of note:
 - `call_graph.rs` — iterative call-graph traversal and dependency worklists.
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
+- `memory.rs` — storage origins across slice definitions, reference arguments, and returns.
+- `loops.rs` — counted-loop recognition and pointwise audio dependence proofs.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
-- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion}.rs` — fixed-point backend-neutral
+- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion,loop_distribution}.rs` — backend-neutral
   canonicalization, integer-range-based bounds proofs, conservative scalar CSE, bounded
-  alias-safe scalar-state promotion, and cleanup.
+  alias-safe scalar-state promotion, cleanup, and selective ordered-reduction distribution.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
-- The production MIR contract is documented in `docs/mir.md`.
+- The production contract is documented in the [MIR reference](https://onda-lang.org/docs/mir/).
 
 ### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
 - `lib.rs` — public JIT/AOT API. The sole `TypedProgram` JIT path lowers to validated MIR before
@@ -505,7 +523,7 @@ changes redraw existing waveform canvases independently.
   `packages/onda_binaryen_web` consumes the current schema, including explicit control mirrors, checked slice
   construction, reference windows, and function attributes, and returns DSP Wasm plus physical
   state, snapshot, interface, input-event, delegate, print-site, source, buffer, and import metadata.
-- [`processor-abi.md`](processor-abi.md) defines the shared logical processor contract. LLVM emits
+- The [processor ABI](https://onda-lang.org/docs/processor-api/) defines the shared logical processor contract. LLVM emits
   relocatable objects for native and WebAssembly targets and leaves linking to the application;
   Binaryen emits a complete core-Wasm module because browsers expose no linker. Target triples
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
@@ -556,15 +574,36 @@ changes redraw existing waveform canvases independently.
   backends share the same logical layouts. Web Audio transports raw print records out of the audio
   callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches
   outside generated execution. Run UIs deliver prints and subscribed delegates in call-local source
-  order.
+  order. See the [host output guide](https://onda-lang.org/docs/host-output/) for collection and
+  decoding examples.
+
+### Optimization boundaries
+
+LLVM is the primary performance target. Prefer shared MIR proofs and simplifications; retain a
+clear native gain when its Wasm cost is modest and measured. Generated code size has no independent
+budget: accept growth from inlining, unrolling, specialization or vectorization whenever it improves
+measured runtime performance. Assess instruction-cache effects, register spills and audio callback
+latency through runtime measurements. Vector widths, inlining, instruction selection, and
+register-pressure decisions belong to backend cost models. Keep numerical permissions explicit
+and validate results as well as elapsed time.
+
+The [MIR pass contract](https://onda-lang.org/docs/mir/#backend-neutral-passes) describes legality
+and invalidation in detail. The main opportunities exposed to backends are:
+
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable
   surface. Integer storage ranges preserve `i32`/`i64` interval facts through MIR, and the shared
   whole-program analysis carries them through statically resolved read-only call boundaries and
   scalar returns. The shared bounds-proof pass removes clamping or checks when the complete
-  coordinate interval is known to fit. Path-sensitive integer comparisons also prove dynamic
-  slice accesses, including loops bounded by the minimum of several slice lengths. These proofs
+  coordinate interval is known to fit. Path-sensitive integer comparisons also prove fixed-array,
+  state-array and dynamic slice accesses, including loops bounded by the minimum of several slice
+  lengths. Compound boolean guards retain their branch facts, and guarded unit-step loops retain
+  a proven lower bound without assuming wrapping arithmetic is monotonic. These proofs
   track value identities through copies, writes, branches, and loops; escaped local storage
-  remains conservative. The resulting unchecked MIR operations benefit every backend.
+  remains conservative. Affine derived indices are expanded only when every intermediate is
+  proved not to wrap. The resulting unchecked MIR operations benefit every backend.
+  Slice descriptor length caps propagate through definitions, subslices, value arguments and
+  returns; payload writes do not invalidate a descriptor's length. Unknown external lengths and
+  mutable descriptor references remain conservative.
   Explicit `read_unsafe` / `write_unsafe` calls instead
   establish a programmer-owned unchecked boundary and are memory-unsafe when any coordinate is
   invalid.
@@ -577,10 +616,39 @@ changes redraw existing waveform canvases independently.
   retains final analysis facts for backend consumption; mutations require a new optimization boundary.
   It retains a parameter when any call site uses fallible argument preparation, preserving checked
   fixed-range and dynamic-slice addressing even when the callee does not read the reference.
+- MIR storage origins preserve owned-object identities and possible contiguous element ranges through
+  views and calls, including different views passed to the same helper. MIR folds common descriptor
+  lengths and removes proven slice construction and window checks. Native lowering computes
+  reference alignment from the recorded element offsets;
+  overlapping views keep the same identity. Pointwise audio proofs allow a native guarded vector path when every
+  pair involving a write is disjoint or exactly equal, with partial overlap using the original loop.
+  Transitive MIR effects preserve that proof through memory-free scalar value-only helpers that
+  cannot fail or loop indefinitely; LLVM retains responsibility for inlining and vectorization.
+- Bounded counted array and known-shape slice loops have a shared MIR dependence proof, including affine forward and
+  mirrored indices and straight-line helper calls. Every pair involving a write must use separate
+  owned objects, disjoint index ranges or stride residue classes, or the same injective index
+  expression. Array references may join several owned state regions across call sites; comparisons
+  include each region's offset in its backing object. Every possible view undergoes the same
+  dependence checks. Runtime loop limits use their proven upper bound to cover all possible iterations;
+  negative or zero counts remain empty. Unknown references,
+  wrapping address arithmetic, unsupported control flow and hidden dependencies reject the proof.
+  LLVM access groups carry it through inlining without relaxing floating-point order. A separate
+  native cost policy keeps short floating-point copies scalar on AVX2 targets without AVX-512;
+  larger loops and arithmetic kernels retain LLVM's ordinary vectorization decisions.
+- Large fixed loops with independent expensive math and an already-materialized result may split
+  rendering from an ordered sum. The MIR transform preserves addition order and introduces no
+  scratch arrays. Calls, failures, unresolved aliases, and coupled reductions prevent distribution.
+- The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
+  `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
+  explicit validity state for initialization and recomputation at each changed assignment.
+  NaNs recompute because they do not compare equal. These are processor-owned caches, not a
+  compiler-wide promise to skip user parameter hooks; events, segments, and snapshots retain
+  their ordinary semantics.
 - Native floating-point permissions independently control reassociation, contraction and ignoring
   signed zero. They default off. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
   x64 MSVC, use SLEEF VFABI mappings selected from resolved LLVM CPU features. After application
-  optimization, the backend links only the used ISA/precision bitcode, internalizes helpers with
+  optimization, the backend resolves newly introduced fixed-width vector `exp2` intrinsics using
+  the same legal target variants, links only the used ISA/precision bitcode, internalizes helpers with
   a private register calling convention, and discards unused functions. SLEEF keeps its own strict
   arithmetic policy even under application fast math. Both JIT code and AOT objects contain the
   implementations, including cross-target objects; there is no separate SLEEF library or flag.
@@ -592,6 +660,7 @@ changes redraw existing waveform canvases independently.
   through derived pointers and slices. Portable snapshots contain only logical elements.
 - Binaryen vectorizes proven independent straight-line f32/f64 sample loops with scalar tails.
   Runtime guards admit disjoint or exactly in-place audio buffers; partial overlap uses scalar code.
+  Invariant reads include state and interface controls, whose MIR place base is `param`.
   Carried state, calls, mixed precision and unsupported control flow retain scalar lowering.
 
 ## Browser build and verification
@@ -640,7 +709,7 @@ changes redraw existing waveform canvases independently.
   The backend-fixture command requires a working native Rust/LLVM Onda build; the example verifier
   and browser asset build do not.
 - `npm run bench` runs the reproducible native LLVM versus Binaryen/Wasm comparison documented in
-  [`docs/backend-benchmarks.md`](backend-benchmarks.md). It is a development benchmark, not a
+  the [benchmark guide](https://github.com/onda-lang/onda/blob/main/scripts/bench/README.md#compare-backend-compilation-and-runtime). It is a development benchmark, not a
   universal browser-performance claim.
 - The browser build is static after staging and requires no CLI, LLVM, or server-side compiler.
   Compiler and Binaryen work run in a module worker; `packages/onda_webaudio` registers and hosts the

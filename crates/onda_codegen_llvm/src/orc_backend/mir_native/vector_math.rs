@@ -133,12 +133,65 @@ unsafe fn function_name(function: LLVMValueRef) -> String {
     String::from_utf8_lossy(std::slice::from_raw_parts(name.cast::<u8>(), len)).into_owned()
 }
 
+/// LLVM can introduce exp2 after VFABI mapping (notably for pow(2, x)).
+/// Resolve only legal fixed-width variants after application optimization so
+/// neither another intrinsic rewrite nor fast math can alter the helper body.
+unsafe fn resolve_vector_exp2(module: LLVMModuleRef, target: LLVMTargetMachineRef) {
+    let triple = CStr::from_ptr(LLVMGetTarget(module)).to_string_lossy();
+    let library = Library::for_target(target, &triple);
+    if !library.is_available() {
+        return;
+    }
+    let (_, accuracy, _) = spec::FUNCTIONS
+        .iter()
+        .find(|entry| entry.0 == "exp2")
+        .unwrap();
+    let intrinsic = LLVMLookupIntrinsicID(c"llvm.exp2".as_ptr(), 9);
+    let mut function = LLVMGetFirstFunction(module);
+    while !function.is_null() {
+        let next = LLVMGetNextFunction(function);
+        if LLVMGetIntrinsicID(function) == intrinsic && !LLVMGetFirstUse(function).is_null() {
+            let signature = LLVMGlobalGetValueType(function);
+            let vector = LLVMGetReturnType(signature);
+            if LLVMGetTypeKind(vector) == llvm_sys::LLVMTypeKind::LLVMVectorTypeKind {
+                let scalar = match LLVMGetTypeKind(LLVMGetElementType(vector)) {
+                    llvm_sys::LLVMTypeKind::LLVMFloatTypeKind => Some(('f', 4)),
+                    llvm_sys::LLVMTypeKind::LLVMDoubleTypeKind => Some(('d', 8)),
+                    _ => None,
+                };
+                if let Some((precision, bytes)) = scalar {
+                    let lanes = LLVMGetVectorSize(vector);
+                    if let Some(&(isa, _)) = library
+                        .variants
+                        .iter()
+                        .flatten()
+                        .find(|(_, width)| *width == lanes * bytes)
+                    {
+                        let name =
+                            CString::new(format!("Sleef_exp2{precision}{lanes}_{accuracy}{isa}"))
+                                .unwrap();
+                        let mut helper = LLVMGetNamedFunction(module, name.as_ptr());
+                        if helper.is_null() {
+                            helper = LLVMAddFunction(module, name.as_ptr(), signature);
+                        }
+                        // Keep call-site FP flags and locations; link_helpers
+                        // resolves the definition and sets its private ABI.
+                        LLVMReplaceAllUsesWith(function, helper);
+                    }
+                }
+            }
+        }
+        function = next;
+    }
+}
+
 /// Link only ISA/precision modules actually used by the vectorizers. Application
 /// optimization runs first so fast-math flags cannot reach SLEEF's arithmetic.
 pub(super) unsafe fn link_helpers(
     module: LLVMModuleRef,
     target: LLVMTargetMachineRef,
 ) -> Result<(), MirCodegenError> {
+    resolve_vector_exp2(module, target);
     let used = LLVMGetNamedGlobal(module, c"llvm.compiler.used".as_ptr());
     if !used.is_null() {
         LLVMDeleteGlobal(used);

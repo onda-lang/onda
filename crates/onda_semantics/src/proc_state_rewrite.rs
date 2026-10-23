@@ -878,6 +878,19 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         errors,
                     );
                 });
+                if let AssignTarget::Tuple(targets) = &mut target_rewritten {
+                    for name in targets.iter_mut().filter_map(|target| target.binding_mut()) {
+                        if ins_names.contains(name) {
+                            push_semantic(
+                                diag.clone(),
+                                errors,
+                                format!("cannot assign to processor input '{name}'"),
+                            );
+                        } else {
+                            *name = qualify_proc_assignment_base(name, field_names, errors);
+                        }
+                    }
+                }
                 let proc_array_member = match &target_rewritten {
                     AssignTarget::IndexedMember {
                         base,

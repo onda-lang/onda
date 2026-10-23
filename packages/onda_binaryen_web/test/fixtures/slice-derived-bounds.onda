@@ -1,0 +1,45 @@
+# Independent runtime lengths, including empty views, exercise derived indices.
+outs 2
+
+def reverse(src: f32[], dst: f32[]):
+  for i in 0..min(src.len(), dst.len()):
+    dst[i] = src[src.len() - 1 - i]
+
+def shifted(src: f32[], dst: f32[]):
+  for i in 0..min(src.len() - 1, dst.len()):
+    dst[i] = src[i + 1]
+
+def wrapping(values: f32[], index: i32):
+  if index >= 0 && index < values.len():
+    return values[index * 2147483647]
+  return -1.0
+
+init:
+  source: f32[5] = [1.0, 2.0, 3.0, 4.0, 5.0]
+  destination: f32[5]
+  frame = 0
+
+sample:
+  left = frame % 6
+  right = (frame / 6) % 6
+  destination[:] = -9.0
+  reverse(source[:left], destination[:right])
+  error = 0.0
+  for i in 0..5:
+    expected = -9.0
+    if i < min(left, right):
+      expected = f32(left - i)
+    error += abs(destination[i] - expected)
+  out1 = error
+
+  destination[:] = -9.0
+  shifted(source[:left], destination[:right])
+  error = 0.0
+  for i in 0..5:
+    expected = -9.0
+    if i < min(left - 1, right):
+      expected = f32(i + 2)
+    error += abs(destination[i] - expected)
+  # 2 * I32_MAX wraps to -2 and must still clamp to the first element.
+  out2 = error + abs(wrapping(source[:], 2) - 1.0)
+  frame += 1

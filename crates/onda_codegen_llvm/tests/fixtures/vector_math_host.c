@@ -13,10 +13,12 @@ typedef float sample;
 #define EPSILON FLT_EPSILON
 #endif
 
+enum { operations = 10 };
+
 int main(void) {
-  sample input[128], output[9][128];
+  sample input[128], output[operations][128];
   const void *inputs[] = {input};
-  void *outputs[9];
+  void *outputs[operations];
   const int lengths[] = {1, 7, 31, 127, 128};
   for (int i = 0; i < 128; ++i) input[i] = (sample)(0.025 + i * 0.005);
   input[0] = NAN;
@@ -26,11 +28,11 @@ int main(void) {
   input[4] = -0.0;
   input[5] = (sample)1e20;
   input[6] = (sample)1e-20;
-  for (int op = 0; op < 9; ++op) outputs[op] = output[op];
+  for (int op = 0; op < operations; ++op) outputs[op] = output[op];
   if (onda_processor_init(NULL, NULL, ONDA_PROCESSOR_INIT_FULL,
                           NULL, NULL, NULL, NULL, NULL) != 0) return 1;
   for (int round = 0; round < 5; ++round) {
-    for (int op = 0; op < 9; ++op)
+    for (int op = 0; op < operations; ++op)
       for (int i = 0; i < 128; ++i) output[op][i] = -9999;
     int frames = lengths[round];
     if (onda_process(NULL, NULL, inputs, outputs, 0, frames,
@@ -39,8 +41,8 @@ int main(void) {
     for (int i = 0; i < frames; ++i) {
       sample x = input[i];
       sample expected[] = {REF(sin)(x), REF(cos)(x), REF(tan)(x), REF(tanh)(x),
-        REF(atan)(x), REF(atan2)(x, (sample)0.5), REF(exp)(x), REF(log)(x), REF(pow)(x, x)};
-      for (int op = 0; op < 9; ++op) {
+        REF(atan)(x), REF(atan2)(x, (sample)0.5), REF(exp)(x), REF(log)(x), REF(pow)(x, x), REF(exp2)(x)};
+      for (int op = 0; op < operations; ++op) {
         sample actual = output[op][i], reference = expected[op];
         int ok = isnan(reference) ? isnan(actual) :
           !isfinite(reference) || reference == 0 ?
@@ -53,7 +55,7 @@ int main(void) {
         }
       }
     }
-    for (int op = 0; op < 9; ++op)
+    for (int op = 0; op < operations; ++op)
       for (int i = frames; i < 128; ++i)
         if (output[op][i] != -9999) return 4;
   }

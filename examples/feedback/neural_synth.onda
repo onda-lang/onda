@@ -23,8 +23,8 @@ params:
   motion_hz = 0.13 {0.01, 10.0, scale = log, unit = "Hz"}
   motion_depth = 0.12 {0.0, 1.0}
   noise_amount = 0.001 {0.0, 0.1}
-  left_neuron: i32 = 0 {0, Neurons - 1}
-  right_neuron: i32 = 7 {0, Neurons - 1}
+  left_neuron = 0 {0, Neurons - 1}
+  right_neuron = 7 {0, Neurons - 1}
   stereo_width = 1.0 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
 

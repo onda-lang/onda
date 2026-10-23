@@ -17,16 +17,16 @@ namespace std::sample<Channels = 2>:
     buffers:
       clip: T[]
 
-    params<T>:
-      speed = 1.0
-      looping: bool = false
+    params:
+      speed: T = 1.0
+      looping = false
 
     delegate finished()
     delegate looped()
 
-    init<T>:
+    init:
       playhead: f64 = 0.0
-      playing: bool = false
+      playing = false
 
     events:
       play(start_frame: f64 = 0.0):

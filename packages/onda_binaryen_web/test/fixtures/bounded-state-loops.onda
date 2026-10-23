@@ -1,0 +1,34 @@
+def transform(source: f32[64], destination: f32[64], count: i32):
+  for i in 0..min(max(count, 0), 64):
+    destination[i] = source[63 - i] * 0.5 + source[i]
+
+init:
+  values: f32[256]
+  count = -1
+
+block:
+  for i in 0..256:
+    values[i] = f32(i)
+  transform(values[16:80], values[144:208], count)
+  error = 0.0
+  for i in 0..64:
+    expected = f32(144 + i)
+    if i < min(max(count, 0), 64):
+      expected = f32(79 - i) * 0.5 + f32(16 + i)
+    error += abs(values[144 + i] - expected)
+  for i in 0..144:
+    error += abs(values[i] - f32(i))
+  for i in 208..256:
+    error += abs(values[i] - f32(i))
+  if count < 0:
+    count = 0
+  elif count == 0:
+    count = 1
+  elif count == 1:
+    count = 63
+  elif count == 63:
+    count = 64
+  else:
+    count = 65
+  sample:
+    out1 = error

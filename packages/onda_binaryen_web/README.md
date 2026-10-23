@@ -44,8 +44,7 @@ execution. These are the complete wasm32-module profile of the generic
 owns allocation in linear memory. Metadata contains resolved target/integration facts,
 state/parameter layouts, state-backed control-output offsets, flattened audio-port channels, packed
 event/delegate payload layouts, print log sites, source tables, and all exported ABI names. See
-the internal [delegate host integration](../../docs/delegates.md) and
-[print host integration](../../docs/printing.md) references for batch sizing, decoding, formatting,
+the [host output guide](../../docs/host-output.md) for batch sizing, decoding, formatting,
 and overflow handling.
 
 Each `onda_event_N` receives a pointer to the ABI's 16-byte wasm32 `EventInput` descriptor before
@@ -174,7 +173,7 @@ lowers it with Binaryen, and validates the generated Wasm. It also
 requires the native build. `npm test` does not.
 
 Run `npm run bench` for the reproducible development comparison documented in
-[`docs/backend-benchmarks.md`](../../docs/backend-benchmarks.md). Those measurements validate output
+[the benchmark guide](../../scripts/bench/README.md#compare-backend-compilation-and-runtime). Those measurements validate output
 and compare native LLVM JIT/processing with Binaryen compilation, Wasm instantiation, and Wasm
 processing; they require the native Rust/LLVM Onda build and are not universal browser-performance
 claims. The benchmark fails by default if Binaryen/Wasm beats LLVM in any checked scenario; the

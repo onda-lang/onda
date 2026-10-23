@@ -1,0 +1,8 @@
+ins:
+  in1: f32
+outs:
+  out1: f32
+params:
+  gain: f32 = 0.5
+sample:
+  out1 = in1 * gain + 0.25
