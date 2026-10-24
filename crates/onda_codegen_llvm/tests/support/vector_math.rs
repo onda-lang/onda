@@ -14,10 +14,20 @@ pub struct Case {
     kind: &'static str,
     lower: u64,
     upper: u64,
+    scalar_lower: u64,
+    scalar_upper: u64,
 }
 
 impl Case {
-    pub fn accepts(self, raw: u64) -> bool {
+    pub fn accepts_vector(self, raw: u64) -> bool {
+        self.accepts(raw, self.lower, self.upper)
+    }
+
+    pub fn accepts_scalar_or_vector(self, raw: u64) -> bool {
+        self.accepts(raw, self.scalar_lower, self.scalar_upper)
+    }
+
+    fn accepts(self, raw: u64, lower: u64, upper: u64) -> bool {
         if self.kind == "N" {
             return if self.precision == 32 {
                 f32::from_bits(raw as u32).is_nan()
@@ -32,7 +42,7 @@ impl Case {
         } else {
             raw | sign
         };
-        (self.lower..=self.upper).contains(&key)
+        (lower..=upper).contains(&key)
     }
 
     pub fn safe_in_audio_mode(self) -> bool {
@@ -68,7 +78,7 @@ pub fn cases() -> Vec<Case> {
         .filter(|line| !line.starts_with('#'))
         .map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
-            assert_eq!(fields.len(), 7, "{line}");
+            assert_eq!(fields.len(), 9, "{line}");
             let hex = |index: usize| u64::from_str_radix(fields[index], 16).unwrap();
             Case {
                 operation: fields[0],
@@ -78,6 +88,8 @@ pub fn cases() -> Vec<Case> {
                 kind: fields[4],
                 lower: hex(5),
                 upper: hex(6),
+                scalar_lower: hex(7),
+                scalar_upper: hex(8),
             }
         })
         .collect()

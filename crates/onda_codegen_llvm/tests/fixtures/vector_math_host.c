@@ -59,9 +59,10 @@ int main(int argc, char **argv) {
     if (line[0] == '#') continue;
     char operation[16], kind;
     unsigned width;
-    unsigned long long x, y, lower, upper;
-    if (sscanf(line, "%15s %u %llx %llx %c %llx %llx",
-               operation, &width, &x, &y, &kind, &lower, &upper) != 7) return 3;
+    unsigned long long x, y, vector_lower, vector_upper, scalar_lower, scalar_upper;
+    if (sscanf(line, "%15s %u %llx %llx %c %llx %llx %llx %llx",
+               operation, &width, &x, &y, &kind, &vector_lower, &vector_upper,
+               &scalar_lower, &scalar_upper) != 9) return 3;
     if (width != precision) continue;
     int selected = -1;
     for (int op = 0; op < operations; ++op)
@@ -72,6 +73,10 @@ int main(int argc, char **argv) {
       for (int op = 0; op < operations; ++op)
         for (int i = 0; i < 128; ++i) output[op][i] = -12345;
       int start = starts[round], frames = lengths[round];
+      /* Full blocks exercise vector helpers. Short calls can mix both paths;
+         apply the same numerical budget without SLEEF's rounded-zero rule. */
+      unsigned long long lower = frames == 128 ? vector_lower : scalar_lower;
+      unsigned long long upper = frames == 128 ? vector_upper : scalar_upper;
       if (onda_process(NULL, NULL, inputs, outputs, start, frames,
                        ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL) != 0) return 4;
       for (int i = start; i < start + frames; ++i) {

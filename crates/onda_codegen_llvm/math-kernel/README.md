@@ -63,8 +63,12 @@ explicit arithmetic separately checks gradual underflow versus x86 FTZ/DAZ witho
 gradual-underflow accuracy in flush mode. A dedicated thread contains the changed FP state.
 
 The reference fixture is generated independently of SLEEF and platform libm, with MPFR evaluations
-agreeing at 4096 and 8192 bits. Intervals use the selected `u10`/`u35` error budgets and upstream
-zero/NaN/infinity classification rules. MPFR is needed only for regeneration:
+agreeing at 4096 and 8192 bits. Intervals use the selected `u10`/`u35` error budgets. Full-block
+vector runs also enforce SLEEF's exact-zero rule when the mathematical result rounds to zero.
+Short runs can mix vector and scalar execution. Their separate MPFR intervals apply the same
+numerical budget, an Onda integration requirement rather than a platform-libm guarantee, without
+SLEEF's extra underflow-zero rule. Exact mathematical zeros, infinities and NaNs
+retain their sign/classification checks in both paths. MPFR is needed only for regeneration:
 
 ```sh
 python3 scripts/generate-vector-math-references.py

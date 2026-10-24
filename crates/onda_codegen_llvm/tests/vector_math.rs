@@ -43,7 +43,12 @@ fn check_references(audio_mode: bool) {
                         for (i, actual) in output.iter().enumerate() {
                             if (start..start + frames).contains(&i) {
                                 let case = chunk[i % chunk.len()];
-                                assert!(case.accepts(actual.to_bits() as u64),
+                                let accepted = if start == 0 && frames == 128 {
+                                    case.accepts_vector(actual.to_bits() as u64)
+                                } else {
+                                    case.accepts_scalar_or_vector(actual.to_bits() as u64)
+                                };
+                                assert!(accepted,
                                     "{case:?}: actual bits {:x}, frame {i}, start {start}, frames {frames}, audio {audio_mode}", actual.to_bits());
                             } else {
                                 assert_eq!(actual.to_bits(), sentinel.to_bits(), "untouched frame {i}");
@@ -61,6 +66,137 @@ fn check_references(audio_mode: bool) {
 #[test]
 fn vector_math_matches_independent_mpfr_intervals() {
     check_references(false);
+}
+
+#[test]
+fn scalar_underflow_uses_the_mpfr_error_budget() {
+    let cases = reference::cases();
+    for (precision, two) in [(32, u64::from(2.0_f32.to_bits())), (64, 2.0_f64.to_bits())] {
+        let sign = 1 << (precision - 1);
+        for negative in [0, sign] {
+            let case = cases
+                .iter()
+                .copied()
+                .find(|case| {
+                    case.operation == "atan2"
+                        && case.precision == precision
+                        && case.left == negative | 1
+                        && case.right == two
+                })
+                .unwrap();
+            // For m = the smallest subnormal, 0 < atan(m/2) < m/2.
+            // Thus 3m is within 3.5 ULP, but 4m exceeds it. The negative
+            // case is symmetric. Windows CRT returned m in the positive f64 case.
+            for magnitude in 0..=4 {
+                let raw = negative | magnitude;
+                assert_eq!(
+                    case.accepts_scalar_or_vector(raw),
+                    magnitude <= 3,
+                    "{case:?}, bits {raw:x}"
+                );
+                assert_eq!(
+                    case.accepts_vector(raw),
+                    magnitude == 0,
+                    "{case:?}, bits {raw:x}"
+                );
+            }
+            assert!(
+                !case.accepts_scalar_or_vector(negative ^ sign),
+                "underflow must retain its sign"
+            );
+            let exact_zero = cases
+                .iter()
+                .copied()
+                .find(|case| {
+                    case.operation == "atan2"
+                        && case.precision == precision
+                        && case.left == negative
+                        && case.right == two
+                })
+                .unwrap();
+            assert!(exact_zero.accepts_scalar_or_vector(negative));
+            assert!(
+                !exact_zero.accepts_scalar_or_vector(negative | 1),
+                "exact zeros are not underflow approximations"
+            );
+            assert!(
+                !exact_zero.accepts_scalar_or_vector(negative ^ sign),
+                "exact zero must retain its sign"
+            );
+        }
+    }
+}
+
+#[test]
+fn reference_intervals_match_analytic_powers_of_two() {
+    let cases = reference::cases();
+    for (precision, minimum_exponent, negative_maximum) in [
+        (32, -149, u64::from((-f32::MAX).to_bits())),
+        (64, -1074, (-f64::MAX).to_bits()),
+    ] {
+        let input_bits = |value: f64| {
+            if precision == 32 {
+                u64::from((value as f32).to_bits())
+            } else {
+                value.to_bits()
+            }
+        };
+        // In units of the smallest subnormal m, exp2(minimum_exponent + d)
+        // equals 2^d * m. These integer ranges follow analytically from the
+        // one-ULP budget, with SLEEF's additional rounded-zero rule.
+        for (offset, vector_low, vector_high, scalar_low, scalar_high) in [
+            (-2.0, 0, 0, 0, 1),
+            (-1.5, 0, 0, 0, 1),
+            (-1.0, 0, 0, 0, 1),
+            (-0.5, 0, 1, 0, 1),
+            (0.0, 0, 2, 0, 2),
+            (0.5, 1, 2, 1, 2),
+            (1.0, 1, 3, 1, 3),
+            (2.0, 3, 5, 3, 5),
+        ] {
+            let case = cases
+                .iter()
+                .copied()
+                .find(|case| {
+                    case.operation == "exp2"
+                        && case.precision == precision
+                        && case.left == input_bits(f64::from(minimum_exponent) + offset)
+                })
+                .unwrap();
+            for raw in 0..=6 {
+                assert_eq!(
+                    case.accepts_vector(raw),
+                    (vector_low..=vector_high).contains(&raw),
+                    "{case:?}, bits {raw}"
+                );
+                assert_eq!(
+                    case.accepts_scalar_or_vector(raw),
+                    (scalar_low..=scalar_high).contains(&raw),
+                    "{case:?}, bits {raw}"
+                );
+            }
+        }
+        for operation in ["exp", "exp2"] {
+            // Both functions are strictly positive for finite inputs, even when
+            // MPFR's own exponent range cannot represent the real result.
+            let case = cases
+                .iter()
+                .copied()
+                .find(|case| {
+                    case.operation == operation
+                        && case.precision == precision
+                        && case.left == negative_maximum
+                })
+                .unwrap();
+            assert!(case.accepts_vector(0));
+            assert!(!case.accepts_vector(1));
+            assert!(
+                case.accepts_scalar_or_vector(1),
+                "{case:?}: positive underflow is within one ULP of m"
+            );
+            assert!(!case.accepts_scalar_or_vector(2));
+        }
+    }
 }
 
 #[test]
@@ -123,7 +259,7 @@ fn all_vector_operations_preserve_aliases_tails_and_memory_guards() {
                                         "{operation}/{}: index {i}, output {output_base}, {segments:?}: {actual} vs {expected}", $precision);
                                 } else {
                                     let case = chunk[(i - output_base) % chunk.len()];
-                                    assert!(case.accepts(actual.to_bits() as u64),
+                                    assert!(case.accepts_scalar_or_vector(actual.to_bits() as u64),
                                         "{case:?}: index {i}, output {output_base}, {segments:?}, actual {actual}");
                                 }
                             }

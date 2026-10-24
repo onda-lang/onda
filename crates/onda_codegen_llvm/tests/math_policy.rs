@@ -4,8 +4,25 @@ use onda_codegen_llvm::{
     FloatMathPolicy, MirCompileOptions,
 };
 
+#[path = "../src/vector_math_spec.rs"]
+mod math_spec;
+
 fn is_vector_call(line: &str) -> bool {
     line.contains("call ") && line.contains("@Sleef_")
+}
+
+fn assert_all_vector_math_calls(ir: &str, precision: &str, target: &str) {
+    for (operation, _, _) in math_spec::FUNCTIONS {
+        let prefix = format!(
+            "@Sleef_{operation}{}",
+            if precision == "f32" { "f" } else { "d" }
+        );
+        assert!(
+            ir.lines()
+                .any(|line| is_vector_call(line) && line.contains(&prefix)),
+            "{target}/{precision}: missing vector {operation}"
+        );
+    }
 }
 
 fn compile(source: &str) -> onda_mir::OptimizedProgram {
@@ -161,10 +178,13 @@ fn power_of_two_uses_vector_exp2_with_scalar_tails_and_overlap_fallbacks() {
                             <$scalar>::MAX, -<$scalar>::MAX,
                         ]);
                         let mut expected = values;
+                        let mut exact_zeros = [false; 512];
                         for &(start, frames) in &segments {
                             for frame in start..start + frames {
                                 let input = expected[8 + frame];
                                 let exponent = input * log2_base;
+                                exact_zeros[output_base + frame] = input.is_infinite()
+                                    && exponent == <$scalar>::NEG_INFINITY;
                                 // Let m be the smallest positive subnormal. At or below m/2,
                                 // ties-to-even gives zero; between m/2 and m it gives m.
                                 // Derive these answers directly, without platform powf underflow.
@@ -190,6 +210,12 @@ fn power_of_two_uses_vector_exp2_with_scalar_tails_and_overlap_fallbacks() {
                                     "{} modified untouched index {index}, output {output_base}, {segments:?}", $name);
                             } else if expected.is_nan() {
                                 assert!(actual.is_nan());
+                            } else if expected == 0.0 && !exact_zeros[index] {
+                                // A finite exponential below m/2 is positive. Both 0 and m
+                                // are within one subnormal ULP; scalar libm need not satisfy
+                                // SLEEF's additional rounded-zero rule.
+                                assert!(actual.to_bits() <= 1,
+                                    "{} pow({base}, x): unexpected underflow bits {}, index {index}", $name, actual.to_bits());
                             } else if !expected.is_finite() || expected == 0.0 {
                                 assert_eq!(actual.to_bits(), expected.to_bits(),
                                     "{} pow({base}, x), index {index}, output {output_base}, {segments:?}", $name);
@@ -211,17 +237,18 @@ fn power_of_two_uses_vector_exp2_with_scalar_tails_and_overlap_fallbacks() {
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[test]
-fn power_of_two_underflow_obeys_the_sleef_accuracy_contract() {
+fn power_of_two_underflow_obeys_vector_and_scalar_accuracy_budgets() {
     macro_rules! check {
         ($scalar:ty, $name:literal) => {
             // m = 2^(MIN_EXP - MANTISSA_DIGITS) is the smallest positive subnormal.
             // These intervals follow from |actual - 2^offset * m| <= m (one ULP),
-            // requiring exact zero when the correctly rounded result is zero, as
-            // SLEEF's src/common/testerutil.c countULPsp/countULPdp do.
+            // Full vector blocks additionally require rounded zero, as SLEEF's
+            // src/common/testerutil.c countULPsp/countULPdp do; mixed/scalar calls
+            // use the numerical budget without that vector-specific condition.
             let cases = [
-                (-2.0, 0, 0),
-                (-1.5, 0, 0),
-                (-1.0, 0, 0),
+                (-2.0, 0, 1),
+                (-1.5, 0, 1),
+                (-1.0, 0, 1),
                 (-0.5, 0, 1),
                 (0.0, 0, 2),
                 (0.5, 1, 2),
@@ -239,6 +266,7 @@ fn power_of_two_underflow_obeys_the_sleef_accuracy_contract() {
                 for (offset, low, high) in cases {
                     let input = [(underflow + offset) / log2_base; 128];
                     for (start, frames) in [(0, 1), (3, 7), (0, 127), (0, 128)] {
+                        let high = if frames == 128 && offset <= -1.0 { 0 } else { high };
                         let sentinel = -12345.0 as $scalar;
                         let mut output = [sentinel; 128];
                         unsafe {
@@ -286,11 +314,7 @@ fn vector_helpers_are_embedded_for_native_and_cross_targets() {
                 ..Default::default()
             };
             let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
-            assert!(ir.lines().any(is_vector_call), "{triple}/{precision}");
-            assert!(
-                ir.contains("@Sleef_exp2"),
-                "{triple}/{precision}: missing exp2"
-            );
+            assert_all_vector_math_calls(&ir, precision, triple);
             for line in ir.lines().filter(|line| line.contains("@Sleef_")) {
                 assert!(!line.starts_with("declare"), "{triple}: {line}");
                 if line.starts_with("define") {
@@ -600,8 +624,8 @@ fn slp_math_calls_use_internal_helpers() {
 #[test]
 fn native_vector_math_objects_link_without_the_compiler_runtime() {
     use onda_codegen_llvm::{
-        lower_optimized_mir_to_object_artifact, MirTargetOptions, TargetConfig, TargetCpu,
-        TargetRelocMode,
+        lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir,
+        MirTargetOptions, TargetConfig, TargetCpu, TargetRelocMode,
     };
     use std::{path::Path, process::Command};
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -648,20 +672,19 @@ fn native_vector_math_objects_link_without_the_compiler_runtime() {
         let mir = compile(&math_source(precision));
         // Execute every available vector ISA, not just compile foreign targets.
         for (name, cpu, features) in &targets {
-            let artifact = lower_optimized_mir_to_object_artifact(
-                &mir,
-                &MirTargetOptions {
-                    fast_math: false,
-                    math: FloatMathPolicy::default(),
-                    target: TargetConfig {
-                        cpu: cpu.clone(),
-                        features: features.clone(),
-                        reloc_model: TargetRelocMode::Pic,
-                        ..TargetConfig::host()
-                    },
+            let options = MirTargetOptions {
+                fast_math: false,
+                math: FloatMathPolicy::default(),
+                target: TargetConfig {
+                    cpu: cpu.clone(),
+                    features: features.clone(),
+                    reloc_model: TargetRelocMode::Pic,
+                    ..TargetConfig::host()
                 },
-            )
-            .unwrap();
+            };
+            let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
+            assert_all_vector_math_calls(&ir, precision, name);
+            let artifact = lower_optimized_mir_to_object_artifact(&mir, &options).unwrap();
             assert_eq!(artifact.metadata.runtime.state_size_bytes, 0);
             assert_eq!(artifact.metadata.runtime.param_size_bytes, 0);
             assert!(artifact.metadata.integration.link_libraries.is_empty());
