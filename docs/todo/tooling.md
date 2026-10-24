@@ -3,11 +3,9 @@
 ## Editor / daemon follow-ups
 
 - Deepen language-server symbol information where the language has not defined enough source
-  metadata yet: namespace/template specialization details, doc comments once Onda has a comment
-  convention, references, and source mapping for generated proc-local symbols.
+  metadata yet: namespace/template specialization details, doc comments once their syntax and
+  attachment rules are defined, references, and source mapping for generated proc-local symbols.
 - Add cancellation-aware analysis scheduling.
-- Improve diagnostic cadence:
-  evaluate publish-on-change/debounced diagnostics in addition to the current open/save flow.
 - Stabilize daemon/editor transport boundaries:
   decide which run-control pieces stay private versus becoming a documented protocol.
 - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
@@ -15,12 +13,12 @@
   `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
 - Improve run panel UX:
   better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
-- Expand the declared-event-aware MIDI performance surface beyond piano notes:
+- Expand declared-event-aware on-screen MIDI controls beyond piano notes:
   - show pitch bend, modulation (CC 1), sustain (CC 64), channel pressure, and configurable CC
     controls only when the corresponding canonical event is declared
   - share control behavior and reset/lifecycle semantics across egui, native webview, and browser
-  - evaluate sample-accurate native timestamp alignment separately from the current block-accurate
-    dispatch, and add hardware-backed Linux/macOS/Windows plus browser coverage
+  - validate the existing native timestamp-to-frame scheduling with hardware-backed
+    Linux/macOS/Windows coverage, and cover browser MIDI timing separately
 - Improve print/delegate Log UX:
   - report UI-history eviction separately from generated batch overflow and transport loss
   - decide and consistently apply whether explicit processor restarts retain or clear visible history
@@ -28,7 +26,8 @@
     throttling, sampling, or changing authored execution
   - introduce stable cross-recompile log-site identity only if editor navigation or retained-history
     workflows need it; processor artifact site indices intentionally remain artifact-local
-- Broaden run buffer ingestion beyond current WAV-only `hound` path if warranted.
+- Broaden run buffer ingestion beyond WAV and typed `.ondabuffer` assets if warranted, using the
+  shared `onda_project` decoders across native and browser hosts.
 
 ## Visual graph editor
 
@@ -65,4 +64,5 @@
 - Integration options:
   - VSCode webview panel first, sharing the existing run panel transport
   - standalone `onda run --graph` or `onda graph <file>` later
-  - optional browser-hosted version once WASM/AudioWorklet export is first-class
+  - optional browser-hosted version reusing the existing playground compiler worker and AudioWorklet
+    adapter

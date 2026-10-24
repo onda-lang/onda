@@ -1,19 +1,9 @@
 # Standard library TODO
 
-## Completed scalar DSP improvements
-
-The pitch-shift, conversion and compressor pass is implemented and validated. `DualWindow` uses
-complementary Hann gains and correctly types its f64 phase/block state. Math conversion helpers
-share the levels/pitch arithmetic, and the compressor caches curve constants and skips
-transcendental work below the knee while continuing detector processing. Validation includes
-the stdlib integration suite and startup/warmed native and Wasm numerical checks.
-
 ## Deferred DSP performance work
 
-The FFT/STFT implementation pass is complete for now. At N=1024, the controlled retry measured
-3.58x faster f32 real FFT and 5.52x faster f32 STFT against the original source using the same
-compiler. Across tested sizes, FFTW remains 1.63–2.14x faster for f32 and 2.19–2.60x for f64.
-The remaining work is deferred.
+Completed optimizations and dated performance comparisons live in the
+[benchmark results folder](../../scripts/bench/results/).
 
 Keep stdlib DSP expressed with scalar Onda loops and functions. General proofs belong in the
 [compiler](compiler.md#dsp-loop-proofs-and-diagnostics), SIMD selection in the
@@ -30,7 +20,8 @@ Keep stdlib DSP expressed with scalar Onda loops and functions. General proofs b
   native hardware. Track static table storage and compilation cost as well as throughput.
 - Improve direct FIR throughput after addressing bounds proofs and vectorization. The measured
   four-accumulator rewrite did not help. Define reduction order/error tolerance before adopting
-  transformations that reassociate floating-point arithmetic.
+  transformations that reassociate floating-point arithmetic, and retain mirrored-history
+  wraparound coverage.
 - Tune convolution for throughput and block latency across partition sizes, stereo and multiple
   instances. Include impulse loading/replacement, long tails, and scheduling of FFT work; avoid
   choosing a default from average throughput alone.
@@ -40,9 +31,15 @@ Keep stdlib DSP expressed with scalar Onda loops and functions. General proofs b
   extremes, filter responses, interpolation error, noise statistics, and reverb/pitch-shift quality.
   Consider triangle corner correction and RNG alternatives only against explicit quality targets.
 
+## Pattern helpers
+
+- Evaluate standard-library clock, trigger-division/swing, note/gate sequencing, and envelope
+  trigger helpers before introducing musical-timing syntax. Reuse host-owned sample-accurate
+  event scheduling where needed.
+
 ## Deferred measurement coverage
 
-- Complete warmed native/Wasm validation for the other stdlib components, including convolution
+- Extend independent warmed native/Wasm validation for stdlib components, including convolution
   tails, pitch shifting, envelopes over a note lifecycle, and external-buffer sample playback.
 - Add representative block sizes, bounded voice/channel banks, ARM targets, and browser AudioWorklet
   runs. Compare equivalent interfaces/layouts and numerical policies with independent references.
