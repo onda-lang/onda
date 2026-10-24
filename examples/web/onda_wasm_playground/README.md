@@ -144,7 +144,7 @@ npm run bench
 ```
 
 This runs the reproducible development comparison documented in
-[`docs/backend-benchmarks.md`](../../../docs/backend-benchmarks.md) and requires the native
+[the benchmark guide](../../../scripts/bench/README.md#compare-backend-compilation-and-runtime) and requires the native
 Rust/LLVM Onda build.
 
 For a manual browser smoke test, edit the default program and confirm LSP diagnostics/completion,

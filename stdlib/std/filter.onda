@@ -87,12 +87,19 @@ namespace std::filter:
       cutoff = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
       mode: i32 = mode::ONE_POLE_LOWPASS {mode::ONE_POLE_LOWPASS, mode::ONE_POLE_HIGHPASS}
 
-    init<T>:
-      z = 0.0
-      a = 0.0
+    init:
+      z: T = 0.0
+      a: T = 0.0
+      coefficient_cutoff: T = 0.0
+      coefficient_valid = false
 
     def update_cutoff():
-      a = 1.0 - exp(-TWO_PI * cutoff / SR)
+      # Assignments may invoke the hook at sample rate. Keep recomputation at
+      # the exact change, including changes within a processing block.
+      if !coefficient_valid || cutoff != coefficient_cutoff:
+        a = 1.0 - exp(-TWO_PI * cutoff / SR)
+        coefficient_cutoff = cutoff
+        coefficient_valid = true
 
     sample:
       z += a * (in1 - z)

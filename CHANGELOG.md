@@ -10,13 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Faster native DSP math through automatic SLEEF vectorization on supported x64 and
-  ARM64 targets.
+  ARM64 targets, including power-of-two `pow` expressions.
 - Independent native floating-point permissions through `--fp-reassociate`, `--fp-contract`,
   and `--fp-no-signed-zeros`.
+- `std::levels::Pan3db<T>` for equal-power mono-to-stereo panning, with gains cached until
+  the pan position changes.
 
 ### Changed
 
-- Speed up compilation of large programs and supported WebAssembly DSP loops.
+- Reduce compilation time and memory use for large programs, especially those with many
+  state variables, array accesses, or loops.
+- Speed up native array and slice kernels, FFTs, voice rendering, and in-place audio processing
+  through better bounds elimination and automatic vectorization.
+- Speed up WebAssembly array and slice processing and parameter-controlled sample loops.
+- Avoid redundant coefficient calculations in `std::filter::OnePole` and `std::env::DecayEnv`
+  when their parameters are unchanged.
 - Reduce memory use for real FFTs and offline WAV rendering.
 - Improve sample-player position precision for long buffers; `play` and `seek` now accept
   f64 frame positions independently of the sample type.
@@ -29,6 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Prevent lost control requests during socket timeouts and missing print/delegate output
   during long Web Audio sessions. Report AudioWorklet failures to pending API requests.
 - Correct `std::math::sign` for signed integer minima and infinities.
+- Preserve scalar assignment behavior when destructuring tuples into state and processor
+  parameters, including numeric precision, integer ranges, and parameter hooks.
+- Fix compilation of generic processor constructors nested in expressions and generic
+  struct-array constructors.
 
 ## [0.8.38]
 

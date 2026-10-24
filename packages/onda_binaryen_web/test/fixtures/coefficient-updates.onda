@@ -1,0 +1,48 @@
+import std/filter
+import std/env
+
+proc Exercise<T>:
+  outs<T> 2
+
+  init<T>:
+    filter = std::filter::OnePole<T>(cutoff = 0.0)
+    envelope = std::env::DecayEnv<T>(decay_s = 0.0)
+    expected_filter = 0.0
+    expected_envelope = 0.0
+    frame: i32 = 0
+
+  sample:
+    # Repeated assignments, changes within a block, and zero/negative times.
+    cutoff = T((frame / 7) % 5) * T(700.0)
+    decay = T((frame / 5) % 4 - 1) * T(0.0005)
+    filter.cutoff = cutoff
+    envelope.decay_s = decay
+    if frame % 9 == 0:
+      envelope.start()
+      expected_envelope = T(1.0)
+
+    input = T(frame % 11 - 5) / T(8.0)
+    coefficient: T = 1.0 - exp(-TWO_PI * cutoff / SR)
+    expected_filter += coefficient * (input - expected_filter)
+    out1 = filter(input) - expected_filter
+
+    decay_coefficient = T(0.0)
+    if decay > 0.0:
+      decay_coefficient = exp(T(-1.0) / (decay * SR))
+    expected_envelope *= decay_coefficient
+    if expected_envelope <= 0.00001:
+      expected_envelope = T(0.0)
+    out2 = envelope() - expected_envelope
+    frame += 1
+
+outs 4
+init:
+  check32 = Exercise<f32>()
+  check64 = Exercise<f64>()
+sample:
+  filter32, envelope32 = check32()
+  filter64, envelope64 = check64()
+  out1 = filter32
+  out2 = envelope32
+  out3 = f32(filter64)
+  out4 = f32(envelope64)

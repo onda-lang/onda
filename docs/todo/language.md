@@ -23,10 +23,10 @@
     possible optimizations to assess, not requirements for the current input implementation.
 
 - Structured-data follow-ups
-  - Revisit implicit struct-method receivers. The intended source model omits `self` from method
-    declarations, makes fields and sibling methods available by bare name like proc-local state,
-    and keeps `self.member` only as an explicit escape hatch when a lexical binding shadows an
-    owner member. Calls remain receiver-based (`voice.tick(...)`); the receiver is compiler-owned
+  - Evaluate implicit struct-method receivers as a replacement for the current explicit `self`
+    parameter. The proposed model makes fields and sibling methods available by bare name like
+    proc-local state, and keeps `self.member` only as an explicit escape hatch when a lexical
+    binding shadows an owner member. Calls remain receiver-based (`voice.tick(...)`); the receiver is compiler-owned
     and should be introduced only when lowering the method, not inserted into the source-level AST.
     Implement this through shared owner-aware name resolution and receiver capture for struct
     methods and proc-local defs. Avoid a separate textual qualification pass or synthetic shadow
@@ -55,8 +55,6 @@
   - Improve overload diagnostics to show per-candidate ranking details.
   - Evaluate extending overloads from top-level `def` and struct methods to proc-local defs.
   - Document remaining overload edge cases for complex untyped array/buffer inference-heavy call sites.
-  - Runtime recursion and mutual recursion are now rejected explicitly as unbounded realtime work;
-    keep cycle diagnostics precise as overloads and new callable forms are added.
 
 - `const` future follow-ups
   - Evaluate const-def overloads. Start with unique names per lexical scope unless reusing ordinary overload machinery is straightforward.
@@ -113,8 +111,6 @@
     ```
     The final syntax must distinguish event handlers, delegates, values, and pure functions from
     their resolved declarations; the sketch only captures the desired readability.
-  - Widen graph source expressions:
-    support array-constructor sources and any other remaining non-call source forms where semantics stay unambiguous.
   - Support calls to proven-pure runtime defs in graph source expressions. Reuse ordinary overload,
     specialization, type, shape, and effect analysis; reject state, resource, event, delegate, and
     other side-effecting call graphs rather than creating a second graph-only function model.
@@ -147,19 +143,7 @@
       env.out1 >> voices[2].gain
       env.out1 >> voices[3].gain
     ```
-    Example broader numeric coercion:
-    ```onda
-    params:
-      mode: i32 = 0
-
-    graph:
-      gate >> mode
-    ```
-    where today an explicit cast would still be preferred:
-    ```onda
-    graph:
-      i32(gate) >> mode
-    ```
+    Keep numeric coercion limited to legal graph destinations; top-level params remain host-owned.
   - Improve graph diagnostics further where useful:
     especially more explicit hints on inferred-`@block` failures and richer cycle path reporting.
   - Evaluate event routing syntax for graph-heavy programs:
@@ -218,19 +202,6 @@
     state machines for incremental FFT and other recurring realtime DSP unless coroutine syntax
     demonstrates a compelling broader benefit.
 
-- Musical scheduling / pattern follow-ups
-  - Evaluate a small sample-accurate scheduling layer on top of events:
-    - host-triggered events can carry target sample offsets inside the next block
-    - scheduled events execute at deterministic sample positions rather than only immediately on the audio thread
-    - payload layout and C API/daemon transport remain explicit and RT-safe
-  - Consider a standard-library pattern/clock helper instead of new syntax first:
-    - phasor/clock utilities
-    - trigger division and swing helpers
-    - note/gate sequencing helpers
-    - envelope trigger helpers
-  - Decide whether musical timing belongs in core language syntax, stdlib procs, or host-side event scheduling.
-  - Add examples that demonstrate polyphonic voice arrays driven by events and graph routing.
-
 - Oversampling follow-ups
   - Consider user-exposed quality/performance modes.
   - Consider selective/local oversampling syntax in addition to full-block `sample N:`.
@@ -247,10 +218,6 @@
 - Standard library follow-ups
   - Defer the measured DSP optimization and validation work recorded in
     [Standard library TODO](stdlib.md), using scalar Onda source and backend-selected SIMD.
-  - Keep the built-in module inventory in sync as docs evolve across `README.md`,
-    `docs/architecture.md`, and `docs/syntax.md`:
-    `std/prelude`, `std/math`, `std/random`, `std/complex`, `std/osc`, `std/filter`, `std/env`,
-    `std/delay`, `std/data`, `std/lookup`, `std/fft`, `std/convolution`.
   - Decide which stdlib modules are considered stable MVP surface versus still-evolving API.
   - Plan the next expansion/versioning pass beyond the current shipped module set.
   - Prioritize graph-friendly proc modules:
@@ -273,10 +240,6 @@
   - Tuple equality/comparison.
   - Tuple in proc port types.
 
-- Assignment follow-ups
-  - Support indexed compound-assignment targets such as `values[i] += amount` while evaluating each
-    selector exactly once.
-
 - Array and slice follow-ups
   - Evaluate arrays of arrays, arrays of tuples, and aggregate tuple elements as one coherent
     nesting extension, with fixed layout and ordinary aggregate copy/alias semantics.
@@ -285,21 +248,13 @@
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.
 
 - Generics follow-ups
-  - Add focused conformance tests for explicit vs inferred generic specialization across `struct`/`proc` and stdlib usage.
   - Evaluate compile-time integer value parameters on defs and controlled static loop expansion.
     Replace manually enumerated FFT stage namespace specializations with concise generic code;
     specify specialization, checking of selected bodies, and code-size limits without exposing
     target vector widths or SIMD operations in Onda.
 
 - Range-analysis follow-ups
-  - Add source syntax for refined integer function parameters. Ranged `i32`/`i64` locals and state,
-    normalization on stores, erased physical representation, conservative MIR range propagation,
-    loop induction facts, call-boundary propagation, and fixed-array bounds-check elimination are
-    implemented.
-  - Extend bounds proofs from fixed storage to relational dynamic slice and external-buffer facts,
-    such as an index derived from the same descriptor's `.len()`. Explicit `read_unsafe` and
-    `write_unsafe` are available when the programmer can establish such a proof today.
-  - Extend loop range analysis with relational induction, divisibility, and derived-index facts so
-    nested kernels such as FFT butterflies can prove `start + k` and
-    `start + k + stage / 2` remain in bounds. Ordinary indexing should then optimize to unchecked
-    accesses and SIMD without requiring library-authored `read_unsafe` or `write_unsafe` calls.
+  - Add source syntax for refined integer function parameters, reusing the existing storage-domain
+    normalization and call-boundary range analysis.
+  - Keep dynamic-view, external-buffer, and derived-index proof work in
+    [compiler.md](compiler.md#dsp-loop-proofs-and-diagnostics).

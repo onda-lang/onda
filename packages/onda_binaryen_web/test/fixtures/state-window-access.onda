@@ -1,0 +1,24 @@
+def pairs(destination: f32[64], source: f32[64]):
+  for i in 0..64:
+    destination[i] = source[63 - i] * 0.5 + source[i]
+
+def forward(destination: f32[96], source: f32[96]):
+  pairs(destination[8:72], source[16:80])
+
+init:
+  values: f32[256]
+
+block:
+  for i in 0..256:
+    values[i] = f32(i)
+  forward(values[128:224], values[:96])
+  error = 0.0
+  for i in 0..64:
+    expected = f32(79 - i) * 0.5 + f32(16 + i)
+    error += abs(values[136 + i] - expected)
+  for i in 0..136:
+    error += abs(values[i] - f32(i))
+  for i in 200..256:
+    error += abs(values[i] - f32(i))
+  sample:
+    out1 = error

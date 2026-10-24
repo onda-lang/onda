@@ -1,13 +1,15 @@
-//! Path-sensitive integer ordering for slice bounds. Symbols name values, not
+//! Path-sensitive integer ordering for bounds. Symbols name values, not
 //! mutable storage: copies preserve identity, writes create new identities,
 //! and loop entry forgets every value the loop can change. The proof needs no
 //! source-language loop pattern or backend-specific representation.
 use std::collections::{HashMap, HashSet};
 
-use crate::{CompareOp, Intrinsic, LocalId, ScalarType, UnaryOp};
+use crate::{BinaryOp, CompareOp, IntegerRange, Intrinsic, LocalId, ScalarType, UnaryOp};
 
 use super::super::collect_block_writes;
 use super::*;
+
+mod affine;
 
 type Symbol = usize;
 // left <= right, or left < right when strict is true.
@@ -17,8 +19,12 @@ type Order = (Symbol, Symbol, bool);
 enum Node {
     Unknown,
     Constant(i64),
+    Boolean(bool),
+    Choice(Symbol, Symbol, Symbol),
     Compare(CompareOp, Symbol, Symbol),
     Not(Symbol),
+    Binary(BinaryOp, Symbol, Symbol, ScalarType),
+    Extremum(Symbol, Symbol),
 }
 
 struct Environment {
@@ -31,6 +37,8 @@ struct Proof<'a, 'p> {
     escaped: Vec<bool>,
     nodes: Vec<Node>,
     edges: Vec<Vec<(Symbol, bool)>>,
+    predecessors: Vec<Vec<(Symbol, bool)>>,
+    ranges: Vec<Option<IntegerRange>>,
     constants: HashMap<(ScalarType, i64), Symbol>,
     lengths: HashMap<Symbol, Symbol>,
     visited: HashSet<(Symbol, bool)>,
@@ -50,6 +58,8 @@ pub(super) fn eliminate(context: &Context<'_>, body: &mut Block) -> u64 {
         escaped,
         nodes: Vec::new(),
         edges: Vec::new(),
+        predecessors: Vec::new(),
+        ranges: Vec::new(),
         constants: HashMap::new(),
         lengths: HashMap::new(),
         visited: HashSet::new(),
@@ -69,7 +79,20 @@ impl Proof<'_, '_> {
         let id = self.nodes.len();
         self.nodes.push(node);
         self.edges.push(Vec::new());
+        self.predecessors.push(Vec::new());
+        self.ranges.push(None);
         id
+    }
+
+    fn local_node(&mut self, local: LocalId, node: Node) -> Symbol {
+        let symbol = self.node(node);
+        self.ranges[symbol] = value_range(self.context, Value::Local(local));
+        symbol
+    }
+
+    fn order(&mut self, left: Symbol, right: Symbol, strict: bool) {
+        self.edges[left].push((right, strict));
+        self.predecessors[right].push((left, strict));
     }
 
     fn fresh_local(&mut self, local: LocalId) -> Option<Symbol> {
@@ -78,7 +101,7 @@ impl Proof<'_, '_> {
         }
         match self.context.program.types[self.context.function.locals[local.index()].ty.index()] {
             Type::Scalar(ScalarType::I32 | ScalarType::I64 | ScalarType::Bool)
-            | Type::Slice { .. } => Some(self.node(Node::Unknown)),
+            | Type::Slice { .. } => Some(self.local_node(local, Node::Unknown)),
             _ => None,
         }
     }
@@ -116,6 +139,7 @@ impl Proof<'_, '_> {
                 Some(self.constant(ScalarType::I32, i64::from(value)))
             }
             Value::Constant(ScalarValue::I64(value)) => Some(self.constant(ScalarType::I64, value)),
+            Value::Constant(ScalarValue::Bool(value)) => Some(self.node(Node::Boolean(value))),
             _ => None,
         }
     }
@@ -126,6 +150,7 @@ impl Proof<'_, '_> {
             return Some(len);
         }
         let len = self.node(Node::Unknown);
+        self.ranges[len] = IntegerRange::new(ScalarType::I32, 0, i64::from(i32::MAX));
         self.lengths.insert(slice, len);
         Some(len)
     }
@@ -141,6 +166,14 @@ impl Proof<'_, '_> {
                 projections,
             }) if projections.is_empty() => return env.locals[source.index()],
             Rvalue::SliceLen(slice) => return self.length(*slice, env),
+            Rvalue::Binary { op, lhs, rhs }
+                if matches!(op, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply) =>
+            {
+                let scalar = self.integer_type(*lhs)?;
+                let lhs = self.value(*lhs, env)?;
+                let rhs = self.value(*rhs, env)?;
+                return Some(self.local_node(local, Node::Binary(*op, lhs, rhs, scalar)));
+            }
             Rvalue::Compare { op, lhs, rhs }
                 if self.integer_type(*lhs).is_some()
                     && self.integer_type(*lhs) == self.integer_type(*rhs) =>
@@ -162,7 +195,7 @@ impl Proof<'_, '_> {
             } if args.len() == 2 && self.integer_type(args[0]).is_some() => {
                 let lhs = self.value(args[0], env)?;
                 let rhs = self.value(args[1], env)?;
-                let result = self.node(Node::Unknown);
+                let result = self.local_node(local, Node::Extremum(lhs, rhs));
                 if matches!(
                     value,
                     Rvalue::Intrinsic {
@@ -170,10 +203,11 @@ impl Proof<'_, '_> {
                         ..
                     }
                 ) {
-                    self.edges[result].extend([(lhs, false), (rhs, false)]);
+                    self.order(result, lhs, false);
+                    self.order(result, rhs, false);
                 } else {
-                    self.edges[lhs].push((result, false));
-                    self.edges[rhs].push((result, false));
+                    self.order(lhs, result, false);
+                    self.order(rhs, result, false);
                 }
                 return Some(result);
             }
@@ -193,17 +227,41 @@ impl Proof<'_, '_> {
         self.fresh_local(local)
     }
 
-    fn assume(&mut self, mut condition: Symbol, mut truth: bool, env: &mut Environment) {
-        let (op, lhs, rhs) = loop {
-            match self.nodes[condition] {
-                Node::Compare(op, lhs, rhs) => break (op, lhs, rhs),
-                Node::Not(value) => {
-                    condition = value;
-                    truth = !truth;
-                }
-                _ => return,
+    fn assume(&mut self, condition: Symbol, truth: bool, env: &mut Environment) {
+        let mut pending = vec![(condition, truth)];
+        self.visited.clear();
+        while let Some((condition, truth)) = pending.pop() {
+            if !self.visited.insert((condition, truth)) {
+                continue;
             }
-        };
+            match self.nodes[condition] {
+                Node::Compare(op, lhs, rhs) => self.assume_order(op, lhs, rhs, truth, env),
+                Node::Not(value) => {
+                    pending.push((value, !truth));
+                }
+                // Short-circuit boolean expressions lower to branch joins.
+                // If one arm cannot produce the assumed result, execution
+                // must have taken the other arm and satisfied its condition.
+                Node::Choice(condition, yes, no) => {
+                    if matches!(self.nodes[yes], Node::Boolean(value) if value != truth) {
+                        pending.extend([(condition, false), (no, truth)]);
+                    } else if matches!(self.nodes[no], Node::Boolean(value) if value != truth) {
+                        pending.extend([(condition, true), (yes, truth)]);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn assume_order(
+        &mut self,
+        op: CompareOp,
+        lhs: Symbol,
+        rhs: Symbol,
+        truth: bool,
+        env: &mut Environment,
+    ) {
         use CompareOp::*;
         let order = match (op, truth) {
             (Less, true) | (GreaterEqual, false) => (lhs, rhs, true),
@@ -220,6 +278,17 @@ impl Proof<'_, '_> {
     }
 
     fn ordered(&mut self, left: Symbol, right: Symbol, strict: bool, env: &Environment) -> bool {
+        self.known_order(left, right, strict, env)
+            || affine::ordered(self, left, right, strict, env)
+    }
+
+    fn known_order(
+        &mut self,
+        left: Symbol,
+        right: Symbol,
+        strict: bool,
+        env: &Environment,
+    ) -> bool {
         self.visited.clear();
         self.pending.clear();
         self.pending.push((left, false));
@@ -249,14 +318,112 @@ impl Proof<'_, '_> {
         false
     }
 
-    fn access(&mut self, slice: Value, index: Value, bounds: &mut BoundsMode, env: &Environment) {
+    /// Bounds of immutable values at this program point. Only unconditional
+    /// ranges and the current path's ordering facts participate; an arithmetic
+    /// identity is never used to prove its own absence of overflow.
+    fn available(&self, left: Symbol, right: Symbol, env: &Environment) -> HashSet<Symbol> {
+        // Unrelated live locals do not participate in this ordering query.
+        // Include its definitions and the current path's constraints, rather
+        // than rebuilding facts for the function's entire expression history.
+        let mut pending = vec![left, right];
+        for &(left, right, _) in &env.assumptions {
+            pending.extend([left, right]);
+        }
+        let mut available = HashSet::new();
+        while let Some(symbol) = pending.pop() {
+            if !available.insert(symbol) {
+                continue;
+            }
+            match self.nodes[symbol] {
+                Node::Binary(_, left, right, _)
+                | Node::Compare(_, left, right)
+                | Node::Extremum(left, right) => pending.extend([left, right]),
+                Node::Not(operand) => pending.push(operand),
+                Node::Choice(condition, yes, no) => pending.extend([condition, yes, no]),
+                _ => {}
+            }
+            if let Some(&length) = self.lengths.get(&symbol) {
+                pending.push(length);
+            }
+        }
+        available
+    }
+
+    fn bound(
+        &self,
+        symbol: Symbol,
+        upper: bool,
+        env: &Environment,
+        available: &HashSet<Symbol>,
+    ) -> i128 {
+        let mut result = if upper {
+            i128::from(i64::MAX)
+        } else {
+            i128::from(i64::MIN)
+        };
+        let mut pending = vec![(symbol, false)];
+        let mut visited = HashSet::new();
+        while let Some((symbol, strict)) = pending.pop() {
+            if !available.contains(&symbol) || !visited.insert((symbol, strict)) {
+                continue;
+            }
+            if let Some(bound) = self.unconditional_bound(symbol, upper) {
+                let bound = i128::from(bound)
+                    + if upper {
+                        -i128::from(strict)
+                    } else {
+                        i128::from(strict)
+                    };
+                result = if upper {
+                    result.min(bound)
+                } else {
+                    result.max(bound)
+                };
+            }
+            let edges = if upper {
+                &self.edges
+            } else {
+                &self.predecessors
+            };
+            for &(next, edge_strict) in &edges[symbol] {
+                pending.push((next, strict || edge_strict));
+            }
+            for &(left, right, edge_strict) in &env.assumptions {
+                let (from, to) = if upper { (left, right) } else { (right, left) };
+                if from == symbol {
+                    pending.push((to, strict || edge_strict));
+                }
+            }
+        }
+        result
+    }
+
+    fn unconditional_bound(&self, symbol: Symbol, upper: bool) -> Option<i64> {
+        match self.nodes[symbol] {
+            Node::Constant(value) => Some(value),
+            _ => self.ranges[symbol].map(|range| if upper { range.max() } else { range.min() }),
+        }
+    }
+
+    fn access(
+        &mut self,
+        index: Value,
+        limit: accesses::Limit,
+        bounds: &mut BoundsMode,
+        env: &Environment,
+    ) {
         if *bounds == BoundsMode::Unchecked {
             return;
         }
         let Some(value) = self.value(index, env) else {
             return;
         };
-        let Some(len) = self.length(slice, env) else {
+        let len = match limit {
+            accesses::Limit::Fixed(len) => Some(self.constant(ScalarType::I64, i64::from(len))),
+            accesses::Limit::Slice(slice) => self.length(slice, env),
+            accesses::Limit::Value(length) => self.value(length, env),
+        };
+        let Some(len) = len else {
             return;
         };
         let zero = self.constant(ScalarType::I32, 0);
@@ -308,7 +475,19 @@ impl Proof<'_, '_> {
                 if !else_continues {
                     *slot = then_value;
                 } else if *slot != then_value {
-                    *slot = self.fresh_local(local);
+                    *slot = match (condition, then_value, *slot) {
+                        (Some(condition), Some(yes), Some(no))
+                            if !self.escaped[local.index()]
+                                && matches!(
+                                    self.context.program.types
+                                        [self.context.function.locals[local.index()].ty.index()],
+                                    Type::Scalar(ScalarType::Bool)
+                                ) =>
+                        {
+                            Some(self.node(Node::Choice(condition, yes, no)))
+                        }
+                        _ => self.fresh_local(local),
+                    };
                 }
             }
             if else_continues {
@@ -329,41 +508,48 @@ impl Proof<'_, '_> {
 
     fn block(&mut self, block: &mut Block, env: &mut Environment) -> bool {
         for statement in &mut block.statements {
+            accesses::visit(
+                self.context,
+                &mut statement.kind,
+                &mut |index, limit, bounds| {
+                    self.access(index, limit, bounds, env);
+                },
+            );
             match &mut statement.kind {
                 StatementKind::Assign { destination, value } => {
-                    if let Rvalue::SliceLoad {
-                        slice,
-                        index,
-                        bounds,
-                    } = value
-                    {
-                        self.access(*slice, *index, bounds, env);
-                    }
                     if let PlaceBase::Local(local) = destination.base {
                         env.locals[local.index()] = if destination.projections.is_empty() {
                             self.rvalue(local, value, env)
                         } else {
                             self.fresh_local(local)
                         };
-                    }
-                }
-                StatementKind::SliceStore {
-                    slice,
-                    index,
-                    bounds,
-                    ..
-                } => self.access(*slice, *index, bounds, env),
-                StatementKind::Call { results, args, .. } => {
-                    for arg in args {
-                        if let CallArgument::SliceElement {
-                            slice,
-                            index,
-                            bounds,
-                        } = arg
-                        {
-                            self.access(*slice, *index, bounds, env);
+                        // A copy can tighten a shared value's range (for
+                        // example the body value of a counted loop). Scope
+                        // only new bounds to this assignment: loads and
+                        // constants already carry their unconditional bounds.
+                        if matches!(value, Rvalue::Use(_) | Rvalue::Load(_)) {
+                            if let Some((symbol, range)) = env.locals[local.index()]
+                                .zip(value_range(self.context, Value::Local(local)))
+                            {
+                                if self
+                                    .unconditional_bound(symbol, false)
+                                    .is_none_or(|lower| lower < range.min())
+                                {
+                                    let lower = self.constant(range.scalar(), range.min());
+                                    env.assumptions.push((lower, symbol, false));
+                                }
+                                if self
+                                    .unconditional_bound(symbol, true)
+                                    .is_none_or(|upper| upper > range.max())
+                                {
+                                    let upper = self.constant(range.scalar(), range.max());
+                                    env.assumptions.push((symbol, upper, false));
+                                }
+                            }
                         }
                     }
+                }
+                StatementKind::Call { results, .. } => {
                     for &local in results.iter() {
                         env.locals[local.index()] = self.fresh_local(local);
                     }
@@ -378,11 +564,26 @@ impl Proof<'_, '_> {
                     }
                 }
                 StatementKind::Loop { body } => {
+                    let lower = crate::loops::guarded_loop(body).and_then(|counted| {
+                        let mut writes = HashSet::new();
+                        // The recognized increment is outside counted.body.
+                        // Any other write would invalidate monotonic progress.
+                        super::super::collect_statements_writes(counted.body, &mut writes);
+                        (!writes.contains(&counted.index))
+                            .then_some((counted.index, env.locals[counted.index.index()]))
+                    });
                     let written = written_locals(&[body]);
                     for &local in &written {
                         env.locals[local.index()] = self.fresh_local(local);
                     }
                     let base = env.assumptions.len();
+                    if let Some((index, Some(initial))) = lower {
+                        if let Some(current) = env.locals[index.index()] {
+                            // A guarded i32 `i += 1` cannot wrap: its guard
+                            // requires i < limit <= i32::MAX on every trip.
+                            env.assumptions.push((initial, current, false));
+                        }
+                    }
                     self.block(body, env);
                     env.assumptions.truncate(base);
                     for local in written {
@@ -417,22 +618,39 @@ fn inspect(block: &Block, escaped: &mut [bool], has_access: &mut bool) {
     };
     for statement in &block.statements {
         match &statement.kind {
-            StatementKind::Assign {
-                value:
+            StatementKind::Assign { destination, value } => {
+                *has_access |= !destination.projections.is_empty();
+                match value {
+                    Rvalue::Load(place) => *has_access |= !place.projections.is_empty(),
+                    Rvalue::SliceLoad { bounds, .. } | Rvalue::NormalizeIndex { bounds, .. } => {
+                        *has_access |= *bounds != BoundsMode::Unchecked;
+                    }
                     Rvalue::MakeSlice {
                         source: crate::SliceSource::Place(place),
                         ..
-                    },
-                ..
-            } => escape(place, escaped),
-            StatementKind::Assign {
-                value: Rvalue::SliceLoad { bounds, .. },
-                ..
+                    } => {
+                        escape(place, escaped);
+                        *has_access |= !place.projections.is_empty();
+                    }
+                    Rvalue::Use(_)
+                    | Rvalue::Unary { .. }
+                    | Rvalue::Binary { .. }
+                    | Rvalue::Compare { .. }
+                    | Rvalue::Cast { .. }
+                    | Rvalue::Intrinsic { .. }
+                    | Rvalue::SliceLen(_)
+                    | Rvalue::InitAll
+                    | Rvalue::ProcessFrame { .. } => {}
+                    _ => *has_access = true,
+                }
             }
-            | StatementKind::SliceStore { bounds, .. } => {
+            StatementKind::SliceStore { bounds, .. } => {
                 *has_access |= *bounds != BoundsMode::Unchecked;
             }
             StatementKind::Call { args, .. } => {
+                *has_access |= args
+                    .iter()
+                    .any(|arg| !matches!(arg, CallArgument::Value(_)));
                 for arg in args {
                     match arg {
                         CallArgument::Place(place)
@@ -453,6 +671,15 @@ fn inspect(block: &Block, escaped: &mut [bool], has_access: &mut bool) {
                 inspect(else_block, escaped, has_access);
             }
             StatementKind::Loop { body } => inspect(body, escaped, has_access),
+            StatementKind::BufferStore { .. }
+            | StatementKind::BufferParamStore { .. }
+            | StatementKind::OutputStore {
+                element: Some(_), ..
+            }
+            | StatementKind::ControlOutputStore {
+                element: Some(_), ..
+            }
+            | StatementKind::PublishDelegate { .. } => *has_access = true,
             _ => {}
         }
     }

@@ -1,0 +1,64 @@
+import std/levels
+
+def mismatch<T>(actual: T, expected: T):
+  if actual == expected || (actual != actual && expected != expected):
+    return T(0.0)
+  return T(1.0)
+
+proc Exercise<T>:
+  outs<T> 2
+
+  init<T>:
+    centered = std::levels::Pan3db<T>()
+    configured = std::levels::Pan3db<T>(pan = -0.75)
+    repeated = std::levels::Pan3db<T>()
+    position = -0.75
+    frame: i32 = 0
+
+  event move(value: T):
+    position = value
+    configured.pan = value
+
+  sample:
+    input = T(frame % 11 - 5) / T(8.0)
+    if frame % 43 == 21:
+      input = T(1.0) / T(0.0)
+    left, right = centered(input)
+    gain_l, gain_r = std::levels::pan_3db(T(0.0))
+    error_l = mismatch(left, input * gain_l)
+    error_r = mismatch(right, input * gain_r)
+
+    left, right = configured(input)
+    gain_l, gain_r = std::levels::pan_3db(position)
+    error_l = max(error_l, mismatch(left, input * gain_l))
+    error_r = max(error_r, mismatch(right, input * gain_r))
+
+    # Repeated assignments, changes within a block, and out-of-range positions.
+    pan = T((frame / 7) % 11 - 5) * T(0.25)
+    if frame % 47 == 17 || frame % 47 == 18:
+      pan = T(0.0) / T(0.0)
+    elif frame % 47 == 27:
+      pan = T(1.0) / T(0.0)
+    elif frame % 47 == 37:
+      pan = T(-1.0) / T(0.0)
+    repeated.pan = pan
+    left, right = repeated(input)
+    gain_l, gain_r = std::levels::pan_3db(pan)
+    out1 = max(error_l, mismatch(left, input * gain_l))
+    out2 = max(error_r, mismatch(right, input * gain_r))
+    frame += 1
+
+outs 4
+init:
+  check32 = Exercise<f32>()
+  check64 = Exercise<f64>()
+event change():
+  check32.move(0.5)
+  check64.move(-1.25)
+sample:
+  left32, right32 = check32()
+  left64, right64 = check64()
+  out1 = left32
+  out2 = right32
+  out3 = f32(left64)
+  out4 = f32(right64)

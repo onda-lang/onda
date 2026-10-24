@@ -11,7 +11,7 @@ const OpenHatPattern = 32896
 struct StepClock:
   clock: i32
   step: i32
-  length: i32 = 1
+  length = 1
 
   def active(self, pattern: i32):
     return ((pattern >> self.step) & 1) == 1

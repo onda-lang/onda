@@ -36,5 +36,7 @@ exclude:
   - targets
   - ui
   - docs/todo
+  - docs/architecture.md
+  - docs/mir.md
   - target
   - vendor

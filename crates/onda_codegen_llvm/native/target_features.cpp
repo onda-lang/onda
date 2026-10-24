@@ -4,21 +4,27 @@
 #include <llvm/Target/TargetMachine.h>
 #include <cstring>
 
-extern "C" unsigned onda_vector_math_features(llvm::TargetMachine *machine) {
+static bool has(llvm::TargetMachine *machine, const char *name) {
   const auto *features = machine->getMCSubtargetInfo();
-  const auto has = [features](const char *name) {
-    for (const auto &feature : features->getAllProcessorFeatures())
-      if (std::strcmp(feature.Key, name) == 0)
-        return features->hasFeature(feature.Value);
-    return false;
-  };
+  for (const auto &feature : features->getAllProcessorFeatures())
+    if (std::strcmp(feature.Key, name) == 0)
+      return features->hasFeature(feature.Value);
+  return false;
+}
+
+extern "C" bool onda_expensive_short_masked_memory(llvm::TargetMachine *machine) {
+  return machine->getTargetTriple().getArch() == llvm::Triple::x86_64 &&
+         has(machine, "avx2") && !has(machine, "avx512f");
+}
+
+extern "C" unsigned onda_vector_math_features(llvm::TargetMachine *machine) {
   const auto &triple = machine->getTargetTriple();
   if (triple.getArch() == llvm::Triple::x86_64) {
-    return (has("sse2") ? 1 : 0) | (has("avx") ? 2 : 0) |
-           (has("avx2") && has("fma") ? 4 : 0) |
-           (has("avx512f") && has("avx2") && has("fma") ? 8 : 0);
+    return (has(machine, "sse2") ? 1 : 0) | (has(machine, "avx") ? 2 : 0) |
+           (has(machine, "avx2") && has(machine, "fma") ? 4 : 0) |
+           (has(machine, "avx512f") && has(machine, "avx2") && has(machine, "fma") ? 8 : 0);
   }
   if (triple.getArch() == llvm::Triple::aarch64)
-    return has("neon") ? 16 : 0;
+    return has(machine, "neon") ? 16 : 0;
   return 0;
 }

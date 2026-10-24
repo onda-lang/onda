@@ -191,6 +191,75 @@ sample:
 """
 
 
+def guarded_array_probe(width, helper):
+    # Dynamic bounds and reverse affine addresses should expose contiguous SIMD
+    # loads. Exercise both references through helpers and direct state storage.
+    declarations = f"""const N = 512
+params:
+  count = 509
+  scale: {width} = 0.875
+outs<{width}> 1
+"""
+    transform = f"""def transform(source: {width}[N], destination: {width}[N], count, scale):
+  if count < 0 || count > N:
+    return
+  for i in 0..count:
+    destination[i] = source[count - 1 - i] * scale + source[i] * source[i]
+""" if helper else ""
+    work = "  transform(values, results, count, scale)\n" if helper else """  n = min(max(count, 0), N)
+  for i in 0..n:
+    results[i] = values[n - 1 - i] * scale + values[i] * values[i]
+"""
+    return declarations + transform + f"""init:
+  values: {width}[N]
+  results: {width}[N]
+  for i in 0..N:
+    values[i] = {width}(i + 1) / {width}(N)
+  index = 0 {{N, wrap}}
+block:
+""" + work + """  sample:
+    out1 = results[index]
+    index += 1
+"""
+
+
+def state_window_probe(width, fixed, *, shared=False, dynamic=False):
+    shape = "256" if fixed else ""
+    bound = "256" if fixed else "min(source.len(), destination.len())"
+    count_parameter = ", count: i32" if dynamic else ""
+    count_argument = ", count" if dynamic else ""
+    if dynamic:
+        bound = f"min(max(count, 0), {bound})"
+    reverse = "255 - i" if fixed else "source.len() - 1 - i"
+    calls = f"transform(values[16:272], values[544:800], scale{count_argument})"
+    if shared:
+        calls += f"\n  transform(values[272:528], values[800:1056], scale{count_argument})"
+    forward = "" if fixed else f"""def forward(values: {width}[], scale: {width}{count_parameter}):
+  {calls}
+"""
+    call = calls if fixed else f"forward(values[:], scale{count_argument})"
+    storage = 2048 if shared else 1024
+    output = "values[544 + index] + values[800 + index]" if shared else "values[544 + index]"
+    count = "  count = 256\n" if dynamic else ""
+    return f"""params:
+{count}  scale: {width} = 0.875
+outs<{width}> 1
+def transform(source: {width}[{shape}], destination: {width}[{shape}], scale: {width}{count_parameter}):
+  for i in 0..{bound}:
+    destination[i] = source[{reverse}] * scale + source[i] * source[i]
+{forward}init:
+  values: {width}[{storage}]
+  for i in 0..{storage}:
+    values[i] = {width}(i + 1) / {width}({storage})
+  index = 0 {{256, wrap}}
+block:
+  {call}
+  sample:
+    out1 = {output}
+    index += 1
+"""
+
+
 def catalog():
     # Factories defer expensive DFT generation until a case is actually selected.
     cases = {name: {"source": source, "warmup_blocks": 8192 if name.startswith("convolution") else 512}
@@ -210,6 +279,24 @@ def catalog():
                 "warmup_blocks": 512,
             }
     for width in ["f32", "f64"]:
+        for kind, fixed in [("array", True), ("slice", False)]:
+            cases[f"state-window-{kind}-{width}"] = {
+                "source": lambda width=width, fixed=fixed: state_window_probe(width, fixed),
+                "warmup_blocks": 512,
+            }
+            cases[f"state-window-shared-{kind}-{width}"] = {
+                "source": lambda width=width, fixed=fixed: state_window_probe(width, fixed, shared=True),
+                "warmup_blocks": 512,
+            }
+        cases[f"state-window-bounded-{width}"] = {
+            "source": lambda width=width: state_window_probe(width, True, dynamic=True),
+            "warmup_blocks": 512,
+        }
+        for kind, helper in [("helper", True), ("state", False)]:
+            cases[f"array-guarded-{kind}-{width}"] = {
+                "source": lambda width=width, helper=helper: guarded_array_probe(width, helper),
+                "warmup_blocks": 512,
+            }
         for name, expression in {
             "arithmetic": "values[i] * factor + values[i] * values[i]",
             "division": "values[i] / factor",

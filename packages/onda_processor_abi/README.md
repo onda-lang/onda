@@ -119,7 +119,7 @@ if (overflowCount) reportOverflow(overflowCount);
 
 Allocate the descriptor and storage before realtime execution and consume records before the next
 call reuses them. Reset the execution output immediately before every generated entry call. See the
-internal [delegate host integration](../../docs/delegates.md) reference
+[host output guide](../../docs/host-output.md#delegates)
 for the complete lifecycle, capacity guidance, and APIs for other hosts.
 
 ## Print batches
@@ -129,7 +129,7 @@ Print delivery uses an independent caller-owned batch with the same physical des
 scalar types; `formatPrintBatch()` and `formatPrintRecords()` produce canonical newline-terminated
 text with exact `i64` and width-correct floating-point formatting. Use `writeExecutionOutput()` to
 pass independently nullable delegate and print batch addresses to init, process, or event exports.
-See the internal [print host integration](../../docs/printing.md) reference for the complete
+See the [host output guide](../../docs/host-output.md#prints) for the complete
 lifecycle and metadata contract.
 
 The current descriptor represents every bindable buffer-array slot as a physical

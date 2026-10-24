@@ -93,18 +93,6 @@ while moving avoidable work earlier in the pipeline.
   - Verify inherited types, distinct type/size specializations, unused declarations, failure caching,
     and sharing across large processor arrays in native and Wasm compilation.
 
-## Parameter smoothing
-
-- Generate smoothing state and block-boundary ramps only for parameters whose values are read.
-  - Reuse and generalize the parameter-array read analysis to follow helpers, slice aliases,
-    events, and dynamic parameter indexing. Length-only access does not require smoothing.
-  - Analyze authored code before inserting smoothing's own reads and writes, so generated ramps
-    do not make otherwise unused parameters appear live.
-  - Keep the check per declaration: reading any array element retains the whole array's ramps.
-    Preserve host parameter descriptors even when no smoothing state or code is generated.
-  - Verify unused and length-only declarations generate no ramp state or processing code, while
-    indirect reads preserve smoothing, in native and Wasm compilation.
-
 ## DSP scheduling and processor-array performance
 
 A 1,000-instance `Sine` bank exposes avoidable state traffic and a serial floating-point
@@ -126,7 +114,19 @@ LLVM vectorize the bank. Use this workload to guide general processor and MIR op
   - Measure register pressure, scratch storage, cache traffic, and code size before adopting a
     scheduling strategy. Allocate any required scratch storage during instance setup.
 
+- Optimize processor-array block-hook lowering for statically proven slot sets.
+  - Emit direct `block_pre` / `block_post` calls and omit runtime active flags when a loop is proved
+    to visit known slots, including exhaustive constant-bound `for i in 0..N: voices[i]()` loops.
+  - Preserve activation and hook ordering for conditional, repeated, or unknown slot visits.
+
+- Evaluate a backend-neutral dot-product or reduction operation only if shared scalar-loop proofs
+  remain insufficient in measured LLVM/Binaryen kernels. Define scalar-order preservation, a fixed
+  reduction tree, or explicitly permitted reassociation before introducing such an operation.
+
 - Expose independent processor-array work and reductions to backend vectorizers.
+  - Native lowering already distributes independent expensive rendering from an ordered sum when
+    results are materialized in an existing array; portable MIR and Binaryen keep the fused loop.
+    Extend coverage only where further dependence and effect proofs justify it.
   - Preserve source floating-point evaluation order under default settings; automatically splitting
     an ordered sum into parallel accumulators or reassociating it requires opt-in fast math.
   - Optimize explicit independent accumulators without requiring global fast math when their
@@ -136,23 +136,24 @@ LLVM vectorize the bank. Use this workload to guide general processor and MIR op
 
 ## DSP loop proofs and diagnostics
 
-Deferred follow-ups from the stdlib DSP performance analysis. Keep
-Onda DSP source scalar; shared analyses should expose facts to backends without FFT-specific
-compiler rules or user-authored SIMD operations.
+The implemented baseline is documented in the [MIR pass contract](../mir.md#backend-neutral-passes).
+Keep Onda DSP source scalar; shared analyses should expose facts to backends without FFT-specific
+compiler rules or user-authored SIMD operations. Measurements and known regressions live in the
+[benchmark results folder](../../scripts/bench/results/).
 
-- Preserve proven alignment, stride, storage identity, and disjoint memory ranges through array
-  views, slices, aliases, and function calls. Slice loads/stores currently lower with `align 1`.
-  Emit stronger alignment and alias facts only when storage layout and access rules guarantee them.
-- Extend relational loop and bounds proofs to derived butterfly indices and mirrored ranges.
-  Prove the independence of real-spectrum bin pairs and eliminate index normalization when valid,
-  using the same machinery for other DSP kernels. See the existing
-  [range-analysis follow-ups](language.md#language-follow-ups).
-- Expose optimization diagnostics tied to source locations: successful/missed vectorization,
-  dependence or alignment limitations, selected vectorization factors, and relevant backend
-  remarks. Use emitted assembly and isolated kernel measurements to check shuffle and spill costs.
-- Track static coefficient storage and compile/JIT cost alongside processing speed. Generic
-  compile-time tables should share immutable data per specialization and materialize only used
-  declarations through the existing const machinery.
+- Extend offset-aware storage origins, reference alignment, contiguous-window and stride-residue
+  dependence proofs to runtime offsets/strides and dynamic ring-wrap patterns where provable.
+  Keep unknown views conservative.
+- Extend nonwrapping affine proofs with remaining relational induction and divisibility facts for
+  FFT butterflies and unsupported loop shapes. Eliminate index normalization only when every
+  intermediate in expressions such as `start + k + stage / 2` is proved safe.
+- Extend relational bounds proofs to external-buffer lengths and remaining dynamic-view patterns.
+  Preserve conservative handling of mutable descriptor references and unknown external lengths.
+- Surface the harness's source-linked LLVM remarks in user tooling: successful/missed vectorization,
+  dependence or alignment limitations, and selected vectorization factors. Use emitted assembly
+  and isolated kernel measurements to check shuffle and spill costs.
+- Track static coefficient storage and compile/JIT cost alongside processing speed when extending
+  [constants in generic scopes](#constants-in-generic-scopes).
 
 Backend vectorization work is tracked in [backends.md](backends.md#optimization-follow-ups), and
 algorithm tuning in [stdlib.md](stdlib.md).
@@ -172,20 +173,18 @@ algorithm tuning in [stdlib.md](stdlib.md).
 ## Measurement
 
 - Profile semantic analysis of long typed slice-view chains (`view0: f32[] = values[:]`, then
-  `viewN: f32[] = viewN-1[:]`). After indexed source locations removed the parser bottleneck, a
-  6,000-link debug compile still takes about 21 seconds while parse/constant inspection takes about
-  1.8 seconds. Find and remove repeated whole-chain work without changing captured bounds,
-  permissions, or lifetime checks; keep this generated program as a scaling benchmark.
-- Add phase-level timing for parse/load, semantic analysis, processor rewriting, MIR construction,
-  parameter pruning, range propagation, validation, MIR optimization, backend IR construction,
-  backend optimization, and JIT linking.
-- Track MIR shape alongside time: function count, state bytes, locals, parameters, statements, and
-  serialized size.
+  `viewN: f32[] = viewN-1[:]`). Measure scaling and remove repeated whole-chain work without changing
+  captured bounds, permissions, or lifetime checks; keep this generated program as a benchmark.
+- Extend the harness's existing parse/load, semantic analysis, MIR construction/optimization, and
+  aggregate JIT timings with processor rewriting, parameter pruning, range propagation, validation,
+  backend IR construction/optimization, and linking breakdowns.
+- Extend existing function/state-entry counts, serialized size, allocation and analysis-visit
+  measurements with locals, parameters, statements, and state bytes in inspect-only runs.
 - Keep regression workloads for a tiny program, a medium nested-processor program, the convolution
   project, and a large processor array. Optimize from these measurements rather than total CLI time
   alone.
-- Add reproducible DSP benchmarks for processors, processor banks and reductions.
-  Include distinct frequencies, modulation, feedback, and segmented events;
+- Extend the [benchmark harness](../../scripts/bench/README.md) with representative external assets
+  and live event/parameter automation. Include distinct frequencies, modulation, feedback, and segmented events;
   compare default and fast-math compilation across block sizes and native/Wasm backends. Measure
   generated DSP separately from host/UI/audio transport, inspect state accesses and SIMD, and
   verify output and state behavior under the selected floating-point policy.

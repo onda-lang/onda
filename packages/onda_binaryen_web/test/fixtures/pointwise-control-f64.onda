@@ -1,0 +1,8 @@
+ins:
+  in1: f64
+outs:
+  out1: f64
+params:
+  gain: f64 = 0.5
+sample:
+  out1 = in1 * gain + 0.25

@@ -1,0 +1,40 @@
+proc Checked:
+  params:
+    private gain = 0.0 {0.0, 1.0} => update_gain
+  init:
+    index: i32 = 0 {0..4, wrap}
+    wide: i64 = 0 {0..4, clamp}
+    values: f32[4] = [0.0, 0.25, 0.5, 0.75]
+    evaluations = 0
+    cached = 0.0
+  def update_gain():
+    cached = gain
+  event set_gain():
+    gain, ignored = (2.0, 0.0)
+  def indices():
+    evaluations += 1
+    return (1000, i64(1000))
+  sample:
+    before = evaluations
+    index, wide = indices()
+    left: f64 = 0.123456789012345
+    right: f64 = 0.75
+    left, right = (right, left)
+    out1 = values[index] + abs(f32(wide) - 3.0)
+    out2 = abs(gain - 1.0) + abs(cached - 1.0)
+    out3 = f32(abs(left - 0.75) + abs(right - 0.123456789012345))
+    out4 = f32(abs(evaluations - before - 1))
+
+outs 4
+init:
+  checked = Checked()
+  index: i32 = 0 {0..4, wrap}
+  values: f32[4] = [0.0, 0.25, 0.5, 0.75]
+sample:
+  checked.set_gain()
+  index, ignored = (1000, 0)
+  first, second, third, fourth = checked()
+  out1 = first + values[index]
+  out2 = second
+  out3 = third
+  out4 = fourth

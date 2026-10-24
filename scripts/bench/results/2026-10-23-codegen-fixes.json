@@ -1,0 +1,3566 @@
+{
+  "date": "2026-10-23",
+  "scope": "Four implemented codegen review findings; strict floating-point permissions",
+  "method": {
+    "cpu": 6,
+    "thread_siblings": [
+      6,
+      7
+    ],
+    "pairs": {
+      "raw_audio": 3,
+      "raw_exp2": 3,
+      "wasm_control": 3,
+      "polyphonic_saw": 2
+    },
+    "rounds_per_process": 7,
+    "order": "alternating before/after by pair",
+    "block_size": 128,
+    "sample_rate": 48000,
+    "example_round_ms": 75,
+    "warmup_blocks": 8192,
+    "validation_blocks": 256,
+    "raw_audio_iterations": 1000000,
+    "raw_exp2_iterations": 200000,
+    "exp2_accuracy_samples": 131072,
+    "exp2_accuracy_domain": [
+      -100,
+      100
+    ],
+    "exp2_timing_domain": [
+      -6,
+      6
+    ],
+    "note": "Runtime ratios, not universal throughput claims. Other tests ran on different physical cores. CPU-2 pilot measurements sharing a physical core with semantic tests were discarded."
+  },
+  "sources": {
+    "audio-direct.onda": "params:\n  gain = 0.75\nsample:\n  out1 = in1 * gain + 0.1\n",
+    "audio-helper.onda": "def scale(x: f32, amount: f32):\n  return x * amount + 0.1\n\nparams:\n  gain = 0.75\nsample:\n  out1 = scale(in1, gain)\n",
+    "exp2.onda": "ins 1\nsample:\n  out1 = pow(2.0, in1)\n",
+    "pan-after.onda": "import std/osc\nimport std/filter\nimport std/env\nimport std/levels\nimport std/random\n\nconst NumVoices = 8\n\nproc Voice:\n  params:\n    decay_s = 0.35\n    amp = 1.0\n\n  init:\n    freq = 220.0\n    cutoff = 1200.0\n    osc = std::osc::Saw(freq = freq)\n    lpf = std::filter::OnePole(cutoff = cutoff)\n    env = std::env::DecayEnv(decay_s = decay_s)\n\n  event bang(freq_hz, cutoff_hz):\n    freq = freq_hz\n    cutoff = cutoff_hz\n    osc.reset()\n    env.start()\n\n  sample:\n    osc.freq = freq\n    lpf.cutoff = cutoff\n    env.decay_s = decay_s\n\n    level = env()\n\n    sig = 0.0\n    if level > 0.00001:\n      sig = lpf(osc()) * level * amp\n\n    out1 = sig\n\nparams:\n  auto_play = true\n  freq_min = 110.0 {20.0, 4000.0}\n  freq_max = 880.0 {20.0, 4000.0}\n  cutoff_min = 300.0 {20.0, 20000.0}\n  cutoff_max = 6000.0 {20.0, 20000.0}\n  decay_s = 0.35 {0.01, 4.0}\n  amp = 1.0 {0.0, 1.0}\n  bpm = 126.0 {45.0, 220.0, unit = \"BPM\"}\n  level = 1.0 {0.0, 1.0}\n\ninit:\n  voices: Voice[NumVoices] = Voice()\n  next_voice = 0\n  rng = std::random::Rng()\n  panners: std::levels::Pan3db<f32>[NumVoices] = std::levels::Pan3db<f32>()\n  clock = 0\n  pending_bang = false\n\nevent bang():\n  pending_bang = true\n\nsample:\n  period = max(i32(SR * 15.0 / bpm), 1)\n  if auto_play && clock == 0:\n    pending_bang = true\n  clock = (clock + 1) % period\n\n  if pending_bang:\n    lo_freq = min(freq_min, freq_max)\n    hi_freq = max(freq_min, freq_max)\n    lo_cutoff = min(cutoff_min, cutoff_max)\n    hi_cutoff = max(cutoff_min, cutoff_max)\n    voices[next_voice].decay_s = decay_s\n    voices[next_voice].amp = amp\n    voices[next_voice].bang(\n      freq_hz = rng.range(lo_freq, hi_freq),\n      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)\n    )\n    panners[next_voice].pan = rng.range(-0.9, 0.9)\n    next_voice = (next_voice + 1) % NumVoices\n    pending_bang = false\n\n  mix_l = 0.0\n  mix_r = 0.0\n  for i in 0..NumVoices:\n    voice = voices[i]()\n    left, right = panners[i](voice)\n    mix_l = mix_l + left\n    mix_r = mix_r + right\n  out1 = tanh(mix_l * level)\n  out2 = tanh(mix_r * level)\n",
+    "pan-before.onda": "import std/osc\nimport std/filter\nimport std/env\nimport std/levels\nimport std/random\n\nconst NumVoices = 8\n\nproc Voice:\n  params:\n    decay_s = 0.35\n    amp = 1.0\n\n  init:\n    freq = 220.0\n    cutoff = 1200.0\n    osc = std::osc::Saw(freq = freq)\n    lpf = std::filter::OnePole(cutoff = cutoff)\n    env = std::env::DecayEnv(decay_s = decay_s)\n\n  event bang(freq_hz, cutoff_hz):\n    freq = freq_hz\n    cutoff = cutoff_hz\n    osc.reset()\n    env.start()\n\n  sample:\n    osc.freq = freq\n    lpf.cutoff = cutoff\n    env.decay_s = decay_s\n\n    level = env()\n\n    sig = 0.0\n    if level > 0.00001:\n      sig = lpf(osc()) * level * amp\n\n    out1 = sig\n\nparams:\n  auto_play = true\n  freq_min = 110.0 {20.0, 4000.0}\n  freq_max = 880.0 {20.0, 4000.0}\n  cutoff_min = 300.0 {20.0, 20000.0}\n  cutoff_max = 6000.0 {20.0, 20000.0}\n  decay_s = 0.35 {0.01, 4.0}\n  amp = 1.0 {0.0, 1.0}\n  bpm = 126.0 {45.0, 220.0, unit = \"BPM\"}\n  level = 1.0 {0.0, 1.0}\n\ninit:\n  voices: Voice[NumVoices] = Voice()\n  next_voice = 0\n  rng = std::random::Rng()\n  voice_pan: f32[NumVoices]\n  clock = 0\n  pending_bang = false\n\nevent bang():\n  pending_bang = true\n\nsample:\n  period = max(i32(SR * 15.0 / bpm), 1)\n  if auto_play && clock == 0:\n    pending_bang = true\n  clock = (clock + 1) % period\n\n  if pending_bang:\n    lo_freq = min(freq_min, freq_max)\n    hi_freq = max(freq_min, freq_max)\n    lo_cutoff = min(cutoff_min, cutoff_max)\n    hi_cutoff = max(cutoff_min, cutoff_max)\n    voices[next_voice].decay_s = decay_s\n    voices[next_voice].amp = amp\n    voices[next_voice].bang(\n      freq_hz = rng.range(lo_freq, hi_freq),\n      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)\n    )\n    voice_pan[next_voice] = rng.range(-0.9, 0.9)\n    next_voice = (next_voice + 1) % NumVoices\n    pending_bang = false\n\n  mix_l = 0.0\n  mix_r = 0.0\n  for i in 0..NumVoices:\n    voice = voices[i]()\n    gain_l, gain_r = std::levels::pan_3db(voice_pan[i])\n    mix_l = mix_l + voice * gain_l\n    mix_r = mix_r + voice * gain_r\n  out1 = tanh(mix_l * level)\n  out2 = tanh(mix_r * level)\n"
+  },
+  "harnesses": {
+    "audio_alias_bench.c": "#define _POSIX_C_SOURCE 200809L\n#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <time.h>\n#include <xmmintrin.h>\n#include \"onda_processor_abi.h\"\n\nstatic double now(void) {\n  struct timespec t;\n  clock_gettime(CLOCK_MONOTONIC, &t);\n  return t.tv_sec + t.tv_nsec * 1e-9;\n}\n\nstatic int measure(int mode, int frames, int iterations, double *result) {\n  _Alignas(64) float source[256], separate[256], expected[256];\n  float gain = 0.75f;\n  for (int i = 0; i < 256; ++i) source[i] = expected[i] = (float)i * 0.003f;\n  memset(separate, 0, sizeof separate);\n  float *destination = mode == 0 ? separate : source + (mode == 2 ? 1 : 0);\n  const void *inputs[] = {source};\n  void *outputs[] = {destination};\n  if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                   ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 1;\n  if (mode == 2) {\n    for (int i = 0; i < frames; ++i) expected[i + 1] = expected[i] * gain + 0.1f;\n  } else {\n    for (int i = 0; i < frames; ++i) expected[i] = expected[i] * gain + 0.1f;\n  }\n  for (int i = 0; i < frames; ++i) {\n    if (memcmp(&destination[i], &expected[i + (mode == 2)], sizeof(float))) return 2;\n  }\n  for (int i = 0; i < 1000; ++i) {\n    if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                     ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 3;\n  }\n  double start = now();\n  for (int i = 0; i < iterations; ++i) {\n    if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                     ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 4;\n  }\n  *result = (now() - start) * 1e9 / iterations / frames;\n  if (!isfinite(destination[frames - 1])) return 5;\n  return 0;\n}\n\nint main(void) {\n  _mm_setcsr(_mm_getcsr() | (1u << 15) | (1u << 6));\n  const int sizes[] = {1, 8, 32, 128};\n  const char *names[] = {\"disjoint\", \"in_place\", \"partial_overlap\"};\n  double measurements[4][3][7];\n  for (int round = 0; round < 7; ++round) {\n    for (int size = 0; size < 4; ++size) {\n      for (int order = 0; order < 3; ++order) {\n        int mode = (order + round) % 3;\n        int status = measure(mode, sizes[size], 1000000, &measurements[size][mode][round]);\n        if (status) { fprintf(stderr, \"validation failed: %d\\n\", status); return status; }\n      }\n    }\n  }\n  printf(\"[\\n\");\n  for (int size = 0; size < 4; ++size) for (int mode = 0; mode < 3; ++mode) {\n    printf(\"{\\\"mode\\\":\\\"%s\\\",\\\"frames\\\":%d,\\\"rounds_ns_per_frame\\\":[\", names[mode], sizes[size]);\n    for (int round = 0; round < 7; ++round) printf(\"%s%.9f\", round ? \",\" : \"\", measurements[size][mode][round]);\n    printf(\"]}%s\\n\", size == 3 && mode == 2 ? \"\" : \",\");\n  }\n  printf(\"]\\n\");\n  return 0;\n}\n",
+    "math_probe.c": "#define _POSIX_C_SOURCE 200809L\n#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <time.h>\n#include <xmmintrin.h>\n#include \"onda_processor_abi.h\"\nstatic double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }\nint main(void) {\n  _mm_setcsr(_mm_getcsr() | (1u<<15) | (1u<<6));\n  _Alignas(64) float source[128], out[128];\n  const void *inputs[] = {source}; void *outputs[] = {out};\n  double max_error=0; unsigned max_ulp=0;\n  for (int k=0;k<1024;k++) {\n    for (int i=0;i<128;i++) source[i]=-100.0f+200.0f*(float)(k*128+i)/131071.0f;\n    if (onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL)) return 1;\n    for (int i=0;i<128;i++) {\n      float expected=exp2f(source[i]); double rel=fabs((double)out[i]-expected)/expected;\n      if(rel>max_error)max_error=rel;\n      uint32_t a,b;memcpy(&a,&out[i],4);memcpy(&b,&expected,4);unsigned ulp=a>b?a-b:b-a;\n      if(ulp>max_ulp)max_ulp=ulp;\n    }\n  }\n  for(int i=0;i<128;i++)source[i]=-6.0f+12.0f*(float)i/127.0f;\n  for(int i=0;i<1000;i++) if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 2;\n  printf(\"{\\\"max_relative_error\\\":%.12g,\\\"max_ulp\\\":%u,\\\"rounds_ns_per_frame\\\":[\",max_error,max_ulp);\n  for(int round=0;round<7;round++) {\n    const int iterations=200000; double start=now();\n    for(int i=0;i<iterations;i++)if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 3;\n    double elapsed=(now()-start)*1e9/iterations/128;\n    printf(\"%s%.9f\",round?\",\":\"\",elapsed);\n  }\n  printf(\"]}\\n\");\n  return max_ulp>2;\n}\n",
+    "measure.py": "from pathlib import Path\nimport hashlib\nimport json\nimport shutil\nimport subprocess\nimport sys\n\nROOT = Path(__file__).resolve().parents[3]\nWORK = Path(__file__).resolve().parent / 'isolated'\nOLD = ROOT / 'target/bench/codegen-stack-review-2026-10-23'\nsys.path.insert(0, str(ROOT / 'scripts/bench'))\nfrom limits import Limits\n\nlimits = Limits(cpu=6, timeout_seconds=30)\ncommands = []\n\ndef run(command):\n    commands.append([str(x) for x in command])\n    (WORK / 'commands.json').write_text(json.dumps(commands, indent=2) + '\\n')\n    subprocess.run(command, cwd=ROOT, check=True)\n\ndef bench(sources, directory, runner):\n    command = ['python3', 'scripts/bench/run.py']\n    for source in sources:\n        command += ['--source', str(WORK / 'sources' / (source + '.onda'))]\n    command += ['--output', str(WORK / directory), '--runner', str(runner), '--backend', 'both',\n                '--cpu', '6', '--block-size', '128', '--repetitions', '7', '--round-ms', '75',\n                '--warmup-blocks', '8192', '--validation-blocks', '256', '--ir', '--assembly']\n    run(command)\n\nrunner = ROOT / 'target/release/examples/benchmark_dsp'\nbaseline = WORK / 'baseline/benchmark_dsp'\nbench(['audio-direct', 'audio-helper', 'exp2'], 'artifacts', runner)\nfor pair in range(2):\n    for version in (['before', 'after'] if pair % 2 == 0 else ['after', 'before']):\n        bench(['pan-' + version], f'pan-{pair}-{version}', baseline if version == 'before' else runner)\n\nfor name, harness, object_file in [\n    ('audio-before', 'audio_alias_bench.c', OLD / 'probes/audio-helper.o'),\n    ('audio-after', 'audio_alias_bench.c', WORK / 'artifacts/audio-helper.o'),\n    ('math-before', 'math_probe.c', OLD / 'exp2.o'),\n    ('math-after', 'math_probe.c', WORK / 'artifacts/exp2.o'),\n]:\n    run(['cc', '-O3', '-ffp-contract=off', '-Iinclude', str(WORK / harness), str(object_file), '-lm', '-o', str(WORK / name)])\n\nfor pair in range(3):\n    for version in (['before', 'after'] if pair % 2 == 0 else ['after', 'before']):\n        for name in ['audio', 'math']:\n            prefix = WORK / f'{name}-{pair}-{version}'\n            result = limits.run([WORK / f'{name}-{version}'], prefix)\n            prefix.with_suffix('.json').write_text(json.dumps(json.loads(result), indent=2) + '\\n')\n        directory = WORK / f'wasm-param-{pair}-{version}'\n        directory.mkdir()\n        prefix = directory / 'audio-direct'\n        config = json.loads((WORK / 'artifacts/audio-direct.config.json').read_text())\n        config.update(prefix=str(prefix), compare_native=False)\n        config_path = prefix.with_suffix('.config.json')\n        config_path.write_text(json.dumps(config, indent=2) + '\\n')\n        shutil.copyfile(WORK / 'artifacts/audio-direct.mir.msgpack', prefix.with_suffix('.mir.msgpack'))\n        worker = WORK / 'wasm-before.mjs' if version == 'before' else ROOT / 'scripts/bench/wasm.mjs'\n        result = limits.run(['node', '--max-old-space-size=256', worker, config_path], directory / 'worker', virtual_memory=True)\n        prefix.with_suffix('.wasm.json').write_text(json.dumps(json.loads(result), indent=2) + '\\n')\nprint('All measurements and numerical checks completed.', flush=True)\n"
+  },
+  "native_math_manifest": {
+    "sleef_version": "3.9.0",
+    "commit": "906ca7512ee483296780a81a21b9ca715d40dfe1",
+    "clang": "Debian clang version 21.1.8 (++20251221032947+2078da43e25a-1~exp1~20251221153113.67)",
+    "llvm": "21.1.2",
+    "files": {
+      "sse2-f32.bc": "9c19e1ecbdc6d8918c230d50662b06ceb1edc225fa575b4d50bdd9b4d4bca141",
+      "sse2-f64.bc": "8fba785d33e36c733fe1ef8d904bab7f406f44dfdc511df9174dcbf8fc9e181d",
+      "avx-f32.bc": "e300104f6bfa1d5cdd53779b6a6b040602c2e9935907fcceb85995c4fc347e55",
+      "avx-f64.bc": "fd5f67cbbefa9d48de117d43c01c27223008598bef50458e805412c00fe61a13",
+      "avx2128-f32.bc": "7810fa5a6d0a2cc939023a8446727847d00a4839258301bc92c5a93f7236ee89",
+      "avx2128-f64.bc": "71e3b6507eed712bfa2d7ae289fa5180e92df374458e271670424ea1ecdac771",
+      "avx2-f32.bc": "c41a7abdf856619bc0f065feb8ef322e8126003164cb8d5ac2b19d055c3b7b2c",
+      "avx2-f64.bc": "79165052558526bf33104154df53303e2bdbed3d09219d7d77abf3beb7323200",
+      "avx512f-f32.bc": "c4a441f02423704bcf12e3ccf2447c893b443a53ae61e2be3c08b794bac797e9",
+      "avx512f-f64.bc": "50e06e73a92f63455300cc9e608ef808c37862d513bc60eceb0467ff7ccaf415",
+      "advsimd-f32.bc": "e2dc0d1b48e5b16d5958f5af5b193a7ec30e8fe5cb82b149425f9d1bf230c43b",
+      "advsimd-f64.bc": "a1001e765af06cdf7d4977eae274a28c79cc1190f2372b68fd5adbeb16cfe58b"
+    },
+    "sources": {
+      "scripts/build-native-math-kernel.py": "8b1d92c98ef2ae133c2f8537e79b60f5241a574a489854385f26496691bc513e",
+      "crates/onda_codegen_llvm/src/vector_math_spec.rs": "028a228d974bd2c681c09d3e4eafc678aceb70b0a23dc11a08bca1712eff81ca",
+      "licenses/SLEEF-LICENSE.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+    }
+  },
+  "runs": {
+    "artifacts": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 2048,
+          "timeout_seconds": 30,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "audio-direct",
+          "audio-helper",
+          "exp2"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "3013.702",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "audio-direct",
+          "frontend_ms": 13.057713999999999,
+          "phases": {
+            "parse_load_ms": 0.164729,
+            "semantics_ms": 12.725376,
+            "mir_lowering_ms": 0.122893,
+            "mir_optimization_ms": 0.030246000000000002,
+            "mir_passes": {
+              "iterations": 1,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 0,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.464694,
+          "init_ms": 0.000967,
+          "shape": {
+            "effect_function_visits": 2,
+            "range_function_visits": 2,
+            "functions": 2,
+            "state_entries": 0,
+            "mir_bytes": 5228
+          },
+          "state_bytes": 0,
+          "iterations": 8388608,
+          "ns_per_frame": 0.11784973181784153,
+          "rounds_ns_per_frame": [
+            0.11826542951166631,
+            0.11832728516310453,
+            0.11783825419843195,
+            0.11813127994537354,
+            0.11759473104029895,
+            0.11784973181784153,
+            0.11761943437159063
+          ],
+          "mad_ns": 0.0002550007775425772,
+          "min_ns": 0.11759473104029895,
+          "max_ns": 0.11832728516310453,
+          "block_p50_us": 0.028,
+          "block_p99_us": 0.036,
+          "block_max_us": 0.188,
+          "cold_max_us": 0.443,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "6265ed2a5ebc79dac327eb6098793be83421e503a00d3a21ae5bac0edafd5e82",
+          "mir_sha256": "9a41ff076860596385e62d74065d4577a143f136bcf3c825f5c7da0ab0fb3e34",
+          "llvm_ir_sha256": "43029efbcf52b31d684c58e5d8f47a56501e147b0aa7f9410a327183de931663"
+        },
+        {
+          "name": "audio-helper",
+          "frontend_ms": 13.069079,
+          "phases": {
+            "parse_load_ms": 0.22025699999999998,
+            "semantics_ms": 12.651545,
+            "mir_lowering_ms": 0.143115,
+            "mir_optimization_ms": 0.038083,
+            "mir_passes": {
+              "iterations": 1,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 0,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.842727,
+          "init_ms": 0.001085,
+          "shape": {
+            "effect_function_visits": 3,
+            "range_function_visits": 4,
+            "functions": 3,
+            "state_entries": 0,
+            "mir_bytes": 6140
+          },
+          "state_bytes": 0,
+          "iterations": 8388608,
+          "ns_per_frame": 0.12140990141779186,
+          "rounds_ns_per_frame": [
+            0.12126107607036829,
+            0.12140990141779186,
+            0.12167007569223641,
+            0.12192635796964169,
+            0.12136226147413255,
+            0.12196821440011263,
+            0.12136299908161165
+          ],
+          "mad_ns": 0.00014882534742356734,
+          "min_ns": 0.12126107607036829,
+          "max_ns": 0.12196821440011263,
+          "block_p50_us": 0.027,
+          "block_p99_us": 0.032999999999999995,
+          "block_max_us": 0.202,
+          "cold_max_us": 0.34299999999999997,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "4b342aa861828c2d702b8b60a195eb8b33688310e925a6513338245d10a15e91",
+          "mir_sha256": "e046cac78dfd3dbb5b4754008f5433b22435e2787ff97a0a73e29a8bc8c60c80",
+          "llvm_ir_sha256": "b1ef9cd060a344f7aa2ecfc1bf7a0c69635a13ad354e541fe3bdd172707271cc"
+        },
+        {
+          "name": "exp2",
+          "frontend_ms": 13.072175999999999,
+          "phases": {
+            "parse_load_ms": 0.16111,
+            "semantics_ms": 12.744501,
+            "mir_lowering_ms": 0.122335,
+            "mir_optimization_ms": 0.029507000000000002,
+            "mir_passes": {
+              "iterations": 1,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 0,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.120792,
+          "init_ms": 0.001011,
+          "shape": {
+            "effect_function_visits": 2,
+            "range_function_visits": 2,
+            "functions": 2,
+            "state_entries": 0,
+            "mir_bytes": 4696
+          },
+          "state_bytes": 0,
+          "iterations": 2097152,
+          "ns_per_frame": 0.4372933469712734,
+          "rounds_ns_per_frame": [
+            0.4422624595463276,
+            0.4391273371875286,
+            0.44037802517414093,
+            0.4372933469712734,
+            0.43723225221037865,
+            0.43551260232925415,
+            0.4355107359588146
+          ],
+          "mad_ns": 0.0017826110124588013,
+          "min_ns": 0.4355107359588146,
+          "max_ns": 0.4422624595463276,
+          "block_p50_us": 0.08,
+          "block_p99_us": 0.105,
+          "block_max_us": 3.1420000000000003,
+          "cold_max_us": 0.602,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "3c454994fbe7f6df3df8b30390d0aa5ed720482fabfdd5d566744b7ba6fe3fac",
+          "mir_sha256": "24f0caebe237e45220a1031775b04ee6abbe4725f9f6b2c0b2a05a8e645d7328",
+          "llvm_ir_sha256": "8389cb4a455ca563961004e4f0ec1bb6d4ef2a0fb9ec13790cdb652039cd9f39"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "audio-direct",
+          "compile_ms": 360.14479100000005,
+          "compile_includes_text": true,
+          "wasm_bytes": 526,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.1729850000000397,
+          "init_ms": 0.01759900000001835,
+          "state_bytes": 0,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 4194304,
+          "ns_per_frame": 0.2117968313395978,
+          "rounds_ns_per_frame": [
+            0.21882284060120574,
+            0.21903694607317425,
+            0.21911922469735123,
+            0.2117968313395978,
+            0.21091581694781775,
+            0.21156306192278856,
+            0.21042401529848562
+          ],
+          "mad_ns": 0.001372816041112196,
+          "min_ns": 0.21042401529848562,
+          "max_ns": 0.21911922469735123,
+          "block_p50_us": 0.08300000013150566,
+          "block_p99_us": 0.9039999999913562,
+          "block_max_us": 7.232999999814638,
+          "cold_max_us": 1614.3650000000207,
+          "validation_samples": 65536,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 1.7971770327570098,
+          "source_fingerprint": "6265ed2a5ebc79dac327eb6098793be83421e503a00d3a21ae5bac0edafd5e82",
+          "mir_sha256": "9a41ff076860596385e62d74065d4577a143f136bcf3c825f5c7da0ab0fb3e34",
+          "wasm_sha256": "ac3f5967ce0721651a04a67308792a07c15571ef1afa0921540d0986a3624a92"
+        },
+        {
+          "name": "audio-helper",
+          "compile_ms": 307.65354099999996,
+          "compile_includes_text": true,
+          "wasm_bytes": 397,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.16023700000005192,
+          "init_ms": 0.017254999999977372,
+          "state_bytes": 0,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 1048576,
+          "ns_per_frame": 0.6754224821925165,
+          "rounds_ns_per_frame": [
+            0.6908951848745344,
+            0.7066032961010927,
+            0.6993393301963807,
+            0.6746256873011591,
+            0.6709039360284803,
+            0.6709268167614941,
+            0.6754224821925165
+          ],
+          "mad_ns": 0.004518546164036241,
+          "min_ns": 0.6709039360284803,
+          "max_ns": 0.7066032961010927,
+          "block_p50_us": 0.14299999998002022,
+          "block_p99_us": 1.023999999915759,
+          "block_max_us": 3.490999999939959,
+          "cold_max_us": 31.116999999994732,
+          "validation_samples": 65536,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.563158146947788,
+          "source_fingerprint": "4b342aa861828c2d702b8b60a195eb8b33688310e925a6513338245d10a15e91",
+          "mir_sha256": "e046cac78dfd3dbb5b4754008f5433b22435e2787ff97a0a73e29a8bc8c60c80",
+          "wasm_sha256": "be42bdbe95a1e8999be969425bebcbb40e18f8ef97f730403613275e3a374b90"
+        },
+        {
+          "name": "exp2",
+          "compile_ms": 660.6216999999999,
+          "compile_includes_text": true,
+          "wasm_bytes": 2502,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 4.699697000000015,
+          "init_ms": 0.02063599999996768,
+          "state_bytes": 0,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 32768,
+          "ns_per_frame": 23.78468465805058,
+          "rounds_ns_per_frame": [
+            23.80208635330202,
+            23.609422683715838,
+            23.62417101860046,
+            23.73666334152223,
+            24.659211158752438,
+            23.80471467971801,
+            23.78468465805058
+          ],
+          "mad_ns": 0.048021316528348734,
+          "min_ns": 23.609422683715838,
+          "max_ns": 24.659211158752438,
+          "block_p50_us": 3.0869999998230924,
+          "block_p99_us": 3.1360000000404398,
+          "block_max_us": 6.118999999898733,
+          "cold_max_us": 542.8819999999632,
+          "validation_samples": 65536,
+          "parity_max_abs": 1.1920928955078125e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 54.39068493217446,
+          "source_fingerprint": "3c454994fbe7f6df3df8b30390d0aa5ed720482fabfdd5d566744b7ba6fe3fac",
+          "mir_sha256": "24f0caebe237e45220a1031775b04ee6abbe4725f9f6b2c0b2a05a8e645d7328",
+          "wasm_sha256": "719fd79c4e4d5e39276e5341c693bd9dd793384357129478e8caf9043d13feff"
+        }
+      ]
+    },
+    "pan-0-before": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 2048,
+          "timeout_seconds": 30,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "pan-before"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "4241.851",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "pan-before",
+          "frontend_ms": 84.14156,
+          "phases": {
+            "parse_load_ms": 24.129513,
+            "semantics_ms": 56.080736,
+            "mir_lowering_ms": 2.227346,
+            "mir_optimization_ms": 1.642083,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 26,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 66.377139,
+          "init_ms": 0.0010240000000000002,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 45,
+            "mir_bytes": 191882
+          },
+          "state_bytes": 1040,
+          "iterations": 8192,
+          "ns_per_frame": 84.42010974884033,
+          "rounds_ns_per_frame": [
+            83.48540306091309,
+            82.89368343353271,
+            84.76371383666992,
+            85.3126049041748,
+            85.74754047393799,
+            83.82958126068115,
+            84.42010974884033
+          ],
+          "mad_ns": 0.8924951553344727,
+          "min_ns": 82.89368343353271,
+          "max_ns": 85.74754047393799,
+          "block_p50_us": 10.613,
+          "block_p99_us": 11.988,
+          "block_max_us": 16.362000000000002,
+          "cold_max_us": 16.849999999999998,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "8285ee5a80035594635557709fe8817d7681827578ae4e76fd809b73279508d4",
+          "llvm_ir_sha256": "9441eae6dea990c81ae2d49e876923b6913424d3cabc232bda11f0a73f786347"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "pan-before",
+          "compile_ms": 1180.615819,
+          "compile_includes_text": true,
+          "wasm_bytes": 15160,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.2180670000000191,
+          "init_ms": 0.1385120000002189,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 4096,
+          "ns_per_frame": 162.93206787109435,
+          "rounds_ns_per_frame": [
+            164.33555984497056,
+            162.70704460144037,
+            163.4750556945802,
+            162.6291961669916,
+            162.70482254028292,
+            162.98556900024366,
+            162.93206787109435
+          ],
+          "mad_ns": 0.22724533081142795,
+          "min_ns": 162.6291961669916,
+          "max_ns": 164.33555984497056,
+          "block_p50_us": 20.830999999816413,
+          "block_p99_us": 24.27799999986746,
+          "block_max_us": 26.898000000073807,
+          "cold_max_us": 1660.5030000000625,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 1.9300148786330205,
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "8285ee5a80035594635557709fe8817d7681827578ae4e76fd809b73279508d4",
+          "wasm_sha256": "05335f3bcf1cc6a176add067bb6fc59fc1f61d071ae381b2623a6b9188799857"
+        }
+      ]
+    },
+    "pan-0-after": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 2048,
+          "timeout_seconds": 30,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "pan-after"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "976.181",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "pan-after",
+          "frontend_ms": 85.49449100000001,
+          "phases": {
+            "parse_load_ms": 23.150441,
+            "semantics_ms": 57.973147000000004,
+            "mir_lowering_ms": 2.444378,
+            "mir_optimization_ms": 1.8581940000000001,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 36,
+              "eliminated_common_subexpressions": 8,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 74.48848199999999,
+          "init_ms": 0.001101,
+          "shape": {
+            "effect_function_visits": 44,
+            "range_function_visits": 63,
+            "functions": 44,
+            "state_entries": 51,
+            "mir_bytes": 218195
+          },
+          "state_bytes": 1208,
+          "iterations": 16384,
+          "ns_per_frame": 53.24760627746582,
+          "rounds_ns_per_frame": [
+            53.45981502532959,
+            53.345011711120605,
+            53.24760627746582,
+            53.16415309906006,
+            53.1677188873291,
+            53.06339120864868,
+            53.39189434051514
+          ],
+          "mad_ns": 0.09740543365478516,
+          "min_ns": 53.06339120864868,
+          "max_ns": 53.45981502532959,
+          "block_p50_us": 6.797000000000001,
+          "block_p99_us": 7.0600000000000005,
+          "block_max_us": 8.616,
+          "cold_max_us": 7.220000000000001,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "f04edc3bc523a4f97e7500e55f6328f8f1f6cb4e57ef2d27139b5755bbcf6133",
+          "mir_sha256": "0fad7d3901f3d6e0764f92ee6dd8c28b7a95d35c36a3ff8306dbba32fe485760",
+          "llvm_ir_sha256": "d519dde14d329f4d1be1d59ac473e2d681d6f19321c97b021b6519b2ce2f4c3c"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "pan-after",
+          "compile_ms": 1138.165387,
+          "compile_includes_text": true,
+          "wasm_bytes": 16293,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.36095099999988633,
+          "init_ms": 0.2073440000001483,
+          "state_bytes": 1216,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 133.98477458953852,
+          "rounds_ns_per_frame": [
+            133.94844341278093,
+            134.60141372680653,
+            133.98477458953852,
+            134.02015304565415,
+            134.4293642044068,
+            133.96662139892592,
+            133.8018569946287
+          ],
+          "mad_ns": 0.036331176757585126,
+          "min_ns": 133.8018569946287,
+          "max_ns": 134.60141372680653,
+          "block_p50_us": 17.057000000022526,
+          "block_p99_us": 19.988000000012107,
+          "block_max_us": 28.090000000247528,
+          "cold_max_us": 1123.3690000001388,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 2.5162591139095083,
+          "source_fingerprint": "f04edc3bc523a4f97e7500e55f6328f8f1f6cb4e57ef2d27139b5755bbcf6133",
+          "mir_sha256": "0fad7d3901f3d6e0764f92ee6dd8c28b7a95d35c36a3ff8306dbba32fe485760",
+          "wasm_sha256": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba"
+        }
+      ]
+    },
+    "pan-1-after": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 2048,
+          "timeout_seconds": 30,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "pan-after"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "841.692",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "pan-after",
+          "frontend_ms": 85.580027,
+          "phases": {
+            "parse_load_ms": 23.137813,
+            "semantics_ms": 58.090415,
+            "mir_lowering_ms": 2.4543540000000004,
+            "mir_optimization_ms": 1.829006,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 36,
+              "eliminated_common_subexpressions": 8,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 73.815966,
+          "init_ms": 0.0009739999999999999,
+          "shape": {
+            "effect_function_visits": 44,
+            "range_function_visits": 63,
+            "functions": 44,
+            "state_entries": 51,
+            "mir_bytes": 218195
+          },
+          "state_bytes": 1208,
+          "iterations": 16384,
+          "ns_per_frame": 53.28504180908203,
+          "rounds_ns_per_frame": [
+            53.28504180908203,
+            53.094722270965576,
+            52.93221187591553,
+            53.28426122665405,
+            53.42624235153198,
+            54.38339138031006,
+            54.11679124832153
+          ],
+          "mad_ns": 0.19031953811645508,
+          "min_ns": 52.93221187591553,
+          "max_ns": 54.38339138031006,
+          "block_p50_us": 6.959,
+          "block_p99_us": 7.2509999999999994,
+          "block_max_us": 19.441,
+          "cold_max_us": 9.602,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "f04edc3bc523a4f97e7500e55f6328f8f1f6cb4e57ef2d27139b5755bbcf6133",
+          "mir_sha256": "0fad7d3901f3d6e0764f92ee6dd8c28b7a95d35c36a3ff8306dbba32fe485760",
+          "llvm_ir_sha256": "d519dde14d329f4d1be1d59ac473e2d681d6f19321c97b021b6519b2ce2f4c3c"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "pan-after",
+          "compile_ms": 1142.319321,
+          "compile_includes_text": true,
+          "wasm_bytes": 16293,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.34294999999997344,
+          "init_ms": 0.20129000000019914,
+          "state_bytes": 1216,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 135.4344120025634,
+          "rounds_ns_per_frame": [
+            135.68320274353025,
+            135.5510959625242,
+            135.4344120025634,
+            135.44075489044195,
+            134.5658588409425,
+            134.5001974105836,
+            134.52557086944583
+          ],
+          "mad_ns": 0.24879074096685372,
+          "min_ns": 134.5001974105836,
+          "max_ns": 135.68320274353025,
+          "block_p50_us": 17.31900000004316,
+          "block_p99_us": 19.439000000147644,
+          "block_max_us": 29.619999999795255,
+          "cold_max_us": 2246.2379999999484,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 2.54169664514516,
+          "source_fingerprint": "f04edc3bc523a4f97e7500e55f6328f8f1f6cb4e57ef2d27139b5755bbcf6133",
+          "mir_sha256": "0fad7d3901f3d6e0764f92ee6dd8c28b7a95d35c36a3ff8306dbba32fe485760",
+          "wasm_sha256": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba"
+        }
+      ]
+    },
+    "pan-1-before": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 2048,
+          "timeout_seconds": 30,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "pan-before"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "94e3e275432da79b80db852fb81fef7f0a04f7c08f4b8de4d87fe97730a8c151",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.000",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "pan-before",
+          "frontend_ms": 82.895342,
+          "phases": {
+            "parse_load_ms": 23.767585,
+            "semantics_ms": 55.296231,
+            "mir_lowering_ms": 2.166223,
+            "mir_optimization_ms": 1.604442,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 26,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 64.783534,
+          "init_ms": 0.001132,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 45,
+            "mir_bytes": 191882
+          },
+          "state_bytes": 1040,
+          "iterations": 8192,
+          "ns_per_frame": 84.00221061706543,
+          "rounds_ns_per_frame": [
+            83.37687873840332,
+            83.10745239257812,
+            85.133544921875,
+            84.35150146484375,
+            84.77410411834717,
+            82.891282081604,
+            84.00221061706543
+          ],
+          "mad_ns": 0.7718935012817383,
+          "min_ns": 82.891282081604,
+          "max_ns": 85.133544921875,
+          "block_p50_us": 10.529,
+          "block_p99_us": 11.693,
+          "block_max_us": 14.437999999999999,
+          "cold_max_us": 16.398,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "8285ee5a80035594635557709fe8817d7681827578ae4e76fd809b73279508d4",
+          "llvm_ir_sha256": "9441eae6dea990c81ae2d49e876923b6913424d3cabc232bda11f0a73f786347"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "pan-before",
+          "compile_ms": 1164.946606,
+          "compile_includes_text": true,
+          "wasm_bytes": 15160,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.32258900000010726,
+          "init_ms": 0.13508999999999105,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 4096,
+          "ns_per_frame": 163.11718940734826,
+          "rounds_ns_per_frame": [
+            164.26545715332023,
+            163.65925407409642,
+            163.8643798828124,
+            163.0260009765623,
+            163.11718940734826,
+            162.9217891693114,
+            162.6061992645268
+          ],
+          "mad_ns": 0.5109901428214698,
+          "min_ns": 162.6061992645268,
+          "max_ns": 164.26545715332023,
+          "block_p50_us": 21.024000000124943,
+          "block_p99_us": 24.289999999837164,
+          "block_max_us": 25.47599999979866,
+          "cold_max_us": 1660.2100000000064,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 1.941820199839006,
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "8285ee5a80035594635557709fe8817d7681827578ae4e76fd809b73279508d4",
+          "wasm_sha256": "05335f3bcf1cc6a176add067bb6fc59fc1f61d071ae381b2623a6b9188799857"
+        }
+      ]
+    }
+  },
+  "raw_audio": {
+    "0-before": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          1.965037998,
+          2.040416002,
+          2.548518998,
+          2.186034002,
+          2.127568998,
+          2.179154999,
+          2.117626002
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.489975999,
+          2.546252003,
+          2.912214,
+          2.802176001,
+          2.617262999,
+          2.866966002,
+          2.777808997
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.049175,
+          1.988067001,
+          2.186324,
+          2.268910001,
+          2.180796,
+          2.076845001,
+          2.238071003
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.284154625,
+          0.309484375,
+          0.331153375,
+          0.33530375,
+          0.31120425,
+          0.324754875,
+          0.332893125
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.4713735,
+          0.500739125,
+          0.541435375,
+          0.53163675,
+          0.49364,
+          0.527675,
+          0.5473105
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.482845625,
+          0.519172375,
+          0.5449995,
+          0.53444625,
+          0.50776625,
+          0.547865125,
+          0.544358625
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.074804031,
+          0.072419219,
+          0.071646,
+          0.079929531,
+          0.073505344,
+          0.073172188,
+          0.084055781
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.294070219,
+          0.303952094,
+          0.287902281,
+          0.299252625,
+          0.293604031,
+          0.284432781,
+          0.301362625
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.820398156,
+          0.831549594,
+          0.824117375,
+          0.818451844,
+          0.855522688,
+          0.844767625,
+          0.812620344
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.03523575,
+          0.034578984,
+          0.035441055,
+          0.036558891,
+          0.035873398,
+          0.035184461,
+          0.036537242
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.246404187,
+          0.240599758,
+          0.239834273,
+          0.247090742,
+          0.239163445,
+          0.239053094,
+          0.249967547
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.757997164,
+          1.752366156,
+          1.757247078,
+          1.784248352,
+          1.818118469,
+          1.808045594,
+          1.759302484
+        ]
+      }
+    ],
+    "0-after": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.009601998,
+          2.245848998,
+          2.183663,
+          2.429733999,
+          2.182387998,
+          2.217033998,
+          2.421707999
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.445820999,
+          2.621274001,
+          2.676614,
+          2.962834998,
+          2.674197,
+          2.767317001,
+          2.936658999
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.047042002,
+          2.181274998,
+          2.181124997,
+          2.489088001,
+          2.184633002,
+          2.182943001,
+          2.416895
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.283725875,
+          0.306659375,
+          0.319077,
+          0.34122225,
+          0.309316,
+          0.32094375,
+          0.335413125
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.328975125,
+          0.327393,
+          0.355081625,
+          0.364694375,
+          0.331321875,
+          0.35168775,
+          0.36045575
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.552037625,
+          0.57042975,
+          0.582721125,
+          0.611473,
+          0.56658775,
+          0.6011255,
+          0.61791075
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.078854437,
+          0.075284844,
+          0.075121313,
+          0.084069187,
+          0.076164969,
+          0.075468313,
+          0.082261813
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.094735156,
+          0.091120281,
+          0.091212281,
+          0.097558187,
+          0.092084187,
+          0.093691781,
+          0.098715438
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.850493906,
+          0.857006094,
+          0.866742594,
+          0.834740031,
+          0.873773688,
+          0.862572656,
+          0.850421063
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.035535484,
+          0.036617391,
+          0.034866344,
+          0.036342203,
+          0.035966914,
+          0.034853664,
+          0.035218016
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.03825743,
+          0.036781398,
+          0.03710182,
+          0.041307367,
+          0.037212742,
+          0.038140758,
+          0.041611898
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.821558766,
+          1.836209687,
+          1.789544539,
+          1.815603586,
+          1.829173219,
+          1.802183828,
+          1.782011773
+        ]
+      }
+    ],
+    "1-before": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          1.989523,
+          2.029592,
+          2.380418999,
+          2.296939001,
+          2.317710998,
+          2.405647003,
+          2.169228999
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.457660998,
+          2.600718999,
+          3.03281,
+          2.831220001,
+          2.520439,
+          2.844308001,
+          2.841564001
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          1.993045,
+          2.082092,
+          2.164011003,
+          2.221211998,
+          2.103620998,
+          2.248507,
+          2.237457
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.287895375,
+          0.31237475,
+          0.328996375,
+          0.33861875,
+          0.320940125,
+          0.325891125,
+          0.345026625
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.475831,
+          0.48972775,
+          0.544767,
+          0.54274175,
+          0.4985235,
+          0.543178,
+          0.544493625
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.484620875,
+          0.49918125,
+          0.557702625,
+          0.5490705,
+          0.530963625,
+          0.529134125,
+          0.5678835
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.078083562,
+          0.071648125,
+          0.072423187,
+          0.083973219,
+          0.074910906,
+          0.073188187,
+          0.085517187
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.279670844,
+          0.300189063,
+          0.289528156,
+          0.304452625,
+          0.300664781,
+          0.294692344,
+          0.306325063
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.819328313,
+          0.826745594,
+          0.832427031,
+          0.823225156,
+          0.835483875,
+          0.836109062,
+          0.818204438
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.035520523,
+          0.035490352,
+          0.034836391,
+          0.036634141,
+          0.035280367,
+          0.034787359,
+          0.035568578
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.245013828,
+          0.244241828,
+          0.242214383,
+          0.251692031,
+          0.241811508,
+          0.244032148,
+          0.249719266
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.76762225,
+          1.777120945,
+          1.773461766,
+          1.770860039,
+          1.774682609,
+          1.767423094,
+          1.782149867
+        ]
+      }
+    ],
+    "1-after": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.049503,
+          2.170823002,
+          2.397486998,
+          2.39107,
+          2.196820002,
+          2.567001,
+          2.450603999
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.460381998,
+          2.562059999,
+          2.969810001,
+          2.921517,
+          2.565792001,
+          3.125436,
+          2.890629003
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.063137999,
+          2.123495,
+          2.180872001,
+          2.447239,
+          2.093814001,
+          2.228825,
+          2.426845
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.282149625,
+          0.31145275,
+          0.32839525,
+          0.34300875,
+          0.328225,
+          0.341056875,
+          0.328550375
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.32705825,
+          0.327411375,
+          0.366985625,
+          0.376836,
+          0.35006875,
+          0.366795375,
+          0.358612875
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.559049125,
+          0.568861625,
+          0.626256625,
+          0.621960625,
+          0.59755425,
+          0.63853575,
+          0.6175635
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.075862188,
+          0.075484656,
+          0.073346781,
+          0.08266,
+          0.072383906,
+          0.073519781,
+          0.08362875
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.093768781,
+          0.096755094,
+          0.089981031,
+          0.097999125,
+          0.101475656,
+          0.086687063,
+          0.100758437
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.85480075,
+          0.879239062,
+          0.860651625,
+          0.847469719,
+          0.846092625,
+          0.859432719,
+          0.862163688
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.034980977,
+          0.035232625,
+          0.034525562,
+          0.034718719,
+          0.034674617,
+          0.035130961,
+          0.034349664
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.041188422,
+          0.035509961,
+          0.039282641,
+          0.041743328,
+          0.039590453,
+          0.037526047,
+          0.043322703
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.77870043,
+          1.790696141,
+          1.794581469,
+          1.783215352,
+          1.795582273,
+          1.796031859,
+          1.795190172
+        ]
+      }
+    ],
+    "2-before": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.135813,
+          2.095128999,
+          2.236492001,
+          2.216707999,
+          2.036902999,
+          2.432503999,
+          2.224462998
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.563442999,
+          2.565159,
+          2.855328003,
+          2.886522001,
+          2.593949001,
+          2.867570001,
+          2.904215999
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.043131997,
+          2.097143999,
+          2.220705999,
+          2.326096001,
+          2.013441001,
+          2.282662001,
+          2.269705001
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.29796975,
+          0.3268665,
+          0.331882625,
+          0.342055375,
+          0.331392625,
+          0.32856275,
+          0.3316425
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.49082875,
+          0.51221125,
+          0.544029375,
+          0.546423375,
+          0.5271635,
+          0.537957625,
+          0.546149375
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.500291125,
+          0.51952,
+          0.546136875,
+          0.544054875,
+          0.52334375,
+          0.543161625,
+          0.54414825
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.078082906,
+          0.075119281,
+          0.071615375,
+          0.083640938,
+          0.07207925,
+          0.073365062,
+          0.082713219
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.296818531,
+          0.298997656,
+          0.316632594,
+          0.306833,
+          0.299242688,
+          0.304106125,
+          0.300480562
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.845695844,
+          0.855799938,
+          0.830004969,
+          0.839399,
+          0.845255281,
+          0.849593813,
+          0.837949312
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.035514719,
+          0.03565632,
+          0.035712977,
+          0.037116227,
+          0.035163023,
+          0.035203867,
+          0.036117164
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.252166398,
+          0.248564961,
+          0.2468795,
+          0.252152469,
+          0.24332868,
+          0.244752859,
+          0.257524969
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.776177914,
+          1.784043813,
+          1.794668461,
+          1.778511633,
+          1.784566648,
+          1.791031938,
+          1.78686132
+        ]
+      }
+    ],
+    "2-after": [
+      {
+        "mode": "disjoint",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.110194,
+          2.236019998,
+          2.430413002,
+          2.509161,
+          2.158945001,
+          2.323383,
+          2.402050999
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.591967001,
+          2.533303999,
+          2.869032,
+          3.012986999,
+          2.622426,
+          3.056597998,
+          2.945896002
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 1,
+        "rounds_ns_per_frame": [
+          2.097998,
+          2.092827999,
+          2.280428002,
+          2.536466,
+          2.176288999,
+          2.242167,
+          2.439790002
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.2876535,
+          0.320786125,
+          0.328729875,
+          0.352807625,
+          0.322798375,
+          0.336365125,
+          0.32979025
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.313699375,
+          0.349803875,
+          0.36463525,
+          0.376603875,
+          0.334465375,
+          0.367130375,
+          0.35876075
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 8,
+        "rounds_ns_per_frame": [
+          0.546131875,
+          0.601314,
+          0.6189825,
+          0.629727125,
+          0.5827775,
+          0.618191125,
+          0.612995
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.077740688,
+          0.073862,
+          0.073426469,
+          0.085160531,
+          0.074132437,
+          0.073766281,
+          0.083789594
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.102204438,
+          0.09508975,
+          0.09280625,
+          0.097860687,
+          0.097758281,
+          0.09009225,
+          0.097526625
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 32,
+        "rounds_ns_per_frame": [
+          0.871446937,
+          0.848455531,
+          0.865850125,
+          0.856680469,
+          0.870221062,
+          0.858812187,
+          0.859903313
+        ]
+      },
+      {
+        "mode": "disjoint",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.03532982,
+          0.034857594,
+          0.035556734,
+          0.035587906,
+          0.035585672,
+          0.035149938,
+          0.03549943
+        ]
+      },
+      {
+        "mode": "in_place",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          0.039038156,
+          0.038073727,
+          0.039061,
+          0.044803102,
+          0.036697383,
+          0.038082492,
+          0.040148547
+        ]
+      },
+      {
+        "mode": "partial_overlap",
+        "frames": 128,
+        "rounds_ns_per_frame": [
+          1.797615875,
+          1.795056047,
+          1.799001844,
+          1.809341609,
+          1.800529133,
+          1.809290188,
+          1.808567305
+        ]
+      }
+    ]
+  },
+  "raw_exp2": {
+    "0-before": {
+      "max_relative_error": 0,
+      "max_ulp": 0,
+      "rounds_ns_per_frame": [
+        2.315325547,
+        2.384484609,
+        2.36757543,
+        2.380332383,
+        2.379849414,
+        2.369177383,
+        2.368679063
+      ]
+    },
+    "0-after": {
+      "max_relative_error": 1.19058093325e-07,
+      "max_ulp": 1,
+      "rounds_ns_per_frame": [
+        0.31341957,
+        0.292384062,
+        0.343132227,
+        0.347243984,
+        0.34204625,
+        0.354406836,
+        0.328933555
+      ]
+    },
+    "1-before": {
+      "max_relative_error": 0,
+      "max_ulp": 0,
+      "rounds_ns_per_frame": [
+        2.343443594,
+        2.390227266,
+        2.383336406,
+        2.437770508,
+        2.397481367,
+        2.434368008,
+        2.460395859
+      ]
+    },
+    "1-after": {
+      "max_relative_error": 1.19058093325e-07,
+      "max_ulp": 1,
+      "rounds_ns_per_frame": [
+        0.304688047,
+        0.309097227,
+        0.34932543,
+        0.337690078,
+        0.339856602,
+        0.333448672,
+        0.340829297
+      ]
+    },
+    "2-before": {
+      "max_relative_error": 0,
+      "max_ulp": 0,
+      "rounds_ns_per_frame": [
+        2.362104805,
+        2.440017305,
+        2.431013086,
+        2.430546016,
+        2.380471914,
+        2.400813789,
+        2.393864258
+      ]
+    },
+    "2-after": {
+      "max_relative_error": 1.19058093325e-07,
+      "max_ulp": 1,
+      "rounds_ns_per_frame": [
+        0.315600547,
+        0.330350117,
+        0.345718086,
+        0.349967109,
+        0.3400825,
+        0.340899766,
+        0.336271328
+      ]
+    }
+  },
+  "wasm_control": {
+    "0-before": {
+      "compile_ms": 259.053245,
+      "compile_includes_text": true,
+      "wasm_bytes": 397,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.25799299999999903,
+      "init_ms": 0.01792399999999361,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 1048576,
+      "ns_per_frame": 0.6718410030007359,
+      "rounds_ns_per_frame": [
+        0.6842923685908315,
+        0.6904274001717567,
+        0.6920577585697169,
+        0.6703817248344416,
+        0.6718410030007359,
+        0.6694924756884574,
+        0.6695896834135048
+      ],
+      "mad_ns": 0.0023485273122785255,
+      "min_ns": 0.6694924756884574,
+      "max_ns": 0.6920577585697169,
+      "block_p50_us": 0.14299999998002022,
+      "block_p99_us": 1.107999999931053,
+      "block_max_us": 22.963000000117972,
+      "cold_max_us": 24.93800000002011,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    },
+    "0-after": {
+      "compile_ms": 377.88462699999997,
+      "compile_includes_text": true,
+      "wasm_bytes": 526,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.1656319999999596,
+      "init_ms": 0.020153999999934058,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 4194304,
+      "ns_per_frame": 0.2119794134050605,
+      "rounds_ns_per_frame": [
+        0.21845938824117184,
+        0.22095863334834553,
+        0.22029204852879058,
+        0.21131833456456672,
+        0.2109516486525539,
+        0.21139910630881778,
+        0.2119794134050605
+      ],
+      "mad_ns": 0.0010277647525065992,
+      "min_ns": 0.2109516486525539,
+      "max_ns": 0.22095863334834553,
+      "block_p50_us": 0.08700000012140663,
+      "block_p99_us": 1.0390000002189481,
+      "block_max_us": 8.141999999907057,
+      "cold_max_us": 32.82200000001012,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    },
+    "1-before": {
+      "compile_ms": 292.34449399999994,
+      "compile_includes_text": true,
+      "wasm_bytes": 397,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.18254100000001472,
+      "init_ms": 0.0191939999999704,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 1048576,
+      "ns_per_frame": 0.6829631999135031,
+      "rounds_ns_per_frame": [
+        0.7132501006126406,
+        0.71946881711483,
+        0.7158858254551879,
+        0.6821440160274509,
+        0.6829631999135031,
+        0.6793670430779463,
+        0.6822535395622252
+      ],
+      "mad_ns": 0.0035961568355568074,
+      "min_ns": 0.6793670430779463,
+      "max_ns": 0.71946881711483,
+      "block_p50_us": 0.14899999996487168,
+      "block_p99_us": 1.1710000001130538,
+      "block_max_us": 6.018000000040047,
+      "cold_max_us": 28.676000000018576,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    },
+    "1-after": {
+      "compile_ms": 367.13232400000004,
+      "compile_includes_text": true,
+      "wasm_bytes": 526,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.16379600000004757,
+      "init_ms": 0.01767399999994268,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 4194304,
+      "ns_per_frame": 0.2119142021983858,
+      "rounds_ns_per_frame": [
+        0.21806878410279731,
+        0.22061392851173894,
+        0.22092559188604352,
+        0.21172763220965876,
+        0.2119142021983858,
+        0.2109397780150175,
+        0.21115963719785227
+      ],
+      "mad_ns": 0.0009744241833682943,
+      "min_ns": 0.2109397780150175,
+      "max_ns": 0.22092559188604352,
+      "block_p50_us": 0.08500000012645614,
+      "block_p99_us": 1.038000000107786,
+      "block_max_us": 3.465999999889391,
+      "cold_max_us": 32.22100000004957,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    },
+    "2-before": {
+      "compile_ms": 265.263896,
+      "compile_includes_text": true,
+      "wasm_bytes": 397,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.16939400000001115,
+      "init_ms": 0.01817599999998265,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 1048576,
+      "ns_per_frame": 0.6811249107122421,
+      "rounds_ns_per_frame": [
+        0.7004875019192693,
+        0.7073287665843964,
+        0.7089654281735417,
+        0.6805039569735535,
+        0.6811249107122421,
+        0.677374869585037,
+        0.6784281507134431
+      ],
+      "mad_ns": 0.003750041127205117,
+      "min_ns": 0.677374869585037,
+      "max_ns": 0.7089654281735417,
+      "block_p50_us": 0.14800000008108327,
+      "block_p99_us": 1.046000000087588,
+      "block_max_us": 23.832000000084008,
+      "cold_max_us": 25.331999999991694,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    },
+    "2-after": {
+      "compile_ms": 374.950005,
+      "compile_includes_text": true,
+      "wasm_bytes": 526,
+      "node_version": "v26.11.1",
+      "v8_version": "14.6.202.34-node.37",
+      "instantiate_ms": 0.17132600000002185,
+      "init_ms": 0.017813000000046486,
+      "state_bytes": 0,
+      "inputs": [
+        "f32"
+      ],
+      "outputs": [
+        "f32"
+      ],
+      "iterations": 4194304,
+      "ns_per_frame": 0.21450382843613613,
+      "rounds_ns_per_frame": [
+        0.22095803171396258,
+        0.2231153976172207,
+        0.22298836894333338,
+        0.21214423887431652,
+        0.21351218037307257,
+        0.21166357211768635,
+        0.21450382843613613
+      ],
+      "mad_ns": 0.0028402563184497798,
+      "min_ns": 0.21166357211768635,
+      "max_ns": 0.2231153976172207,
+      "block_p50_us": 0.08800000000519503,
+      "block_p99_us": 1.0400000001027365,
+      "block_max_us": 4.122999999935928,
+      "cold_max_us": 36.454000000048836,
+      "validation_samples": 65536,
+      "parity_max_abs": null,
+      "validation": "finite",
+      "wasm_to_native": null
+    }
+  },
+  "comparisons": {
+    "audio-1-disjoint": {
+      "before_process_medians": [
+        2.127568998,
+        2.296939001,
+        2.216707999
+      ],
+      "after_process_medians": [
+        2.217033998,
+        2.39107,
+        2.323383
+      ],
+      "before_ns_per_frame": 2.216707999,
+      "after_ns_per_frame": 2.323383,
+      "speedup": 0.9540863469346207,
+      "time_reduction_percent": -4.812316328904087
+    },
+    "audio-1-in_place": {
+      "before_process_medians": [
+        2.777808997,
+        2.831220001,
+        2.855328003
+      ],
+      "after_process_medians": [
+        2.676614,
+        2.890629003,
+        2.869032
+      ],
+      "before_ns_per_frame": 2.831220001,
+      "after_ns_per_frame": 2.869032,
+      "speedup": 0.9868206422932893,
+      "time_reduction_percent": -1.3355372944046762
+    },
+    "audio-1-partial_overlap": {
+      "before_process_medians": [
+        2.180796,
+        2.164011003,
+        2.220705999
+      ],
+      "after_process_medians": [
+        2.182943001,
+        2.180872001,
+        2.242167
+      ],
+      "before_ns_per_frame": 2.180796,
+      "after_ns_per_frame": 2.182943001,
+      "speedup": 0.9990164649287606,
+      "time_reduction_percent": -0.09845033648263612
+    },
+    "audio-8-disjoint": {
+      "before_process_medians": [
+        0.324754875,
+        0.325891125,
+        0.331392625
+      ],
+      "after_process_medians": [
+        0.319077,
+        0.32839525,
+        0.328729875
+      ],
+      "before_ns_per_frame": 0.325891125,
+      "after_ns_per_frame": 0.32839525,
+      "speedup": 0.9923746613265568,
+      "time_reduction_percent": -0.7683931251579956
+    },
+    "audio-8-in_place": {
+      "before_process_medians": [
+        0.527675,
+        0.54274175,
+        0.537957625
+      ],
+      "after_process_medians": [
+        0.35168775,
+        0.358612875,
+        0.35876075
+      ],
+      "before_ns_per_frame": 0.537957625,
+      "after_ns_per_frame": 0.358612875,
+      "speedup": 1.5001068352607252,
+      "time_reduction_percent": 33.33808122898155
+    },
+    "audio-8-partial_overlap": {
+      "before_process_medians": [
+        0.53444625,
+        0.530963625,
+        0.543161625
+      ],
+      "after_process_medians": [
+        0.582721125,
+        0.6175635,
+        0.612995
+      ],
+      "before_ns_per_frame": 0.53444625,
+      "after_ns_per_frame": 0.612995,
+      "speedup": 0.8718607003319767,
+      "time_reduction_percent": -14.69722165699543
+    },
+    "audio-32-disjoint": {
+      "before_process_medians": [
+        0.073505344,
+        0.074910906,
+        0.075119281
+      ],
+      "after_process_medians": [
+        0.076164969,
+        0.075484656,
+        0.074132437
+      ],
+      "before_ns_per_frame": 0.074910906,
+      "after_ns_per_frame": 0.075484656,
+      "speedup": 0.9923991175107164,
+      "time_reduction_percent": -0.7659098396166852
+    },
+    "audio-32-in_place": {
+      "before_process_medians": [
+        0.294070219,
+        0.300189063,
+        0.300480562
+      ],
+      "after_process_medians": [
+        0.093691781,
+        0.096755094,
+        0.097526625
+      ],
+      "before_ns_per_frame": 0.300189063,
+      "after_ns_per_frame": 0.096755094,
+      "speedup": 3.102565979626871,
+      "time_reduction_percent": 67.76861454142984
+    },
+    "audio-32-partial_overlap": {
+      "before_process_medians": [
+        0.824117375,
+        0.826745594,
+        0.845255281
+      ],
+      "after_process_medians": [
+        0.857006094,
+        0.859432719,
+        0.859903313
+      ],
+      "before_ns_per_frame": 0.826745594,
+      "after_ns_per_frame": 0.859432719,
+      "speedup": 0.9619666271979577,
+      "time_reduction_percent": -3.953710214753192
+    },
+    "audio-128-disjoint": {
+      "before_process_medians": [
+        0.035441055,
+        0.035490352,
+        0.03565632
+      ],
+      "after_process_medians": [
+        0.035535484,
+        0.034718719,
+        0.03549943
+      ],
+      "before_ns_per_frame": 0.035490352,
+      "after_ns_per_frame": 0.03549943,
+      "speedup": 0.9997442775841754,
+      "time_reduction_percent": -0.02557878265054825
+    },
+    "audio-128-in_place": {
+      "before_process_medians": [
+        0.240599758,
+        0.244241828,
+        0.248564961
+      ],
+      "after_process_medians": [
+        0.038140758,
+        0.039590453,
+        0.039038156
+      ],
+      "before_ns_per_frame": 0.244241828,
+      "after_ns_per_frame": 0.039038156,
+      "speedup": 6.256489881335584,
+      "time_reduction_percent": 84.01659686235234
+    },
+    "audio-128-partial_overlap": {
+      "before_process_medians": [
+        1.759302484,
+        1.773461766,
+        1.784566648
+      ],
+      "after_process_medians": [
+        1.815603586,
+        1.794581469,
+        1.800529133
+      ],
+      "before_ns_per_frame": 1.773461766,
+      "after_ns_per_frame": 1.800529133,
+      "speedup": 0.9849669930333752,
+      "time_reduction_percent": -1.5262447445399285
+    },
+    "exp2": {
+      "before_process_medians": [
+        2.369177383,
+        2.397481367,
+        2.400813789
+      ],
+      "after_process_medians": [
+        0.34204625,
+        0.337690078,
+        0.3400825
+      ],
+      "before_ns_per_frame": 2.397481367,
+      "after_ns_per_frame": 0.3400825,
+      "speedup": 7.049705195062963,
+      "time_reduction_percent": 85.8150096730241
+    },
+    "wasm-control": {
+      "before_process_medians": [
+        0.6718410030007359,
+        0.6829631999135031,
+        0.6811249107122421
+      ],
+      "after_process_medians": [
+        0.2119794134050605,
+        0.2119142021983858,
+        0.21450382843613613
+      ],
+      "before_ns_per_frame": 0.6811249107122421,
+      "after_ns_per_frame": 0.2119794134050605,
+      "speedup": 3.2131653719161672,
+      "time_reduction_percent": 68.87804130032525
+    },
+    "pan-native": {
+      "before_process_medians": [
+        84.42010974884033,
+        84.00221061706543
+      ],
+      "after_process_medians": [
+        53.24760627746582,
+        53.28504180908203
+      ],
+      "before_ns_per_frame": 84.21116018295288,
+      "after_ns_per_frame": 53.266324043273926,
+      "speedup": 1.580945591712677,
+      "time_reduction_percent": 36.74671631699383
+    },
+    "pan-wasm": {
+      "before_process_medians": [
+        162.93206787109435,
+        163.11718940734826
+      ],
+      "after_process_medians": [
+        133.98477458953852,
+        135.4344120025634
+      ],
+      "before_ns_per_frame": 163.0246286392213,
+      "after_ns_per_frame": 134.70959329605097,
+      "speedup": 1.210193161825843,
+      "time_reduction_percent": 17.368563007637583
+    }
+  },
+  "captures": [
+    {
+      "case": "pan",
+      "backend": "native",
+      "pair": 0,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3"
+    },
+    {
+      "case": "pan",
+      "backend": "native",
+      "pair": 0,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c"
+    },
+    {
+      "case": "pan",
+      "backend": "native",
+      "pair": 1,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3"
+    },
+    {
+      "case": "pan",
+      "backend": "native",
+      "pair": 1,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c"
+    },
+    {
+      "case": "pan",
+      "backend": "wasm",
+      "pair": 0,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a"
+    },
+    {
+      "case": "pan",
+      "backend": "wasm",
+      "pair": 0,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319"
+    },
+    {
+      "case": "pan",
+      "backend": "wasm",
+      "pair": 1,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a"
+    },
+    {
+      "case": "pan",
+      "backend": "wasm",
+      "pair": 1,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 65536,
+      "sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 0,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 0,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 1,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 1,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 2,
+      "phase": "output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    },
+    {
+      "case": "wasm-control",
+      "pair": 2,
+      "phase": "warm-output.bin",
+      "bit_identical": true,
+      "samples": 32768,
+      "sha256": "fe460fb7235ae565041de4acf6063da5918bad9708b9b8f84fb490b4fbe53e91"
+    }
+  ],
+  "exp2_inspection": {
+    "before": {
+      "topic": "LLVM vector math phase ordering and architecture",
+      "settings": {
+        "date": "2026-10-23",
+        "cpu_affinity": 2,
+        "frames": 128,
+        "ports": "f32 disjoint input/output",
+        "rounds": 7,
+        "iterations_per_round": 200000,
+        "warmup_calls": 1000,
+        "timing_inputs": "128 equally spaced f32 values from -6 to 6",
+        "validation_inputs": "131072 equally spaced f32 values from -100 to 100",
+        "fp": "no fast math or contraction; x86 FTZ/DAZ",
+        "repetitions": "three process pairs, reversed order for pair1",
+        "application_backend": "LLVM21.1.2 llc -mcpu=native; same optimized baseline IR"
+      },
+      "interpretation": "Diagnostic only; dedicated exp2 helper built with systemClang23.1.3 from pinned SLEEF3.9, not pinned productionClang21.1.8. No production files changed. Generic vectorpow is slower and is rejected. No f64/AArch64/edge-case acceptance claimed.",
+      "tools": {
+        "clang": "clang version 23.1.3",
+        "llc": "LLVM (http://llvm.org/):",
+        "sleef_revision": "906ca7512ee483296780a81a21b9ca715d40dfe1",
+        "onda_sha256": "aca90839e6c2f915753b9d07c51d7793694b5b63e76b6b40384bf2ae11487eae"
+      },
+      "summary": {
+        "specialized": {
+          "pair_medians_ns_per_frame": {
+            "baseline": [
+              1.929621484,
+              1.955458945,
+              1.955445898
+            ],
+            "candidate": [
+              0.267505391,
+              0.265621445,
+              0.269176953
+            ]
+          },
+          "median_baseline": 1.955445898,
+          "median_candidate": 0.267505391,
+          "speedup": 7.309930804347791
+        },
+        "vector_pow": {
+          "pair_medians_ns_per_frame": {
+            "baseline": [
+              1.926226719,
+              1.95935043,
+              1.955040742
+            ],
+            "candidate": [
+              2.780548125,
+              2.795690156,
+              2.799467812
+            ]
+          },
+          "median_baseline": 1.955040742,
+          "median_candidate": 2.795690156,
+          "speedup": 0.6993052280146884
+        }
+      },
+      "specialized_raw": {
+        "0-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            1.893392422,
+            1.909638867,
+            1.929621484,
+            1.926446563,
+            1.931280703,
+            1.941518789,
+            1.947161133
+          ]
+        },
+        "0-specialized": {
+          "max_relative_error": 1.19058093325e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            0.286804023,
+            0.258877422,
+            0.272368125,
+            0.267630742,
+            0.265467891,
+            0.267505391,
+            0.265081602
+          ]
+        },
+        "1-specialized": {
+          "max_relative_error": 1.19058093325e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            0.304502891,
+            0.275688203,
+            0.262960391,
+            0.265621445,
+            0.270918594,
+            0.264681836,
+            0.262689688
+          ]
+        },
+        "1-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            1.952428359,
+            1.943767578,
+            1.955585117,
+            1.964545195,
+            1.9642525,
+            1.95491168,
+            1.955458945
+          ]
+        },
+        "2-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            1.960045508,
+            1.955445898,
+            1.944660391,
+            1.945830078,
+            1.945946484,
+            1.95715707,
+            1.962139453
+          ]
+        },
+        "2-specialized": {
+          "max_relative_error": 1.19058093325e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            0.292715625,
+            0.26603043,
+            0.264157383,
+            0.269572266,
+            0.26687793,
+            0.269376797,
+            0.269176953
+          ]
+        }
+      },
+      "generic_pow_raw": {
+        "0-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            1.895585039,
+            1.903822305,
+            1.917060039,
+            1.926226719,
+            1.934898047,
+            1.952535117,
+            1.948835859
+          ]
+        },
+        "0-vector-pow": {
+          "max_relative_error": 1.18301180847e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            2.748215117,
+            2.776108047,
+            2.78513,
+            2.789419844,
+            2.780548125,
+            2.792707578,
+            2.779758203
+          ]
+        },
+        "1-vector-pow": {
+          "max_relative_error": 1.18301180847e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            2.771305273,
+            2.795690156,
+            2.797971484,
+            2.812031914,
+            2.792602344,
+            2.791898086,
+            2.798906133
+          ]
+        },
+        "1-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            2.009367891,
+            1.96251543,
+            1.95935043,
+            1.952610703,
+            1.960353359,
+            1.953984102,
+            1.956257188
+          ]
+        },
+        "2-baseline": {
+          "max_relative_error": 0,
+          "max_ulp": 0,
+          "rounds_ns_per_frame": [
+            1.948145469,
+            1.958722695,
+            1.955040742,
+            1.951193672,
+            1.958303672,
+            1.95445293,
+            1.957706602
+          ]
+        },
+        "2-vector-pow": {
+          "max_relative_error": 1.18301180847e-07,
+          "max_ulp": 1,
+          "rounds_ns_per_frame": [
+            2.78210918,
+            2.788453164,
+            2.807296055,
+            2.802660742,
+            2.808294727,
+            2.799467812,
+            2.794530039
+          ]
+        }
+      },
+      "sources": {
+        "dbamp.onda": "ins 1\nsample:\n  out1 = dbamp(in1)\n",
+        "exp.onda": "ins 1\nsample:\n  out1 = exp(in1)\n",
+        "exp10.onda": "ins 1\nsample:\n  out1 = pow(10.0, in1)\n",
+        "exp2.onda": "ins 1\nsample:\n  out1 = pow(2.0, in1)\n",
+        "log2.onda": "ins 1\nsample:\n  out1 = log(in1) / log(2.0)\n",
+        "midicps.onda": "ins 1\nsample:\n  out1 = midicps(in1)\n",
+        "pow4.onda": "ins 1\nsample:\n  out1 = pow(4.0, in1)\n",
+        "pow9.onda": "ins 1\nsample:\n  out1 = pow(9.0, in1)\n",
+        "sin.onda": "ins 1\nsample:\n  out1 = sin(in1)\n",
+        "sincos.onda": "ins 1\nsample:\n  out1 = sin(in1) + cos(in1)\n"
+      },
+      "harness": "#define _POSIX_C_SOURCE 200809L\n#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <time.h>\n#include <xmmintrin.h>\n#include \"onda_processor_abi.h\"\nstatic double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }\nint main(void) {\n  _mm_setcsr(_mm_getcsr() | (1u<<15) | (1u<<6));\n  _Alignas(64) float source[128], out[128];\n  const void *inputs[] = {source}; void *outputs[] = {out};\n  double max_error=0; unsigned max_ulp=0;\n  for (int k=0;k<1024;k++) {\n    for (int i=0;i<128;i++) source[i]=-100.0f+200.0f*(float)(k*128+i)/131071.0f;\n    if (onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL)) return 1;\n    for (int i=0;i<128;i++) {\n      float expected=exp2f(source[i]); double rel=fabs((double)out[i]-expected)/expected;\n      if(rel>max_error)max_error=rel;\n      uint32_t a,b;memcpy(&a,&out[i],4);memcpy(&b,&expected,4);unsigned ulp=a>b?a-b:b-a;\n      if(ulp>max_ulp)max_ulp=ulp;\n    }\n  }\n  for(int i=0;i<128;i++)source[i]=-6.0f+12.0f*(float)i/127.0f;\n  for(int i=0;i<1000;i++) if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 2;\n  printf(\"{\\\"max_relative_error\\\":%.12g,\\\"max_ulp\\\":%u,\\\"rounds_ns_per_frame\\\":[\",max_error,max_ulp);\n  for(int round=0;round<7;round++) {\n    const int iterations=200000; double start=now();\n    for(int i=0;i<iterations;i++)if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 3;\n    double elapsed=(now()-start)*1e9/iterations/128;\n    printf(\"%s%.9f\",round?\",\":\"\",elapsed);\n  }\n  printf(\"]}\\n\");\n  return max_ulp>2;\n}\n",
+      "kernel_build_command": [
+        "clang",
+        "-c",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-O2",
+        "-ffp-contract=off",
+        "-fno-math-errno",
+        "-fno-asynchronous-unwind-tables",
+        "-ffreestanding",
+        "-nostdlibinc",
+        "--target=x86_64-unknown-linux-gnu",
+        "-mavx2",
+        "-mfma",
+        "-DENABLE_AVX2",
+        "-DNDEBUG",
+        "-Dxexp2f=Sleef_exp2f8_u10avx2",
+        "-Ideps/sleef/src/common",
+        "-Ideps/sleef/src/arch",
+        "-Ideps/sleef/src/libm",
+        "-Itarget/bench/codegen-stack-review-2026-10-23/exp2-kernel",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/exp2.c",
+        "-o",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/native.o"
+      ],
+      "artifact_sha256": {
+        "exp2.ll": "34b8b5c2796f0d77e91de53ad676fb2eb5821c4b5fca44bb3ec91f964861e2c3",
+        "exp2-llc.o": "d2b142e130e86a4b95c78d8fda58726d7ce88366a0d6374095db867ea8cd5f8c",
+        "exp2-specialized.ll": "be11118e665c41437344b0be712ad7c98a50124509bc11e3fae1f1b212191737",
+        "exp2-specialized.o": "9202f016543510e53d9d1867762dc5c387bf5e2bf7a4eb20c314169bb540ad4d",
+        "exp2-kernel/native.o": "b0228abfe466879b31b70e0e0b4e800189dc2b846a5a25e1366ae4356fe1115e",
+        "exp2-vector-pow.ll": "c5924db4a201f024755a6d614d9721feaa1f0aa89429c03b134c8cb07c92ab7c",
+        "exp2-vector-pow.o": "1ae2cf7679b6eae43109b4615e44d9b3d722fe6bcb9a1abb2ed443dd7081f11a"
+      },
+      "transformation": "Specialized: rename only two calls and the declaration llvm.exp2.v8f32 to Sleef_exp2f8_u10avx2; retain every scalar tail call and every other application instruction; compile LLVM21 llc -mcpu=native and link scratch strict SLEEF exp2 helper. Genericpow: replace two vector exp2 calls by fastcc bundled Sleef_powf8_u10avx2 with all base lanes=2.0, then internalize/globaldce/strip and LLVM21 llc; no applicationO3 rerun."
+    },
+    "after": {
+      "kind": "descriptive-assembly-counts",
+      "counts": {
+        "instructions": 196,
+        "stack_address_operands": 16,
+        "vector_register_instructions": 56,
+        "calls": 12
+      },
+      "external_relocations": {
+        "exp2f": 10
+      },
+      "note": "Stack addresses include locals, ABI saves and spills; counts do not predict throughput."
+    },
+    "after_vector_call_lines": [
+      "  %15 = tail call fastcc <8 x float> @Sleef_exp2f8_u10avx2(<8 x float> %wide.load150), !dbg !13",
+      "  %22 = tail call fastcc <8 x float> @Sleef_exp2f8_u10avx2(<8 x float> %wide.load), !dbg !13"
+    ]
+  },
+  "object_sha256": {
+    "target/bench/codegen-stack-review-2026-10-23/probes/audio-helper.o": "0e830811745e5f95ea24b77090ff1d22e5ee532f1ab64c99f6122563b565428d",
+    "target/bench/codegen-stack-review-2026-10-23/exp2.o": "8dcdeeec761e641e49bc5aae296d03c0d579917214f1b90d5f192e86ff552172",
+    "target/bench/codegen-fixes-2026-10-23/isolated/artifacts/audio-helper.o": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b",
+    "target/bench/codegen-fixes-2026-10-23/isolated/artifacts/exp2.o": "c8ccae620515afc07baf8eb0030479a3c3ab078222dfd860811d57d242c233f2",
+    "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after/pan-after.o": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+    "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before/pan-before.o": "615f936a93fbbc737e2b58db9e283cbd8431f7f4e99473c38a7c6c7713674383"
+  },
+  "commands": [
+    [
+      "python3",
+      "scripts/bench/run.py",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda",
+      "--output",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
+      "--runner",
+      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "--backend",
+      "both",
+      "--cpu",
+      "6",
+      "--block-size",
+      "128",
+      "--repetitions",
+      "7",
+      "--round-ms",
+      "75",
+      "--warmup-blocks",
+      "8192",
+      "--validation-blocks",
+      "256",
+      "--ir",
+      "--assembly"
+    ],
+    [
+      "python3",
+      "scripts/bench/run.py",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
+      "--output",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
+      "--runner",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
+      "--backend",
+      "both",
+      "--cpu",
+      "6",
+      "--block-size",
+      "128",
+      "--repetitions",
+      "7",
+      "--round-ms",
+      "75",
+      "--warmup-blocks",
+      "8192",
+      "--validation-blocks",
+      "256",
+      "--ir",
+      "--assembly"
+    ],
+    [
+      "python3",
+      "scripts/bench/run.py",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
+      "--output",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
+      "--runner",
+      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "--backend",
+      "both",
+      "--cpu",
+      "6",
+      "--block-size",
+      "128",
+      "--repetitions",
+      "7",
+      "--round-ms",
+      "75",
+      "--warmup-blocks",
+      "8192",
+      "--validation-blocks",
+      "256",
+      "--ir",
+      "--assembly"
+    ],
+    [
+      "python3",
+      "scripts/bench/run.py",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
+      "--output",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
+      "--runner",
+      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "--backend",
+      "both",
+      "--cpu",
+      "6",
+      "--block-size",
+      "128",
+      "--repetitions",
+      "7",
+      "--round-ms",
+      "75",
+      "--warmup-blocks",
+      "8192",
+      "--validation-blocks",
+      "256",
+      "--ir",
+      "--assembly"
+    ],
+    [
+      "python3",
+      "scripts/bench/run.py",
+      "--source",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
+      "--output",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
+      "--runner",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
+      "--backend",
+      "both",
+      "--cpu",
+      "6",
+      "--block-size",
+      "128",
+      "--repetitions",
+      "7",
+      "--round-ms",
+      "75",
+      "--warmup-blocks",
+      "8192",
+      "--validation-blocks",
+      "256",
+      "--ir",
+      "--assembly"
+    ],
+    [
+      "cc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
+      "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/probes/audio-helper.o",
+      "-lm",
+      "-o",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio-before"
+    ],
+    [
+      "cc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts/audio-helper.o",
+      "-lm",
+      "-o",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio-after"
+    ],
+    [
+      "cc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
+      "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/exp2.o",
+      "-lm",
+      "-o",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math-before"
+    ],
+    [
+      "cc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts/exp2.o",
+      "-lm",
+      "-o",
+      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math-after"
+    ]
+  ],
+  "git_head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+  "final_artifact_verification": {
+    "worker_sha256": "a3311ae24a3e0a3a8cf84d43c0d096f1aadfc0b382219e6013042016eef95f86",
+    "artifacts": [
+      {
+        "name": "audio-direct",
+        "object_bit_identical": true,
+        "measured_object_sha256": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b",
+        "final_object_sha256": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b"
+      },
+      {
+        "name": "audio-helper",
+        "object_bit_identical": true,
+        "measured_object_sha256": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b",
+        "final_object_sha256": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b"
+      },
+      {
+        "name": "exp2",
+        "object_bit_identical": true,
+        "measured_object_sha256": "c8ccae620515afc07baf8eb0030479a3c3ab078222dfd860811d57d242c233f2",
+        "final_object_sha256": "c8ccae620515afc07baf8eb0030479a3c3ab078222dfd860811d57d242c233f2"
+      },
+      {
+        "name": "pan-after",
+        "object_bit_identical": true,
+        "measured_object_sha256": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+        "final_object_sha256": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00"
+      }
+    ]
+  },
+  "validation": {
+    "semantic_tests_passed": 1085,
+    "mir_and_llvm_tests_including_doc_tests_passed": 326,
+    "javascript_tests_passed": 104,
+    "source_corpus_fixtures_passed": 43,
+    "source_derived_simd_precisions": [
+      "f32",
+      "f64"
+    ],
+    "backend_parity_scenarios": 41,
+    "binaryen_configurations": 2,
+    "bit_exact_parity_samples": 3064,
+    "approximate_parity_samples": 4096,
+    "maximum_parity_absolute_error": 1.192e-07,
+    "format_checks": "passed",
+    "kernel_manifest_check": "passed",
+    "source_file_line_limit": "all modified handwritten sources at most 5000 lines",
+    "final_artifact_identity": "all four final benchmark objects byte-identical to measured objects"
+  }
+}

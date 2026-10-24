@@ -6,7 +6,7 @@ namespace std::delay<Capacity = SR * 2>:
 
   struct Line<T>:
     data: std::data<Capacity>::Data<T>
-    write_index: i32 = 0 {Capacity, wrap}
+    write_index = 0 {Capacity, wrap}
 
     def read(self, delay_samples: i32):
       return self.data.read(self.write_index - delay_samples)

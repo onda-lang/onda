@@ -4,8 +4,25 @@ use onda_codegen_llvm::{
     FloatMathPolicy, MirCompileOptions,
 };
 
+#[path = "../src/vector_math_spec.rs"]
+mod math_spec;
+
 fn is_vector_call(line: &str) -> bool {
     line.contains("call ") && line.contains("@Sleef_")
+}
+
+fn assert_all_vector_math_calls(ir: &str, precision: &str, target: &str) {
+    for (operation, _, _) in math_spec::FUNCTIONS {
+        let prefix = format!(
+            "@Sleef_{operation}{}",
+            if precision == "f32" { "f" } else { "d" }
+        );
+        assert!(
+            ir.lines()
+                .any(|line| is_vector_call(line) && line.contains(&prefix)),
+            "{target}/{precision}: missing vector {operation}"
+        );
+    }
 }
 
 fn compile(source: &str) -> onda_mir::OptimizedProgram {
@@ -104,8 +121,8 @@ fn native_vector_math_calls_resolve_and_preserve_exceptional_values() {
 }
 
 fn math_source(precision: &str) -> String {
-    let mut source = format!("ins:\n  in1: {precision}\nouts:\n");
-    for i in 1..=9 {
+    let mut source = format!("ins:\n  in1: {precision}\n  in2: {precision}\nouts:\n");
+    for i in 1..=10 {
         source.push_str(&format!("  out{i}: {precision}\n"));
     }
     source.push_str("sample:\n");
@@ -115,10 +132,11 @@ fn math_source(precision: &str) -> String {
         "tan(in1)",
         "tanh(in1)",
         "atan(in1)",
-        "atan2(in1, 0.5)",
+        "atan2(in1, in2)",
         "exp(in1)",
         "log(in1)",
-        "pow(in1, in1)",
+        "pow(in1, in2)",
+        "pow(2.0, in1)",
     ]
     .iter()
     .enumerate()
@@ -126,6 +144,152 @@ fn math_source(precision: &str) -> String {
         source.push_str(&format!("  out{} = {expression}\n", index + 1));
     }
     source
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn power_of_two_uses_vector_exp2_with_scalar_tails_and_overlap_fallbacks() {
+    macro_rules! check {
+        ($scalar:ty, $name:literal) => {
+            for (base, log2_base) in [(2.0 as $scalar, 1.0), (4.0, 2.0), (0.5, -1.0)] {
+                let mir = compile(&format!(
+                    "ins:\n  in1: {0}\nouts:\n  out1: {0}\nsample:\n  out1 = pow({base:?}, in1)\n", $name
+                ));
+                let ir = lower_optimized_mir_to_llvm_ir_with_options(&mir, MirCompileOptions::default()).unwrap();
+                assert!(ir.lines().any(|line| is_vector_call(line) && line.contains("@Sleef_exp2")), "{base}: no vector exp2");
+                assert!(!ir.lines().any(|line| line.contains("call ") && line.contains("@llvm.exp2.v")), "unresolved vector exp2");
+                assert!(ir.contains("audio_alias_guard") && ir.contains("audio_overlap"),
+                    "{base}: missing alias guard or scalar overlap fallback");
+                let jit = jit_program_from_optimized_mir_with_options(mir, MirCompileOptions::default()).unwrap();
+                let params = jit.default_param_bytes();
+                let mut state = jit.initialize_state(&params).unwrap();
+                for output_base in [7, 8, 9, 256] {
+                    for segments in [vec![(0, 127)], vec![(3, 125)], vec![(0, 1), (1, 65), (66, 62)]] {
+                        let mut values = [0.0 as $scalar; 512];
+                        for (index, value) in values[8..136].iter_mut().enumerate() {
+                            *value = (index as $scalar - 64.0) / 8.0;
+                        }
+                        let overflow = <$scalar>::MAX_EXP as $scalar;
+                        let underflow = (<$scalar>::MIN_EXP - <$scalar>::MANTISSA_DIGITS as i32) as $scalar;
+                        values[8..22].copy_from_slice(&[
+                            <$scalar>::NAN, <$scalar>::INFINITY, <$scalar>::NEG_INFINITY,
+                            0.0, -0.0, overflow, overflow - 0.5, overflow + 0.5,
+                            underflow, underflow - 1.0, underflow + 0.5, underflow - 0.5,
+                            <$scalar>::MAX, -<$scalar>::MAX,
+                        ]);
+                        let mut expected = values;
+                        let mut exact_zeros = [false; 512];
+                        for &(start, frames) in &segments {
+                            for frame in start..start + frames {
+                                let input = expected[8 + frame];
+                                let exponent = input * log2_base;
+                                exact_zeros[output_base + frame] = input.is_infinite()
+                                    && exponent == <$scalar>::NEG_INFINITY;
+                                // Let m be the smallest positive subnormal. At or below m/2,
+                                // ties-to-even gives zero; between m/2 and m it gives m.
+                                // Derive these answers directly, without platform powf underflow.
+                                expected[output_base + frame] = if exponent <= underflow - 1.0 {
+                                    0.0
+                                } else if exponent <= underflow {
+                                    <$scalar>::from_bits(1)
+                                } else {
+                                    base.powf(input)
+                                };
+                            }
+                            unsafe {
+                                jit.process_checked(&mut state, &params, start, frames, 3,
+                                    &[values.as_ptr().add(8).cast()], &[values.as_mut_ptr().add(output_base).cast()],
+                                    &[], &[], &[], &[], None).unwrap();
+                            }
+                        }
+                        for (index, (&actual, &expected)) in values.iter().zip(&expected).enumerate() {
+                            let written = segments.iter().any(|&(start, frames)|
+                                (output_base + start..output_base + start + frames).contains(&index));
+                            if !written {
+                                assert_eq!(actual.to_bits(), expected.to_bits(),
+                                    "{} modified untouched index {index}, output {output_base}, {segments:?}", $name);
+                            } else if expected.is_nan() {
+                                assert!(actual.is_nan());
+                            } else if expected == 0.0 && !exact_zeros[index] {
+                                // A finite exponential below m/2 is positive. Both 0 and m
+                                // are within one subnormal ULP; scalar libm need not satisfy
+                                // SLEEF's additional rounded-zero rule.
+                                assert!(actual.to_bits() <= 1,
+                                    "{} pow({base}, x): unexpected underflow bits {}, index {index}", $name, actual.to_bits());
+                            } else if !expected.is_finite() || expected == 0.0 {
+                                assert_eq!(actual.to_bits(), expected.to_bits(),
+                                    "{} pow({base}, x), index {index}, output {output_base}, {segments:?}", $name);
+                            } else {
+                                // Differential integration check against platform libm, not
+                                // a proof of SLEEF's error bound against the exact real result.
+                                assert!(actual.is_finite() && actual.to_bits().abs_diff(expected.to_bits()) <= 2,
+                                    "{} pow({base}, x): {actual} vs {expected}, index {index}, output {output_base}, {segments:?}", $name);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+    check!(f32, "f32");
+    check!(f64, "f64");
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn power_of_two_underflow_obeys_vector_and_scalar_accuracy_budgets() {
+    macro_rules! check {
+        ($scalar:ty, $name:literal) => {
+            // m = 2^(MIN_EXP - MANTISSA_DIGITS) is the smallest positive subnormal.
+            // These intervals follow from |actual - 2^offset * m| <= m (one ULP),
+            // Full vector blocks additionally require rounded zero, as SLEEF's
+            // src/common/testerutil.c countULPsp/countULPdp do; mixed/scalar calls
+            // use the numerical budget without that vector-specific condition.
+            let cases = [
+                (-2.0, 0, 1),
+                (-1.5, 0, 1),
+                (-1.0, 0, 1),
+                (-0.5, 0, 1),
+                (0.0, 0, 2),
+                (0.5, 1, 2),
+                (1.0, 1, 3),
+                (2.0, 3, 5),
+            ];
+            let underflow = (<$scalar>::MIN_EXP - <$scalar>::MANTISSA_DIGITS as i32) as $scalar;
+            for (base, log2_base) in [(2.0 as $scalar, 1.0), (4.0, 2.0), (0.5, -1.0)] {
+                let mir = compile(&format!(
+                    "ins:\n  in1: {0}\nouts:\n  out1: {0}\nsample:\n  out1 = pow({base:?}, in1)\n", $name
+                ));
+                let jit = jit_program_from_optimized_mir_with_options(mir, MirCompileOptions::default()).unwrap();
+                let params = jit.default_param_bytes();
+                let mut state = jit.initialize_state(&params).unwrap();
+                for (offset, low, high) in cases {
+                    let input = [(underflow + offset) / log2_base; 128];
+                    for (start, frames) in [(0, 1), (3, 7), (0, 127), (0, 128)] {
+                        let high = if frames == 128 && offset <= -1.0 { 0 } else { high };
+                        let sentinel = -12345.0 as $scalar;
+                        let mut output = [sentinel; 128];
+                        unsafe {
+                            jit.process_checked(&mut state, &params, start, frames, 3,
+                                &[input.as_ptr().cast()], &[output.as_mut_ptr().cast()],
+                                &[], &[], &[], &[], None).unwrap();
+                        }
+                        for (index, actual) in output.iter().enumerate() {
+                            if (start..start + frames).contains(&index) {
+                                assert!((low..=high).contains(&actual.to_bits()),
+                                    "{} pow({base}, {}): bits {}, expected {low}..={high}, frame {index}, start {start}, frames {frames}",
+                                    $name, input[index], actual.to_bits());
+                            } else {
+                                assert_eq!(actual.to_bits(), sentinel.to_bits(), "untouched frame {index}");
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+    check!(f32, "f32");
+    check!(f64, "f64");
 }
 
 #[test]
@@ -150,7 +314,7 @@ fn vector_helpers_are_embedded_for_native_and_cross_targets() {
                 ..Default::default()
             };
             let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
-            assert!(ir.lines().any(is_vector_call), "{triple}/{precision}");
+            assert_all_vector_math_calls(&ir, precision, triple);
             for line in ir.lines().filter(|line| line.contains("@Sleef_")) {
                 assert!(!line.starts_with("declare"), "{triple}: {line}");
                 if line.starts_with("define") {
@@ -173,7 +337,7 @@ fn vector_variants_follow_cpu_features_and_platform_abi() {
     use onda_codegen_llvm::{
         lower_optimized_mir_to_target_llvm_ir, MirTargetOptions, TargetConfig, TargetCpu,
     };
-    let mir = compile("ins 1\nsample:\n  out1 = atan2(in1, 0.5)\n");
+    let mir = compile("ins 1\nouts 2\nsample:\n  out1 = atan2(in1, 0.5)\n  out2 = pow(2.0, in1)\n");
     for (triple, cpu, features, expected, forbidden) in [
         (
             "x86_64-unknown-linux-gnu",
@@ -279,6 +443,10 @@ fn vector_variants_follow_cpu_features_and_platform_abi() {
             },
         };
         let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
+        assert!(
+            ir.contains("@Sleef_exp2"),
+            "{triple}/{cpu}/{features}: missing exp2"
+        );
         let calls = ir
             .lines()
             .filter(|line| is_vector_call(line))
@@ -456,31 +624,67 @@ fn slp_math_calls_use_internal_helpers() {
 #[test]
 fn native_vector_math_objects_link_without_the_compiler_runtime() {
     use onda_codegen_llvm::{
-        lower_optimized_mir_to_object_artifact, MirTargetOptions, TargetConfig, TargetCpu,
-        TargetRelocMode,
+        lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir,
+        MirTargetOptions, TargetConfig, TargetCpu, TargetRelocMode,
     };
     use std::{path::Path, process::Command};
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = tempfile::tempdir().unwrap();
     let windows = cfg!(target_os = "windows");
+    let targets = vec![
+        ("generic", TargetCpu::Explicit("generic".to_owned()), None),
+        ("host", TargetCpu::Host, None),
+    ];
+    #[cfg(target_arch = "x86_64")]
+    let targets = {
+        let mut targets = targets;
+        for (name, features, available) in [
+            ("avx", "+avx", std::arch::is_x86_feature_detected!("avx")),
+            (
+                "avx2-no-fma",
+                "+avx2,-fma",
+                std::arch::is_x86_feature_detected!("avx2"),
+            ),
+            (
+                "avx2-fma",
+                "+avx2,+fma",
+                std::arch::is_x86_feature_detected!("avx2")
+                    && std::arch::is_x86_feature_detected!("fma"),
+            ),
+            (
+                "avx512-fma",
+                "+avx512f,+fma",
+                std::arch::is_x86_feature_detected!("avx512f")
+                    && std::arch::is_x86_feature_detected!("fma"),
+            ),
+        ] {
+            if available {
+                targets.push((
+                    name,
+                    TargetCpu::Explicit("generic".to_owned()),
+                    Some(features.to_owned()),
+                ));
+            }
+        }
+        targets
+    };
     for precision in ["f32", "f64"] {
         let mir = compile(&math_source(precision));
-        // Exercise the baseline ISA as well as the host-optimized ISA. This
-        // catches SSE2-only ABI/numerical bugs on AVX-capable build machines.
-        for cpu in [TargetCpu::Explicit("generic".to_owned()), TargetCpu::Host] {
-            let artifact = lower_optimized_mir_to_object_artifact(
-                &mir,
-                &MirTargetOptions {
-                    fast_math: false,
-                    math: FloatMathPolicy::default(),
-                    target: TargetConfig {
-                        cpu,
-                        reloc_model: TargetRelocMode::Pic,
-                        ..TargetConfig::host()
-                    },
+        // Execute every available vector ISA, not just compile foreign targets.
+        for (name, cpu, features) in &targets {
+            let options = MirTargetOptions {
+                fast_math: false,
+                math: FloatMathPolicy::default(),
+                target: TargetConfig {
+                    cpu: cpu.clone(),
+                    features: features.clone(),
+                    reloc_model: TargetRelocMode::Pic,
+                    ..TargetConfig::host()
                 },
-            )
-            .unwrap();
+            };
+            let ir = lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
+            assert_all_vector_math_calls(&ir, precision, name);
+            let artifact = lower_optimized_mir_to_object_artifact(&mir, &options).unwrap();
             assert_eq!(artifact.metadata.runtime.state_size_bytes, 0);
             assert_eq!(artifact.metadata.runtime.param_size_bytes, 0);
             assert!(artifact.metadata.integration.link_libraries.is_empty());
@@ -528,10 +732,13 @@ fn native_vector_math_objects_link_without_the_compiler_runtime() {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            let output = Command::new(&executable).output().unwrap();
+            let output = Command::new(&executable)
+                .arg(root.join("tests/fixtures/vector_math_reference.txt"))
+                .output()
+                .unwrap();
             assert!(
                 output.status.success(),
-                "{precision}: {}",
+                "{precision}/{name}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }

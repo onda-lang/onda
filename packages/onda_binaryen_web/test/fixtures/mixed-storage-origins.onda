@@ -1,0 +1,19 @@
+def shift(src: f32[], dst: f32[]):
+  for i in 0..min(src.len(), dst.len()) - 1:
+    dst[i + 1] = src[i]
+
+def exercise(src: f32[]):
+  values: f32[64]
+  shift(src, values[:])
+  shift(values[:], values[:])
+  return values[32]
+
+init:
+  initial: f32[64]
+  for i in 0..64:
+    initial[i] = f32(i + 1)
+
+block:
+  result = exercise(initial[:])
+  sample:
+    out1 = f32(result)

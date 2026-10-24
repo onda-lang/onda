@@ -1,0 +1,3186 @@
+{
+  "date": "2026-10-23",
+  "scope": "Codegen architecture review after initial runtime improvements; no new production changes",
+  "reviewed_source_sha256": "86d8e69796d590d30a983ac51191be0c0c89ecd80f89faa93a9b991173656af2",
+  "runs": {
+    "probes": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-helper.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/probes",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 2,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "audio-direct",
+          "audio-helper",
+          "pan-current",
+          "pan-on-write"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "146c6caa715636ae20a825e0e71327488c96b40d779e88a7821d038d55980225",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "2",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.000",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "4",
+          "cpu cores": "24",
+          "apicid": "8",
+          "initial apicid": "8",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "audio-direct",
+          "frontend_ms": 13.574272,
+          "phases": {
+            "parse_load_ms": 0.20948399999999998,
+            "semantics_ms": 13.17689,
+            "mir_lowering_ms": 0.13886700000000002,
+            "mir_optimization_ms": 0.032433,
+            "mir_passes": {
+              "iterations": 1,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 0,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 10.036793000000001,
+          "init_ms": 0.000849,
+          "shape": {
+            "effect_function_visits": 2,
+            "range_function_visits": 2,
+            "functions": 2,
+            "state_entries": 0,
+            "mir_bytes": 5228
+          },
+          "state_bytes": 0,
+          "iterations": 8388608,
+          "ns_per_frame": 0.10233265068382025,
+          "rounds_ns_per_frame": [
+            0.10169678367674351,
+            0.1015368839725852,
+            0.10128107573837042,
+            0.10233265068382025,
+            0.10288627445697784,
+            0.10323710087686777,
+            0.10235939174890518
+          ],
+          "mad_ns": 0.0006358670070767403,
+          "min_ns": 0.10128107573837042,
+          "max_ns": 0.10323710087686777,
+          "block_p50_us": 0.023,
+          "block_p99_us": 0.024999999999999998,
+          "block_max_us": 0.298,
+          "cold_max_us": 0.40499999999999997,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "9f88743b087021d532a7001c16efbd35c899c78360b5d26b3ff0996a4a03a80a",
+          "mir_sha256": "9a41ff076860596385e62d74065d4577a143f136bcf3c825f5c7da0ab0fb3e34",
+          "llvm_ir_sha256": "43029efbcf52b31d684c58e5d8f47a56501e147b0aa7f9410a327183de931663"
+        },
+        {
+          "name": "audio-helper",
+          "frontend_ms": 11.652219,
+          "phases": {
+            "parse_load_ms": 0.194841,
+            "semantics_ms": 11.284832,
+            "mir_lowering_ms": 0.126077,
+            "mir_optimization_ms": 0.033417,
+            "mir_passes": {
+              "iterations": 1,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 0,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 7.346781999999999,
+          "init_ms": 0.00088,
+          "shape": {
+            "effect_function_visits": 3,
+            "range_function_visits": 4,
+            "functions": 3,
+            "state_entries": 0,
+            "mir_bytes": 6140
+          },
+          "state_bytes": 0,
+          "iterations": 8388608,
+          "ns_per_frame": 0.10239974595606327,
+          "rounds_ns_per_frame": [
+            0.10203704796731472,
+            0.10273310448974371,
+            0.10176998376846313,
+            0.10297131258994341,
+            0.10283916257321835,
+            0.1019494291394949,
+            0.10239974595606327
+          ],
+          "mad_ns": 0.0004394166171550751,
+          "min_ns": 0.10176998376846313,
+          "max_ns": 0.10297131258994341,
+          "block_p50_us": 0.023,
+          "block_p99_us": 0.035,
+          "block_max_us": 0.157,
+          "cold_max_us": 0.452,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "9abd625f5421816cc4aae29bc4ba87698ceb6a0f14365dca561042e589488ab0",
+          "mir_sha256": "e046cac78dfd3dbb5b4754008f5433b22435e2787ff97a0a73e29a8bc8c60c80",
+          "llvm_ir_sha256": "f5162ff0ded0fceb56f0480e757514fee120d6472911982519394f9d5416b706"
+        },
+        {
+          "name": "pan-current",
+          "frontend_ms": 72.925189,
+          "phases": {
+            "parse_load_ms": 23.914969000000003,
+            "semantics_ms": 45.801694,
+            "mir_lowering_ms": 1.7871219999999999,
+            "mir_optimization_ms": 1.352234,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 26,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 54.738267,
+          "init_ms": 0.000799,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 45,
+            "mir_bytes": 191883
+          },
+          "state_bytes": 1040,
+          "iterations": 16384,
+          "ns_per_frame": 70.12404918670654,
+          "rounds_ns_per_frame": [
+            70.12404918670654,
+            69.76874780654907,
+            70.02142286300659,
+            69.92987775802612,
+            70.58886861801147,
+            70.7533540725708,
+            70.9176721572876
+          ],
+          "mad_ns": 0.3553013801574707,
+          "min_ns": 69.76874780654907,
+          "max_ns": 70.9176721572876,
+          "block_p50_us": 8.639,
+          "block_p99_us": 9.377,
+          "block_max_us": 10.469999999999999,
+          "cold_max_us": 11.032,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "cd1c14202dee3e39d2b8a85b809082e3849852090fcc43e748d46bb30d914142",
+          "llvm_ir_sha256": "b3d714919a085f17fc72c5aec06fac2182ad24be546612036b6d2993e4adf13e"
+        },
+        {
+          "name": "pan-on-write",
+          "frontend_ms": 72.66546699999999,
+          "phases": {
+            "parse_load_ms": 23.018211,
+            "semantics_ms": 46.249700999999995,
+            "mir_lowering_ms": 1.894662,
+            "mir_optimization_ms": 1.419883,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 30,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 64.24882,
+          "init_ms": 0.000802,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 47,
+            "mir_bytes": 197649
+          },
+          "state_bytes": 1104,
+          "iterations": 16384,
+          "ns_per_frame": 44.012404441833496,
+          "rounds_ns_per_frame": [
+            44.04111099243164,
+            43.980703830718994,
+            44.012404441833496,
+            43.95522594451904,
+            44.07306528091431,
+            43.95641374588013,
+            44.04261589050293
+          ],
+          "mad_ns": 0.03170061111450195,
+          "min_ns": 43.95522594451904,
+          "max_ns": 44.07306528091431,
+          "block_p50_us": 5.657,
+          "block_p99_us": 5.8919999999999995,
+          "block_max_us": 9.266,
+          "cold_max_us": 7.5680000000000005,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "5db609a7541c78597d325415050da9708ff75966966fa38323299d19023c7cb2",
+          "mir_sha256": "3025a6d7aa1a9099e80bac7215deb91e003b0cbe7b2f429244394097a31245c2",
+          "llvm_ir_sha256": "bc583e78211989729bb35611cbbc7f211fd52b4bc76aa3c4b7cf71bdfc7037fa"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "audio-direct",
+          "compile_ms": 220.17790300000001,
+          "compile_includes_text": true,
+          "wasm_bytes": 397,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.15181599999999662,
+          "init_ms": 0.01593499999995629,
+          "state_bytes": 0,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 2097152,
+          "ns_per_frame": 0.5532959401607511,
+          "rounds_ns_per_frame": [
+            0.5553659647703172,
+            0.5625293590128423,
+            0.5642605461180215,
+            0.553160849958659,
+            0.5519575178623201,
+            0.5532959401607511,
+            0.5513747371733186
+          ],
+          "mad_ns": 0.0019212029874324799,
+          "min_ns": 0.5513747371733186,
+          "max_ns": 0.5642605461180215,
+          "block_p50_us": 0.1190000000406144,
+          "block_p99_us": 0.9830000001329608,
+          "block_max_us": 19.588999999996304,
+          "cold_max_us": 24.564999999995507,
+          "validation_samples": 65536,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.406836786337954,
+          "source_fingerprint": "9f88743b087021d532a7001c16efbd35c899c78360b5d26b3ff0996a4a03a80a",
+          "mir_sha256": "9a41ff076860596385e62d74065d4577a143f136bcf3c825f5c7da0ab0fb3e34",
+          "wasm_sha256": "be42bdbe95a1e8999be969425bebcbb40e18f8ef97f730403613275e3a374b90"
+        },
+        {
+          "name": "audio-helper",
+          "compile_ms": 225.714419,
+          "compile_includes_text": true,
+          "wasm_bytes": 397,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 15.441069000000027,
+          "init_ms": 0.019844999999975244,
+          "state_bytes": 0,
+          "inputs": [
+            "f32"
+          ],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 2097152,
+          "ns_per_frame": 0.5606725923717019,
+          "rounds_ns_per_frame": [
+            0.5576023682951927,
+            0.5699446387588972,
+            0.5669396668672559,
+            0.5569555833935741,
+            0.5590593777596952,
+            0.5623158924281593,
+            0.5606725923717019
+          ],
+          "mad_ns": 0.0030702240765091426,
+          "min_ns": 0.5569555833935741,
+          "max_ns": 0.5699446387588972,
+          "block_p50_us": 0.1199999999244028,
+          "block_p99_us": 0.9699999998247222,
+          "block_max_us": 3.9449999999305874,
+          "cold_max_us": 50.281000000040876,
+          "validation_samples": 65536,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.475331868618795,
+          "source_fingerprint": "9abd625f5421816cc4aae29bc4ba87698ceb6a0f14365dca561042e589488ab0",
+          "mir_sha256": "e046cac78dfd3dbb5b4754008f5433b22435e2787ff97a0a73e29a8bc8c60c80",
+          "wasm_sha256": "be42bdbe95a1e8999be969425bebcbb40e18f8ef97f730403613275e3a374b90"
+        },
+        {
+          "name": "pan-current",
+          "compile_ms": 988.9023579999999,
+          "compile_includes_text": true,
+          "wasm_bytes": 15160,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.4191560000001573,
+          "init_ms": 0.11360100000001694,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 135.65573215484602,
+          "rounds_ns_per_frame": [
+            134.89050483703602,
+            135.1193304061889,
+            135.93585872650138,
+            135.84285736084004,
+            135.65573215484602,
+            135.26298236846927,
+            138.08617687225333
+          ],
+          "mad_ns": 0.3927497863767542,
+          "min_ns": 134.89050483703602,
+          "max_ns": 138.08617687225333,
+          "block_p50_us": 17.197000000123808,
+          "block_p99_us": 20.552999999836175,
+          "block_max_us": 22.193999999672087,
+          "cold_max_us": 1547.221000000036,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 1.9345108237212627,
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "cd1c14202dee3e39d2b8a85b809082e3849852090fcc43e748d46bb30d914142",
+          "wasm_sha256": "05335f3bcf1cc6a176add067bb6fc59fc1f61d071ae381b2623a6b9188799857"
+        },
+        {
+          "name": "pan-on-write",
+          "compile_ms": 942.3712039999999,
+          "compile_includes_text": true,
+          "wasm_bytes": 15595,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.18490999999994528,
+          "init_ms": 0.16745900000000802,
+          "state_bytes": 1104,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 109.35340499877927,
+          "rounds_ns_per_frame": [
+            109.93772220611594,
+            109.71539115905765,
+            108.94832897186276,
+            109.41099357604989,
+            109.09914588928208,
+            109.35340499877927,
+            109.2759323120117
+          ],
+          "mad_ns": 0.254259109497184,
+          "min_ns": 108.94832897186276,
+          "max_ns": 109.93772220611594,
+          "block_p50_us": 13.977999999951862,
+          "block_p99_us": 15.733000000182074,
+          "block_max_us": 17.906000000039057,
+          "cold_max_us": 979.176999999936,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 2.4846042016018464,
+          "source_fingerprint": "5db609a7541c78597d325415050da9708ff75966966fa38323299d19023c7cb2",
+          "mir_sha256": "3025a6d7aa1a9099e80bac7215deb91e003b0cbe7b2f429244394097a31245c2",
+          "wasm_sha256": "ad279ea41d3a748bd727120df19ce1203330ab265e3e2c3ac948086697eb05ee"
+        }
+      ]
+    },
+    "pan-reversed": {
+      "metadata": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda",
+            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/pan-reversed",
+          "backend": "both",
+          "inspect_only": false,
+          "ir": false,
+          "assembly": false,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 7,
+          "round_ms": 75.0,
+          "warmup_blocks": 8192,
+          "validation_blocks": 256,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 2,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "4d575c6704a1994406a15687c1e593899af8978d2cffa89321ee4b4c1a06ea2c",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "d829c7a66acb543ab8f3109274427c4be2e0d5a2e25231714177218a8ecddae3"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "pan-on-write",
+          "pan-current"
+        ],
+        "working_tree_dirty": true,
+        "wasm_backend_sha256": {
+          "packages/onda_binaryen_web/src/artifact.js": "63974b7201de8e619b7ae8eb3b229e9b94e0523214b44d1fd67c4bedb26cc438",
+          "packages/onda_binaryen_web/src/compiler/core.js": "5cecd2e28a0132d62bd6ba64882f386d3786d2dbe91bebed13f4604104720a39",
+          "packages/onda_binaryen_web/src/compiler/event-input.js": "f928f0b0ec156c7dd6f699da5fc8dbc487508202707b21ef16401cdaeb2f2c1d",
+          "packages/onda_binaryen_web/src/compiler/index.js": "824b5f44518ea86a9d3c23ed1beb5c3438c4aab6d01ac24093b53a509622a322",
+          "packages/onda_binaryen_web/src/compiler/lowering.js": "eaa6b31a9d4c475f5e37326729d0853736bd614257f629f12834c47dc308ebfd",
+          "packages/onda_binaryen_web/src/compiler/shared.js": "9b6a81f477e2240ccef5c2a4609a68109f796c5a7439ecfc8d6d729b2696c3c7",
+          "packages/onda_binaryen_web/src/compiler/simd.js": "146c6caa715636ae20a825e0e71327488c96b40d779e88a7821d038d55980225",
+          "packages/onda_binaryen_web/src/constants.js": "aa06f8bf17124439abbd444386c8409df8e6d9a8eed3d41c122eab6436aebd18",
+          "packages/onda_binaryen_web/src/errors.js": "0588082e7bc610255669481320c2b205d59e5db80a7596300eec91f09439d31a",
+          "packages/onda_binaryen_web/src/index.js": "33ac66b4df8b20d992bc2b5ea3fc76228380313ce30d4191a7e831e9fc6284df",
+          "packages/onda_binaryen_web/src/math-kernel.generated.js": "ca63cae35f574c20cd6f8f68d2e85da5366ee4bd9b9ceb741fabaa7efe41383d",
+          "packages/onda_binaryen_web/src/messagepack.js": "ac3d4ce85ca77e3f2857e3a444ca3962e58c3b5391110966f5189ff34ae91856",
+          "packages/onda_binaryen_web/src/operations.js": "7949204b32754945e29a749d276ac418c9d4df865501cc4f7459b2cf0d053182"
+        },
+        "package_lock_sha256": "881ffcc4529cb5624840ed7c1f9cb11d843f85f320223faaa87b050e3df8d8ef",
+        "cpu_info": {
+          "processor": "2",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "3785.312",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "4",
+          "cpu cores": "24",
+          "apicid": "8",
+          "initial apicid": "8",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "native": [
+        {
+          "name": "pan-on-write",
+          "frontend_ms": 71.128202,
+          "phases": {
+            "parse_load_ms": 22.138568,
+            "semantics_ms": 45.576343,
+            "mir_lowering_ms": 1.929836,
+            "mir_optimization_ms": 1.425697,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 30,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 65.277408,
+          "init_ms": 0.001269,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 47,
+            "mir_bytes": 197649
+          },
+          "state_bytes": 1104,
+          "iterations": 16384,
+          "ns_per_frame": 43.7092661857605,
+          "rounds_ns_per_frame": [
+            43.7092661857605,
+            43.63247728347778,
+            43.6900691986084,
+            43.66519117355347,
+            43.84038734436035,
+            43.78990125656128,
+            43.89005470275879
+          ],
+          "mad_ns": 0.07678890228271484,
+          "min_ns": 43.63247728347778,
+          "max_ns": 43.89005470275879,
+          "block_p50_us": 5.563,
+          "block_p99_us": 5.821,
+          "block_max_us": 9.137,
+          "cold_max_us": 6.445,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "5db609a7541c78597d325415050da9708ff75966966fa38323299d19023c7cb2",
+          "mir_sha256": "3025a6d7aa1a9099e80bac7215deb91e003b0cbe7b2f429244394097a31245c2"
+        },
+        {
+          "name": "pan-current",
+          "frontend_ms": 71.99730699999999,
+          "phases": {
+            "parse_load_ms": 22.513629,
+            "semantics_ms": 46.23824,
+            "mir_lowering_ms": 1.814417,
+            "mir_optimization_ms": 1.371181,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 26,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 56.617633,
+          "init_ms": 0.000823,
+          "shape": {
+            "effect_function_visits": 41,
+            "range_function_visits": 59,
+            "functions": 41,
+            "state_entries": 45,
+            "mir_bytes": 191883
+          },
+          "state_bytes": 1040,
+          "iterations": 16384,
+          "ns_per_frame": 70.41316270828247,
+          "rounds_ns_per_frame": [
+            70.41316270828247,
+            69.99680805206299,
+            69.64993572235107,
+            70.02719354629517,
+            71.4309778213501,
+            71.13171195983887,
+            71.66266965866089
+          ],
+          "mad_ns": 0.7185492515563965,
+          "min_ns": 69.64993572235107,
+          "max_ns": 71.66266965866089,
+          "block_p50_us": 8.607999999999999,
+          "block_p99_us": 9.486,
+          "block_max_us": 13.693999999999999,
+          "cold_max_us": 12.93,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "cd1c14202dee3e39d2b8a85b809082e3849852090fcc43e748d46bb30d914142"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "pan-on-write",
+          "compile_ms": 893.3459680000001,
+          "compile_includes_text": false,
+          "wasm_bytes": 15595,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 0.1898190000001705,
+          "init_ms": 0.2218880000000354,
+          "state_bytes": 1104,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 109.26396369934088,
+          "rounds_ns_per_frame": [
+            109.46721935272221,
+            109.26396369934088,
+            109.06842613220215,
+            109.5488204956056,
+            108.99900627136215,
+            109.41633892059318,
+            108.86981105804466
+          ],
+          "mad_ns": 0.20325565338133345,
+          "min_ns": 108.86981105804466,
+          "max_ns": 109.5488204956056,
+          "block_p50_us": 13.907000000017433,
+          "block_p99_us": 16.393999999763764,
+          "block_max_us": 20.121000000017375,
+          "cold_max_us": 1069.344000000001,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 2.4997894779330943,
+          "source_fingerprint": "5db609a7541c78597d325415050da9708ff75966966fa38323299d19023c7cb2",
+          "mir_sha256": "3025a6d7aa1a9099e80bac7215deb91e003b0cbe7b2f429244394097a31245c2",
+          "wasm_sha256": "ad279ea41d3a748bd727120df19ce1203330ab265e3e2c3ac948086697eb05ee"
+        },
+        {
+          "name": "pan-current",
+          "compile_ms": 954.586065,
+          "compile_includes_text": false,
+          "wasm_bytes": 15160,
+          "node_version": "v26.11.1",
+          "v8_version": "14.6.202.34-node.37",
+          "instantiate_ms": 1.7722669999998288,
+          "init_ms": 0.1160899999999856,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32",
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 136.5112686157225,
+          "rounds_ns_per_frame": [
+            136.18399143218983,
+            135.83357429504395,
+            137.03074932098397,
+            136.5112686157225,
+            136.39346504211446,
+            136.51642608642584,
+            137.25677871704104
+          ],
+          "mad_ns": 0.3272771835326864,
+          "min_ns": 135.83357429504395,
+          "max_ns": 137.25677871704104,
+          "block_p50_us": 17.31999999992695,
+          "block_p99_us": 19.227000000228145,
+          "block_max_us": 23.469000000204687,
+          "cold_max_us": 1561.333999999988,
+          "validation_samples": 131072,
+          "parity_max_abs": 1.862645149230957e-07,
+          "validation": "native-parity",
+          "wasm_to_native": 1.9387180374396837,
+          "source_fingerprint": "cd6ef6c70e1ab4cccb134a42ff568c4adc47cb06572bfedf73d7d704077a3870",
+          "mir_sha256": "cd1c14202dee3e39d2b8a85b809082e3849852090fcc43e748d46bb30d914142",
+          "wasm_sha256": "05335f3bcf1cc6a176add067bb6fc59fc1f61d071ae381b2623a6b9188799857"
+        }
+      ]
+    }
+  },
+  "diagnostic_sources": {
+    "audio-direct.onda": "params:\n  gain = 0.75\nsample:\n  out1 = in1 * gain + 0.1\n",
+    "audio-helper.onda": "def scale(x: f32, amount: f32):\n  return x * amount + 0.1\n\nparams:\n  gain = 0.75\nsample:\n  out1 = scale(in1, gain)\n",
+    "pan-current.onda": "import std/osc\nimport std/filter\nimport std/env\nimport std/levels\nimport std/random\n\nconst NumVoices = 8\n\nproc Voice:\n  params:\n    decay_s = 0.35\n    amp = 1.0\n\n  init:\n    freq = 220.0\n    cutoff = 1200.0\n    osc = std::osc::Saw(freq = freq)\n    lpf = std::filter::OnePole(cutoff = cutoff)\n    env = std::env::DecayEnv(decay_s = decay_s)\n\n  event bang(freq_hz, cutoff_hz):\n    freq = freq_hz\n    cutoff = cutoff_hz\n    osc.reset()\n    env.start()\n\n  sample:\n    osc.freq = freq\n    lpf.cutoff = cutoff\n    env.decay_s = decay_s\n\n    level = env()\n\n    sig = 0.0\n    if level > 0.00001:\n      sig = lpf(osc()) * level * amp\n\n    out1 = sig\n\nparams:\n  auto_play = true\n  freq_min = 110.0 {20.0, 4000.0}\n  freq_max = 880.0 {20.0, 4000.0}\n  cutoff_min = 300.0 {20.0, 20000.0}\n  cutoff_max = 6000.0 {20.0, 20000.0}\n  decay_s = 0.35 {0.01, 4.0}\n  amp = 1.0 {0.0, 1.0}\n  bpm = 126.0 {45.0, 220.0, unit = \"BPM\"}\n  level = 1.0 {0.0, 1.0}\n\ninit:\n  voices: Voice[NumVoices] = Voice()\n  next_voice = 0\n  rng = std::random::Rng()\n  voice_pan: f32[NumVoices]\n  clock = 0\n  pending_bang = false\n\nevent bang():\n  pending_bang = true\n\nsample:\n  period = max(i32(SR * 15.0 / bpm), 1)\n  if auto_play && clock == 0:\n    pending_bang = true\n  clock = (clock + 1) % period\n\n  if pending_bang:\n    lo_freq = min(freq_min, freq_max)\n    hi_freq = max(freq_min, freq_max)\n    lo_cutoff = min(cutoff_min, cutoff_max)\n    hi_cutoff = max(cutoff_min, cutoff_max)\n    voices[next_voice].decay_s = decay_s\n    voices[next_voice].amp = amp\n    voices[next_voice].bang(\n      freq_hz = rng.range(lo_freq, hi_freq),\n      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)\n    )\n    voice_pan[next_voice] = rng.range(-0.9, 0.9)\n    next_voice = (next_voice + 1) % NumVoices\n    pending_bang = false\n\n  mix_l = 0.0\n  mix_r = 0.0\n  for i in 0..NumVoices:\n    voice = voices[i]()\n    gain_l, gain_r = std::levels::pan_3db(voice_pan[i])\n    mix_l = mix_l + voice * gain_l\n    mix_r = mix_r + voice * gain_r\n  out1 = tanh(mix_l * level)\n  out2 = tanh(mix_r * level)\n",
+    "pan-on-write.onda": "import std/osc\nimport std/filter\nimport std/env\nimport std/levels\nimport std/random\n\nconst NumVoices = 8\n\nproc Voice:\n  params:\n    decay_s = 0.35\n    amp = 1.0\n\n  init:\n    freq = 220.0\n    cutoff = 1200.0\n    osc = std::osc::Saw(freq = freq)\n    lpf = std::filter::OnePole(cutoff = cutoff)\n    env = std::env::DecayEnv(decay_s = decay_s)\n\n  event bang(freq_hz, cutoff_hz):\n    freq = freq_hz\n    cutoff = cutoff_hz\n    osc.reset()\n    env.start()\n\n  sample:\n    osc.freq = freq\n    lpf.cutoff = cutoff\n    env.decay_s = decay_s\n\n    level = env()\n\n    sig = 0.0\n    if level > 0.00001:\n      sig = lpf(osc()) * level * amp\n\n    out1 = sig\n\nparams:\n  auto_play = true\n  freq_min = 110.0 {20.0, 4000.0}\n  freq_max = 880.0 {20.0, 4000.0}\n  cutoff_min = 300.0 {20.0, 20000.0}\n  cutoff_max = 6000.0 {20.0, 20000.0}\n  decay_s = 0.35 {0.01, 4.0}\n  amp = 1.0 {0.0, 1.0}\n  bpm = 126.0 {45.0, 220.0, unit = \"BPM\"}\n  level = 1.0 {0.0, 1.0}\n\ninit:\n  voices: Voice[NumVoices] = Voice()\n  next_voice = 0\n  rng = std::random::Rng()\n  voice_pan: f32[NumVoices]\n  voice_gain_l: f32[NumVoices]\n  voice_gain_r: f32[NumVoices]\n  for i in 0..NumVoices:\n    initial_l, initial_r = std::levels::pan_3db(voice_pan[i])\n    voice_gain_l[i] = initial_l\n    voice_gain_r[i] = initial_r\n  clock = 0\n  pending_bang = false\n\nevent bang():\n  pending_bang = true\n\nsample:\n  period = max(i32(SR * 15.0 / bpm), 1)\n  if auto_play && clock == 0:\n    pending_bang = true\n  clock = (clock + 1) % period\n\n  if pending_bang:\n    lo_freq = min(freq_min, freq_max)\n    hi_freq = max(freq_min, freq_max)\n    lo_cutoff = min(cutoff_min, cutoff_max)\n    hi_cutoff = max(cutoff_min, cutoff_max)\n    voices[next_voice].decay_s = decay_s\n    voices[next_voice].amp = amp\n    voices[next_voice].bang(\n      freq_hz = rng.range(lo_freq, hi_freq),\n      cutoff_hz = rng.range(lo_cutoff, hi_cutoff)\n    )\n    voice_pan[next_voice] = rng.range(-0.9, 0.9)\n    next_l, next_r = std::levels::pan_3db(voice_pan[next_voice])\n    voice_gain_l[next_voice] = next_l\n    voice_gain_r[next_voice] = next_r\n    next_voice = (next_voice + 1) % NumVoices\n    pending_bang = false\n\n  mix_l = 0.0\n  mix_r = 0.0\n  for i in 0..NumVoices:\n    voice = voices[i]()\n    gain_l = voice_gain_l[i]\n    gain_r = voice_gain_r[i]\n    mix_l = mix_l + voice * gain_l\n    mix_r = mix_r + voice * gain_r\n  out1 = tanh(mix_l * level)\n  out2 = tanh(mix_r * level)\n"
+  },
+  "pan_output_comparisons": [
+    {
+      "run": "probes",
+      "backend": "native",
+      "phase": "output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3",
+      "on_write_sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3"
+    },
+    {
+      "run": "probes",
+      "backend": "native",
+      "phase": "warm-output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c",
+      "on_write_sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c"
+    },
+    {
+      "run": "probes",
+      "backend": "wasm",
+      "phase": "output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a",
+      "on_write_sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a"
+    },
+    {
+      "run": "probes",
+      "backend": "wasm",
+      "phase": "warm-output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319",
+      "on_write_sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319"
+    },
+    {
+      "run": "pan-reversed",
+      "backend": "native",
+      "phase": "output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3",
+      "on_write_sha256": "0087b242fb91e35122812f0083280395d0ec56011ae02cd308a2b941bc89faf3"
+    },
+    {
+      "run": "pan-reversed",
+      "backend": "native",
+      "phase": "warm-output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c",
+      "on_write_sha256": "1a7fed3e1d29e0c64c0465f2f152e63b49f171225bf7c0befb42d1ccc058173c"
+    },
+    {
+      "run": "pan-reversed",
+      "backend": "wasm",
+      "phase": "output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a",
+      "on_write_sha256": "6e5de65101e6cb605245432535d27e9eef27ee9bc9b5e36ecf153c93ff10046a"
+    },
+    {
+      "run": "pan-reversed",
+      "backend": "wasm",
+      "phase": "warm-output",
+      "samples": 65536,
+      "bytes_equal": true,
+      "current_sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319",
+      "on_write_sha256": "b1b8cc9afb32377ad5263c7d9e391a464899a33b6e1a63918f1d3c9f5f2ed319"
+    }
+  ],
+  "audio_pairs": {
+    "audio-direct": [
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.812973002,
+            1.809342,
+            1.971783999,
+            2.035117001,
+            1.821844,
+            1.810152,
+            1.916109
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.516936,
+            2.183841001,
+            2.176604001,
+            2.253840001,
+            2.177794999,
+            2.543482999,
+            2.261633999
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.606975,
+            1.792135999,
+            1.828895001,
+            1.860261,
+            1.791186001,
+            1.790955999,
+            1.912105001
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.424239875,
+            0.254074875,
+            0.263870125,
+            0.28842375,
+            0.261642875,
+            0.266271875,
+            0.2826585
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.3729605,
+            0.27371425,
+            0.286795,
+            0.289704625,
+            0.26881325,
+            0.289535125,
+            0.305536
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.483834,
+            0.457595125,
+            0.474705,
+            0.49542925,
+            0.493604,
+            0.501374375,
+            0.505698875
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.064690531,
+            0.062687375,
+            0.06253725,
+            0.066014062,
+            0.064674969,
+            0.063569844,
+            0.067820656
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.073128719,
+            0.080159531,
+            0.077680313,
+            0.079092281,
+            0.078933594,
+            0.074272906,
+            0.078889844
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.701564938,
+            0.70329325,
+            0.706339,
+            0.713432531,
+            0.732836312,
+            0.704672375,
+            0.705483188
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.029892148,
+            0.029539469,
+            0.029789813,
+            0.030147742,
+            0.029753914,
+            0.029553398,
+            0.030004828
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.030352125,
+            0.030958422,
+            0.030471414,
+            0.032768031,
+            0.031399227,
+            0.03038818,
+            0.035828484
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.508898297,
+            1.505460508,
+            1.508381109,
+            1.507973758,
+            1.53322575,
+            1.50683868,
+            1.541670844
+          ]
+        }
+      ],
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.806082,
+            1.795337001,
+            1.911787,
+            1.952070999,
+            1.892768001,
+            1.921032999,
+            2.153181
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.150597,
+            2.184095001,
+            2.351772,
+            2.314472,
+            2.20105,
+            2.359045,
+            2.418822001
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.818561001,
+            1.798055,
+            1.810848,
+            1.929204,
+            1.791256,
+            1.807399,
+            2.019602
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.24701,
+            0.262502875,
+            0.267447625,
+            0.267278125,
+            0.27672375,
+            0.271925625,
+            0.27042575
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.3046275,
+            0.28431925,
+            0.303016375,
+            0.295188375,
+            0.2843465,
+            0.289788625,
+            0.2927965
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.5199015,
+            0.487126,
+            0.49183825,
+            0.503461625,
+            0.5048555,
+            0.498731375,
+            0.49365575
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.066833906,
+            0.063985906,
+            0.063563594,
+            0.067718812,
+            0.0632715,
+            0.063390344,
+            0.066022438
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.078561469,
+            0.079818062,
+            0.081020125,
+            0.080596281,
+            0.080298812,
+            0.080545781,
+            0.079562313
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.7092265,
+            0.710882063,
+            0.727918813,
+            0.710644781,
+            0.711875656,
+            0.707760719,
+            0.712789906
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.030380938,
+            0.030075875,
+            0.029412398,
+            0.029631188,
+            0.02999557,
+            0.029684547,
+            0.031165367
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.035806172,
+            0.036520336,
+            0.032239398,
+            0.040446937,
+            0.035231586,
+            0.0316265,
+            0.034609109
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.508563133,
+            1.547178898,
+            1.528129187,
+            1.508429891,
+            1.511153156,
+            1.505125031,
+            1.506045281
+          ]
+        }
+      ],
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.81471,
+            1.885719999,
+            1.943858,
+            2.306624001,
+            1.822976001,
+            1.940287999,
+            1.936367
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.159177999,
+            2.151749,
+            2.627111999,
+            2.406942,
+            2.207170999,
+            2.505283001,
+            2.33531
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.815468,
+            1.838434,
+            1.791193001,
+            1.966683001,
+            1.791376999,
+            1.811547001,
+            1.928715999
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.258253625,
+            0.265525875,
+            0.2685805,
+            0.276576,
+            0.2694935,
+            0.268232625,
+            0.26854825
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.295820125,
+            0.2814945,
+            0.29086925,
+            0.293499875,
+            0.28967925,
+            0.291153875,
+            0.296303375
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.477153125,
+            0.483561625,
+            0.499289375,
+            0.491232875,
+            0.47542275,
+            0.50318575,
+            0.4991955
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.065188062,
+            0.062904031,
+            0.062509875,
+            0.067856031,
+            0.062120281,
+            0.065455625,
+            0.067448844
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.088551656,
+            0.08102975,
+            0.078387625,
+            0.078673625,
+            0.078835906,
+            0.076332906,
+            0.0789525
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.716731437,
+            0.710512781,
+            0.706890844,
+            0.7114515,
+            0.714922719,
+            0.7084535,
+            0.714597125
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.030564391,
+            0.030110578,
+            0.029858547,
+            0.031237977,
+            0.029830516,
+            0.029869531,
+            0.030499844
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.0337655,
+            0.035409313,
+            0.031544672,
+            0.037979508,
+            0.037430641,
+            0.030954555,
+            0.038159977
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.506666094,
+            1.512570336,
+            1.508388406,
+            1.506697586,
+            1.509958508,
+            1.503690937,
+            1.509114125
+          ]
+        }
+      ]
+    ],
+    "audio-helper": [
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.709185,
+            1.700955001,
+            1.817982,
+            1.858594998,
+            1.877335999,
+            1.879209,
+            1.798310999
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.159082,
+            2.150226999,
+            2.559274999,
+            2.382098999,
+            2.154152999,
+            2.533266001,
+            2.318074001
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.726651,
+            1.804295,
+            1.791198001,
+            1.966945001,
+            1.711282999,
+            1.711349001,
+            1.927742
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.247572375,
+            0.280765375,
+            0.268536375,
+            0.281277375,
+            0.262698875,
+            0.268427875,
+            0.283576875
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.413871875,
+            0.41259125,
+            0.432972875,
+            0.443163875,
+            0.4041595,
+            0.432715625,
+            0.44316975
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.42917375,
+            0.414833875,
+            0.44695525,
+            0.437703375,
+            0.429407625,
+            0.44532375,
+            0.440234875
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.065490469,
+            0.062907844,
+            0.06220925,
+            0.066462469,
+            0.062911,
+            0.063005187,
+            0.067546469
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.251855844,
+            0.244629562,
+            0.236087344,
+            0.244209625,
+            0.244244625,
+            0.235650531,
+            0.24724475
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.69644025,
+            0.691346375,
+            0.699521906,
+            0.694940969,
+            0.715888219,
+            0.699769219,
+            0.697234
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.02993432,
+            0.029678656,
+            0.02966368,
+            0.031028227,
+            0.029828086,
+            0.03001168,
+            0.029686016
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.209444984,
+            0.199321328,
+            0.196905227,
+            0.204193727,
+            0.199588117,
+            0.198380102,
+            0.206618242
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.493313078,
+            1.494108336,
+            1.493304914,
+            1.494345422,
+            1.496250203,
+            1.495749781,
+            1.495018383
+          ]
+        }
+      ],
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.740894,
+            1.719876,
+            1.871814999,
+            1.809729001,
+            1.843812001,
+            1.903364,
+            1.886857
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.167140001,
+            2.170321,
+            2.273722999,
+            2.562869999,
+            2.214113001,
+            2.342251999,
+            2.475718999
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.782496,
+            1.791196,
+            1.816698999,
+            1.920786,
+            1.737577999,
+            1.845158,
+            1.951012
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.24856225,
+            0.257459625,
+            0.259878875,
+            0.280968,
+            0.274596875,
+            0.269092375,
+            0.276766875
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.411819375,
+            0.420401375,
+            0.437106125,
+            0.445584125,
+            0.40819175,
+            0.438231625,
+            0.442673875
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.43433975,
+            0.41732175,
+            0.42022775,
+            0.448451625,
+            0.419588625,
+            0.434442375,
+            0.442413625
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.067873281,
+            0.06280875,
+            0.064040594,
+            0.068961687,
+            0.068633906,
+            0.063503125,
+            0.067174563
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.244477406,
+            0.248911906,
+            0.237277781,
+            0.250412344,
+            0.245951813,
+            0.248531469,
+            0.245953906
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.696511406,
+            0.692973281,
+            0.70478675,
+            0.70095825,
+            0.703002844,
+            0.694352187,
+            0.698018594
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.030996555,
+            0.029821141,
+            0.029789047,
+            0.031200156,
+            0.030130867,
+            0.029649984,
+            0.030093461
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.204129586,
+            0.200464773,
+            0.201063906,
+            0.206208055,
+            0.208452148,
+            0.198642609,
+            0.212507547
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.495922,
+            1.526068758,
+            1.527370922,
+            1.554934039,
+            1.532562586,
+            1.494633203,
+            1.495361281
+          ]
+        }
+      ],
+      [
+        {
+          "mode": "disjoint",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.734205,
+            1.815464,
+            1.727858,
+            1.836578998,
+            1.799812,
+            1.933174,
+            1.900099001
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            2.165458,
+            2.19591,
+            2.359848999,
+            2.407116001,
+            2.19128,
+            2.609748999,
+            2.562849
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 1,
+          "rounds_ns_per_frame": [
+            1.702019999,
+            1.749334999,
+            1.877691,
+            1.874649,
+            1.715074,
+            1.812021001,
+            2.020926
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.2496805,
+            0.27151175,
+            0.288008125,
+            0.277939625,
+            0.262317625,
+            0.271191875,
+            0.2882925
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.48260875,
+            0.420454,
+            0.455805,
+            0.443464,
+            0.414990875,
+            0.439811625,
+            0.448378625
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 8,
+          "rounds_ns_per_frame": [
+            0.444581375,
+            0.424029125,
+            0.51606,
+            0.44629225,
+            0.432602,
+            0.454195875,
+            0.444986375
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.06863875,
+            0.062492719,
+            0.0628575,
+            0.067681437,
+            0.063393844,
+            0.063305687,
+            0.068487812
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.242694656,
+            0.246359563,
+            0.238308719,
+            0.247552156,
+            0.258528031,
+            0.239488313,
+            0.244490469
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 32,
+          "rounds_ns_per_frame": [
+            0.693957187,
+            0.695904469,
+            0.700091531,
+            0.693090156,
+            0.696273844,
+            0.695884688,
+            0.693995875
+          ]
+        },
+        {
+          "mode": "disjoint",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.029983047,
+            0.029773641,
+            0.029911359,
+            0.031515984,
+            0.029604258,
+            0.029700859,
+            0.031108547
+          ]
+        },
+        {
+          "mode": "in_place",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            0.21361532,
+            0.202943094,
+            0.200585352,
+            0.205288344,
+            0.202102211,
+            0.199639547,
+            0.20791057
+          ]
+        },
+        {
+          "mode": "partial_overlap",
+          "frames": 128,
+          "rounds_ns_per_frame": [
+            1.496527844,
+            1.510621727,
+            1.498132852,
+            1.495825984,
+            1.507932375,
+            1.497754195,
+            1.497336703
+          ]
+        }
+      ]
+    ]
+  },
+  "audio_summary": [
+    {
+      "frames": 1,
+      "mode": "disjoint",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          1.821844,
+          1.911787,
+          1.936367
+        ],
+        "median_ns_per_frame": 1.911787
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          1.817982,
+          1.843812001,
+          1.815464
+        ],
+        "median_ns_per_frame": 1.817982
+      },
+      "helper_to_direct": 0.9509333414234954
+    },
+    {
+      "frames": 1,
+      "mode": "in_place",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          2.253840001,
+          2.314472,
+          2.33531
+        ],
+        "median_ns_per_frame": 2.314472
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          2.318074001,
+          2.273722999,
+          2.359848999
+        ],
+        "median_ns_per_frame": 2.318074001
+      },
+      "helper_to_direct": 1.0015562949130514
+    },
+    {
+      "frames": 1,
+      "mode": "partial_overlap",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          1.828895001,
+          1.810848,
+          1.815468
+        ],
+        "median_ns_per_frame": 1.815468
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          1.791198001,
+          1.816698999,
+          1.812021001
+        ],
+        "median_ns_per_frame": 1.812021001
+      },
+      "helper_to_direct": 0.9981013165751199
+    },
+    {
+      "frames": 8,
+      "mode": "disjoint",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.266271875,
+          0.267447625,
+          0.26854825
+        ],
+        "median_ns_per_frame": 0.267447625
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.268536375,
+          0.269092375,
+          0.27151175
+        ],
+        "median_ns_per_frame": 0.269092375
+      },
+      "helper_to_direct": 1.0061498022276323
+    },
+    {
+      "frames": 8,
+      "mode": "in_place",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.289535125,
+          0.2927965,
+          0.291153875
+        ],
+        "median_ns_per_frame": 0.291153875
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.432715625,
+          0.437106125,
+          0.443464
+        ],
+        "median_ns_per_frame": 0.437106125
+      },
+      "helper_to_direct": 1.5012890520519433
+    },
+    {
+      "frames": 8,
+      "mode": "partial_overlap",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.493604,
+          0.498731375,
+          0.491232875
+        ],
+        "median_ns_per_frame": 0.493604
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.437703375,
+          0.43433975,
+          0.444986375
+        ],
+        "median_ns_per_frame": 0.437703375
+      },
+      "helper_to_direct": 0.8867500567256343
+    },
+    {
+      "frames": 32,
+      "mode": "disjoint",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.064674969,
+          0.063985906,
+          0.065188062
+        ],
+        "median_ns_per_frame": 0.064674969
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.063005187,
+          0.067174563,
+          0.063393844
+        ],
+        "median_ns_per_frame": 0.063393844
+      },
+      "helper_to_direct": 0.9801913318273103
+    },
+    {
+      "frames": 32,
+      "mode": "in_place",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.078889844,
+          0.080298812,
+          0.078835906
+        ],
+        "median_ns_per_frame": 0.078889844
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.244244625,
+          0.245953906,
+          0.244490469
+        ],
+        "median_ns_per_frame": 0.244490469
+      },
+      "helper_to_direct": 3.099137437767021
+    },
+    {
+      "frames": 32,
+      "mode": "partial_overlap",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.705483188,
+          0.710882063,
+          0.7114515
+        ],
+        "median_ns_per_frame": 0.710882063
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.697234,
+          0.698018594,
+          0.695884688
+        ],
+        "median_ns_per_frame": 0.697234
+      },
+      "helper_to_direct": 0.9808012275026272
+    },
+    {
+      "frames": 128,
+      "mode": "disjoint",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.029789813,
+          0.02999557,
+          0.030110578
+        ],
+        "median_ns_per_frame": 0.02999557
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.029828086,
+          0.030093461,
+          0.029911359
+        ],
+        "median_ns_per_frame": 0.029911359
+      },
+      "helper_to_direct": 0.9971925521001934
+    },
+    {
+      "frames": 128,
+      "mode": "in_place",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          0.030958422,
+          0.035231586,
+          0.035409313
+        ],
+        "median_ns_per_frame": 0.035231586
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          0.199588117,
+          0.204129586,
+          0.202943094
+        ],
+        "median_ns_per_frame": 0.202943094
+      },
+      "helper_to_direct": 5.760259955370729
+    },
+    {
+      "frames": 128,
+      "mode": "partial_overlap",
+      "audio-direct": {
+        "process_medians_ns_per_frame": [
+          1.508381109,
+          1.508563133,
+          1.508388406
+        ],
+        "median_ns_per_frame": 1.508388406
+      },
+      "audio-helper": {
+        "process_medians_ns_per_frame": [
+          1.494345422,
+          1.526068758,
+          1.497754195
+        ],
+        "median_ns_per_frame": 1.497754195
+      },
+      "helper_to_direct": 0.9929499517778713
+    }
+  ],
+  "raw_audio_harness": "#define _POSIX_C_SOURCE 200809L\n#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <time.h>\n#include <xmmintrin.h>\n#include \"onda_processor_abi.h\"\n\nstatic double now(void) {\n  struct timespec t;\n  clock_gettime(CLOCK_MONOTONIC, &t);\n  return t.tv_sec + t.tv_nsec * 1e-9;\n}\n\nstatic int measure(int mode, int frames, int iterations, double *result) {\n  _Alignas(64) float source[256], separate[256], expected[256];\n  float gain = 0.75f;\n  for (int i = 0; i < 256; ++i) source[i] = expected[i] = (float)i * 0.003f;\n  memset(separate, 0, sizeof separate);\n  float *destination = mode == 0 ? separate : source + (mode == 2 ? 1 : 0);\n  const void *inputs[] = {source};\n  void *outputs[] = {destination};\n  if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                   ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 1;\n  if (mode == 2) {\n    for (int i = 0; i < frames; ++i) expected[i + 1] = expected[i] * gain + 0.1f;\n  } else {\n    for (int i = 0; i < frames; ++i) expected[i] = expected[i] * gain + 0.1f;\n  }\n  for (int i = 0; i < frames; ++i) {\n    if (memcmp(&destination[i], &expected[i + (mode == 2)], sizeof(float))) return 2;\n  }\n  for (int i = 0; i < 1000; ++i) {\n    if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                     ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 3;\n  }\n  double start = now();\n  for (int i = 0; i < iterations; ++i) {\n    if (onda_process(NULL, &gain, inputs, outputs, 0, frames,\n                     ONDA_PROCESSOR_FULL_BLOCK, NULL, NULL, NULL, NULL, NULL)) return 4;\n  }\n  *result = (now() - start) * 1e9 / iterations / frames;\n  if (!isfinite(destination[frames - 1])) return 5;\n  return 0;\n}\n\nint main(void) {\n  _mm_setcsr(_mm_getcsr() | (1u << 15) | (1u << 6));\n  const int sizes[] = {1, 8, 32, 128};\n  const char *names[] = {\"disjoint\", \"in_place\", \"partial_overlap\"};\n  double measurements[4][3][7];\n  for (int round = 0; round < 7; ++round) {\n    for (int size = 0; size < 4; ++size) {\n      for (int order = 0; order < 3; ++order) {\n        int mode = (order + round) % 3;\n        int status = measure(mode, sizes[size], 1000000, &measurements[size][mode][round]);\n        if (status) { fprintf(stderr, \"validation failed: %d\\n\", status); return status; }\n      }\n    }\n  }\n  printf(\"[\\n\");\n  for (int size = 0; size < 4; ++size) for (int mode = 0; mode < 3; ++mode) {\n    printf(\"{\\\"mode\\\":\\\"%s\\\",\\\"frames\\\":%d,\\\"rounds_ns_per_frame\\\":[\", names[mode], sizes[size]);\n    for (int round = 0; round < 7; ++round) printf(\"%s%.9f\", round ? \",\" : \"\", measurements[size][mode][round]);\n    printf(\"]}%s\\n\", size == 3 && mode == 2 ? \"\" : \",\");\n  }\n  printf(\"]\\n\");\n  return 0;\n}\n",
+  "raw_audio_commands": [
+    [
+      "gcc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "target/bench/codegen-stack-review-2026-10-23/audio_alias_bench.c",
+      "target/bench/codegen-stack-review-2026-10-23/probes/audio-direct.o",
+      "-lm",
+      "-o",
+      "target/bench/codegen-stack-review-2026-10-23/audio-direct"
+    ],
+    [
+      "gcc",
+      "-O3",
+      "-ffp-contract=off",
+      "-Iinclude",
+      "target/bench/codegen-stack-review-2026-10-23/audio_alias_bench.c",
+      "target/bench/codegen-stack-review-2026-10-23/probes/audio-helper.o",
+      "-lm",
+      "-o",
+      "target/bench/codegen-stack-review-2026-10-23/audio-helper"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-direct"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-helper"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-helper"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-direct"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-direct"
+    ],
+    [
+      "taskset",
+      "-c",
+      "2",
+      "target/bench/codegen-stack-review-2026-10-23/audio-helper"
+    ]
+  ],
+  "raw_audio_method": "Three alternating direct/helper process pairs on CPU 2; each process has seven rotating binding-mode rounds of one million calls. Every mode checked bitwise against sequential scalar reference. Median of process medians. GCC O3 with contraction disabled; Onda object strict math.",
+  "artifact_inspection": {
+    "audio-direct": {
+      "ir_sha256": "43029efbcf52b31d684c58e5d8f47a56501e147b0aa7f9410a327183de931663",
+      "object_sha256": "10a842a2c23ce11430abd6148fb9acf0851874d2809fbf26c8229361c7cd1d3b",
+      "object_bytes": 2328,
+      "inspection": {
+        "kind": "descriptive-llvm-ir-counts",
+        "functions": {
+          "onda_processor_init": {
+            "instruction_lines": 1
+          },
+          "onda_process": {
+            "instruction_lines": 405,
+            "align_1_accesses": 2,
+            "vector_instruction_lines": 144,
+            "shufflevector": 4
+          }
+        }
+      },
+      "pointwise_guard_present": true,
+      "remaining_user_helper_definitions": 0
+    },
+    "audio-helper": {
+      "ir_sha256": "f5162ff0ded0fceb56f0480e757514fee120d6472911982519394f9d5416b706",
+      "object_sha256": "0e830811745e5f95ea24b77090ff1d22e5ee532f1ab64c99f6122563b565428d",
+      "object_bytes": 1672,
+      "inspection": {
+        "kind": "descriptive-llvm-ir-counts",
+        "functions": {
+          "onda_processor_init": {
+            "instruction_lines": 1
+          },
+          "onda_process": {
+            "instruction_lines": 239,
+            "align_1_accesses": 1,
+            "vector_instruction_lines": 72,
+            "shufflevector": 2
+          }
+        }
+      },
+      "pointwise_guard_present": false,
+      "remaining_user_helper_definitions": 0
+    },
+    "pan-current": {
+      "ir_sha256": "b3d714919a085f17fc72c5aec06fac2182ad24be546612036b6d2993e4adf13e",
+      "object_sha256": "615f936a93fbbc737e2b58db9e283cbd8431f7f4e99473c38a7c6c7713674383",
+      "object_bytes": 5616,
+      "inspection": {
+        "kind": "descriptive-llvm-ir-counts",
+        "functions": {
+          "onda_processor_init": {
+            "instruction_lines": 143,
+            "align_1_accesses": 15,
+            "call:llvm.memset.p0.i64": 8,
+            "vector_instruction_lines": 26
+          },
+          "onda_process": {
+            "instruction_lines": 347,
+            "vector_instruction_lines": 5,
+            "align_1_accesses": 10,
+            "call:llvm.maxnum.v8f32": 1,
+            "call:llvm.minnum.v8f32": 1,
+            "shufflevector": 1,
+            "call:llvm.fptosi.sat.i32.f32": 1,
+            "call:llvm.smax.i32": 2,
+            "call:llvm.minimum.f32": 2,
+            "call:llvm.maximum.f32": 2,
+            "call:llvm.umin.i32": 1,
+            "call:llvm.maxnum.f32": 1,
+            "call:llvm.minnum.f32": 1,
+            "call:expf": 2,
+            "call:llvm.floor.f32": 1,
+            "call:llvm.fabs.f32": 1,
+            "call:cosf": 1,
+            "call:sinf": 1,
+            "call:tanhf": 2
+          },
+          "onda_event_views_0": {
+            "instruction_lines": 29
+          },
+          "onda_event_0": {
+            "instruction_lines": 37
+          }
+        }
+      },
+      "pointwise_guard_present": false,
+      "remaining_user_helper_definitions": 0
+    },
+    "pan-on-write": {
+      "ir_sha256": "bc583e78211989729bb35611cbbc7f211fd52b4bc76aa3c4b7cf71bdfc7037fa",
+      "object_sha256": "d39f4391ad9861bc080c9f751ff5a0a75cb742ced8adbe7e776818f56876f438",
+      "object_bytes": 15024,
+      "inspection": {
+        "kind": "descriptive-llvm-ir-counts",
+        "functions": {
+          "onda_processor_init": {
+            "instruction_lines": 181,
+            "align_1_accesses": 15,
+            "call:llvm.memset.p0.i64": 8,
+            "vector_instruction_lines": 49,
+            "shufflevector": 4,
+            "call:Sleef_cosf8_u35avx2": 1,
+            "call:Sleef_sinf8_u35avx2": 1
+          },
+          "onda_process": {
+            "instruction_lines": 355,
+            "vector_instruction_lines": 5,
+            "align_1_accesses": 10,
+            "call:llvm.maxnum.v8f32": 1,
+            "call:llvm.minnum.v8f32": 1,
+            "shufflevector": 1,
+            "call:llvm.fptosi.sat.i32.f32": 1,
+            "call:llvm.smax.i32": 2,
+            "call:llvm.minimum.f32": 2,
+            "call:llvm.maximum.f32": 2,
+            "call:llvm.umin.i32": 1,
+            "call:cosf": 1,
+            "call:sinf": 1,
+            "call:llvm.maxnum.f32": 1,
+            "call:llvm.minnum.f32": 1,
+            "call:expf": 2,
+            "call:llvm.floor.f32": 1,
+            "call:llvm.fabs.f32": 1,
+            "call:tanhf": 2
+          },
+          "onda_event_views_0": {
+            "instruction_lines": 29
+          },
+          "onda_event_0": {
+            "instruction_lines": 37
+          },
+          "Sleef_sinf8_u35avx2": {
+            "instruction_lines": 162,
+            "vector_instruction_lines": 155,
+            "shufflevector": 4,
+            "call:llvm.x86.sse41.ptestc": 2,
+            "call:llvm.x86.avx.cvt.ps2dq.256": 2,
+            "call:llvm.fma.v8f32": 17,
+            "call:llvm.usub.sat.v8i32": 1,
+            "call:llvm.x86.avx2.gather.d.ps.256": 4,
+            "call:llvm.x86.avx.round.ps.256": 4,
+            "call:llvm.x86.avx.cvtt.ps2dq.256": 2,
+            "call:llvm.x86.avx.blendv.ps.256": 2,
+            "call:llvm.is.fpclass.v8f32": 1
+          },
+          "Sleef_cosf8_u35avx2": {
+            "instruction_lines": 167,
+            "vector_instruction_lines": 160,
+            "shufflevector": 4,
+            "call:llvm.x86.sse41.ptestc": 2,
+            "call:llvm.x86.avx.cvt.ps2dq.256": 2,
+            "call:llvm.fma.v8f32": 17,
+            "call:llvm.usub.sat.v8i32": 1,
+            "call:llvm.x86.avx2.gather.d.ps.256": 4,
+            "call:llvm.x86.avx.round.ps.256": 4,
+            "call:llvm.x86.avx.cvtt.ps2dq.256": 2
+          }
+        }
+      },
+      "pointwise_guard_present": false,
+      "remaining_user_helper_definitions": 0
+    }
+  },
+  "reproduction": "Restore diagnostic_sources under a local scratch directory. Use scripts/bench/run.py --source for the four probes, --backend both --ir --assembly --repetitions 7 --round-ms 75 --warmup-blocks 8192 --validation-blocks 256 --cpu 2 --memory-mib 4096 --timeout-seconds 120. Repeat only pan probes in reversed order. Compile raw_audio_harness against each emitted audio object with the retained command, adjusting artifact paths, then run three alternating pairs.",
+  "llvm": {
+    "topic": "LLVM vector math phase ordering and architecture",
+    "settings": {
+      "date": "2026-10-23",
+      "cpu_affinity": 2,
+      "frames": 128,
+      "ports": "f32 disjoint input/output",
+      "rounds": 7,
+      "iterations_per_round": 200000,
+      "warmup_calls": 1000,
+      "timing_inputs": "128 equally spaced f32 values from -6 to 6",
+      "validation_inputs": "131072 equally spaced f32 values from -100 to 100",
+      "fp": "no fast math or contraction; x86 FTZ/DAZ",
+      "repetitions": "three process pairs, reversed order for pair1",
+      "application_backend": "LLVM21.1.2 llc -mcpu=native; same optimized baseline IR"
+    },
+    "interpretation": "Diagnostic only; dedicated exp2 helper built with systemClang23.1.3 from pinned SLEEF3.9, not pinned productionClang21.1.8. No production files changed. Generic vectorpow is slower and is rejected. No f64/AArch64/edge-case acceptance claimed.",
+    "tools": {
+      "clang": "clang version 23.1.3",
+      "llc": "LLVM (http://llvm.org/):",
+      "sleef_revision": "906ca7512ee483296780a81a21b9ca715d40dfe1",
+      "onda_sha256": "aca90839e6c2f915753b9d07c51d7793694b5b63e76b6b40384bf2ae11487eae"
+    },
+    "summary": {
+      "specialized": {
+        "pair_medians_ns_per_frame": {
+          "baseline": [
+            1.929621484,
+            1.955458945,
+            1.955445898
+          ],
+          "candidate": [
+            0.267505391,
+            0.265621445,
+            0.269176953
+          ]
+        },
+        "median_baseline": 1.955445898,
+        "median_candidate": 0.267505391,
+        "speedup": 7.309930804347791
+      },
+      "vector_pow": {
+        "pair_medians_ns_per_frame": {
+          "baseline": [
+            1.926226719,
+            1.95935043,
+            1.955040742
+          ],
+          "candidate": [
+            2.780548125,
+            2.795690156,
+            2.799467812
+          ]
+        },
+        "median_baseline": 1.955040742,
+        "median_candidate": 2.795690156,
+        "speedup": 0.6993052280146884
+      }
+    },
+    "specialized_raw": {
+      "0-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          1.893392422,
+          1.909638867,
+          1.929621484,
+          1.926446563,
+          1.931280703,
+          1.941518789,
+          1.947161133
+        ]
+      },
+      "0-specialized": {
+        "max_relative_error": 1.19058093325e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          0.286804023,
+          0.258877422,
+          0.272368125,
+          0.267630742,
+          0.265467891,
+          0.267505391,
+          0.265081602
+        ]
+      },
+      "1-specialized": {
+        "max_relative_error": 1.19058093325e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          0.304502891,
+          0.275688203,
+          0.262960391,
+          0.265621445,
+          0.270918594,
+          0.264681836,
+          0.262689688
+        ]
+      },
+      "1-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          1.952428359,
+          1.943767578,
+          1.955585117,
+          1.964545195,
+          1.9642525,
+          1.95491168,
+          1.955458945
+        ]
+      },
+      "2-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          1.960045508,
+          1.955445898,
+          1.944660391,
+          1.945830078,
+          1.945946484,
+          1.95715707,
+          1.962139453
+        ]
+      },
+      "2-specialized": {
+        "max_relative_error": 1.19058093325e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          0.292715625,
+          0.26603043,
+          0.264157383,
+          0.269572266,
+          0.26687793,
+          0.269376797,
+          0.269176953
+        ]
+      }
+    },
+    "generic_pow_raw": {
+      "0-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          1.895585039,
+          1.903822305,
+          1.917060039,
+          1.926226719,
+          1.934898047,
+          1.952535117,
+          1.948835859
+        ]
+      },
+      "0-vector-pow": {
+        "max_relative_error": 1.18301180847e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          2.748215117,
+          2.776108047,
+          2.78513,
+          2.789419844,
+          2.780548125,
+          2.792707578,
+          2.779758203
+        ]
+      },
+      "1-vector-pow": {
+        "max_relative_error": 1.18301180847e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          2.771305273,
+          2.795690156,
+          2.797971484,
+          2.812031914,
+          2.792602344,
+          2.791898086,
+          2.798906133
+        ]
+      },
+      "1-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          2.009367891,
+          1.96251543,
+          1.95935043,
+          1.952610703,
+          1.960353359,
+          1.953984102,
+          1.956257188
+        ]
+      },
+      "2-baseline": {
+        "max_relative_error": 0,
+        "max_ulp": 0,
+        "rounds_ns_per_frame": [
+          1.948145469,
+          1.958722695,
+          1.955040742,
+          1.951193672,
+          1.958303672,
+          1.95445293,
+          1.957706602
+        ]
+      },
+      "2-vector-pow": {
+        "max_relative_error": 1.18301180847e-07,
+        "max_ulp": 1,
+        "rounds_ns_per_frame": [
+          2.78210918,
+          2.788453164,
+          2.807296055,
+          2.802660742,
+          2.808294727,
+          2.799467812,
+          2.794530039
+        ]
+      }
+    },
+    "sources": {
+      "dbamp.onda": "ins 1\nsample:\n  out1 = dbamp(in1)\n",
+      "exp.onda": "ins 1\nsample:\n  out1 = exp(in1)\n",
+      "exp10.onda": "ins 1\nsample:\n  out1 = pow(10.0, in1)\n",
+      "exp2.onda": "ins 1\nsample:\n  out1 = pow(2.0, in1)\n",
+      "log2.onda": "ins 1\nsample:\n  out1 = log(in1) / log(2.0)\n",
+      "midicps.onda": "ins 1\nsample:\n  out1 = midicps(in1)\n",
+      "pow4.onda": "ins 1\nsample:\n  out1 = pow(4.0, in1)\n",
+      "pow9.onda": "ins 1\nsample:\n  out1 = pow(9.0, in1)\n",
+      "sin.onda": "ins 1\nsample:\n  out1 = sin(in1)\n",
+      "sincos.onda": "ins 1\nsample:\n  out1 = sin(in1) + cos(in1)\n"
+    },
+    "harness": "#define _POSIX_C_SOURCE 200809L\n#include <math.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <time.h>\n#include <xmmintrin.h>\n#include \"onda_processor_abi.h\"\nstatic double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }\nint main(void) {\n  _mm_setcsr(_mm_getcsr() | (1u<<15) | (1u<<6));\n  _Alignas(64) float source[128], out[128];\n  const void *inputs[] = {source}; void *outputs[] = {out};\n  double max_error=0; unsigned max_ulp=0;\n  for (int k=0;k<1024;k++) {\n    for (int i=0;i<128;i++) source[i]=-100.0f+200.0f*(float)(k*128+i)/131071.0f;\n    if (onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL)) return 1;\n    for (int i=0;i<128;i++) {\n      float expected=exp2f(source[i]); double rel=fabs((double)out[i]-expected)/expected;\n      if(rel>max_error)max_error=rel;\n      uint32_t a,b;memcpy(&a,&out[i],4);memcpy(&b,&expected,4);unsigned ulp=a>b?a-b:b-a;\n      if(ulp>max_ulp)max_ulp=ulp;\n    }\n  }\n  for(int i=0;i<128;i++)source[i]=-6.0f+12.0f*(float)i/127.0f;\n  for(int i=0;i<1000;i++) if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 2;\n  printf(\"{\\\"max_relative_error\\\":%.12g,\\\"max_ulp\\\":%u,\\\"rounds_ns_per_frame\\\":[\",max_error,max_ulp);\n  for(int round=0;round<7;round++) {\n    const int iterations=200000; double start=now();\n    for(int i=0;i<iterations;i++)if(onda_process(NULL,NULL,inputs,outputs,0,128,3,NULL,NULL,NULL,NULL,NULL))return 3;\n    double elapsed=(now()-start)*1e9/iterations/128;\n    printf(\"%s%.9f\",round?\",\":\"\",elapsed);\n  }\n  printf(\"]}\\n\");\n  return max_ulp>2;\n}\n",
+    "kernel_build_command": [
+      "clang",
+      "-c",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-O2",
+      "-ffp-contract=off",
+      "-fno-math-errno",
+      "-fno-asynchronous-unwind-tables",
+      "-ffreestanding",
+      "-nostdlibinc",
+      "--target=x86_64-unknown-linux-gnu",
+      "-mavx2",
+      "-mfma",
+      "-DENABLE_AVX2",
+      "-DNDEBUG",
+      "-Dxexp2f=Sleef_exp2f8_u10avx2",
+      "-Ideps/sleef/src/common",
+      "-Ideps/sleef/src/arch",
+      "-Ideps/sleef/src/libm",
+      "-Itarget/bench/codegen-stack-review-2026-10-23/exp2-kernel",
+      "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/exp2.c",
+      "-o",
+      "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/native.o"
+    ],
+    "artifact_sha256": {
+      "exp2.ll": "34b8b5c2796f0d77e91de53ad676fb2eb5821c4b5fca44bb3ec91f964861e2c3",
+      "exp2-llc.o": "d2b142e130e86a4b95c78d8fda58726d7ce88366a0d6374095db867ea8cd5f8c",
+      "exp2-specialized.ll": "be11118e665c41437344b0be712ad7c98a50124509bc11e3fae1f1b212191737",
+      "exp2-specialized.o": "9202f016543510e53d9d1867762dc5c387bf5e2bf7a4eb20c314169bb540ad4d",
+      "exp2-kernel/native.o": "b0228abfe466879b31b70e0e0b4e800189dc2b846a5a25e1366ae4356fe1115e",
+      "exp2-vector-pow.ll": "c5924db4a201f024755a6d614d9721feaa1f0aa89429c03b134c8cb07c92ab7c",
+      "exp2-vector-pow.o": "1ae2cf7679b6eae43109b4615e44d9b3d722fe6bcb9a1abb2ed443dd7081f11a"
+    },
+    "transformation": "Specialized: rename only two calls and the declaration llvm.exp2.v8f32 to Sleef_exp2f8_u10avx2; retain every scalar tail call and every other application instruction; compile LLVM21 llc -mcpu=native and link scratch strict SLEEF exp2 helper. Genericpow: replace two vector exp2 calls by fastcc bundled Sleef_powf8_u10avx2 with all base lanes=2.0, then internalize/globaldce/strip and LLVM21 llc; no applicationO3 rerun.",
+    "kernel_build_sources": {
+      "assert.h": "#define assert(x) ((void)0)\n",
+      "exp2.c": "#include \"sleefsimdsp.c\"\n#include \"rempitab.c\"\n",
+      "sleef-config.h": "/* No optional quad precision. */\n",
+      "stdlib.h": "#include <stddef.h>\nvoid *malloc(size_t);\nvoid free(void *);\n",
+      "string.h": "#include <stddef.h>\nvoid *memcpy(void *, const void *, size_t);\n"
+    },
+    "kernel_commands": {
+      "command.json": [
+        "clang",
+        "-S",
+        "-emit-llvm",
+        "-O2",
+        "-ffp-contract=off",
+        "-fno-math-errno",
+        "-fno-asynchronous-unwind-tables",
+        "-ffreestanding",
+        "-nostdlibinc",
+        "--target=x86_64-unknown-linux-gnu",
+        "-mavx2",
+        "-mfma",
+        "-DENABLE_AVX2",
+        "-DNDEBUG",
+        "-Dxexp2f=Sleef_exp2f8_u10avx2",
+        "-Ideps/sleef/src/common",
+        "-Ideps/sleef/src/arch",
+        "-Ideps/sleef/src/libm",
+        "-Itarget/bench/codegen-stack-review-2026-10-23/exp2-kernel",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/exp2.c",
+        "-o",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/raw.ll"
+      ],
+      "object-command.json": [
+        "clang",
+        "-c",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-O2",
+        "-ffp-contract=off",
+        "-fno-math-errno",
+        "-fno-asynchronous-unwind-tables",
+        "-ffreestanding",
+        "-nostdlibinc",
+        "--target=x86_64-unknown-linux-gnu",
+        "-mavx2",
+        "-mfma",
+        "-DENABLE_AVX2",
+        "-DNDEBUG",
+        "-Dxexp2f=Sleef_exp2f8_u10avx2",
+        "-Ideps/sleef/src/common",
+        "-Ideps/sleef/src/arch",
+        "-Ideps/sleef/src/libm",
+        "-Itarget/bench/codegen-stack-review-2026-10-23/exp2-kernel",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/exp2.c",
+        "-o",
+        "target/bench/codegen-stack-review-2026-10-23/exp2-kernel/native.o"
+      ]
+    }
+  },
+  "wasm_parameter_simd": {
+    "original_admission": "['state', 'parameter']",
+    "counterfactual_admission": "['state', 'parameter', 'param']",
+    "explanation": "Interface controls use PlaceBase::Param serialized as param; function formals use parameter. A scratch copy of the backend admits param in its invariant-load whitelist; production is unchanged.",
+    "cpu": 3,
+    "method": "Three alternating pairs; seven 75ms rounds each; same MIR and Node/V8. Median of process medians. Original harness with only backend import changed for candidate. Memory/time cgroup limits retained.",
+    "results": [
+      {
+        "compile_ms": 218.80832299999997,
+        "compile_includes_text": true,
+        "wasm_bytes": 397,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 0.14009300000003577,
+        "init_ms": 0.01548400000001493,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 2097152,
+        "ns_per_frame": 0.5557115226984021,
+        "rounds_ns_per_frame": [
+          0.5611090660095216,
+          0.5633952319622038,
+          0.5665879696607595,
+          0.5557115226984021,
+          0.5554526522755625,
+          0.5543956197798255,
+          0.5551162920892241
+        ],
+        "mad_ns": 0.001315902918576528,
+        "min_ns": 0.5543956197798255,
+        "max_ns": 0.5665879696607595,
+        "block_p50_us": 0.1190000000406144,
+        "block_p99_us": 0.9860000000116997,
+        "block_max_us": 3.544000000147207,
+        "cold_max_us": 20.859000000029937,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 0,
+        "variant": "before",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": false
+      },
+      {
+        "compile_ms": 309.299031,
+        "compile_includes_text": true,
+        "wasm_bytes": 526,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 0.15017999999997755,
+        "init_ms": 0.014099999999984902,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 4194304,
+        "ns_per_frame": 0.1793722715228796,
+        "rounds_ns_per_frame": [
+          0.1793722715228796,
+          0.18215743266046047,
+          0.18179258145391944,
+          0.1767110005021095,
+          0.18010554835200274,
+          0.17419674433767815,
+          0.17646248266100883
+        ],
+        "mad_ns": 0.0026612710207701007,
+        "min_ns": 0.17419674433767815,
+        "max_ns": 0.18215743266046047,
+        "block_p50_us": 0.07099999993442907,
+        "block_p99_us": 0.9509999999863794,
+        "block_max_us": 4.871999999977561,
+        "cold_max_us": 27.586999999925865,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 0,
+        "variant": "after",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": true
+      },
+      {
+        "compile_ms": 315.85371899999996,
+        "compile_includes_text": true,
+        "wasm_bytes": 526,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 0.14677000000006046,
+        "init_ms": 0.015809999999987667,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 4194304,
+        "ns_per_frame": 0.17722598835825937,
+        "rounds_ns_per_frame": [
+          0.18340596929192543,
+          0.1852108556777238,
+          0.1859966907650233,
+          0.1766520086675885,
+          0.1761823482811451,
+          0.17722598835825937,
+          0.17650001496076595
+        ],
+        "mad_ns": 0.0010436400771142718,
+        "min_ns": 0.1761823482811451,
+        "max_ns": 0.1859966907650233,
+        "block_p50_us": 0.07000000005064066,
+        "block_p99_us": 0.950000000102591,
+        "block_max_us": 3.1759999999394495,
+        "cold_max_us": 28.81999999999607,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 1,
+        "variant": "after",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": true
+      },
+      {
+        "compile_ms": 223.89021199999996,
+        "compile_includes_text": true,
+        "wasm_bytes": 397,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 0.15294599999998582,
+        "init_ms": 0.015923999999984062,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 1048576,
+        "ns_per_frame": 0.5729086548089981,
+        "rounds_ns_per_frame": [
+          0.578320384025574,
+          0.5901937484741212,
+          0.587366946041584,
+          0.5729086548089981,
+          0.5726359114050865,
+          0.5657275468111036,
+          0.5707053169608112
+        ],
+        "mad_ns": 0.005411729216575845,
+        "min_ns": 0.5657275468111036,
+        "max_ns": 0.5901937484741212,
+        "block_p50_us": 0.12100000003556488,
+        "block_p99_us": 0.9820000000217988,
+        "block_max_us": 18.503999999893495,
+        "cold_max_us": 22.620999999958258,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 1,
+        "variant": "before",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": false
+      },
+      {
+        "compile_ms": 221.74993500000002,
+        "compile_includes_text": true,
+        "wasm_bytes": 397,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 1.935058999999967,
+        "init_ms": 0.01860599999997703,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 1048576,
+        "ns_per_frame": 0.5688325166702268,
+        "rounds_ns_per_frame": [
+          0.5843821987509725,
+          0.5944528132677072,
+          0.5898712500929836,
+          0.5677111074328426,
+          0.5686554536223407,
+          0.5688325166702268,
+          0.5664090439677234
+        ],
+        "mad_ns": 0.0024234727025034264,
+        "min_ns": 0.5664090439677234,
+        "max_ns": 0.5944528132677072,
+        "block_p50_us": 0.12199999991935329,
+        "block_p99_us": 1.063000000158354,
+        "block_max_us": 3.361999999924592,
+        "cold_max_us": 49.25500000001648,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 2,
+        "variant": "before",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": false
+      },
+      {
+        "compile_ms": 313.423432,
+        "compile_includes_text": true,
+        "wasm_bytes": 526,
+        "node_version": "v26.11.1",
+        "v8_version": "14.6.202.34-node.37",
+        "instantiate_ms": 0.15470199999992928,
+        "init_ms": 0.018634000000020023,
+        "state_bytes": 0,
+        "inputs": [
+          "f32"
+        ],
+        "outputs": [
+          "f32"
+        ],
+        "iterations": 4194304,
+        "ns_per_frame": 0.17742440663278106,
+        "rounds_ns_per_frame": [
+          0.18253619782626632,
+          0.18523726612329477,
+          0.18510659597814075,
+          0.17742440663278106,
+          0.1771341543644664,
+          0.17729679867625248,
+          0.17731291241943867
+        ],
+        "mad_ns": 0.0002902522683146669,
+        "min_ns": 0.1771341543644664,
+        "max_ns": 0.18523726612329477,
+        "block_p50_us": 0.07300000015675323,
+        "block_p99_us": 1.0099999999511056,
+        "block_max_us": 17.155000000002474,
+        "cold_max_us": 28.74799999995048,
+        "validation_samples": 65536,
+        "parity_max_abs": null,
+        "validation": "finite",
+        "wasm_to_native": null,
+        "pair": 2,
+        "variant": "after",
+        "cpu": 3,
+        "output_equals_native": true,
+        "warm-output_equals_native": true,
+        "simd_present": true
+      }
+    ],
+    "median_before_ns_per_frame": 0.5688325166702268,
+    "median_after_ns_per_frame": 0.17742440663278106,
+    "speedup": 3.206055623720085,
+    "all_output_captures_equal_native": true,
+    "wasm_bytes": {
+      "before": 397,
+      "after": 526
+    },
+    "original_simd_sha256": "146c6caa715636ae20a825e0e71327488c96b40d779e88a7821d038d55980225",
+    "candidate_simd_sha256": "274aa1d12a9de1674753bd9c9c4e3406f6d78e7440321245f8f14e5d589afa2e",
+    "reproduction": "Copy packages/onda_binaryen_web/src to scratch, retain resolution to its installed node_modules, and replace only the invariant load whitelist as recorded. Copy scripts/bench/wasm.mjs, resolve its wasm-memory.mjs import to the original helper, and its compiler import to the scratch index.js. Run the same emitted audio-direct.mir.msgpack via both workers with the probes config and CPU affinity 3. Retain original cgroup/heap limits; alternate before/after three times.",
+    "commands": {
+      "wasm-param-0-before": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-5d230535120b46a9941f3baedd1e09e4",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-before/audio-direct.config.json"
+      ],
+      "wasm-param-0-after": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-4b36b2d3fbe5419db8c4e5d9987ee970",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct.config.json"
+      ],
+      "wasm-param-1-after": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-5f111940fdc74ad7aac593112de713a2",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-1-after/audio-direct.config.json"
+      ],
+      "wasm-param-1-before": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-67c3cfafc7fd4dbea8ee0834ef1e5c5a",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-1-before/audio-direct.config.json"
+      ],
+      "wasm-param-2-before": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-06a0e6375411463ebc64da343606949e",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-2-before/audio-direct.config.json"
+      ],
+      "wasm-param-2-after": [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=exec",
+        "--unit=onda-bench-6d93dddae8a348c9bafcaabc0a9a56d3",
+        "-p",
+        "MemoryMax=4096M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "TasksMax=64",
+        "-p",
+        "RuntimeMaxSec=120s",
+        "-p",
+        "LimitCPU=120",
+        "-p",
+        "LimitCORE=0",
+        "-p",
+        "CPUAffinity=3",
+        "node",
+        "--max-old-space-size=256",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-2-after/audio-direct.config.json"
+      ]
+    },
+    "config": {
+      "schema_version": 1,
+      "source": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
+      "prefix": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct",
+      "mode": "bench",
+      "sample_rate": 48000,
+      "block_size": 128,
+      "repetitions": 7,
+      "round_ms": 75.0,
+      "warmup_blocks": 8192,
+      "validation_blocks": 256,
+      "latency_blocks": 1024,
+      "input_seed": 12345,
+      "input_pattern": "noise",
+      "atol": 1e-06,
+      "rtol": 1e-06,
+      "bitwise": false,
+      "opt_level": 3,
+      "wasm_opt_level": 4,
+      "fast_math": false,
+      "math": {
+        "reassociate": false,
+        "contract": false,
+        "no_signed_zeros": false
+      },
+      "allocations": false,
+      "remarks": false,
+      "ir": true,
+      "assembly": true,
+      "trust_mir": false,
+      "max_output_abs": null,
+      "compare_native": false
+    }
+  }
+}

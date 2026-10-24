@@ -86,7 +86,7 @@ struct BellVoiceManager:
   pans: f32[VoiceCount]
   active: bool[VoiceCount]
   held: bool[VoiceCount]
-  next_voice: i32 = 0
+  next_voice = 0
 
   def configure(
     self,

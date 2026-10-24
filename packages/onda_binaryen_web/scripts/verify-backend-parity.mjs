@@ -39,6 +39,60 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "mixed state and local storage preserves in-place dependencies",
+    source: join(packageDir, "test/fixtures/mixed-storage-origins.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "tuple stores preserve normalization, hooks, precision and evaluation order",
+    source: join(packageDir, "test/fixtures/tuple-stores.onda"),
+    blocks: 3,
+    expectedChannels: Array.from({ length: 4 }, () => Array(12).fill(0)),
+  },
+  {
+    name: "shared helpers preserve alternative state views",
+    source: join(packageDir, "test/fixtures/shared-view-ranges.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "bounded runtime loops cover negative, empty and oversized counts",
+    source: join(packageDir, "test/fixtures/bounded-state-loops.onda"),
+    blocks: 8,
+    expectedChannels: [Array(32).fill(0)],
+  },
+  {
+    name: "state view shapes, forwarded lengths and clamped empty views",
+    source: join(packageDir, "test/fixtures/state-view-shapes.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "disjoint state windows through forwarding helpers",
+    source: join(packageDir, "test/fixtures/state-window-access.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "fixed array guards preserve clamping, mutation, and wrapping",
+    source: join(packageDir, "test/fixtures/guarded-array-access.onda"),
+    blocks: 20,
+    expectedChannels: Array.from({ length: 3 }, () => Array(80).fill(0)),
+  },
+  {
+    name: "interleaved access through helpers shared by owned state arrays",
+    source: join(packageDir, "test/fixtures/interleaved-state-access.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
+    name: "affine mirrored array accesses through helpers",
+    source: join(packageDir, "test/fixtures/affine-array-pairs.onda"),
+    blocks: 3,
+    expectedChannels: [Array(12).fill(0)],
+  },
+  {
     name: "Memory access semantics across overlapping slices, calls, and loops",
     source: join(packageDir, "test/fixtures/memory-access-semantics.onda"),
     blocks: 12,
@@ -54,6 +108,12 @@ const scenarios = [
     name: "borrowed branch aliases and explicit aggregate arguments",
     source: join(packageDir, "test/fixtures/structured-data-regressions.onda"),
     blocks: 3,
+  },
+  {
+    name: "derived slice indices preserve empty views and integer wrapping",
+    source: join(packageDir, "test/fixtures/slice-derived-bounds.onda"),
+    blocks: 12,
+    expectedChannels: Array.from({ length: 2 }, () => Array(48).fill(0)),
   },
   {
     name: "nested aggregate routing through proc events and delegates",
@@ -359,6 +419,38 @@ const scenarios = [
     name: "stdlib oscillator, envelope, mapping, panning, and biquad regressions",
     source: join(packageDir, "test/fixtures/stdlib-dsp-regressions.onda"),
     blocks: 16,
+    comparison: "approximate",
+  },
+  {
+    name: "coefficient updates remain sample accurate across snapshots",
+    source: join(packageDir, "test/fixtures/coefficient-updates.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      ...Array.from({ length: 12 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 12 }, () => ({ kind: "render" })),
+    ],
+    expectedChannels: Array.from({ length: 4 }, () => Array(100).fill(0)),
+  },
+  {
+    name: "independent voice rendering retains ordered floating-point mixing",
+    source: join(packageDir, "test/fixtures/ordered-voice-rendering.onda"),
+    blocks: 12,
+    expectedChannels: [Array(48).fill(0)],
+  },
+  {
+    name: "panning gains follow initialization, repeated writes, events, and snapshots",
+    source: join(packageDir, "test/fixtures/panning-updates.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "event", name: "change", values: [] },
+      ...Array.from({ length: 24 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 24 }, () => ({ kind: "render" })),
+    ],
+    expectedChannels: Array.from({ length: 4 }, () => Array(196).fill(0)),
     comparison: "approximate",
   },
   {

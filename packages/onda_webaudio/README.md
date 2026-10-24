@@ -182,7 +182,7 @@ and can be set to zero to suppress host delivery without suppressing argument ev
 collection is inactive while no listener is registered, avoiding record packing and transport work
 in the render callback. Listeners added later with `processor.onPrint(...)` receive subsequent
 executions; use the construction option above when initialized-code output must be observed.
-See the internal [print host integration](../../docs/printing.md) reference for scalar formatting,
+See the [host output guide](../../docs/host-output.md#prints) for scalar formatting,
 source metadata, and the equivalent Rust, C, and raw processor APIs.
 
 ## Delegates
@@ -216,8 +216,8 @@ not a compiler-computable exact whole-call size: occurrence counts and slice pay
 runtime-dependent. The worklet supplies delegate storage to generated code only while at least one
 listener is registered, and decoding happens on the main side. `overflowCount` reports insufficient
 configured capacity; `transportDropCount` separately reports records discarded by the bounded
-worklet-to-main queue. Internal Onda `when` handlers still run in either case. See the internal
-[delegate host integration](../../docs/delegates.md) reference for sizing and lifecycle details.
+worklet-to-main queue. Internal Onda `when` handlers still run in either case. See the
+[host output guide](../../docs/host-output.md#delegates) for sizing and lifecycle details.
 
 When print and delegate listeners are both active, the adapter invokes them in authored order for
 each init, event, or process segment. It may split one stream's batch around an occurrence from the

@@ -101,7 +101,7 @@ struct VoiceManager:
   active: bool[VoiceCount]
   held: bool[VoiceCount]
   bends: f32[MidiChannelCount]
-  next_voice: i32 = 0
+  next_voice = 0
 
   def configure(
     self,
