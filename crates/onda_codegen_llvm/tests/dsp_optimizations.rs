@@ -1,7 +1,8 @@
 #![cfg(feature = "llvm-orc")]
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
+    jit_program_from_optimized_mir_with_options, lower_optimized_mir_to_llvm_ir_with_options,
+    lower_optimized_mir_to_object, MirCompileOptions, MirTargetOptions, TargetOptLevel,
 };
 
 fn optimize(source: &str) -> (onda_mir::OptimizedProgram, onda_mir::PassStats) {
@@ -18,13 +19,77 @@ fn optimize(source: &str) -> (onda_mir::OptimizedProgram, onda_mir::PassStats) {
 }
 
 #[test]
-fn distribution_preserves_ordered_mixing_and_avoids_coupled_or_small_loops() {
+fn portable_optimization_preserves_the_fused_rendering_schedule() {
     let source = include_str!(
         "../../../packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
     );
-    let (mir, stats) = optimize(source);
+    for source in [
+        source.to_owned(),
+        source
+            .replace("f32", "f64")
+            .replace("mixed = 0.0", "mixed: f64 = 0.0")
+            .replace("expected = 0.0", "expected: f64 = 0.0")
+            .replace("out1 = mixed - expected", "out1 = f32(mixed - expected)"),
+    ] {
+        let (mir, stats) = optimize(&source);
+        assert_eq!(stats.distributed_loops, 0);
+        assert!(mir.functions.iter().all(|function| function
+            .locals
+            .iter()
+            .all(|local| local.name.as_deref() != Some("$distributed.term"))));
+        let original = onda_mir::to_messagepack_optimized(&mir).unwrap();
+        let (scheduled, stats) = onda_mir::distribute_loops(&mir).unwrap();
+        assert_eq!(stats.distributed_loops, 1);
+        assert_eq!(original, onda_mir::to_messagepack_optimized(&mir).unwrap());
+        assert_eq!(scheduled.effects(), &onda_mir::analyze_effects(&scheduled));
+        assert_eq!(
+            scheduled.ranges(),
+            &onda_mir::analyze_program_integer_ranges_with_effects(&scheduled, scheduled.effects())
+        );
+        assert_eq!(scheduled.memory(), &onda_mir::analyze_memory(&scheduled));
+        let (again, stats) = onda_mir::distribute_loops(&scheduled).unwrap();
+        assert_eq!(stats.distributed_loops, 0);
+        assert!(matches!(again, std::borrow::Cow::Borrowed(_)));
+    }
+}
+
+#[test]
+fn native_codegen_selects_distribution_without_changing_portable_mir() {
+    let (mir, _) = optimize(
+        "const Voices = 64\ninit:\n  phases: f32[Voices]\n  rendered: f32[Voices]\nsample:\n  mixed = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + (110.0 + f32(voice) * 0.37) / SR\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed\n",
+    );
+    let original = onda_mir::to_messagepack_optimized(&mir).unwrap();
+    let (scheduled, stats) = onda_mir::distribute_loops(&mir).unwrap();
+    assert_eq!(stats.distributed_loops, 1);
+    let options = MirCompileOptions::default();
     assert_eq!(
-        optimize(&source.replace("Voices = 256", "Voices = 32"))
+        lower_optimized_mir_to_llvm_ir_with_options(&mir, options).unwrap(),
+        lower_optimized_mir_to_llvm_ir_with_options(&scheduled, options).unwrap()
+    );
+    let target = MirTargetOptions::default();
+    assert_eq!(
+        lower_optimized_mir_to_object(&mir, &target).unwrap(),
+        lower_optimized_mir_to_object(&scheduled, &target).unwrap()
+    );
+    assert_eq!(original, onda_mir::to_messagepack_optimized(&mir).unwrap());
+}
+
+#[test]
+fn distribution_preserves_ordered_mixing_and_avoids_coupled_or_small_loops() {
+    let distribute = |source: &str| {
+        let (mir, _) = optimize(source);
+        let (scheduled, stats) = onda_mir::distribute_loops(&mir).unwrap();
+        if stats.distributed_loops == 0 {
+            assert!(matches!(scheduled, std::borrow::Cow::Borrowed(_)));
+        }
+        (scheduled.into_owned(), stats)
+    };
+    let source = include_str!(
+        "../../../packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
+    );
+    let (mir, stats) = distribute(source);
+    assert_eq!(
+        distribute(&source.replace("Voices = 256", "Voices = 32"))
             .1
             .distributed_loops,
         1
@@ -36,13 +101,13 @@ fn distribution_preserves_ordered_mixing_and_avoids_coupled_or_small_loops() {
         onda_mir::format_program(&mir)
     );
     assert_eq!(
-        optimize(&source.replace("Voices = 256", "Voices = 16"))
+        distribute(&source.replace("Voices = 256", "Voices = 16"))
             .1
             .distributed_loops,
         0
     );
     assert_eq!(
-        optimize(&source.replace(
+        distribute(&source.replace(
             "tone = sin(phase * TWO_PI)",
             "tone = sin(phase * TWO_PI) + mixed"
         ))
@@ -51,7 +116,7 @@ fn distribution_preserves_ordered_mixing_and_avoids_coupled_or_small_loops() {
         0
     );
     assert_eq!(
-        optimize(
+        distribute(
             &source
                 .replace("tone = sin(phase * TWO_PI)", "tone = helper(phase)")
                 .replace(

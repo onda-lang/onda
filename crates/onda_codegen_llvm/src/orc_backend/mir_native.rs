@@ -4081,6 +4081,18 @@ unsafe fn build_native_module(
     target_machine: LLVMTargetMachineRef,
     source_locations: bool,
 ) -> Result<(LLVMModuleRef, LLVMContextRef, NativeLayouts), MirCodegenError> {
+    // Keep target-profitable scheduling out of portable MIR: Binaryen cannot
+    // yet vectorize these math kernels and pays for the extra traversal.
+    let (scheduled, _) = onda_mir::distribute_loops(program).map_err(|errors| {
+        MirCodegenError::invalid(
+            errors
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    })?;
+    let program = scheduled.as_ref();
     let context = LLVMContextCreate();
     if context.is_null() {
         return Err(MirCodegenError::llvm("failed to create LLVM context"));

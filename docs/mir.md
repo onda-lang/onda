@@ -332,18 +332,25 @@ fixed point across forwarding chains. A parameter remains when preparing its arg
 any call site: this preserves checked fixed-range addressing and checked or clamped dynamic-slice
 addressing even when the callee never reads the resulting reference. `canonicalize` performs one
 validated structural round. `optimize` runs its trusted monotonic cleanup to a fixed point,
-then selectively distributes independent rendering from an ordered sum, validates the completed
-pipeline once, and returns `PassStats` with an opaque `OptimizedProgram`.
+validates the completed pipeline once, and returns `PassStats` with an opaque `OptimizedProgram`.
+Portable MIR retains fused rendering and reduction loops; profitable scheduling is selected
+separately by each backend.
 
 ### Ordered loop distribution
 
-Distribution currently requires a nonempty fixed forward loop of at least 32 iterations, expensive
+The explicit `distribute_loops` MIR pass separates independent rendering from an ordered sum.
+LLVM requests this pass at its shared JIT/IR/object emission boundary, enabling vector math without
+changing the portable MIR supplied by the caller. Binaryen keeps the fused schedule because its
+current scalar array-math lowering does not offset the extra traversal and loads. The pass borrows
+unchanged programs; changed programs are revalidated and their effects, ranges and storage origins
+are rebuilt. Applying it to an already distributed program leaves that program unchanged.
+
+Distribution requires a nonempty fixed forward loop of at least 32 iterations, expensive
 pointwise math, and a reduction term already stored to an owned array at the current index. The
 second traversal reads that array and adds in the original order. It allocates no scratch array and
 does not enable floating-point reassociation. Calls, failures, cross-index writes, unresolved
 aliases, and reduction-dependent rendering retain the original schedule. The size threshold avoids
-small loops where the additional traversal outweighs vector math; native throughput takes priority
-when this schedule has a modest Wasm cost.
+small loops where the additional traversal outweighs vector math.
 
 ### Effects, ranges, and bounds proofs
 

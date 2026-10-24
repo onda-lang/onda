@@ -1,6 +1,7 @@
 use crate::constant_eval::{
     binary as fold_binary, cast as fold_cast, compare as fold_compare, unary as fold_unary,
 };
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
@@ -37,8 +38,8 @@ pub struct PassStats {
     pub distributed_loops: u64,
 }
 
-/// A validated MIR program brought to the backend-neutral optimization fixed
-/// point by [`optimize`].
+/// A validated MIR program after portable cleanup or backend-selected
+/// scheduling, retaining analyses of its final executable form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptimizedProgram {
     program: ValidatedProgram,
@@ -48,6 +49,18 @@ pub struct OptimizedProgram {
 }
 
 impl OptimizedProgram {
+    fn new(program: ValidatedProgram) -> Self {
+        let effects = crate::analyze_effects(&program);
+        let ranges = crate::analyze_program_integer_ranges_with_effects(&program, &effects);
+        let memory = crate::analyze_memory(&program);
+        Self {
+            program,
+            effects,
+            ranges,
+            memory,
+        }
+    }
+
     pub fn memory(&self) -> &crate::MemoryAnalysis {
         &self.memory
     }
@@ -138,7 +151,6 @@ impl PassStats {
             || self.eliminated_bounds_checks != 0
             || self.removed_function_parameters != 0
             || self.removed_functions != 0
-            || self.distributed_loops != 0
     }
 }
 
@@ -260,26 +272,27 @@ pub fn optimize(
         let changed = stats.changed();
         total.merge(stats);
         if !changed {
-            // Scheduling adds executable structure, so keep it outside the
-            // monotonic cleanup fixed point. The materialized map/reduction
-            // form cannot match this transform a second time.
-            loop_distribution::distribute(&mut raw, &mut total);
             let program = crate::validate::revalidate_owned(raw, producer_proofs)?;
-            let effects = crate::analyze_effects(program.as_program());
-            let ranges =
-                crate::analyze_program_integer_ranges_with_effects(program.as_program(), &effects);
-            let memory = crate::analyze_memory(program.as_program());
-            return Ok((
-                OptimizedProgram {
-                    program,
-                    effects,
-                    ranges,
-                    memory,
-                },
-                total,
-            ));
+            return Ok((OptimizedProgram::new(program), total));
         }
     }
+}
+
+/// Separates independent rendering from an ordered sum for backends that
+/// benefit from vector math. Portable optimization preserves the fused form.
+/// Unchanged programs are borrowed; changed programs are revalidated and their
+/// analyses rebuilt. The distributed form cannot match this pass again.
+pub fn distribute_loops(
+    program: &OptimizedProgram,
+) -> Result<(Cow<'_, OptimizedProgram>, PassStats), Vec<ValidationError>> {
+    let mut stats = PassStats::default();
+    if !loop_distribution::is_applicable(program) {
+        return Ok((Cow::Borrowed(program), stats));
+    }
+    let mut raw = program.as_program().clone();
+    loop_distribution::distribute(&mut raw, &mut stats);
+    let validated = crate::validate::revalidate_owned(raw, program.program.producer_proofs())?;
+    Ok((Cow::Owned(OptimizedProgram::new(validated)), stats))
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

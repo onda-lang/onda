@@ -644,9 +644,13 @@ and invalidation in detail. The main opportunities exposed to backends are:
   larger loops and arithmetic kernels retain LLVM's ordinary vectorization decisions.
   Loop queries share one immutable per-function summary and lazily collected descriptor origins;
   each dependence proof tracks only the locals it uses, including inside helpers.
-- Large fixed loops with independent expensive math and an already-materialized result may split
-  rendering from an ordered sum. The MIR transform preserves addition order and introduces no
-  scratch arrays. Calls, failures, unresolved aliases, and coupled reductions prevent distribution.
+- Portable MIR preserves fused rendering and reduction loops. LLVM selects the shared MIR
+  distribution pass at JIT/IR/object emission: large fixed loops with independent expensive math
+  and an already-materialized result may split rendering from an ordered sum. The transform
+  preserves addition order and introduces no scratch arrays. Calls, failures, unresolved aliases,
+  and coupled reductions prevent distribution. Unchanged programs are borrowed; changed programs
+  are revalidated with fresh analysis facts. Binaryen retains the fused schedule while its array
+  math remains scalar, avoiding the cost of an extra traversal without vector-math gains.
 - The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
   `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
   explicit validity state for initialization and recomputation at each changed assignment.

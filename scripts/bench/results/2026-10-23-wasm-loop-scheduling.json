@@ -1,0 +1,2234 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-23",
+  "baseline_revision": "de627d1659d3d83ef9afd60bf8be96c36ad11ea4",
+  "scope": "Move ordered loop distribution from portable optimization to an explicit MIR pass selected by the LLVM emission boundary. Binaryen consumes the original fused schedule.",
+  "cause": "Distributed rendering remains scalar in Binaryen, adding a second traversal and reloads without the SLEEF SIMD benefit available to LLVM.",
+  "method": {
+    "native": "18 programs: f32/f64 voice counts 32/64/128/256, nine application examples, and ordered-voice-rendering. Matching release workers; strict LLVM O3, 48kHz, 128-frame blocks. IR/object byte equality and startup/warmed captures establish generated-code preservation; native timing differences are not credited.",
+    "wasm": "Same before/after compiler-produced MIR compiled with the unchanged Binaryen backend, O4 and strict FP. Source and compile settings match within each pair.",
+    "timing": "Three independent Node process pairs per voice case; prepare order alternates between processes; each process uses nine alternating timing rounds of at least approximately 30ms. Report median of process medians in ns/frame. Compilation and initialization excluded; 2048 warmup blocks. Each pair first checks 4096 startup samples bitwise.",
+    "captures": "The standard harness also compares eight startup blocks and eight blocks after 512 warmup blocks, within each backend. All 72 capture-file comparisons match byte-for-byte.",
+    "limits": "CPU6 affinity, systemd user-service cgroup: 2048MiB committed memory, no swap, 256MiB Node heap, 90s per child. Native worker RLIMIT_AS 4096MiB and 120s timeout.",
+    "environment": "Linux x86-64; no concurrent builds/tests during timing. Shared machine; clocks and exclusive core reservation uncontrolled. Results apply to these workloads and engine.",
+    "phase_accounting": "Native scheduling and its revalidation/analysis now occur during native emission, after the portable MIR optimization timer. Recorded phase values from a single sweep are diagnostic, not a compiler-speed claim."
+  },
+  "tools": {
+    "node": "v26.11.1",
+    "llvm": "21.1.2",
+    "binaryen": "130.0.0",
+    "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44"
+  },
+  "runtime_workers": {
+    "baseline": {
+      "path": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline-worker",
+      "sha256": "22caba45e5969989d735f660057366ec4cd9f94f845461fc4556c5742da96dd5"
+    },
+    "candidate": {
+      "path": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate-worker",
+      "sha256": "180c858734d9ed1554064d7e9df7899ebd0447d0d65f3c5444c08fa102f45803"
+    }
+  },
+  "candidate_source_sha256": {
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native.rs": "e2e5b3e388a5471cbb4b825ac993ed1012c05bf0a8e142b25892a37ab0a139f1",
+    "crates/onda_codegen_llvm/tests/dsp_optimizations.rs": "5ebd80f081b466085301b2b16c25e8db5fa3412c369dadf621585c070f91ed5d",
+    "crates/onda_mir/src/lib.rs": "93d3779b44f22fd359b7696c832dd0cb54b50030dc9abf440ef19d41b6fd1422",
+    "crates/onda_mir/src/passes.rs": "76aaea0cae78a75baac658283763c07968f69703de68f59cc2cba8e97759e343",
+    "crates/onda_mir/src/passes/loop_distribution.rs": "0895481b1e87368ab21891e9844b0c5c9bb1c9ca1f00d97cccdd1b62f8fa573c",
+    "packages/onda_binaryen_web/scripts/verify-source-corpus.mjs": "547ea3ac50c79959348975848cb0b2fa0dd915acfe1882a78b078d09d0d7853f"
+  },
+  "harness_sha256": {
+    "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+    "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+    "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18"
+  },
+  "feedback_loop": {
+    "command": "cargo test -p onda_codegen_llvm --test dsp_optimizations portable_optimization_preserves_the_fused_rendering_schedule",
+    "baseline": "FAIL: portable MIR reports 1 distributed loop instead of 0",
+    "candidate": "PASS",
+    "additional_tests": "Explicit distribution is idempotent, returns a borrowed program when unchanged, refreshes effects/ranges/memory facts, and leaves the input MIR unchanged. LLVM IR/object entry points select the same schedule as an explicitly scheduled input. Wasm corpus requires the authored three-loop shape for ordered-voice-rendering."
+  },
+  "validation": {
+    "rust_passed": 2297,
+    "rust_ignored": 1,
+    "javascript_passed": 104,
+    "source_corpus_passed": 52,
+    "parity_scenarios": 50,
+    "binaryen_configurations": 2,
+    "fma_oracle_vectors": 20020,
+    "formatting": "pass",
+    "clippy_warnings_denied": "pass"
+  },
+  "generated_sources": {
+    "voices-f32-32.onda": "const Voices = 32\nconst def increments() -> f32[Voices]:\n  result: f32[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f32(i) * 0.37) / SR\n  return result\nconst Increments: f32[Voices] = increments()\ninit:\n  phases: f32[Voices]\n  rendered: f32[Voices]\nsample:\n  mixed = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f32(Voices)\n",
+    "voices-f64-32.onda": "outs<f64> 1\nconst Voices = 32\nconst def increments() -> f64[Voices]:\n  result: f64[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f64(i) * 0.37) / SR\n  return result\nconst Increments: f64[Voices] = increments()\ninit:\n  phases: f64[Voices]\n  rendered: f64[Voices]\nsample:\n  mixed: f64 = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f64(Voices)\n",
+    "voices-f32-64.onda": "const Voices = 64\nconst def increments() -> f32[Voices]:\n  result: f32[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f32(i) * 0.37) / SR\n  return result\nconst Increments: f32[Voices] = increments()\ninit:\n  phases: f32[Voices]\n  rendered: f32[Voices]\nsample:\n  mixed = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f32(Voices)\n",
+    "voices-f64-64.onda": "outs<f64> 1\nconst Voices = 64\nconst def increments() -> f64[Voices]:\n  result: f64[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f64(i) * 0.37) / SR\n  return result\nconst Increments: f64[Voices] = increments()\ninit:\n  phases: f64[Voices]\n  rendered: f64[Voices]\nsample:\n  mixed: f64 = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f64(Voices)\n",
+    "voices-f32-128.onda": "const Voices = 128\nconst def increments() -> f32[Voices]:\n  result: f32[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f32(i) * 0.37) / SR\n  return result\nconst Increments: f32[Voices] = increments()\ninit:\n  phases: f32[Voices]\n  rendered: f32[Voices]\nsample:\n  mixed = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f32(Voices)\n",
+    "voices-f64-128.onda": "outs<f64> 1\nconst Voices = 128\nconst def increments() -> f64[Voices]:\n  result: f64[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f64(i) * 0.37) / SR\n  return result\nconst Increments: f64[Voices] = increments()\ninit:\n  phases: f64[Voices]\n  rendered: f64[Voices]\nsample:\n  mixed: f64 = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f64(Voices)\n",
+    "voices-f32-256.onda": "const Voices = 256\nconst def increments() -> f32[Voices]:\n  result: f32[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f32(i) * 0.37) / SR\n  return result\nconst Increments: f32[Voices] = increments()\ninit:\n  phases: f32[Voices]\n  rendered: f32[Voices]\nsample:\n  mixed = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f32(Voices)\n",
+    "voices-f64-256.onda": "outs<f64> 1\nconst Voices = 256\nconst def increments() -> f64[Voices]:\n  result: f64[Voices]\n  for i in 0..Voices:\n    result[i] = (110.0 + f64(i) * 0.37) / SR\n  return result\nconst Increments: f64[Voices] = increments()\ninit:\n  phases: f64[Voices]\n  rendered: f64[Voices]\nsample:\n  mixed: f64 = 0.0\n  for voice in 0..Voices:\n    phase = phases[voice] + Increments[voice]\n    if phase >= 1.0:\n      phase -= 1.0\n    phases[voice] = phase\n    tone = sin(phase * TWO_PI)\n    rendered[voice] = tone\n    mixed += tone\n  out1 = mixed / f64(Voices)\n"
+  },
+  "harnesses": {
+    "compare.mjs": "import { readFileSync, writeFileSync } from 'node:fs';\nimport { performance } from 'node:perf_hooks';\nimport { createDefaultImports } from '../../packages/onda_binaryen_web/src/index.js';\n\nconst prefixes = process.argv.slice(2).filter(arg => !arg.startsWith('--'));\nasync function prepare(prefix) {\n  const metadata = JSON.parse(readFileSync(`${prefix}.wasm-metadata.json`));\n  const { instance } = await WebAssembly.instantiate(readFileSync(`${prefix}.wasm`), createDefaultImports());\n  const { memory, __heap_base, onda_processor_init: init, onda_process: process } = instance.exports;\n  let heap = Number(__heap_base.value);\n  const alloc = bytes => { heap = (heap + 15) & -16; const result = heap; heap += Math.max(bytes, 1); return result; };\n  const params = alloc(metadata.runtime.param_size_bytes);\n  const state = alloc(metadata.runtime.state_size_bytes);\n  const width = metadata.metadata.outputs[0].scalar === 'f64' ? 8 : 4;\n  const out = alloc(128 * width);\n  const table = alloc(4);\n  if (heap > memory.buffer.byteLength) memory.grow(Math.ceil((heap - memory.buffer.byteLength) / 65536));\n  new DataView(memory.buffer).setUint32(table, out, true);\n  if (init(params, state, 1, 0, 0, 0, 0, 0)) throw new Error('init failed');\n  const run = () => { if (process(state, params, 0, table, 0, 128, 3, 0, 0, 0, 0)) throw new Error('process failed'); };\n  const captures = [];\n  for (let i = 0; i < 32; i++) { run(); captures.push(Buffer.from(new Uint8Array(memory.buffer, out, 128 * width))); }\n  for (let i = 0; i < 2048; i++) run();\n  return { prefix, run, captures: Buffer.concat(captures), rounds: [] };\n}\nconst variants = [];\nfor (const prefix of prefixes) variants.push(await prepare(prefix));\nfor (const variant of variants) {\n  if (!variant.captures.equals(variants[0].captures)) throw new Error(`output differs: ${variant.prefix}`);\n}\nlet iterations = 128;\nwhile (true) {\n  const start = performance.now();\n  for (let i = 0; i < iterations; i++) variants[0].run();\n  if (performance.now() - start > 30) break;\n  iterations *= 2;\n}\nfor (let round = 0; round < 9; round++) {\n  const order = round % 2 ? [...variants].reverse() : variants;\n  for (const variant of order) {\n    const start = performance.now();\n    for (let i = 0; i < iterations; i++) variant.run();\n    variant.rounds.push((performance.now() - start) * 1e6 / (iterations * 128));\n  }\n}\nconst median = numbers => [...numbers].sort((a, b) => a - b)[Math.floor(numbers.length / 2)];\nconst result = variants.map(variant => ({ prefix: variant.prefix, ns_per_frame: median(variant.rounds), rounds: variant.rounds }));\nfor (const row of result) row.ratio = row.ns_per_frame / result[0].ns_per_frame;\nconsole.log(JSON.stringify({ bitwise_equal_samples: 32 * 128, result }, null, 2));\nif (process.argv.includes('--assert-no-regression') && result[1].ratio > 1.02) process.exitCode = 1;\n",
+    "measure.py": "import json,statistics,sys,hashlib\nfrom pathlib import Path\nsys.path.insert(0,'scripts/bench')\nfrom limits import Limits\np=Path.cwd()/'target/wasm-loop-fix'\nlimits=Limits(6,2048,90)\nkeys=[Path(source).stem for source in json.loads((p/'sources.json').read_text())]\nresults={}\nfor key in keys:\n result={}\n for kind in ['baseline','candidate']:\n  prefix=p/kind/key\n  config=json.loads(prefix.with_suffix('.config.json').read_text())\n  config.update(mode='bench',compare_native=False,ir=True,repetitions=3,round_ms=20)\n  configfile=p/kind/f'{key}.wasm-config.json'\n  configfile.write_text(json.dumps(config,indent=2)+'\\n')\n  row=json.loads(limits.run(['node','--max-old-space-size=256',Path.cwd()/'scripts/bench/wasm.mjs',configfile],p/kind/f'{key}-wasm',virtual_memory=True))\n  prefix.with_suffix('.wasm.json').write_text(json.dumps(row,indent=2)+'\\n')\n  result[kind]=row\n result['native_object_equal']=(p/'baseline'/f'{key}.o').read_bytes()==(p/'candidate'/f'{key}.o').read_bytes()\n result['native_ir_equal']=(p/'baseline'/f'{key}.ll').read_bytes()==(p/'candidate'/f'{key}.ll').read_bytes()\n result['native_captures_equal']=all((p/'baseline'/f'{key}.native.{extension}').read_bytes()==(p/'candidate'/f'{key}.native.{extension}').read_bytes() for extension in ['output.bin','warm-output.bin'])\n result['wasm_captures_equal']=all((p/'baseline'/f'{key}.wasm.{extension}').read_bytes()==(p/'candidate'/f'{key}.wasm.{extension}').read_bytes() for extension in ['output.bin','warm-output.bin'])\n for required in ['native_object_equal','native_ir_equal','native_captures_equal','wasm_captures_equal']:\n  assert result[required],f'{key} {required}'\n result['native_object_sha256']=hashlib.sha256((p/'candidate'/f'{key}.o').read_bytes()).hexdigest()\n result['wasm_sha256']={kind:hashlib.sha256((p/kind/f'{key}.wasm').read_bytes()).hexdigest() for kind in ['baseline','candidate']}\n results[key]=result\n print(key,'native unchanged, captures exact, Wasm bytes',result['baseline']['wasm_bytes'],'->',result['candidate']['wasm_bytes'],flush=True)\n(p/'artifact-comparison.json').write_text(json.dumps(results,indent=2)+'\\n')\nsummary={}\nfor scalar in ['f32','f64']:\n for count in [32,64,128,256]:\n  key=f'voices-{scalar}-{count}'\n  rounds=[]\n  for run in range(3):\n   order=['baseline','candidate'] if run%2==0 else ['candidate','baseline']\n   row=json.loads(limits.run(['node','--max-old-space-size=256',p/'compare.mjs',*[p/kind/key for kind in order]],p/f'pair-{scalar}-{count}-{run}',virtual_memory=True))\n   rounds.append(row)\n  medians={kind:statistics.median(next(r['ns_per_frame'] for r in row['result'] if Path(r['prefix']).parent.name==kind) for row in rounds) for kind in ['baseline','candidate']}\n  summary[key]={**medians,'candidate_to_baseline':medians['candidate']/medians['baseline'],'processes':rounds}\n  print(key,'paired medians:',medians,'ratio:',summary[key]['candidate_to_baseline'],flush=True)\n(p/'timing-summary.json').write_text(json.dumps(summary,indent=2)+'\\n')\n"
+  },
+  "artifacts": {
+    "voices-f32-32": {
+      "source_fingerprint": "076fb0afef5ec150c7e441a0b6ff1afb7a33418b40779f5ca7abd3224d072ad3",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "773f5c39336890efcc4561b12166f7e3a07eeb630512d1a5ab5302ba6cb802a9",
+        "ir_sha256": "9e5feaa7fd16f0f37d294630cbe20baa0330e3993197699d80f9b33f723dbeca",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.166773,
+          "mir_optimization_ms": 0.109221,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 4.087468,
+          "semantics_ms": 18.837833
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.16970000000000002,
+          "mir_optimization_ms": 0.096073,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.295306,
+          "semantics_ms": 18.714392999999998
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 5520,
+        "candidate_bytes": 5483,
+        "sha256": {
+          "baseline": "a1e9d9d096d6b161a2566d34c281b39d1ab63e3da207036676fc8285f2b00040",
+          "candidate": "430bec4e6f31ef8221b769da7992b4e402a84d78dadd31dc56d7de400814a166"
+        },
+        "matches_original_fused_artifact": true
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "809834ca5b59914e1ea138e47e724f80267039933722cfa622e44e38e0a9acd3"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "1b8e86f22126c5a8130fc7da416123bef057ecc48b90fddd80ab40ded88cb4d1"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "f6c84222bf466040f2651043db9a5f2509626343a76b80a9e67ea80b091f9299"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "22c94abbfdf27645ca2260cffc8ac5b3119f33019f7d770e3dcb10cc7abd4112"
+          }
+        }
+      }
+    },
+    "voices-f64-32": {
+      "source_fingerprint": "de8930f2ade1619410a9d280594612ee28ee6aec18fc0aee96eb81766d21b8a9",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "6871b01be29b97b0f937ce1535e777171c4c7f50a84f5f62d4dfdef6e78748bd",
+        "ir_sha256": "a4ebc3a1bea3cbaf804831b361681e0051f9813c523a8ebc33c90bcaac6c03be",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.18834099999999998,
+          "mir_optimization_ms": 0.127265,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.342262,
+          "semantics_ms": 13.436342
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.17081600000000002,
+          "mir_optimization_ms": 0.09459200000000001,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.823056,
+          "semantics_ms": 14.96173
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 7224,
+        "candidate_bytes": 7187,
+        "sha256": {
+          "baseline": "6eb7054a2a2a309a09be584dc6a2dc7694701d657a24ef362a7ac7142188e056",
+          "candidate": "373f6b8577aef048fdc7334bd9a33109d2ac98ba6c00d09260a7d90573972c5b"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "d33fa869cee09d9821c3b002948bfe7dc4ee166f27b6f4ad77643786ff83d1fb"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "6a99da51954bf4e4916b58fd046c56fcd0e51f4af59b2037f2936caf23bfaf89"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "65690070be45f6db5c607b44e91bf35ab600210e41a2d88d75a13dac9cafff27"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "c89d4bfff5ff1ba9b90323b51d85ccee6bcbe0ad1c5baa89a2e7c48062b9ee97"
+          }
+        }
+      }
+    },
+    "voices-f32-64": {
+      "source_fingerprint": "41b9569f9e0f6c8e5759a486cdd539f405eba27fab56edc5b8f6123ca65e4cf3",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "d644cc3118aff9fd62b94e10bbd3ac9703ae838be52da5a1a8b360180ab65e19",
+        "ir_sha256": "031e66d3253a1cb2e3ed4c912845800f0ff767d8a94608a5468662baba6525d2",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.168599,
+          "mir_optimization_ms": 0.110402,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.352765,
+          "semantics_ms": 15.813329000000001
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.182858,
+          "mir_optimization_ms": 0.103254,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.0175379999999998,
+          "semantics_ms": 12.787913
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 5650,
+        "candidate_bytes": 5613,
+        "sha256": {
+          "baseline": "a58af13fd0666d33553bb45c88c01660dec12e9cd627a721b78b9eeba5ac277f",
+          "candidate": "5c7aab077d1f4ade1f15d8722d4a1c1cb1f0a8e841b14a091e62eea9b8d33baa"
+        },
+        "matches_original_fused_artifact": true
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "347b45ebe0622e3b99e5001bd01f38340bc7fe468a574f8c76498c54a1c615d0"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "18d3dc24ed3aee78e7f5be636d47dcce7da04f197b6fa39000a5f2f3e4e05c55"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "89841a143e6190770b4f574faaefc3ad0025f919e2c9125570ee0a2001a67811"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "d3c117a897dae432ebd3dc6654877dbd01f23a25deaf686b3f788b7dfeafe3b3"
+          }
+        }
+      }
+    },
+    "voices-f64-64": {
+      "source_fingerprint": "10f8aecf5d280a946232850f3e7244446edeadc11a6a7f9312c98b8a64ed3b55",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "9ad95ae0e960a690df1134e2ce06618e75d3681a7b31b394f6d01aab6deadf17",
+        "ir_sha256": "b923055e1f3e1f90f4cca87fcc6cfe1ff4bbc843358db14530156720998f3e45",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.16752999999999998,
+          "mir_optimization_ms": 0.11178700000000001,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.076251,
+          "semantics_ms": 15.421262
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.176165,
+          "mir_optimization_ms": 0.096625,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.607252,
+          "semantics_ms": 16.535078000000002
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 7482,
+        "candidate_bytes": 7445,
+        "sha256": {
+          "baseline": "d108786bb1be7b83446f05edd354a831b48293d3d522fb9af63e1d0ae96a9d22",
+          "candidate": "39df754b33a0589c03ba31c604c74fcc26abcdf7b6b671a0ecf789461ba9a9be"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "a02bbe4d9839ae012ebf4ea86cd591e865b2287e26696701475f940b54106dd2"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "63951d35600202f695073df242f94e3ca986e39be0854640cfb8d068dc5da2bb"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "f8339e2573e14d801b75aea8278f32e350a4be8eed5d83a38116a6f245a3682d"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "8b5221b7a46601e86c820fa44ba8167604320088f55953e71b501f706b7f08a6"
+          }
+        }
+      }
+    },
+    "voices-f32-128": {
+      "source_fingerprint": "b9eacbf7871f29d1337dbcd76207952e2d07d835b3125c67bb53ac7113b5e107",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "3c6eed86c140eeb4fa160d1b9dac5f8aa11eb7e73e592a10f9ef8e385fa796e6",
+        "ir_sha256": "de7f7051e50694a1fda118a2d75cf1f8fb42d33bf3e6bcbd05e27d0b49d6a440",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.172288,
+          "mir_optimization_ms": 0.110411,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.246045,
+          "semantics_ms": 15.764606
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.17722,
+          "mir_optimization_ms": 0.101719,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.492248,
+          "semantics_ms": 15.868279999999999
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 5910,
+        "candidate_bytes": 5872,
+        "sha256": {
+          "baseline": "9b35d2f53784fd161e78727136ba2c246fd14d7e7707d364a6bd086ac13e2251",
+          "candidate": "5d20bb5da307c1e7ab542467cde5013a7ddf79259f934a5a5d48a10ec6e36e20"
+        },
+        "matches_original_fused_artifact": true
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "0c02d541d5b91e3904c976a6d08e4fe6c724f01ce75e67e5b0ac4807df0de673"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "985716f6d26810cc887c8e2e395ccab1f08a640a7a6bfb9366dfc8f3ee734e21"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "e85ab83b9bb01f915235bbfa3ccb405561d4ee5c5c302adf488b74145c3de3cf"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "6a0c70742c6a83aa818a8f0c93c3196052dfac6b304efae1308e9857c40cb756"
+          }
+        }
+      }
+    },
+    "voices-f64-128": {
+      "source_fingerprint": "e6862e2770eb0c8a83f3d141e3b4e7a16def5ce8f5facbf45b16f7052ace598a",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "80edbc29435e4d109c5104643afc26fecff983814e0a4df78f25eb539efd552d",
+        "ir_sha256": "ddb936d717e221a6e0a65c196a3950cccd7f9c8a049c52012af53d9dd1e172cd",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.179879,
+          "mir_optimization_ms": 0.117194,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.087056,
+          "semantics_ms": 12.947925000000001
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.170576,
+          "mir_optimization_ms": 0.094107,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.128892,
+          "semantics_ms": 15.3385
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 7998,
+        "candidate_bytes": 7960,
+        "sha256": {
+          "baseline": "888eb7ac1648230bf92e6bf1c36ff75ac3103b1d79f81a9ca383d2d69c14f7e7",
+          "candidate": "cb43c7a95b96821610d84120385ae3a3c6f20ecd2e72487a9ce99a44fd485559"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "f3d165b4617b72949853129be7b2ad46b94c7a288973387ec6a31fbbbf1de336"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "e3a9fa9ae3207503505b8c178b0e4338e03fdf31ed2d69386cf02257bca067dc"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "f557708ede74fff738c589be12d610216191aff4521a922b599f6c4c7603e0aa"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "ab86c5306040a9d886f5e7dd06690079f812c42d21fc1383c106df7396faeed0"
+          }
+        }
+      }
+    },
+    "voices-f32-256": {
+      "source_fingerprint": "d394ef0c71e5ce76316c43829f85f4a3d78c76962582e5c8d1eb6f1e6707e2cb",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627",
+        "ir_sha256": "601692ac4a70f62741da25bc176037ffbfd8f0a018d6a521719987ec144afb5a",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.182246,
+          "mir_optimization_ms": 0.12626,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.0475269999999999,
+          "semantics_ms": 13.319044
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.168451,
+          "mir_optimization_ms": 0.093047,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.443813,
+          "semantics_ms": 16.341005
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 6422,
+        "candidate_bytes": 6384,
+        "sha256": {
+          "baseline": "f5082aa1c08f07cbfecdbcc96e31c1b276f340827b5c700861e9456bfeff275e",
+          "candidate": "2abffce5e9c5c1d79b2c870912b957380db98b8b72a0e7921a67cb09862bb735"
+        },
+        "matches_original_fused_artifact": true
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "1ac2749e498c1c2ac130580f5bd1313a39dbc2ddecb776d4cd9262854ea06ac6"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "467655cf09062ac892394e07a065d41748a9c9714d79459e2446fa3b397d4b79"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "170f79e083740861ff243742c683fcd78181cf68beec5e5ed6811c31386cae54"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "d3afd439f0a8865736b63b202c11c4d3eabc2d46da3a79a90b663b998bf933ce"
+          }
+        }
+      }
+    },
+    "voices-f64-256": {
+      "source_fingerprint": "4a889e44a0a3292ca72b4fb20d3c62b7a187eaee6a09d4d930de5cacb4fcc7aa",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "ec9046b9d1572c2d764373f0eee97a75adbade5cf1462947b523e9595831894e",
+        "ir_sha256": "1d5f57ecd22153fb28157029da006717275de49ec084ab0bd3c31f844e01c533",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.184423,
+          "mir_optimization_ms": 0.12087,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.88582,
+          "semantics_ms": 15.270343
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.165905,
+          "mir_optimization_ms": 0.09404299999999999,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.520272,
+          "semantics_ms": 16.03062
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 9022,
+        "candidate_bytes": 8984,
+        "sha256": {
+          "baseline": "b75f039dc6705cb3e9448bc47519e508e4218a8ee8cebb2d2ea51c1c9dbcddd1",
+          "candidate": "ad8906a23304cb596e97c20a9382c6abc832fc2296eb47bf4a90879e54019e2b"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "fa34e476b8a9a339bdfa4f00d4353bf26cb804eefb27ec128f12be06c22c1e73"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "23c4fe30ada8ea8d39a33915d32ac4a4b05edaf645715ca5bba393a87d6f133b"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "3a5f9815cfb46fdae172a0e924190ae2cc6dbcf305941c6b943a61638e6c7224"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "64c5088b98ffb7e828068f6908086707322e64f2300b8c0908623451c04a4ea5"
+          }
+        }
+      }
+    },
+    "sine": {
+      "source_fingerprint": "fdf615ea597548d723e5a4623523d21a032b40dad63d96745347a459a15aba48",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7",
+        "ir_sha256": "cfba56bbca1d7244ce564ad84ae64253cb5a88aefc130e25c1844c4536e1823a",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.141684,
+          "mir_optimization_ms": 0.05398,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 0,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 1,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 0.43574,
+          "semantics_ms": 12.649325
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.151049,
+          "mir_optimization_ms": 0.051579,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 0,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 1,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.18604,
+          "semantics_ms": 17.53642
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 5212,
+        "candidate_bytes": 5212,
+        "sha256": {
+          "baseline": "567eac859f13d8137cd07a141ae86e0faef779bc2dfe44649d010c550f7adc56",
+          "candidate": "567eac859f13d8137cd07a141ae86e0faef779bc2dfe44649d010c550f7adc56"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "3e517d7bc949fa326eb63b482c6d4a66c29c37bc35480de5df5a0b3728a0f3d7"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "5db1511b1454c6ddb3fb5aa7fe6074b1972af3f45777b1ff140aeb46eea7cc07"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "fab7b2db46d10ceae8f7f8245bb35aaa2e80b842133050b5b247739639f709c3"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "28da355e6c503630667f8b7f0f205e82480044c8892f8d71c51c62fce90526bb"
+          }
+        }
+      }
+    },
+    "voice_bank": {
+      "source_fingerprint": "1de090e70c558633e89060425b55b5c7fe604de070b7b8e2805112da13852825",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc",
+        "ir_sha256": "ae3fc808a493f22ae50004f59147ac3713e11d1e72f110735f31aa7c2553ee63",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.570894,
+          "mir_optimization_ms": 0.511624,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 22,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 9.629472,
+          "semantics_ms": 83.25300700000001
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.6207400000000001,
+          "mir_optimization_ms": 0.550955,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 22,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 16.226046,
+          "semantics_ms": 91.937579
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 67532,
+        "candidate_bytes": 67532,
+        "sha256": {
+          "baseline": "988845662038b24849d465435ed7ef4039ad89e40a1625553d0d9255f60eba54",
+          "candidate": "988845662038b24849d465435ed7ef4039ad89e40a1625553d0d9255f60eba54"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "21bd2b7d807ce9d1ef19c523e67a21a4f62b4325cee4e1474b4a3db765180e9f"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "552645803409c495c415818680ba37f31d57db94acbb643d4a1be28fd8f45244"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "21bd2b7d807ce9d1ef19c523e67a21a4f62b4325cee4e1474b4a3db765180e9f"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "552645803409c495c415818680ba37f31d57db94acbb643d4a1be28fd8f45244"
+          }
+        }
+      }
+    },
+    "polyphonic_saw": {
+      "source_fingerprint": "9d787051de0185a28c3b4ae47e2f4878db5e35a6db869781a05b63ba3323b61f",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+        "ir_sha256": "ad537dea1428ec7a2a59893527d51d6eef9f3d8abfd345f2f1ac5bfb4d54cb02",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 2.125764,
+          "mir_optimization_ms": 2.339027,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 36,
+            "eliminated_common_subexpressions": 8,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 22.011837,
+          "semantics_ms": 50.392365
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 2.356131,
+          "mir_optimization_ms": 2.4628710000000003,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 36,
+            "eliminated_common_subexpressions": 8,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 23.542127,
+          "semantics_ms": 53.78799
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 16293,
+        "candidate_bytes": 16293,
+        "sha256": {
+          "baseline": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba",
+          "candidate": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "688d413bdff04f0ff03e172ad122025b95cb200cdfab6e14885c37cf0013d21f"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "5e4bd4e054e1a106668abe416d3fff0ef25a52b8427b1c8657608ace54dc647b"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "0f1131d8c90179ed8878b73620c85abe487e10977e1491dd54bb8df4eb1f5729"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "96635a1a7663f4185e57ee8802e917b66f4a33f6ae44da7f569fa111b387aa57"
+          }
+        }
+      }
+    },
+    "saw_filter_saturator": {
+      "source_fingerprint": "1a0884b753ae24fbe84f091e7758a48e208208ec57691666fd51d833741a8f62",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a",
+        "ir_sha256": "638390ce84d5df090e8b145394a404ff392b92c1f0e81fbbda41410a803c4e5e",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 1.9053060000000002,
+          "mir_optimization_ms": 1.488898,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 0,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 19.407653,
+          "semantics_ms": 103.370542
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 2.0847740000000003,
+          "mir_optimization_ms": 1.598692,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 0,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 18.34378,
+          "semantics_ms": 111.734748
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 78415,
+        "candidate_bytes": 78415,
+        "sha256": {
+          "baseline": "d3fa2a68d34de946769bffe9cac4408c182e897719ac1b58f7b64486539fab22",
+          "candidate": "d3fa2a68d34de946769bffe9cac4408c182e897719ac1b58f7b64486539fab22"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "7bfd79c168d4745601fe17e670f9910bfde0034f4e1261b92021faa4a1b4ee7f"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "c75add63ac1e8aaf9513db02f6c9903d0647c18f0c1d2464119003535699c6ef"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "dbaf6d5be50d7b2bde9b2acc96e344c44d2d2f928555a72607599b10ad796264"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "84b63831a544e7f960f1c9471faf4262457f9a9a81badd513d558c6b87033b18"
+          }
+        }
+      }
+    },
+    "additive_synth": {
+      "source_fingerprint": "233eb67606796abc4471adb66dfb7db8a17701e31e03d38b56e119b619e7288f",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72",
+        "ir_sha256": "ee9afe84d49f33819bc5dfca5fa6ada651b4e67c127ac655efa66000f7dc0757",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 2.222313,
+          "mir_optimization_ms": 3.40133,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 106,
+            "eliminated_common_subexpressions": 32,
+            "iterations": 4,
+            "removed_functions": 0,
+            "removed_parameters": 3
+          },
+          "parse_load_ms": 34.779204,
+          "semantics_ms": 105.31523399999999
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 2.407835,
+          "mir_optimization_ms": 3.62894,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 106,
+            "eliminated_common_subexpressions": 32,
+            "iterations": 4,
+            "removed_functions": 0,
+            "removed_parameters": 3
+          },
+          "parse_load_ms": 30.580963,
+          "semantics_ms": 114.193502
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 84787,
+        "candidate_bytes": 84787,
+        "sha256": {
+          "baseline": "728c442c870606a12886fd0ec944d391f96a7b990faa4a5e7471a1814acb3664",
+          "candidate": "728c442c870606a12886fd0ec944d391f96a7b990faa4a5e7471a1814acb3664"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "0e41fe660a1bb177d7430997850e06e9d5ce98ef067ecb998b3c0ede2b611fb0"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "19340c21143862d3d3c482a23599523816d53589756bdb89899011f92816dc5e"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "0e41fe660a1bb177d7430997850e06e9d5ce98ef067ecb998b3c0ede2b611fb0"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "dd81fc2287fa1f78bbd9e5e2ad7a1733b227593bae46f78b87b9dc5964088c33"
+          }
+        }
+      }
+    },
+    "fdn_reverb": {
+      "source_fingerprint": "819bfb6eebd94ca8ac32473119edc803fc75fe6af8ead32cddccf984c8d46d1a",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392",
+        "ir_sha256": "64c7eff1ae964b28374e88465bb57425766d987f3a3a7e46fd706da52540c0e2",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 2.014072,
+          "mir_optimization_ms": 1.430548,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 44,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 31.287677,
+          "semantics_ms": 118.56124
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 2.2223479999999998,
+          "mir_optimization_ms": 1.522804,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 44,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 27.601949,
+          "semantics_ms": 128.308257
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 74277,
+        "candidate_bytes": 74277,
+        "sha256": {
+          "baseline": "7b0ec2be1ad110dc0cd8032a31250e296732bfbd781d6c61238c35e39f879231",
+          "candidate": "7b0ec2be1ad110dc0cd8032a31250e296732bfbd781d6c61238c35e39f879231"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "81e1149031f22bcb6a4c7d97e62c5d90e1181e76cb62a7d3c03a7d81bd6d4072"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "f137ce5d1c769e79323d49b8ff684d53a77ae55e60b623a834d0cebcde60cde1"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "81e1149031f22bcb6a4c7d97e62c5d90e1181e76cb62a7d3c03a7d81bd6d4072"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "b83d8bbe1ad4599cc91d0b9569018be0a10e21ff8c34d46644fd3ec47cef1bb0"
+          }
+        }
+      }
+    },
+    "tape_echo": {
+      "source_fingerprint": "45069cfc815208105ab15474c93e2694b815d8d3d5d16965e3c1cb90dd616c3b",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5",
+        "ir_sha256": "ee99de14dab171f78f5e6a2e0cc095858f847b8cb45128971f9dc95778af6ca1",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 3.813325,
+          "mir_optimization_ms": 3.8861030000000003,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 3,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 4,
+            "removed_functions": 0,
+            "removed_parameters": 3
+          },
+          "parse_load_ms": 36.928651,
+          "semantics_ms": 147.02564800000002
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 4.259422,
+          "mir_optimization_ms": 4.256784,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 3,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 4,
+            "removed_functions": 0,
+            "removed_parameters": 3
+          },
+          "parse_load_ms": 34.422861,
+          "semantics_ms": 158.00066600000002
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 74595,
+        "candidate_bytes": 74595,
+        "sha256": {
+          "baseline": "a06ddc0e4f9eff2308187471e4ac85d86dd2ae3aa2f4850c9c437aaa045cd738",
+          "candidate": "a06ddc0e4f9eff2308187471e4ac85d86dd2ae3aa2f4850c9c437aaa045cd738"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "0ab9012ceef0161e4bc7435b7e87643d3db0b4f790b63478c71dc972512ee5ac"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "1136c75d440dd08c6242abbf3da398d1c5f35f489906503d9bec8b39f3350895"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "15e2bb92b074df2d25ee7050feb7ca763aae5fd6b3b26feb638734423a50c30a"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "37abb8b33b99d9aeea160b9075bc7aa3c0af5074571ecb5e9738af2a0028cad9"
+          }
+        }
+      }
+    },
+    "neural_synth": {
+      "source_fingerprint": "10666e35a5d7897f80c326f65160f86301733063eb2b5133c958188c43739e01",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c",
+        "ir_sha256": "a1c139540cfd0e4db5915b6a976012ebc32d20e92af32cb7df9a3b754c054de7",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 2.457561,
+          "mir_optimization_ms": 3.059381,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 134,
+            "eliminated_common_subexpressions": 14,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 2
+          },
+          "parse_load_ms": 23.075054,
+          "semantics_ms": 98.491151
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 2.652723,
+          "mir_optimization_ms": 3.3004729999999998,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 134,
+            "eliminated_common_subexpressions": 14,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 2
+          },
+          "parse_load_ms": 17.783054999999997,
+          "semantics_ms": 107.355192
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 82806,
+        "candidate_bytes": 82806,
+        "sha256": {
+          "baseline": "a463ac0e48b7bb4fe90f2c672f37bbed67ad3f0686879630fa63562e4100918e",
+          "candidate": "a463ac0e48b7bb4fe90f2c672f37bbed67ad3f0686879630fa63562e4100918e"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "4bf33e305b6d79d510db7f3846c034de3ac09fee462ec36c5c370d6fe5dd2319"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "6260966b2ba894a069eae9c542a030ff2fc506877e08d23b29ae9eb5162fc035"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "781f151799c7e6e92a23f58c10eb77594748099fabbf059902f6a3d48ce92cd3"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "995fba5014c639ceb8aedf582f2b69434213122ce681e2e4ebe4ac55dfb907d4"
+          }
+        }
+      }
+    },
+    "spectral_freeze": {
+      "source_fingerprint": "057ce0fc7ced8d5e23654c9fc4dc82bb0407f7922e89cf9cb9d1253ee7608570",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe",
+        "ir_sha256": "6c7b0653851906bc8a1b0b0da9c26013846f4b8c77295df230c9f53a25269a11",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 7.839232999999999,
+          "mir_optimization_ms": 9.205929999999999,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 61,
+            "eliminated_common_subexpressions": 1,
+            "iterations": 4,
+            "removed_functions": 11,
+            "removed_parameters": 16
+          },
+          "parse_load_ms": 64.13658699999999,
+          "semantics_ms": 222.70219899999998
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 8.439609,
+          "mir_optimization_ms": 9.739131,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 61,
+            "eliminated_common_subexpressions": 1,
+            "iterations": 4,
+            "removed_functions": 11,
+            "removed_parameters": 16
+          },
+          "parse_load_ms": 68.263565,
+          "semantics_ms": 242.921503
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 84646,
+        "candidate_bytes": 84646,
+        "sha256": {
+          "baseline": "a04acc30c8825f599d60aadaf014d1b6664232eff74e8ed75bda49c4c1526e90",
+          "candidate": "a04acc30c8825f599d60aadaf014d1b6664232eff74e8ed75bda49c4c1526e90"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "0a1936cdac294ee39ac4c882728a2e7a0c3c17ef128a0b23292d16d9fb66d680"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "bfb0e6f0e0fd1617641de11594f02c6424e89f41b4dd70ceb65b89f944da8e07"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 8192,
+            "sha256": "395a984d12d7c0e74f5fc2c281fe2f7bb30224bb5511f04898e844dc9dfe9d27"
+          },
+          "warm-output.bin": {
+            "bytes": 8192,
+            "sha256": "a5eebe7ee9187d0a5abc54c3d60f31f59aaab4a43ad7fe14d163d27c1d7c9ae6"
+          }
+        }
+      }
+    },
+    "ordered-voice-rendering": {
+      "source_fingerprint": "91db6641dc29156e959403634702435e813bbde74af552d3637bc6d11aeb1bd4",
+      "native": {
+        "object_bytes_equal": true,
+        "ir_bytes_equal": true,
+        "object_sha256": "295b90357225c900508059989aac086063d7aa19291510d2fb4c4275a7afa8ad",
+        "ir_sha256": "3468eb9fef09377e201ebad77b2fdaf4b2a2ff5fa3a745b15389198938a8ab07",
+        "baseline_phase_ms": {
+          "mir_lowering_ms": 0.19117599999999998,
+          "mir_optimization_ms": 0.155264,
+          "mir_passes": {
+            "distributed_loops": 1,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 1.611442,
+          "semantics_ms": 15.296511
+        },
+        "candidate_phase_ms": {
+          "mir_lowering_ms": 0.206657,
+          "mir_optimization_ms": 0.13157500000000003,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 4,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 2,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 0.770742,
+          "semantics_ms": 16.228357
+        }
+      },
+      "wasm": {
+        "baseline_bytes": 5481,
+        "candidate_bytes": 5445,
+        "sha256": {
+          "baseline": "a77d188d46a2ec667e5d20b2b28c36efaf54ef6385ab3636680a636e955f7899",
+          "candidate": "33b9cf94b94ace2883fee49074af429f764f3521ed8643344d6e1a129a0dddd8"
+        }
+      },
+      "captures": {
+        "native": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+          }
+        },
+        "wasm": {
+          "output.bin": {
+            "bytes": 4096,
+            "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+          },
+          "warm-output.bin": {
+            "bytes": 4096,
+            "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+          }
+        }
+      }
+    }
+  },
+  "wasm_timings": {
+    "voices-f32-32": {
+      "baseline": 118.68379974365244,
+      "candidate": 113.95870208740249,
+      "candidate_to_baseline": 0.960187509445638,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "ns_per_frame": 118.68379974365244,
+              "rounds": [
+                116.83428955078126,
+                117.13579177856435,
+                118.08667755126953,
+                118.46224594116214,
+                119.3037567138672,
+                118.96059417724602,
+                119.35486221313455,
+                119.38244247436565,
+                118.68379974365244
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "ns_per_frame": 113.95870208740249,
+              "rounds": [
+                111.20734024047847,
+                112.632900238037,
+                113.8765640258787,
+                113.00639343261734,
+                114.04888534545911,
+                114.66563034057609,
+                113.95870208740249,
+                115.27592468261712,
+                115.32661437988314
+              ],
+              "ratio": 0.960187509445638
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "ns_per_frame": 114.9700984954833,
+              "rounds": [
+                113.951093673706,
+                115.35529327392591,
+                115.5975532531738,
+                115.9694175720215,
+                115.16095924377447,
+                114.9700984954833,
+                114.38628768920857,
+                114.59967994689951,
+                114.73701095581065
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "ns_per_frame": 119.07154273986814,
+              "rounds": [
+                116.67138290405269,
+                117.56113815307619,
+                119.14753341674806,
+                119.36505508422837,
+                119.07154273986814,
+                118.92034721374496,
+                123.39814758300814,
+                118.93577194213881,
+                119.07676887512207
+              ],
+              "ratio": 1.0356740082687323
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "ns_per_frame": 118.18801116943341,
+              "rounds": [
+                116.21474456787124,
+                117.19326019287118,
+                118.18801116943341,
+                118.5657958984376,
+                118.16762161254894,
+                118.46901702880844,
+                118.17723464965833,
+                118.83382797241204,
+                118.44009399414064
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "ns_per_frame": 113.61347579956038,
+              "rounds": [
+                111.81947326660168,
+                111.94401931762681,
+                113.61347579956038,
+                112.75759506225577,
+                113.56494903564436,
+                114.72917938232415,
+                114.69272994995119,
+                114.84108734130831,
+                114.42351531982392
+              ],
+              "ratio": 0.9612944212817406
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f32-64": {
+      "baseline": 234.2484970092769,
+      "candidate": 222.5172576904291,
+      "candidate_to_baseline": 0.9499196815833435,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "ns_per_frame": 234.2484970092769,
+              "rounds": [
+                231.48118591308568,
+                231.60369873046926,
+                232.61418914794896,
+                233.81116485595658,
+                234.43153381347628,
+                234.2484970092769,
+                235.8693466186527,
+                235.2008514404291,
+                237.56986999511759
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "ns_per_frame": 221.82209014892564,
+              "rounds": [
+                219.1204605102538,
+                220.0816345214844,
+                220.51776885986285,
+                221.82209014892564,
+                221.2706604003906,
+                224.4868927001953,
+                227.5112533569332,
+                225.70162200927746,
+                224.7924499511724
+              ],
+              "ratio": 0.9469520316287915
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "ns_per_frame": 227.3810615539551,
+              "rounds": [
+                223.6316566467285,
+                224.64998626708964,
+                226.57711791992205,
+                227.3280181884765,
+                227.3810615539551,
+                227.87313079833913,
+                228.477519989014,
+                229.71574783325119,
+                229.5846138000487
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "ns_per_frame": 235.85729598999066,
+              "rounds": [
+                230.06179046630868,
+                232.74331283569322,
+                234.67065048217785,
+                235.1648139953615,
+                235.85729598999066,
+                236.77571868896496,
+                236.3237228393553,
+                237.68232727050793,
+                238.74010467529305
+              ],
+              "ratio": 1.0372776623440305
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "ns_per_frame": 233.3580856323245,
+              "rounds": [
+                230.84184265136693,
+                230.71487426757795,
+                232.261978149414,
+                233.46455383300815,
+                233.03391265869135,
+                233.3580856323245,
+                234.73153686523474,
+                234.8242950439448,
+                236.26657867431652
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "ns_per_frame": 222.5172576904291,
+              "rounds": [
+                219.10412597656287,
+                219.3233795166013,
+                220.03301239013635,
+                220.6726455688474,
+                222.5172576904291,
+                222.61637115478499,
+                225.5890960693365,
+                223.91179656982425,
+                223.1866149902343
+              ],
+              "ratio": 0.953544236907325
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f32-128": {
+      "baseline": 462.99598693847787,
+      "candidate": 439.03241729736396,
+      "candidate_to_baseline": 0.9482423815386155,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "ns_per_frame": 462.99598693847787,
+              "rounds": [
+                453.94106292724524,
+                457.88451385497984,
+                461.60294342041055,
+                461.49542236328165,
+                462.99598693847787,
+                464.3888931274414,
+                467.06832122802786,
+                467.82986450195216,
+                468.29276275634805
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "ns_per_frame": 439.03241729736396,
+              "rounds": [
+                428.8890380859372,
+                430.4041366577152,
+                436.3717117309568,
+                436.25018310546915,
+                439.03241729736396,
+                439.9062423706048,
+                446.31880950927666,
+                444.3633499145519,
+                442.27297210693365
+              ],
+              "ratio": 0.9482423815386155
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "ns_per_frame": 440.27802276611243,
+              "rounds": [
+                430.40625762939476,
+                430.57044982910185,
+                434.4209747314453,
+                436.9775009155277,
+                440.61809539794933,
+                440.27802276611243,
+                442.60752868652276,
+                444.11687469482484,
+                445.4455795288078
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "ns_per_frame": 461.3182601928695,
+              "rounds": [
+                449.3902816772458,
+                450.04981994628895,
+                456.1283111572268,
+                456.5913009643551,
+                461.3182601928695,
+                461.5623550415053,
+                464.8203201293947,
+                464.944076538085,
+                467.8987808227533
+              ],
+              "ratio": 1.0477885252926518
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "ns_per_frame": 465.0574417114257,
+              "rounds": [
+                452.43494415283214,
+                456.5878982543941,
+                458.7206954956057,
+                462.03502655029274,
+                470.0363388061533,
+                465.32068634033175,
+                465.0574417114257,
+                470.26868438720777,
+                468.9616394042973
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "ns_per_frame": 435.8676300048828,
+              "rounds": [
+                424.3176498413088,
+                427.894180297852,
+                432.5147018432616,
+                434.20734405517567,
+                435.8676300048828,
+                440.8779220581062,
+                442.0334625244143,
+                440.66902923584064,
+                442.9577407836904
+              ],
+              "ratio": 0.9372339649073811
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f32-256": {
+      "baseline": 903.34307861328,
+      "candidate": 844.3048553466795,
+      "candidate_to_baseline": 0.9346447383454468,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "ns_per_frame": 902.7594299316419,
+              "rounds": [
+                898.2446594238293,
+                896.0507202148433,
+                902.0468444824215,
+                902.7594299316419,
+                913.1030273437507,
+                902.0263366699213,
+                910.5716247558605,
+                913.6779022216809,
+                913.6302795410174
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "ns_per_frame": 839.0597686767572,
+              "rounds": [
+                827.3627166748045,
+                838.9427032470704,
+                830.7798614501961,
+                846.0749969482415,
+                837.545120239258,
+                851.7096557617183,
+                839.0597686767572,
+                853.6181945800781,
+                845.4162902832019
+              ],
+              "ratio": 0.9294389411587669
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "ns_per_frame": 847.7958831787108,
+              "rounds": [
+                838.7064208984375,
+                847.7958831787108,
+                846.6828308105468,
+                839.1752166748041,
+                849.3043365478508,
+                845.7604522705067,
+                854.3798980712863,
+                850.695587158206,
+                858.3108520507816
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "ns_per_frame": 903.34307861328,
+              "rounds": [
+                891.06640625,
+                896.944961547852,
+                898.9984893798819,
+                903.34307861328,
+                902.7077941894529,
+                908.4169158935541,
+                906.601150512696,
+                916.5998535156268,
+                914.2902069091824
+              ],
+              "ratio": 1.0655195390030694
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "ns_per_frame": 911.3342742919916,
+              "rounds": [
+                900.1856689453118,
+                890.5627899169922,
+                908.2781372070324,
+                902.8791198730478,
+                913.8331604003937,
+                911.3342742919916,
+                917.288421630861,
+                917.2609710693357,
+                918.6313629150379
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "ns_per_frame": 844.3048553466795,
+              "rounds": [
+                824.5048675537114,
+                837.8728790283205,
+                834.1260070800806,
+                844.3048553466795,
+                840.5825195312508,
+                849.1336364746111,
+                844.562622070312,
+                855.1086425781264,
+                852.9617309570338
+              ],
+              "ratio": 0.9264491407421424
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f64-32": {
+      "baseline": 168.6878166198731,
+      "candidate": 163.2519302368165,
+      "candidate_to_baseline": 0.9677754654012386,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "ns_per_frame": 168.6878166198731,
+              "rounds": [
+                168.57138442993164,
+                168.76800537109347,
+                168.98324966430675,
+                169.5897598266603,
+                168.37998580932629,
+                169.70371246337888,
+                168.6878166198731,
+                168.31424331664996,
+                167.88500595092768
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "ns_per_frame": 163.2519302368165,
+              "rounds": [
+                163.2519302368165,
+                163.97133255004908,
+                164.50006866455075,
+                163.1770095825197,
+                163.5692596435546,
+                168.7711601257324,
+                162.30724334716794,
+                163.02552413940398,
+                162.57033538818413
+              ],
+              "ratio": 0.9677754654012386
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "ns_per_frame": 162.49575805664037,
+              "rounds": [
+                162.36314010620117,
+                162.0832901000975,
+                163.0643692016602,
+                161.91938781738276,
+                162.7032699584958,
+                162.49575805664037,
+                162.18213272094738,
+                162.53423309326146,
+                163.2039184570307
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "ns_per_frame": 168.0592651367187,
+              "rounds": [
+                168.0592651367187,
+                167.61516189575187,
+                169.70355606079093,
+                167.53007507324227,
+                167.41765594482408,
+                168.36302185058594,
+                168.42942810058568,
+                167.79769897460943,
+                168.63039016723653
+              ],
+              "ratio": 1.0342378604008793
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "ns_per_frame": 169.89382171630868,
+              "rounds": [
+                167.6378173828127,
+                167.60256958007818,
+                169.05499649047832,
+                171.1619415283201,
+                169.89382171630868,
+                171.51753616333025,
+                169.89303588867176,
+                170.12798309326212,
+                173.20569992065361
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "ns_per_frame": 164.04818725585923,
+              "rounds": [
+                162.0223236083985,
+                161.72774887084964,
+                165.84985351562497,
+                164.280689239502,
+                163.46320724487316,
+                162.87789535522492,
+                165.8906097412108,
+                167.27928924560555,
+                164.04818725585923
+              ],
+              "ratio": 0.9655924247191838
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f64-64": {
+      "baseline": 329.38967132568365,
+      "candidate": 315.40580749511673,
+      "candidate_to_baseline": 0.957546137453896,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "ns_per_frame": 329.38967132568365,
+              "rounds": [
+                330.7528228759767,
+                330.06481170654286,
+                329.3605728149421,
+                329.38967132568365,
+                330.37785339355435,
+                329.514404296875,
+                329.2312545776369,
+                329.35551452636764,
+                328.82228851318325
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "ns_per_frame": 316.65339660644565,
+              "rounds": [
+                317.04178619384754,
+                316.04677581787126,
+                317.26554107665976,
+                315.9024276733402,
+                317.42741394043003,
+                316.65339660644565,
+                318.427322387696,
+                316.45337677001925,
+                314.6722335815432
+              ],
+              "ratio": 0.9613337155716549
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "ns_per_frame": 315.1958312988274,
+              "rounds": [
+                317.9419097900393,
+                313.93814086914074,
+                316.3207550048825,
+                316.5788497924808,
+                315.0681228637695,
+                315.00000000000017,
+                317.06966400146547,
+                315.1958312988274,
+                314.87567901611334
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "ns_per_frame": 329.5483322143557,
+              "rounds": [
+                329.2690277099603,
+                328.77728271484347,
+                330.94998168945335,
+                328.92706298828097,
+                329.5483322143557,
+                328.8956069946291,
+                332.82663726806607,
+                331.184761047364,
+                329.6091995239267
+              ],
+              "ratio": 1.0455351863518816
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "ns_per_frame": 327.5866165161128,
+              "rounds": [
+                326.08917236328153,
+                327.7995834350582,
+                327.5866165161128,
+                328.1072463989258,
+                328.94122314453165,
+                325.97470092773483,
+                328.79915618896484,
+                326.12346649169876,
+                327.40453338622916
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "ns_per_frame": 315.40580749511673,
+              "rounds": [
+                315.40580749511673,
+                314.2482376098637,
+                315.49076843261776,
+                314.8674545288086,
+                315.7213592529301,
+                314.75674438476585,
+                318.95570373535134,
+                315.9410705566405,
+                315.26544189453
+              ],
+              "ratio": 0.9628165242202532
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f64-128": {
+      "baseline": 644.0335235595694,
+      "candidate": 613.8132476806637,
+      "candidate_to_baseline": 0.9530765483885397,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "ns_per_frame": 645.0732421875022,
+              "rounds": [
+                652.3096466064457,
+                638.3740844726569,
+                650.2643127441407,
+                639.6793212890619,
+                646.8105468750013,
+                638.5130004882833,
+                645.0732421875022,
+                640.2344970703119,
+                646.1549987792948
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "ns_per_frame": 610.1772918701183,
+              "rounds": [
+                610.1772918701183,
+                621.3021850585941,
+                606.2157440185554,
+                623.3564300537116,
+                609.1086120605487,
+                623.4886779785155,
+                609.290252685548,
+                625.148162841798,
+                609.7388000488278
+              ],
+              "ratio": 0.9459038942631561
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "ns_per_frame": 615.0006256103527,
+              "rounds": [
+                624.0447845458976,
+                609.1704711914062,
+                622.6481933593753,
+                605.631469726562,
+                619.1293640136729,
+                611.9973449707044,
+                615.0006256103527,
+                614.3289184570334,
+                617.5258636474598
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "ns_per_frame": 643.7649688720709,
+              "rounds": [
+                643.7649688720709,
+                655.4086303710935,
+                640.0797271728514,
+                655.7284698486318,
+                640.6323089599604,
+                656.6096038818358,
+                640.0319061279289,
+                651.6876373291042,
+                642.2127685546883
+              ],
+              "ratio": 1.0467712422782842
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "ns_per_frame": 644.0335235595694,
+              "rounds": [
+                649.5212402343742,
+                637.8262481689466,
+                652.3611145019537,
+                641.8518676757808,
+                649.5211639404291,
+                640.572006225585,
+                645.6302185058604,
+                644.0335235595694,
+                641.5978088378897
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "ns_per_frame": 613.8132476806637,
+              "rounds": [
+                613.8132476806637,
+                623.9453430175786,
+                608.4959106445308,
+                624.0142364501953,
+                608.8208312988296,
+                622.4195098876971,
+                609.9280242919912,
+                625.9543457031239,
+                610.3006896972657
+              ],
+              "ratio": 0.9530765483885397
+            }
+          ]
+        }
+      ]
+    },
+    "voices-f64-256": {
+      "baseline": 1267.483428955076,
+      "candidate": 1195.1084594726547,
+      "candidate_to_baseline": 0.9428986858296933,
+      "processes": [
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "ns_per_frame": 1267.483428955076,
+              "rounds": [
+                1267.483428955076,
+                1271.5500183105507,
+                1304.8951721191388,
+                1263.5548706054697,
+                1265.3104553222647,
+                1268.9213256835903,
+                1305.4761047363306,
+                1260.9776000976556,
+                1261.1997375488252
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "ns_per_frame": 1195.1084594726547,
+              "rounds": [
+                1192.5079345703089,
+                1195.1084594726547,
+                1195.933990478515,
+                1249.649291992186,
+                1196.5853881835965,
+                1192.0032348632856,
+                1194.0007934570299,
+                1243.1362609863286,
+                1189.2587280273453
+              ],
+              "ratio": 0.9428986858296933
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "ns_per_frame": 1191.1954345703164,
+              "rounds": [
+                1189.1274719238281,
+                1191.1954345703164,
+                1236.0013122558605,
+                1186.1402587890618,
+                1195.1040954589835,
+                1189.7454528808637,
+                1233.3492431640668,
+                1181.3128356933655,
+                1191.389526367187
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "ns_per_frame": 1272.8735961914026,
+              "rounds": [
+                1277.1094360351578,
+                1265.5836791992183,
+                1274.7807922363284,
+                1324.9497375488265,
+                1269.194366455083,
+                1272.8735961914026,
+                1270.3366088867158,
+                1323.531494140627,
+                1266.8092346191443
+              ],
+              "ratio": 1.0685682292348182
+            }
+          ]
+        },
+        {
+          "bitwise_equal_samples": 4096,
+          "result": [
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "ns_per_frame": 1263.7776489257783,
+              "rounds": [
+                1263.7776489257783,
+                1263.0991821289058,
+                1309.231994628901,
+                1255.1523132324216,
+                1264.3988647460872,
+                1266.5977783203123,
+                1303.3515319824246,
+                1262.3479309082018,
+                1253.629394531247
+              ],
+              "ratio": 1
+            },
+            {
+              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "ns_per_frame": 1199.5596313476576,
+              "rounds": [
+                1196.119964599611,
+                1199.5596313476576,
+                1196.16976928711,
+                1251.9647216796895,
+                1208.2947082519556,
+                1207.3199768066409,
+                1199.4168395996069,
+                1252.691680908205,
+                1195.1669006347656
+              ],
+              "ratio": 0.949185667563668
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

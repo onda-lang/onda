@@ -11,6 +11,34 @@ use super::{collect_statement_read_references, PassStats};
 // after unrolling. This is a profitability threshold, not a legality rule.
 const MIN_ITERATIONS: i32 = 32;
 
+pub(super) fn is_applicable(program: &Program) -> bool {
+    for function in &program.functions {
+        let mut pending = vec![&function.body];
+        while let Some(block) = pending.pop() {
+            for (index, statement) in block.statements.iter().enumerate() {
+                match &statement.kind {
+                    StatementKind::Loop { body } => {
+                        let previous = index.checked_sub(1).map(|i| &block.statements[i]);
+                        if plan(&program.types, &function.locals, previous, body).is_some() {
+                            return true;
+                        }
+                        pending.push(body);
+                    }
+                    StatementKind::If {
+                        then_block,
+                        else_block,
+                        ..
+                    } => {
+                        pending.extend([then_block, else_block]);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
+}
+
 pub(super) fn distribute(program: &mut Program, stats: &mut PassStats) {
     for function in &mut program.functions {
         visit(
@@ -37,7 +65,7 @@ fn visit(types: &[Type], locals: &mut Vec<Local>, block: &mut Block, stats: &mut
             StatementKind::Loop { body } => {
                 visit(types, locals, body, stats);
                 if let Some(reduction) = split(types, locals, output.last(), body) {
-                    output.push(statement.clone());
+                    output.push(statement);
                     output.extend(reduction);
                     stats.distributed_loops += 1;
                     continue;
@@ -94,12 +122,17 @@ fn fixed_loop(previous: &Statement, body: &Block) -> Option<FixedLoop> {
     Some(FixedLoop { induction, index })
 }
 
-fn split(
+struct Distribution {
+    reduction_at: usize,
+    ty: TypeId,
+}
+
+fn plan(
     types: &[Type],
-    locals: &mut Vec<Local>,
+    locals: &[Local],
     previous: Option<&Statement>,
-    body: &mut Block,
-) -> Option<Vec<Statement>> {
+    body: &Block,
+) -> Option<Distribution> {
     if locals.len() >= MAX_FUNCTION_LOCAL_COUNT {
         return None;
     }
@@ -167,7 +200,25 @@ fn split(
     if !independent_map(&context, map, &mut defined, &mut expensive) || !expensive {
         return None;
     }
+    Some(Distribution { reduction_at, ty })
+}
 
+fn split(
+    types: &[Type],
+    locals: &mut Vec<Local>,
+    previous: Option<&Statement>,
+    body: &mut Block,
+) -> Option<Vec<Statement>> {
+    let Distribution { reduction_at, ty } = plan(types, locals, previous, body)?;
+    let previous = previous?;
+    let statements = &body.statements;
+    let StatementKind::Assign {
+        destination: materialized,
+        ..
+    } = &statements[reduction_at - 1].kind
+    else {
+        unreachable!("planned materialized reduction term")
+    };
     let loaded = LocalId::new(locals.len() as u32);
     locals.push(Local {
         name: Some("$distributed.term".into()),
