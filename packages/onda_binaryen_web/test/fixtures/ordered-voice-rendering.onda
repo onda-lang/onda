@@ -1,0 +1,23 @@
+const Voices = 256
+init:
+  phases: f32[Voices]
+  rendered: f32[Voices]
+sample:
+  mixed = 0.0
+  for voice in 0..Voices:
+    phase = phases[voice] + (110.0 + f32(voice) * 0.37) / SR
+    if phase >= 1.0:
+      phase -= 1.0
+    phases[voice] = phase
+    tone = sin(phase * TWO_PI)
+    # Cancellation makes a change in addition order observable.
+    if voice % 4 == 0:
+      tone += 100000000000000000000.0
+    if voice % 4 == 2:
+      tone -= 100000000000000000000.0
+    rendered[voice] = tone
+    mixed += tone
+  expected = 0.0
+  for voice in 0..Voices:
+    expected += rendered[voice]
+  out1 = mixed - expected

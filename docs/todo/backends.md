@@ -65,12 +65,19 @@ does not need LLVM, a server-side compiler, `wasm-ld`, or JavaScript math callba
   8-point base stage lowers to extensive shuffles and register spills; evaluate vectorization
   direction, width, interleaving, and register pressure with measured code quality rather than
   assuming wider vectors are faster. Keep target-specific cost decisions in the LLVM backend.
-- Add automatic DSP loop vectorization to Binaryen/Wasm. Current SIMD support covers slice fills,
-  not general FFT butterfly loops. Start with independent contiguous and mirrored-range kernels,
+- Broaden Binaryen/Wasm SIMD beyond slice fills and independent straight-line sample loops with
+  invariant controls. General array/voice loops and helper calls remain candidates. Start with
+  independent contiguous and mirrored-range kernels,
   preserving numerical and memory semantics with correct scalar handling where required.
 - Measure real-spectrum reconstruction separately: the native N=1024 fixture currently processes
   255 bin pairs with scalar arithmetic. Use it as a general loop-dependence/vectorization case.
 - Continue the affinity-pinned LLVM/Binaryen matrix as MIR passes and backend versions change.
+- Resolve the small-array native regression isolated to memory-fact lowering, and retain short
+  partially overlapping audio calls in guard-cost measurements. See the
+  [recorded results](../../scripts/bench/results/2026-10-23.md#remaining-limits-and-regressions).
+- Evaluate other optimizer-created vector math operations, vector sin/cos fusion, and failure-path
+  layout only with isolated generated-code and runtime evidence. Supported fixed-width vector
+  `exp2` already resolves through the bundled SLEEF kernels after application optimization.
 - Evaluate targeted MIR analyses only when they expose facts that both LLVM and Binaryen cannot
   reliably recover; avoid encoding target-specific vector widths or loop policies in MIR.
 - Re-evaluate WebAssembly relaxed SIMD and future native core-Wasm math/FMA proposals when broadly

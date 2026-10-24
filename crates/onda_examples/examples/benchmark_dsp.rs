@@ -158,7 +158,7 @@ fn optimize_mir(
         "mir_optimization_ms".into(),
         json!(started.elapsed().as_secs_f64() * 1000.0),
     );
-    phases.insert("mir_passes".into(), json!({"iterations": stats.iterations, "removed_functions": stats.removed_functions, "removed_parameters": stats.removed_function_parameters, "eliminated_bounds_checks": stats.eliminated_bounds_checks, "eliminated_common_subexpressions": stats.eliminated_common_subexpressions}));
+    phases.insert("mir_passes".into(), json!({"iterations": stats.iterations, "removed_functions": stats.removed_functions, "removed_parameters": stats.removed_function_parameters, "eliminated_bounds_checks": stats.eliminated_bounds_checks, "eliminated_common_subexpressions": stats.eliminated_common_subexpressions, "distributed_loops": stats.distributed_loops}));
     Ok(mir)
 }
 

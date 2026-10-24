@@ -1,0 +1,2691 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "681a2faea629bb84c303f29a91ddd05c928c0ecf plus the existing uncommitted review fixes",
+  "fix": "Avoid adding unconditional bounds to path assumptions for ranged loads and constants. Preserve genuinely tighter copy refinements and use numeric bounds for ordering even without affine arithmetic.",
+  "before_source_sha256": {
+    "crates/onda_mir/src/passes/bounds_proofs/relations.rs": "dac18edb332150a56c411900a61ea7fc4913b7ef8d3ccd7abecf69e6035dd89b",
+    "crates/onda_mir/src/passes/bounds_proofs/relations/affine.rs": "4a5d27554558ffe0f7b2b907ef1b536b4457a14cb58a3278eb91ed2a60c88ca4"
+  },
+  "after_source_sha256": {
+    "crates/onda_mir/src/passes/bounds_proofs/relations.rs": "959dd464f91c2cbe4e926e9eb66efc07827ff08762595c80854d6883ca8fc7ec",
+    "crates/onda_mir/src/passes/bounds_proofs/relations/affine.rs": "b259d5b24a6f8a8f52c12527248a46c4d5781326aa6e0fbcecebc6efbee15e16"
+  },
+  "regression": {
+    "command": "cargo test -p onda_mir ranged_reference_loads_keep_affine_queries_linear",
+    "before": "64 ranged loads visited 4800 symbols, exceeding the limit of 4096",
+    "after": "Passes at 64, 512 and 4096 loads; copied-value range preservation regression also passes"
+  },
+  "scaling": {
+    "method": "MIR JSON decoded before timing; one unchanged optimization round; both Rust release opt-level 2; three alternating process pairs pinned to CPU6; no concurrent builds/tests",
+    "worker_sha256": {
+      "before": "6f2dfa087e111ae2b25ca3d3e0aeafedf8135f0e67b86378cfadfca4b49c5b97",
+      "after": "484f607cff74ae701a9ad30272f6958b55b0d8078f2c26beadac04c84d71b1b3"
+    },
+    "cases": [
+      {
+        "accesses": 200,
+        "mir_sha256": "0e002475c9376d90fc00ac718465999972106b9a5e15d1a445cce8aa9bb6c284",
+        "runs": [
+          {
+            "pair": 0,
+            "version": "before",
+            "ns": 28795586.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 28.795586ms, 1 rounds"
+          },
+          {
+            "pair": 0,
+            "version": "after",
+            "ns": 761092.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 761.092\u00b5s, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "after",
+            "ns": 717807.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 717.807\u00b5s, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "before",
+            "ns": 30425445.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 30.425445ms, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "before",
+            "ns": 30650350.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 30.65035ms, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "after",
+            "ns": 746109.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged200.json: 746.109\u00b5s, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 30425445.0,
+          "after": 746109.0
+        },
+        "speedup": 40.77882052086223
+      },
+      {
+        "accesses": 400,
+        "mir_sha256": "777e441ad2eaf27eb90f9be0f0388f7a962cc7a123a2d524857953835d957369",
+        "runs": [
+          {
+            "pair": 0,
+            "version": "before",
+            "ns": 177983175.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 177.983175ms, 1 rounds"
+          },
+          {
+            "pair": 0,
+            "version": "after",
+            "ns": 1404903.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 1.404903ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "after",
+            "ns": 1352327.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 1.352327ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "before",
+            "ns": 178898726.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 178.898726ms, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "before",
+            "ns": 179016742.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 179.016742ms, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "after",
+            "ns": 1375209.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged400.json: 1.375209ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 178898726.0,
+          "after": 1375209.0
+        },
+        "speedup": 130.08839092821526
+      },
+      {
+        "accesses": 800,
+        "mir_sha256": "4ff41e2c4bc0555639f5ea537214708c07fe35ee5e979078f5dc3c0448f45407",
+        "runs": [
+          {
+            "pair": 0,
+            "version": "before",
+            "ns": 1177479556.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 1.177479556s, 1 rounds"
+          },
+          {
+            "pair": 0,
+            "version": "after",
+            "ns": 2794860.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 2.79486ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "after",
+            "ns": 2669019.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 2.669019ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "before",
+            "ns": 1180405453.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 1.180405453s, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "before",
+            "ns": 1174188005.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 1.174188005s, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "after",
+            "ns": 2722503.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged800.json: 2.722503ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 1177479556.0,
+          "after": 2722503.0
+        },
+        "speedup": 432.49890119496655
+      },
+      {
+        "accesses": 1600,
+        "mir_sha256": "a889080d190b3ecff3f7fbd3daa453daddd90a90fa74a9b5ba9a27dbc3010d62",
+        "runs": [
+          {
+            "pair": 0,
+            "version": "before",
+            "ns": 8617169899.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 8.617169899s, 1 rounds"
+          },
+          {
+            "pair": 0,
+            "version": "after",
+            "ns": 5408874.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 5.408874ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "after",
+            "ns": 5509659.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 5.509659ms, 1 rounds"
+          },
+          {
+            "pair": 1,
+            "version": "before",
+            "ns": 8647737040.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 8.64773704s, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "before",
+            "ns": 8646724460.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 8.64672446s, 1 rounds"
+          },
+          {
+            "pair": 2,
+            "version": "after",
+            "ns": 5532084.0,
+            "stdout": "/tmp/onda_mir_review_probe/ranged1600.json: 5.532084ms, 1 rounds"
+          }
+        ],
+        "median_ns": {
+          "before": 8646724460.0,
+          "after": 5509659.0
+        },
+        "speedup": 1569.3756110859129
+      }
+    ],
+    "source_pattern": "struct Reader:\n  cursor: i32 {range = 0..=2147483647}\n  data: f32[16]\n  def read(self):\n    value = 0.0\n    # Repeat for k = 1..accesses:\n    value += self.data[self.cursor + k]\n    return value\ninit:\n  reader = Reader()\nsample:\n  reader.cursor = i32(in1)\n  out1 = reader.read()\n",
+    "harness_source": "use std::time::Instant;\nfn main(){for file in std::env::args().skip(1){let json=std::fs::read_to_string(&file).unwrap();let program=unsafe{onda_mir::from_json_with_producer_proofs(&json)}.unwrap();let start=Instant::now();let (_,stats)=onda_mir::optimize(program).unwrap();println!(\"{file}: {:?}, {} rounds\",start.elapsed(),stats.iterations);}}\n",
+    "preparation": "Emit each generated Reader program with onda compile --emit mir-json. Decode trusted compiler-produced JSON before timing onda_mir::optimize; all measurements perform exactly one unchanged round."
+  },
+  "runtime": {
+    "method": "Before/after sweep of 27 kernel probes and nine examples, no concurrent builds/tests; CPU6, 48kHz, 128-frame blocks, five 30ms rounds; clocks uncontrolled. LLVM O3 strict floating-point defaults, Binaryen O4. Performance acceptance is exact artifact equality; small timing differences are noise.",
+    "compiler_rust_release_opt_level": 3,
+    "worker_sha256": {
+      "before": "bde8c0ca732c29bb4ab0041c185a7494fa02fb7f463eb825549e763925c8bbc2",
+      "after": "0f64ec2d2e72f38f3b1ed82d33d41901d02fea36f0609e3d4f4c2325f7da7bcd"
+    },
+    "build_note": "The first release rustc invocation hit the previously documented intermittent LLVM crash. Retrying with RUST_MIN_STACK=33554432 succeeded; no build configuration changed.",
+    "suites": {
+      "kernels": {
+        "programs": [
+          {
+            "name": "slice-fixed",
+            "source_fingerprint": "b740f073e18f71dc994bb57d78d47eae5d0bd1bda4fbe900f5ac2475bea3240d",
+            "identical_artifacts_sha256": {
+              ".o": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b",
+              ".wasm": "058a3d6ccf234251456d294505876d78d2405f3b22c2ebd8706eeb6fa3c49075",
+              ".mir.msgpack": "e414f4dd7de498fd183f08cae75f79464804ded216c09ac9b34c6c3f46c9f6c0"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6854662597179413,
+                  "rounds_ns_per_frame": [
+                    0.6817176938056946,
+                    0.6854662597179413,
+                    0.6824163645505905,
+                    0.6858513653278351,
+                    0.6869942992925644
+                  ],
+                  "block_p99_us": 0.109
+                },
+                "after": {
+                  "ns_per_frame": 0.6807109862565994,
+                  "rounds_ns_per_frame": [
+                    0.6848064213991165,
+                    0.6807109862565994,
+                    0.680180162191391,
+                    0.6815499067306519,
+                    0.6789898574352264
+                  ],
+                  "block_p99_us": 0.10700000000000001
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+                  "warm-output.bin": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.820728838443757,
+                  "rounds_ns_per_frame": [
+                    2.820728838443757,
+                    2.9278663396835256,
+                    2.921746253967293,
+                    2.730132818222047,
+                    2.741502285003662
+                  ],
+                  "block_p99_us": 0.48199999991993536
+                },
+                "after": {
+                  "ns_per_frame": 2.7865620255470294,
+                  "rounds_ns_per_frame": [
+                    2.7865620255470294,
+                    2.9251469969749393,
+                    2.9065093994140643,
+                    2.7141958475112786,
+                    2.70409876108169
+                  ],
+                  "block_p99_us": 0.7129999999051506
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "d89629c15ad0e641a93d3bf4f82e99a86dda814b28c230dc24841f8c0cee2eb6",
+                  "warm-output.bin": "6059a0beaa509764b5f07b015a4a546a12892b12b226278e40ff0033dd5f483f"
+                }
+              }
+            }
+          },
+          {
+            "name": "slice-dynamic",
+            "source_fingerprint": "866bae37db196f2f98f3a3bd08e2fe56d35f9546ab681ba6e7810cf6bcef259e",
+            "identical_artifacts_sha256": {
+              ".o": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3",
+              ".wasm": "0f776ee0dcc9a465cd2d2212c9dd7212aebeb39de17d5a016a9725cde0faffe1",
+              ".mir.msgpack": "872304838a7101c2553954fbf01fcf74a05974837d018036af36a89f510435f7"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.711542472243309,
+                  "rounds_ns_per_frame": [
+                    0.7117089033126831,
+                    0.711542472243309,
+                    0.7125407308340073,
+                    0.7100273072719574,
+                    0.7080575674772263
+                  ],
+                  "block_p99_us": 0.111
+                },
+                "after": {
+                  "ns_per_frame": 0.7002017796039581,
+                  "rounds_ns_per_frame": [
+                    0.7002017796039581,
+                    0.7005199044942856,
+                    0.6996167153120041,
+                    0.6988636702299118,
+                    0.7031106203794479
+                  ],
+                  "block_p99_us": 0.108
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+                  "warm-output.bin": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.8367508053779638,
+                  "rounds_ns_per_frame": [
+                    2.8367508053779638,
+                    2.9562236666679405,
+                    2.968692600727085,
+                    2.769348680973051,
+                    2.7607752680778512
+                  ],
+                  "block_p99_us": 0.5059999998593412
+                },
+                "after": {
+                  "ns_per_frame": 2.7898902893066353,
+                  "rounds_ns_per_frame": [
+                    2.7898902893066353,
+                    2.9190493226051264,
+                    2.926954925060269,
+                    2.729959607124333,
+                    2.730845689773563
+                  ],
+                  "block_p99_us": 0.542999999879612
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "d89629c15ad0e641a93d3bf4f82e99a86dda814b28c230dc24841f8c0cee2eb6",
+                  "warm-output.bin": "6059a0beaa509764b5f07b015a4a546a12892b12b226278e40ff0033dd5f483f"
+                }
+              }
+            }
+          },
+          {
+            "name": "voice-bank-16",
+            "source_fingerprint": "1f7cf503e8dd35e323d76b0790e998e97cb648a87dd2f3c60013ad2af3f9f564",
+            "identical_artifacts_sha256": {
+              ".o": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c",
+              ".wasm": "7b418e6fe307cd9c5257988ac9e3a8cae72a123b3dac27a08266b34cd4d4ab7e",
+              ".mir.msgpack": "290c1f47e90bd3f28c76ef3179c30916e4019609f63fce16f27fe588c79f35d2"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 11.648866891860962,
+                  "rounds_ns_per_frame": [
+                    11.706197023391724,
+                    11.606153726577759,
+                    11.648866891860962,
+                    11.632487058639526,
+                    11.739368200302124
+                  ],
+                  "block_p99_us": 1.535
+                },
+                "after": {
+                  "ns_per_frame": 11.978854894638062,
+                  "rounds_ns_per_frame": [
+                    11.98258900642395,
+                    11.999342203140259,
+                    11.978854894638062,
+                    11.940247535705566,
+                    11.974841356277466
+                  ],
+                  "block_p99_us": 1.565
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "1171b9a8c6fca21b8688735804d0e6d13abd6acdabf41f5079770f63203d312b",
+                  "warm-output.bin": "d57e73a04bc0f886db8f910ff5e6407c1f5652756aef90cccffc3d997f2045e3"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 60.562009811401374,
+                  "rounds_ns_per_frame": [
+                    60.562009811401374,
+                    60.69422912597646,
+                    61.173467636108526,
+                    60.33388710021976,
+                    60.36968040466295
+                  ],
+                  "block_p99_us": 8.8820000000851
+                },
+                "after": {
+                  "ns_per_frame": 59.905569076537915,
+                  "rounds_ns_per_frame": [
+                    59.61190032958974,
+                    59.95614814758307,
+                    60.30316925048846,
+                    59.905569076537915,
+                    59.826673507690394
+                  ],
+                  "block_p99_us": 9.158999999954176
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "6ce3ec88b40ea78f7765cd6d5035e1e99bbbc93f6ff101c595c064bd8ae0620e",
+                  "warm-output.bin": "eacd13847cff18448a6cd3e4a05971a4ac3b7f42da10e2b979435f7687a7ecfb"
+                }
+              }
+            }
+          },
+          {
+            "name": "voice-bank-256",
+            "source_fingerprint": "1dee2f3d7bfa4ebd219d8678e812d27aca50f2aefe02b0f18f78223a77ad1008",
+            "identical_artifacts_sha256": {
+              ".o": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627",
+              ".wasm": "0f59f7ad79717e051f430078909621015aaa42b2b0f7a7fc7be3c2651b782e87",
+              ".mir.msgpack": "bd5503ea1a19097878f615d8d120b0ea1e0f3cc7b37849ca2d4dabd7f4c0047a"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 208.56531524658203,
+                  "rounds_ns_per_frame": [
+                    209.04423904418945,
+                    208.57299041748047,
+                    208.2423973083496,
+                    208.56531524658203,
+                    208.3303985595703
+                  ],
+                  "block_p99_us": 29.493000000000002
+                },
+                "after": {
+                  "ns_per_frame": 205.34640502929688,
+                  "rounds_ns_per_frame": [
+                    205.34640502929688,
+                    205.63002014160156,
+                    204.8989486694336,
+                    205.2370262145996,
+                    205.88438034057617
+                  ],
+                  "block_p99_us": 27.607
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "431d03cab0bb0d6b3f42e6af31a0c4d96afda48b972e079f5bebcbd07cf07861",
+                  "warm-output.bin": "d6365332976d21f03666cb85b65a947da2f669a0ef773e34cd1c1289d913d1da"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 903.105026245115,
+                  "rounds_ns_per_frame": [
+                    903.105026245115,
+                    894.3295745849622,
+                    903.406509399414,
+                    899.2727813720708,
+                    907.872436523436
+                  ],
+                  "block_p99_us": 129.93200000005345
+                },
+                "after": {
+                  "ns_per_frame": 886.0030975341784,
+                  "rounds_ns_per_frame": [
+                    885.866729736326,
+                    880.1953124999984,
+                    886.2498321533207,
+                    886.0030975341784,
+                    891.3947296142582
+                  ],
+                  "block_p99_us": 128.51399999999558
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "5aee3ca01df6deb050fc361b0b5c5c5b00ed0f2cfbab13df1f384ba51f329ad0",
+                  "warm-output.bin": "fcf7c109771568e3d0b6cf8a31a1c8a6c1e97319c842f48b7747ac3cdfa15f65"
+                }
+              }
+            }
+          },
+          {
+            "name": "voice-bank-4096",
+            "source_fingerprint": "951cde7c32b9201762d784b3fbe7eb12f557691216445243db43592e2d502efb",
+            "identical_artifacts_sha256": {
+              ".o": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb",
+              ".wasm": "be8161da829b1eeddfceadd3d65319c1f89e76befb79af46e97e73ba91f6d971",
+              ".mir.msgpack": "181600e54ad887f91e44e701b412109c8eef89797dfab9171fa337b819b96fcf"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 3502.2164916992188,
+                  "rounds_ns_per_frame": [
+                    3495.47607421875,
+                    3505.4724731445312,
+                    3499.4769287109375,
+                    3502.2164916992188,
+                    3505.607452392578
+                  ],
+                  "block_p99_us": 459.88399999999996
+                },
+                "after": {
+                  "ns_per_frame": 3461.6818237304688,
+                  "rounds_ns_per_frame": [
+                    3456.230743408203,
+                    3462.0172729492188,
+                    3461.6818237304688,
+                    3451.9151916503906,
+                    3467.0308837890625
+                  ],
+                  "block_p99_us": 452.326
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "79cb3ee64938f52143e95323fffa983e521137f52eb0b35d1b3932ac179d1928",
+                  "warm-output.bin": "492e4da5c8c30a7deb13276af95181020340b7e0cb76c5b69b4c35fa34eeb83f"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 14289.28762817383,
+                  "rounds_ns_per_frame": [
+                    14289.28762817383,
+                    14085.42678833008,
+                    14463.627197265627,
+                    14180.070251464838,
+                    14501.847167968748
+                  ],
+                  "block_p99_us": 2134.982000000491
+                },
+                "after": {
+                  "ns_per_frame": 13947.754791259766,
+                  "rounds_ns_per_frame": [
+                    13947.754791259766,
+                    13770.010955810541,
+                    14117.264007568354,
+                    13792.925170898447,
+                    13986.11950683594
+                  ],
+                  "block_p99_us": 2086.113000000296
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ffb7cfd4bdacf809577b350b39957d413c79939e44bf140abdcbc3d45706451b",
+                  "warm-output.bin": "36b982fe16ce7ea1634af8224213a5b439bc93f9858cff9175b0999b50e99df9"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-array-f32",
+            "source_fingerprint": "253b4f926e852589dd4dbbcb650929f8149aec25ab135a9a4c174225aa3ee9c2",
+            "identical_artifacts_sha256": {
+              ".o": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+              ".wasm": "eabf53d53eb03c7aa53de4045e70900bded3c17dbcf8744dc684465dc3b1330a",
+              ".mir.msgpack": "275f1187459032526eca4055e8103471144598328ce5737977403cb33be13012"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6985747963190079,
+                  "rounds_ns_per_frame": [
+                    0.7118811160326004,
+                    0.6985711008310318,
+                    0.6985747963190079,
+                    0.6963414996862411,
+                    0.7003168612718582
+                  ],
+                  "block_p99_us": 0.108
+                },
+                "after": {
+                  "ns_per_frame": 0.6754079163074493,
+                  "rounds_ns_per_frame": [
+                    0.6762883365154266,
+                    0.673536404967308,
+                    0.6747970879077911,
+                    0.6779703944921494,
+                    0.6754079163074493
+                  ],
+                  "block_p99_us": 0.105
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.8235057890415183,
+                  "rounds_ns_per_frame": [
+                    1.8235057890415183,
+                    1.884826987981795,
+                    1.8924951553344742,
+                    1.7986551821231838,
+                    1.8040157258510598
+                  ],
+                  "block_p99_us": 0.3739999999652355
+                },
+                "after": {
+                  "ns_per_frame": 1.7913825809955604,
+                  "rounds_ns_per_frame": [
+                    1.7913825809955604,
+                    1.856652289628985,
+                    1.8596116900444013,
+                    1.7660457789897905,
+                    1.7677721977233891
+                  ],
+                  "block_p99_us": 0.3930000000309519
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-shared-array-f32",
+            "source_fingerprint": "2495078a4565e80d70da4c04af3f1307115263c9b87c764631880384033cead5",
+            "identical_artifacts_sha256": {
+              ".o": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+              ".wasm": "1a61314a216fb168d78c5e46c8967371519b9b9925cbe235cb78f2fe152b56a7",
+              ".mir.msgpack": "f8ff2368ac0b87e57a9b915ee7965825f8b3946ceae3901876f0e851110acf52"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.8565529584884644,
+                  "rounds_ns_per_frame": [
+                    0.857740968465805,
+                    0.8565529584884644,
+                    0.856700137257576,
+                    0.8534741103649139,
+                    0.854492798447609
+                  ],
+                  "block_p99_us": 0.13199999999999998
+                },
+                "after": {
+                  "ns_per_frame": 0.8296926915645599,
+                  "rounds_ns_per_frame": [
+                    0.8296926915645599,
+                    0.8306940943002701,
+                    0.8244715332984924,
+                    0.8308800905942917,
+                    0.8265075236558914
+                  ],
+                  "block_p99_us": 0.159
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+                  "warm-output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.0893641114234907,
+                  "rounds_ns_per_frame": [
+                    3.0893641114234907,
+                    3.2084950208663936,
+                    3.2171093821525596,
+                    3.0281123518943813,
+                    3.0424526333808926
+                  ],
+                  "block_p99_us": 0.551999999970576
+                },
+                "after": {
+                  "ns_per_frame": 3.16355627775192,
+                  "rounds_ns_per_frame": [
+                    3.16355627775192,
+                    3.2860543131828326,
+                    3.282859981060024,
+                    3.0907407999038683,
+                    3.0977374911308284
+                  ],
+                  "block_p99_us": 0.5419999999958236
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+                  "warm-output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-slice-f32",
+            "source_fingerprint": "42786007c389360dcdebc4922e2a42890b5e64154161bd8b441e976334ab4e3d",
+            "identical_artifacts_sha256": {
+              ".o": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+              ".wasm": "fe9a2507ce0ae9e0de8454a3b514fdb4cb1efca9e6a2b129ccdc6108d5b0a924",
+              ".mir.msgpack": "7cd1c731fe3979900c0ba20a1d070917044977dd4a6c341faeae9f9ac1b9da42"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6857888996601105,
+                  "rounds_ns_per_frame": [
+                    0.6857105642557144,
+                    0.6857888996601105,
+                    0.7019544243812561,
+                    0.6874457746744156,
+                    0.6784963607788086
+                  ],
+                  "block_p99_us": 0.111
+                },
+                "after": {
+                  "ns_per_frame": 0.6744093000888824,
+                  "rounds_ns_per_frame": [
+                    0.6725083589553833,
+                    0.6696419566869736,
+                    0.6744093000888824,
+                    0.681886300444603,
+                    0.6769248396158218
+                  ],
+                  "block_p99_us": 0.10700000000000001
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.8882616758346529,
+                  "rounds_ns_per_frame": [
+                    1.8882616758346529,
+                    2.0242395401000963,
+                    2.017231106758118,
+                    1.8182457089424113,
+                    1.8257475495338482
+                  ],
+                  "block_p99_us": 0.381000000061249
+                },
+                "after": {
+                  "ns_per_frame": 1.8165959119796746,
+                  "rounds_ns_per_frame": [
+                    1.8165959119796746,
+                    1.8897289335727685,
+                    1.8919452726840946,
+                    1.7878319621086123,
+                    1.7930661439895652
+                  ],
+                  "block_p99_us": 0.3849999998237763
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-shared-slice-f32",
+            "source_fingerprint": "53b4561a7fb0981b00dfb099857a4b4bb52b09fd684c5c5c63a74a4687261f0f",
+            "identical_artifacts_sha256": {
+              ".o": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+              ".wasm": "96d7bc9c9a83d3b4668033318a16cb9d3fb8fe2f6b8062c86fd76c9ae648babf",
+              ".mir.msgpack": "2b611334c3ab9f5621d3d7d412585fc9592fa0d64c3c3c00fe1f7df17ee010bb"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.8486570119857788,
+                  "rounds_ns_per_frame": [
+                    0.8426373600959778,
+                    0.8486570119857788,
+                    0.8489768207073212,
+                    0.852816566824913,
+                    0.8437980115413666
+                  ],
+                  "block_p99_us": 0.126
+                },
+                "after": {
+                  "ns_per_frame": 0.8276489228010178,
+                  "rounds_ns_per_frame": [
+                    0.8269307166337967,
+                    0.8327425271272659,
+                    0.8272121697664261,
+                    0.8276489228010178,
+                    0.8292219489812851
+                  ],
+                  "block_p99_us": 0.126
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+                  "warm-output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.3215093612670907,
+                  "rounds_ns_per_frame": [
+                    3.3161953687667847,
+                    3.3448188304901207,
+                    3.3215093612670907,
+                    3.499551773071286,
+                    3.222638368606569
+                  ],
+                  "block_p99_us": 0.5879999999933716
+                },
+                "after": {
+                  "ns_per_frame": 3.2315127849578844,
+                  "rounds_ns_per_frame": [
+                    3.2315127849578844,
+                    3.383930563926701,
+                    3.3634416460990946,
+                    3.1828027963638275,
+                    3.1907820105552713
+                  ],
+                  "block_p99_us": 0.5249999999250576
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+                  "warm-output.bin": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-bounded-f32",
+            "source_fingerprint": "8f67873369f0f20ed1ada2f336739d0140b462fdc198b64e3a35f691da7b098d",
+            "identical_artifacts_sha256": {
+              ".o": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78",
+              ".wasm": "e6f6574a3c1ac380238b60fb5977051967608dcde4bdcf1b076b3c33cb7de314",
+              ".mir.msgpack": "2c30e13bc1eb338a44e044bf6b3572dd9d5b2085ddf5344a66ce0dae77eb5bfb"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6704785376787186,
+                  "rounds_ns_per_frame": [
+                    0.6704785376787186,
+                    0.6690596342086792,
+                    0.6692760437726974,
+                    0.6726855933666229,
+                    0.6719040870666504
+                  ],
+                  "block_p99_us": 0.111
+                },
+                "after": {
+                  "ns_per_frame": 0.6687162071466446,
+                  "rounds_ns_per_frame": [
+                    0.6687162071466446,
+                    0.670978769659996,
+                    0.6698641628026962,
+                    0.6669706106185913,
+                    0.6672532558441162
+                  ],
+                  "block_p99_us": 0.108
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.9800158739089968,
+                  "rounds_ns_per_frame": [
+                    1.9800158739089968,
+                    2.1093103289604214,
+                    2.09703975915909,
+                    1.9045584797859163,
+                    1.8932361602783212
+                  ],
+                  "block_p99_us": 0.895000000014079
+                },
+                "after": {
+                  "ns_per_frame": 1.790755182504653,
+                  "rounds_ns_per_frame": [
+                    1.790755182504653,
+                    1.8598210215568525,
+                    1.8607146441936477,
+                    1.7469066977500902,
+                    1.7444265484809867
+                  ],
+                  "block_p99_us": 0.35299999990456854
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+                  "warm-output.bin": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+                }
+              }
+            }
+          },
+          {
+            "name": "array-guarded-helper-f32",
+            "source_fingerprint": "9079e2e5e416322c7277b26006df7cf9a2069831d982d61f25f452fd04776b40",
+            "identical_artifacts_sha256": {
+              ".o": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482",
+              ".wasm": "f3034d8c0d624d9e43011e074993d383ca7492863fd7131317b44f9a8540a138",
+              ".mir.msgpack": "a3015bc18d9fa4bb40ac3dae1169cdce28b8cd11ddd17fe7053aa6237e073ff8"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.5909471213817596,
+                  "rounds_ns_per_frame": [
+                    0.5916261374950409,
+                    0.5877250880002975,
+                    0.5886588990688324,
+                    0.5922226160764694,
+                    0.5909471213817596
+                  ],
+                  "block_p99_us": 0.13899999999999998
+                },
+                "after": {
+                  "ns_per_frame": 0.5823987573385239,
+                  "rounds_ns_per_frame": [
+                    0.5813905000686646,
+                    0.5848094671964645,
+                    0.5823987573385239,
+                    0.5837256610393524,
+                    0.5820540934801102
+                  ],
+                  "block_p99_us": 0.095
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+                  "warm-output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.124788224697114,
+                  "rounds_ns_per_frame": [
+                    3.124788224697114,
+                    3.266624033451085,
+                    3.2379895448684666,
+                    3.0281608104705766,
+                    3.026967585086822
+                  ],
+                  "block_p99_us": 0.5390000000033979
+                },
+                "after": {
+                  "ns_per_frame": 3.125212550163269,
+                  "rounds_ns_per_frame": [
+                    3.125212550163269,
+                    3.2565606236457842,
+                    3.2223204374313337,
+                    2.994394600391383,
+                    2.983969211578367
+                  ],
+                  "block_p99_us": 0.5169999999452557
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+                  "warm-output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+                }
+              }
+            }
+          },
+          {
+            "name": "array-guarded-state-f32",
+            "source_fingerprint": "9a70981c017bfc9e98b28434a310b760072e8d191b0b5f605d382151ab33330e",
+            "identical_artifacts_sha256": {
+              ".o": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3",
+              ".wasm": "9b305b5dd329439ffe42fd4578a7c46cb17717119b4e17d7d9ce87f07ef5e9dd",
+              ".mir.msgpack": "b6910e36df7546f88b1d15db6ef6ceed7351eeafd0cb27ff8cd5e0f32bf3824d"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.5921769440174103,
+                  "rounds_ns_per_frame": [
+                    0.5897468328475952,
+                    0.5947301834821701,
+                    0.5865472853183746,
+                    0.5921769440174103,
+                    0.5928181111812592
+                  ],
+                  "block_p99_us": 0.092
+                },
+                "after": {
+                  "ns_per_frame": 0.5900394767522812,
+                  "rounds_ns_per_frame": [
+                    0.5833681970834732,
+                    0.5991505682468414,
+                    0.5925624370574951,
+                    0.5900394767522812,
+                    0.5887402445077896
+                  ],
+                  "block_p99_us": 0.102
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+                  "warm-output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.1603331565856965,
+                  "rounds_ns_per_frame": [
+                    3.1603331565856965,
+                    3.30131244659424,
+                    3.2937929630279537,
+                    3.081973969936372,
+                    3.087489664554597
+                  ],
+                  "block_p99_us": 0.5280000000311702
+                },
+                "after": {
+                  "ns_per_frame": 3.128535568714148,
+                  "rounds_ns_per_frame": [
+                    3.128535568714148,
+                    3.2558898329734816,
+                    3.2563341259956404,
+                    3.054700374603272,
+                    3.037397801876067
+                  ],
+                  "block_p99_us": 0.5580000000691143
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+                  "warm-output.bin": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-arithmetic-f32",
+            "source_fingerprint": "91210e340df17f0c2412b318cd3b3abe90404f780bbb996d0641211e1a627225",
+            "identical_artifacts_sha256": {
+              ".o": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067",
+              ".wasm": "6e62428604f0bb8f77100fbc629b74e58ed18f44768cfb7a94af654db9738e70",
+              ".mir.msgpack": "67c14f6c594f534b8e3edbc4e40bcc7d7c7ab67de057b808a181aabdb38e453d"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6919056922197342,
+                  "rounds_ns_per_frame": [
+                    0.6919582784175873,
+                    0.6945738345384598,
+                    0.6892241984605789,
+                    0.6919056922197342,
+                    0.6869937926530838
+                  ],
+                  "block_p99_us": 0.099
+                },
+                "after": {
+                  "ns_per_frame": 0.6877907812595367,
+                  "rounds_ns_per_frame": [
+                    0.6825255304574966,
+                    0.6904423087835312,
+                    0.6895809173583984,
+                    0.6877907812595367,
+                    0.6872602105140686
+                  ],
+                  "block_p99_us": 0.102
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+                  "warm-output.bin": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.695692777633668,
+                  "rounds_ns_per_frame": [
+                    2.695692777633668,
+                    2.852389395236967,
+                    2.836098253726957,
+                    2.616099059581762,
+                    2.6102352738380405
+                  ],
+                  "block_p99_us": 0.5000000001018634
+                },
+                "after": {
+                  "ns_per_frame": 2.6607956290245016,
+                  "rounds_ns_per_frame": [
+                    2.6607956290245016,
+                    2.8137776851653986,
+                    2.816893458366395,
+                    2.607392072677612,
+                    2.590276360511787
+                  ],
+                  "block_p99_us": 0.490000000127111
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+                  "warm-output.bin": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-division-f32",
+            "source_fingerprint": "cbae3ae7501432ccad25c864c996637bb50beeae0a4e8d476386b45771ab18ca",
+            "identical_artifacts_sha256": {
+              ".o": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b",
+              ".wasm": "1204d4fa340a4b5e4a955c8112d5385ee17406d09e4c257b48fe05cc0721acc2",
+              ".mir.msgpack": "8a1dccff92d791355d880741246b676e74484e53070847e897e82ea6ce3bf055"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.9991457164287566,
+                  "rounds_ns_per_frame": [
+                    0.998663455247879,
+                    0.9957833588123322,
+                    1.000495582818985,
+                    1.001042127609253,
+                    0.9991457164287566
+                  ],
+                  "block_p99_us": 0.13699999999999998
+                },
+                "after": {
+                  "ns_per_frame": 0.9924952685832977,
+                  "rounds_ns_per_frame": [
+                    0.9912216961383818,
+                    0.9955747127532959,
+                    0.9924952685832977,
+                    0.9972208440303802,
+                    0.9898286163806914
+                  ],
+                  "block_p99_us": 0.142
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+                  "warm-output.bin": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.480064034461965,
+                  "rounds_ns_per_frame": [
+                    3.5093556642532397,
+                    3.480064034461965,
+                    3.4779843091964815,
+                    3.6664309501648105,
+                    3.3743942975997774
+                  ],
+                  "block_p99_us": 0.5889999999908468
+                },
+                "after": {
+                  "ns_per_frame": 3.3613262176513725,
+                  "rounds_ns_per_frame": [
+                    3.3705288171768326,
+                    3.3613262176513725,
+                    3.3437813520431505,
+                    3.5626266002654936,
+                    3.258391499519342
+                  ],
+                  "block_p99_us": 0.6510000000616856
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+                  "warm-output.bin": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-reciprocal-f32",
+            "source_fingerprint": "9cd050c51b3444425cd782e1ee97716ad7bc71c86b1f05c309ff6b80972bc2ce",
+            "identical_artifacts_sha256": {
+              ".o": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c",
+              ".wasm": "1b68912a4ce12fd5229ce473b7d0b72a776aa55db3ab618ea55671393d17d89d",
+              ".mir.msgpack": "e7db9328859df4d1dc1b73255522bf70f0c78b09c7bde1a52c947f0e185612c3"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.6516530960798264,
+                  "rounds_ns_per_frame": [
+                    0.6516530960798264,
+                    0.652472659945488,
+                    0.6513822674751282,
+                    0.6495387107133865,
+                    0.6526001989841461
+                  ],
+                  "block_p99_us": 0.093
+                },
+                "after": {
+                  "ns_per_frame": 0.6453944146633148,
+                  "rounds_ns_per_frame": [
+                    0.6439899504184723,
+                    0.6453944146633148,
+                    0.6453876048326492,
+                    0.6528200805187225,
+                    0.6537456065416336
+                  ],
+                  "block_p99_us": 0.093
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+                  "warm-output.bin": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.454243779182426,
+                  "rounds_ns_per_frame": [
+                    3.458082437515249,
+                    3.454243779182426,
+                    3.452262401580804,
+                    3.649395227432262,
+                    3.3422974348068286
+                  ],
+                  "block_p99_us": 0.6510000000616856
+                },
+                "after": {
+                  "ns_per_frame": 3.4191576242446864,
+                  "rounds_ns_per_frame": [
+                    3.432555198669445,
+                    3.409798622131351,
+                    3.4191576242446864,
+                    3.5906184911727848,
+                    3.326097965240495
+                  ],
+                  "block_p99_us": 0.7029999999303982
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+                  "warm-output.bin": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-reduction-f32",
+            "source_fingerprint": "dec73528638f0a0151c5bcbda43ac0ef1b22df677c270b280b7120eab32c0c27",
+            "identical_artifacts_sha256": {
+              ".o": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc",
+              ".wasm": "1c33a3a96c5bd277faa852c1aa2d8a85a16e34aa085dee57277411b790ccf224",
+              ".mir.msgpack": "c234e4fcc412a895a8a7483fa599e601f2f39d62adf138fae476afb0dcf825e7"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 1.4228411316871643,
+                  "rounds_ns_per_frame": [
+                    1.4193400144577026,
+                    1.4249476492404938,
+                    1.4188845753669739,
+                    1.4228411316871643,
+                    1.4251610040664673
+                  ],
+                  "block_p99_us": 0.224
+                },
+                "after": {
+                  "ns_per_frame": 1.4160463511943817,
+                  "rounds_ns_per_frame": [
+                    1.414357990026474,
+                    1.4235346615314484,
+                    1.4160463511943817,
+                    1.415575534105301,
+                    1.417556881904602
+                  ],
+                  "block_p99_us": 0.222
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+                  "warm-output.bin": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.019232511520395,
+                  "rounds_ns_per_frame": [
+                    2.019232511520395,
+                    2.1586545109748796,
+                    2.1685511469841003,
+                    1.9525159597396795,
+                    1.9536048173904383
+                  ],
+                  "block_p99_us": 0.38500000005115
+                },
+                "after": {
+                  "ns_per_frame": 2.009961605072019,
+                  "rounds_ns_per_frame": [
+                    2.009961605072019,
+                    2.1497142910957363,
+                    2.146928250789645,
+                    1.9415879249572812,
+                    1.942531943321222
+                  ],
+                  "block_p99_us": 0.34899999991466757
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+                  "warm-output.bin": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-array-f64",
+            "source_fingerprint": "e0e8e24647b7b58ffa44149c5162ffce28cc8aee2cae8878b1f1d41e16a3a68d",
+            "identical_artifacts_sha256": {
+              ".o": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+              ".wasm": "ee33f70140ca3419b26a5c2e12bcee59e7146db49e455628690315c7a02234f2",
+              ".mir.msgpack": "84ee2be52118694c77524948af636049cd66b7a50050c6f312c5b1773b9af63f"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.7829963713884354,
+                  "rounds_ns_per_frame": [
+                    0.7840933799743652,
+                    0.7829963713884354,
+                    0.7829521149396896,
+                    0.7845349907875061,
+                    0.7824219167232513
+                  ],
+                  "block_p99_us": 0.117
+                },
+                "after": {
+                  "ns_per_frame": 0.7808919996023178,
+                  "rounds_ns_per_frame": [
+                    0.7809010744094849,
+                    0.7808919996023178,
+                    0.7810462117195129,
+                    0.7806302458047867,
+                    0.7791825532913208
+                  ],
+                  "block_p99_us": 0.118
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.8220746517181403,
+                  "rounds_ns_per_frame": [
+                    1.8220746517181403,
+                    1.8749038875102966,
+                    1.870864868164062,
+                    1.7837244570255275,
+                    1.79020267724991
+                  ],
+                  "block_p99_us": 0.37599999996018596
+                },
+                "after": {
+                  "ns_per_frame": 1.80506840348244,
+                  "rounds_ns_per_frame": [
+                    1.80506840348244,
+                    1.8755700290203083,
+                    1.8683967888355255,
+                    1.783818870782854,
+                    1.7782105803489707
+                  ],
+                  "block_p99_us": 0.35200000002078013
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-shared-array-f64",
+            "source_fingerprint": "5f8001ec01639d544251c3ffdbab5c3dbe0f0fc4234369e456c668d22d2e95fe",
+            "identical_artifacts_sha256": {
+              ".o": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+              ".wasm": "51be9cd718de2566b31238187172dd9f74fc32ed9045717e2819f5f4448906ae",
+              ".mir.msgpack": "310e12c06ec0715653901fc69e8fc73c67419e0edc04a95c04d40949e8e0e0a2"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 1.0010252594947815,
+                  "rounds_ns_per_frame": [
+                    1.0158809125423431,
+                    1.0049085021018982,
+                    1.0002000629901886,
+                    1.0010252594947815,
+                    1.0009153485298157
+                  ],
+                  "block_p99_us": 0.14700000000000002
+                },
+                "after": {
+                  "ns_per_frame": 0.9933477938175201,
+                  "rounds_ns_per_frame": [
+                    0.9933477938175201,
+                    0.9930433332920074,
+                    0.998416304588318,
+                    0.9944221675395964,
+                    0.9906433522701263
+                  ],
+                  "block_p99_us": 0.158
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+                  "warm-output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.0768687725067094,
+                  "rounds_ns_per_frame": [
+                    3.0768687725067094,
+                    3.2080246806144728,
+                    3.217206597328187,
+                    3.00136089324951,
+                    3.015784919261929
+                  ],
+                  "block_p99_us": 0.6090000000540385
+                },
+                "after": {
+                  "ns_per_frame": 3.0398305058479265,
+                  "rounds_ns_per_frame": [
+                    3.0398305058479265,
+                    3.1811427474021916,
+                    3.166197121143339,
+                    2.997277021408076,
+                    2.985081017017367
+                  ],
+                  "block_p99_us": 0.5859999999984211
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+                  "warm-output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-slice-f64",
+            "source_fingerprint": "6dd279fe481044a5504ddbc6de425b67937685533e5607d9209aec295f49c196",
+            "identical_artifacts_sha256": {
+              ".o": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+              ".wasm": "a6c528d33d97b6a2b7f9d39cc7d5f310cfa31a0d84b6d0dfa7219da69833a707",
+              ".mir.msgpack": "fd91f201aed43ae04248810618259346cdda1ff32cb7cffd336ad3c4e4c4c626"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.7828402668237686,
+                  "rounds_ns_per_frame": [
+                    0.7862011343240738,
+                    0.7809689790010452,
+                    0.781635046005249,
+                    0.7828880399465561,
+                    0.7828402668237686
+                  ],
+                  "block_p99_us": 0.125
+                },
+                "after": {
+                  "ns_per_frame": 0.7785881012678146,
+                  "rounds_ns_per_frame": [
+                    0.7785881012678146,
+                    0.7788980901241302,
+                    0.7780939638614655,
+                    0.7807421386241913,
+                    0.7760404348373413
+                  ],
+                  "block_p99_us": 0.12100000000000001
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.8867208957672164,
+                  "rounds_ns_per_frame": [
+                    1.8867208957672164,
+                    2.009733796119693,
+                    2.0121286511421217,
+                    1.8121871948242192,
+                    1.8000335097312952
+                  ],
+                  "block_p99_us": 0.5069999999705033
+                },
+                "after": {
+                  "ns_per_frame": 1.8152011632919316,
+                  "rounds_ns_per_frame": [
+                    1.8152011632919316,
+                    1.8895089030265833,
+                    1.886106699705124,
+                    1.7866896092891704,
+                    1.7895577251911166
+                  ],
+                  "block_p99_us": 0.44200000002092565
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-shared-slice-f64",
+            "source_fingerprint": "a205bb55ae3728266a86db8b88dd12f7dcfdb2fc65b4729664bb5886c6e1bdcf",
+            "identical_artifacts_sha256": {
+              ".o": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+              ".wasm": "e0efc57e92651cdcc54b8384d512e1866dd4f4cc89928ec6a1b7c2943b58739c",
+              ".mir.msgpack": "8a4ceb22c541399e9247473fe0beb1e611bf6b78094e2622da76a06801eaa6eb"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 1.0020338892936707,
+                  "rounds_ns_per_frame": [
+                    1.0020338892936707,
+                    0.9994555711746216,
+                    1.0009037554264069,
+                    1.002962738275528,
+                    1.0035365521907806
+                  ],
+                  "block_p99_us": 0.15
+                },
+                "after": {
+                  "ns_per_frame": 0.993417650461197,
+                  "rounds_ns_per_frame": [
+                    0.9899746179580688,
+                    0.996558427810669,
+                    0.993417650461197,
+                    0.988801121711731,
+                    0.9958001673221588
+                  ],
+                  "block_p99_us": 0.14700000000000002
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+                  "warm-output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.3018981218338084,
+                  "rounds_ns_per_frame": [
+                    3.3018981218338084,
+                    3.3266124725341846,
+                    3.292544484138489,
+                    3.5001455545425437,
+                    3.2061468362808148
+                  ],
+                  "block_p99_us": 0.6230000000186919
+                },
+                "after": {
+                  "ns_per_frame": 3.2459692955017054,
+                  "rounds_ns_per_frame": [
+                    3.2459692955017054,
+                    3.3404051661491376,
+                    3.3707605004310586,
+                    3.170355796813966,
+                    3.1673920750618008
+                  ],
+                  "block_p99_us": 0.5400000000008731
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+                  "warm-output.bin": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+                }
+              }
+            }
+          },
+          {
+            "name": "state-window-bounded-f64",
+            "source_fingerprint": "4d358949be0e47de7b551d619681b0e8fd0acf93206b8c966398a13d2d10798a",
+            "identical_artifacts_sha256": {
+              ".o": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7",
+              ".wasm": "b28f020ff0ef9b23bde9ac79b5b35d4c861614352cce9f310d54628b5d9fd6e5",
+              ".mir.msgpack": "a957570f3c6beccc8f1ec5114e0cc813399f8d97888f9bdb4d67fadcbcb6617c"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.794887125492096,
+                  "rounds_ns_per_frame": [
+                    0.7962877154350281,
+                    0.794887125492096,
+                    0.7947613447904587,
+                    0.7940567135810852,
+                    0.7963481545448303
+                  ],
+                  "block_p99_us": 0.12200000000000001
+                },
+                "after": {
+                  "ns_per_frame": 0.7874963134527206,
+                  "rounds_ns_per_frame": [
+                    0.7860749512910843,
+                    0.7859272360801697,
+                    0.7882140576839447,
+                    0.7874963134527206,
+                    0.7909796983003616
+                  ],
+                  "block_p99_us": 0.119
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1.8289795815944665,
+                  "rounds_ns_per_frame": [
+                    1.8289795815944665,
+                    1.9001315832138062,
+                    1.902254790067672,
+                    1.7843777537345888,
+                    1.7905391752719868
+                  ],
+                  "block_p99_us": 0.38099999983387534
+                },
+                "after": {
+                  "ns_per_frame": 1.8251937329769132,
+                  "rounds_ns_per_frame": [
+                    1.8251937329769132,
+                    1.8969428837299351,
+                    1.8793344497680682,
+                    1.7661368846893335,
+                    1.7769198119640335
+                  ],
+                  "block_p99_us": 0.8689999999660358
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+                  "warm-output.bin": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+                }
+              }
+            }
+          },
+          {
+            "name": "array-guarded-helper-f64",
+            "source_fingerprint": "153b5f5138deae1c13b5253c7e18b931e6a2a94a9e8f23f56c2bb4a8325d15ae",
+            "identical_artifacts_sha256": {
+              ".o": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f",
+              ".wasm": "f253d52f8c310de689bd533b616edcfdb096ebf47f235f3f59babbb6120a97d4",
+              ".mir.msgpack": "9b4981497b46eb36083b85e57c7c239153da505fbf74f35168f495162c9afc82"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.7471147179603577,
+                  "rounds_ns_per_frame": [
+                    0.7404629737138748,
+                    0.740812674164772,
+                    0.7535867840051651,
+                    0.7471147179603577,
+                    0.7477001249790192
+                  ],
+                  "block_p99_us": 0.119
+                },
+                "after": {
+                  "ns_per_frame": 0.7385887056589127,
+                  "rounds_ns_per_frame": [
+                    0.7377887815237045,
+                    0.7371474802494049,
+                    0.7425589263439178,
+                    0.7385887056589127,
+                    0.7488762736320496
+                  ],
+                  "block_p99_us": 0.128
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+                  "warm-output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.0733337402343714,
+                  "rounds_ns_per_frame": [
+                    3.0733337402343714,
+                    3.2193688750266993,
+                    3.202607631683346,
+                    3.0045418739318817,
+                    2.9920868277549753
+                  ],
+                  "block_p99_us": 0.5280000000311702
+                },
+                "after": {
+                  "ns_per_frame": 3.0588228106498723,
+                  "rounds_ns_per_frame": [
+                    3.0588228106498723,
+                    3.2256559133529663,
+                    3.2021711468696603,
+                    2.9881252646446237,
+                    2.987225353717807
+                  ],
+                  "block_p99_us": 0.5509999999731008
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+                  "warm-output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+                }
+              }
+            }
+          },
+          {
+            "name": "array-guarded-state-f64",
+            "source_fingerprint": "e878310d45ad89a9f39252979bb3c1729530f46722528cbb2701aa0f90166314",
+            "identical_artifacts_sha256": {
+              ".o": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04",
+              ".wasm": "72eec03ab24c12ea102b575e9b1b135c378d42d6b31781a38c9a514f02454802",
+              ".mir.msgpack": "3b3d71e24e05a27cac2564bf0907f5abd9efe2ec9106eca03ecc40f8705bb983"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.7596636712551117,
+                  "rounds_ns_per_frame": [
+                    0.7583666294813156,
+                    0.7538995891809464,
+                    0.7637955546379089,
+                    0.7614170759916306,
+                    0.7596636712551117
+                  ],
+                  "block_p99_us": 0.12
+                },
+                "after": {
+                  "ns_per_frame": 0.7476549744606018,
+                  "rounds_ns_per_frame": [
+                    0.7481355369091034,
+                    0.7453774511814117,
+                    0.745691329240799,
+                    0.7528396844863892,
+                    0.7476549744606018
+                  ],
+                  "block_p99_us": 0.12
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+                  "warm-output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 3.139946520328524,
+                  "rounds_ns_per_frame": [
+                    3.139946520328524,
+                    3.273003220558166,
+                    3.267447710037237,
+                    3.056723058223727,
+                    3.0624893903732295
+                  ],
+                  "block_p99_us": 0.5350000000134969
+                },
+                "after": {
+                  "ns_per_frame": 3.1011162400245667,
+                  "rounds_ns_per_frame": [
+                    3.1011162400245667,
+                    3.236054241657255,
+                    3.2293781638145456,
+                    3.025118827819823,
+                    3.0387893319129966
+                  ],
+                  "block_p99_us": 0.559999999950378
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+                  "warm-output.bin": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-arithmetic-f64",
+            "source_fingerprint": "922003127673f7674a003e42c0ec1f033d72adba0f464053b00a951f705ca026",
+            "identical_artifacts_sha256": {
+              ".o": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6",
+              ".wasm": "2ae3edc27aaefe5a809f9eb4a8121e57c837e9a54df1c9b6d964979c7e81ed6f",
+              ".mir.msgpack": "843ec1a158e101853fd5200f0366e64765e7375b75c5a0eb90c2f2ef6d5d851b"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.8090902119874954,
+                  "rounds_ns_per_frame": [
+                    0.8090161234140396,
+                    0.8090902119874954,
+                    0.8100287020206451,
+                    0.8069247305393219,
+                    0.8107241094112396
+                  ],
+                  "block_p99_us": 0.113
+                },
+                "after": {
+                  "ns_per_frame": 0.8000487834215164,
+                  "rounds_ns_per_frame": [
+                    0.7986600995063782,
+                    0.8000487834215164,
+                    0.7993806749582291,
+                    0.8001280725002289,
+                    0.800701916217804
+                  ],
+                  "block_p99_us": 0.112
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7",
+                  "warm-output.bin": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.670877456665039,
+                  "rounds_ns_per_frame": [
+                    2.670877456665039,
+                    2.8163402080535906,
+                    2.8127499818801875,
+                    2.5917769670486446,
+                    2.606230854988102
+                  ],
+                  "block_p99_us": 0.8869999999205902
+                },
+                "after": {
+                  "ns_per_frame": 2.7417876720428582,
+                  "rounds_ns_per_frame": [
+                    2.7417876720428582,
+                    2.8773759603500304,
+                    2.8843830823898333,
+                    2.657345175743103,
+                    2.6589527130126887
+                  ],
+                  "block_p99_us": 0.4779999999300344
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "a974cd018032c4dbde8147d85c737764333f3b6604cd40cbcf40089a8e6a20a6",
+                  "warm-output.bin": "a974cd018032c4dbde8147d85c737764333f3b6604cd40cbcf40089a8e6a20a6"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-division-f64",
+            "source_fingerprint": "451c735480eca64ee659fd3fd4624ed0a8d0b87ae419cf6f5635281f1d2f2c49",
+            "identical_artifacts_sha256": {
+              ".o": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200",
+              ".wasm": "3dc1be0a25d1312640b4299796afc0645ba36434933ba4ac53c55fbefc383f9d",
+              ".mir.msgpack": "bdb9c3326117a41b0a0267673151374606f1b6feaa4021663163894ab724c8be"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 1.9604258537292483,
+                  "rounds_ns_per_frame": [
+                    1.9570391178131106,
+                    1.9488011002540586,
+                    1.9706349968910215,
+                    1.9775360822677612,
+                    1.9604258537292483
+                  ],
+                  "block_p99_us": 0.262
+                },
+                "after": {
+                  "ns_per_frame": 1.945058465003967,
+                  "rounds_ns_per_frame": [
+                    1.9400014877319338,
+                    1.9373575448989868,
+                    1.9566420316696167,
+                    1.9491297006607058,
+                    1.945058465003967
+                  ],
+                  "block_p99_us": 0.262
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb",
+                  "warm-output.bin": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 4.092062711715704,
+                  "rounds_ns_per_frame": [
+                    4.1139364242553915,
+                    4.0902863740921065,
+                    4.092062711715704,
+                    4.304015040397643,
+                    3.9738782644271917
+                  ],
+                  "block_p99_us": 0.653000000056636
+                },
+                "after": {
+                  "ns_per_frame": 4.058816432952881,
+                  "rounds_ns_per_frame": [
+                    4.105874538421622,
+                    4.058816432952881,
+                    4.054425120353686,
+                    4.269454598426823,
+                    3.9474626779556217
+                  ],
+                  "block_p99_us": 0.6430000000818836
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "042b506e6e56ba00df021cd9a181ddeeac97597267691474da940d18105fe9a4",
+                  "warm-output.bin": "042b506e6e56ba00df021cd9a181ddeeac97597267691474da940d18105fe9a4"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-reciprocal-f64",
+            "source_fingerprint": "b2c5d00184899dd775e8ac13a22191937082ca262a4d634d99c2835dee0920fc",
+            "identical_artifacts_sha256": {
+              ".o": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f",
+              ".wasm": "4e3ab2cdec70850ed3a7ac2c620c1d3ae275d4a1c23776522062254d460e0a53",
+              ".mir.msgpack": "3efc417eae2ca3eb5ba094b060c8e230e1713776042e4bafc081bf7f2d6b7026"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 0.7375018447637558,
+                  "rounds_ns_per_frame": [
+                    0.7375018447637558,
+                    0.7352973967790604,
+                    0.7328675240278244,
+                    0.7387450039386749,
+                    0.7405695617198944
+                  ],
+                  "block_p99_us": 0.108
+                },
+                "after": {
+                  "ns_per_frame": 0.7268607020378113,
+                  "rounds_ns_per_frame": [
+                    0.7274975031614304,
+                    0.7282441556453705,
+                    0.7257576584815979,
+                    0.7268607020378113,
+                    0.7247396111488342
+                  ],
+                  "block_p99_us": 0.103
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e",
+                  "warm-output.bin": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 4.2319843769073735,
+                  "rounds_ns_per_frame": [
+                    4.25754249095916,
+                    4.2319843769073735,
+                    4.209692239761362,
+                    4.415026783943191,
+                    4.1845157146453715
+                  ],
+                  "block_p99_us": 2.5279999999838765
+                },
+                "after": {
+                  "ns_per_frame": 4.1823759078979705,
+                  "rounds_ns_per_frame": [
+                    4.202956676483148,
+                    4.1823759078979705,
+                    4.159350514411927,
+                    4.374677062034607,
+                    4.081481933593744
+                  ],
+                  "block_p99_us": 0.6989999999404972
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "059a39b37e0cb7348b9c601da6a3162440a042f83f61b411a8eab423a50dc4fa",
+                  "warm-output.bin": "059a39b37e0cb7348b9c601da6a3162440a042f83f61b411a8eab423a50dc4fa"
+                }
+              }
+            }
+          },
+          {
+            "name": "operator-reduction-f64",
+            "source_fingerprint": "f2dd18d3535be5da828e363dc399989e7ccea68356a0bd3ac8e50bdc00e878ac",
+            "identical_artifacts_sha256": {
+              ".o": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed",
+              ".wasm": "ed67b683adce5c9c067fa055618e2ee5f43ce351f6836584d6b239acb26600f1",
+              ".mir.msgpack": "ae0a677ff28ab3fa45af6c7111ee36ea4a9442f1dd5a6d2323185eadbdc5ae4d"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 1.5987932682037354,
+                  "rounds_ns_per_frame": [
+                    1.6051224172115326,
+                    1.5987932682037354,
+                    1.5939213037490845,
+                    1.598087877035141,
+                    1.60049769282341
+                  ],
+                  "block_p99_us": 0.22
+                },
+                "after": {
+                  "ns_per_frame": 1.5865797400474548,
+                  "rounds_ns_per_frame": [
+                    1.584348440170288,
+                    1.5797724425792694,
+                    1.5896723866462708,
+                    1.5903358459472656,
+                    1.5865797400474548
+                  ],
+                  "block_p99_us": 0.224
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608",
+                  "warm-output.bin": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.0297485589981026,
+                  "rounds_ns_per_frame": [
+                    2.0297485589981026,
+                    2.1542099118232683,
+                    2.1580363512039096,
+                    1.9558685421943736,
+                    1.9449161887169004
+                  ],
+                  "block_p99_us": 0.38900000004105095
+                },
+                "after": {
+                  "ns_per_frame": 2.0049170255660953,
+                  "rounds_ns_per_frame": [
+                    2.0049170255660953,
+                    2.1502313613891513,
+                    2.133464753627782,
+                    1.9350364208221424,
+                    1.9294670224189754
+                  ],
+                  "block_p99_us": 0.398000000132015
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "046c4ef2ee1ff22a0c69791b5d740d74fbdddf78afa558b48219a46ce0a2b833",
+                  "warm-output.bin": "046c4ef2ee1ff22a0c69791b5d740d74fbdddf78afa558b48219a46ce0a2b833"
+                }
+              }
+            }
+          }
+        ],
+        "settings": {
+          "block_size": 128,
+          "sample_rate": 48000,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": null,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06
+        }
+      },
+      "examples": {
+        "programs": [
+          {
+            "name": "sine",
+            "source_fingerprint": "fdf615ea597548d723e5a4623523d21a032b40dad63d96745347a459a15aba48",
+            "identical_artifacts_sha256": {
+              ".o": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7",
+              ".wasm": "567eac859f13d8137cd07a141ae86e0faef779bc2dfe44649d010c550f7adc56",
+              ".mir.msgpack": "3e42f4775a8ea1a19086c86be4471ea2eaaaf46e3a117ea08c2d76df723b2e25"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 3.63839590549469,
+                  "rounds_ns_per_frame": [
+                    3.640471935272217,
+                    3.63839590549469,
+                    3.649051785469055,
+                    3.630977749824524,
+                    3.6300591230392456
+                  ],
+                  "block_p99_us": 0.515
+                },
+                "after": {
+                  "ns_per_frame": 3.645888566970825,
+                  "rounds_ns_per_frame": [
+                    3.631409168243408,
+                    3.650183081626892,
+                    3.6283923387527466,
+                    3.6509761810302734,
+                    3.645888566970825
+                  ],
+                  "block_p99_us": 0.513
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ebc263130e3d392e0eb10ad64b62600238b0011b5c47ee5fe9b639f8fdb541cc",
+                  "warm-output.bin": "15b278e51a024776a520df403b22354356193daff540c413121d53374266ece2"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 2.8282111287117027,
+                  "rounds_ns_per_frame": [
+                    2.8282111287117027,
+                    2.95574599504471,
+                    2.9516659975051978,
+                    2.7442848086357134,
+                    2.7501350045204065
+                  ],
+                  "block_p99_us": 0.5949999999756983
+                },
+                "after": {
+                  "ns_per_frame": 2.847285568714151,
+                  "rounds_ns_per_frame": [
+                    2.847285568714151,
+                    2.981189131736752,
+                    2.9727718830108754,
+                    2.762717783451083,
+                    2.7638463377952567
+                  ],
+                  "block_p99_us": 0.569000000041342
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "0ade7dd11cc2c297d75604400d157f59dca43f38029ddeeceaee3423c490132b",
+                  "warm-output.bin": "eebb6faa6da373cc4ac9a8fc99bed852088596a032a7fd6be16667c482c19466"
+                }
+              }
+            }
+          },
+          {
+            "name": "voice_bank",
+            "source_fingerprint": "1de090e70c558633e89060425b55b5c7fe604de070b7b8e2805112da13852825",
+            "identical_artifacts_sha256": {
+              ".o": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc",
+              ".wasm": "988845662038b24849d465435ed7ef4039ad89e40a1625553d0d9255f60eba54",
+              ".mir.msgpack": "feb3ea920d837856b160dcd814502a7fec979176a52d8f5134a280d7f867a7ee"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 2.19221955537796,
+                  "rounds_ns_per_frame": [
+                    2.19221955537796,
+                    2.2001222372055054,
+                    2.185165286064148,
+                    2.1928664445877075,
+                    2.191967725753784
+                  ],
+                  "block_p99_us": 0.309
+                },
+                "after": {
+                  "ns_per_frame": 2.222910523414612,
+                  "rounds_ns_per_frame": [
+                    2.2249513268470764,
+                    2.2172467708587646,
+                    2.2250528931617737,
+                    2.2187978625297546,
+                    2.222910523414612
+                  ],
+                  "block_p99_us": 0.312
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "1c50434911edbf08c489caf7137a5d8f99838118b4bb29e2bc4fbce60ed0a5ba",
+                  "warm-output.bin": "fda8827952ac7f986b41d1278bb248d0adc71fe09323371d0b26235a1f1f6eed"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 15.815301895141614,
+                  "rounds_ns_per_frame": [
+                    15.909780502319338,
+                    15.845573425292988,
+                    15.756486892700165,
+                    15.77345085144045,
+                    15.815301895141614
+                  ],
+                  "block_p99_us": 2.9239999998935673
+                },
+                "after": {
+                  "ns_per_frame": 15.915547847747826,
+                  "rounds_ns_per_frame": [
+                    15.915547847747826,
+                    15.853970050811784,
+                    15.866664409637457,
+                    15.925483703613317,
+                    15.941596508026135
+                  ],
+                  "block_p99_us": 2.7880000000095606
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "1c50434911edbf08c489caf7137a5d8f99838118b4bb29e2bc4fbce60ed0a5ba",
+                  "warm-output.bin": "fda8827952ac7f986b41d1278bb248d0adc71fe09323371d0b26235a1f1f6eed"
+                }
+              }
+            }
+          },
+          {
+            "name": "polyphonic_saw",
+            "source_fingerprint": "9d787051de0185a28c3b4ae47e2f4878db5e35a6db869781a05b63ba3323b61f",
+            "identical_artifacts_sha256": {
+              ".o": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+              ".wasm": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba",
+              ".mir.msgpack": "4c8820264cf1f6c8b120be432965b2c9d2a8c9f453d3e36f94bbdcb56f4925f5"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 48.89995193481445,
+                  "rounds_ns_per_frame": [
+                    48.75220203399658,
+                    49.46816635131836,
+                    49.203776359558105,
+                    48.89995193481445,
+                    48.89491653442383
+                  ],
+                  "block_p99_us": 7.335
+                },
+                "after": {
+                  "ns_per_frame": 48.36574363708496,
+                  "rounds_ns_per_frame": [
+                    48.36097526550293,
+                    48.36574363708496,
+                    48.706780433654785,
+                    48.49094200134277,
+                    48.19858169555664
+                  ],
+                  "block_p99_us": 6.628
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "533e453c066eb4e0017c9e772c0a940b53d3b35f56140455d3f5c11fe8ede55d",
+                  "warm-output.bin": "b41b89233efb0caa49ad5a19f4716806ff851d6b3388d686afcae749dd202448"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 121.83875656127975,
+                  "rounds_ns_per_frame": [
+                    121.37978744506793,
+                    122.43871307373016,
+                    122.85371780395519,
+                    121.83875656127975,
+                    121.00196075439436
+                  ],
+                  "block_p99_us": 18.62600000004022
+                },
+                "after": {
+                  "ns_per_frame": 122.3977699279788,
+                  "rounds_ns_per_frame": [
+                    121.6751976013189,
+                    123.39617156982476,
+                    123.14075851440394,
+                    122.3977699279788,
+                    121.76513671875028
+                  ],
+                  "block_p99_us": 18.957999999884123
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "ab7eed66a36a5b1afdbee90a17aa9c5af13476e27ea3360592b3f270ade19941",
+                  "warm-output.bin": "370b27bfc91dc9f9df9b4455619ad8f36005ed7e7cc538fb5a4f3d8f0c46d58b"
+                }
+              }
+            }
+          },
+          {
+            "name": "saw_filter_saturator",
+            "source_fingerprint": "1a0884b753ae24fbe84f091e7758a48e208208ec57691666fd51d833741a8f62",
+            "identical_artifacts_sha256": {
+              ".o": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a",
+              ".wasm": "d3fa2a68d34de946769bffe9cac4408c182e897719ac1b58f7b64486539fab22",
+              ".mir.msgpack": "ddfc310c864439309edcdbffab7bb3399a6afa774a26acef081f4c50fff92332"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 71.01236343383789,
+                  "rounds_ns_per_frame": [
+                    71.07116317749023,
+                    70.94914245605469,
+                    71.19294166564941,
+                    71.00260734558105,
+                    71.01236343383789
+                  ],
+                  "block_p99_us": 10.464
+                },
+                "after": {
+                  "ns_per_frame": 71.35258483886719,
+                  "rounds_ns_per_frame": [
+                    71.40844345092773,
+                    71.51559829711914,
+                    71.29369163513184,
+                    71.23844337463379,
+                    71.35258483886719
+                  ],
+                  "block_p99_us": 10.311
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "d2e6a742007da2cb8ea3f0519fe91bb3564c28c4101696507a38d81dcd60967b",
+                  "warm-output.bin": "e5293c70143a9063217982991eedba14203dd983da550c499f6598d47cb7770e"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 154.6631813049322,
+                  "rounds_ns_per_frame": [
+                    155.9488677978513,
+                    154.8719520568847,
+                    154.26977920532207,
+                    154.6631813049322,
+                    154.48951339721694
+                  ],
+                  "block_p99_us": 24.280000000089785
+                },
+                "after": {
+                  "ns_per_frame": 155.0719108581542,
+                  "rounds_ns_per_frame": [
+                    154.7948493957523,
+                    155.0719108581542,
+                    154.65459442138683,
+                    155.4743576049804,
+                    155.17515945434513
+                  ],
+                  "block_p99_us": 25.369000000182496
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "8211da721cb660b17a8062dec54050bec5afb219cf80bb85ebc9cc1584d84217",
+                  "warm-output.bin": "7aece63b567404bcbc77282e89106ddc46ec0d28d70de73b3a3882214aca898d"
+                }
+              }
+            }
+          },
+          {
+            "name": "additive_synth",
+            "source_fingerprint": "233eb67606796abc4471adb66dfb7db8a17701e31e03d38b56e119b619e7288f",
+            "identical_artifacts_sha256": {
+              ".o": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72",
+              ".wasm": "728c442c870606a12886fd0ec944d391f96a7b990faa4a5e7471a1814acb3664",
+              ".mir.msgpack": "53ceb646452fd2f7adcd64e5e2308561d7eba341334a8fcbf6065b5ed51a06f6"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 37.7190523147583,
+                  "rounds_ns_per_frame": [
+                    37.76309585571289,
+                    37.7190523147583,
+                    37.61122417449951,
+                    37.616594314575195,
+                    37.834065437316895
+                  ],
+                  "block_p99_us": 5.312
+                },
+                "after": {
+                  "ns_per_frame": 38.07644176483154,
+                  "rounds_ns_per_frame": [
+                    38.13540554046631,
+                    38.084869384765625,
+                    38.01668453216553,
+                    38.06106758117676,
+                    38.07644176483154
+                  ],
+                  "block_p99_us": 6.048
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "c3dca99bbcfba1636da05b822a12c97e751c2be75c70f07bfc0cafbb969f0ebd",
+                  "warm-output.bin": "67a59c98a1d0a1d78184dec9051343f73a8d148303e4a977342658372fe4cc98"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 73.76071166992175,
+                  "rounds_ns_per_frame": [
+                    73.83007240295429,
+                    74.42729568481448,
+                    73.49217987060548,
+                    73.76071166992175,
+                    73.42007255554212
+                  ],
+                  "block_p99_us": 10.995000000093569
+                },
+                "after": {
+                  "ns_per_frame": 73.88661193847646,
+                  "rounds_ns_per_frame": [
+                    74.03461074829065,
+                    74.97097587585468,
+                    73.62894248962374,
+                    73.88661193847646,
+                    73.40436172485363
+                  ],
+                  "block_p99_us": 10.979000000133965
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "c3dca99bbcfba1636da05b822a12c97e751c2be75c70f07bfc0cafbb969f0ebd",
+                  "warm-output.bin": "6be44401c2d7250c0d1f4930274c17892318c65cb6e0a1d498186b4cbee9069b"
+                }
+              }
+            }
+          },
+          {
+            "name": "fdn_reverb",
+            "source_fingerprint": "819bfb6eebd94ca8ac32473119edc803fc75fe6af8ead32cddccf984c8d46d1a",
+            "identical_artifacts_sha256": {
+              ".o": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392",
+              ".wasm": "7b0ec2be1ad110dc0cd8032a31250e296732bfbd781d6c61238c35e39f879231",
+              ".mir.msgpack": "3b4dd533eef08cf491115132dae9b71d5ea5f3f7019dca987cdacc8e8264c82d"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 23.88822031021118,
+                  "rounds_ns_per_frame": [
+                    23.817980766296387,
+                    23.826404571533203,
+                    23.88822031021118,
+                    23.891149044036865,
+                    23.949882984161377
+                  ],
+                  "block_p99_us": 3.18
+                },
+                "after": {
+                  "ns_per_frame": 24.211538314819336,
+                  "rounds_ns_per_frame": [
+                    24.370145320892334,
+                    24.051332473754883,
+                    23.888381481170654,
+                    24.211538314819336,
+                    24.457576274871826
+                  ],
+                  "block_p99_us": 3.21
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "2004075fc7e157bd6a37f9514d2ec6bb55d3d907ed6579e2567c0b0217074d82",
+                  "warm-output.bin": "3e110c494f07a510484627e1d8f3c0aa8e9c3d337847ce7d27ae4bf200ed95b2"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 56.489724159240666,
+                  "rounds_ns_per_frame": [
+                    56.63798618316638,
+                    56.489724159240666,
+                    56.32419395446768,
+                    56.80801296234126,
+                    56.41808414459226
+                  ],
+                  "block_p99_us": 9.726000000000568
+                },
+                "after": {
+                  "ns_per_frame": 56.27889251708985,
+                  "rounds_ns_per_frame": [
+                    56.35912418365486,
+                    56.351672172546415,
+                    56.22460269927993,
+                    56.09667491912845,
+                    56.27889251708985
+                  ],
+                  "block_p99_us": 9.407000000010157
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "2004075fc7e157bd6a37f9514d2ec6bb55d3d907ed6579e2567c0b0217074d82",
+                  "warm-output.bin": "90a3d71978d774d457af6bb1f0aa2bc802bc743ff4ba57bbcc14f85e53d90b3d"
+                }
+              }
+            }
+          },
+          {
+            "name": "tape_echo",
+            "source_fingerprint": "45069cfc815208105ab15474c93e2694b815d8d3d5d16965e3c1cb90dd616c3b",
+            "identical_artifacts_sha256": {
+              ".o": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5",
+              ".wasm": "a06ddc0e4f9eff2308187471e4ac85d86dd2ae3aa2f4850c9c437aaa045cd738",
+              ".mir.msgpack": "a3d649001dfb8aecf33893b58d9a1eefc5cb291a8929aa590f4cb3812ee55b53"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 38.19016170501709,
+                  "rounds_ns_per_frame": [
+                    38.14189624786377,
+                    38.15833759307861,
+                    38.194552421569824,
+                    38.19016170501709,
+                    38.31822681427002
+                  ],
+                  "block_p99_us": 5.37
+                },
+                "after": {
+                  "ns_per_frame": 38.32437324523926,
+                  "rounds_ns_per_frame": [
+                    38.42214393615723,
+                    38.41475009918213,
+                    38.24129867553711,
+                    38.32437324523926,
+                    38.2248649597168
+                  ],
+                  "block_p99_us": 5.41
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "c9155509f24a7f1eeeeb5419ee4fd17d9db83a942b94aa8c895ee3be79b4702c",
+                  "warm-output.bin": "ace28964dae43bea828cbe6cffd8d71110b0e8f0815dedd6e514a19917cf4dde"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 98.64145278930692,
+                  "rounds_ns_per_frame": [
+                    98.64145278930692,
+                    99.1685886383058,
+                    98.32523536682132,
+                    98.68809509277305,
+                    98.38361167907725
+                  ],
+                  "block_p99_us": 14.470999999957712
+                },
+                "after": {
+                  "ns_per_frame": 98.99206161499046,
+                  "rounds_ns_per_frame": [
+                    99.8757858276366,
+                    100.15769958496074,
+                    98.99206161499046,
+                    98.80149078369139,
+                    98.73881912231437
+                  ],
+                  "block_p99_us": 14.378000000078828
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "4d99c2eea31f97b3bd9a00bf5ec369bf32ad690139d2ea1b7f855c5dbc308ff8",
+                  "warm-output.bin": "422fe67af74e69aeb0245275efc10b450d78baa95a35248c9ad915bb236f5e07"
+                }
+              }
+            }
+          },
+          {
+            "name": "neural_synth",
+            "source_fingerprint": "10666e35a5d7897f80c326f65160f86301733063eb2b5133c958188c43739e01",
+            "identical_artifacts_sha256": {
+              ".o": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c",
+              ".wasm": "a463ac0e48b7bb4fe90f2c672f37bbed67ad3f0686879630fa63562e4100918e",
+              ".mir.msgpack": "5cab2665cc4177074b35d0b9debc38a1dc8f4664b1fa7943993c229d54e2ec48"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 580.9073486328125,
+                  "rounds_ns_per_frame": [
+                    579.903564453125,
+                    580.0817718505859,
+                    581.1847534179688,
+                    581.3993988037109,
+                    580.9073486328125
+                  ],
+                  "block_p99_us": 77.65299999999999
+                },
+                "after": {
+                  "ns_per_frame": 580.4364624023438,
+                  "rounds_ns_per_frame": [
+                    580.4364624023438,
+                    581.2562255859375,
+                    579.8579406738281,
+                    580.2963714599609,
+                    580.9555053710938
+                  ],
+                  "block_p99_us": 78.863
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "fb49ae6446c812055dac1424cd96f57ba2d8920cf59bc5868f37a85980b39101",
+                  "warm-output.bin": "de3566dd1cefc72570bbb3bac30346a7be38bc5d1545afd15da8a525cdba06af"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 1653.230316162102,
+                  "rounds_ns_per_frame": [
+                    1650.8830871582031,
+                    1653.230316162102,
+                    1653.8505859375052,
+                    1653.6606750488374,
+                    1650.533325195311
+                  ],
+                  "block_p99_us": 216.21000000004642
+                },
+                "after": {
+                  "ns_per_frame": 1657.9095458984366,
+                  "rounds_ns_per_frame": [
+                    1654.143493652338,
+                    1658.1430664062564,
+                    1657.9095458984366,
+                    1661.4780883789092,
+                    1652.0220642089882
+                  ],
+                  "block_p99_us": 219.15899999976318
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "9fc9dc4d9e051e4c1a1511e4be2058005955ef050aa48d3b0d55e648fd44c56e",
+                  "warm-output.bin": "86a7a7d768ae83e5f9ad12c52a0f910ab3427a3349f4038800ff38af2606f1af"
+                }
+              }
+            }
+          },
+          {
+            "name": "spectral_freeze",
+            "source_fingerprint": "057ce0fc7ced8d5e23654c9fc4dc82bb0407f7922e89cf9cb9d1253ee7608570",
+            "identical_artifacts_sha256": {
+              ".o": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe",
+              ".wasm": "a04acc30c8825f599d60aadaf014d1b6664232eff74e8ed75bda49c4c1526e90",
+              ".mir.msgpack": "8ef6431019d33715122964d4e717270a0c0a641b4a156de7c42563970b688799"
+            },
+            "backends": {
+              "native": {
+                "before": {
+                  "ns_per_frame": 36.27743434906006,
+                  "rounds_ns_per_frame": [
+                    36.373294830322266,
+                    36.11140155792236,
+                    36.41313552856445,
+                    36.22978687286377,
+                    36.27743434906006
+                  ],
+                  "block_p99_us": 11.182
+                },
+                "after": {
+                  "ns_per_frame": 36.41885280609131,
+                  "rounds_ns_per_frame": [
+                    36.41885280609131,
+                    36.40034008026123,
+                    36.44214725494385,
+                    36.45138072967529,
+                    36.405877113342285
+                  ],
+                  "block_p99_us": 10.258000000000001
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "c1bb338a6634cc453c5343c0cbb50ca42d2510fbdc6942e60ef2d1d4dfccdfb5",
+                  "warm-output.bin": "7d8c7ba0364f5ae6152664c5b6bdb382042c05ed60376ab8933bccd46f45e93d"
+                }
+              },
+              "wasm": {
+                "before": {
+                  "ns_per_frame": 79.28047180175797,
+                  "rounds_ns_per_frame": [
+                    78.98651123046906,
+                    79.80586051940926,
+                    79.35079765319843,
+                    78.88029479980472,
+                    79.28047180175797
+                  ],
+                  "block_p99_us": 24.715000000014697
+                },
+                "after": {
+                  "ns_per_frame": 79.46076774597134,
+                  "rounds_ns_per_frame": [
+                    79.46076774597134,
+                    80.16633605957037,
+                    79.67481613159163,
+                    79.39408683776874,
+                    78.91879653930661
+                  ],
+                  "block_p99_us": 25.02900000013142
+                },
+                "identical_captures_sha256": {
+                  "output.bin": "b5cea11212b54c4f4395422827b2a09b3fc6f723b050615c0788e29ec4af2aa8",
+                  "warm-output.bin": "c2cbdf7d8f3a4c818471f4b454698a5f5f789ff735c8535c0ffad898d6f9958e"
+                }
+              }
+            }
+          }
+        ],
+        "settings": {
+          "block_size": 128,
+          "sample_rate": 48000,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": 2048,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1.0,
+          "rtol": 1.0
+        }
+      }
+    }
+  },
+  "validation": {
+    "rust_tests_including_doctests": 2274,
+    "rust_tests_ignored": 1,
+    "javascript_tests": 104,
+    "wasm_corpus_fixtures": 52,
+    "parity_scenarios": 50,
+    "parity_configurations": 2,
+    "clippy": "passes with -D warnings",
+    "formatting": "cargo fmt --all -- --check passes",
+    "adversarial": {
+      "helpers": 1000,
+      "boundary_evaluations": 361000,
+      "removed_bounds_checks": 141,
+      "result": "All optimized/original evaluations match; no invalid unchecked access"
+    }
+  }
+}

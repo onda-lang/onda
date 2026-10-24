@@ -669,6 +669,9 @@ handler failure. The processor remains usable after rejected input.
 
 ## Delegates
 
+For collection examples across C, Rust, and raw objects, see the
+[host output guide](https://onda-lang.org/docs/host-output/#hosted-c-api).
+
 Top-level delegates are sparse typed output occurrences. Proc-local routing and `when` handlers run
 synchronously inside generated code; optional host collection copies top-level occurrences into a
 caller-owned `onda_delegate_batch_t`.

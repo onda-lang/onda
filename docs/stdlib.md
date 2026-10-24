@@ -24,7 +24,7 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/reverb`](#stdreverb) | `Schroeder` |
 | [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
-| [`std/levels`](#stdlevels) | `DB_PER_NAT`, `HALF_PI`, `MIN_FLOAT`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
+| [`std/levels`](#stdlevels) | `DB_PER_NAT`, `HALF_PI`, `MIN_FLOAT`, `Pan3db`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
 | [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between`, `ratio_from_semitones`, `semitones_from_ratio` |
@@ -596,6 +596,16 @@ def pan_linear<T>(x: T):
 def pan_3db<T>(x: T):
 ```
 
+### Processor `Pan3db<T>`
+
+```onda
+proc Pan3db<T>:
+  ins<T> 1
+  outs<T> 2
+  params:
+    pan: T = 0.0 => update_pan
+```
+
 
 ## `std/mix`
 
@@ -1048,7 +1058,7 @@ proc Player<T>:
   outs<T> Channels
   params:
     speed: T = 1.0
-    looping: bool = false
+    looping = false
   buffers:
     clip: T[]
   delegates:

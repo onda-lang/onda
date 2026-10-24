@@ -1,7 +1,17 @@
+---
+title: MIR reference
+description: Onda's backend-neutral executable representation, validation, optimization, and backend contract.
+permalink: /docs/mir/
+section: reference
+eyebrow: Compiler reference
+---
+
 # Onda MIR
 
 Onda MIR is the backend-neutral executable representation shared by native LLVM codegen and
 WebAssembly codegen. It is a core compiler boundary, not a Web-specific translation format.
+For the crate map and optimization ownership, see
+[compiler architecture](https://onda-lang.org/docs/architecture/#compilation-pipeline).
 
 The production pipeline is:
 
@@ -294,6 +304,8 @@ context where possible.
 
 ## Backend-neutral passes
 
+### Scalar cleanup and state promotion
+
 MIR stays structured and non-SSA while a shared pass pipeline performs cleanup useful to every
 backend. The pipeline propagates constants and immutable local copies through structured control
 flow, merges identical branch facts, folds target-independent scalar operations and exact simple
@@ -321,6 +333,26 @@ any call site: this preserves checked fixed-range addressing and checked or clam
 addressing even when the callee never reads the resulting reference. `canonicalize` performs one
 validated structural round. `optimize` runs its trusted monotonic cleanup to a fixed point,
 validates the completed pipeline once, and returns `PassStats` with an opaque `OptimizedProgram`.
+Portable MIR retains fused rendering and reduction loops; profitable scheduling is selected
+separately by each backend.
+
+### Ordered loop distribution
+
+The explicit `distribute_loops` MIR pass separates independent rendering from an ordered sum.
+LLVM requests this pass at its shared JIT/IR/object emission boundary, enabling vector math without
+changing the portable MIR supplied by the caller. Binaryen keeps the fused schedule because its
+current scalar array-math lowering does not offset the extra traversal and loads. The pass borrows
+unchanged programs; changed programs are revalidated and their effects, ranges and storage origins
+are rebuilt. Applying it to an already distributed program leaves that program unchanged.
+
+Distribution requires a nonempty fixed forward loop of at least 32 iterations, expensive
+pointwise math, and a reduction term already stored to an owned array at the current index. The
+second traversal reads that array and adds in the original order. It allocates no scratch array and
+does not enable floating-point reassociation. Calls, failures, cross-index writes, unresolved
+aliases, and reduction-dependent rendering retain the original schedule. The size threshold avoids
+small loops where the additional traversal outweighs vector math.
+
+### Effects, ranges, and bounds proofs
 
 `analysis.rs` exposes call-transitive logical effect summaries, per-interface-buffer reachable-write
 effects, and conservative integer ranges. Buffer-write effects trace direct stores, buffer
@@ -345,6 +377,20 @@ surfaces uses the same canonical integer range normalization; the pass removes t
 when the selector interval already fits. Bounds proofs run after structural cleanup in each fixed-point
 round, allowing removed branches, unreachable assignments, and newly exposed constants to tighten
 the ranges used by the next proof.
+The interval and path-sensitive proofs share one traversal of fixed arrays, state projections,
+constant tables, interface arrays, fixed windows, collection selectors and dynamic slices.
+Short-circuit boolean joins preserve the implications of conjunctions and disjunctions. Guarded
+`i32` loops with an otherwise unmodified unit-step counter preserve their initial lower bound:
+the exclusive comparison prevents the increment from wrapping. Other loops remain conservative.
+Slice proofs retain relations to lengths, including affine expressions such as
+`length - 1 - index` and `index + offset`. Every expanded intermediate must fit its signed type on
+the current path; wrapping expressions remain opaque. Division, signed remainder, masked bits,
+and shifts also contribute conservative interval facts. Integer `min` and `max` preserve a bound
+from either operand even when the other has no narrower range than its integer type.
+Ordering proofs reuse each immutable value's unconditional bounds instead of duplicating them
+as path constraints for every ranged load or constant assignment. Only tighter copy-specific
+refinements enter the current path's constraints, preserving scope without accumulating unrelated
+load history.
 Source `for` variables default to `i32` and may explicitly select `i32` or `i64`. Constant loops use
 the selected induction width and a compile-time-computed final iteration, so every increment is
 proven not to overflow without adding a checked-arithmetic branch. Dynamic loops also retain the
@@ -358,11 +404,62 @@ arrays uniformly.
 Failure effects distinguish checked fixed-range access from clamped access, which is non-failing for
 nonempty fixed arrays, ports, constant data, and validated external buffers. Clamped dynamic-slice
 element access may still fail on an empty slice, and slice windows may fail their dynamic shape
-requirement. Only integer division and remainder can fail; floating division and remainder follow
-IEEE semantics. These analyses are backend inputs: they let LLVM attach memory and range attributes
+requirement. Integer division and remainder can fail when the divisor may be zero; a known nonzero
+divisor is non-failing, including the language's wrapping signed-minimum / -1 case. Floating division
+and remainder follow IEEE semantics. These analyses are backend inputs: they let LLVM attach memory and range attributes
 today and give future Wasm/native passes one shared place for alias, failure, and vectorization
 legality. Aggregate read-write references remain conservative when converted to descriptors, so
 LLVM never receives a `readonly` promise that descriptor provenance has not proved.
+
+### Storage origins and pointwise loops
+
+`memory.rs` joins slice and reference storage origins across definitions, branches, and every call
+site. Unknown origins stay conservative; two views of one state object share its identity. Constant
+contiguous windows retain alternative offsets and extents in logical top-level elements, including
+through forwarding and returns. A shared helper can receive several views of the same object while
+retaining a common length. Every consumer checks all alternatives; differing lengths never become
+an exact length. Each object retains at most 16 alternatives to bound analysis storage and
+fixed-point convergence; exceeding that analysis budget discards ranges while retaining identity.
+Nested aggregate projections and unresolved offsets remain conservative.
+LLVM uses identities for scoped alias metadata and converts all possible offsets to a common
+reference alignment using its own physical layout. Affirmative state alias scopes require exclusively
+owned-state origins; a union that also includes non-state storage retains only safe
+`noalias` facts. Native metadata shares domains between proven disjoint groups of accessed
+origins, refining overlapping groups until every disjoint pair is covered. Distinct state
+objects use O(n log n) metadata operands, with no per-object full complement lists. Unknown
+origins remain unannotated. An offset view never inherits stronger alignment than its actual
+address supports. MIR uses known descriptor lengths to fold `SliceLen`, prove element bounds,
+and remove redundant slice construction checks. Fixed-array windows additionally require a proven
+contiguous payload of sufficient size before their shape/stride check is removed. Mutable payloads
+do not invalidate descriptor shape; writable descriptor references do. The analysis is derived
+from MIR during cleanup and recomputed at the optimization boundary, rather than serialized as a
+second source of truth.
+
+`slice_lengths.rs` separately joins upper bounds on descriptor lengths through definitions,
+value parameters, subslices and returns. Fixed arrays, constant data and literal window lengths
+bound these facts; external lengths and descriptor references remain conservative. Payload
+mutation does not change a slice descriptor's length. Integer-range analysis uses these caps for
+`SliceLen`, so portable bounds proofs and backend cost decisions consume the same information.
+
+`loops/independent.rs` proves memory independence for bounded counted loops over owned scalar arrays.
+The limit can be constant or have a whole-function `i32` upper bound. With a nonnegative constant
+start and an otherwise unmodified unit-step counter, the proof covers every possible iteration
+below that bound without counter overflow. Negative and zero trip counts do no work.
+It follows affine addresses through bounded straight-line helper expansion without rewriting or
+inlining MIR. Potentially overlapping accesses involving a write must have disjoint full index
+ranges, disjoint stride residue classes, or the same nonconstant affine expression. The residue
+proof uses the greatest common divisor of the strides, covering interleaved channels whose overall
+ranges overlap. Array references and slice descriptors with known contiguous shapes can include
+several state regions; accesses include their
+offsets in the backing object before dependence checks. Intersecting origin sets retain their
+possible aliasing. Every arithmetic intermediate must fit
+its integer type. Scalar borrows, unknown origins, recursion, unsupported control flow and
+analysis-budget exhaustion reject the proof. Scalar recurrences retain their ordinary semantics;
+memory independence does not authorize floating-point reassociation. LLVM represents successful
+proofs with access groups that remain valid when inlining or debug information replaces loop IDs.
+`LoopAnalysis` shares structural facts and descriptor origins across the loops of one immutable
+function. Symbolic execution uses a fresh sparse overlay for each loop and helper call, preserving
+the same legality checks and proof budgets without rescanning unrelated function state.
 
 These passes do not replace LLVM or Binaryen optimization. They keep portable MIR deterministic,
 remove producer artifacts before backend legalization, and prevent basic code quality from depending
@@ -373,7 +470,12 @@ read-only functions, reference read/write direction, no-capture/non-null/derefer
 non-throwing/non-allocating behavior, constant ranges for process and ranged value arguments, and
 `!range` metadata on direct loads from ranged locals, parameters, interface parameters, and state. It then
 applies the standard target-aware O3 pipeline, including LLVM's ordinary loop and SLP vectorization
-decisions. MIR does not inject loop hints or override those target heuristics. The output-transaction
+decisions. Neither vector width nor reassociation is forced. Shared pointwise audio legality checks
+use transitive effects to admit scalar value-only helpers with no memory effects, failure paths,
+or unproved termination; loop-written results must be defined before use. These checks
+permit native loop versioning for disjoint or exactly equal audio bindings; pairs involving a write
+are checked before entering a loop annotated with iteration independence. Partial overlaps retain
+the original processing path, and zero-frame calls need not access audio tables. The output-transaction
 form and alias metadata expose independent work to the backend, while another backend remains free
 to choose the best target strategy for the same operations.
 
@@ -513,7 +615,7 @@ The AOT processor descriptor includes the packed persistent-state segment manife
 snapshot/restore without confusing packed offsets with the target's physical state layout.
 It also records the resolved LLVM pointer width, byte order, data layout, pointer model, and
 relocatable-object integration profile. The logical entry points are specified once in
-[`processor-abi.md`](processor-abi.md); target triples select the platform representation rather than
+[the processor ABI](https://onda-lang.org/docs/processor-api/); target triples select the platform representation rather than
 creating a separate Wasm ABI.
 
 The former direct `TypedProgram`/frontend-AST-to-LLVM implementation has been removed. Native JIT,
@@ -587,7 +689,7 @@ strict software FMA from its internal pure-Wasm math kernel. It matches one-roun
 semantics without a JavaScript import or allocation, but native LLVM can still select hardware FMA;
 dense per-sample FMA may therefore remain a browser performance limitation rather than a semantic
 mismatch. The reproducible development comparison and its measurement caveats are recorded in
-[the backend benchmark report](backend-benchmarks.md).
+[the benchmark guide](https://github.com/onda-lang/onda/blob/main/scripts/bench/README.md#compare-backend-compilation-and-runtime).
 
 ## Backend invariants
 

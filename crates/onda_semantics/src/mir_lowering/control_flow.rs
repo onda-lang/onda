@@ -324,7 +324,6 @@ impl<'a> FunctionLowerer<'a> {
                             targets,
                             values,
                             block,
-                            expr.loc(),
                             loc.clone().into(),
                         )?,
                         AssignTarget::Index { base, .. } => self.assign_index_target(

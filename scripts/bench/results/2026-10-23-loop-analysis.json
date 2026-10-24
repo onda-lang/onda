@@ -1,0 +1,1132 @@
+{
+  "baseline_revision": "681a2faea629bb84c303f29a91ddd05c928c0ecf plus the pre-existing uncommitted review fixes",
+  "method": {
+    "scope": "Compiler analysis only; generated DSP code is compared separately.",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "optimization": "Both original proof oracle and current onda_mir compiled with Rust opt-level 3.",
+    "cpu_affinity": 6,
+    "rounds": 3,
+    "order": "Alternating original/current per round in one process.",
+    "timed": "One original proof per loop, versus construction of one LoopAnalysis plus one proof per loop.",
+    "excluded": "Program construction, validation, effects, memory and integer-range analysis.",
+    "input": "N sequential counted loops over one owned f32[128] array, each with its own i32 counter and bool condition; every proof must succeed.",
+    "limits": "No concurrent task builds/tests during timing; clock frequency and exclusive core reservation were not controlled.",
+    "oracle": "Unchanged baseline loop and dependence modules, plus the original native induction test; only module imports and private place_type visibility were adapted."
+  },
+  "original_source_sha256": {
+    "crates/onda_mir/src/loops.rs": "066514900262fa63807292d33b8c891995d6cbb43a2b98685db0c65112eded3c",
+    "crates/onda_mir/src/loops/independent.rs": "2522f931171c8b3f5cd185dd9c260ff260eed852431c68c670b0c1d6e1dd7a00",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/loop_cost.rs": "e4955c21ef860eda1961355365afce51f8a2ae70987c255820d08bf0731eb02b"
+  },
+  "final_source_sha256": {
+    "crates/onda_mir/src/loops.rs": "d1c52345be8b1326e7622f9faf2b3a147b3a91b80dba4eb3952478b850206069",
+    "crates/onda_mir/src/loops/facts.rs": "7885c8d83a534533b4844cb30e8d8e63850d62e99e83dbabc6f5797ec9ea74bc",
+    "crates/onda_mir/src/loops/independent.rs": "5cfb955e27e323d7489d83dddbd78e877281d209c467df17e43dd69f254d7586",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native.rs": "5b696a1b91b58fd7959511afde6658f7869239428a7b8ca4ea9b3fe9e3685bc8",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/function_emitter.rs": "c074fe7b6933875fb2d75fcea056a7c44dc508438f7afb1059c1087d9bb8ba20",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/loop_cost.rs": "1f9f4d182a789f607a54ce7e1498536b90ce825673d0daa7e1fd9d964a040c74",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/pointwise.rs": "75f714f4db20d94bfd5519f001ecd5405d46de61d59571ecb10faffa97f33012"
+  },
+  "baseline_worker_sha256": "80bd546090f29fe02be9e149ab665815323523fba19b4869ecbf77b66c0c32f1",
+  "candidate_worker_sha256": "22caba45e5969989d735f660057366ec4cd9f94f845461fc4556c5742da96dd5",
+  "scaling": [
+    {
+      "loops": 256,
+      "before_ms": [
+        0.30288,
+        0.297502,
+        0.323035
+      ],
+      "after_ms": [
+        0.031434,
+        0.027932,
+        0.027698
+      ],
+      "before_median_ms": 0.30288,
+      "after_median_ms": 0.027932
+    },
+    {
+      "loops": 512,
+      "before_ms": [
+        1.255021,
+        1.470526,
+        1.752724
+      ],
+      "after_ms": [
+        0.053195,
+        0.056126999999999996,
+        0.072027
+      ],
+      "before_median_ms": 1.470526,
+      "after_median_ms": 0.056126999999999996
+    },
+    {
+      "loops": 1024,
+      "before_ms": [
+        5.844459,
+        5.935974,
+        5.801753
+      ],
+      "after_ms": [
+        0.12523800000000002,
+        0.12330699999999999,
+        0.12352700000000001
+      ],
+      "before_median_ms": 5.844459,
+      "after_median_ms": 0.12352700000000001
+    },
+    {
+      "loops": 2048,
+      "before_ms": [
+        23.772880999999998,
+        23.680640999999998,
+        23.687013
+      ],
+      "after_ms": [
+        0.261708,
+        0.25059000000000003,
+        0.256345
+      ],
+      "before_median_ms": 23.687013,
+      "after_median_ms": 0.256345
+    },
+    {
+      "loops": 4096,
+      "before_ms": [
+        137.18478000000002,
+        138.088883,
+        140.286447
+      ],
+      "after_ms": [
+        0.5255019999999999,
+        0.5300809999999999,
+        0.5226160000000001
+      ],
+      "before_median_ms": 138.088883,
+      "after_median_ms": 0.5255019999999999
+    },
+    {
+      "loops": 8192,
+      "before_ms": [
+        631.607922,
+        641.6888389999999,
+        643.984912
+      ],
+      "after_ms": [
+        1.088948,
+        1.056758,
+        1.0718539999999999
+      ],
+      "before_median_ms": 641.6888389999999,
+      "after_median_ms": 1.0718539999999999
+    }
+  ],
+  "decisions": "Matched all original memory/audio/induction decisions: 278 loops, 90 programs",
+  "validation": {
+    "mir_native_tests_including_doctest": 367,
+    "new_regression_tests": 3,
+    "clippy": "onda_mir and onda_codegen_llvm, all targets, warnings denied",
+    "artifact_cases": 90,
+    "coverage": "27 kernel probes, 9 examples, 52 backend fixtures, and 2 additional fixture invocations",
+    "objects": "Byte-identical in all cases",
+    "llvm_ir": "Identical in all cases, normalizing generated corpus directory paths",
+    "mir": "Identical in all cases, normalizing generated corpus directory paths",
+    "wasm": "Byte-identical and valid in all cases"
+  },
+  "native_artifacts": [
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f32",
+      "object_sha256": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482"
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f64",
+      "object_sha256": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f"
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f32",
+      "object_sha256": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3"
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f64",
+      "object_sha256": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f32",
+      "object_sha256": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f64",
+      "object_sha256": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f32",
+      "object_sha256": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f64",
+      "object_sha256": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f32",
+      "object_sha256": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f64",
+      "object_sha256": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f32",
+      "object_sha256": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc"
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f64",
+      "object_sha256": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed"
+    },
+    {
+      "group": "kernels",
+      "name": "slice-dynamic",
+      "object_sha256": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3"
+    },
+    {
+      "group": "kernels",
+      "name": "slice-fixed",
+      "object_sha256": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f32",
+      "object_sha256": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f64",
+      "object_sha256": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f32",
+      "object_sha256": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f64",
+      "object_sha256": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f32",
+      "object_sha256": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f64",
+      "object_sha256": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f32",
+      "object_sha256": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f64",
+      "object_sha256": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f32",
+      "object_sha256": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a"
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f64",
+      "object_sha256": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a"
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-16",
+      "object_sha256": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c"
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-256",
+      "object_sha256": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627"
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-4096",
+      "object_sha256": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb"
+    },
+    {
+      "group": "examples",
+      "name": "additive_synth",
+      "object_sha256": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72"
+    },
+    {
+      "group": "examples",
+      "name": "fdn_reverb",
+      "object_sha256": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392"
+    },
+    {
+      "group": "examples",
+      "name": "neural_synth",
+      "object_sha256": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c"
+    },
+    {
+      "group": "examples",
+      "name": "ordered-voice-rendering",
+      "object_sha256": "295b90357225c900508059989aac086063d7aa19291510d2fb4c4275a7afa8ad"
+    },
+    {
+      "group": "examples",
+      "name": "polyphonic_saw",
+      "object_sha256": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00"
+    },
+    {
+      "group": "examples",
+      "name": "saw_filter_saturator",
+      "object_sha256": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a"
+    },
+    {
+      "group": "examples",
+      "name": "sine",
+      "object_sha256": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7"
+    },
+    {
+      "group": "examples",
+      "name": "slice-derived-bounds",
+      "object_sha256": "f4a7cdcf0921fb62966dfbaecae7c6d9cbbdd87ba64d99802231b7af74ad8ccf"
+    },
+    {
+      "group": "examples",
+      "name": "spectral_freeze",
+      "object_sha256": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe"
+    },
+    {
+      "group": "examples",
+      "name": "tape_echo",
+      "object_sha256": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5"
+    },
+    {
+      "group": "examples",
+      "name": "voice_bank",
+      "object_sha256": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc"
+    },
+    {
+      "group": "fixtures",
+      "name": "affine-array-pairs",
+      "object_sha256": "8490942d398b817ec0c08463b0cb15a66b5b29dd16030a254bdeaeda2e1909e1"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-constant",
+      "object_sha256": "53e8cb7985fc084b8947b743c78def686b70e50b0fa921df6bf2b14f14c6515e"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-forwarded-invariant",
+      "object_sha256": "286267d72b441660480e8d317e4b4d7b800a30643d223664da851608687c4379"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-invariant",
+      "object_sha256": "10632c31a5d8a65f5171bde2c13a280f360dee191f84cb2a3467f3d898ae6d97"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-varying",
+      "object_sha256": "2e5fc96529593d6ceefe9f16abc323fcf957049f3de67d474a0a7fa892085ffb"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-interpolation",
+      "object_sha256": "2428ce15360343300ab1b2f10a9e1a235f25b605f4b0404fd1f7d7bdb5a121fa"
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-sequential",
+      "object_sha256": "7338238c73c5d1482fa80427c8ae3bbc50e09edcd1f7aec6c2d0f51cfa53372b"
+    },
+    {
+      "group": "fixtures",
+      "name": "bounded-state-loops",
+      "object_sha256": "936296f1a263e1131f455caf58d5d31073d156a06dfee434aa67c3abb33cb8a5"
+    },
+    {
+      "group": "fixtures",
+      "name": "buffer-slice",
+      "object_sha256": "0acf324ca920936252428d92987c7f946e1bfc017c725e6f40953772a9b0af81"
+    },
+    {
+      "group": "fixtures",
+      "name": "coefficient-updates",
+      "object_sha256": "008281d247262f51589ff68e3affe75cc92d66a6697591b678b96dd3b0dc2366"
+    },
+    {
+      "group": "fixtures",
+      "name": "control-flow-parity",
+      "object_sha256": "4b07e999109d7052afae835cb5c1ae088771798b7a39c0af53a2b3955072fb6c"
+    },
+    {
+      "group": "fixtures",
+      "name": "delay-wrap-parity",
+      "object_sha256": "905779da45240aece5f5b30291812959edf097307a5270d2f2c442838764d793"
+    },
+    {
+      "group": "fixtures",
+      "name": "event-parity",
+      "object_sha256": "dd73d89ba5b4804a6c492b6f26389cd95d61a1f8a4101442cd1714aee8e899a7"
+    },
+    {
+      "group": "fixtures",
+      "name": "execution-output-parity",
+      "object_sha256": "18bc3b831cf3162fccf71eb99386dfc4d68161c66e1c50c1ad54e52084f7a723"
+    },
+    {
+      "group": "fixtures",
+      "name": "guarded-array-access",
+      "object_sha256": "12fb8b17764f3924c29da3ec3c8178c9e856f967322dbe50f482427e749d5ee9"
+    },
+    {
+      "group": "fixtures",
+      "name": "integer-semantics-parity",
+      "object_sha256": "eab37fc038b8905f803c6cd4d66376cdd42af5a453c36fed355fb558ac60f256"
+    },
+    {
+      "group": "fixtures",
+      "name": "interleaved-state-access",
+      "object_sha256": "8257eb40e905288d0cc11deeb121bc5f39656e9e40fef25b51362f31e4347246"
+    },
+    {
+      "group": "fixtures",
+      "name": "language-slice",
+      "object_sha256": "bcf9984c9ece8c46f4aae72bb668769b363fdf2d97e9be7f2368485925114947"
+    },
+    {
+      "group": "fixtures",
+      "name": "math-intrinsics-parity",
+      "object_sha256": "dd18f183f9ebc4dfdb2b41082e8471de17c37c58a3b61b1aadc57f434622f465"
+    },
+    {
+      "group": "fixtures",
+      "name": "memory-access-semantics",
+      "object_sha256": "ec2e7451c1f1df6fd685f253c846e872381f248ff73b3b04541254f532c90966"
+    },
+    {
+      "group": "fixtures",
+      "name": "mixed-storage-origins",
+      "object_sha256": "5409cffb66c2ff623bdc0af2697190fec50ecb443381adec6b7b5881a717bd26"
+    },
+    {
+      "group": "fixtures",
+      "name": "numeric-edge-parity",
+      "object_sha256": "f920e645f2dc54b32320266b57024dad8b19f18adb39b1edd21cc60f668046c8"
+    },
+    {
+      "group": "fixtures",
+      "name": "ordered-voice-rendering",
+      "object_sha256": "295b90357225c900508059989aac086063d7aa19291510d2fb4c4275a7afa8ad"
+    },
+    {
+      "group": "fixtures",
+      "name": "oversampling-parity",
+      "object_sha256": "e4d108355538c88f9551c1bcd30b424f6d07e3aac547b743776ed310e36cc335"
+    },
+    {
+      "group": "fixtures",
+      "name": "panning-updates",
+      "object_sha256": "81277f471c1f2bfd701ced5e109babab54da433ae00a446b4f06af5a69d6ef30"
+    },
+    {
+      "group": "fixtures",
+      "name": "param-array-snapshots",
+      "object_sha256": "b29e52ac4b38d5412839261875cfdbea035ce00297eff3bf49aed5a329768ced"
+    },
+    {
+      "group": "fixtures",
+      "name": "pointwise-control-f32",
+      "object_sha256": "cf5810f0dc73c0d970dd7a34b7089baef27edb47e7f0409faa83edfd4179f80f"
+    },
+    {
+      "group": "fixtures",
+      "name": "pointwise-control-f64",
+      "object_sha256": "df007c19e97900061841916337b345c1dc181ac3f01cb5dc14d5dde1f1e1a8a3"
+    },
+    {
+      "group": "fixtures",
+      "name": "range-semantics-parity",
+      "object_sha256": "36725952c7253552fcc33d76765128a4a424b9ec1fa87af9f0c507fbfbfa361c"
+    },
+    {
+      "group": "fixtures",
+      "name": "retained-data",
+      "object_sha256": "4ca084fb5d52a75e214590a273c4a308646debe2f8bad04deed579271a5ee181"
+    },
+    {
+      "group": "fixtures",
+      "name": "retained-scopes",
+      "object_sha256": "95c64e1f4af48f81c4e6107151ef5c48e7c877682a2b588f1d7fbaca1910020c"
+    },
+    {
+      "group": "fixtures",
+      "name": "runtime-failure-parity",
+      "object_sha256": "b1e7b514bbbbf9472e8d48a3d05d8a6cb5edf56a2d866eb93db28af6becafd2b"
+    },
+    {
+      "group": "fixtures",
+      "name": "scalar-semantics-parity",
+      "object_sha256": "dcfe58059c56c68f407e2944423d8a85ffe84c5ef2de32d13fbfaf57dd53de41"
+    },
+    {
+      "group": "fixtures",
+      "name": "shared-view-ranges",
+      "object_sha256": "b91bb90b10acbad4d7f71dc5a91c73446eab006973249274129df256ad910a50"
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-bounds-proofs",
+      "object_sha256": "a633fb85e7027ececd183d4b755409649731faec4894e6cdb08138019ad77255"
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-derived-bounds",
+      "object_sha256": "f4a7cdcf0921fb62966dfbaecae7c6d9cbbdd87ba64d99802231b7af74ad8ccf"
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-semantics",
+      "object_sha256": "01df7a5357bb03837e2aedf0f628d36ad7e477e3c85b65cc7b1a6dc793ef93b7"
+    },
+    {
+      "group": "fixtures",
+      "name": "smoothing-ramps",
+      "object_sha256": "d9acac2db203089f149b275c7909e53c086e78db61758b2157872a526f442957"
+    },
+    {
+      "group": "fixtures",
+      "name": "state-view-shapes",
+      "object_sha256": "a4872fa6fe56e24824e35144286dd90df5f6f4d934afb8f83d318a4e10650380"
+    },
+    {
+      "group": "fixtures",
+      "name": "state-window-access",
+      "object_sha256": "d987d855ac1ecbe602a8b7c72fc9e87be9d0f3bd3fb4992bb01af8de6059557c"
+    },
+    {
+      "group": "fixtures",
+      "name": "stdlib-dsp-regressions",
+      "object_sha256": "9322de588d15572a952f3d98d5e851011a2c49f73d4f1e9c8f1dfbeb9d25f256"
+    },
+    {
+      "group": "fixtures",
+      "name": "stereo-buffer-len",
+      "object_sha256": "71651b42b0f887f3140b46dec3ace2de9a7599acbe5f38592b9a6c30dafb7a31"
+    },
+    {
+      "group": "fixtures",
+      "name": "strict-float-parity",
+      "object_sha256": "fa275a0f11184ee868fef6ef29e78491c011a9fc69ac45d52a4f14c271139b33"
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-data-regressions",
+      "object_sha256": "a329a6668bfac7bd38dc7a0313f858fbdfe8e3b7cdb42435cb6c182c7dc1022e"
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-data",
+      "object_sha256": "4099236213b16fad452518cd31091020eed6318c5b488f049aae48f2be555554"
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-message-routing",
+      "object_sha256": "ee333cd5ff73b4c9e9e97378803a50d79be114e0aab66a45bf4d98143733aa46"
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-messages",
+      "object_sha256": "a77fd6feb99f1e2ad859324dbce52e5a59bf86b954cc05436ab6c7b6499c5935"
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-slice-messages",
+      "object_sha256": "2e28592dac80fba9401b650e986e3cb7cad247acce013d46ccc7cbb0325d6ba6"
+    },
+    {
+      "group": "fixtures",
+      "name": "task-lifecycle-parity",
+      "object_sha256": "71f5fa7c624314bad7c71b63ae29639057469d5b25674c91a215caec812ab1eb"
+    },
+    {
+      "group": "fixtures",
+      "name": "top-level-oversampling-parity",
+      "object_sha256": "e1eda93b7fd138f701b8b6b6ad70440933c242cc49ff082f7a35a82b72544a13"
+    },
+    {
+      "group": "fixtures",
+      "name": "top-level-task-lifecycle-parity",
+      "object_sha256": "dded3290b64e7d267bec868da28138bd90a73fd5fd9c94d93344f074b4057e41"
+    },
+    {
+      "group": "fixtures",
+      "name": "tuple-stores",
+      "object_sha256": "261febb5d9ea252df3810be587bfac221bc960bf59c305fc4b9ceebb445b547b"
+    }
+  ],
+  "wasm_artifacts": [
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f32.mir.json",
+      "sha256": "f3034d8c0d624d9e43011e074993d383ca7492863fd7131317b44f9a8540a138",
+      "bytes": 891
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f64.mir.json",
+      "sha256": "f253d52f8c310de689bd533b616edcfdb096ebf47f235f3f59babbb6120a97d4",
+      "bytes": 904
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f32.mir.json",
+      "sha256": "9b305b5dd329439ffe42fd4578a7c46cb17717119b4e17d7d9ce87f07ef5e9dd",
+      "bytes": 908
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f64.mir.json",
+      "sha256": "72eec03ab24c12ea102b575e9b1b135c378d42d6b31781a38c9a514f02454802",
+      "bytes": 921
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f32.mir.json",
+      "sha256": "6e62428604f0bb8f77100fbc629b74e58ed18f44768cfb7a94af654db9738e70",
+      "bytes": 6995
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f64.mir.json",
+      "sha256": "2ae3edc27aaefe5a809f9eb4a8121e57c837e9a54df1c9b6d964979c7e81ed6f",
+      "bytes": 7003
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f32.mir.json",
+      "sha256": "1204d4fa340a4b5e4a955c8112d5385ee17406d09e4c257b48fe05cc0721acc2",
+      "bytes": 6985
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f64.mir.json",
+      "sha256": "3dc1be0a25d1312640b4299796afc0645ba36434933ba4ac53c55fbefc383f9d",
+      "bytes": 6993
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f32.mir.json",
+      "sha256": "1b68912a4ce12fd5229ce473b7d0b72a776aa55db3ab618ea55671393d17d89d",
+      "bytes": 6991
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f64.mir.json",
+      "sha256": "4e3ab2cdec70850ed3a7ac2c620c1d3ae275d4a1c23776522062254d460e0a53",
+      "bytes": 7003
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f32.mir.json",
+      "sha256": "1c33a3a96c5bd277faa852c1aa2d8a85a16e34aa085dee57277411b790ccf224",
+      "bytes": 6920
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f64.mir.json",
+      "sha256": "ed67b683adce5c9c067fa055618e2ee5f43ce351f6836584d6b239acb26600f1",
+      "bytes": 6932
+    },
+    {
+      "group": "kernels",
+      "name": "slice-dynamic.mir.json",
+      "sha256": "0f776ee0dcc9a465cd2d2212c9dd7212aebeb39de17d5a016a9725cde0faffe1",
+      "bytes": 5592
+    },
+    {
+      "group": "kernels",
+      "name": "slice-fixed.mir.json",
+      "sha256": "058a3d6ccf234251456d294505876d78d2405f3b22c2ebd8706eeb6fa3c49075",
+      "bytes": 5465
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f32.mir.json",
+      "sha256": "eabf53d53eb03c7aa53de4045e70900bded3c17dbcf8744dc684465dc3b1330a",
+      "bytes": 764
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f64.mir.json",
+      "sha256": "ee33f70140ca3419b26a5c2e12bcee59e7146db49e455628690315c7a02234f2",
+      "bytes": 774
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f32.mir.json",
+      "sha256": "e6f6574a3c1ac380238b60fb5977051967608dcde4bdcf1b076b3c33cb7de314",
+      "bytes": 795
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f64.mir.json",
+      "sha256": "b28f020ff0ef9b23bde9ac79b5b35d4c861614352cce9f310d54628b5d9fd6e5",
+      "bytes": 805
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f32.mir.json",
+      "sha256": "1a61314a216fb168d78c5e46c8967371519b9b9925cbe235cb78f2fe152b56a7",
+      "bytes": 810
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f64.mir.json",
+      "sha256": "51be9cd718de2566b31238187172dd9f74fc32ed9045717e2819f5f4448906ae",
+      "bytes": 819
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f32.mir.json",
+      "sha256": "96d7bc9c9a83d3b4668033318a16cb9d3fb8fe2f6b8062c86fd76c9ae648babf",
+      "bytes": 818
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f64.mir.json",
+      "sha256": "e0efc57e92651cdcc54b8384d512e1866dd4f4cc89928ec6a1b7c2943b58739c",
+      "bytes": 827
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f32.mir.json",
+      "sha256": "fe9a2507ce0ae9e0de8454a3b514fdb4cb1efca9e6a2b129ccdc6108d5b0a924",
+      "bytes": 764
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f64.mir.json",
+      "sha256": "a6c528d33d97b6a2b7f9d39cc7d5f310cfa31a0d84b6d0dfa7219da69833a707",
+      "bytes": 774
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-16.mir.json",
+      "sha256": "7b418e6fe307cd9c5257988ac9e3a8cae72a123b3dac27a08266b34cd4d4ab7e",
+      "bytes": 5452
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-256.mir.json",
+      "sha256": "0f59f7ad79717e051f430078909621015aaa42b2b0f7a7fc7be3c2651b782e87",
+      "bytes": 6422
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-4096.mir.json",
+      "sha256": "be8161da829b1eeddfceadd3d65319c1f89e76befb79af46e97e73ba91f6d971",
+      "bytes": 21788
+    },
+    {
+      "group": "examples",
+      "name": "additive_synth.mir.json",
+      "sha256": "728c442c870606a12886fd0ec944d391f96a7b990faa4a5e7471a1814acb3664",
+      "bytes": 84787
+    },
+    {
+      "group": "examples",
+      "name": "fdn_reverb.mir.json",
+      "sha256": "7b0ec2be1ad110dc0cd8032a31250e296732bfbd781d6c61238c35e39f879231",
+      "bytes": 74277
+    },
+    {
+      "group": "examples",
+      "name": "neural_synth.mir.json",
+      "sha256": "a463ac0e48b7bb4fe90f2c672f37bbed67ad3f0686879630fa63562e4100918e",
+      "bytes": 82806
+    },
+    {
+      "group": "examples",
+      "name": "ordered-voice-rendering.mir.json",
+      "sha256": "a77d188d46a2ec667e5d20b2b28c36efaf54ef6385ab3636680a636e955f7899",
+      "bytes": 5481
+    },
+    {
+      "group": "examples",
+      "name": "polyphonic_saw.mir.json",
+      "sha256": "376f48a73653e2f21c030dfaced915de030e5af6e409bd83e4cb19851844b7ba",
+      "bytes": 16293
+    },
+    {
+      "group": "examples",
+      "name": "saw_filter_saturator.mir.json",
+      "sha256": "d3fa2a68d34de946769bffe9cac4408c182e897719ac1b58f7b64486539fab22",
+      "bytes": 78415
+    },
+    {
+      "group": "examples",
+      "name": "sine.mir.json",
+      "sha256": "567eac859f13d8137cd07a141ae86e0faef779bc2dfe44649d010c550f7adc56",
+      "bytes": 5212
+    },
+    {
+      "group": "examples",
+      "name": "slice-derived-bounds.mir.json",
+      "sha256": "f3dedda4e7838415899e9753db390a1ba61ddc88f16c6dd3ef6411323b69e8d0",
+      "bytes": 1387
+    },
+    {
+      "group": "examples",
+      "name": "spectral_freeze.mir.json",
+      "sha256": "a04acc30c8825f599d60aadaf014d1b6664232eff74e8ed75bda49c4c1526e90",
+      "bytes": 84646
+    },
+    {
+      "group": "examples",
+      "name": "tape_echo.mir.json",
+      "sha256": "a06ddc0e4f9eff2308187471e4ac85d86dd2ae3aa2f4850c9c437aaa045cd738",
+      "bytes": 74595
+    },
+    {
+      "group": "examples",
+      "name": "voice_bank.mir.json",
+      "sha256": "988845662038b24849d465435ed7ef4039ad89e40a1625553d0d9255f60eba54",
+      "bytes": 67532
+    },
+    {
+      "group": "fixtures",
+      "name": "affine-array-pairs.mir.json",
+      "sha256": "3c5a1f70fab6a92fd03b52224568f7e0ad8f69aa058948c03aa5fb98b57845f4",
+      "bytes": 731
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-constant.mir.json",
+      "sha256": "9b2a637335116e6c2032ed1ac6ceb367fe86e83da7e32eb6253b562c9a1557d4",
+      "bytes": 758
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-forwarded-invariant.mir.json",
+      "sha256": "8280a9f596f296938a71e8df1ef51e5082b16c9fe17564a907e457b4c13d3f72",
+      "bytes": 869
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-invariant.mir.json",
+      "sha256": "97378478df6ab51fe392067c2714a4f02fc3ec5a8fcd2e2b0c47fddc0bc917d2",
+      "bytes": 840
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-collection-varying.mir.json",
+      "sha256": "23444819be38ac7c5361b73428ec3cbe2428242faeefa6c9e034650f7401d2d9",
+      "bytes": 802
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-interpolation.mir.json",
+      "sha256": "27450d29f225bbc872acc75f7ac2cedeb60656d7b364cfd58532e6076e13c070",
+      "bytes": 892
+    },
+    {
+      "group": "fixtures",
+      "name": "benchmark-buffer-sequential.mir.json",
+      "sha256": "e389a6588b2544af8b83bdcb85fa64afaf58444e85cc3ade45d704774c74f775",
+      "bytes": 572
+    },
+    {
+      "group": "fixtures",
+      "name": "bounded-state-loops.mir.json",
+      "sha256": "4dd1923130f3910c581b61eb7d05f096b8a20b2019f5c82b07c675f8f80065ab",
+      "bytes": 953
+    },
+    {
+      "group": "fixtures",
+      "name": "buffer-slice.mir.json",
+      "sha256": "50d157655e664c827868bf60d67226214cdaa8c95aa79782174817484b71fd31",
+      "bytes": 872
+    },
+    {
+      "group": "fixtures",
+      "name": "coefficient-updates.mir.json",
+      "sha256": "461467b3b3784253e9db7237831fa37c521707abe1ac2d589a1f9bfcbe1ceee2",
+      "bytes": 5724
+    },
+    {
+      "group": "fixtures",
+      "name": "control-flow-parity.mir.json",
+      "sha256": "278f0d161f7370aed9478172e6236fdaad89e59e5bb589e5bb6a8a2b9e070513",
+      "bytes": 743
+    },
+    {
+      "group": "fixtures",
+      "name": "delay-wrap-parity.mir.json",
+      "sha256": "c94c76fd07fb927fab9079ff28722d37ab984d54322ca75e9be9ad3c8151ccdd",
+      "bytes": 799
+    },
+    {
+      "group": "fixtures",
+      "name": "event-parity.mir.json",
+      "sha256": "a623c17bdba2f9560f84df8fbba619194c346f4ba467234176564a1198667841",
+      "bytes": 959
+    },
+    {
+      "group": "fixtures",
+      "name": "execution-output-parity.mir.json",
+      "sha256": "f70f54c82613003ffd9f188ddfa1a430a12b9ceb2529ca6cfd04624f3e6d78c0",
+      "bytes": 1958
+    },
+    {
+      "group": "fixtures",
+      "name": "guarded-array-access.mir.json",
+      "sha256": "e7963934a6983d9ebbe4e200c3ebbf6dd4f1dc20253e70ab8cc646e3044fa7d5",
+      "bytes": 1080
+    },
+    {
+      "group": "fixtures",
+      "name": "integer-semantics-parity.mir.json",
+      "sha256": "a36fc96a4a6161534bb79212296faad4e7eb2eafa618e39064b350d97f3783e3",
+      "bytes": 3407
+    },
+    {
+      "group": "fixtures",
+      "name": "interleaved-state-access.mir.json",
+      "sha256": "4a349f6756d5acdede2b92e41a2226c3fc3e4845d77e5b8bec2e24b5afd4bb01",
+      "bytes": 930
+    },
+    {
+      "group": "fixtures",
+      "name": "language-slice.mir.json",
+      "sha256": "a3570db7dcbc30910d9e38ea82da903f62ca8cbae9eec13c76273d21e70f4816",
+      "bytes": 886
+    },
+    {
+      "group": "fixtures",
+      "name": "math-intrinsics-parity.mir.json",
+      "sha256": "31e0bd73c982dfc691754fff083e2fde8ffb52c312c6b4fac84cf8cadeb304a2",
+      "bytes": 19803
+    },
+    {
+      "group": "fixtures",
+      "name": "memory-access-semantics.mir.json",
+      "sha256": "69b5be38b7a35ef19694ee7b38046d9aa0642d561efb26fb28b582e4ba222df8",
+      "bytes": 1154
+    },
+    {
+      "group": "fixtures",
+      "name": "mixed-storage-origins.mir.json",
+      "sha256": "5f9ed8702b4dbdef31766e6d8d1a692ee46e10f2d26ed62aacdfdca888859527",
+      "bytes": 740
+    },
+    {
+      "group": "fixtures",
+      "name": "numeric-edge-parity.mir.json",
+      "sha256": "08b8400236d5133df7a628713265aa851ebf95e0c400916f5b921ec1e98f831e",
+      "bytes": 573
+    },
+    {
+      "group": "fixtures",
+      "name": "ordered-voice-rendering.mir.json",
+      "sha256": "a77d188d46a2ec667e5d20b2b28c36efaf54ef6385ab3636680a636e955f7899",
+      "bytes": 5481
+    },
+    {
+      "group": "fixtures",
+      "name": "oversampling-parity.mir.json",
+      "sha256": "5a58a6f1cb63e584f8892084e6ea3c378f470140701e79cc6b8fb41d706ed493",
+      "bytes": 1524
+    },
+    {
+      "group": "fixtures",
+      "name": "panning-updates.mir.json",
+      "sha256": "4f1536dcee6fd05cb03a4e4b749061c5e5131e9f5e92044c550773a5ab89a94f",
+      "bytes": 13840
+    },
+    {
+      "group": "fixtures",
+      "name": "param-array-snapshots.mir.json",
+      "sha256": "f539edaa7dc3bdea6da2df485d3a70a7b872182f8628491d2142573403527594",
+      "bytes": 1117
+    },
+    {
+      "group": "fixtures",
+      "name": "pointwise-control-f32.mir.json",
+      "sha256": "976c0e5e81ffd3a50d758c6bfa2ae6d5cc06991979e8f653ca3a3f6fb2b110a5",
+      "bytes": 526
+    },
+    {
+      "group": "fixtures",
+      "name": "pointwise-control-f64.mir.json",
+      "sha256": "fc215a8f893590b21cc1dc1e073dcfaae091bc169a37ed68cc46dca90a9d1c84",
+      "bytes": 530
+    },
+    {
+      "group": "fixtures",
+      "name": "range-semantics-parity.mir.json",
+      "sha256": "4fd915c8c2277c975b03825e8b2247a4325c7dddd471f5531d0e21c12345f04a",
+      "bytes": 3335
+    },
+    {
+      "group": "fixtures",
+      "name": "retained-data.mir.json",
+      "sha256": "8e7145c9b255f9b08c901239b0aca9de6c71e82abd4d1befe0d484ee063e6643",
+      "bytes": 2336
+    },
+    {
+      "group": "fixtures",
+      "name": "retained-scopes.mir.json",
+      "sha256": "f529dbe233ef66b00b8bed3a6af6ed673106c610488661313defb87d2d48babd",
+      "bytes": 4119
+    },
+    {
+      "group": "fixtures",
+      "name": "runtime-failure-parity.mir.json",
+      "sha256": "bbb45ce6bc8c288a3b99884c4c44943232306803fec6ef11c10f98f340924a6e",
+      "bytes": 2561
+    },
+    {
+      "group": "fixtures",
+      "name": "scalar-semantics-parity.mir.json",
+      "sha256": "46b7eed5ede805a65fee34b426ea4657b3bd9ec182cddea962ce701dfbb06095",
+      "bytes": 9577
+    },
+    {
+      "group": "fixtures",
+      "name": "shared-view-ranges.mir.json",
+      "sha256": "4d827ddac8cc9fe44209e6161a5c35387f909c75a898c40aa1f5c796811de53b",
+      "bytes": 950
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-bounds-proofs.mir.json",
+      "sha256": "8347a4185b878c711974fbfaf6d707bc7fb153abd587f3d5847509aba0c30a78",
+      "bytes": 1442
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-derived-bounds.mir.json",
+      "sha256": "f3dedda4e7838415899e9753db390a1ba61ddc88f16c6dd3ef6411323b69e8d0",
+      "bytes": 1387
+    },
+    {
+      "group": "fixtures",
+      "name": "slice-semantics.mir.json",
+      "sha256": "40df5cf9e885e69a4fc69ca59827769c2ac6dcf65fc4730ea4c2f15da07c4bcc",
+      "bytes": 1906
+    },
+    {
+      "group": "fixtures",
+      "name": "smoothing-ramps.mir.json",
+      "sha256": "72d2fd01f2164754882c8e15d3e65864a6be7f3745824fd3cca2a91fe0c934bf",
+      "bytes": 3486
+    },
+    {
+      "group": "fixtures",
+      "name": "state-view-shapes.mir.json",
+      "sha256": "a53f34c6e39f59285b78ec9ffcfa2ea1448cfa44d6825f325b1e500606d5501f",
+      "bytes": 842
+    },
+    {
+      "group": "fixtures",
+      "name": "state-window-access.mir.json",
+      "sha256": "06322ab26b70d5bc8ce21461886a59c317f6b5539b009bc64dce6708476e3b1f",
+      "bytes": 818
+    },
+    {
+      "group": "fixtures",
+      "name": "stdlib-dsp-regressions.mir.json",
+      "sha256": "40e59037c3b0050ad5c88bf35d6885ed8d03952a440045ea9c327d63dbe1e0b5",
+      "bytes": 13327
+    },
+    {
+      "group": "fixtures",
+      "name": "stereo-buffer-len.mir.json",
+      "sha256": "e6b11c5669fcc5f2316e6b52fa4771fed2e6c9c018c34ae12c6514bd24107641",
+      "bytes": 433
+    },
+    {
+      "group": "fixtures",
+      "name": "strict-float-parity.mir.json",
+      "sha256": "86c985375458cbc69b328c57d30ccac6cbd0abc6201d788f2e2d668e4ae59064",
+      "bytes": 817
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-data-regressions.mir.json",
+      "sha256": "63f80693eaef6deebf4a6db7e9c1b231c8fc9c171a8d1018fdb6fc457239c3e3",
+      "bytes": 990
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-data.mir.json",
+      "sha256": "2d5f9f3262e0837e1c5a28dc1c1c1c4417932bc7c283851e1d33bfd43440539b",
+      "bytes": 2098
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-message-routing.mir.json",
+      "sha256": "702cf4040129fbb75df0c60d43d06a3f2561d282729b898a1c5dca2363073e11",
+      "bytes": 2220
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-messages.mir.json",
+      "sha256": "743dbee192fe01ca434220a51c185cedf3d2d326833d2147816e7d123f29b058",
+      "bytes": 2584
+    },
+    {
+      "group": "fixtures",
+      "name": "structured-slice-messages.mir.json",
+      "sha256": "92efd7c560a8afc5a5b0298e2d29af9239cf6b1a59b3dbb51a086a9951ddeea2",
+      "bytes": 2275
+    },
+    {
+      "group": "fixtures",
+      "name": "task-lifecycle-parity.mir.json",
+      "sha256": "da54306986446c7adab8514cb83482b72fa0a5b4f8cb8a83aad1b03afe4d7df3",
+      "bytes": 1555
+    },
+    {
+      "group": "fixtures",
+      "name": "top-level-oversampling-parity.mir.json",
+      "sha256": "3deaf50e39f1e7cba84da34c0e6090d5570cd09f52c59d2dfe0ba3d6f4defb37",
+      "bytes": 1226
+    },
+    {
+      "group": "fixtures",
+      "name": "top-level-task-lifecycle-parity.mir.json",
+      "sha256": "14e5e2ae6dea43134ed19d20f59957327cc317e2f0c3633a024a52eae59bd2c7",
+      "bytes": 1139
+    },
+    {
+      "group": "fixtures",
+      "name": "tuple-stores.mir.json",
+      "sha256": "6ed71d3ef3261b6feac3af1cce8ba6d0d4099c1cefc160cb2d4775d417495e48",
+      "bytes": 1341
+    }
+  ],
+  "reproducer_source": "use onda_mir::*;\nuse std::time::Instant;\nfn s(kind: StatementKind) -> Statement { Statement { kind, source: SourceSpan::UNKNOWN } }\nfn a(local: LocalId, value: Rvalue) -> Statement { s(StatementKind::Assign { destination: Place::local(local), value }) }\nfn f(name: &str, kind: FunctionKind) -> Function { Function { name: name.into(), kind, attributes: FunctionAttributes { runtime_context: true, ..Default::default() }, params: vec![], results: vec![], locals: vec![], body: Block::default(), source: SourceSpan::UNKNOWN } }\nfn program(n: usize) -> Program {\n let i32t=TypeId::new(0); let boolt=TypeId::new(1); let f32t=TypeId::new(2); let arrt=TypeId::new(3);\n let mut p=Program::new(CompileConfig::new(48000.0,128).unwrap(),FunctionId::new(0),FunctionId::new(1));\n p.types=vec![Type::Scalar(ScalarType::I32),Type::Scalar(ScalarType::Bool),Type::Scalar(ScalarType::F32),Type::Array { element:f32t,len:128 }];\n p.state.push(StateSlot {name:\"state\".into(), ty:arrt,persistence:StatePersistence::Snapshot,authored:true,pinned:false,integer_range:None});\n p.functions.push(f(\"init\",FunctionKind::Init));\n let mut work=f(\"process\",FunctionKind::Process); work.params=process_function_params(i32t);\n for k in 0..n {\n  let index=LocalId::new((k*2) as u32); let condition=LocalId::new((k*2+1) as u32);\n  work.locals.extend([Local {name:None,ty:i32t,integer_range:None},Local {name:None,ty:boolt,integer_range:None}]);\n  work.body.statements.push(a(index,Rvalue::Use(Value::Constant(ScalarValue::I32(0)))));\n  work.body.statements.push(s(StatementKind::Loop {body:Block {statements:vec![\n   a(condition,Rvalue::Compare {op:CompareOp::Less,lhs:Value::Local(index),rhs:Value::Constant(ScalarValue::I32(128))}),\n   s(StatementKind::If {condition:Value::Local(condition),then_block:Block::default(),else_block:Block {statements:vec![s(StatementKind::Break)]}}),\n   s(StatementKind::Assign {destination:Place {base:PlaceBase::State(StateId::new(0)),projections:vec![Projection::Index {index:Value::Local(index),bounds:BoundsMode::Clamp}]}, value:Rvalue::Use(Value::Constant(ScalarValue::F32(1.0)))}),\n   a(index,Rvalue::Binary {op:BinaryOp::Add,lhs:Value::Local(index),rhs:Value::Constant(ScalarValue::I32(1))}),\n  ]}}));\n }\n p.functions.push(work);p\n}\n\nmod original {\n    include!(\"/tmp/onda-loops-oracle.rs\");\n    include!(\"/tmp/onda-loop-cost-oracle.rs\");\n}\nfn compare_file(path: &str) -> usize {\n    let json=std::fs::read_to_string(path).unwrap();\n    let validated=unsafe{from_json_with_producer_proofs(&json)}.unwrap();\n    let p=validated.as_program();\n    let effects=analyze_effects(&p);\n    let memory=analyze_memory(&p);\n    let ranges=analyze_program_integer_ranges_with_effects(&p,&effects);\n    let mut checked=0;\n    for (index,function) in p.functions.iter().enumerate() {\n        let id=FunctionId::new(index as u32);\n        let analysis=LoopAnalysis::new(&p,&effects,&memory,&ranges,id);\n        let mut pending=vec![&function.body];\n        while let Some(block)=pending.pop() {\n            for statement in &block.statements {\n                match &statement.kind {\n                    StatementKind::Loop {body} => {\n                        let before=original::independent_memory_loop(&p,&effects,&memory,&ranges,id,body);\n                        assert_eq!(analysis.independent_memory_loop(body),before,\"memory: {path}, {}\",function.name);\n                        let before=original::pointwise_audio_loop(&p,&effects,function,body).map(|p|(p.scalar,format!(\"{:?}\",p.ports)));\n                        let after=analysis.pointwise_audio_loop(body).map(|p|(p.scalar,format!(\"{:?}\",p.ports)));\n                        assert_eq!(after,before,\"audio: {path}, {}\",function.name);\n                        if let Some(counted)=counted_loop(body) {\n                            assert_eq!(analysis.nonnegative_induction(counted.index),original::nonnegative_induction(function,counted.index),\"induction: {path}, {}\",function.name);\n                        }\n                        checked+=1; pending.push(body);\n                    }\n                    StatementKind::If {then_block,else_block,..} => pending.extend([then_block,else_block]),\n                    _=>{}\n                }\n            }\n        }\n    }\n    checked\n}\nfn main() {\n    let mut files=0;let mut loops=0;\n    for path in std::env::args().skip(1).filter(|path| path!=\"--decisions-only\") {loops+=compare_file(&path);files+=1;}\n    println!(\"Matched all original memory/audio/induction decisions: {loops} loops, {files} programs\");\n    if std::env::args().any(|arg|arg==\"--decisions-only\") {return;}\n    for n in [256,512,1024,2048,4096,8192] {\n        let p=program(n);validate(&p).unwrap();let effects=analyze_effects(&p);let memory=analyze_memory(&p);let ranges=analyze_program_integer_ranges_with_effects(&p,&effects);\n        let mut before=vec![];let mut after=vec![];\n        for round in 0..3 {\n            for old in if round%2==0 {[true,false]} else {[false,true]} {\n                let start=Instant::now();let mut passed=0;\n                if old {\n                    for statement in &p.functions[1].body.statements {if let StatementKind::Loop {body}=&statement.kind {passed+=std::hint::black_box(original::independent_memory_loop(&p,&effects,&memory,&ranges,FunctionId::new(1),body)) as usize;}}\n                } else {\n                    let analysis=LoopAnalysis::new(&p,&effects,&memory,&ranges,FunctionId::new(1));\n                    for statement in &p.functions[1].body.statements {if let StatementKind::Loop {body}=&statement.kind {passed+=std::hint::black_box(analysis.independent_memory_loop(body)) as usize;}}\n                }\n                let elapsed=start.elapsed().as_secs_f64()*1000.0;\n                assert_eq!(passed,n);\n                if old {before.push(elapsed);} else {after.push(elapsed);}\n            }\n        }\n        println!(\"loops={n} before_ms={before:?} after_ms={after:?}\");\n    }\n}\n\ntrait OraclePlaceType { fn oracle_place_type(&self, function: &Function, place: &Place) -> Option<TypeId>; }\nimpl OraclePlaceType for Program {\n    fn oracle_place_type(&self, function: &Function, place: &Place) -> Option<TypeId> {\n        let mut ty = match place.base {\n            PlaceBase::Local(local) => function.locals.get(local.index())?.ty,\n            PlaceBase::Parameter(parameter) => function.params.get(parameter.index())?.ty,\n            PlaceBase::State(state) => self.state.get(state.index())?.ty,\n            PlaceBase::Param(param) => self.interface.params.get(param.index())?.ty,\n            PlaceBase::EventParam(param) => {\n                let FunctionKind::Event(event) = function.kind else {\n                    return None;\n                };\n                self.interface\n                    .events\n                    .get(event.index())?\n                    .params\n                    .get(param.index())?\n                    .ty\n            }\n        };\n        for projection in &place.projections {\n            ty = match (self.types.get(ty.index())?, projection) {\n                (Type::Struct(structure), Projection::Field(field)) => {\n                    self.structs\n                        .get(structure.index())?\n                        .fields\n                        .get(field.index())?\n                        .ty\n                }\n                (Type::Array { element, .. }, Projection::Index { .. }) => *element,\n                _ => return None,\n            };\n        }\n        Some(ty)\n    }\n\n}\n",
+  "scratch_artifacts": "target/bench/loop-analysis"
+}

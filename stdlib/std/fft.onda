@@ -28,7 +28,7 @@ namespace std::_fft_coefficients<Count = 256>:
 namespace std::_fft_radix4<Stage = 4>:
   def transform<T>(real: T[], imag: T[], n: i32, direction: T,
     wide_real: f64[], wide_imag: f64[], single_real: f32[], single_imag: f32[],
-    base: i32 = 0, odd_length: bool = false):
+    base: i32 = 0, odd_length = false):
     # Binary bit reversal swaps the middle two radix-4 inputs.
     stage = Stage
     if odd_length:

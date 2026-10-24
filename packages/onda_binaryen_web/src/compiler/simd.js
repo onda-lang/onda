@@ -84,7 +84,7 @@ export function vectorizeSampleLoop(compiler, statement, context, scalarLoop) {
       // Parameters and state cannot change in the admitted loop. A projected
       // load could depend on the induction variable, so leave it scalar.
       case "load":
-        if (!['state', 'parameter'].includes(value.data.base.kind) || value.data.projections.length) return null;
+        if (!['state', 'param', 'parameter'].includes(value.data.base.kind) || value.data.projections.length) return null;
         break;
       default: return null;
     }

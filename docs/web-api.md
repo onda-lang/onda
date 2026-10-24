@@ -145,6 +145,9 @@ endpoints, apply linear, logarithmic, or curved scale, and clamp and snap to the
 
 ### Delegates and print output
 
+See the [host output guide](https://onda-lang.org/docs/host-output/#javascript-and-web-audio)
+for batch sizing, decoding, formatting, and Web Audio listener examples.
+
 Complete wasm32 processor exports receive an optional execution-output descriptor containing
 independently nullable delegate and print batches. Allocate all descriptors and storage before
 real-time execution. Their linear-memory regions must be mutually disjoint and must not overlap any
@@ -165,7 +168,7 @@ chronological output stream.
 
 Batch capacity is host policy. `overflowCount` reports whole records that did not fit; it is not a
 byte count. Consume the returned storage before reusing it for another init, process, or event call.
-See the [language guide](https://onda-lang.org/docs/language/#delegates) for authored semantics and
+See the [language guide](https://onda-lang.org/docs/language/#delegates-and-when) for authored semantics and
 the [processor API](https://onda-lang.org/docs/processor-api/#call-scoped-execution-output) for
 physical record layout.
 

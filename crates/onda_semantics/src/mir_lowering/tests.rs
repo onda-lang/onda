@@ -2999,7 +2999,10 @@ sample:
     ));
     let dump = format_program(&mir);
     assert!(dump.contains("make_slice @state0"));
-    assert!(dump.contains("slice_len"));
+    assert!(
+        !dump.contains("slice_len"),
+        "known backing lengths should fold"
+    );
     assert!(dump.contains("load_slice"));
     assert!(dump.contains("store_slice"));
     assert!(dump.contains("slice_fill"));

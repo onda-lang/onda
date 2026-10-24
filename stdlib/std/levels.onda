@@ -22,3 +22,28 @@ namespace std::levels:
     t = _pan_position(x)
     angle = t * (PI / 2.0)
     return (cos(angle), sin(angle))
+
+  # Equal-power mono-to-stereo panning. Positions use pan_3db's clamp to
+  # [-1, 1]; gains are recomputed only when the position changes.
+  proc Pan3db<T>:
+    ins<T> 1
+    outs<T> 2
+
+    params<T>:
+      pan = 0.0 => update_pan
+
+    init:
+      gain_l: T = 0.0
+      gain_r: T = 0.0
+      coefficient_pan: T = 0.0
+      coefficient_valid = false
+
+    def update_pan():
+      if !coefficient_valid || pan != coefficient_pan:
+        gain_l, gain_r = std::levels::pan_3db(pan)
+        coefficient_pan = pan
+        coefficient_valid = true
+
+    sample:
+      out1 = in1 * gain_l
+      out2 = in1 * gain_r

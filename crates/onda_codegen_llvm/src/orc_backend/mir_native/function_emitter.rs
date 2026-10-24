@@ -80,7 +80,13 @@ impl FunctionEmitter<'_, '_> {
                             self.parameters.push(PlaceRef {
                                 ptr: incoming,
                                 ty: parameter.ty,
-                                alignment: 1,
+                                alignment: super::state_alias::reference_alignment(
+                                    self.module.program,
+                                    self.module.memory,
+                                    self.module.layouts,
+                                    onda_mir::FunctionId::new(self.function_index as u32),
+                                    onda_mir::ParameterId::new(index as u32),
+                                ),
                             });
                         }
                     }
@@ -113,9 +119,10 @@ impl FunctionEmitter<'_, '_> {
     unsafe fn lower_statement(&mut self, statement: &StatementKind) -> Result<(), MirCodegenError> {
         match statement {
             StatementKind::Assign { destination, value } => {
-                let destination = self.lower_place(destination)?;
-                let value = self.lower_rvalue(value, destination.ty)?;
-                self.store(destination, value);
+                let place = self.lower_place(destination)?;
+                let value = self.lower_rvalue(value, place.ty)?;
+                let store = self.store(place, value);
+                self.mark_place_access(store, destination);
             }
             StatementKind::Call {
                 results,
@@ -558,6 +565,21 @@ impl FunctionEmitter<'_, '_> {
     }
 
     unsafe fn lower_loop(&mut self, body: &Block) -> Result<(), MirCodegenError> {
+        if self.lower_pointwise_loop(body)? {
+            return Ok(());
+        }
+        let previous = self.parallel_loop.take();
+        if self.loops.independent_memory_loop(body) {
+            self.parallel_loop = Some(super::loop_metadata::ParallelLoop::new(
+                self.module.context,
+            )?);
+        }
+        let result = self.lower_plain_loop(body);
+        self.parallel_loop = previous;
+        result
+    }
+
+    pub(super) unsafe fn lower_plain_loop(&mut self, body: &Block) -> Result<(), MirCodegenError> {
         let body_bb = append_block(self.module.context, self.declaration.value, "loop_body")?;
         let exit_bb = append_block(self.module.context, self.declaration.value, "loop_exit")?;
         LLVMBuildBr(self.builder, body_bb);
@@ -566,7 +588,9 @@ impl FunctionEmitter<'_, '_> {
         let terminated = self.lower_block(body)?;
         self.loop_stack.pop();
         if !terminated {
-            LLVMBuildBr(self.builder, body_bb);
+            let branch = LLVMBuildBr(self.builder, body_bb);
+            self.mark_parallel_latch(branch);
+            self.mark_short_memory_loop(branch, body);
         }
         LLVMPositionBuilderAtEnd(self.builder, exit_bb);
         // Only emitted breaks can reach this block. A loop with no exit edge
@@ -717,6 +741,9 @@ impl FunctionEmitter<'_, '_> {
             llvm_args.len() as u32,
             c_name(if results.is_empty() { "" } else { "call" })?.as_ptr(),
         );
+        // LLVM propagates the proven dependence facts to memory operations
+        // when this helper is inlined, including through nested helpers.
+        self.mark_parallel_access(call);
         for (index, (alignment, parameter)) in reference_alignments
             .into_iter()
             .zip(&callee.params)
@@ -774,7 +801,9 @@ impl FunctionEmitter<'_, '_> {
         }
         match results {
             [] => {}
-            [result] => self.store(self.locals[result.index()], call),
+            [result] => {
+                self.store(self.locals[result.index()], call);
+            }
             results => {
                 for (index, result) in results.iter().enumerate() {
                     let value = LLVMBuildExtractValue(
@@ -1058,6 +1087,13 @@ impl FunctionEmitter<'_, '_> {
             Rvalue::Load(place) => {
                 let lowered = self.lower_place(place)?;
                 let load = self.load(lowered);
+                self.mark_place_access(load, place);
+                if matches!(
+                    place.base,
+                    onda_mir::PlaceBase::State(_) | onda_mir::PlaceBase::Param(_)
+                ) {
+                    self.mark_parallel_access(load);
+                }
                 if let Some(range) = self.direct_place_integer_range(place) {
                     self.mark_integer_range(load, range);
                 }
@@ -1187,7 +1223,7 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
-    unsafe fn lower_value(
+    pub(super) unsafe fn lower_value(
         &mut self,
         value: onda_mir::Value,
     ) -> Result<LLVMValueRef, MirCodegenError> {
@@ -1945,6 +1981,7 @@ impl FunctionEmitter<'_, '_> {
         let store = LLVMBuildStore(self.builder, value, ptr);
         LLVMSetAlignment(store, scalar_store_size(scalar) as u32);
         self.mark_audio_output_access(store);
+        self.mark_parallel_access(store);
         Ok(())
     }
 
@@ -1998,6 +2035,7 @@ impl FunctionEmitter<'_, '_> {
             c_name("audio_load")?.as_ptr(),
         );
         LLVMSetAlignment(load, scalar_store_size(scalar) as u32);
+        self.mark_parallel_access(load);
         if context_field == 1 {
             self.mark_audio_output_access(load);
         }
@@ -2011,6 +2049,24 @@ impl FunctionEmitter<'_, '_> {
         port: LLVMValueRef,
         frame: onda_mir::Value,
     ) -> Result<LLVMValueRef, MirCodegenError> {
+        let channel = self.audio_channel_ptr(context_field, port)?;
+        // ProcessFrame already includes the segment's start offset.
+        let logical_frame = self.lower_value(frame)?;
+        Ok(LLVMBuildGEP2(
+            self.builder,
+            llvm_scalar_type(self.module.context, scalar),
+            channel,
+            [logical_frame].as_mut_ptr(),
+            1,
+            c_name("audio_sample_ptr")?.as_ptr(),
+        ))
+    }
+
+    pub(super) unsafe fn audio_channel_ptr(
+        &mut self,
+        context_field: u32,
+        port: LLVMValueRef,
+    ) -> Result<LLVMValueRef, MirCodegenError> {
         let ports = load_context_field(
             self.module,
             self.builder,
@@ -2018,6 +2074,7 @@ impl FunctionEmitter<'_, '_> {
             context_field,
             "audio_ports",
         )?;
+        self.mark_parallel_access(ports);
         let port_ptr = LLVMBuildGEP2(
             self.builder,
             self.module.ptr_ty,
@@ -2032,18 +2089,8 @@ impl FunctionEmitter<'_, '_> {
             port_ptr,
             c_name("audio_channel")?.as_ptr(),
         );
-        // Segmented process MIR already computes the logical I/O frame as
-        // `start_frame + local_frame`. Host pointers address the full block,
-        // so the ABI start must not be added again here.
-        let logical_frame = self.lower_value(frame)?;
-        Ok(LLVMBuildGEP2(
-            self.builder,
-            llvm_scalar_type(self.module.context, scalar),
-            channel,
-            [logical_frame].as_mut_ptr(),
-            1,
-            c_name("audio_sample_ptr")?.as_ptr(),
-        ))
+        self.mark_parallel_access(channel);
+        Ok(channel)
     }
 
     unsafe fn interface_port(
@@ -2873,13 +2920,16 @@ impl FunctionEmitter<'_, '_> {
         name: &str,
         write: bool,
     ) -> Result<LLVMValueRef, MirCodegenError> {
-        let byte_offset = LLVMBuildMul(
+        // Validated MIR limits slice backing storage to a signed i32 byte
+        // extent. Callers have checked/clamped the index, or carry an explicit
+        // unchecked-access proof, so this address calculation cannot wrap.
+        let byte_offset = LLVMBuildNSWMul(
             self.builder,
             index,
             parts.stride_bytes,
             c_name(&format!("{name}_byte_offset"))?.as_ptr(),
         );
-        Ok(LLVMBuildGEP2(
+        Ok(LLVMBuildInBoundsGEP2(
             self.builder,
             LLVMInt8TypeInContext(self.module.context),
             if write {
@@ -3307,6 +3357,7 @@ impl FunctionEmitter<'_, '_> {
             c_name("slice_load")?.as_ptr(),
         );
         LLVMSetAlignment(load, 1);
+        self.mark_slice_access(load, slice);
         Ok(load)
     }
 
@@ -3328,6 +3379,7 @@ impl FunctionEmitter<'_, '_> {
         let value = self.lower_value(value)?;
         let store = LLVMBuildStore(self.builder, value, ptr);
         LLVMSetAlignment(store, 1);
+        self.mark_slice_access(store, slice);
         Ok(())
     }
 
@@ -3998,7 +4050,7 @@ impl FunctionEmitter<'_, '_> {
         let index = self.lower_fixed_index(index, len as usize, bounds)?;
         let zero = LLVMConstInt(LLVMInt32TypeInContext(self.module.context), 0, 0);
         let mut indices = [zero, index];
-        let ptr = LLVMBuildGEP2(
+        let ptr = LLVMBuildInBoundsGEP2(
             self.builder,
             self.module.types.get(place.ty),
             place.ptr,
@@ -4240,9 +4292,10 @@ impl FunctionEmitter<'_, '_> {
         );
     }
 
-    unsafe fn store(&self, place: PlaceRef, value: LLVMValueRef) {
+    unsafe fn store(&self, place: PlaceRef, value: LLVMValueRef) -> LLVMValueRef {
         let store = LLVMBuildStore(self.builder, value, place.ptr);
         LLVMSetAlignment(store, place.alignment as u32);
+        store
     }
 
     unsafe fn set_fast_math(&self, instruction: LLVMValueRef) {

@@ -21,6 +21,7 @@ import {
   compileTrustedMir as compileMir,
 } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
+import { decodeMirMessagePack } from "../src/messagepack.js";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoDir = resolve(packageDir, "../..");
@@ -30,6 +31,16 @@ const corpusRoots = [join(packageDir, "test/fixtures")];
 // exclusions explicit prevents a newly added source from silently escaping the
 // continuous corpus gate.
 const excludedSources = new Map([]);
+
+// Check the frontend's actual parameter representation reaches the SIMD path.
+const requiredInstructions = new Map([
+  ["pointwise-control-f32.onda", "f32x4.mul"],
+  ["pointwise-control-f64.onda", "f64x2.mul"],
+]);
+
+// One sample loop, fused voice rendering, and its ordered reference sum.
+// Native codegen selects distribution on its own copy after this boundary.
+const requiredMirLoopCounts = new Map([["ordered-voice-rendering.onda", 3]]);
 
 const sampleRate = "48000";
 const blockSize = "128";
@@ -74,7 +85,17 @@ try {
 
     try {
       compileSourceToMir(ondaCli, source, mirPath);
-      const artifact = compileMir(readFileSync(mirPath));
+      const filename = source.split(sep).at(-1);
+      const mir = decodeMirMessagePack(readFileSync(mirPath));
+      const expectedLoops = requiredMirLoopCounts.get(filename);
+      if (expectedLoops !== undefined && countMirLoops(mir) !== expectedLoops) {
+        throw new Error(`portable MIR must preserve ${expectedLoops} loops in the authored schedule`);
+      }
+      const instruction = requiredInstructions.get(filename);
+      const artifact = compileMir(mir, { emitText: instruction !== undefined });
+      if (instruction && !artifact.wat.includes(instruction)) {
+        throw new Error(`generated Wasm is missing ${instruction}`);
+      }
       if (
         artifact.metadata.mir_schema_version !== SUPPORTED_MIR_SCHEMA_VERSION
       ) {
@@ -103,6 +124,22 @@ try {
   }
 } finally {
   rmSync(temporary, { recursive: true, force: true });
+}
+
+function countMirLoops(mir) {
+  const pending = mir.functions.map((fn) => fn.body);
+  let count = 0;
+  while (pending.length) {
+    for (const { kind } of pending.pop().statements) {
+      if (kind.kind === "loop") {
+        count += 1;
+        pending.push(kind.data.body);
+      } else if (kind.kind === "if") {
+        pending.push(kind.data.then_block, kind.data.else_block);
+      }
+    }
+  }
+  return count;
 }
 
 const excludedCount = discovered.length - sources.length;

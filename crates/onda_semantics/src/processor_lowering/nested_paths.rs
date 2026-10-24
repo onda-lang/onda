@@ -135,35 +135,35 @@ fn prefixed_self_field_path(
     })
 }
 
+fn rewrite_target_bases(target: &mut AssignTarget, mut rewrite: impl FnMut(&mut String)) {
+    match target {
+        AssignTarget::Var(base)
+        | AssignTarget::Index { base, .. }
+        | AssignTarget::IndexedMember { base, .. }
+        | AssignTarget::Slice { base, .. } => rewrite(base),
+        AssignTarget::Tuple(targets) => {
+            for name in targets.iter_mut().filter_map(|target| target.binding_mut()) {
+                rewrite(name);
+            }
+        }
+    }
+}
+
 pub(super) fn rewrite_nested_field_paths_in_stmt(
     stmt: &mut Stmt,
     nested_fields: &HashMap<String, HashSet<String>>,
 ) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
-            match target {
-                AssignTarget::Var(name) => {
-                    if let Some((base, field)) = split_simple_field_path(name) {
-                        if let Some(fields) = nested_fields.get(base) {
-                            if fields.contains(field) {
-                                *name = format!("self.{}", nested_field_name(base, field));
-                            }
+            rewrite_target_bases(target, |name| {
+                if let Some((base, field)) = split_simple_field_path(name) {
+                    if let Some(fields) = nested_fields.get(base) {
+                        if fields.contains(field) {
+                            *name = format!("self.{}", nested_field_name(base, field));
                         }
                     }
                 }
-                AssignTarget::Index { base, .. }
-                | AssignTarget::IndexedMember { base, .. }
-                | AssignTarget::Slice { base, .. } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if let Some(fields) = nested_fields.get(root) {
-                            if fields.contains(field) {
-                                *base = format!("self.{}", nested_field_name(root, field));
-                            }
-                        }
-                    }
-                }
-                AssignTarget::Tuple(_) => {}
-            }
+            });
             target.visit_selectors_mut(|selector| {
                 rewrite_nested_field_paths_in_expr(selector, nested_fields)
             });
@@ -307,29 +307,15 @@ pub(super) fn remap_nested_symbols_in_expr(expr: &mut Expr, remap: &HashMap<Stri
 pub(super) fn remap_nested_symbols_in_stmt(stmt: &mut Stmt, remap: &HashMap<String, String>) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
-            match target {
-                AssignTarget::Var(name) => {
-                    if let Some((base, field)) = split_simple_field_path(name) {
-                        if let Some(mapped) = remap.get(base) {
-                            *name = format!("{mapped}.{field}");
-                        }
-                    } else if let Some(mapped) = remap.get(name) {
-                        *name = mapped.clone();
+            rewrite_target_bases(target, |name| {
+                if let Some((base, field)) = split_simple_field_path(name) {
+                    if let Some(mapped) = remap.get(base) {
+                        *name = format!("{mapped}.{field}");
                     }
+                } else if let Some(mapped) = remap.get(name) {
+                    *name = mapped.clone();
                 }
-                AssignTarget::Index { base, .. }
-                | AssignTarget::IndexedMember { base, .. }
-                | AssignTarget::Slice { base, .. } => {
-                    if let Some((root, field)) = split_simple_field_path(base) {
-                        if let Some(mapped) = remap.get(root) {
-                            *base = format!("{mapped}.{field}");
-                        }
-                    } else if let Some(mapped) = remap.get(base) {
-                        *base = mapped.clone();
-                    }
-                }
-                AssignTarget::Tuple(_) => {}
-            }
+            });
             target.visit_selectors_mut(|selector| remap_nested_symbols_in_expr(selector, remap));
             remap_nested_symbols_in_expr(expr, remap);
         }
@@ -465,25 +451,11 @@ pub(super) fn prefix_self_fields_in_stmt(
 ) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
-            match target {
-                AssignTarget::Var(name) => {
-                    if let Some(prefixed) =
-                        prefixed_self_field_path(name, prefix, nested_field_names)
-                    {
-                        *name = prefixed;
-                    }
+            rewrite_target_bases(target, |name| {
+                if let Some(prefixed) = prefixed_self_field_path(name, prefix, nested_field_names) {
+                    *name = prefixed;
                 }
-                AssignTarget::Index { base, .. }
-                | AssignTarget::IndexedMember { base, .. }
-                | AssignTarget::Slice { base, .. } => {
-                    if let Some(prefixed) =
-                        prefixed_self_field_path(base, prefix, nested_field_names)
-                    {
-                        *base = prefixed;
-                    }
-                }
-                AssignTarget::Tuple(_) => {}
-            }
+            });
             target.visit_selectors_mut(|selector| {
                 prefix_self_fields_in_expr(selector, prefix, nested_field_names)
             });

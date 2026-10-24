@@ -215,7 +215,7 @@ inside nested control flow is local to that flow:
 
 ```onda
 params:
-  use_high_value: bool = false
+  use_high_value = false
 
 init:
   if use_high_value:
@@ -607,7 +607,11 @@ First assignment infers a type:
 sample:
   x = 0
   y = 0.0
+  enabled = false
 ```
+
+Without a section default type, boolean literals infer `bool`, so `enabled = false` needs no
+type annotation. [Section defaults](#section-shorthands) apply even to boolean initializers.
 
 Explicit declarations pin the type:
 

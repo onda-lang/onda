@@ -6,6 +6,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -132,10 +133,18 @@ class HarnessContracts(unittest.TestCase):
                 Limits(CPU, memory_mib=128, timeout_seconds=1).run([sys.executable, script, pidfile], directory / "job")
             pid = int(pidfile.read_text())
             stat = Path(f"/proc/{pid}/stat")
-            try:
-                state = stat.read_text().split()[2]
-            except FileNotFoundError:
-                state = None
+            # SIGKILL is pending until the descendant runs. In particular,
+            # sharing one pinned CPU can leave it briefly runnable after the
+            # parent has been reaped; wait for exit, not for init to reap it.
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    state = stat.read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state in (None, "Z") or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
             self.assertIn(state, (None, "Z"))
 
 

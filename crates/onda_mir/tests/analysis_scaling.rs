@@ -112,6 +112,176 @@ fn call_chain_analysis_visits_scale_linearly() {
             optimized.ranges(),
             &analyze_program_integer_ranges_with_effects(&optimized, optimized.effects())
         );
+        assert_eq!(optimized.memory(), &analyze_memory(&optimized));
+    }
+}
+
+#[test]
+fn reference_origins_flow_through_long_forwarding_chains() {
+    for size in [32, 128, 512] {
+        let mut program = chain(size);
+        for (index, function) in program.functions.iter_mut().enumerate().skip(1) {
+            if index > 1 {
+                function.params.push(FunctionParam {
+                    name: "storage".into(),
+                    ty: TypeId::new(0),
+                    mode: PassingMode::ReadOnlyReference,
+                    integer_range: None,
+                });
+            }
+            if let StatementKind::Call { args, .. } = &mut function.body.statements[0].kind {
+                args.push(CallArgument::Place(Place {
+                    base: if index == 1 {
+                        PlaceBase::State(StateId::new(0))
+                    } else {
+                        PlaceBase::Parameter(ParameterId::new(0))
+                    },
+                    projections: vec![],
+                }));
+            }
+        }
+        validate(&program).unwrap();
+        let memory = analyze_memory(&program);
+        let origins = memory.parameter(FunctionId::new((size + 1) as u32), ParameterId::new(0));
+        assert_eq!(
+            origins.only_states().unwrap().collect::<Vec<_>>(),
+            vec![StateId::new(0)]
+        );
+        assert!(
+            memory.function_visits <= 3 * program.functions.len(),
+            "{} visits for {size} functions",
+            memory.function_visits
+        );
+    }
+}
+
+#[test]
+fn window_offsets_and_extents_flow_through_long_forwarding_chains() {
+    for size in [32, 128, 512] {
+        let mut program = chain(size);
+        for remaining in (1024 - size..=1024).rev() {
+            program.types.push(Type::Array {
+                element: TypeId::new(0),
+                len: remaining as u32,
+            });
+        }
+        program.state[0].ty = TypeId::new(1);
+        for (index, function) in program.functions.iter_mut().enumerate().skip(1) {
+            if index > 1 {
+                function.params.push(FunctionParam {
+                    name: "storage".into(),
+                    ty: TypeId::new(index as u32),
+                    mode: PassingMode::ReadOnlyReference,
+                    integer_range: None,
+                });
+            }
+            if let StatementKind::Call { args, .. } = &mut function.body.statements[0].kind {
+                args.push(CallArgument::ArrayWindow {
+                    array: Place {
+                        base: if index == 1 {
+                            PlaceBase::State(StateId::new(0))
+                        } else {
+                            PlaceBase::Parameter(ParameterId::new(0))
+                        },
+                        projections: vec![],
+                    },
+                    start: Value::Constant(ScalarValue::I32(1)),
+                    bounds: BoundsMode::Checked,
+                });
+            } else {
+                function.body.statements.remove(0);
+            }
+        }
+        validate(&program).unwrap();
+        let memory = analyze_memory(&program);
+        let regions = memory
+            .parameter(FunctionId::new((size + 1) as u32), ParameterId::new(0))
+            .state_regions()
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            regions,
+            [StateRegion {
+                state: StateId::new(0),
+                start: size as u32,
+                len: (1024 - size) as u32
+            }]
+        );
+        assert!(memory.function_visits <= 3 * program.functions.len());
+    }
+}
+
+#[test]
+fn alternative_views_remain_bounded_across_long_forwarding_chains() {
+    for alternatives in [2, 256] {
+        let size = 128;
+        let mut program = chain(size);
+        program.types.extend([
+            Type::Array {
+                element: TypeId::new(0),
+                len: 4096,
+            },
+            Type::Array {
+                element: TypeId::new(0),
+                len: 4,
+            },
+        ]);
+        program.state[0].ty = TypeId::new(1);
+        for (index, function) in program.functions.iter_mut().enumerate().skip(2) {
+            function.params.push(FunctionParam {
+                name: "view".into(),
+                ty: TypeId::new(2),
+                mode: PassingMode::ReadOnlyReference,
+                integer_range: None,
+            });
+            if index + 1 < size + 2 {
+                let StatementKind::Call { args, .. } = &mut function.body.statements[0].kind else {
+                    unreachable!()
+                };
+                args.push(CallArgument::Place(Place {
+                    base: PlaceBase::Parameter(ParameterId::new(0)),
+                    projections: vec![],
+                }));
+            } else {
+                function.body.statements.remove(0);
+            }
+        }
+        program.functions[1].body.statements = (0..alternatives)
+            .map(|offset| {
+                statement(StatementKind::Call {
+                    function: FunctionId::new(2),
+                    results: vec![LocalId::new(0)],
+                    args: vec![CallArgument::ArrayWindow {
+                        array: Place {
+                            base: PlaceBase::State(StateId::new(0)),
+                            projections: vec![],
+                        },
+                        start: Value::Constant(ScalarValue::I32(offset * 8)),
+                        bounds: BoundsMode::Checked,
+                    }],
+                })
+            })
+            .collect();
+        validate(&program).unwrap();
+        let memory = analyze_memory(&program);
+        let origins = memory.parameter(FunctionId::new((size + 1) as u32), ParameterId::new(0));
+        assert_eq!(
+            origins.only_states().unwrap().collect::<Vec<_>>(),
+            [StateId::new(0)]
+        );
+        if alternatives == 2 {
+            assert_eq!(
+                origins
+                    .state_regions()
+                    .unwrap()
+                    .map(|r| (r.start, r.len))
+                    .collect::<Vec<_>>(),
+                [(0, 4), (8, 4)]
+            );
+        } else {
+            assert!(origins.state_regions().is_none());
+        }
+        assert!(memory.function_visits <= 3 * program.functions.len());
     }
 }
 

@@ -1,0 +1,4403 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+  "baseline_working_tree": "Includes the preceding tuple-store, mixed-origin alias and ranged-load fixes; baseline captured before alias-metadata edits.",
+  "method": {
+    "compiler": "Matching default Rust release builds; backend harnesses reference this repository directly.",
+    "target": "Linux x86-64 host, LLVM 21.1.2, strict floating-point policy, O3 unless the row kind is 0.",
+    "scaling": "Three alternating process pairs on CPU6. Decode trusted compiler JSON and optimize MIR before starting the backend timer. IR emission includes serialization; object emission includes machine-code generation.",
+    "memory": "Per-child peak RSS from a fresh native wait4 launcher, avoiding inherited Python-process memory peaks.",
+    "runtime": "27 kernels plus nine examples; CPU6, 48kHz, 128-frame blocks, five 30ms rounds. Kernel warmup defaults to 512 blocks; example warmup is 2048 blocks. Captures cover 32 blocks at startup and after warmup.",
+    "acceptance": "Identical MIR, native object bytes and startup/warmed captures. Final production planner re-emits the same artifacts. No DSP speedup is attributed to timing noise for identical objects.",
+    "environment": "No concurrent builds or tests during timing; clocks and exclusive core reservation uncontrolled.",
+    "complexity": "Separate objects have O(n log n) metadata operands. Arbitrary overlapping origin unions can require more partitions; exact disjointness is retained without a threshold or analysis cutoff."
+  },
+  "source_sha256": {
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/state_alias.rs": "8b973570a86825b828ab6c21cea1e0f995078dca1d5b0b0a7f99eb2101cabe03",
+    "crates/onda_codegen_llvm/src/orc_backend/mir_native/state_alias/scopes.rs": "f9e812da413c04d8e6c28897a52b6926805e99beac68e1427ac345dc3042a930",
+    "crates/onda_codegen_llvm/tests/alias_metadata.rs": "c12a8458ab1a35a411707e4fdd22f413c4ffad829f4ca3b5d6cd5a66d1de4ac4"
+  },
+  "baseline_state_alias_sha256": "1cbfccb59fc66b486a74792cf315bda759bc0c0c27ba20580b34ecb5f0ea2e3b",
+  "runtime_workers": {
+    "before": {
+      "path": "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-worker",
+      "sha256": "0f64ec2d2e72f38f3b1ed82d33d41901d02fea36f0609e3d4f4c2325f7da7bcd"
+    },
+    "after": {
+      "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "sha256": "58944432b0c8e4fca56337df4ae3acdc6717e9bc26b7e335eeb137442a7de842"
+    },
+    "final": {
+      "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "sha256": "80bd546090f29fe02be9e149ab665815323523fba19b4869ecbf77b66c0c32f1"
+    }
+  },
+  "feedback_loop": {
+    "command": "cargo test -p onda_codegen_llvm --test alias_metadata -- --nocapture",
+    "baseline": "FAIL: metadata operands: 19518 -> 71742 at 128 -> 256 states",
+    "final": "PASS",
+    "proof_check": "All 3969 ordered pairs of the 63 state-only and mixed origin sets over five objects match the original scoped-noalias relation, using LLVM subset-within-domain semantics."
+  },
+  "scaling_summaries": [
+    {
+      "kind": "0",
+      "states": 512,
+      "source_sha256": "9202165fb23b94765d7cbfdbb6f98282ce713293508156479c991e7e5f6ce3f4",
+      "median_backend_seconds": {
+        "before": 0.048713771,
+        "after": 0.030858688000000002
+      },
+      "median_peak_rss_kib": {
+        "before": 77616,
+        "after": 58940
+      },
+      "artifact_bytes": {
+        "before": 3639053,
+        "after": 2211599
+      },
+      "metadata_operands": {
+        "before": 274494,
+        "after": 26156
+      }
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "source_sha256": "2098db042de8c4115e90be36499ee87325cb7fe30a8b6ffbf3d713aa86081be2",
+      "median_backend_seconds": {
+        "before": 0.140989167,
+        "after": 0.062398137
+      },
+      "median_peak_rss_kib": {
+        "before": 113292,
+        "after": 77028
+      },
+      "artifact_bytes": {
+        "before": 10476189,
+        "after": 4456629
+      },
+      "metadata_operands": {
+        "before": 1073214,
+        "after": 54316
+      }
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "source_sha256": "7860fe690c92cd7ad36bae115bc84d35ece38ad58ff4973540977314ffbb6456",
+      "median_backend_seconds": {
+        "before": 0.45778656,
+        "after": 0.127606426
+      },
+      "median_peak_rss_kib": {
+        "before": 215284,
+        "after": 114408
+      },
+      "artifact_bytes": {
+        "before": 35714725,
+        "after": 9067916
+      },
+      "metadata_operands": {
+        "before": 4243518,
+        "after": 112684
+      }
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "source_sha256": "6221cef87c4ed0e33be4ca6fffca85ae85a83c22be6ec35ec53cc57fd7b37f38",
+      "median_backend_seconds": {
+        "before": 1.60001042,
+        "after": 0.26838717500000003
+      },
+      "median_peak_rss_kib": {
+        "before": 554504,
+        "after": 189408
+      },
+      "artifact_bytes": {
+        "before": 130333589,
+        "after": 18320195
+      },
+      "metadata_operands": {
+        "before": 16875582,
+        "after": 233516
+      }
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "source_sha256": "9202165fb23b94765d7cbfdbb6f98282ce713293508156479c991e7e5f6ce3f4",
+      "median_backend_seconds": {
+        "before": 0.35452491500000005,
+        "after": 0.202967051
+      },
+      "median_peak_rss_kib": {
+        "before": 87100,
+        "after": 69336
+      },
+      "artifact_bytes": {
+        "before": 2228885,
+        "after": 610418
+      }
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "source_sha256": "2098db042de8c4115e90be36499ee87325cb7fe30a8b6ffbf3d713aa86081be2",
+      "median_backend_seconds": {
+        "before": 0.87834394,
+        "after": 0.518031653
+      },
+      "median_peak_rss_kib": {
+        "before": 135952,
+        "after": 104024
+      },
+      "artifact_bytes": {
+        "before": 8089426,
+        "after": 1247286
+      }
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "source_sha256": "7860fe690c92cd7ad36bae115bc84d35ece38ad58ff4973540977314ffbb6456",
+      "median_backend_seconds": {
+        "before": 1.943768604,
+        "after": 0.804276324
+      },
+      "median_peak_rss_kib": {
+        "before": 274652,
+        "after": 163936
+      },
+      "artifact_bytes": {
+        "before": 34340153,
+        "after": 2661324
+      }
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "source_sha256": "6221cef87c4ed0e33be4ca6fffca85ae85a83c22be6ec35ec53cc57fd7b37f38",
+      "median_backend_seconds": {
+        "before": 4.875023038,
+        "after": 1.351052092
+      },
+      "median_peak_rss_kib": {
+        "before": 711820,
+        "after": 240392
+      },
+      "artifact_bytes": {
+        "before": 138068418,
+        "after": 5441494
+      }
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "source_sha256": "2098db042de8c4115e90be36499ee87325cb7fe30a8b6ffbf3d713aa86081be2",
+      "median_backend_seconds": {
+        "before": 1.343632741,
+        "after": 1.001201114
+      },
+      "median_peak_rss_kib": {
+        "before": 174264,
+        "after": 148024
+      },
+      "artifact_bytes": {
+        "before": 49448,
+        "after": 49448
+      },
+      "all_six_objects_byte_identical": true
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "source_sha256": "7860fe690c92cd7ad36bae115bc84d35ece38ad58ff4973540977314ffbb6456",
+      "median_backend_seconds": {
+        "before": 3.155308543,
+        "after": 2.183401362
+      },
+      "median_peak_rss_kib": {
+        "before": 309156,
+        "after": 243028
+      },
+      "artifact_bytes": {
+        "before": 109400,
+        "after": 109400
+      },
+      "all_six_objects_byte_identical": true
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "source_sha256": "6221cef87c4ed0e33be4ca6fffca85ae85a83c22be6ec35ec53cc57fd7b37f38",
+      "median_backend_seconds": {
+        "before": 8.301635732,
+        "after": 5.76927601
+      },
+      "median_peak_rss_kib": {
+        "before": 680800,
+        "after": 447172
+      },
+      "artifact_bytes": {
+        "before": 217696,
+        "after": 217696
+      },
+      "all_six_objects_byte_identical": true
+    }
+  ],
+  "scaling_rounds": [
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-0-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.047948746,
+      "peak_rss_kib": 77732,
+      "artifact_bytes": 3639053,
+      "artifact_sha256": "fd72d9ebfa090df8aae47c052cbda27faf8a7844eb65093be28964c55b87d1a5",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-0-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.031536141000000004,
+      "peak_rss_kib": 58940,
+      "artifact_bytes": 2211599,
+      "artifact_sha256": "9a2f9b2432a90a9fd09f55c15be257bffa8fa120be2d306b189be145db2f1fd7",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-1-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.030612118,
+      "peak_rss_kib": 59184,
+      "artifact_bytes": 2211599,
+      "artifact_sha256": "9a2f9b2432a90a9fd09f55c15be257bffa8fa120be2d306b189be145db2f1fd7",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-1-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.048713771,
+      "peak_rss_kib": 77596,
+      "artifact_bytes": 3639053,
+      "artifact_sha256": "fd72d9ebfa090df8aae47c052cbda27faf8a7844eb65093be28964c55b87d1a5",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-2-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.049742890000000005,
+      "peak_rss_kib": 77616,
+      "artifact_bytes": 3639053,
+      "artifact_sha256": "fd72d9ebfa090df8aae47c052cbda27faf8a7844eb65093be28964c55b87d1a5",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 512,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-512-2-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.030858688000000002,
+      "peak_rss_kib": 58920,
+      "artifact_bytes": 2211599,
+      "artifact_sha256": "9a2f9b2432a90a9fd09f55c15be257bffa8fa120be2d306b189be145db2f1fd7",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-0-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.140089564,
+      "peak_rss_kib": 113448,
+      "artifact_bytes": 10476189,
+      "artifact_sha256": "5383535d876cad45f89a74ee423140fb220a1ee828763570c6906b34a930340d",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-0-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.062490308,
+      "peak_rss_kib": 75692,
+      "artifact_bytes": 4456629,
+      "artifact_sha256": "660fec08d8a5289bc7a25681599bbd6942367cb3bce0519724e326e6e4e2993e",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-1-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.062398137,
+      "peak_rss_kib": 77028,
+      "artifact_bytes": 4456629,
+      "artifact_sha256": "660fec08d8a5289bc7a25681599bbd6942367cb3bce0519724e326e6e4e2993e",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-1-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.140989167,
+      "peak_rss_kib": 113292,
+      "artifact_bytes": 10476189,
+      "artifact_sha256": "5383535d876cad45f89a74ee423140fb220a1ee828763570c6906b34a930340d",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-2-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.141971178,
+      "peak_rss_kib": 113204,
+      "artifact_bytes": 10476189,
+      "artifact_sha256": "5383535d876cad45f89a74ee423140fb220a1ee828763570c6906b34a930340d",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 1024,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-1024-2-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.062309016,
+      "peak_rss_kib": 77048,
+      "artifact_bytes": 4456629,
+      "artifact_sha256": "660fec08d8a5289bc7a25681599bbd6942367cb3bce0519724e326e6e4e2993e",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-0-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.456246319,
+      "peak_rss_kib": 215284,
+      "artifact_bytes": 35714725,
+      "artifact_sha256": "a1c072a0cd18f1acbd6b820948fadbe4cc14ad1404e2fabe2d0d8a5c263bbc60",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-0-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.127834741,
+      "peak_rss_kib": 115400,
+      "artifact_bytes": 9067916,
+      "artifact_sha256": "1995053d3ffd562274b58dd3169e8dfc9aec8dddb2e82704ccb8369465862a87",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-1-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.127606426,
+      "peak_rss_kib": 114408,
+      "artifact_bytes": 9067916,
+      "artifact_sha256": "1995053d3ffd562274b58dd3169e8dfc9aec8dddb2e82704ccb8369465862a87",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-1-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.460805811,
+      "peak_rss_kib": 215508,
+      "artifact_bytes": 35714725,
+      "artifact_sha256": "a1c072a0cd18f1acbd6b820948fadbe4cc14ad1404e2fabe2d0d8a5c263bbc60",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-2-before.ll",
+        "0"
+      ],
+      "backend_seconds": 0.45778656,
+      "peak_rss_kib": 215276,
+      "artifact_bytes": 35714725,
+      "artifact_sha256": "a1c072a0cd18f1acbd6b820948fadbe4cc14ad1404e2fabe2d0d8a5c263bbc60",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 2048,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-2048-2-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.126922212,
+      "peak_rss_kib": 114092,
+      "artifact_bytes": 9067916,
+      "artifact_sha256": "1995053d3ffd562274b58dd3169e8dfc9aec8dddb2e82704ccb8369465862a87",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-0-before.ll",
+        "0"
+      ],
+      "backend_seconds": 1.608701808,
+      "peak_rss_kib": 553976,
+      "artifact_bytes": 130333589,
+      "artifact_sha256": "ab54bfb7add61b70d70c9b3f994d2cec344f7b22fa8e9729c27fb3cf8cbd9fb1",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-0-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.26838717500000003,
+      "peak_rss_kib": 189408,
+      "artifact_bytes": 18320195,
+      "artifact_sha256": "6c821026d37a2bb612a4ea0b02381beb573a4cf2f0d69047ae78b6ca5ad69e50",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-1-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.26791770400000003,
+      "peak_rss_kib": 188576,
+      "artifact_bytes": 18320195,
+      "artifact_sha256": "6c821026d37a2bb612a4ea0b02381beb573a4cf2f0d69047ae78b6ca5ad69e50",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-1-before.ll",
+        "0"
+      ],
+      "backend_seconds": 1.60001042,
+      "peak_rss_kib": 554552,
+      "artifact_bytes": 130333589,
+      "artifact_sha256": "ab54bfb7add61b70d70c9b3f994d2cec344f7b22fa8e9729c27fb3cf8cbd9fb1",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-2-before.ll",
+        "0"
+      ],
+      "backend_seconds": 1.599639073,
+      "peak_rss_kib": 554504,
+      "artifact_bytes": 130333589,
+      "artifact_sha256": "ab54bfb7add61b70d70c9b3f994d2cec344f7b22fa8e9729c27fb3cf8cbd9fb1",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "0",
+      "states": 4096,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-0-4096-2-after.ll",
+        "0"
+      ],
+      "backend_seconds": 0.288833108,
+      "peak_rss_kib": 190268,
+      "artifact_bytes": 18320195,
+      "artifact_sha256": "6c821026d37a2bb612a4ea0b02381beb573a4cf2f0d69047ae78b6ca5ad69e50",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-0-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.35452491500000005,
+      "peak_rss_kib": 87100,
+      "artifact_bytes": 2228885,
+      "artifact_sha256": "de229d875acf111bf1fd03d7b5fcd4081529a279c0409465efc1ae067c4189b0",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-0-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.205196433,
+      "peak_rss_kib": 69356,
+      "artifact_bytes": 610418,
+      "artifact_sha256": "731a4d80dec83a8edfe27ff2f14d22bc706d808d717f84ca9be2f339e8ecbc7c",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-1-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.202967051,
+      "peak_rss_kib": 69336,
+      "artifact_bytes": 610418,
+      "artifact_sha256": "731a4d80dec83a8edfe27ff2f14d22bc706d808d717f84ca9be2f339e8ecbc7c",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-1-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.347598815,
+      "peak_rss_kib": 86964,
+      "artifact_bytes": 2228885,
+      "artifact_sha256": "de229d875acf111bf1fd03d7b5fcd4081529a279c0409465efc1ae067c4189b0",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-2-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.357465085,
+      "peak_rss_kib": 87268,
+      "artifact_bytes": 2228885,
+      "artifact_sha256": "de229d875acf111bf1fd03d7b5fcd4081529a279c0409465efc1ae067c4189b0",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 512,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s512.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-512-2-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.197328972,
+      "peak_rss_kib": 69124,
+      "artifact_bytes": 610418,
+      "artifact_sha256": "731a4d80dec83a8edfe27ff2f14d22bc706d808d717f84ca9be2f339e8ecbc7c",
+      "input_sha256": "700bacaa9062ca263bb07aa9a01187dd8f5129a15ecd3ed4cb13334e39f7e2e6",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-0-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.87834394,
+      "peak_rss_kib": 135756,
+      "artifact_bytes": 8089426,
+      "artifact_sha256": "7860d0095503c6410630ce9744402a2ddd412d3bb20f3cbc92242ddda21d93fd",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-0-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.518031653,
+      "peak_rss_kib": 103964,
+      "artifact_bytes": 1247286,
+      "artifact_sha256": "e0704d20c59c52023359079d21aa2f1fc2dd606cad064fcb64071a0d01a85422",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-1-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.532379626,
+      "peak_rss_kib": 104560,
+      "artifact_bytes": 1247286,
+      "artifact_sha256": "e0704d20c59c52023359079d21aa2f1fc2dd606cad064fcb64071a0d01a85422",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-1-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.8611779850000001,
+      "peak_rss_kib": 135952,
+      "artifact_bytes": 8089426,
+      "artifact_sha256": "7860d0095503c6410630ce9744402a2ddd412d3bb20f3cbc92242ddda21d93fd",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-2-before.ll",
+        "3"
+      ],
+      "backend_seconds": 0.886783884,
+      "peak_rss_kib": 136180,
+      "artifact_bytes": 8089426,
+      "artifact_sha256": "7860d0095503c6410630ce9744402a2ddd412d3bb20f3cbc92242ddda21d93fd",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 1024,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-1024-2-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.48146876,
+      "peak_rss_kib": 104024,
+      "artifact_bytes": 1247286,
+      "artifact_sha256": "e0704d20c59c52023359079d21aa2f1fc2dd606cad064fcb64071a0d01a85422",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-0-before.ll",
+        "3"
+      ],
+      "backend_seconds": 1.927840121,
+      "peak_rss_kib": 274988,
+      "artifact_bytes": 34340153,
+      "artifact_sha256": "67b7b1a9c3e6e2fdb6411510c311ba620efc54e73ee424548ad603076ad1febd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-0-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.805492909,
+      "peak_rss_kib": 163184,
+      "artifact_bytes": 2661324,
+      "artifact_sha256": "575e0a6d608dfac2fa0311fa82f0e9a0283b6773dc67399e27e7d466d587ffbd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-1-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.804276324,
+      "peak_rss_kib": 164816,
+      "artifact_bytes": 2661324,
+      "artifact_sha256": "575e0a6d608dfac2fa0311fa82f0e9a0283b6773dc67399e27e7d466d587ffbd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-1-before.ll",
+        "3"
+      ],
+      "backend_seconds": 1.94888694,
+      "peak_rss_kib": 273716,
+      "artifact_bytes": 34340153,
+      "artifact_sha256": "67b7b1a9c3e6e2fdb6411510c311ba620efc54e73ee424548ad603076ad1febd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-2-before.ll",
+        "3"
+      ],
+      "backend_seconds": 1.943768604,
+      "peak_rss_kib": 274652,
+      "artifact_bytes": 34340153,
+      "artifact_sha256": "67b7b1a9c3e6e2fdb6411510c311ba620efc54e73ee424548ad603076ad1febd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 2048,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-2048-2-after.ll",
+        "3"
+      ],
+      "backend_seconds": 0.802291192,
+      "peak_rss_kib": 163936,
+      "artifact_bytes": 2661324,
+      "artifact_sha256": "575e0a6d608dfac2fa0311fa82f0e9a0283b6773dc67399e27e7d466d587ffbd",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-0-before.ll",
+        "3"
+      ],
+      "backend_seconds": 4.828351829,
+      "peak_rss_kib": 712688,
+      "artifact_bytes": 138068418,
+      "artifact_sha256": "734157b3ed7abc5ce4d24443d527c75daeb8034cf3b67f1cda5954e0901bd71e",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-0-after.ll",
+        "3"
+      ],
+      "backend_seconds": 1.343348198,
+      "peak_rss_kib": 240392,
+      "artifact_bytes": 5441494,
+      "artifact_sha256": "ec53a138f699721064d2d58feb398b13059a42f7e010ba35c45a3ee72104f743",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-1-after.ll",
+        "3"
+      ],
+      "backend_seconds": 1.354491043,
+      "peak_rss_kib": 240284,
+      "artifact_bytes": 5441494,
+      "artifact_sha256": "ec53a138f699721064d2d58feb398b13059a42f7e010ba35c45a3ee72104f743",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-1-before.ll",
+        "3"
+      ],
+      "backend_seconds": 4.875023038,
+      "peak_rss_kib": 711820,
+      "artifact_bytes": 138068418,
+      "artifact_sha256": "734157b3ed7abc5ce4d24443d527c75daeb8034cf3b67f1cda5954e0901bd71e",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-2-before.ll",
+        "3"
+      ],
+      "backend_seconds": 4.935027382,
+      "peak_rss_kib": 711100,
+      "artifact_bytes": 138068418,
+      "artifact_sha256": "734157b3ed7abc5ce4d24443d527c75daeb8034cf3b67f1cda5954e0901bd71e",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "3",
+      "states": 4096,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-3-4096-2-after.ll",
+        "3"
+      ],
+      "backend_seconds": 1.351052092,
+      "peak_rss_kib": 240468,
+      "artifact_bytes": 5441494,
+      "artifact_sha256": "ec53a138f699721064d2d58feb398b13059a42f7e010ba35c45a3ee72104f743",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-0-before.o",
+        "obj"
+      ],
+      "backend_seconds": 1.343632741,
+      "peak_rss_kib": 175040,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-0-after.o",
+        "obj"
+      ],
+      "backend_seconds": 1.001201114,
+      "peak_rss_kib": 148024,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-1-after.o",
+        "obj"
+      ],
+      "backend_seconds": 1.009139726,
+      "peak_rss_kib": 147364,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-1-before.o",
+        "obj"
+      ],
+      "backend_seconds": 1.323786267,
+      "peak_rss_kib": 174264,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-2-before.o",
+        "obj"
+      ],
+      "backend_seconds": 1.377370308,
+      "peak_rss_kib": 172976,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 1024,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s1024.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-1024-2-after.o",
+        "obj"
+      ],
+      "backend_seconds": 0.995595899,
+      "peak_rss_kib": 148956,
+      "artifact_bytes": 49448,
+      "artifact_sha256": "f1593bcffa4f3f1cf5692f6439b2d85ff3e16df994dcf6893c0e51ec57342107",
+      "input_sha256": "81e27612c9bdc9e9760556899c67c7b3e9f23a636d0405796ffecc81a203180a",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-0-before.o",
+        "obj"
+      ],
+      "backend_seconds": 3.096420958,
+      "peak_rss_kib": 309308,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-0-after.o",
+        "obj"
+      ],
+      "backend_seconds": 2.178071826,
+      "peak_rss_kib": 241784,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-1-after.o",
+        "obj"
+      ],
+      "backend_seconds": 2.183458232,
+      "peak_rss_kib": 243028,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-1-before.o",
+        "obj"
+      ],
+      "backend_seconds": 3.183380894,
+      "peak_rss_kib": 309156,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-2-before.o",
+        "obj"
+      ],
+      "backend_seconds": 3.155308543,
+      "peak_rss_kib": 307072,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 2048,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s2048.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-2048-2-after.o",
+        "obj"
+      ],
+      "backend_seconds": 2.183401362,
+      "peak_rss_kib": 243064,
+      "artifact_bytes": 109400,
+      "artifact_sha256": "50f0a89518cf0f805b0821d147356bc612e6170d44dd6c0e9b34d39f819b09b3",
+      "input_sha256": "83187819a428d0dc3514c6a176150f00a4eceecb2e1e8f99d4ab10268f879e50",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 0,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-0-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-0-before.o",
+        "obj"
+      ],
+      "backend_seconds": 8.230983821,
+      "peak_rss_kib": 680800,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 0,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-0-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-0-after.o",
+        "obj"
+      ],
+      "backend_seconds": 5.76927601,
+      "peak_rss_kib": 447172,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 1,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-1-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-1-after.o",
+        "obj"
+      ],
+      "backend_seconds": 5.77920336,
+      "peak_rss_kib": 447396,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 1,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-1-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-1-before.o",
+        "obj"
+      ],
+      "backend_seconds": 8.301635732,
+      "peak_rss_kib": 685244,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 2,
+      "version": "before",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-2-before.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-2-before.o",
+        "obj"
+      ],
+      "backend_seconds": 8.415853834,
+      "peak_rss_kib": 678312,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "ebf6dd3c01afd8a522d5a66815c4690e1410dec95bb27a8110f7acd695c8f33a"
+    },
+    {
+      "kind": "obj",
+      "states": 4096,
+      "pair": 2,
+      "version": "after",
+      "command": [
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/measure",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-2-after.rss",
+        "taskset",
+        "-c",
+        "6",
+        "/tmp/onda-standards-main-codegen/target/release/review-current-codegen",
+        "/tmp/onda-standards-alias-scaling/s4096.json",
+        "/home/francesco/Sources/onda/target/alias-metadata-fix/final-scaling-obj-4096-2-after.o",
+        "obj"
+      ],
+      "backend_seconds": 5.761603316,
+      "peak_rss_kib": 444432,
+      "artifact_bytes": 217696,
+      "artifact_sha256": "9f13fbc457892a30bb1a6b98eedab535b5abf54bf8d19eec9c8969517a7d03e4",
+      "input_sha256": "bbde33bde1890dee8e6036f3af3d3fb6cc3488e0603dffd59f2c24064952125e",
+      "worker_sha256": "d184750100fb585f04b37cf93aa8e72371dc34b9abc8f86651ce62bd27aee5cc"
+    }
+  ],
+  "runtime_artifact_comparisons": [
+    {
+      "group": "kernels",
+      "name": "slice-fixed",
+      "artifact_hashes": {
+        "o": {
+          "before": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b",
+          "after": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b",
+          "final": "7c796fd7a09830a88de44f0d08621e2fd56966f836926c221e535b13439e7a5b"
+        },
+        "mir.msgpack": {
+          "before": "e414f4dd7de498fd183f08cae75f79464804ded216c09ac9b34c6c3f46c9f6c0",
+          "after": "e414f4dd7de498fd183f08cae75f79464804ded216c09ac9b34c6c3f46c9f6c0",
+          "final": "e414f4dd7de498fd183f08cae75f79464804ded216c09ac9b34c6c3f46c9f6c0"
+        },
+        "native.output.bin": {
+          "before": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+          "after": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609"
+        },
+        "native.warm-output.bin": {
+          "before": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83",
+          "after": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6294999420642853,
+        "after": 0.6476602852344513
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6284094452857971,
+          0.6294999420642853,
+          0.6289742887020111,
+          0.6299673914909363,
+          0.6328587085008621
+        ],
+        "after": [
+          0.6489971280097961,
+          0.6476602852344513,
+          0.6492414623498917,
+          0.6401923447847366,
+          0.6443793326616287
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.09999999999999999,
+        "after": 0.099
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "slice-dynamic",
+      "artifact_hashes": {
+        "o": {
+          "before": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3",
+          "after": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3",
+          "final": "17e68fa284297fff116bb4bbc4f93ab9b4c23b7ee2db3e06f004e3040e4e8eb3"
+        },
+        "mir.msgpack": {
+          "before": "872304838a7101c2553954fbf01fcf74a05974837d018036af36a89f510435f7",
+          "after": "872304838a7101c2553954fbf01fcf74a05974837d018036af36a89f510435f7",
+          "final": "872304838a7101c2553954fbf01fcf74a05974837d018036af36a89f510435f7"
+        },
+        "native.output.bin": {
+          "before": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609",
+          "after": "f5c67bad3bf7cde7a681b03af2a6069d865693318de560326335ff8c6fdbe609"
+        },
+        "native.warm-output.bin": {
+          "before": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83",
+          "after": "8ac8a925914ad68a37c4dfb824689d3514ab9f6b3d802a366e8d28a105803c83"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6484767943620682,
+        "after": 0.6568942368030548
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6504252105951309,
+          0.6484767943620682,
+          0.6480321735143661,
+          0.648878812789917,
+          0.64818474650383
+        ],
+        "after": [
+          0.6583336144685745,
+          0.6594517529010773,
+          0.6550119966268539,
+          0.6563949435949326,
+          0.6568942368030548
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.108,
+        "after": 0.103
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-16",
+      "artifact_hashes": {
+        "o": {
+          "before": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c",
+          "after": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c",
+          "final": "164e5402efd0af9ba16fc6ad44f56baaeb969679b79ae0acf4067b5628c2840c"
+        },
+        "mir.msgpack": {
+          "before": "290c1f47e90bd3f28c76ef3179c30916e4019609f63fce16f27fe588c79f35d2",
+          "after": "290c1f47e90bd3f28c76ef3179c30916e4019609f63fce16f27fe588c79f35d2",
+          "final": "290c1f47e90bd3f28c76ef3179c30916e4019609f63fce16f27fe588c79f35d2"
+        },
+        "native.output.bin": {
+          "before": "1171b9a8c6fca21b8688735804d0e6d13abd6acdabf41f5079770f63203d312b",
+          "after": "1171b9a8c6fca21b8688735804d0e6d13abd6acdabf41f5079770f63203d312b"
+        },
+        "native.warm-output.bin": {
+          "before": "d57e73a04bc0f886db8f910ff5e6407c1f5652756aef90cccffc3d997f2045e3",
+          "after": "d57e73a04bc0f886db8f910ff5e6407c1f5652756aef90cccffc3d997f2045e3"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 11.410195350646973,
+        "after": 11.132720947265625
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          11.000341653823853,
+          11.015268325805664,
+          11.410195350646973,
+          12.327376365661621,
+          12.01033902168274
+        ],
+        "after": [
+          11.106003761291504,
+          11.132720947265625,
+          11.13879680633545,
+          11.132245540618896,
+          11.151514053344727
+        ]
+      },
+      "block_p99_us": {
+        "before": 3.371,
+        "after": 1.449
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-256",
+      "artifact_hashes": {
+        "o": {
+          "before": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627",
+          "after": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627",
+          "final": "4ffb995d3a7c513c4022df128c79bde21a44f42149b3782eddb479ca70d3f627"
+        },
+        "mir.msgpack": {
+          "before": "bd5503ea1a19097878f615d8d120b0ea1e0f3cc7b37849ca2d4dabd7f4c0047a",
+          "after": "bd5503ea1a19097878f615d8d120b0ea1e0f3cc7b37849ca2d4dabd7f4c0047a",
+          "final": "bd5503ea1a19097878f615d8d120b0ea1e0f3cc7b37849ca2d4dabd7f4c0047a"
+        },
+        "native.output.bin": {
+          "before": "431d03cab0bb0d6b3f42e6af31a0c4d96afda48b972e079f5bebcbd07cf07861",
+          "after": "431d03cab0bb0d6b3f42e6af31a0c4d96afda48b972e079f5bebcbd07cf07861"
+        },
+        "native.warm-output.bin": {
+          "before": "d6365332976d21f03666cb85b65a947da2f669a0ef773e34cd1c1289d913d1da",
+          "after": "d6365332976d21f03666cb85b65a947da2f669a0ef773e34cd1c1289d913d1da"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 203.66494750976562,
+        "after": 196.1723175048828
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          201.3046875,
+          204.60124969482422,
+          209.39771270751953,
+          203.66494750976562,
+          200.07828903198242
+        ],
+        "after": [
+          196.03845596313477,
+          196.1723175048828,
+          195.8900260925293,
+          196.2783966064453,
+          196.80157852172852
+        ]
+      },
+      "block_p99_us": {
+        "before": 28.217000000000002,
+        "after": 26.591
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "voice-bank-4096",
+      "artifact_hashes": {
+        "o": {
+          "before": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb",
+          "after": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb",
+          "final": "1c0057a628c7513e251b1cbffd873d9c146baf4c2f74a066eb49b04ce5ebefbb"
+        },
+        "mir.msgpack": {
+          "before": "181600e54ad887f91e44e701b412109c8eef89797dfab9171fa337b819b96fcf",
+          "after": "181600e54ad887f91e44e701b412109c8eef89797dfab9171fa337b819b96fcf",
+          "final": "181600e54ad887f91e44e701b412109c8eef89797dfab9171fa337b819b96fcf"
+        },
+        "native.output.bin": {
+          "before": "79cb3ee64938f52143e95323fffa983e521137f52eb0b35d1b3932ac179d1928",
+          "after": "79cb3ee64938f52143e95323fffa983e521137f52eb0b35d1b3932ac179d1928"
+        },
+        "native.warm-output.bin": {
+          "before": "492e4da5c8c30a7deb13276af95181020340b7e0cb76c5b69b4c35fa34eeb83f",
+          "after": "492e4da5c8c30a7deb13276af95181020340b7e0cb76c5b69b4c35fa34eeb83f"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 3318.2755126953125,
+        "after": 3328.573974609375
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          3325.5636291503906,
+          3335.3880004882812,
+          3310.304412841797,
+          3318.2755126953125,
+          3307.2643432617188
+        ],
+        "after": [
+          3328.573974609375,
+          3324.060028076172,
+          3323.318359375,
+          3332.017608642578,
+          3332.5797424316406
+        ]
+      },
+      "block_p99_us": {
+        "before": 434.30600000000004,
+        "after": 435.91499999999996
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+          "after": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+          "final": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a"
+        },
+        "mir.msgpack": {
+          "before": "275f1187459032526eca4055e8103471144598328ce5737977403cb33be13012",
+          "after": "275f1187459032526eca4055e8103471144598328ce5737977403cb33be13012",
+          "final": "275f1187459032526eca4055e8103471144598328ce5737977403cb33be13012"
+        },
+        "native.output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        },
+        "native.warm-output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6411166042089462,
+        "after": 0.6435075104236603
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.639697939157486,
+          0.6411166042089462,
+          0.6419689357280731,
+          0.6405708938837051,
+          0.643358051776886
+        ],
+        "after": [
+          0.6501382887363434,
+          0.6392685174942017,
+          0.6505622118711472,
+          0.6417937725782394,
+          0.6435075104236603
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.102,
+        "after": 0.106
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+          "after": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+          "final": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65"
+        },
+        "mir.msgpack": {
+          "before": "f8ff2368ac0b87e57a9b915ee7965825f8b3946ceae3901876f0e851110acf52",
+          "after": "f8ff2368ac0b87e57a9b915ee7965825f8b3946ceae3901876f0e851110acf52",
+          "final": "f8ff2368ac0b87e57a9b915ee7965825f8b3946ceae3901876f0e851110acf52"
+        },
+        "native.output.bin": {
+          "before": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+          "after": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+        },
+        "native.warm-output.bin": {
+          "before": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+          "after": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7970768213272095,
+        "after": 0.802742600440979
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.8173404335975647,
+          0.7971761077642441,
+          0.7970768213272095,
+          0.7905790209770203,
+          0.7925215512514114
+        ],
+        "after": [
+          0.7995738387107849,
+          0.7985933274030685,
+          0.8027960956096649,
+          0.803794264793396,
+          0.802742600440979
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.118,
+        "after": 0.118
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+          "after": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a",
+          "final": "c0ebf071df7e8778ec33accbcd4b9f0b3cfd443b2530c6c9e4da5e9555ff6d2a"
+        },
+        "mir.msgpack": {
+          "before": "7cd1c731fe3979900c0ba20a1d070917044977dd4a6c341faeae9f9ac1b9da42",
+          "after": "7cd1c731fe3979900c0ba20a1d070917044977dd4a6c341faeae9f9ac1b9da42",
+          "final": "7cd1c731fe3979900c0ba20a1d070917044977dd4a6c341faeae9f9ac1b9da42"
+        },
+        "native.output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        },
+        "native.warm-output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.639391154050827,
+        "after": 0.6420336365699768
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6415072679519653,
+          0.6386272311210632,
+          0.639391154050827,
+          0.6387676000595093,
+          0.642051100730896
+        ],
+        "after": [
+          0.6475888788700104,
+          0.6407887935638428,
+          0.6420336365699768,
+          0.6376412957906723,
+          0.6450248211622238
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.105,
+        "after": 0.102
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+          "after": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65",
+          "final": "28623f1f86275d39327444d933b9aa1dc4beea8bd95a14598157b380f401af65"
+        },
+        "mir.msgpack": {
+          "before": "2b611334c3ab9f5621d3d7d412585fc9592fa0d64c3c3c00fe1f7df17ee010bb",
+          "after": "2b611334c3ab9f5621d3d7d412585fc9592fa0d64c3c3c00fe1f7df17ee010bb",
+          "final": "2b611334c3ab9f5621d3d7d412585fc9592fa0d64c3c3c00fe1f7df17ee010bb"
+        },
+        "native.output.bin": {
+          "before": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+          "after": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+        },
+        "native.warm-output.bin": {
+          "before": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1",
+          "after": "15b4f94a16fb4ba622d974b3f580f31ff7409b95a2e0c14f2b94410dcc1f1af1"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7883988320827484,
+        "after": 0.794340044260025
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.791331097483635,
+          0.7878105789422989,
+          0.7857631891965866,
+          0.7883988320827484,
+          0.7921396940946579
+        ],
+        "after": [
+          0.7998603284358978,
+          0.7877543717622757,
+          0.7956415116786957,
+          0.7938210666179657,
+          0.794340044260025
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.12,
+        "after": 0.119
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78",
+          "after": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78",
+          "final": "8543cdf599b39a22b6c8d1dc6e22f2192b18c48634f19562e6ff47564b52da78"
+        },
+        "mir.msgpack": {
+          "before": "2c30e13bc1eb338a44e044bf6b3572dd9d5b2085ddf5344a66ce0dae77eb5bfb",
+          "after": "2c30e13bc1eb338a44e044bf6b3572dd9d5b2085ddf5344a66ce0dae77eb5bfb",
+          "final": "2c30e13bc1eb338a44e044bf6b3572dd9d5b2085ddf5344a66ce0dae77eb5bfb"
+        },
+        "native.output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        },
+        "native.warm-output.bin": {
+          "before": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4",
+          "after": "0b1d523c3de5350654751037713325cdc237ece0d7c5be9fe94a1db6a07403b4"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6377328336238861,
+        "after": 0.637326180934906
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6377328336238861,
+          0.6383621990680695,
+          0.6376311331987381,
+          0.6379799991846085,
+          0.6365503519773483
+        ],
+        "after": [
+          0.634832352399826,
+          0.637326180934906,
+          0.6343512386083603,
+          0.6518129110336304,
+          0.6418907344341278
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.108,
+        "after": 0.10400000000000001
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482",
+          "after": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482",
+          "final": "4ef9c06d4aa0966a428248fed1ede61fa63e70fd163a41dbd9d484a273b4c482"
+        },
+        "mir.msgpack": {
+          "before": "a3015bc18d9fa4bb40ac3dae1169cdce28b8cd11ddd17fe7053aa6237e073ff8",
+          "after": "a3015bc18d9fa4bb40ac3dae1169cdce28b8cd11ddd17fe7053aa6237e073ff8",
+          "final": "a3015bc18d9fa4bb40ac3dae1169cdce28b8cd11ddd17fe7053aa6237e073ff8"
+        },
+        "native.output.bin": {
+          "before": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+          "after": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+        },
+        "native.warm-output.bin": {
+          "before": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+          "after": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.545667976140976,
+        "after": 0.5508803725242615
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.5449851751327515,
+          0.5458243787288666,
+          0.545667976140976,
+          0.5467536598443985,
+          0.5439253598451614
+        ],
+        "after": [
+          0.552406907081604,
+          0.5503710359334946,
+          0.5508803725242615,
+          0.5504954159259796,
+          0.5526173561811447
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.08499999999999999,
+        "after": 0.09
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3",
+          "after": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3",
+          "final": "25a1d625ebcb85f72bab9c26fc86b1270ccade06acc3717bd35e9179990ba4d3"
+        },
+        "mir.msgpack": {
+          "before": "b6910e36df7546f88b1d15db6ef6ceed7351eeafd0cb27ff8cd5e0f32bf3824d",
+          "after": "b6910e36df7546f88b1d15db6ef6ceed7351eeafd0cb27ff8cd5e0f32bf3824d",
+          "final": "b6910e36df7546f88b1d15db6ef6ceed7351eeafd0cb27ff8cd5e0f32bf3824d"
+        },
+        "native.output.bin": {
+          "before": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+          "after": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+        },
+        "native.warm-output.bin": {
+          "before": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1",
+          "after": "a6a930f97647f18dd9df502278dfc9ee7d2239ad2f0a0802a7983589c1d3e0f1"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.5440391898155212,
+        "after": 0.54874487221241
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.5426413714885712,
+          0.5440391898155212,
+          0.5421581417322159,
+          0.5480599105358124,
+          0.5491362512111664
+        ],
+        "after": [
+          0.5488185882568359,
+          0.5472832918167114,
+          0.5470419824123383,
+          0.54874487221241,
+          0.5491307824850082
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.09,
+        "after": 0.083
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067",
+          "after": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067",
+          "final": "8372c3cb46ea2e57eb369ebbb978011769750dba94fc29386908db20850f0067"
+        },
+        "mir.msgpack": {
+          "before": "67c14f6c594f534b8e3edbc4e40bcc7d7c7ab67de057b808a181aabdb38e453d",
+          "after": "67c14f6c594f534b8e3edbc4e40bcc7d7c7ab67de057b808a181aabdb38e453d",
+          "final": "67c14f6c594f534b8e3edbc4e40bcc7d7c7ab67de057b808a181aabdb38e453d"
+        },
+        "native.output.bin": {
+          "before": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+          "after": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+        },
+        "native.warm-output.bin": {
+          "before": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68",
+          "after": "cac604f12d92f82df46cac2f3fa14a318607abc82a25c2acd3c5a4cdf3396c68"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6424353420734406,
+        "after": 0.6468343138694763
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6424353420734406,
+          0.6434314250946045,
+          0.6399320065975189,
+          0.6475766450166702,
+          0.6410237848758698
+        ],
+        "after": [
+          0.6489008516073227,
+          0.6468343138694763,
+          0.645907461643219,
+          0.6460113227367401,
+          0.6471646428108215
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.094,
+        "after": 0.091
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b",
+          "after": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b",
+          "final": "c6ca95581f3edea99b8693653e01a886a20569077ceed145755536cc74852b7b"
+        },
+        "mir.msgpack": {
+          "before": "8a1dccff92d791355d880741246b676e74484e53070847e897e82ea6ce3bf055",
+          "after": "8a1dccff92d791355d880741246b676e74484e53070847e897e82ea6ce3bf055",
+          "final": "8a1dccff92d791355d880741246b676e74484e53070847e897e82ea6ce3bf055"
+        },
+        "native.output.bin": {
+          "before": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+          "after": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+        },
+        "native.warm-output.bin": {
+          "before": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c",
+          "after": "a345d65c695772fbd1a5efc75df653aa97b429bd3cded7491dbbdb20cc12590c"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.9497429430484771,
+        "after": 0.9568247497081758
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.9441874027252197,
+          0.9511823058128357,
+          0.9446453452110289,
+          0.9497429430484771,
+          0.9501516819000244
+        ],
+        "after": [
+          0.9547879695892333,
+          0.9568247497081758,
+          0.9573503732681276,
+          0.9588836431503296,
+          0.9549840092658995
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.129,
+        "after": 0.13199999999999998
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c",
+          "after": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c",
+          "final": "89b9241217502d5587142adfb21a80c433b62a4ac77fd447e84363463106278c"
+        },
+        "mir.msgpack": {
+          "before": "e7db9328859df4d1dc1b73255522bf70f0c78b09c7bde1a52c947f0e185612c3",
+          "after": "e7db9328859df4d1dc1b73255522bf70f0c78b09c7bde1a52c947f0e185612c3",
+          "final": "e7db9328859df4d1dc1b73255522bf70f0c78b09c7bde1a52c947f0e185612c3"
+        },
+        "native.output.bin": {
+          "before": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+          "after": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+        },
+        "native.warm-output.bin": {
+          "before": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27",
+          "after": "83e7957505e2ce51f69bed2e7b86c99282f403ff85d49e3167389bc0f6509c27"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6093439757823944,
+        "after": 0.6144730448722839
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.609407365322113,
+          0.6089507639408112,
+          0.6093439757823944,
+          0.6109437495470047,
+          0.6087538748979568
+        ],
+        "after": [
+          0.6149303168058395,
+          0.6131178289651871,
+          0.6149163544178009,
+          0.6129128336906433,
+          0.6144730448722839
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.087,
+        "after": 0.087
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f32",
+      "artifact_hashes": {
+        "o": {
+          "before": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc",
+          "after": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc",
+          "final": "5c914389ed6e5cc7aef2ac34090ea6bb7a8a204b9b44bbbae4bb3ce2e61c53dc"
+        },
+        "mir.msgpack": {
+          "before": "c234e4fcc412a895a8a7483fa599e601f2f39d62adf138fae476afb0dcf825e7",
+          "after": "c234e4fcc412a895a8a7483fa599e601f2f39d62adf138fae476afb0dcf825e7",
+          "final": "c234e4fcc412a895a8a7483fa599e601f2f39d62adf138fae476afb0dcf825e7"
+        },
+        "native.output.bin": {
+          "before": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+          "after": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+        },
+        "native.warm-output.bin": {
+          "before": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614",
+          "after": "ca96d29cced836c82c388c8883440c37701ea298830c7bec6ed367d4a276b614"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 1.3398022949695587,
+        "after": 1.3474439978599548
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          1.3395149111747742,
+          1.3392232060432434,
+          1.3398022949695587,
+          1.344329595565796,
+          1.3474460542201996
+        ],
+        "after": [
+          1.3474439978599548,
+          1.3399828970432281,
+          1.3503064513206482,
+          1.3589782118797302,
+          1.3414636850357056
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.215,
+        "after": 0.212
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-array-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+          "after": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+          "final": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a"
+        },
+        "mir.msgpack": {
+          "before": "84ee2be52118694c77524948af636049cd66b7a50050c6f312c5b1773b9af63f",
+          "after": "84ee2be52118694c77524948af636049cd66b7a50050c6f312c5b1773b9af63f",
+          "final": "84ee2be52118694c77524948af636049cd66b7a50050c6f312c5b1773b9af63f"
+        },
+        "native.output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        },
+        "native.warm-output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7464449852705002,
+        "after": 0.7505071610212326
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.7446134090423584,
+          0.7476087361574173,
+          0.7463370859622955,
+          0.7474745959043503,
+          0.7464449852705002
+        ],
+        "after": [
+          0.7498102933168411,
+          0.7502014338970184,
+          0.7507749050855637,
+          0.7513770461082458,
+          0.7505071610212326
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.119,
+        "after": 0.111
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-array-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+          "after": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+          "final": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291"
+        },
+        "mir.msgpack": {
+          "before": "310e12c06ec0715653901fc69e8fc73c67419e0edc04a95c04d40949e8e0e0a2",
+          "after": "310e12c06ec0715653901fc69e8fc73c67419e0edc04a95c04d40949e8e0e0a2",
+          "final": "310e12c06ec0715653901fc69e8fc73c67419e0edc04a95c04d40949e8e0e0a2"
+        },
+        "native.output.bin": {
+          "before": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+          "after": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+        },
+        "native.warm-output.bin": {
+          "before": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+          "after": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.9386066794395447,
+        "after": 0.948906898498535
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.9386066794395447,
+          0.941303014755249,
+          0.9411431849002837,
+          0.9366133213043214,
+          0.9358507096767424
+        ],
+        "after": [
+          0.9485187530517577,
+          0.9487729370594024,
+          0.948906898498535,
+          0.9517485201358795,
+          0.9525077044963838
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.14700000000000002,
+        "after": 0.14100000000000001
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-slice-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+          "after": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a",
+          "final": "50d9fb86eed57e1b681e9315f7ed28fae7819573186fd5b775417ac84c75083a"
+        },
+        "mir.msgpack": {
+          "before": "fd91f201aed43ae04248810618259346cdda1ff32cb7cffd336ad3c4e4c4c626",
+          "after": "fd91f201aed43ae04248810618259346cdda1ff32cb7cffd336ad3c4e4c4c626",
+          "final": "fd91f201aed43ae04248810618259346cdda1ff32cb7cffd336ad3c4e4c4c626"
+        },
+        "native.output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        },
+        "native.warm-output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7415670901536942,
+        "after": 0.750194787979126
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.7421196699142456,
+          0.740835428237915,
+          0.741088017821312,
+          0.7415670901536942,
+          0.7423112392425537
+        ],
+        "after": [
+          0.7509377598762512,
+          0.7476401925086975,
+          0.750194787979126,
+          0.7503337264060974,
+          0.7496915459632874
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.111,
+        "after": 0.113
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-shared-slice-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+          "after": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291",
+          "final": "4606c694ba487d1bcad22ce49841f2d5475a4fa38c3fdc3902bdcc4b22cd2291"
+        },
+        "mir.msgpack": {
+          "before": "8a4ceb22c541399e9247473fe0beb1e611bf6b78094e2622da76a06801eaa6eb",
+          "after": "8a4ceb22c541399e9247473fe0beb1e611bf6b78094e2622da76a06801eaa6eb",
+          "final": "8a4ceb22c541399e9247473fe0beb1e611bf6b78094e2622da76a06801eaa6eb"
+        },
+        "native.output.bin": {
+          "before": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+          "after": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+        },
+        "native.warm-output.bin": {
+          "before": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36",
+          "after": "bb961d548c7087cc0a3cae51ab1ba3f5c7eefe2e2420c9960305485303cf3b36"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.9372998476028442,
+        "after": 0.9455366432666779
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.9329895079135895,
+          0.9372998476028442,
+          0.9366845190525055,
+          0.9378313124179841,
+          0.9411564469337463
+        ],
+        "after": [
+          0.9403100311756134,
+          0.9456805884838103,
+          0.9497041106224061,
+          0.9453820884227754,
+          0.9455366432666779
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.14700000000000002,
+        "after": 0.13799999999999998
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "state-window-bounded-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7",
+          "after": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7",
+          "final": "02710bff2185b884e19ba107e450b81b9279bc553f4d70f195ea2fd385d566e7"
+        },
+        "mir.msgpack": {
+          "before": "a957570f3c6beccc8f1ec5114e0cc813399f8d97888f9bdb4d67fadcbcb6617c",
+          "after": "a957570f3c6beccc8f1ec5114e0cc813399f8d97888f9bdb4d67fadcbcb6617c",
+          "final": "a957570f3c6beccc8f1ec5114e0cc813399f8d97888f9bdb4d67fadcbcb6617c"
+        },
+        "native.output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        },
+        "native.warm-output.bin": {
+          "before": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188",
+          "after": "fda2146fdafac05ba8b9c4a0dd1b1862ca03346b7ce5ed87b994c34d682c7188"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7464307099580765,
+        "after": 0.755274772644043
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.7443656176328659,
+          0.7442295849323273,
+          0.7464307099580765,
+          0.7474930733442307,
+          0.7491612136363983
+        ],
+        "after": [
+          0.755274772644043,
+          0.7489782869815826,
+          0.7546233981847763,
+          0.7554821074008942,
+          0.756539911031723
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.117,
+        "after": 0.12200000000000001
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-helper-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f",
+          "after": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f",
+          "final": "aa0682b8b42eff4771e300e0fb7ec80fb627924d7970e2ab42818ea954814c2f"
+        },
+        "mir.msgpack": {
+          "before": "9b4981497b46eb36083b85e57c7c239153da505fbf74f35168f495162c9afc82",
+          "after": "9b4981497b46eb36083b85e57c7c239153da505fbf74f35168f495162c9afc82",
+          "final": "9b4981497b46eb36083b85e57c7c239153da505fbf74f35168f495162c9afc82"
+        },
+        "native.output.bin": {
+          "before": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+          "after": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+        },
+        "native.warm-output.bin": {
+          "before": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+          "after": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6930329650640488,
+        "after": 0.6988898813724518
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6955554038286209,
+          0.6930329650640488,
+          0.6928851157426834,
+          0.6931092292070389,
+          0.6914057731628418
+        ],
+        "after": [
+          0.6961533725261688,
+          0.7176806181669235,
+          0.7082485556602478,
+          0.6988898813724518,
+          0.69230817258358
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.114,
+        "after": 0.109
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "array-guarded-state-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04",
+          "after": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04",
+          "final": "d9aa44dc915c458e713b8e288e4c54bb53dc0e5ae13eb854efa313db4b9a0a04"
+        },
+        "mir.msgpack": {
+          "before": "3b3d71e24e05a27cac2564bf0907f5abd9efe2ec9106eca03ecc40f8705bb983",
+          "after": "3b3d71e24e05a27cac2564bf0907f5abd9efe2ec9106eca03ecc40f8705bb983",
+          "final": "3b3d71e24e05a27cac2564bf0907f5abd9efe2ec9106eca03ecc40f8705bb983"
+        },
+        "native.output.bin": {
+          "before": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+          "after": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+        },
+        "native.warm-output.bin": {
+          "before": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a",
+          "after": "f42bd5070ef756b9d5054167e2cfe6228827eef044cd04302b3e7b6be9fbca8a"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7023596614599228,
+        "after": 0.7321205884218216
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.7148053646087646,
+          0.7077773958444595,
+          0.7023596614599228,
+          0.7010042667388916,
+          0.6992298811674118
+        ],
+        "after": [
+          0.7346861809492111,
+          0.729314535856247,
+          0.7321205884218216,
+          0.7321111261844635,
+          0.7325806021690369
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.112,
+        "after": 0.113
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-arithmetic-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6",
+          "after": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6",
+          "final": "c1f6b3330b02119b8e2200b744d15cea1701abcd3744cc8f260ae31d3353e7e6"
+        },
+        "mir.msgpack": {
+          "before": "843ec1a158e101853fd5200f0366e64765e7375b75c5a0eb90c2f2ef6d5d851b",
+          "after": "843ec1a158e101853fd5200f0366e64765e7375b75c5a0eb90c2f2ef6d5d851b",
+          "final": "843ec1a158e101853fd5200f0366e64765e7375b75c5a0eb90c2f2ef6d5d851b"
+        },
+        "native.output.bin": {
+          "before": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7",
+          "after": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7"
+        },
+        "native.warm-output.bin": {
+          "before": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7",
+          "after": "ac3bdc8be69097b6a5d31a3aa9a8f35a3548e6e402ededb0a9d9df991ce892f7"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.7527860701084137,
+        "after": 0.766141727566719
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.7527860701084137,
+          0.7508342266082764,
+          0.7518322914838791,
+          0.7559878975152969,
+          0.7536889761686325
+        ],
+        "after": [
+          0.7630298733711243,
+          0.7707750648260117,
+          0.7661177814006805,
+          0.766141727566719,
+          0.7661536633968353
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.108,
+        "after": 0.106
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-division-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200",
+          "after": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200",
+          "final": "1a27fb41310b955fe115b960954b8fa8fef45b2f7d63ecd1d9e822a1113ab200"
+        },
+        "mir.msgpack": {
+          "before": "bdb9c3326117a41b0a0267673151374606f1b6feaa4021663163894ab724c8be",
+          "after": "bdb9c3326117a41b0a0267673151374606f1b6feaa4021663163894ab724c8be",
+          "final": "bdb9c3326117a41b0a0267673151374606f1b6feaa4021663163894ab724c8be"
+        },
+        "native.output.bin": {
+          "before": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb",
+          "after": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb"
+        },
+        "native.warm-output.bin": {
+          "before": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb",
+          "after": "6329dad7627a75213ef1cd3124eca45ec64c2b7c1a9c999d2fe6c983caecceeb"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 1.8738540410995483,
+        "after": 1.8846031427383423
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          1.9136887788772585,
+          1.8584022521972656,
+          1.8652329444885252,
+          1.882325291633606,
+          1.8738540410995483
+        ],
+        "after": [
+          1.8846031427383423,
+          1.8915012478828432,
+          1.8656287789344788,
+          1.8618683815002441,
+          1.8968412280082705
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.248,
+        "after": 0.27399999999999997
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reciprocal-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f",
+          "after": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f",
+          "final": "10035a1064a20b57a893f6b3db9385a5dd801c83e1f6ff800873f75cf2046f7f"
+        },
+        "mir.msgpack": {
+          "before": "3efc417eae2ca3eb5ba094b060c8e230e1713776042e4bafc081bf7f2d6b7026",
+          "after": "3efc417eae2ca3eb5ba094b060c8e230e1713776042e4bafc081bf7f2d6b7026",
+          "final": "3efc417eae2ca3eb5ba094b060c8e230e1713776042e4bafc081bf7f2d6b7026"
+        },
+        "native.output.bin": {
+          "before": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e",
+          "after": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e"
+        },
+        "native.warm-output.bin": {
+          "before": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e",
+          "after": "fd666de55c836641c6bd1b04a1bd80b82339e4755ea1cdb9bd096e499550372e"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 0.6860296130180359,
+        "after": 0.6984741389751434
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          0.6860296130180359,
+          0.6900642216205597,
+          0.6846128553152084,
+          0.6855608969926834,
+          0.6873759776353836
+        ],
+        "after": [
+          0.6981829255819321,
+          0.6966395974159241,
+          0.6997519135475159,
+          0.6984741389751434,
+          0.7001939564943314
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.09699999999999999,
+        "after": 0.099
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "kernels",
+      "name": "operator-reduction-f64",
+      "artifact_hashes": {
+        "o": {
+          "before": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed",
+          "after": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed",
+          "final": "ee4222c0a41555220048848e570829ebd5e2adb58351615d0f6c99012fcf32ed"
+        },
+        "mir.msgpack": {
+          "before": "ae0a677ff28ab3fa45af6c7111ee36ea4a9442f1dd5a6d2323185eadbdc5ae4d",
+          "after": "ae0a677ff28ab3fa45af6c7111ee36ea4a9442f1dd5a6d2323185eadbdc5ae4d",
+          "final": "ae0a677ff28ab3fa45af6c7111ee36ea4a9442f1dd5a6d2323185eadbdc5ae4d"
+        },
+        "native.output.bin": {
+          "before": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608",
+          "after": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608"
+        },
+        "native.warm-output.bin": {
+          "before": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608",
+          "after": "e13a3011a111b1d6a664f8feac996514f7b410407567c30bd3887de05675e608"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 1.5143293142318726,
+        "after": 1.5322490632534027
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          1.5243272483348846,
+          1.4972071051597595,
+          1.510040670633316,
+          1.5143293142318726,
+          1.5209470391273499
+        ],
+        "after": [
+          1.5175243318080902,
+          1.548352688550949,
+          1.5279657244682312,
+          1.5403806567192078,
+          1.5322490632534027
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.212,
+        "after": 0.233
+      },
+      "configuration": [
+        "f64"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "sine",
+      "artifact_hashes": {
+        "o": {
+          "before": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7",
+          "after": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7",
+          "final": "cd3fc4a902ca3a48f3f4838aace2884c7d65c28e25cf1e712d8bdbb5f8b893a7"
+        },
+        "mir.msgpack": {
+          "before": "3e42f4775a8ea1a19086c86be4471ea2eaaaf46e3a117ea08c2d76df723b2e25",
+          "after": "3e42f4775a8ea1a19086c86be4471ea2eaaaf46e3a117ea08c2d76df723b2e25",
+          "final": "3e42f4775a8ea1a19086c86be4471ea2eaaaf46e3a117ea08c2d76df723b2e25"
+        },
+        "native.output.bin": {
+          "before": "ebc263130e3d392e0eb10ad64b62600238b0011b5c47ee5fe9b639f8fdb541cc",
+          "after": "ebc263130e3d392e0eb10ad64b62600238b0011b5c47ee5fe9b639f8fdb541cc"
+        },
+        "native.warm-output.bin": {
+          "before": "15b278e51a024776a520df403b22354356193daff540c413121d53374266ece2",
+          "after": "15b278e51a024776a520df403b22354356193daff540c413121d53374266ece2"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 3.519189178943634,
+        "after": 3.5187795758247375
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          3.519189178943634,
+          3.5159013867378235,
+          3.526772439479828,
+          3.517082929611206,
+          3.5325520038604736
+        ],
+        "after": [
+          3.5129944682121277,
+          3.5179824829101562,
+          3.5187795758247375,
+          3.5584582686424255,
+          3.603514313697815
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.512,
+        "after": 0.489
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "voice_bank",
+      "artifact_hashes": {
+        "o": {
+          "before": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc",
+          "after": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc",
+          "final": "dd231460dd974466a506c0ba32b6bce2779bdf7a382f73791105c112d3eb34bc"
+        },
+        "mir.msgpack": {
+          "before": "feb3ea920d837856b160dcd814502a7fec979176a52d8f5134a280d7f867a7ee",
+          "after": "feb3ea920d837856b160dcd814502a7fec979176a52d8f5134a280d7f867a7ee",
+          "final": "feb3ea920d837856b160dcd814502a7fec979176a52d8f5134a280d7f867a7ee"
+        },
+        "native.output.bin": {
+          "before": "1c50434911edbf08c489caf7137a5d8f99838118b4bb29e2bc4fbce60ed0a5ba",
+          "after": "1c50434911edbf08c489caf7137a5d8f99838118b4bb29e2bc4fbce60ed0a5ba"
+        },
+        "native.warm-output.bin": {
+          "before": "fda8827952ac7f986b41d1278bb248d0adc71fe09323371d0b26235a1f1f6eed",
+          "after": "fda8827952ac7f986b41d1278bb248d0adc71fe09323371d0b26235a1f1f6eed"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 2.1192948818206787,
+        "after": 2.139914393424988
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          2.1169723868370056,
+          2.1192948818206787,
+          2.119280219078064,
+          2.132294178009033,
+          2.1377832889556885
+        ],
+        "after": [
+          2.1376752853393555,
+          2.1369986534118652,
+          2.1406880617141724,
+          2.14229679107666,
+          2.139914393424988
+        ]
+      },
+      "block_p99_us": {
+        "before": 0.303,
+        "after": 0.311
+      },
+      "configuration": [
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "polyphonic_saw",
+      "artifact_hashes": {
+        "o": {
+          "before": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+          "after": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00",
+          "final": "59751bf91b54668bd07fe2da00c0b6cc10c35fe2c83185b5d32246ffb4c62e00"
+        },
+        "mir.msgpack": {
+          "before": "4c8820264cf1f6c8b120be432965b2c9d2a8c9f453d3e36f94bbdcb56f4925f5",
+          "after": "4c8820264cf1f6c8b120be432965b2c9d2a8c9f453d3e36f94bbdcb56f4925f5",
+          "final": "4c8820264cf1f6c8b120be432965b2c9d2a8c9f453d3e36f94bbdcb56f4925f5"
+        },
+        "native.output.bin": {
+          "before": "533e453c066eb4e0017c9e772c0a940b53d3b35f56140455d3f5c11fe8ede55d",
+          "after": "533e453c066eb4e0017c9e772c0a940b53d3b35f56140455d3f5c11fe8ede55d"
+        },
+        "native.warm-output.bin": {
+          "before": "b41b89233efb0caa49ad5a19f4716806ff851d6b3388d686afcae749dd202448",
+          "after": "b41b89233efb0caa49ad5a19f4716806ff851d6b3388d686afcae749dd202448"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 45.94951343536377,
+        "after": 45.96235942840576
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          45.95719337463379,
+          45.92314910888672,
+          45.950021743774414,
+          45.81013488769531,
+          45.94951343536377
+        ],
+        "after": [
+          45.83880424499512,
+          45.96235942840576,
+          46.063114166259766,
+          45.91755390167236,
+          46.052279472351074
+        ]
+      },
+      "block_p99_us": {
+        "before": 6.171,
+        "after": 6.841
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "saw_filter_saturator",
+      "artifact_hashes": {
+        "o": {
+          "before": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a",
+          "after": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a",
+          "final": "78fa4327e42ed7a91870ba9317984b64121a2068bdf62ff183280eecca4bda6a"
+        },
+        "mir.msgpack": {
+          "before": "ddfc310c864439309edcdbffab7bb3399a6afa774a26acef081f4c50fff92332",
+          "after": "ddfc310c864439309edcdbffab7bb3399a6afa774a26acef081f4c50fff92332",
+          "final": "ddfc310c864439309edcdbffab7bb3399a6afa774a26acef081f4c50fff92332"
+        },
+        "native.output.bin": {
+          "before": "d2e6a742007da2cb8ea3f0519fe91bb3564c28c4101696507a38d81dcd60967b",
+          "after": "d2e6a742007da2cb8ea3f0519fe91bb3564c28c4101696507a38d81dcd60967b"
+        },
+        "native.warm-output.bin": {
+          "before": "e5293c70143a9063217982991eedba14203dd983da550c499f6598d47cb7770e",
+          "after": "e5293c70143a9063217982991eedba14203dd983da550c499f6598d47cb7770e"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 68.45383834838867,
+        "after": 69.126953125
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          68.63115692138672,
+          68.44309997558594,
+          68.50334548950195,
+          68.45383834838867,
+          68.4149169921875
+        ],
+        "after": [
+          69.20342826843262,
+          69.43267440795898,
+          68.96914291381836,
+          69.04064750671387,
+          69.126953125
+        ]
+      },
+      "block_p99_us": {
+        "before": 9.062000000000001,
+        "after": 8.956
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "additive_synth",
+      "artifact_hashes": {
+        "o": {
+          "before": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72",
+          "after": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72",
+          "final": "3291dacf05ac44e732b82b907dc92db7b6064832c1c1a10ca98325072a038a72"
+        },
+        "mir.msgpack": {
+          "before": "53ceb646452fd2f7adcd64e5e2308561d7eba341334a8fcbf6065b5ed51a06f6",
+          "after": "53ceb646452fd2f7adcd64e5e2308561d7eba341334a8fcbf6065b5ed51a06f6",
+          "final": "53ceb646452fd2f7adcd64e5e2308561d7eba341334a8fcbf6065b5ed51a06f6"
+        },
+        "native.output.bin": {
+          "before": "c3dca99bbcfba1636da05b822a12c97e751c2be75c70f07bfc0cafbb969f0ebd",
+          "after": "c3dca99bbcfba1636da05b822a12c97e751c2be75c70f07bfc0cafbb969f0ebd"
+        },
+        "native.warm-output.bin": {
+          "before": "67a59c98a1d0a1d78184dec9051343f73a8d148303e4a977342658372fe4cc98",
+          "after": "67a59c98a1d0a1d78184dec9051343f73a8d148303e4a977342658372fe4cc98"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 36.061668395996094,
+        "after": 36.39540195465088
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          36.01156997680664,
+          35.9675350189209,
+          36.061668395996094,
+          36.299448013305664,
+          36.118563652038574
+        ],
+        "after": [
+          36.518839836120605,
+          36.39540195465088,
+          36.27050971984863,
+          36.39605522155762,
+          36.231146812438965
+        ]
+      },
+      "block_p99_us": {
+        "before": 5.039000000000001,
+        "after": 5.0409999999999995
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "fdn_reverb",
+      "artifact_hashes": {
+        "o": {
+          "before": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392",
+          "after": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392",
+          "final": "b0cd06aeb0e02087823f30827040a99fe4ce281aae3762666505ccfe5de18392"
+        },
+        "mir.msgpack": {
+          "before": "3b4dd533eef08cf491115132dae9b71d5ea5f3f7019dca987cdacc8e8264c82d",
+          "after": "3b4dd533eef08cf491115132dae9b71d5ea5f3f7019dca987cdacc8e8264c82d",
+          "final": "3b4dd533eef08cf491115132dae9b71d5ea5f3f7019dca987cdacc8e8264c82d"
+        },
+        "native.output.bin": {
+          "before": "2004075fc7e157bd6a37f9514d2ec6bb55d3d907ed6579e2567c0b0217074d82",
+          "after": "2004075fc7e157bd6a37f9514d2ec6bb55d3d907ed6579e2567c0b0217074d82"
+        },
+        "native.warm-output.bin": {
+          "before": "3e110c494f07a510484627e1d8f3c0aa8e9c3d337847ce7d27ae4bf200ed95b2",
+          "after": "3e110c494f07a510484627e1d8f3c0aa8e9c3d337847ce7d27ae4bf200ed95b2"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 22.814132690429688,
+        "after": 22.840532302856445
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          22.71146583557129,
+          22.941263675689697,
+          22.787770748138428,
+          22.814132690429688,
+          22.900771141052246
+        ],
+        "after": [
+          22.817199230194092,
+          22.845240592956543,
+          22.840532302856445,
+          22.86921262741089,
+          22.731755256652832
+        ]
+      },
+      "block_p99_us": {
+        "before": 3.035,
+        "after": 3.0869999999999997
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "tape_echo",
+      "artifact_hashes": {
+        "o": {
+          "before": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5",
+          "after": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5",
+          "final": "81ca39a2409a43737205d3ab9230d1f7534219f66d737677b2b56d4678c9bbb5"
+        },
+        "mir.msgpack": {
+          "before": "a3d649001dfb8aecf33893b58d9a1eefc5cb291a8929aa590f4cb3812ee55b53",
+          "after": "a3d649001dfb8aecf33893b58d9a1eefc5cb291a8929aa590f4cb3812ee55b53",
+          "final": "a3d649001dfb8aecf33893b58d9a1eefc5cb291a8929aa590f4cb3812ee55b53"
+        },
+        "native.output.bin": {
+          "before": "c9155509f24a7f1eeeeb5419ee4fd17d9db83a942b94aa8c895ee3be79b4702c",
+          "after": "c9155509f24a7f1eeeeb5419ee4fd17d9db83a942b94aa8c895ee3be79b4702c"
+        },
+        "native.warm-output.bin": {
+          "before": "ace28964dae43bea828cbe6cffd8d71110b0e8f0815dedd6e514a19917cf4dde",
+          "after": "ace28964dae43bea828cbe6cffd8d71110b0e8f0815dedd6e514a19917cf4dde"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 36.76369285583496,
+        "after": 36.86144161224365
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          36.76369285583496,
+          36.740477561950684,
+          36.80550193786621,
+          36.88187885284424,
+          36.73757076263428
+        ],
+        "after": [
+          36.890421867370605,
+          36.83457851409912,
+          36.96193218231201,
+          36.86144161224365,
+          36.73051738739014
+        ]
+      },
+      "block_p99_us": {
+        "before": 5.186,
+        "after": 5.237
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "neural_synth",
+      "artifact_hashes": {
+        "o": {
+          "before": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c",
+          "after": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c",
+          "final": "2f57d4c1f3e20098254c8c24cf46367c5cafedd78ea405cf2893b53e32bd969c"
+        },
+        "mir.msgpack": {
+          "before": "5cab2665cc4177074b35d0b9debc38a1dc8f4664b1fa7943993c229d54e2ec48",
+          "after": "5cab2665cc4177074b35d0b9debc38a1dc8f4664b1fa7943993c229d54e2ec48",
+          "final": "5cab2665cc4177074b35d0b9debc38a1dc8f4664b1fa7943993c229d54e2ec48"
+        },
+        "native.output.bin": {
+          "before": "fb49ae6446c812055dac1424cd96f57ba2d8920cf59bc5868f37a85980b39101",
+          "after": "fb49ae6446c812055dac1424cd96f57ba2d8920cf59bc5868f37a85980b39101"
+        },
+        "native.warm-output.bin": {
+          "before": "de3566dd1cefc72570bbb3bac30346a7be38bc5d1545afd15da8a525cdba06af",
+          "after": "de3566dd1cefc72570bbb3bac30346a7be38bc5d1545afd15da8a525cdba06af"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 561.8046417236328,
+        "after": 561.7926177978516
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          562.1278381347656,
+          561.8046417236328,
+          560.7569732666016,
+          562.04052734375,
+          558.7010192871094
+        ],
+        "after": [
+          560.2611389160156,
+          562.1983489990234,
+          562.5359039306641,
+          561.7926177978516,
+          560.8414459228516
+        ]
+      },
+      "block_p99_us": {
+        "before": 74.94,
+        "after": 76.145
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    },
+    {
+      "group": "examples",
+      "name": "spectral_freeze",
+      "artifact_hashes": {
+        "o": {
+          "before": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe",
+          "after": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe",
+          "final": "59e7c1100fcf495e847fc06179ba7822ea8670e1c586797e1833bfa91aa03afe"
+        },
+        "mir.msgpack": {
+          "before": "8ef6431019d33715122964d4e717270a0c0a641b4a156de7c42563970b688799",
+          "after": "8ef6431019d33715122964d4e717270a0c0a641b4a156de7c42563970b688799",
+          "final": "8ef6431019d33715122964d4e717270a0c0a641b4a156de7c42563970b688799"
+        },
+        "native.output.bin": {
+          "before": "c1bb338a6634cc453c5343c0cbb50ca42d2510fbdc6942e60ef2d1d4dfccdfb5",
+          "after": "c1bb338a6634cc453c5343c0cbb50ca42d2510fbdc6942e60ef2d1d4dfccdfb5"
+        },
+        "native.warm-output.bin": {
+          "before": "7d8c7ba0364f5ae6152664c5b6bdb382042c05ed60376ab8933bccd46f45e93d",
+          "after": "7d8c7ba0364f5ae6152664c5b6bdb382042c05ed60376ab8933bccd46f45e93d"
+        }
+      },
+      "process_medians_ns_per_frame": {
+        "before": 34.71860885620117,
+        "after": 34.82542610168457
+      },
+      "raw_rounds_ns_per_frame": {
+        "before": [
+          34.78841590881348,
+          34.71860885620117,
+          34.580183029174805,
+          34.75071620941162,
+          34.688475608825684
+        ],
+        "after": [
+          34.97746276855469,
+          34.74891471862793,
+          34.82542610168457,
+          34.81288719177246,
+          34.85871124267578
+        ]
+      },
+      "block_p99_us": {
+        "before": 9.833,
+        "after": 10.265
+      },
+      "configuration": [
+        "f32",
+        "f32"
+      ]
+    }
+  ],
+  "reproduction": {
+    "scalar_source_generator_python": "def source(n):\n    return \"\\n\".join([\"init:\"] + [f\"  x{i} = {i+1}.0\" for i in range(n)] + [\"\", \"sample:\"] + [f\"  x{i} = (x{i} + in1) * 0.999\" for i in range(n)] + [\"  out1 = \" + \" + \".join(f\"x{i}\" for i in range(n)), \"\"])\n",
+    "scaling_config": {
+      "sample_rate": 48000.0,
+      "block_size": 512
+    },
+    "backend_harness_rust": "use onda_codegen_llvm::*;\nfn main() {\n let args:Vec<_>=std::env::args().collect();\n let text=std::fs::read_to_string(&args[1]).unwrap();\n let p=unsafe {onda_mir::from_json_with_producer_proofs(&text)}.unwrap();\n let (p,_)=onda_mir::optimize(p).unwrap();\n let start=std::time::Instant::now();\n if args[3]==\"obj\" { let obj=lower_optimized_mir_to_object(&p,&MirTargetOptions::default()).unwrap();println!(\"{:?}\",start.elapsed()); std::fs::write(&args[2],obj).unwrap();return; }\n let ir=lower_optimized_mir_to_llvm_ir_with_options(&p,MirCompileOptions{ opt_level: if args[3]==\"0\" {TargetOptLevel::O0} else {TargetOptLevel::O3},..Default::default()}).unwrap();\n println!(\"{:?}\",start.elapsed());\n std::fs::write(&args[2],ir).unwrap();\n}\n",
+    "peak_memory_launcher_c": "#define _DEFAULT_SOURCE\n#include <stdio.h>\n#include <stdlib.h>\n#include <sys/resource.h>\n#include <sys/wait.h>\n#include <unistd.h>\n\nint main(int argc, char **argv) {\n    if (argc < 3) return 2;\n    pid_t child = fork();\n    if (child < 0) return 2;\n    if (!child) {\n        execvp(argv[2], argv + 2);\n        _exit(127);\n    }\n    struct rusage usage;\n    int status;\n    if (wait4(child, &status, 0, &usage) < 0) return 2;\n    FILE *output = fopen(argv[1], \"w\");\n    if (!output) return 2;\n    fprintf(output, \"%ld\\n\", usage.ru_maxrss);\n    fclose(output);\n    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);\n}\n",
+    "measurement_script_python": "\"\"\"Debug harness: measure alias-metadata compilation against the saved baseline.\"\"\"\nimport hashlib\nimport json\nfrom pathlib import Path\nimport subprocess\n\nOUTPUT = Path(__file__).resolve().parent\nWORKERS = {\n    'before': OUTPUT / 'baseline-codegen',\n    'after': Path('/tmp/onda-standards-main-codegen/target/release/review-current-codegen'),\n}\n\n\ndef digest(path):\n    with path.open('rb') as stream:\n        return hashlib.file_digest(stream, 'sha256').hexdigest()\n\n\nrows = []\nfor kind, sizes in [('0', [512, 1024, 2048, 4096]),\n                    ('3', [512, 1024, 2048, 4096]),\n                    ('obj', [1024, 2048, 4096])]:\n    for size in sizes:\n        source = Path('/tmp/onda-standards-alias-scaling') / f's{size}.json'\n        for pair in range(3):\n            for version in (['before', 'after'] if pair % 2 == 0 else ['after', 'before']):\n                name = f'final-scaling-{kind}-{size}-{pair}-{version}'\n                artifact = OUTPUT / f'{name}.{\"o\" if kind == \"obj\" else \"ll\"}'\n                rss = OUTPUT / f'{name}.rss'\n                command = [str(OUTPUT / 'measure'), str(rss), 'taskset', '-c', '6',\n                           str(WORKERS[version]), str(source), str(artifact), kind]\n                with (OUTPUT / f'{name}.stdout').open('w') as out, (OUTPUT / f'{name}.stderr').open('w') as err:\n                    result = subprocess.run(command, stdout=out, stderr=err, timeout=120)\n                if result.returncode:\n                    raise RuntimeError(f'{command}: {result.returncode}')\n                duration = (OUTPUT / f'{name}.stdout').read_text().strip()\n                unit = next(unit for unit in ['ns', '\u00b5s', 'ms', 's'] if duration.endswith(unit))\n                seconds = float(duration[:-len(unit)]) * {'ns': 1e-9, '\u00b5s': 1e-6, 'ms': 1e-3, 's': 1}[unit]\n                rows.append({\n                    'kind': kind, 'states': size, 'pair': pair, 'version': version,\n                    'command': command, 'backend_seconds': seconds,\n                    'peak_rss_kib': int(rss.read_text()),\n                    'artifact_bytes': artifact.stat().st_size, 'artifact_sha256': digest(artifact),\n                    'input_sha256': digest(source), 'worker_sha256': digest(WORKERS[version]),\n                })\n        (OUTPUT / 'final-scaling-results.json').write_text(json.dumps(rows, indent=2) + '\\n')\n        print(json.dumps({'kind': kind, 'states': size, 'complete': True}), flush=True)\n",
+    "runtime_metadata": {
+      "kernels-before": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": null,
+          "filter": "state-window|array-guarded|operator-|slice-|voice-bank",
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/kernels-before",
+          "backend": "native",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": null,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-worker",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-worker",
+          "sha256": "0f64ec2d2e72f38f3b1ed82d33d41901d02fea36f0609e3d4f4c2325f7da7bcd"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "slice-fixed",
+          "slice-dynamic",
+          "voice-bank-16",
+          "voice-bank-256",
+          "voice-bank-4096",
+          "state-window-array-f32",
+          "state-window-shared-array-f32",
+          "state-window-slice-f32",
+          "state-window-shared-slice-f32",
+          "state-window-bounded-f32",
+          "array-guarded-helper-f32",
+          "array-guarded-state-f32",
+          "operator-arithmetic-f32",
+          "operator-division-f32",
+          "operator-reciprocal-f32",
+          "operator-reduction-f32",
+          "state-window-array-f64",
+          "state-window-shared-array-f64",
+          "state-window-slice-f64",
+          "state-window-shared-slice-f64",
+          "state-window-bounded-f64",
+          "array-guarded-helper-f64",
+          "array-guarded-state-f64",
+          "operator-arithmetic-f64",
+          "operator-division-f64",
+          "operator-reciprocal-f64",
+          "operator-reduction-f64"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "1205.782",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "kernels-after": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": null,
+          "filter": "state-window|array-guarded|operator-|slice-|voice-bank",
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/kernels-after",
+          "backend": "native",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": null,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "58944432b0c8e4fca56337df4ae3acdc6717e9bc26b7e335eeb137442a7de842"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "slice-fixed",
+          "slice-dynamic",
+          "voice-bank-16",
+          "voice-bank-256",
+          "voice-bank-4096",
+          "state-window-array-f32",
+          "state-window-shared-array-f32",
+          "state-window-slice-f32",
+          "state-window-shared-slice-f32",
+          "state-window-bounded-f32",
+          "array-guarded-helper-f32",
+          "array-guarded-state-f32",
+          "operator-arithmetic-f32",
+          "operator-division-f32",
+          "operator-reciprocal-f32",
+          "operator-reduction-f32",
+          "state-window-array-f64",
+          "state-window-shared-array-f64",
+          "state-window-slice-f64",
+          "state-window-shared-slice-f64",
+          "state-window-bounded-f64",
+          "array-guarded-helper-f64",
+          "array-guarded-state-f64",
+          "operator-arithmetic-f64",
+          "operator-division-f64",
+          "operator-reciprocal-f64",
+          "operator-reduction-f64"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "921.269",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "kernels-final": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": null,
+          "filter": "state-window|array-guarded|operator-|slice-|voice-bank",
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/kernels-final",
+          "backend": "native",
+          "inspect_only": true,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 3,
+          "round_ms": 10,
+          "warmup_blocks": null,
+          "validation_blocks": 8,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "80bd546090f29fe02be9e149ab665815323523fba19b4869ecbf77b66c0c32f1"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "slice-fixed",
+          "slice-dynamic",
+          "voice-bank-16",
+          "voice-bank-256",
+          "voice-bank-4096",
+          "state-window-array-f32",
+          "state-window-shared-array-f32",
+          "state-window-slice-f32",
+          "state-window-shared-slice-f32",
+          "state-window-bounded-f32",
+          "array-guarded-helper-f32",
+          "array-guarded-state-f32",
+          "operator-arithmetic-f32",
+          "operator-division-f32",
+          "operator-reciprocal-f32",
+          "operator-reduction-f32",
+          "state-window-array-f64",
+          "state-window-shared-array-f64",
+          "state-window-slice-f64",
+          "state-window-shared-slice-f64",
+          "state-window-bounded-f64",
+          "array-guarded-helper-f64",
+          "array-guarded-state-f64",
+          "operator-arithmetic-f64",
+          "operator-division-f64",
+          "operator-reciprocal-f64",
+          "operator-reduction-f64"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.467",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "examples-before": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/examples/basic/sine.onda",
+            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
+            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
+            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
+            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
+            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
+            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
+            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
+            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/examples-before",
+          "backend": "native",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": 2048,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-worker",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/alias-metadata-fix/baseline-worker",
+          "sha256": "0f64ec2d2e72f38f3b1ed82d33d41901d02fea36f0609e3d4f4c2325f7da7bcd"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "sine",
+          "voice_bank",
+          "polyphonic_saw",
+          "saw_filter_saturator",
+          "additive_synth",
+          "fdn_reverb",
+          "tape_echo",
+          "neural_synth",
+          "spectral_freeze"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.493",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "examples-after": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/examples/basic/sine.onda",
+            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
+            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
+            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
+            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
+            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
+            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
+            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
+            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/examples-after",
+          "backend": "native",
+          "inspect_only": false,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 5,
+          "round_ms": 30.0,
+          "warmup_blocks": 2048,
+          "validation_blocks": 32,
+          "latency_blocks": 512,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "58944432b0c8e4fca56337df4ae3acdc6717e9bc26b7e335eeb137442a7de842"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "sine",
+          "voice_bank",
+          "polyphonic_saw",
+          "saw_filter_saturator",
+          "additive_synth",
+          "fdn_reverb",
+          "tape_echo",
+          "neural_synth",
+          "spectral_freeze"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "2733.332",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      },
+      "examples-final": {
+        "schema_version": 1,
+        "label": "",
+        "settings": {
+          "source": [
+            "/home/francesco/Sources/onda/examples/basic/sine.onda",
+            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
+            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
+            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
+            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
+            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
+            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
+            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
+            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+          ],
+          "filter": null,
+          "all": false,
+          "list": false,
+          "output": "/home/francesco/Sources/onda/target/alias-metadata-fix/examples-final",
+          "backend": "native",
+          "inspect_only": true,
+          "ir": true,
+          "assembly": true,
+          "trust_mir": false,
+          "sample_rate": 48000,
+          "block_size": 128,
+          "repetitions": 3,
+          "round_ms": 10,
+          "warmup_blocks": null,
+          "validation_blocks": 8,
+          "latency_blocks": 1024,
+          "input_seed": 12345,
+          "input_pattern": "noise",
+          "atol": 1e-06,
+          "rtol": 1e-06,
+          "bitwise": false,
+          "max_output_abs": null,
+          "fast_math": false,
+          "fp_reassociate": false,
+          "fp_contract": false,
+          "fp_no_signed_zeros": false,
+          "allocations": false,
+          "remarks": false,
+          "opt_level": 3,
+          "wasm_opt_level": 4,
+          "cpu": 6,
+          "memory_mib": 4096,
+          "timeout_seconds": 120,
+          "node_heap_mib": 256,
+          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "references": false,
+          "compare_to": null,
+          "label": ""
+        },
+        "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
+        "machine": "x86_64",
+        "python": "3.14.8",
+        "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
+        "worker": {
+          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "sha256": "80bd546090f29fe02be9e149ab665815323523fba19b4869ecbf77b66c0c32f1"
+        },
+        "tools_sha256": {
+          "scripts/bench/compare.py": "97fe1f96344c5c2527f4384cd0c428ce930cc86786cc13183c8e80cb646f0a1a",
+          "scripts/bench/inspection.py": "7fef670e25a3c09b6466819b773596bd991683a4f311085616683dd5b5c72623",
+          "scripts/bench/limits.py": "c780ba4d99b0d11755a7b468b952dd9dc31fd88ee07278a9f59ba5aa5f82ca18",
+          "scripts/bench/reference.c": "e46cfab167b02a5c6c9af26c1c13f17f5376e1458f3fbad0c53d097634867444",
+          "scripts/bench/references.py": "c99f9d5312e98aceb8e4178d073f895cd23e99ceafb9edf8409467a44e1ac2d6",
+          "scripts/bench/run.py": "3cc05e659dd7d1c6054d639eb41f3fbf0c9d49d0a34a3d5bc6b08ed41ffafc1d",
+          "scripts/bench/test_harness.py": "9369ff3f01022f01d3b003e98032bb2494812b29adfb8cd5eff76f9e1a309a6f",
+          "scripts/bench/wasm.mjs": "b4928ca474ecd8e759876ed75a5cf76fbeae36d216aa70603b7342f40c74f557",
+          "scripts/bench/workloads.py": "b87a0b16ccebd9f9fa956849bb4ad6f6942ead903f3d5d723f1738f982e09a4c",
+          "scripts/bench/fft_reference.c": "995114dc139ecb7dfd41377bc600c2312c49a5c81722bbd45b64d2b4e169bd45",
+          "scripts/bench/fft.py": "3f8e278e84382f4ad044f1dd89ceb17ff4be8d764a2e629af2f40873ee63e1e9"
+        },
+        "execution": {
+          "sequential": true,
+          "native_memory": "RLIMIT_AS",
+          "wasm_memory": "systemd MemoryMax; swap disabled",
+          "native_fp_mode": "Onda runtime default; FTZ/DAZ on x86",
+          "wasm_fp_mode": "WebAssembly float semantics"
+        },
+        "cases": [
+          "sine",
+          "voice_bank",
+          "polyphonic_saw",
+          "saw_filter_saturator",
+          "additive_synth",
+          "fdn_reverb",
+          "tape_echo",
+          "neural_synth",
+          "spectral_freeze"
+        ],
+        "working_tree_dirty": true,
+        "cpu_info": {
+          "processor": "6",
+          "vendor_id": "GenuineIntel",
+          "cpu family": "6",
+          "model": "183",
+          "model name": "Intel(R) Core(TM) i9-14900HX",
+          "stepping": "1",
+          "microcode": "0x137",
+          "cpu MHz": "800.000",
+          "cache size": "36864 KB",
+          "physical id": "0",
+          "siblings": "32",
+          "core id": "12",
+          "cpu cores": "24",
+          "apicid": "24",
+          "initial apicid": "24",
+          "fpu": "yes",
+          "fpu_exception": "yes",
+          "cpuid level": "32",
+          "wp": "yes",
+          "flags": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities",
+          "bugs": "spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb rfds bhi spectre_v2_user vmscape",
+          "bogomips": "4838.40",
+          "clflush size": "64",
+          "cache_alignment": "64",
+          "address sizes": "39 bits physical, 48 bits virtual",
+          "power management": ""
+        }
+      }
+    }
+  },
+  "validation": {
+    "rust": {
+      "command": "cargo test -p onda_codegen_llvm -p onda_examples --features onda_examples/llvm-orc",
+      "passed": 1029,
+      "ignored": 1
+    },
+    "parity": {
+      "command": "npm run test:parity --workspace @onda-lang/binaryen-web",
+      "scenarios": 50,
+      "binaryen_configurations": 2,
+      "max_approximate_error": 1.1920928955078125e-07
+    },
+    "clippy": "cargo clippy -p onda_codegen_llvm --all-targets -- -D warnings",
+    "formatting": "rustfmt --edition 2021 --check crates/onda_codegen_llvm/src/orc_backend/mir_native/state_alias.rs crates/onda_codegen_llvm/tests/alias_metadata.rs"
+  }
+}

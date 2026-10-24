@@ -157,9 +157,10 @@ C ABIs without introducing a target-specific entry point.
 
 ### Call-scoped execution output
 
-For the language semantics, see [delegates](syntax.md#delegates) and
-[printing](syntax.md#printing). The internal [delegate](delegates.md) and
-[print](printing.md) integration notes contain cross-host implementation details.
+For language semantics, see [delegates](https://onda-lang.org/docs/language/#delegates-and-when) and
+[printing](https://onda-lang.org/docs/language/#printing). The
+[host output guide](https://onda-lang.org/docs/host-output/) covers sizing, ownership, decoding,
+and presentation across host APIs.
 
 `output` is null when the host consumes neither occurrence stream. Otherwise it points to two
 independently nullable pointers followed by the generated call-local counter:

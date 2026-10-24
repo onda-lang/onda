@@ -1,25 +1,25 @@
 {
   "sleef_version": "3.9.0",
   "commit": "906ca7512ee483296780a81a21b9ca715d40dfe1",
-  "clang": "clang version 21.1.8",
+  "clang": "Debian clang version 21.1.8 (++20251221032947+2078da43e25a-1~exp1~20251221153113.67)",
   "llvm": "21.1.2",
   "files": {
-    "sse2-f32.bc": "68026852fb818c3c1f9dc407903b1e055b4faca270bdb5ebe30028615669f8b4",
-    "sse2-f64.bc": "b36538e75832350cc1fd7259255730dbb5f754b4cc571fd0e2e6c3e06f56e040",
-    "avx-f32.bc": "0d1b5f4d8ee47eca5bb7f653b6a8168c3a1bad2fc1a2e967db80398d5e6b0c2c",
-    "avx-f64.bc": "ffb479e84d2b4c4bdae9e29abb651d9f0442f1f9c181dc2a5e1a99e3091cc196",
-    "avx2128-f32.bc": "32ff3aaf9e820e3d7b23e070a870fe4157bdf64dbcd7966902c7856a4a533e76",
-    "avx2128-f64.bc": "d63cd725f8f0ab040752b7cc47d3f12da97554ac94c90fa1b911ff27b5037d4e",
-    "avx2-f32.bc": "583a4b7d9abad54cd3680261010a90fdd3f833425725ed536bd56cc8e348f1fe",
-    "avx2-f64.bc": "e7d4df1bea74417e29482bb3658a264dfff663ee1511890f4c1e2b69e432a1e6",
-    "avx512f-f32.bc": "0af14612b655797e061f94de8e11652ba5d844b4d4e94dbdca08ded8c67606e5",
-    "avx512f-f64.bc": "c5f1ede3ff1c5f8ea03d7ff7507ea88e3731e7648937afbb476777fb11784405",
-    "advsimd-f32.bc": "6becb7f22a2aaba985cca38e550bb3aea1bbdae69da8ac2a269f0696f788a71d",
-    "advsimd-f64.bc": "0349677d74790e7d53e3b77f3f8852029773ebf2a8d471003c22dfafc6941dff"
+    "sse2-f32.bc": "9c19e1ecbdc6d8918c230d50662b06ceb1edc225fa575b4d50bdd9b4d4bca141",
+    "sse2-f64.bc": "8fba785d33e36c733fe1ef8d904bab7f406f44dfdc511df9174dcbf8fc9e181d",
+    "avx-f32.bc": "e300104f6bfa1d5cdd53779b6a6b040602c2e9935907fcceb85995c4fc347e55",
+    "avx-f64.bc": "fd5f67cbbefa9d48de117d43c01c27223008598bef50458e805412c00fe61a13",
+    "avx2128-f32.bc": "7810fa5a6d0a2cc939023a8446727847d00a4839258301bc92c5a93f7236ee89",
+    "avx2128-f64.bc": "71e3b6507eed712bfa2d7ae289fa5180e92df374458e271670424ea1ecdac771",
+    "avx2-f32.bc": "c41a7abdf856619bc0f065feb8ef322e8126003164cb8d5ac2b19d055c3b7b2c",
+    "avx2-f64.bc": "79165052558526bf33104154df53303e2bdbed3d09219d7d77abf3beb7323200",
+    "avx512f-f32.bc": "c4a441f02423704bcf12e3ccf2447c893b443a53ae61e2be3c08b794bac797e9",
+    "avx512f-f64.bc": "50e06e73a92f63455300cc9e608ef808c37862d513bc60eceb0467ff7ccaf415",
+    "advsimd-f32.bc": "e2dc0d1b48e5b16d5958f5af5b193a7ec30e8fe5cb82b149425f9d1bf230c43b",
+    "advsimd-f64.bc": "a1001e765af06cdf7d4977eae274a28c79cc1190f2372b68fd5adbeb16cfe58b"
   },
   "sources": {
-    "scripts/build-native-math-kernel.py": "5051c2913fbf9c31896765bc64cd0d1045323eb0811ecf3016ff3f663e270f91",
-    "crates/onda_codegen_llvm/src/vector_math_spec.rs": "461d65391edf1d6d12285d842fd0ce34f1b44e63bf91ebadfc880fb8da08132c",
+    "scripts/build-native-math-kernel.py": "8b1d92c98ef2ae133c2f8537e79b60f5241a574a489854385f26496691bc513e",
+    "crates/onda_codegen_llvm/src/vector_math_spec.rs": "028a228d974bd2c681c09d3e4eafc678aceb70b0a23dc11a08bca1712eff81ca",
     "licenses/SLEEF-LICENSE.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
   }
 }
