@@ -41,7 +41,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Verify embedded SLEEF kernels
-        run: python3 scripts/build-native-math-kernel.py --check
+        run: |
+          python3 scripts/build-native-math-kernel.py --check
+          python3 scripts/generate-vector-math-references.py --check
 
       - name: Test benchmark inspection and bounds
         run: python3 -m unittest discover -s scripts/bench -p 'test_*.py'
@@ -130,7 +132,7 @@ jobs:
         run: |
           ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test slice_optimization
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization
       - name: Test Windows JIT, AOT linking, and target ABIs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -138,7 +140,7 @@ jobs:
           ./scripts/bootstrap-llvm.ps1 -Version "$env:LLVM_VERSION"
           . ./scripts/use-msvc-env.ps1
           . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test slice_optimization
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
 
   browser:

@@ -3679,6 +3679,7 @@ dependencies = [
  "onda_frontend",
  "onda_mir",
  "onda_processor_abi",
+ "onda_realtime",
  "onda_semantics",
  "serde",
  "tempfile",

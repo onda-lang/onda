@@ -32,9 +32,3 @@ eyebrow: Onda docs
 - [Processor API and ABI]({{ '/docs/processor-api/' | relative_url }}) — Host compiled native and WebAssembly processors without `libonda`.
 - [Web API]({{ '/docs/web-api/' | relative_url }}) — JavaScript packages for compilation, artifacts, and Web Audio playback.
 - [Host output]({{ '/docs/host-output/' | relative_url }}) — Collect and present delegates and prints across host APIs.
-
-## Compiler contributors
-
-- [Architecture]({{ '/docs/architecture/' | relative_url }}) — Compiler pipeline, runtime, optimization ownership, and codebase map.
-- [MIR reference]({{ '/docs/mir/' | relative_url }}) — Executable representation, validation, shared analyses, and backend contract.
-- [Benchmark guide](https://github.com/onda-lang/onda/blob/main/scripts/bench/README.md) — Reproduce performance measurements and inspect dated evidence in the repository.

@@ -1,17 +1,9 @@
----
-title: Compiler architecture
-description: A map of the Onda compiler, runtime, CLI, language server, and host crates.
-permalink: /docs/architecture/
-section: reference
-eyebrow: Contributor guide
----
-
 # Onda compiler architecture
 
 This guide describes the architecture of `onda` and where each piece of the project lives.
 For language syntax and semantics, see the [language guide](https://onda-lang.org/docs/language/).
 For build, CLI usage, and editor integrations, see [Getting started](https://onda-lang.org/docs/getting-started/).
-The [MIR reference](https://onda-lang.org/docs/mir/) specifies the executable compiler boundary;
+The [MIR reference](mir.md) specifies the executable compiler boundary;
 the [benchmark guide](https://github.com/onda-lang/onda/blob/main/scripts/bench/README.md) owns
 measurement procedures and dated results.
 
@@ -287,7 +279,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   canonicalization, integer-range-based bounds proofs, conservative scalar CSE, bounded
   alias-safe scalar-state promotion, cleanup, and selective ordered-reduction distribution.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
-- The production contract is documented in the [MIR reference](https://onda-lang.org/docs/mir/).
+- The production contract is documented in the [MIR reference](mir.md).
 
 ### `onda_codegen_llvm` (`crates/onda_codegen_llvm/src`)
 - `lib.rs` — public JIT/AOT API. The sole `TypedProgram` JIT path lowers to validated MIR before
@@ -590,7 +582,7 @@ latency through runtime measurements. Vector widths, inlining, instruction selec
 register-pressure decisions belong to backend cost models. Keep numerical permissions explicit
 and validate results as well as elapsed time.
 
-The [MIR pass contract](https://onda-lang.org/docs/mir/#backend-neutral-passes) describes legality
+The [MIR pass contract](mir.md#backend-neutral-passes) describes legality
 and invalidation in detail. The main opportunities exposed to backends are:
 
 - Ordinary source indexing clamps each coordinate independently for every nonempty indexable

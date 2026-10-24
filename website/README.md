@@ -3,19 +3,6 @@
 Jekyll site with documentation sourced from the repository's [docs](../docs)
 directory. The playground uses the [shared browser IDE](../ui/playground/README.md).
 
-## Documentation organization
-
-`docs/` contains maintained reader-facing guides. Every top-level Markdown file has Jekyll front
-matter and a stable permalink, and is linked from the documentation index. Keep compiler ownership
-and design in `architecture.md`, executable contracts and shared analyses in `mir.md`, and public
-interfaces in the relevant language/API guide. `host-output.md` covers the shared delegate/print
-delivery model and host examples.
-
-Benchmark commands and methodology live in [scripts/bench](../scripts/bench/README.md); dated
-measurements and raw evidence live in its `results/` directory. Fold lasting design decisions into
-the compiler guides and track unfinished work in `docs/todo/`, which the site excludes. Investigation
-diaries, implementation checklists, and machine-local setup notes do not belong in public docs.
-
 ## Local preview
 
 Run from the repository root with npm, the browser compiler build tools, and

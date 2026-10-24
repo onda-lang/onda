@@ -11,7 +11,7 @@ eyebrow: Compiler reference
 Onda MIR is the backend-neutral executable representation shared by native LLVM codegen and
 WebAssembly codegen. It is a core compiler boundary, not a Web-specific translation format.
 For the crate map and optimization ownership, see
-[compiler architecture](https://onda-lang.org/docs/architecture/#compilation-pipeline).
+[compiler architecture](architecture.md#compilation-pipeline).
 
 The production pipeline is:
 

@@ -50,7 +50,26 @@ assembly, and removes generating CPU attributes and module flags. It records too
 and SHA-256 hashes in `manifest.json`, and generates the operation mapping used by the backend.
 `--check` needs neither Clang nor initialized SLEEF sources and runs in CI.
 
-Run `cargo test -p onda_codegen_llvm --test math_policy --test slice_optimization` on each
-release platform. Tests cover numerical edge cases, scalar tails, CPU feature overrides,
-loop and SLP vectorization, cross-target objects and native C hosts linked without SLEEF
-or Onda libraries. The Boost license ships in `licenses/SLEEF-LICENSE.txt`.
+Run `cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization`
+on each release platform. Linux, macOS, and Windows CI execute the JIT and standalone C hosts
+against the same checked-in MPFR reference intervals for all ten operations and both precisions.
+The native host executes the baseline and host ISA, plus AVX, AVX2 without FMA, AVX2/FMA, and
+AVX-512/FMA when detected at runtime. Unsupported ISAs and foreign targets remain emission checks.
+
+`tests/vector_math.rs` covers mixed vector lanes, scalar tails, unaligned starts, zero-length calls,
+both input aliases of binary operations, overlap ordering, and exact memory guards. Audio-mode
+tests use the production thread-local FP setup: normal input/output cases retain the MPFR bounds;
+explicit arithmetic separately checks gradual underflow versus x86 FTZ/DAZ without asserting
+gradual-underflow accuracy in flush mode. A dedicated thread contains the changed FP state.
+
+The reference fixture is generated independently of SLEEF and platform libm, with MPFR evaluations
+agreeing at 4096 and 8192 bits. Intervals use the selected `u10`/`u35` error budgets and upstream
+zero/NaN/infinity classification rules. MPFR is needed only for regeneration:
+
+```sh
+python3 scripts/generate-vector-math-references.py
+python3 scripts/generate-vector-math-references.py --check
+```
+
+The check verifies generator provenance and the case checksum without loading MPFR. The Boost
+license ships in `licenses/SLEEF-LICENSE.txt`.
