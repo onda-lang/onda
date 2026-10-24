@@ -3637,7 +3637,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "onda_api"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
@@ -3651,7 +3651,7 @@ dependencies = [
 
 [[package]]
 name = "onda_cli"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "embed-resource",
  "hound",
@@ -3672,7 +3672,7 @@ dependencies = [
 
 [[package]]
 name = "onda_codegen_llvm"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "cc",
  "llvm-sys",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "onda_compiler_web"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_frontend",
  "onda_lsp",
@@ -3701,7 +3701,7 @@ dependencies = [
 
 [[package]]
 name = "onda_cpal"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "cpal",
  "libc",
@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "onda_daemon"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3724,7 +3724,7 @@ dependencies = [
 
 [[package]]
 name = "onda_egui"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -3744,7 +3744,7 @@ dependencies = [
 
 [[package]]
 name = "onda_examples"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "hound",
  "onda_codegen_llvm",
@@ -3759,7 +3759,7 @@ dependencies = [
 
 [[package]]
 name = "onda_frontend"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "pest",
  "pest_derive",
@@ -3767,14 +3767,14 @@ dependencies = [
 
 [[package]]
 name = "onda_host_protocol"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "onda_lsp"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_frontend",
  "onda_host_protocol",
@@ -3785,7 +3785,7 @@ dependencies = [
 
 [[package]]
 name = "onda_mir"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_processor_abi",
  "rmp-serde",
@@ -3795,7 +3795,7 @@ dependencies = [
 
 [[package]]
 name = "onda_processor_abi"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "serde",
  "serde_json",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "onda_project"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "hex",
  "hound",
@@ -3816,11 +3816,11 @@ dependencies = [
 
 [[package]]
 name = "onda_realtime"
-version = "0.8.39"
+version = "0.8.40"
 
 [[package]]
 name = "onda_run"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "libc",
  "midir",
@@ -3839,7 +3839,7 @@ dependencies = [
 
 [[package]]
 name = "onda_runtime"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_codegen_llvm",
  "onda_frontend",
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "onda_semantics"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "onda_frontend",
  "onda_mir",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "onda_webview"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "image",
  "objc2 0.6.4",
